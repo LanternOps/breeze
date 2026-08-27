@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { EVENT_SUBSCRIBER_IDS } from '../services/eventSubscriberIds';
 
 export const desktopSessionFinalizationJobDataSchema = z.object({
   version: z.literal(1),
@@ -333,6 +334,60 @@ export const vulnSourceSyncSchema = z.object({
   month: z.string().optional(),
 }).strict();
 
+/**
+ * Wave 3.5c dispatch queue (#4085): the envelope for a `BreezeEvent` as it
+ * rides a job payload. Mirrors `BreezeEvent`'s own field set exactly (see
+ * services/eventBus.ts) rather than the full EventType union — `type` stays
+ * `z.string()` so adding a new event type never requires a matching edit
+ * here. `payload` and `metadata.correlationId/causationId/userId` stay open
+ * (the publisher already owns their shape); only the envelope itself is
+ * `.strict()` so a genuinely new top-level BreezeEvent field is caught here.
+ */
+const breezeEventMetadataJobSchema = z.object({
+  correlationId: z.string().optional(),
+  causationId: z.string().optional(),
+  userId: z.string().optional(),
+  timestamp: z.string().min(1),
+}).strict();
+
+const breezeEventEnvelopeSchema = z.object({
+  id: z.string().min(1),
+  type: z.string().min(1),
+  orgId: z.string().min(1),
+  audienceUserId: z.string().min(1).optional(),
+  siteId: z.string().min(1).optional(),
+  source: z.string().min(1),
+  priority: z.enum(['low', 'normal', 'high', 'critical']),
+  payload: z.record(z.string(), z.unknown()),
+  metadata: breezeEventMetadataJobSchema,
+}).strict();
+
+const eventSubscriberIdSchema = z.enum(EVENT_SUBSCRIBER_IDS);
+
+/**
+ * `event-dispatch` queue, `route-event` job (services/eventDispatchQueue.ts).
+ * Snapshots the PUBLISHER's routing plan verbatim — the router (task 6) trusts
+ * `matchedSubscriberIds`/`queueSubscriberIds` as-is and never recomputes them.
+ */
+export const routeEventJobDataSchema = z.object({
+  v: z.literal(1),
+  mode: z.enum(['shadow', 'enforce']),
+  event: breezeEventEnvelopeSchema,
+  matchedSubscriberIds: z.array(eventSubscriberIdSchema),
+  queueSubscriberIds: z.array(eventSubscriberIdSchema),
+}).strict();
+
+/**
+ * `event-dispatch` queue, `deliver-event` job — one durable delivery to ONE
+ * subscriber (produced by the router from a route-event job's
+ * `queueSubscriberIds`; consumed by the per-subscriber delivery worker).
+ */
+export const deliverEventJobDataSchema = z.object({
+  v: z.literal(1),
+  subscriberId: eventSubscriberIdSchema,
+  event: breezeEventEnvelopeSchema,
+}).strict();
+
 export type BackupQueueJobData = z.infer<typeof backupQueueJobDataSchema>;
 export type DiscoveryQueueJobData = z.infer<typeof discoveryQueueJobDataSchema>;
 export type FdbEntry = z.infer<typeof fdbEntrySchema>;
@@ -346,6 +401,12 @@ export type RecoveryMediaQueueJobData = z.infer<typeof recoveryMediaQueueJobData
 export type RecoveryBootMediaQueueJobData = z.infer<typeof recoveryBootMediaQueueJobDataSchema>;
 export type VulnSourceSyncJobData = z.infer<typeof vulnSourceSyncSchema>;
 export type QueueActorMeta = z.infer<typeof queueActorMetaSchema>;
+// Note: NOT named RouteEventJobData/DeliverEventJobData — those canonical
+// interfaces are hand-written in services/eventDispatchQueue.ts (the
+// Task 6 contract surface); these are this file's schema-inferred shapes,
+// used for defensive parsing at the dequeue boundary.
+export type RouteEventQueueJobData = z.infer<typeof routeEventJobDataSchema>;
+export type DeliverEventQueueJobData = z.infer<typeof deliverEventJobDataSchema>;
 
 export function withQueueMeta<T extends Record<string, unknown>>(
   payload: T,

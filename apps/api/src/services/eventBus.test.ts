@@ -24,11 +24,22 @@ vi.mock('../db', () => {
 
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
+// eventDispatchQueue (wave 3.5c, #4085) is mocked wholesale so publish()'s
+// wiring can be asserted (called / not called, with what args) without
+// depending on a real BullMQ queue or Redis connection — matching the
+// './redis' + '../db' mocking pattern already used in this file.
+vi.mock('./eventDispatchQueue', () => ({
+  enqueueRouteEvent: vi.fn().mockResolvedValue(undefined),
+  recordShadowLocalInvocation: vi.fn().mockResolvedValue(undefined),
+}));
+
 describe('eventBus service', () => {
   let mockRedis: Partial<Redis>;
   let eventBusModule: typeof import('./eventBus');
   let getRedis: (typeof import('./redis'))['getRedis'];
   let getRedisConnection: (typeof import('./redis'))['getRedisConnection'];
+  let enqueueRouteEvent: (typeof import('./eventDispatchQueue'))['enqueueRouteEvent'];
+  let recordShadowLocalInvocation: (typeof import('./eventDispatchQueue'))['recordShadowLocalInvocation'];
 
   beforeEach(async () => {
     vi.resetModules();
@@ -44,6 +55,10 @@ describe('eventBus service', () => {
     ({ getRedis, getRedisConnection } = await import('./redis'));
     vi.mocked(getRedis).mockReturnValue(mockRedis as Redis);
     vi.mocked(getRedisConnection).mockReturnValue(mockRedis as Redis);
+
+    ({ enqueueRouteEvent, recordShadowLocalInvocation } = await import('./eventDispatchQueue'));
+    vi.mocked(enqueueRouteEvent).mockClear().mockResolvedValue(undefined);
+    vi.mocked(recordShadowLocalInvocation).mockClear().mockResolvedValue(undefined);
 
     const { _resetEventSubscriberRegistryForTests } = await import('./eventSubscriberRegistry');
     _resetEventSubscriberRegistryForTests();
@@ -469,5 +484,153 @@ describe('eventBus service', () => {
 
       errorSpy.mockRestore();
     });
+  });
+
+  // ---------------------------------------------------------------------
+  // Dispatch-queue ingress wiring (wave 3.5c, #4085 task 5).
+  // ---------------------------------------------------------------------
+
+  describe('dispatch-queue ingress wiring', () => {
+    it('does NOT call enqueueRouteEvent when EVENT_DISPATCH_MODE is off (default)', async () => {
+      const { publishEvent, EVENT_TYPES } = eventBusModule;
+
+      await publishEvent(EVENT_TYPES.DEVICE_ENROLLED, 'org-1', { deviceId: 'dev-1' }, 'unit-test');
+
+      expect(enqueueRouteEvent).not.toHaveBeenCalled();
+    });
+
+    it('calls enqueueRouteEvent with the published event when mode is shadow', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
+      const { publishEvent, EVENT_TYPES } = eventBusModule;
+
+      const eventId = await publishEvent(EVENT_TYPES.DEVICE_ENROLLED, 'org-1', { deviceId: 'dev-1' }, 'unit-test');
+
+      expect(enqueueRouteEvent).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(enqueueRouteEvent).mock.calls[0]![0]).toMatchObject({ id: eventId, type: EVENT_TYPES.DEVICE_ENROLLED });
+
+      vi.unstubAllEnvs();
+    });
+
+    it('calls enqueueRouteEvent when mode is enforce', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'enforce');
+      const { publishEvent, EVENT_TYPES } = eventBusModule;
+
+      await publishEvent(EVENT_TYPES.DEVICE_ENROLLED, 'org-1', { deviceId: 'dev-1' }, 'unit-test');
+
+      expect(enqueueRouteEvent).toHaveBeenCalledTimes(1);
+
+      vi.unstubAllEnvs();
+    });
+
+    it('runs enqueueRouteEvent BEFORE invokeLocalHandlers (registry subscribers)', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
+      const { publishEvent, EVENT_TYPES } = eventBusModule;
+      const { registerEventSubscriber } = await import('./eventSubscriberRegistry');
+      const handler = vi.fn().mockResolvedValue(undefined);
+      registerEventSubscriber({ id: 'webhook-delivery', eventTypes: [EVENT_TYPES.DEVICE_ENROLLED], handler });
+
+      await publishEvent(EVENT_TYPES.DEVICE_ENROLLED, 'org-1', { deviceId: 'dev-1' }, 'unit-test');
+
+      const enqueueOrder = vi.mocked(enqueueRouteEvent).mock.invocationCallOrder[0]!;
+      const handlerOrder = handler.mock.invocationCallOrder[0]!;
+      expect(enqueueOrder).toBeLessThan(handlerOrder);
+
+      vi.unstubAllEnvs();
+    });
+
+    it('publishUserEvent NEVER calls enqueueRouteEvent, even in shadow/enforce mode', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'enforce');
+      const { getEventBus } = eventBusModule;
+
+      await getEventBus().publishUserEvent(
+        'notification.created', 'org-1', 'user-alice', { notificationId: 'n-1' }, 'unit-test',
+      );
+
+      expect(enqueueRouteEvent).not.toHaveBeenCalled();
+
+      vi.unstubAllEnvs();
+    });
+  });
+
+  describe('shadow-mode local-invocation bookkeeping wiring', () => {
+    it('records "ok" for a successful local subscriber', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
+      const { publishEvent, EVENT_TYPES } = eventBusModule;
+      const { registerEventSubscriber } = await import('./eventSubscriberRegistry');
+      registerEventSubscriber({
+        id: 'webhook-delivery',
+        eventTypes: [EVENT_TYPES.DEVICE_ENROLLED],
+        handler: vi.fn().mockResolvedValue(undefined),
+      });
+
+      await publishEvent(EVENT_TYPES.DEVICE_ENROLLED, 'org-1', { deviceId: 'dev-1' }, 'unit-test');
+
+      expect(recordShadowLocalInvocation).toHaveBeenCalledWith(
+        expect.objectContaining({ type: EVENT_TYPES.DEVICE_ENROLLED }),
+        'webhook-delivery',
+        'ok',
+      );
+
+      vi.unstubAllEnvs();
+    });
+
+    it('records "error" for a failing local subscriber, and does not let a rejected bookkeeping call escape', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
+      vi.mocked(recordShadowLocalInvocation).mockRejectedValueOnce(new Error('redis down'));
+      const { publishEvent, EVENT_TYPES } = eventBusModule;
+      const { registerEventSubscriber } = await import('./eventSubscriberRegistry');
+      registerEventSubscriber({
+        id: 'webhook-delivery',
+        eventTypes: [EVENT_TYPES.DEVICE_ENROLLED],
+        handler: vi.fn().mockRejectedValue(new Error('handler boom')),
+      });
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await expect(
+        publishEvent(EVENT_TYPES.DEVICE_ENROLLED, 'org-1', { deviceId: 'dev-1' }, 'unit-test'),
+      ).resolves.toEqual(expect.any(String));
+
+      expect(recordShadowLocalInvocation).toHaveBeenCalledWith(
+        expect.objectContaining({ type: EVENT_TYPES.DEVICE_ENROLLED }),
+        'webhook-delivery',
+        'error',
+      );
+
+      // Fire-and-forget: publish() must not reject just because the shadow
+      // bookkeeping call rejected. Flush microtasks so the .catch() runs.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(warnSpy).toHaveBeenCalledWith('[EventBus] shadow-record-failed', expect.any(Error));
+
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Carried fix from the Task 2 review (#4085): a throwing captureException
+  // must not escape invokeLocalHandlers and reject publish().
+  // ---------------------------------------------------------------------
+
+  it('a throwing captureException does not reject publish() (carried fix, #4085 task 5)', async () => {
+    const { publishEvent, EVENT_TYPES } = eventBusModule;
+    const { registerEventSubscriber } = await import('./eventSubscriberRegistry');
+    const { captureException } = await import('./sentry');
+    vi.mocked(captureException).mockImplementationOnce(() => {
+      throw new Error('sentry sdk misconfigured');
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    registerEventSubscriber({
+      id: 'webhook-delivery',
+      eventTypes: [EVENT_TYPES.DEVICE_ENROLLED],
+      handler: vi.fn().mockRejectedValue(new Error('handler boom')),
+    });
+
+    await expect(
+      publishEvent(EVENT_TYPES.DEVICE_ENROLLED, 'org-1', { deviceId: 'dev-1' }, 'unit-test'),
+    ).resolves.toEqual(expect.any(String));
+
+    vi.restoreAllMocks();
   });
 });

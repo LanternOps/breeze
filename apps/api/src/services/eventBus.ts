@@ -4,6 +4,8 @@ import { randomUUID } from 'crypto';
 import { runOutsideDbContext } from '../db';
 import { captureException } from './sentry';
 import { partitionSubscribersForEvent } from './eventSubscriberRegistry';
+import { eventDispatchMode } from '../config/env';
+import { enqueueRouteEvent, recordShadowLocalInvocation } from './eventDispatchQueue';
 
 // Event types for type safety
 export type EventType =
@@ -314,6 +316,16 @@ class EventBus {
         console.log(`[EventBus] Published ${type} for org ${orgId}: ${eventId}`);
       }
 
+      // Dispatch-queue ingress (wave 3.5c, #4085): snapshot the publisher's
+      // routing plan into a durable BullMQ job BEFORE running local handlers,
+      // so the snapshot survives even if this process crashes mid-handler.
+      // `off` (the default) skips this entirely — today's in-process-only
+      // delivery is unchanged. enqueueRouteEvent itself never throws.
+      const dispatchMode = eventDispatchMode();
+      if (dispatchMode !== 'off') {
+        await enqueueRouteEvent(event as BreezeEvent);
+      }
+
       // Invoke local in-process handlers immediately
       // This handles the case where startConsuming() hasn't been called
       await this.invokeLocalHandlers(event as BreezeEvent);
@@ -425,6 +437,12 @@ class EventBus {
     for (const sub of local) {
       try {
         await sub.handler(event);
+        // Shadow-mode bookkeeping (wave 3.5c, #4085): fire-and-forget — a
+        // Redis hiccup recording shadow stats must never affect delivery.
+        // No-ops entirely outside shadow mode (see recordShadowLocalInvocation).
+        recordShadowLocalInvocation(event, sub.id, 'ok').catch((err) => {
+          console.warn('[EventBus] shadow-record-failed', err);
+        });
       } catch (error) {
         // Local delivery keeps wave-3d semantics: a buggy subscriber must not
         // break the publish path (#820). Queue delivery (eventDispatchWorker)
@@ -443,7 +461,16 @@ class EventBus {
               : String(error),
           }),
         );
-        captureException(error); // NEW — five of six subscribers were stdout-only
+        try {
+          captureException(error); // NEW — five of six subscribers were stdout-only
+        } catch {
+          // Sentry must never break publish() — a throwing captureException
+          // (e.g. a misconfigured SDK) would otherwise escape this catch and
+          // reject publish() for the caller. See the carried fix, #4085 task 5.
+        }
+        recordShadowLocalInvocation(event, sub.id, 'error').catch((err) => {
+          console.warn('[EventBus] shadow-record-failed', err);
+        });
       }
     }
   }
