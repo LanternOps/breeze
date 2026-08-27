@@ -70,6 +70,21 @@ describe('buildAgentAuthContext', () => {
     ).toThrow(AgentRunOwnershipError);
   });
 
+  it('pins a device-bound run to the exact device, not just its site', () => {
+    const deviceRun = { id: 'run-2', orgId: 'org-1', deviceId: 'device-1', deviceSiteId: 'site-A' };
+    const auth = buildAgentAuthContext(agentOrg, deviceRun, org1);
+
+    expect(auth.allowedDeviceIds).toEqual(['device-1']);
+    // The existing site-level pin stays in place alongside the new device pin.
+    expect(auth.allowedSiteIds).toEqual(['site-A']);
+  });
+
+  it('does not set allowedDeviceIds for a non-device-bound (org-wide) run', () => {
+    const auth = buildAgentAuthContext(agentOrg, run, org1);
+
+    expect(auth.allowedDeviceIds).toBeUndefined();
+  });
+
   it('never carries a user id in either DB access-context path', () => {
     const auth = buildAgentAuthContext(agentPartner, run, org1);
     const expected = {
