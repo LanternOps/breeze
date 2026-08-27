@@ -10,7 +10,7 @@ export class TenantInactiveError extends Error {
   }
 }
 
-function isUsableOrgStatus(status: string | null | undefined): boolean {
+export function isUsableOrgStatus(status: string | null | undefined): boolean {
   return status === 'active' || status === 'trial';
 }
 
