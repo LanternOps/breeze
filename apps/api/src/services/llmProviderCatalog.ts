@@ -7,8 +7,15 @@ import {
   type LlmProviderModelMap,
 } from '../db/schema';
 import { OFFERABLE_AI_MODELS } from './aiCostTracker';
+import { FIDELITY_HARNESS_VERSION } from './llm/providerFidelityHarness';
 
-export const CURRENT_HARNESS_VERSION = '1';
+/**
+ * Activation/listing gates read this; the harness stamps it onto every
+ * verification record. Sourced from the harness itself so a harness bump
+ * automatically invalidates every prior pass instead of silently keeping
+ * revisions activatable on stale verifications.
+ */
+export const CURRENT_HARNESS_VERSION = FIDELITY_HARNESS_VERSION;
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 let listedProvidersCache: ListedProvider[] | null = null;
