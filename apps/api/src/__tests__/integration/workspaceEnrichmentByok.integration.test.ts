@@ -35,8 +35,8 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { and, eq, sql } from 'drizzle-orm';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
-import postgres from 'postgres';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import postgres, { type Sql } from 'postgres';
 import Anthropic from '@anthropic-ai/sdk';
 import { createEnrichmentService } from '@breeze/ext-workspace/src/services/enrichmentService';
 import { TransientIngestError } from '@breeze/ext-workspace/src/services/ingestErrors';
@@ -75,6 +75,44 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
  * is a safe no-op if the real boot step already ran on this DB, and the real
  * boot step re-applying afterwards (recording its own `breeze_migrations`
  * ledger rows) is equally a safe no-op against schema this already created.
+ *
+ * THE LEAK THIS FIXTURE MUST NOT CAUSE (CI run 33031202932, shard 4/4).
+ * The `public` schema of the integration database is a SHARED, CONTRACT-CHECKED
+ * namespace: `tenantCascade.integration.test.ts` enumerates every `org_id`-
+ * columned public BASE TABLE in the live DB and fails when one isn't registered
+ * in `getOrgCascadeDeleteOrder()`. Extension tables are deliberately absent from
+ * that core list — registering them would break the sibling "no entry references
+ * a non-existent table" assertion on every extension-less deployment — so tables
+ * this fixture creates and LEAVES BEHIND red the core cascade contract for the
+ * rest of the vitest run. That is exactly what happened: all eleven relations
+ * below survived into `tenantCascade`'s enumeration and it reported ten of them
+ * (`workspace_sources` was the only one it did not, being already covered).
+ *
+ * The fix is fixture hygiene, not cascade registration: this suite now owns the
+ * full lifecycle of the schema it creates — a defensive drop in `beforeAll`
+ * (so a crashed prior run cannot poison this one) and a mandatory drop in
+ * `afterAll` that ASSERTS nothing survived. `vitest.integration.config.ts` sets
+ * `fileParallelism: false` and `sequence.concurrent: false`, so no other suite
+ * is running while this file holds the schema and an `afterAll` drop is
+ * sufficient; a per-file throwaway database (the approach
+ * `extensions/builtinTableProbe.integration.test.ts` takes) is not, because
+ * unlike that probe this suite needs the FULL core schema — organizations,
+ * partners, devices, ai_sessions, partner_llm_configs, ai_cost_usage, the
+ * `breeze_app` role and the `breeze_has_org_access` helpers — i.e. a complete
+ * 400+ file `autoMigrate()` replay per run, plus a `DATABASE_URL` swap before
+ * the module-level `../../db` handle is constructed.
+ *
+ * WHY THE MIGRATION FILES AND NOT HAND-WRITTEN DDL. This is an integration
+ * PROOF: the real `ee/workspace` enrichment service runs against the real
+ * extension schema. Hand-copying a trimmed subset of the DDL here would let the
+ * fixture drift silently away from the shipped migrations and quietly hollow
+ * the proof out. The file set is already minimal — three of the extension's
+ * eight migrations; the crawler/finder/chunks/ingest-jobs files are NOT applied.
+ * `memory_blocks` and `workspace_file_activity` are unavoidable collateral of
+ * `2026-07-10-workspace-foundation.sql` (which is also the only source of the
+ * `workspace_sources`/`workspace_file_index` the fixtures need), and shipped
+ * migrations must never be edited — so they are created and then dropped like
+ * everything else, rather than skipped.
  */
 const WORKSPACE_MIGRATIONS_DIR = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -86,18 +124,105 @@ const REQUIRED_WORKSPACE_MIGRATIONS = [
   '2026-07-24-org-settings-dlp.sql',
 ];
 
-async function ensureWorkspaceSchema(): Promise<void> {
+/**
+ * EVERY table the three migrations above create — the teardown contract.
+ * Keep in sync when `REQUIRED_WORKSPACE_MIGRATIONS` changes; anything missing
+ * here leaks into `public` and reds `tenantCascade.integration.test.ts`.
+ * Dropped in one statement with CASCADE, so declaration order is irrelevant.
+ */
+const WORKSPACE_FIXTURE_TABLES = [
+  // 2026-07-10-workspace-foundation.sql
+  'workspace_sources',
+  'workspace_file_index',
+  'workspace_file_activity',
+  'memory_blocks',
+  // 2026-07-19-content.sql
+  'workspace_file_content',
+  'workspace_content_entities',
+  'workspace_file_enrichment',
+  'workspace_projects',
+  'workspace_project_crosswalk',
+  'workspace_email_filings',
+  // 2026-07-24-org-settings-dlp.sql
+  'workspace_org_settings',
+] as const;
+
+/**
+ * The enum types those same migrations create. Dropped after the tables so the
+ * next `ensureWorkspaceSchema()` re-runs their `CREATE TYPE` branch from a
+ * clean slate (in particular re-establishing `workspace_content_status`'s
+ * `blocked_dlp` value, which `2026-07-24` adds via `ALTER TYPE ... ADD VALUE`).
+ */
+const WORKSPACE_FIXTURE_TYPES = [
+  'workspace_source_kind',
+  'workspace_source_status',
+  'workspace_file_action',
+  'workspace_content_status',
+  'workspace_filing_status',
+  'workspace_filing_confidence',
+] as const;
+
+async function withWorkspaceAdmin<T>(fn: (admin: Sql) => Promise<T>): Promise<T> {
   const adminUrl =
     process.env.DATABASE_URL ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
-  const admin = postgres(adminUrl, { max: 1 });
+  const admin = postgres(adminUrl, { max: 1, onnotice: () => {} });
   try {
+    return await fn(admin);
+  } finally {
+    await admin.end();
+  }
+}
+
+/** Idempotent teardown of everything `ensureWorkspaceSchema()` creates. */
+async function dropWorkspaceSchema(): Promise<void> {
+  await withWorkspaceAdmin(async (admin) => {
+    await admin.unsafe(
+      `DROP TABLE IF EXISTS ${WORKSPACE_FIXTURE_TABLES.join(', ')} CASCADE`,
+    );
+    await admin.unsafe(`DROP TYPE IF EXISTS ${WORKSPACE_FIXTURE_TYPES.join(', ')} CASCADE`);
+  });
+}
+
+/**
+ * Proves the teardown actually landed. Without this, a silently-failed drop
+ * resurfaces as a baffling failure in a DIFFERENT file (`tenantCascade`)
+ * potentially minutes later; here it names the leaking tables directly.
+ */
+async function assertWorkspaceSchemaGone(): Promise<void> {
+  // Deliberately unparameterised + filtered in JS: binding a `text[]` into this
+  // kind of probe is the exact shape that shipped `malformed array literal` once
+  // before (see extensions/builtinTableProbe.integration.test.ts's header).
+  const present = await withWorkspaceAdmin(
+    (admin) => admin<Array<{ table_name: string }>>`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+    `,
+  );
+  const remaining = new Set(present.map((row) => row.table_name));
+  const survivors = WORKSPACE_FIXTURE_TABLES.filter((table) => remaining.has(table));
+  if (survivors.length > 0) {
+    throw new Error(
+      `workspaceEnrichmentByok teardown leaked ee/workspace tables into the shared ` +
+        `integration database: ${survivors.join(', ')}. ` +
+        `Every org_id-columned public table is enumerated by ` +
+        `tenantCascade.integration.test.ts, so these WILL red the core GDPR cascade ` +
+        `contract for the rest of this run.`,
+    );
+  }
+}
+
+async function ensureWorkspaceSchema(): Promise<void> {
+  // Defensive: a run killed mid-flight (Ctrl-C, CI timeout, an unhandled
+  // rejection before afterAll) leaves the schema behind. Start from a known
+  // state rather than inheriting a half-migrated one.
+  await dropWorkspaceSchema();
+  await withWorkspaceAdmin(async (admin) => {
     for (const filename of REQUIRED_WORKSPACE_MIGRATIONS) {
       const content = readFileSync(join(WORKSPACE_MIGRATIONS_DIR, filename), 'utf8');
       await admin.begin((tx) => tx.unsafe(content));
     }
-  } finally {
-    await admin.end();
-  }
+  });
 }
 
 function orgContext(orgId: string): DbAccessContext {
@@ -148,6 +273,15 @@ describe('workspace enrichment honors partner BYOK', () => {
   beforeAll(async () => {
     if (!process.env.DATABASE_URL) return;
     await ensureWorkspaceSchema();
+  });
+
+  // Registered inside the describe on purpose: suite-level afterAll hooks run
+  // BEFORE the file-level ones `setup.ts` installs, so the shared pools are
+  // still open and the drop cannot race pool teardown.
+  afterAll(async () => {
+    if (!process.env.DATABASE_URL) return;
+    await dropWorkspaceSchema();
+    await assertWorkspaceSchemaGone();
   });
 
   runDb(
