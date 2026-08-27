@@ -6,15 +6,17 @@ import type { Organization } from './OrganizationList';
 import OrganizationForm from './OrganizationForm';
 import SiteList, { type Site } from './SiteList';
 import SiteForm from './SiteForm';
+import MergeOrgModal from './MergeOrgModal';
 import BulkOrgImport from '../organizations/BulkOrgImport';
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { useJwtClaims } from '../../lib/authScope';
 import { extractApiError } from '@/lib/apiError';
 import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 
-type ModalMode = 'closed' | 'add' | 'edit' | 'delete';
+type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'merge';
 type SiteModalMode = 'closed' | 'add' | 'edit' | 'delete';
 
 type OrganizationFormValues = {
@@ -78,6 +80,14 @@ import { fetchAllOrganizations } from '../../lib/fetchAllOrganizations';
 
 export default function OrganizationsPage() {
   const { t } = useTranslation('settings');
+  // Merge is a partner-scope-only action (the API's org-merge routes require
+  // `requireScope('partner', 'system')`, and only a partner token's own
+  // partner org list is ever eligible as a survivor). `useJwtClaims()`
+  // (not the one-shot `getJwtClaims()`) so this stays reactive to the token
+  // landing after cold load instead of freezing the pre-token "unresolved"
+  // answer for the life of the mount (#4013's lesson, TicketingSettingsTabs).
+  const jwt = useJwtClaims();
+  const canMergeOrgs = jwt.status === 'resolved' && jwt.claims.scope === 'partner';
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -280,6 +290,43 @@ export default function OrganizationsPage() {
   const handleDelete = (org: Organization) => {
     setSelectedOrg(org);
     setModalMode('delete');
+  };
+
+  const handleMerge = (org: Organization) => {
+    setSelectedOrg(org);
+    setModalMode('merge');
+  };
+
+  /**
+   * Called by MergeOrgModal once its merge-runs poll reports a genuine
+   * `completed` result. LIST-STATE UPDATE ONLY — deliberately does not close
+   * the modal or touch `selectedOrg`. MergeOrgModal stays open on its own
+   * `done` phase so the operator can actually see the result summary; if this
+   * closed the modal too, the summary would be unmounted the instant it
+   * appeared (React 18 batches this call with the child's own `setPhase`
+   * update into one render).
+   *
+   * NOT a `refreshOrgs()` — the merged-away org is not soft-deleted, it ends
+   * up a terminal `status='merging'` shell with `deleted_at IS NULL`
+   * (services/orgMerge.ts), so a refetch would still return it. The local
+   * filter is the only way to actually drop it from this screen.
+   */
+  const handleMergeComplete = (loserId: string) => {
+    setOrganizations(prev => prev.filter(o => o.id !== loserId));
+  };
+
+  /**
+   * The done-phase summary's explicit Close button. Unlike a plain
+   * `handleCloseModal()`, `selectedOrg` here is known to be the org that was
+   * JUST merged away (handleMergeComplete already dropped it from the list),
+   * so it's cleared too — mirrors handleConfirmDelete's selectedOrg-clearing
+   * behavior. A plain Cancel out of the pick/failed phases (before anything
+   * merged) must NOT clear it, which is why this is a separate handler
+   * rather than folded into `onClose`.
+   */
+  const handleMergeDoneClose = () => {
+    setSelectedOrg(null);
+    handleCloseModal();
   };
 
   const handleSelectOrg = (org: Organization) => {
@@ -883,6 +930,16 @@ export default function OrganizationsPage() {
                     >
                       {t('common:actions.delete')}
                     </button>
+                    {canMergeOrgs && (
+                      <button
+                        type="button"
+                        data-testid="org-merge-open"
+                        onClick={() => handleMerge(selectedOrg)}
+                        className="rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
+                      >
+                        {t('organizationsPage.merge.openButton')}
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -976,6 +1033,17 @@ export default function OrganizationsPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Org Merge Modal */}
+      {modalMode === 'merge' && selectedOrg && (
+        <MergeOrgModal
+          loserOrg={selectedOrg}
+          orgs={organizations}
+          onClose={handleCloseModal}
+          onMerged={handleMergeComplete}
+          onDoneClose={handleMergeDoneClose}
+        />
       )}
 
       {/* Site Add/Edit Modal */}

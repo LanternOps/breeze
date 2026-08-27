@@ -3087,6 +3087,38 @@
       "title": "Supprimer le site",
       "messagePrefix": "Êtes-vous sûr de vouloir supprimer ?",
       "messageSuffix": " Cette action ne peut être annulée."
+    },
+    "merge": {
+      "openButton": "Fusionner avec une autre organisation",
+      "title": "Fusionner l'organisation",
+      "description": "Déplacez les données de {{name}} vers une organisation survivante. {{name}} est ensuite retirée définitivement et ne peut plus être récupérée.",
+      "survivorLabel": "Fusionner avec",
+      "survivorPlaceholder": "Sélectionnez une organisation survivante...",
+      "noEligibleSurvivors": "Aucune organisation éligible pour la fusion.",
+      "previewLoading": "Calcul de ce qui serait déplacé...",
+      "totalMovableRows": "{{count}} lignes seront déplacées",
+      "tablesHeading": "Tables concernées",
+      "tableRowSummary": "{{table}} : {{loserRows}} ligne(s), {{wouldDrop}} seraient abandonnées",
+      "warningsHeading": "Avertissements",
+      "tooLarge": "Cette fusion déplacerait trop de lignes pour s'exécuter automatiquement. Contactez le support pour planifier une fusion manuelle.",
+      "confirmLabel": "Saisissez « {{name}} » pour confirmer",
+      "cancel": "Annuler",
+      "confirmButton": "Fusionner l'organisation",
+      "merging": "Fusion en cours...",
+      "progressTitle": "Fusion en cours",
+      "progressDescription": "Cela peut prendre quelques minutes.",
+      "doneTitle": "Fusion terminée",
+      "resultSummary": "{{moved}} ligne(s) déplacée(s), {{dropped}} ligne(s) abandonnée(s)",
+      "close": "Fermer",
+      "failedTitle": "Échec de la fusion",
+      "retry": "Réessayer la fusion",
+      "retrying": "Nouvelle tentative...",
+      "errors": {
+        "preview": "Échec de l'aperçu de la fusion",
+        "merge": "Échec du démarrage de la fusion",
+        "missingResult": "La fusion s'est terminée mais n'a renvoyé aucune donnée de résultat. Réessayez.",
+        "mfaRequired": "La fusion d'organisations nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez."
+      }
     }
   },
   "siteDetailPage": {

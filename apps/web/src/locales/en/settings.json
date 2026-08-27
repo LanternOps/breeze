@@ -3140,6 +3140,38 @@
       "title": "Delete Site",
       "messagePrefix": "Are you sure you want to delete",
       "messageSuffix": " This action cannot be undone."
+    },
+    "merge": {
+      "openButton": "Merge into another organization",
+      "title": "Merge organization",
+      "description": "Move {{name}}'s data into a surviving organization. {{name}} is retired permanently afterward and cannot be recovered.",
+      "survivorLabel": "Merge into",
+      "survivorPlaceholder": "Select a surviving organization...",
+      "noEligibleSurvivors": "No eligible organizations to merge into.",
+      "previewLoading": "Calculating what would move...",
+      "totalMovableRows": "{{count}} rows will move",
+      "tablesHeading": "Affected tables",
+      "tableRowSummary": "{{table}}: {{loserRows}} row(s), {{wouldDrop}} would be dropped",
+      "warningsHeading": "Warnings",
+      "tooLarge": "This merge would move too many rows to run automatically. Contact support to schedule a manual merge.",
+      "confirmLabel": "Type \"{{name}}\" to confirm",
+      "cancel": "Cancel",
+      "confirmButton": "Merge organization",
+      "merging": "Merging...",
+      "progressTitle": "Merge in progress",
+      "progressDescription": "This can take a few minutes.",
+      "doneTitle": "Merge complete",
+      "resultSummary": "{{moved}} row(s) moved, {{dropped}} row(s) dropped",
+      "close": "Close",
+      "failedTitle": "Merge failed",
+      "retry": "Retry merge",
+      "retrying": "Retrying...",
+      "errors": {
+        "preview": "Failed to preview the merge",
+        "merge": "Failed to start the merge",
+        "missingResult": "The merge finished but returned no result data. Try again.",
+        "mfaRequired": "Merging organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
+      }
     }
   },
   "siteDetailPage": {

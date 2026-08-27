@@ -42,6 +42,10 @@ const TARGET_GLOBS = [
   // cannot by itself stop a handler routing an error back to setError, whose
   // banner renders behind this page's modals.
   'src/components/settings/OrganizationsPage.tsx',
+  // Org merge (org-lifecycle Wave 3): both the preview and the actual merge
+  // POST are advisory-then-destructive mutations against a partner's tenant
+  // tree, so a silent failure here is exactly the class this guard exists for.
+  'src/components/settings/MergeOrgModal.tsx',
   'src/components/settings/LoginBrandingCard.tsx',
   'src/components/settings/ConnectSsoCard.tsx',
   'src/components/patches/PatchesPage.tsx',
@@ -358,8 +362,9 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    // 97 since #3989 added OrganizationsPage.tsx to the guarded set.
-    expect(absoluteFiles.length).toBe(97);
+    // 98: 97 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
+    // (org-lifecycle Wave 3).
+    expect(absoluteFiles.length).toBe(98);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

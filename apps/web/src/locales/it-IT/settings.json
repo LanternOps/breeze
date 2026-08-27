@@ -3135,6 +3135,38 @@
       "title": "Elimina sito",
       "messagePrefix": "Vuoi davvero eliminare",
       "messageSuffix": " Questa azione non può essere annullata."
+    },
+    "merge": {
+      "openButton": "Unisci a un'altra organizzazione",
+      "title": "Unisci organizzazione",
+      "description": "Sposta i dati di {{name}} in un'organizzazione superstite. {{name}} viene quindi ritirata permanentemente e non può essere recuperata.",
+      "survivorLabel": "Unisci a",
+      "survivorPlaceholder": "Seleziona un'organizzazione superstite...",
+      "noEligibleSurvivors": "Nessuna organizzazione idonea a cui unire.",
+      "previewLoading": "Calcolo di ciò che verrebbe spostato...",
+      "totalMovableRows": "Verranno spostate {{count}} righe",
+      "tablesHeading": "Tabelle interessate",
+      "tableRowSummary": "{{table}}: {{loserRows}} riga/e, {{wouldDrop}} verrebbero scartate",
+      "warningsHeading": "Avvisi",
+      "tooLarge": "Questa unione sposterebbe troppe righe per essere eseguita automaticamente. Contatta l'assistenza per pianificare un'unione manuale.",
+      "confirmLabel": "Digita \"{{name}}\" per confermare",
+      "cancel": "Annulla",
+      "confirmButton": "Unisci organizzazione",
+      "merging": "Unione in corso...",
+      "progressTitle": "Unione in corso",
+      "progressDescription": "L'operazione può richiedere alcuni minuti.",
+      "doneTitle": "Unione completata",
+      "resultSummary": "{{moved}} riga/e spostate, {{dropped}} riga/e scartate",
+      "close": "Chiudi",
+      "failedTitle": "Unione non riuscita",
+      "retry": "Riprova unione",
+      "retrying": "Nuovo tentativo...",
+      "errors": {
+        "preview": "Anteprima dell'unione non riuscita",
+        "merge": "Impossibile avviare l'unione",
+        "missingResult": "L'unione è terminata ma non ha restituito dati di risultato. Riprova.",
+        "mfaRequired": "L'unione delle organizzazioni richiede l'autenticazione a più fattori. Attiva l'MFA nelle impostazioni di sicurezza del tuo profilo e riprova."
+      }
     }
   },
   "siteDetailPage": {

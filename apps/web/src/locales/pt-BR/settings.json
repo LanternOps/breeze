@@ -3140,6 +3140,38 @@
       "title": "Excluir site",
       "messagePrefix": "Tem certeza de que deseja excluir",
       "messageSuffix": "Esta ação não pode ser desfeita."
+    },
+    "merge": {
+      "openButton": "Mesclar com outra organização",
+      "title": "Mesclar organização",
+      "description": "Mova os dados de {{name}} para uma organização sobrevivente. {{name}} é então desativada permanentemente e não pode ser recuperada.",
+      "survivorLabel": "Mesclar com",
+      "survivorPlaceholder": "Selecione uma organização sobrevivente...",
+      "noEligibleSurvivors": "Nenhuma organização elegível para mesclagem.",
+      "previewLoading": "Calculando o que seria movido...",
+      "totalMovableRows": "{{count}} linhas serão movidas",
+      "tablesHeading": "Tabelas afetadas",
+      "tableRowSummary": "{{table}}: {{loserRows}} linha(s), {{wouldDrop}} seriam descartadas",
+      "warningsHeading": "Avisos",
+      "tooLarge": "Esta mesclagem moveria linhas demais para ser executada automaticamente. Entre em contato com o suporte para agendar uma mesclagem manual.",
+      "confirmLabel": "Digite \"{{name}}\" para confirmar",
+      "cancel": "Cancelar",
+      "confirmButton": "Mesclar organização",
+      "merging": "Mesclando...",
+      "progressTitle": "Mesclagem em andamento",
+      "progressDescription": "Isso pode levar alguns minutos.",
+      "doneTitle": "Mesclagem concluída",
+      "resultSummary": "{{moved}} linha(s) movida(s), {{dropped}} linha(s) descartada(s)",
+      "close": "Fechar",
+      "failedTitle": "Falha na mesclagem",
+      "retry": "Repetir mesclagem",
+      "retrying": "Repetindo...",
+      "errors": {
+        "preview": "Falha ao pré-visualizar a mesclagem",
+        "merge": "Falha ao iniciar a mesclagem",
+        "missingResult": "A mesclagem terminou, mas não retornou dados de resultado. Tente novamente.",
+        "mfaRequired": "Mesclar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente."
+      }
     }
   },
   "siteDetailPage": {
