@@ -103,6 +103,7 @@ export * from './invoices';
 export * from './stripePayments';
 export * from './partnerLlmConfigs';
 export * from './llmProviderCatalog';
+export * from './llmEgressEvents';
 export * from './invoiceDocuments';
 export * from './contracts';
 export * from './quotes';

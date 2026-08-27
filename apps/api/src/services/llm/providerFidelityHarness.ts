@@ -25,18 +25,22 @@
  *   2. Real `@anthropic-ai/claude-agent-sdk` `query()` subprocess with one
  *      in-process MCP tool, pointed at `baseUrl` via the child env.
  *
- * Egress: the direct stage goes through `buildPinnedProviderFetch` — origin
- * pinned to the revision's own base URL and dialled through `safeFetch`, so a
- * base URL aimed at loopback/RFC1918/link-local/cloud-metadata space is refused
- * rather than proxied back to the operator through the returned steps. The
- * subprocess stage only runs after the direct stage passes, so it can never be
- * the first thing to reach an internal address; Wave 2's CONNECT proxy is what
- * pins the child's own egress.
+ * Egress: the direct stage goes through `buildGuardedLlmFetch`
+ * (`guardedLlmFetch.ts`, Wave 2 Task 2.1) — origin pinned to the revision's own
+ * base URL and dialled through `safeFetch`, so a base URL aimed at
+ * loopback/RFC1918/link-local/cloud-metadata space is refused rather than
+ * proxied back to the operator through the returned steps. The harness has no
+ * `llm_egress_events` row to write yet (that table doesn't exist until Task
+ * 2.3), so it passes a no-op recorder — this stays dead code, per the Wave 2
+ * map, until Wave 3 wires a real one through the resolver. The subprocess
+ * stage only runs after the direct stage passes, so it can never be the first
+ * thing to reach an internal address; Wave 2's CONNECT proxy is what pins the
+ * child's own egress.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
-import { safeFetch } from '../urlSafety';
+import { buildGuardedLlmFetch } from './guardedLlmFetch';
 
 /**
  * Bump this whenever the harness gets meaningfully stricter — verification
@@ -235,73 +239,33 @@ export function buildFidelityChildEnv(
   return env;
 }
 
-/** A request the harness refused to make. Never carries the response body. */
-export class LlmEgressViolationError extends Error {
-  readonly code = 'llm_egress_blocked';
-  constructor(message: string) {
-    super(message);
-    this.name = 'LlmEgressViolationError';
-  }
-}
-
-function requestUrl(input: unknown): string {
-  if (typeof input === 'string') return input;
-  if (input instanceof URL) return input.toString();
-  const url = (input as { url?: unknown }).url;
-  if (typeof url === 'string') return url;
-  throw new LlmEgressViolationError('unrecognised request target');
-}
+/**
+ * Re-exported so existing importers of the harness's egress error keep
+ * working; the canonical definition now lives in `guardedLlmFetch.ts`
+ * (Wave 2 Task 2.1) alongside the fetch implementation that throws it, so
+ * there is exactly one guarded-fetch implementation in the codebase.
+ */
+export { LlmEgressViolationError } from './guardedLlmFetch';
 
 /**
- * The `fetch` the direct stage's Anthropic client uses.
- *
- * The base URL is operator-supplied, so it is attacker-influenced the moment a
- * platform-admin session is. Two properties close that:
- *
- *  - **Origin pinning.** Anything not on the revision's own origin is refused
- *    before a socket is opened, so the client cannot be steered elsewhere.
- *  - **Connect-time SSRF pinning.** `safeFetch` resolves once and dials only a
- *    validated public IP, so loopback/RFC1918/link-local/cloud-metadata targets
- *    are blocked and a DNS rebind between validation and connect cannot land.
- *    It also follows no redirects, so a 3xx surfaces to the SDK as an error
- *    rather than becoming a second, unvalidated request.
- *
- * `safeFetch` additionally asserts it is not called inside a held DB context —
- * which is why the `/verify` route is registered in
- * `middleware/selfManagedDbContextRoutes.ts`.
+ * `safeFetch` (reached via `buildGuardedLlmFetch`) additionally asserts it is
+ * not called inside a held DB context — which is why the `/verify` route is
+ * registered in `middleware/selfManagedDbContextRoutes.ts`.
  */
-export function buildPinnedProviderFetch(
-  baseUrl: string,
-): (input: unknown, init?: RequestInit) => Promise<Response> {
-  const allowedOrigin = new URL(baseUrl).origin;
-  return async (input: unknown, init?: RequestInit): Promise<Response> => {
-    const target = requestUrl(input);
-    let origin: string;
-    try {
-      origin = new URL(target).origin;
-    } catch {
-      throw new LlmEgressViolationError(`blocked egress to an unparseable URL`);
-    }
-    if (origin !== allowedOrigin) {
-      throw new LlmEgressViolationError(
-        `blocked egress to ${origin}; this client is pinned to ${allowedOrigin}`,
-      );
-    }
-    const { signal, ...rest } = init ?? {};
-    return safeFetch(target, {
-      ...rest,
-      ...(signal ? { signal } : {}),
-    } as Parameters<typeof safeFetch>[1]);
-  };
-}
-
 function buildAnthropicClient(input: FidelityCheckInput): Anthropic {
   return new Anthropic({
     baseURL: input.baseUrl,
     ...(input.authMode === 'x-api-key'
       ? { apiKey: input.apiKey, authToken: null }
       : { authToken: input.apiKey, apiKey: null }),
-    fetch: buildPinnedProviderFetch(input.baseUrl) as unknown as typeof fetch,
+    fetch: buildGuardedLlmFetch({
+      allowedOrigin: new URL(input.baseUrl).origin,
+      // `llm_egress_events` is org-scoped (see `llmEgressRecorder.ts`), and the
+      // harness is a platform-admin vetting tool with no tenant behind it —
+      // there is no org/partner to attribute a row to. Partner traffic is
+      // recorded where it has a tenant: the resolver-built clients in Wave 3.
+      recordEgress: () => {},
+    }) as unknown as typeof fetch,
     timeout: DIRECT_REQUEST_TIMEOUT_MS,
     maxRetries: 1,
   });
