@@ -214,8 +214,14 @@ function bareHostname(hostname: string): string {
  * The single place the resolve-and-filter policy lives, shared by `safeFetch`,
  * `assertSafeUrl` and `createGuardedLookup` so they can never drift apart.
  * Throws `SsrfBlockedError` when nothing safe remains.
+ *
+ * Exported for callers that dial a socket themselves and therefore need the
+ * validated record rather than a finished `Response` — the LLM egress CONNECT
+ * proxy (`services/llm/llmEgressProxy.ts`) is the motivating case: it must pin
+ * the IP it dials, and re-implementing this filter there would be exactly the
+ * drift this helper exists to prevent.
  */
-async function resolveSafeRecords(
+export async function resolveSafeRecords(
   hostname: string,
   opts?: SsrfGuardOptions
 ): Promise<{ safe: LookupAddress[]; allIps: string[] }> {

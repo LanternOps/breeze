@@ -10,6 +10,7 @@ import {
   isRfc1918OrUla,
   isAlwaysBlockedIp,
   createGuardedLookup,
+  resolveSafeRecords,
   safeFetchFollowingRedirects,
   SsrfBlockedError,
   ResponseTooLargeError,
@@ -169,6 +170,31 @@ describe('createGuardedLookup', () => {
     });
 
     expect(records).toEqual([{ address: '8.8.8.8', family: 4 }]);
+  });
+});
+
+// Exported for socket-dialing callers (the LLM egress CONNECT proxy pins the
+// record it hands back). Same policy as the helpers above — asserted directly
+// so the export cannot silently drift from what safeFetch enforces.
+describe('resolveSafeRecords (exported)', () => {
+  afterEach(() => {
+    __setLookupForTests(null);
+  });
+
+  it('returns only the safe records and throws when none remain', async () => {
+    __setLookupForTests(async () => [
+      { address: '169.254.169.254', family: 4 },
+      { address: '8.8.8.8', family: 4 },
+    ]);
+    await expect(resolveSafeRecords('provider.example.test')).resolves.toEqual({
+      safe: [{ address: '8.8.8.8', family: 4 }],
+      allIps: ['169.254.169.254', '8.8.8.8'],
+    });
+
+    __setLookupForTests(async () => [{ address: '127.0.0.1', family: 4 }]);
+    await expect(resolveSafeRecords('provider.example.test')).rejects.toBeInstanceOf(
+      SsrfBlockedError
+    );
   });
 });
 
