@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import * as dbModule from '../db';
 import {
   alerts,
@@ -211,6 +211,10 @@ export async function handlePolicyViolation(orgId: string, payload: PolicyEventP
       eq(automationPolicyCompliance.policyId, payload.policyId),
       eq(automationPolicyCompliance.deviceId, payload.deviceId),
     ))
+    // Duplicate (policy, device) compliance rows exist in the wild — without
+    // an explicit order, an arbitrary stale 'compliant' row can suppress a
+    // real violation. Most-recently-updated row wins.
+    .orderBy(desc(automationPolicyCompliance.updatedAt))
     .limit(1);
   if (compliance && compliance.status !== 'non_compliant') {
     // Stale or reordered violation event: the persisted evaluation state has

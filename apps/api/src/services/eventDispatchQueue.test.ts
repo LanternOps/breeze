@@ -10,14 +10,35 @@ vi.mock('./bullmqQueue', () => ({
   })),
 }));
 
-const redisHincrby = vi.fn().mockResolvedValue(1);
-const redisHset = vi.fn().mockResolvedValue(1);
-const redisExpire = vi.fn().mockResolvedValue(1);
+// `recordShadowLocalInvocation` coalesces HINCRBY + HSET + EXPIRE into ONE
+// `multi()` pipeline (final-review cost trim, #4085) rather than three
+// separately-awaited commands. The pipeline mock records each queued command
+// via these spies and resolves/rejects on `.exec()`.
+const pipelineHincrby = vi.fn();
+const pipelineHset = vi.fn();
+const pipelineExpire = vi.fn();
+const pipelineExec = vi.fn().mockResolvedValue([]);
+const redisMulti = vi.fn(() => {
+  const pipeline = {
+    hincrby: (...args: unknown[]) => {
+      pipelineHincrby(...args);
+      return pipeline;
+    },
+    hset: (...args: unknown[]) => {
+      pipelineHset(...args);
+      return pipeline;
+    },
+    expire: (...args: unknown[]) => {
+      pipelineExpire(...args);
+      return pipeline;
+    },
+    exec: pipelineExec,
+  };
+  return pipeline;
+});
 vi.mock('./redis', () => ({
   getRedisConnection: vi.fn(() => ({
-    hincrby: redisHincrby,
-    hset: redisHset,
-    expire: redisExpire,
+    multi: redisMulti,
   })),
 }));
 
@@ -45,9 +66,11 @@ describe('eventDispatchQueue', () => {
     vi.unstubAllEnvs();
     queueAdd.mockClear().mockResolvedValue(undefined);
     queueClose.mockClear().mockResolvedValue(undefined);
-    redisHincrby.mockClear().mockResolvedValue(1);
-    redisHset.mockClear().mockResolvedValue(1);
-    redisExpire.mockClear().mockResolvedValue(1);
+    redisMulti.mockClear();
+    pipelineHincrby.mockClear();
+    pipelineHset.mockClear();
+    pipelineExpire.mockClear();
+    pipelineExec.mockClear().mockResolvedValue([]);
 
     mod = await import('./eventDispatchQueue');
     registry = await import('./eventSubscriberRegistry');
@@ -155,29 +178,36 @@ describe('eventDispatchQueue', () => {
     it('does nothing when mode is not shadow', async () => {
       vi.stubEnv('EVENT_DISPATCH_MODE', 'off');
       await mod.recordShadowLocalInvocation(makeEvent(), 'webhook-delivery', 'ok');
-      expect(redisHincrby).not.toHaveBeenCalled();
-      expect(redisHset).not.toHaveBeenCalled();
+      expect(redisMulti).not.toHaveBeenCalled();
+      expect(pipelineHincrby).not.toHaveBeenCalled();
+      expect(pipelineHset).not.toHaveBeenCalled();
     });
 
-    it('always increments the per-subscriber/outcome counter in shadow mode', async () => {
+    it('always increments the per-subscriber/outcome counter in shadow mode, via one pipeline', async () => {
       vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
       // 0xff = 255, well above the <26 sampling threshold, and the type isn't
       // alert.*/policy.* — so this event is NOT sampled, but the counter still
       // fires unconditionally.
       const event = makeEvent({ id: 'ff000000-0000-4000-8000-000000000000', type: 'device.online' as EventType });
       await mod.recordShadowLocalInvocation(event, 'webhook-delivery', 'ok');
-      expect(redisHincrby).toHaveBeenCalledWith('breeze:event-shadow:count:webhook-delivery', 'ok', 1);
+      expect(pipelineHincrby).toHaveBeenCalledWith('breeze:event-shadow:count:webhook-delivery', 'ok', 1);
+      // One multi() / one exec() — the whole point of coalescing.
+      expect(redisMulti).toHaveBeenCalledTimes(1);
+      expect(pipelineExec).toHaveBeenCalledTimes(1);
     });
 
-    it('records sampled-detail HSET+EXPIRE for alert.* events (100% sampled)', async () => {
+    it('records sampled-detail HSET+EXPIRE for alert.* events (100% sampled), in the SAME pipeline as the counter', async () => {
       vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
       const event = makeEvent({
         id: 'ff000000-0000-4000-8000-000000000000',
         type: 'alert.triggered' as EventType,
       });
       await mod.recordShadowLocalInvocation(event, 'webhook-delivery', 'error');
-      expect(redisHset).toHaveBeenCalledWith(`breeze:event-shadow:local:${event.id}`, 'webhook-delivery', 'error');
-      expect(redisExpire).toHaveBeenCalledWith(`breeze:event-shadow:local:${event.id}`, 7200);
+      expect(pipelineHincrby).toHaveBeenCalledWith('breeze:event-shadow:count:webhook-delivery', 'error', 1);
+      expect(pipelineHset).toHaveBeenCalledWith(`breeze:event-shadow:local:${event.id}`, 'webhook-delivery', 'error');
+      expect(pipelineExpire).toHaveBeenCalledWith(`breeze:event-shadow:local:${event.id}`, 7200);
+      expect(redisMulti).toHaveBeenCalledTimes(1);
+      expect(pipelineExec).toHaveBeenCalledTimes(1);
     });
 
     it('records sampled-detail for policy.* events too (100% sampled)', async () => {
@@ -187,20 +217,22 @@ describe('eventDispatchQueue', () => {
         type: 'policy.evaluated' as EventType,
       });
       await mod.recordShadowLocalInvocation(event, 'automation-worker', 'ok');
-      expect(redisHset).toHaveBeenCalledWith(`breeze:event-shadow:local:${event.id}`, 'automation-worker', 'ok');
+      expect(pipelineHset).toHaveBeenCalledWith(`breeze:event-shadow:local:${event.id}`, 'automation-worker', 'ok');
     });
 
-    it('skips the sampled-detail HSET for a non-sampled event id/type', async () => {
+    it('skips the sampled-detail HSET/EXPIRE for a non-sampled event id/type, but still pipelines the counter', async () => {
       vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
       const event = makeEvent({ id: 'ff000000-0000-4000-8000-000000000000', type: 'device.online' as EventType });
       await mod.recordShadowLocalInvocation(event, 'webhook-delivery', 'ok');
-      expect(redisHset).not.toHaveBeenCalled();
-      expect(redisExpire).not.toHaveBeenCalled();
+      expect(pipelineHincrby).toHaveBeenCalledTimes(1);
+      expect(pipelineHset).not.toHaveBeenCalled();
+      expect(pipelineExpire).not.toHaveBeenCalled();
+      expect(pipelineExec).toHaveBeenCalledTimes(1);
     });
 
-    it('never throws when the underlying Redis calls reject (shadow bookkeeping must never break delivery)', async () => {
+    it('never throws synchronously when the pipeline exec rejects (shadow bookkeeping must never break delivery)', async () => {
       vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
-      redisHincrby.mockRejectedValueOnce(new Error('redis down'));
+      pipelineExec.mockRejectedValueOnce(new Error('redis down'));
       const event = makeEvent({ type: 'alert.triggered' as EventType });
       await expect(mod.recordShadowLocalInvocation(event, 'webhook-delivery', 'ok')).rejects.toThrow();
       // The rejection is real (so a caller's .catch() sees it), but nothing in

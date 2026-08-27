@@ -14,9 +14,21 @@
  * the wider alert engine has and ships a working signal today.
  */
 import { and, eq, gt, inArray } from 'drizzle-orm';
-import { db } from '../db';
+import * as dbModule from '../db';
 import { alerts, devices } from '../db/schema';
 import type { BreezeEvent } from './eventBus';
+
+const { db } = dbModule;
+
+// #4085 final-review fix: publish() (eventBus.ts) invokes durable-registry
+// handlers via runOutsideDbContext, i.e. scope 'none' — under forced RLS
+// (queue-mode dispatch) that is a 42501 the moment this handler's `db.select`/
+// `db.insert(alerts)` run without an explicit access context. Mirrors
+// policyAlertBridge.ts's local helper exactly.
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
 
 const DEFAULT_COOLDOWN_MINUTES = 60;
 const ALERT_SOURCE = 'dns_threat_evaluator';
@@ -134,7 +146,7 @@ export async function handleDnsThreatBlocked(
 export async function handleDnsThreatBlockedEvent(event: BreezeEvent): Promise<void> {
   const payload = event.payload as unknown as DnsThreatBlockedPayload;
   try {
-    await handleDnsThreatBlocked(event.orgId, payload);
+    await runWithSystemDbAccess(() => handleDnsThreatBlocked(event.orgId, payload));
   } catch (err) {
     // Structured log kept for ops to trace the DNS-alert path specifically,
     // then rethrown so the failure is visible to retry/observability layers

@@ -479,8 +479,9 @@ LanternOps tenant.
 
 Runner, queue, headless session path, agent-originated intents,
 `automations.managed_by_agent_id`, remediation-worker event publishing
-(wave 3); notifications and inbox (2); worker role split and ~~consumer-group
-dispatch~~ durable BullMQ dispatch (3.5c, amendment 2026-08-26 — see §2/§7);
+(wave 3); notifications and inbox (2); worker role split (3.5d) and
+~~consumer-group dispatch~~ durable BullMQ dispatch (3.5c, amendment
+2026-08-26 — see §2/§7);
 `act` mode (4); unattended Tier 3 (5); ticket trigger,
 transcript review UI (6); any agent-platform features (§2); external/MCP
 agent policy unification.

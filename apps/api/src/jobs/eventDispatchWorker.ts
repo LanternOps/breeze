@@ -335,6 +335,38 @@ function logParseFailure(jobName: string, job: Job, error: unknown): void {
   captureException(error instanceof Error ? error : new Error(String(error)));
 }
 
+/**
+ * `deliver-event` schema-validation failures only (final-review fix, #4085):
+ * a `route-event` job that fails parse never got as far as inserting a
+ * receipt (`processRouteEvent` does that), so there is nothing to CAS. A
+ * `deliver-event` job, by contrast, only ever exists because `processRouteEvent`
+ * already inserted its receipt — dropping the job here without touching the
+ * receipt would leave it stuck at `planned`/`delivering` forever (invisible to
+ * the retention sweep's partial index, per `buildReceiptClaimCas`'s docstring)
+ * and, worse, silently drop delivery with no terminal record.
+ *
+ * `breezeEventEnvelopeSchema` is `.strict()` (queueSchemas.ts) specifically so
+ * a future `BreezeEvent` field lands HERE — this is that failure mode's
+ * recovery path, not just a defensive nicety. `job.data` is read loosely
+ * (schema validation already failed, so it cannot be trusted as
+ * `DeliverEventJobData`) — if `subscriberId`/`event.id` cannot even be read as
+ * strings, the payload is too malformed to identify a receipt and this is a
+ * silent no-op beyond the log/capture above.
+ */
+async function markDeliverEventReceiptFailedOnParseError(job: Job): Promise<void> {
+  const raw = job.data as { subscriberId?: unknown; event?: { id?: unknown } } | null | undefined;
+  const subscriberId = typeof raw?.subscriberId === 'string' ? raw.subscriberId : undefined;
+  const eventId = typeof raw?.event?.id === 'string' ? raw.event.id : undefined;
+  if (!subscriberId || !eventId) return;
+
+  await runWithSystemDbAccess(() =>
+    db
+      .update(eventDeliveryReceipts)
+      .set({ status: 'failed', lastError: 'schema validation', updatedAt: sql`now()` })
+      .where(buildReceiptClaimCas(eventId, subscriberId))
+  );
+}
+
 export async function eventDispatchProcessor(job: Job): Promise<void> {
   if (job.name === 'route-event') {
     let data: RouteEventJobData;
@@ -357,6 +389,7 @@ export async function eventDispatchProcessor(job: Job): Promise<void> {
       data = deliverEventJobDataSchema.parse(job.data) as unknown as DeliverEventJobData;
     } catch (error) {
       logParseFailure('deliver-event', job, error);
+      await markDeliverEventReceiptFailedOnParseError(job);
       return;
     }
     await processDeliverEvent(data);
@@ -403,19 +436,27 @@ export function buildDeliveredRetentionDeleteQuery(): SQL {
 }
 
 /**
- * Pass 2: ALL shadow-mode receipts older than 7 days, regardless of status.
+ * Pass 2: ALL shadow-mode receipts older than 48 HOURS, regardless of status.
  * `processRouteEvent` stops after the receipt insert in shadow mode (see its
  * own docstring) — a shadow receipt terminates at `planned` by design, so
  * this pass, not the `(delivered|failed)` partial index above, is what bounds
  * table growth while shadow mode runs. Covered by
  * `event_delivery_receipts_mode_created_idx`.
+ *
+ * Deliberately shorter than pass 1's 7-day window (final-review cost trim,
+ * #4085): shadow receipts are comparison scaffolding for the enforce-mode
+ * evidence gate (`runShadowComparisonSweep`), not a delivery record anyone
+ * needs to audit days later — the 5-minute shadow-compare sweep has long
+ * since consumed them, and `SHADOW_LOCAL_TTL_SECONDS` (2h) already bounds how
+ * far back that comparison ever looks. Holding a full week of shadow rows on
+ * a table sized for delivery traffic was pure storage cost with no consumer.
  */
 export function buildShadowRetentionDeleteQuery(): SQL {
   return sql`
     DELETE FROM event_delivery_receipts
     WHERE ctid IN (
       SELECT ctid FROM event_delivery_receipts
-      WHERE mode = 'shadow' AND created_at < now() - interval '7 days'
+      WHERE mode = 'shadow' AND created_at < now() - interval '48 hours'
       LIMIT ${RETENTION_BATCH_SIZE}
     )
   `;
@@ -759,7 +800,7 @@ async function registerEventDispatchMaintenanceRepeatables(): Promise<void> {
     {
       // Coarse (daily) — MUST use the scheduleRegistry cron lane, never
       // `every:` (epoch-stampede rule, see jobs/scheduleRegistry.ts).
-      repeat: { pattern: jobSchedule('eventDeliveryReceiptRetention') },
+      repeat: { pattern: jobSchedule('receipt-retention') },
       removeOnComplete: { count: 5 },
       removeOnFail: { count: 10 }
     }

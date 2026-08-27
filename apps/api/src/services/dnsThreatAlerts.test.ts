@@ -31,7 +31,7 @@ vi.mock('./eventBus', () => ({
   EVENT_TYPES: { DNS_THREAT_BLOCKED: 'dns.threat.blocked' },
 }));
 
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { handleDnsThreatBlocked, handleDnsThreatBlockedEvent } from './dnsThreatAlerts';
 
 function mockCooldownSelect(found: boolean) {
@@ -259,5 +259,35 @@ describe('handleDnsThreatBlockedEvent (durable registry contract)', () => {
     );
 
     expect(vi.mocked(db.insert)).toHaveBeenCalled();
+  });
+
+  // #4085 final-review fix: publish() dispatches durable-registry handlers via
+  // runOutsideDbContext (scope 'none'), so without an explicit system context
+  // the cooldown `db.select`/alert `db.insert` above would 42501 under forced
+  // RLS in queue mode. A plain "was withSystemDbAccessContext called at all"
+  // check would pass even if it were called AFTER the queries (or on something
+  // unrelated) — the real guarantee is that it wraps the queries, so this
+  // asserts ordering via each mock's own invocationCallOrder.
+  it('establishes a system DB access context before the alerts/devices queries (RLS fix)', async () => {
+    mockCooldownSelect(false);
+    mockDeviceSelect({ hostname: 'h', displayName: null });
+    mockInsertReturning('alert-1');
+
+    await handleDnsThreatBlockedEvent(
+      event('org-1', {
+        deviceId: 'dev-1',
+        domain: 'm.example.com',
+        category: 'malware',
+        integrationId: null,
+        timestamp: '2026-05-22T20:00:00.000Z',
+      })
+    );
+
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    const contextCallOrder = vi.mocked(withSystemDbAccessContext).mock.invocationCallOrder[0]!;
+    const firstSelectCallOrder = vi.mocked(db.select).mock.invocationCallOrder[0]!;
+    const firstInsertCallOrder = vi.mocked(db.insert).mock.invocationCallOrder[0]!;
+    expect(contextCallOrder).toBeLessThan(firstSelectCallOrder);
+    expect(contextCallOrder).toBeLessThan(firstInsertCallOrder);
   });
 });

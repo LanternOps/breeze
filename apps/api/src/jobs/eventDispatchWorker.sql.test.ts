@@ -76,11 +76,11 @@ describe('receipt retention queries (compiled SQL)', () => {
     expect(params).toEqual([5000]);
   });
 
-  it("pass 2: ALL shadow-mode receipts older than 7 days (no status filter — shadow terminates at 'planned')", () => {
+  it("pass 2: ALL shadow-mode receipts older than 48 hours (no status filter — shadow terminates at 'planned')", () => {
     const { sql, params } = dialect.sqlToQuery(buildShadowRetentionDeleteQuery());
     expect(normalize(sql)).toBe(
       "DELETE FROM event_delivery_receipts WHERE ctid IN ( SELECT ctid FROM event_delivery_receipts "
-      + "WHERE mode = 'shadow' AND created_at < now() - interval '7 days' LIMIT $1 )"
+      + "WHERE mode = 'shadow' AND created_at < now() - interval '48 hours' LIMIT $1 )"
     );
     expect(params).toEqual([5000]);
   });

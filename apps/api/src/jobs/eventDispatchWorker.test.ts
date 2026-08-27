@@ -449,6 +449,56 @@ describe('eventDispatchProcessor', () => {
 
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     expect(getSubscriberByIdMock).not.toHaveBeenCalled();
+    // No `event.id` on this malformed payload — nothing to identify a receipt
+    // by, so the CAS-on-parse-failure path (below) must not fire either.
+    expect(updateSetMock).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  // Final-review fix (#4085): breezeEventEnvelopeSchema is `.strict()`
+  // specifically so a future BreezeEvent field is caught HERE — this proves
+  // that failure mode doesn't silently drop the delivery with no terminal
+  // receipt state. `event.id`/`subscriberId` are still readable even though
+  // parse failed (an unrelated field is what tripped `.strict()`), so the
+  // receipt this job was already inserted for (by the route-event job) must
+  // be CAS'd to `failed` — same claim-free shape as the unknown-subscriber
+  // path — rather than left stuck at `planned`/`delivering` forever.
+  it('deliver-event: schema parse failure CASes the already-inserted receipt to failed (claim-free, mirrors unknown-subscriber path)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const job = {
+      id: 'job-2b',
+      name: 'deliver-event',
+      // Simulates BreezeEvent drift: a genuine new top-level field the
+      // `.strict()` envelope schema does not know about yet. event.id and
+      // subscriberId are both intact and readable.
+      data: {
+        v: 1,
+        subscriberId: 'webhook-delivery',
+        event: { ...makeEvent(), unexpectedNewField: 'drift' }
+      }
+    } as never;
+
+    await expect(eventDispatchProcessor(job)).resolves.toBeUndefined();
+
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(getSubscriberByIdMock).not.toHaveBeenCalled();
+    expect(updateSetMock).toHaveBeenCalledTimes(1);
+    expect(updateSetMock).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', lastError: 'schema validation' })
+    );
+    expect(updateWhereMock).toHaveBeenCalledTimes(1);
+    expect(updateWhereMock.mock.calls[0]![0]).toEqual(buildReceiptClaimCas('event-1', 'webhook-delivery'));
+    errorSpy.mockRestore();
+  });
+
+  it('deliver-event: schema parse failure with no identifiable event.id/subscriberId skips the CAS silently (beyond the log/capture)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const job = { id: 'job-2c', name: 'deliver-event', data: { v: 1, event: { id: 'event-1' } } } as never;
+
+    await expect(eventDispatchProcessor(job)).resolves.toBeUndefined();
+
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(updateSetMock).not.toHaveBeenCalled();
     errorSpy.mockRestore();
   });
 
@@ -532,7 +582,7 @@ describe('initializeEventDispatchWorker / shutdownEventDispatchWorker', () => {
     await initializeEventDispatchWorker();
 
     expect(queueRemoveRepeatableByKeyMock).toHaveBeenCalledWith('stale-repeat-key');
-    expect(jobScheduleMock).toHaveBeenCalledWith('eventDeliveryReceiptRetention');
+    expect(jobScheduleMock).toHaveBeenCalledWith('receipt-retention');
 
     const [retentionCall, shadowCall] = queueAddMock.mock.calls as Array<
       [string, unknown, Record<string, unknown>]
@@ -637,7 +687,7 @@ describe('runReceiptRetentionSweep', () => {
     expect(compiled(0)).toContain("status = 'delivered'");
     expect(compiled(0)).toContain("interval '7 days'");
     expect(compiled(2)).toContain("mode = 'shadow'");
-    expect(compiled(2)).toContain("interval '7 days'");
+    expect(compiled(2)).toContain("interval '48 hours'");
     expect(compiled(3)).toContain("status IN ('failed', 'planned', 'delivering')");
     expect(compiled(3)).toContain("interval '30 days'");
     expect(compiled(4)).toContain("status IN ('failed', 'planned', 'delivering')");

@@ -166,11 +166,20 @@ export async function recordShadowLocalInvocation(
 
   const redis = getRedisConnection();
 
-  await redis.hincrby(`${SHADOW_COUNT_PREFIX}:${subscriberId}`, outcome, 1);
+  // Coalesced into ONE Redis round trip (final-review cost trim, #4085): this
+  // runs once per local subscriber invocation, so at production event volume
+  // three separate awaited commands means three round trips per invocation
+  // instead of one. The counter increment is unconditional; the per-event
+  // HSET+EXPIRE only queue when the event is sampled — same shape as before,
+  // just pipelined rather than sequentially awaited.
+  const pipeline = redis.multi();
+  pipeline.hincrby(`${SHADOW_COUNT_PREFIX}:${subscriberId}`, outcome, 1);
 
-  if (!isShadowSampledEvent(event)) return;
+  if (isShadowSampledEvent(event)) {
+    const key = `${SHADOW_LOCAL_PREFIX}:${event.id}`;
+    pipeline.hset(key, subscriberId, outcome);
+    pipeline.expire(key, SHADOW_LOCAL_TTL_SECONDS);
+  }
 
-  const key = `${SHADOW_LOCAL_PREFIX}:${event.id}`;
-  await redis.hset(key, subscriberId, outcome);
-  await redis.expire(key, SHADOW_LOCAL_TTL_SECONDS);
+  await pipeline.exec();
 }

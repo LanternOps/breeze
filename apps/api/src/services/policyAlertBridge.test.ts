@@ -46,6 +46,7 @@ vi.mock('../db/schema', () => ({
     policyId: 'policy_id',
     deviceId: 'device_id',
     status: 'status',
+    updatedAt: 'updated_at',
   },
 }));
 
@@ -58,7 +59,7 @@ vi.mock('./eventBus', () => ({
   getEventBus: vi.fn(),
 }));
 
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { automationPolicyCompliance } from '../db/schema';
 import { createAlert } from './alertService';
@@ -69,10 +70,15 @@ import {
 } from './policyAlertBridge';
 
 function mockSelectOnce(rows: unknown[]) {
+  const limit = vi.fn().mockResolvedValue(rows);
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(rows),
+        // Most call sites go straight to `.limit()`; the reconcile query
+        // (#4085 Task 10 + determinism fix) chains `.orderBy().limit()` —
+        // support both without needing a second helper.
+        limit,
+        orderBy: vi.fn().mockReturnValue({ limit }),
       }),
     }),
   } as any);
@@ -278,8 +284,9 @@ describe('handlePolicyViolation reconciles against persisted compliance state (#
     expect(vi.mocked(createAlert)).toHaveBeenCalledTimes(1);
   });
 
-  it('pins the reconcile predicate to (policyId AND deviceId), not a lookalike (e.g. deviceId alone)', async () => {
+  it('pins the reconcile predicate to (policyId AND deviceId), not a lookalike (e.g. deviceId alone), and orders by most-recently-updated', async () => {
     const capturedWheres: unknown[] = [];
+    const capturedOrderBys: unknown[] = [];
 
     vi.mocked(db.select)
       .mockReturnValueOnce({
@@ -293,7 +300,12 @@ describe('handlePolicyViolation reconciles against persisted compliance state (#
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockImplementation((predicate: unknown) => {
             capturedWheres.push(predicate);
-            return { limit: vi.fn().mockResolvedValue([]) };
+            return {
+              orderBy: vi.fn().mockImplementation((orderByArg: unknown) => {
+                capturedOrderBys.push(orderByArg);
+                return { limit: vi.fn().mockResolvedValue([]) };
+              }),
+            };
           }),
         }),
       } as any)
@@ -319,5 +331,11 @@ describe('handlePolicyViolation reconciles against persisted compliance state (#
       eq(automationPolicyCompliance.deviceId, DEVICE_ID),
     );
     expect(capturedWheres[0]).toEqual(expectedPredicate);
+
+    expect(capturedOrderBys).toHaveLength(1);
+    // Same discipline for the ORDER BY: a duplicate (policy, device) compliance
+    // row must not be picked arbitrarily — the most-recently-updated row wins.
+    const expectedOrderBy = desc(automationPolicyCompliance.updatedAt);
+    expect(capturedOrderBys[0]).toEqual(expectedOrderBy);
   });
 });
