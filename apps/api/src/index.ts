@@ -1798,10 +1798,13 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     { name: 'sentry', tasks: [() => flushSentry()], timeoutMs: 5_000 },
   ]);
   const failed = report.failures.length > 0;
+  const timedOutSuffix = report.timedOutPhases.length > 0
+    ? ` (timed-out phase(s): ${report.timedOutPhases.join(', ')})`
+    : '';
   if (failed) {
-    console.error(`[shutdown] Completed with ${report.failures.length} failure(s)`);
+    console.error(`[shutdown] Completed with ${report.failures.length} failure(s)${timedOutSuffix}`);
   } else {
-    console.log('[shutdown] Complete');
+    console.log(`[shutdown] Complete${timedOutSuffix}`);
   }
   process.exit(failed ? 1 : 0);
 }

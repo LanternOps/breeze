@@ -43,6 +43,7 @@ export async function runShutdownPhases(
       results.forEach((result, index) => {
         if (result.status === 'rejected') {
           report.failures.push({ phase: phase.name, index, error: result.reason });
+          log(`[shutdown] phase ${phase.name} task ${index} failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
         }
       });
     });
