@@ -642,6 +642,23 @@ failures; all three stacked-PR checks attached at that SHA also passed. Issue
 Task 8 work, native Windows evidence, deployment, hosted mutation, or customer
 mutation is claimed.
 
+### Task 7B: Repair the frozen PAM v2 dispatch wire contract
+
+**Authoritative design:** [`2026-08-27-s0-track-e-pam-dispatch-wire-contract-design.md`](../specs/2026-08-27-s0-track-e-pam-dispatch-wire-contract-design.md)
+
+**Executable plan:** [`2026-08-27-s0-track-e-pam-dispatch-wire-contract.md`](2026-08-27-s0-track-e-pam-dispatch-wire-contract.md)
+
+The API worker currently emits aliases and server-only fields that do not
+decode into the exact `PamApplyV2` and `PamCleanupV2` structures frozen above.
+This pre-Task-8 repair makes the server conform to the unchanged strict agent
+decoder. It does not add a new protocol, relax decoding, change the durable
+ledger or result transaction, or claim endpoint execution.
+
+- [ ] **Step 1: Pin the exact apply/cleanup contract in TypeScript, Go, and one shared fixture**
+- [ ] **Step 2: Store and atomically bind the exact primary-agent command payloads**
+- [ ] **Step 3: Pass focused, real-PostgreSQL, Go race/cross-compile, governance, and exact-head core CI gates**
+- [ ] **Step 4: Synchronize issue #4060 and PR #4105 without starting Task 8**
+
 ### Task 8: Prove the failure matrix and produce exact-candidate Windows evidence
 
 **Files:**
