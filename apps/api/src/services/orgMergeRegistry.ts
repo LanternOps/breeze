@@ -86,6 +86,39 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   audit_chain_anchors: { kind: 'leave-for-erasure', note: 'append-only' },
   ml_feedback_events: { kind: 'leave-for-erasure', note: 'append-only' },
 
+  // Column-level immutability: a BEFORE UPDATE row trigger RAISEs when
+  // `org_id` changes, so these cannot be re-tenanted by ANY role the merge
+  // can assume (the triggers are `tgenabled = 'O'`, and both bypasses —
+  // `ALTER TABLE ... DISABLE TRIGGER` and `session_replication_role =
+  // 'replica'` — need table ownership / superuser, neither of which
+  // `breeze_app` has). `leave-for-erasure` is not a preference here, it is
+  // the only physically reachable classification. The preview counts these
+  // rows as destroyed, so the operator is told before the merge runs.
+  // Enforced by the `no org_id-mutating policy sits on a table whose org_id
+  // a trigger blocks` contract test.
+  //
+  // action_intents: PRE-EXISTING MISCLASSIFICATION, not rebase fallout — it
+  // was `repoint-dedupe` (keyed on the real `action_intents_org_idem_uniq`
+  // index), but `action_intents_block_content_update()` has listed `org_id`
+  // in its immutable set since the table shipped
+  // (migrations/2026-07-18-action-intents.sql, re-asserted verbatim by the
+  // three later CREATE OR REPLACE migrations through 2026-09-05-a). The
+  // repoint UPDATE raises `action_intents content is immutable` and aborts
+  // the entire merge the moment the loser org holds a single intent; the
+  // Wave-2 gauntlet never caught it because its fixture creates none.
+  action_intents: { kind: 'leave-for-erasure', note: 'org_id is trigger-immutable (action_intents_block_content_update, since 2026-07-18) — a repoint raises and aborts the merge; durable approval records die with the loser shell' },
+  // ai_agent_runs: org_id joined the immutable set in
+  // migrations/2026-09-06-a-agent-runs-org-immutable.sql, which also encodes
+  // the owner decision it exists for (2026-08-23): agent-run history stays
+  // with the SOURCE org rather than following the device/org it was moved
+  // from. Leaving it for erasure is that same decision applied to a merge.
+  // This also keeps the composite
+  // action_intents(requesting_agent_run_id, org_id) -> ai_agent_runs(id, org_id)
+  // FK self-consistent: intents and runs stay together under the loser and
+  // are erased together (tenantCascade deletes action_intents first —
+  // alphabetical order happens to be the correct child-before-parent order).
+  ai_agent_runs: { kind: 'leave-for-erasure', note: 'org_id is trigger-immutable (ai_agent_runs_immutable_guard); run history stays with the source org per the 2026-08-23 owner decision' },
+
   // partner_export_configuration_org_state is trigger-maintained (SECURITY
   // DEFINER triggers on the policy tables regenerate it — verified in
   // migrations/2026-07-25-partner-export-canonical-configuration.sql);
@@ -129,13 +162,10 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   delegant_m365_connections: { kind: 'repoint-dedupe', key: ['customer_label'] }, // verified: delegant_m365_org_customer_uniq (org_id, customer_label)
   remediation_suggestions: { kind: 'repoint-dedupe', key: ['source_type', 'source_id'] }, // superset of its four partial uniques (org_id, source_type, source_id, {script_id|script_template_id|playbook_id|target_type}); derived rows, over-dropping is safe
   tunnel_allowlists: { kind: 'repoint-dedupe', key: ['direction', 'pattern', "COALESCE({site_id}, '00000000-0000-0000-0000-000000000000'::uuid)"] }, // verified: tunnel_allowlists_org_direction_pattern_site_idx (2026-08-08-proxy-session-lifetime.sql)
-  // CORRECTED: brief's draft predicate used 'pending' — the real status enum
-  // value (and the value the partial index actually filters on) is
-  // 'pending_approval'. Verified against action_intents_org_idem_uniq in
-  // migrations/2026-07-18-action-intents.sql: `WHERE status IN
-  // ('pending_approval', 'approved', 'executing')` — confirmed unchanged by
-  // every later action_intents migration.
-  action_intents: { kind: 'repoint-dedupe', key: ['idempotency_key'], keyWhere: "{status} IN ('pending_approval','approved','executing')" },
+  // action_intents used to be classified here as a `repoint-dedupe` keyed on
+  // action_intents_org_idem_uniq. It is now `leave-for-erasure` above: the
+  // index reading was right, but org_id is trigger-immutable so no repoint
+  // can run at all. See the note there.
   device_mtls_certificates: { kind: 'repoint-dedupe', key: ['serial_number'] }, // verified: device_mtls_certificates_org_serial_uq (org_id, serial_number)
   // CORRECTED (controller ruling R1): was a plain repoint, but
   // user_risk_org_user_calc_idx is a TOTAL unique on (org_id, user_id,
@@ -191,6 +221,20 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // device_group_ids arrays (per-org access scoping) instead of carrying
   // that access forward to the survivor.
   organization_users: { kind: 'custom', note: "union the loser row's site_ids/device_group_ids arrays into the surviving membership row, then delete the loser row" },
+  // ai_agents — dual-owner config table (org_id XOR partner_id). Only the
+  // org-owned rows are in merge scope; the partner-wide ones (org_id IS NULL)
+  // are never touched, and their `ai_agents_partner_kind_uq` partial index
+  // (WHERE org_id IS NULL AND disabled_at IS NULL) therefore cannot collide.
+  //
+  // `ai_agents_org_kind_uq ON (org_id, kind) WHERE disabled_at IS NULL` CAN
+  // collide — both orgs may run an active agent of the same kind — so a plain
+  // repoint raises 23505. A `repoint-dedupe` DELETE is not available either:
+  // three inbound FKs are ON DELETE RESTRICT (ai_agent_runs.agent_id,
+  // ai_sessions.agent_id, automations.managed_by_agent_id), and the loser's
+  // ai_agent_runs are `leave-for-erasure` and therefore still referencing the
+  // row at merge time. Neutralize instead, exactly as audit_baselines and
+  // fleet_findings do.
+  ai_agents: { kind: 'custom', note: "disable colliding loser agents (disabled_at=now(), enabled=false — the same write agentService.disableAgent makes) so they leave the ai_agents_org_kind_uq partial index, then repoint all rows; NEVER delete — ai_agent_runs/ai_sessions/automations are ON DELETE RESTRICT children" },
   // Controller ruling R2 (spec compliance): the design doc says the loser's
   // org-bound capabilities are "revoked, not repointed". Repointing alone
   // would silently hand the survivor a live credential the loser's contacts

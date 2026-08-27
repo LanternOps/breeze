@@ -924,9 +924,15 @@ describe('sweepOffboardingTenants', () => {
 
     await sweepOffboardingTenants(NOW);
 
-    // Select call index 2 (0: orgs candidates, 1: partner candidates,
-    // 2: this org's countOutstandingUninstalls call).
-    const outstandingWhere = selectMock.mock.results[2]!.value.where.mock.calls[0][0];
+    // Located by CONTENT, not by call index: the candidate lists read up-front
+    // grew from two to five when Wave 2 added the org-merge backstop sweeps,
+    // and a hard-coded index silently retargets this assertion at whatever
+    // query lands in the slot instead of failing. Match the one query that
+    // touches device_commands — countOutstandingUninstalls is the only one.
+    const outstandingWhere = selectMock.mock.results
+      .map((r) => r.value?.where?.mock?.calls?.[0]?.[0])
+      .find((w: unknown) => w !== undefined && JSON.stringify(w).includes('deviceCommands.uninstallReasons'));
+    expect(outstandingWhere, 'no select() issued a where() touching deviceCommands.uninstallReasons').toBeDefined();
     const whereJson = JSON.stringify(outstandingWhere);
     expect(whereJson).toContain('self_uninstall');
     expect(whereJson).toContain('"or"');

@@ -1140,9 +1140,11 @@ export async function previewOrgMerge(
       const notes: string[] = [];
       if (destroyedRows > 0) {
         notes.push(
-          `the merged-away organization's audit trail is PERMANENTLY DESTROYED by this merge: ${destroyedRows} append-only row(s) across `
+          `the merged-away organization's audit and provenance trail is PERMANENTLY DESTROYED by this merge: ${destroyedRows} row(s) across `
           + `${tables.filter((t) => t.policy === 'leave-for-erasure').map((t) => t.table).join(', ')} `
-          + 'cannot be re-tenanted (per-org hash chains) and are erased with the org shell — export them first if you need to retain them',
+          + 'cannot be re-tenanted (each is immutable at the database layer — per-org hash chains, append-only guards, or a column-level org_id lock) '
+          + 'and are erased with the org shell — export them first if you need to retain them. '
+          + 'This includes any pending or approved action intents and agent-run history belonging to the merged-away organization',
         );
       }
 
