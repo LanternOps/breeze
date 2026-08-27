@@ -172,6 +172,20 @@ function parseFile(file: string): ParsedFile {
  * chooses whether `import('...')` edges are traversed — see the module
  * header comment for why both modes are needed.
  */
+/**
+ * Role-safe boundary modules (#4141): the walk records them but does NOT
+ * traverse their imports. `services/agentCommandRelay.ts` is the ONE module
+ * designed to be loaded by every placement: its only socket-local access is a
+ * dynamic `import('../routes/agentWs')` inside `breezeRole() !== 'worker'`
+ * guards, and 3.5b's runtime assertions make any illegal call THROW rather
+ * than silently report agents offline. Treating it as a leaf is what lets the
+ * facade's callers (monitor/snmp/backup/discovery/networkBaseline) be
+ * `global` — the entire point of the relay. Any OTHER path to agentWs still
+ * classifies an entry socket-owner.
+ */
+const AGENT_COMMAND_RELAY = path.join(SRC_ROOT, 'services', 'agentCommandRelay.ts');
+const ROLE_SAFE_BOUNDARY_MODULES = new Set([AGENT_COMMAND_RELAY]);
+
 function importClosure(entryFile: string, opts: { followDynamic: boolean }): Set<string> {
   const visited = new Set<string>();
   const stack: string[] = [entryFile];
@@ -179,6 +193,7 @@ function importClosure(entryFile: string, opts: { followDynamic: boolean }): Set
     const file = stack.pop()!;
     if (visited.has(file)) continue;
     visited.add(file);
+    if (file !== entryFile && ROLE_SAFE_BOUNDARY_MODULES.has(file)) continue;
     const { staticSpecs, dynamicSpecs } = parseFile(file);
     const specs = opts.followDynamic ? [...staticSpecs, ...dynamicSpecs] : staticSpecs;
     for (const spec of specs) {
@@ -453,5 +468,62 @@ describe('workerEntrypointClosure contract (#4086 Task 5)', () => {
         ).toEqual([]);
       });
     }
+  });
+
+  // #4141: the boundary exemption above is valid ONLY while agentCommandRelay's
+  // socket-local access stays a dynamic import behind role guards. A reverted
+  // static value-import would make every `global` facade caller load agentWs in
+  // a worker process again — so the exemption self-invalidates here.
+  describe('the role-safe boundary module holds its side of the bargain', () => {
+    it('agentCommandRelay.ts static CLOSURE reaches no socket-local module and no routes/ file', () => {
+      // A direct-spec check would be strictly narrower than the exemption it
+      // justifies: an INDIRECT static edge (e.g. importing commandQueue, which
+      // value-imports agentWs) or any other route reachability would re-pin
+      // agentWs into the worker container while a direct check stays green.
+      // importClosure skips boundary modules only when they are non-entry
+      // nodes, so walking FROM the relay traverses it fully.
+      const closure = importClosure(AGENT_COMMAND_RELAY, { followDynamic: false });
+      const offenders = [...closure].filter(
+        (f) => f === AGENT_WS || f === AGENT_COMMAND_AWAIT || f.startsWith(ROUTES_DIR),
+      );
+      expect(
+        offenders,
+        offenders.length > 0
+          ? 'services/agentCommandRelay.ts statically reaches socket-local/route modules again '
+            + `(via: ${offenders.map(relPath).join(', ')}) — either restore the lazy role-guarded `
+            + 'import shape (#4141) or remove it from ROLE_SAFE_BOUNDARY_MODULES and '
+            + 're-classify every facade caller.'
+          : undefined,
+      ).toEqual([]);
+    });
+
+    it('socketLocal() is the only dynamic agentWs edge, hoisted nowhere, and both call sites are role-guarded', () => {
+      const src = stripComments(fs.readFileSync(AGENT_COMMAND_RELAY, 'utf8'));
+      // The dynamic import must live INSIDE the socketLocal function body —
+      // a module-scope hoist (`const p = import('../routes/agentWs')`) would
+      // load agentWs at relay-module load, i.e. in every worker process,
+      // defeating the boundary while a whole-file match stays green.
+      const fnStart = src.indexOf('async function socketLocal');
+      expect(fnStart, 'socketLocal() function not found in agentCommandRelay.ts').toBeGreaterThan(-1);
+      // The import must sit within the function (its body is tiny — the type
+      // annotation plus a single return), never hoisted above it.
+      const fnWindow = src.slice(fnStart, fnStart + 500);
+      expect(fnWindow).toMatch(/return import\('\.\.\/routes\/agentWs'\)/);
+      expect(src.slice(0, fnStart)).not.toMatch(/import\(\s*['"]\.\.\/routes\/agentWs['"]\s*\)/);
+      const dynamicAgentWsEdges = src.match(/import\(\s*['"]\.\.\/routes\/agentWs['"]\s*\)/g) ?? [];
+      expect(dynamicAgentWsEdges.length, 'exactly one dynamic agentWs edge (inside socketLocal)').toBe(1);
+      // Every socketLocal() consumer sits behind a worker-role check: each
+      // call must appear on a line/branch whose preceding 300 chars contain
+      // the guard. Coarse but comment-stripped and call-site-anchored.
+      const callSites = [...src.matchAll(/socketLocal\(\)/g)].map((m) => m.index!);
+      const consumerSites = callSites.filter((i) => !src.slice(Math.max(0, i - 40), i).includes('function '));
+      expect(consumerSites.length).toBeGreaterThanOrEqual(2);
+      for (const i of consumerSites) {
+        expect(
+          src.slice(Math.max(0, i - 300), i),
+          'a socketLocal() consumer lost its breezeRole() !== worker guard',
+        ).toMatch(/breezeRole\(\) !== 'worker'/);
+      }
+    });
   });
 });

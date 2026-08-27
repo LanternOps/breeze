@@ -89,7 +89,7 @@ vi.mock('../services/agentCommandRelay', () => ({
   dispatchCommandToAgent: agentRelayMock.dispatchCommandToAgent,
 }));
 
-vi.mock('../services/automationRuntime', () => ({
+vi.mock('../services/cronDue', () => ({
   isCronDue: vi.fn()
 }));
 
