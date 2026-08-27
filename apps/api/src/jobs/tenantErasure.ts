@@ -30,6 +30,9 @@ import { getBullMQConnection } from '../services/redis';
 import { cascadeDeleteOrg } from '../services/tenantCascade';
 import { createAuditLog } from '../services/auditService';
 import { enqueueOrReplaceStale } from '../services/bullmqUtils';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { organizations, users } from '../db/schema';
+import { eq } from 'drizzle-orm';
 
 const QUEUE_NAME = 'tenant-erasure';
 const JOB_NAME = 'tenant-erasure';
@@ -38,6 +41,8 @@ export interface TenantErasureJobPayload {
   orgId: string;
   performedBy: string;
   performedByEmail?: string;
+  /** The admin route has its own platform-admin + MFA + email confirmation. */
+  source?: 'platform_admin';
 }
 
 let erasureQueue: Queue | null = null;
@@ -97,7 +102,89 @@ export function createTenantErasureWorker(): Worker {
         console.warn(`[TenantErasure] Ignoring unknown job name: ${job.name}`);
         return { skipped: true };
       }
-      const { orgId, performedBy, performedByEmail } = job.data;
+      const { orgId, performedBy, performedByEmail, source } = job.data;
+
+      const [organization] = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db
+            .select({
+              status: organizations.status,
+              deletedAt: organizations.deletedAt,
+            })
+            .from(organizations)
+            .where(eq(organizations.id, orgId))
+            .limit(1)
+        )
+      );
+      const statusAllowsErasure =
+        !organization
+        || organization.status === 'purging'
+        || (organization.status === 'merging' && organization.deletedAt !== null)
+        || organization.deletedAt !== null;
+      // `/admin/tenant-erasure` does not soft-delete first; it authenticates a
+      // platform admin, requires MFA + confirmEmail, verifies the org exists,
+      // and then enqueues, always stamping `source: 'platform_admin'`. Require
+      // that tag STRICTLY — no source-less compat window.
+      //
+      // Review hardening (Task 4 fix round 2, I2): a prior version of this
+      // guard tried to bound a source-less bypass to "jobs older than this
+      // worker process's boot time," but that's process-relative, not
+      // deployment-relative: every restart re-arms the window, so a
+      // source-less job enqueued between a deploy and a LATER restart would
+      // still pass `job.timestamp < bootTime` and could erase a live org.
+      // There is no safe way to date a job against "the deployment that
+      // shipped source-tagging" from inside the worker process itself, so the
+      // bypass is removed entirely instead of bounded. Any in-flight
+      // source-less job from before this change is refused once (with the
+      // refusal audit below) rather than silently trusted; the org itself is
+      // untouched, the org-shell backstops in tenantOffboarding.ts's sweep
+      // (cases 1/3) re-enqueue with a proper `purging`/stamped-merge state if
+      // this was actually an archive-purge or merge handoff, and a genuine
+      // admin erasure is trivially re-run from `/admin/tenant-erasure` (its
+      // own jobId collapses the retry). No compat window is needed.
+      let adminRouteAllowsErasure = false;
+      if (!statusAllowsErasure) {
+        const [actor] = await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            db
+              .select({ isPlatformAdmin: users.isPlatformAdmin })
+              .from(users)
+              .where(eq(users.id, performedBy))
+              .limit(1)
+          )
+        );
+        adminRouteAllowsErasure = actor?.isPlatformAdmin === true && source === 'platform_admin';
+      }
+
+      if (!statusAllowsErasure && !adminRouteAllowsErasure) {
+        const message =
+          `[TenantErasure] refused status guard for org ${orgId}: `
+          + `status=${organization.status} deletedAt=${organization.deletedAt?.toISOString() ?? 'null'}`;
+        console.warn(message);
+        try {
+          await createAuditLog({
+            orgId: null,
+            actorType: 'user',
+            actorId: performedBy,
+            actorEmail: performedByEmail,
+            action: 'tenant.erasure.refused_status_guard',
+            resourceType: 'organization',
+            resourceId: orgId,
+            details: {
+              jobId: job.id,
+              status: organization.status,
+              deletedAt: organization.deletedAt?.toISOString() ?? null,
+              source: source ?? null,
+            },
+            result: 'failure',
+            errorMessage: message,
+          });
+        } catch (auditErr) {
+          console.error('[TenantErasure] audit write for refused status guard failed', auditErr);
+        }
+        return { skipped: true, reason: 'status_guard' };
+      }
+
       try {
         const stats = await cascadeDeleteOrg(orgId, performedBy, performedByEmail);
         return { ...stats, jobId: job.id };

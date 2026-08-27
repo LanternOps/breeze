@@ -19,6 +19,7 @@ vi.mock('../db', () => {
   };
   return {
     db: makeChain(),
+    getCurrentDbAccessContext: () => undefined,
     runOutsideDbContext: <T>(fn: () => T): T => fn(),
     withSystemDbAccessContext: <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
@@ -38,6 +39,17 @@ vi.mock('../services/quoteOutcomeNotify', () => ({
 // so this file stays focused on the serialization path, same rationale as
 // the quoteAcceptToken/quoteLifecycle stubs above.
 vi.mock('../services/orgMerge', () => ({ resolveMergedOrgIds: vi.fn(async (orgId: string) => [orgId]) }));
+// Org-lifecycle gate (Wave 4 review fix C-A.1) runs its own system-context
+// query in resolve(); stubbed OPEN here so the queued dbResults stay aligned
+// with the superseded-path queries this file is about. The gate's own
+// behaviour is covered by publicLinkOrgGate.test.ts + quotesPublic.test.ts.
+vi.mock('../services/publicLinkOrgGate', async (importActual) => {
+  const actual = await importActual<typeof import('../services/publicLinkOrgGate')>();
+  return {
+    ...actual,
+    resolveQuoteLinkOrgGate: vi.fn(async () => actual.PUBLIC_LINK_ORG_GATE_OPEN),
+  };
+});
 
 import { db } from '../db';
 import {

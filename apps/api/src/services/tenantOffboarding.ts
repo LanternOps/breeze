@@ -1,6 +1,14 @@
-import { and, arrayContains, eq, gte, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, arrayContains, eq, gte, inArray, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { deviceCommands, devices, organizations, partners } from '../db/schema';
+import {
+  deviceCommands,
+  devices,
+  organizations,
+  partners,
+  partnerUsers,
+  roles,
+  users,
+} from '../db/schema';
 import { ANONYMOUS_ACTOR_ID, requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import { captureException } from './sentry';
 import {
@@ -9,6 +17,7 @@ import {
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
   severAgentCredentialsForOrgIds,
+  suspendOrganizationTenantAccessReversibly,
   type TenantRevocationResult,
 } from './tenantLifecycle';
 import { invalidateAgentTenantCache } from './tenantStatus';
@@ -18,6 +27,8 @@ import { envInt } from '../utils/envInt';
 import { enqueueTenantErasure } from '../jobs/tenantErasure';
 import { getOrgMergeQueue } from '../jobs/orgMerge';
 import { MERGE_PRIOR_STATUS_KEY } from './orgMerge';
+import { getEmailService } from './email';
+import { escapeHtml, renderLayout } from './emailLayout';
 
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 /**
@@ -127,11 +138,176 @@ function inCallerOrSystemDbContext<T>(
  */
 const DB_NOW = sql`now()`;
 
+export const ARCHIVE_PURGE_WARN_14_SENT_AT_KEY = 'archivePurgeWarn14SentAt';
+export const ARCHIVE_PURGE_WARN_1_SENT_AT_KEY = 'archivePurgeWarn1SentAt';
+export type ArchivePurgeWarningMarker =
+  | typeof ARCHIVE_PURGE_WARN_14_SENT_AT_KEY
+  | typeof ARCHIVE_PURGE_WARN_1_SENT_AT_KEY;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Review hardening (I3): only recover a `purging` row whose CAS committed at
+ * least 15 MINUTES ago (same fixed-interval-literal style as the merge
+ * backstop's `interval '1 hour'` / `interval '2 hours'` guards above). The
+ * initial claim loop just above this backstop already re-enqueues its own
+ * successful CASes in the same pass, so a row claimed seconds ago is very
+ * likely still finishing that very call — recovering it again here too would
+ * be harmless (enqueueTenantErasure is idempotent) but would fire the
+ * counter/audit on every normal sweep instead of only the crash/queue-outage
+ * case this backstop actually exists for.
+ *
+ * Exported so the age guard is compiled-SQL asserted (review fix): a plain
+ * unit test injecting rows straight past the WHERE clause can't tell a
+ * 15-minute floor apart from no floor at all.
+ */
+export const ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY = 'purgingRecoveryAttempts';
+
+/**
+ * How many times the backstop will re-run the erasure handoff for one `purging`
+ * row before giving up and alerting once.
+ *
+ * `purging` had no bounded recovery owner: the backstop re-enqueued every
+ * qualifying row on EVERY 5-minute sweep, forever, and `enqueueOrReplaceStale`
+ * genuinely re-runs a failed cascade. A permanently failing erasure — e.g. a new
+ * `org_id` table missing from CORE_ORG_CASCADE_DELETE_ORDER, this repo's
+ * most-repeated defect — therefore produced ~288 audit rows, 288 erasure jobs
+ * and 288 Sentry captures per day, indefinitely, while the tenant sat neither
+ * erased nor visible nor restorable. The 15-minute grace bounded when retrying
+ * STARTS, never how long it continues.
+ */
+export const ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS = 5;
+
+/** Upper clamp for the attempt counter — see `archivePurgingRecoveryAttemptsExpr`. */
+const ARCHIVE_PURGING_RECOVERY_ATTEMPTS_CEILING = 1000;
+
+/**
+ * The attempt counter as a SAFE int, for a value that is tenant-reachable.
+ *
+ * `organizations.settings` is a client-writable blob (the org PATCH replaces it
+ * wholesale), so this key can hold ANY jsonb: a string, an object, `1e400`,
+ * `0.5`, `-9999`. And this expression runs inside the FLEET-WIDE candidate
+ * snapshot, which is taken before the sweep's per-org try/catch — so a single
+ * bad value in one tenant used to be able to abort the whole sweep for every
+ * tenant, not just its own org. `jsonb_typeof` alone was not enough: it admits
+ * fractional and out-of-range numbers, and `'0.5'::int` / `'1e400'::int` still
+ * raise 22P02 / 22003.
+ *
+ * So: non-numbers read as 0; numbers go through `numeric` (which swallows any
+ * magnitude), then `floor`, then a clamp into [0, ceiling] before the `::int`.
+ * Nothing reaching `::int` can be out of range or fractional, so the cast cannot
+ * raise. `GREATEST(0, ...)` also means a preseeded negative can only ever buy
+ * the normal ceiling of extra attempts, never an unbounded retry loop.
+ *
+ * `stripOrgLifecycleInternalSettings` (services/orgSettingsInternalKeys.ts)
+ * stops the key being written through the API at all; this is the independent
+ * database-side half, because the sweep must survive a row that got one anyway.
+ */
+function archivePurgingRecoveryAttemptsExpr(): SQL {
+  return sql`(
+    CASE WHEN jsonb_typeof(${organizations.settings}->${ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY}) = 'number'
+      THEN GREATEST(0, LEAST(
+        ${ARCHIVE_PURGING_RECOVERY_ATTEMPTS_CEILING},
+        floor((${organizations.settings}->>${ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY})::numeric)
+      ))::int
+      ELSE 0
+    END)`;
+}
+
+export function buildArchivePurgingRecoveryCandidatesWhere(): SQL {
+  return and(
+    eq(organizations.status, 'purging'),
+    sql`${organizations.updatedAt} < now() - interval '15 minutes'`,
+    // Once the counter passes the ceiling the row leaves the candidate set for
+    // good, so the exhausted alert below fires exactly once instead of every
+    // sweep — and the wedged tenant stops generating writes entirely.
+    sql`${archivePurgingRecoveryAttemptsExpr()} <= ${ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS}`
+  )!;
+}
+
+/**
+ * Atomically bump the attempt counter and report the NEW value. `updated_at` is
+ * deliberately NOT touched: bumping it would push the row past the 15-minute age
+ * guard and silently turn the recovery cadence into a 15-minute backoff.
+ */
+export function buildArchivePurgingRecoveryAttemptIncrement(orgId: string): SQL {
+  return sql`
+    UPDATE organizations
+       SET settings = jsonb_set(
+             COALESCE(settings, '{}'::jsonb),
+             '{${sql.raw(ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY)}}',
+             to_jsonb(${archivePurgingRecoveryAttemptsExpr()} + 1),
+             true
+           )
+     WHERE id = ${orgId}::uuid
+       AND status = 'purging'
+     RETURNING (settings->>${ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY})::int AS attempts`;
+}
+
+/** Raw SQL so the archived-only transition is atomic and compiled-SQL testable. */
+export function buildArchivePurgeCas(orgId: string): SQL {
+  return sql`
+    UPDATE organizations
+       SET status = 'purging', updated_at = now()
+     WHERE id = ${orgId}::uuid
+       AND status = 'archived'
+     RETURNING id`;
+}
+
+/**
+ * Undo only this process's warning claim when the outbound email fails. The
+ * value guard prevents a delayed failure from deleting a newer marker written
+ * after a restore/re-archive cycle or by another sweeper.
+ */
+export function buildArchiveWarningMarkerRelease(
+  orgId: string,
+  marker: ArchivePurgeWarningMarker,
+  claimedValue: string,
+): SQL {
+  return sql`
+    UPDATE organizations
+       SET settings = COALESCE(settings, '{}'::jsonb) - ${marker},
+           updated_at = now()
+     WHERE id = ${orgId}::uuid
+       AND status = 'archived'
+       AND settings->>${marker} = ${claimedValue}
+     RETURNING id`;
+}
+
+/**
+ * Atomically claims one warning slot without reading and rewriting the whole
+ * settings document in JavaScript. The archived guard also makes a concurrent
+ * restore win safely: a restored org cannot acquire a warning marker.
+ */
+export function buildArchiveWarningMarkerCas(
+  orgId: string,
+  marker: ArchivePurgeWarningMarker,
+): SQL {
+  return sql`
+    UPDATE organizations
+       SET settings = jsonb_set(
+             COALESCE(settings, '{}'::jsonb),
+             ARRAY[${marker}]::text[],
+             to_jsonb(now()),
+             true
+           ),
+           updated_at = now()
+     WHERE id = ${orgId}::uuid
+       AND status = 'archived'
+       AND settings->>${marker} IS NULL
+     RETURNING id, settings->>${marker} AS claimed_value`;
+}
+
 export interface OffboardingEntryResult {
   revocation: TenantRevocationResult;
   devicesTargeted: number;
   uninstallsQueued: number;
   otherCommandsCancelled: number;
+}
+
+export interface OrganizationOffboardingOptions {
+  target?: 'churn' | 'archive';
+  purgeAt?: Date | null;
 }
 
 export interface OffboardingAbortResult {
@@ -265,23 +441,42 @@ async function queueDrainUninstalls(
 
 export async function beginOrganizationOffboarding(
   orgId: string,
-  actorUserId: string | null
+  actorUserId: string | null,
+  options: OrganizationOffboardingOptions = {}
 ): Promise<OffboardingEntryResult> {
-  // Users/API keys/OAuth out immediately; agent channel kept (drain mode).
+  const target = options.target ?? 'churn';
+  const purgeAt = options.purgeAt ?? null;
+  // Churn hard-revokes user/API/OAuth access immediately. Archive leaves all
+  // one-way credential surfaces untouched and prepares only the agent delivery
+  // channel; the offboarding status gate blocks the preserved credentials.
   // This runs on its own short system contexts BEFORE the ambient-transaction
   // work below: it never writes the organizations row (no lock conflict with
   // the route's held request transaction), and its non-DB side effects
   // (session/WS teardown, Redis) could not be transactional anyway. It is
   // idempotent, so a rollback of the request transaction is recoverable by
   // retrying the PATCH (or by reactivation's restore path).
-  const revocation = await revokeOrganizationTenantAccess(orgId, { agentChannel: 'drain' });
+  const revocation = target === 'archive'
+    ? await prepareAgentDrainForOrgIds([orgId], { preserveEnrollmentKeys: true }).then(() => ({
+      apiKeysRevoked: 0,
+      userSessionsRevoked: 0,
+      oauthGrantsRevoked: 0,
+      oauthRefreshTokensRevoked: 0,
+      agentTokensSuspended: 0,
+      enrollmentKeysInvalidated: 0,
+    }))
+    : await revokeOrganizationTenantAccess(orgId, { agentChannel: 'drain' });
 
   return inCallerOrSystemDbContext({ orgId }, async () => {
     // Preserve the original start on re-entry so a repeated PATCH can't
     // extend the drain window indefinitely.
     await db
       .update(organizations)
-      .set({ offboardingStartedAt: DB_NOW, updatedAt: new Date() })
+      .set({
+        offboardingStartedAt: DB_NOW,
+        offboardingTarget: target,
+        purgeAt,
+        updatedAt: new Date(),
+      })
       .where(and(eq(organizations.id, orgId), isNull(organizations.offboardingStartedAt)));
 
     const queued = await queueDrainUninstalls([orgId], actorUserId);
@@ -713,13 +908,13 @@ function writeOffboardingReportAudit(report: OffboardingFinalizeReport, orgIdFor
  * `churned` no longer stands — the sever is only correct for a tenant that is
  * still terminal.
  */
-async function orgIsStillChurned(orgId: string): Promise<boolean> {
+async function orgIsStillStatus(orgId: string, expectedStatus: 'churned' | 'archived'): Promise<boolean> {
   const [row] = await db
     .select({ status: organizations.status })
     .from(organizations)
     .where(eq(organizations.id, orgId))
     .limit(1);
-  return row?.status === 'churned';
+  return row?.status === expectedStatus;
 }
 
 async function partnerIsStillChurned(partnerId: string): Promise<boolean> {
@@ -731,11 +926,22 @@ async function partnerIsStillChurned(partnerId: string): Promise<boolean> {
   return row?.status === 'churned';
 }
 
+export function buildOrganizationFinalizeCas(
+  orgId: string,
+  target: 'churn' | 'archive'
+): SQL {
+  return and(
+    eq(organizations.id, orgId),
+    eq(organizations.status, 'offboarding'),
+    eq(organizations.offboardingTarget, target)
+  )!;
+}
+
 /**
- * Finalize an org drain: CAS the status offboarding→churned FIRST (losing the
- * CAS means an operator aborted or forced another transition concurrently —
- * do nothing), then cancel leftovers with the never-drained report, write the
- * audit report, and sever agent credentials.
+ * Finalize an org drain according to its persisted offboarding target. The CAS
+ * lands churn at `churned` with the existing hard sever, or archive at
+ * `archived` with an archived_at stamp and reversible credential suspension.
+ * Losing the CAS means an operator changed the state or target concurrently.
  */
 export async function finalizeOrganizationOffboarding(
   orgId: string,
@@ -744,15 +950,35 @@ export async function finalizeOrganizationOffboarding(
   // Read the drain start BEFORE the CAS clears it — it scopes the report's
   // terminal counts to this drain window.
   const [before] = await db
-    .select({ startedAt: organizations.offboardingStartedAt })
+    .select({
+      startedAt: organizations.offboardingStartedAt,
+      target: organizations.offboardingTarget,
+      purgeAt: organizations.purgeAt,
+    })
     .from(organizations)
     .where(eq(organizations.id, orgId))
     .limit(1);
 
+  const target = before?.target === 'archive' ? 'archive' : 'churn';
+  const terminalStatus = target === 'archive' ? 'archived' : 'churned';
+  const terminalValues = target === 'archive'
+    ? {
+      status: 'archived' as const,
+      archivedAt: new Date(),
+      purgeAt: before?.purgeAt ?? null,
+      offboardingStartedAt: null,
+      updatedAt: new Date(),
+    }
+    : {
+      status: 'churned' as const,
+      offboardingStartedAt: null,
+      updatedAt: new Date(),
+    };
+
   const flipped = await db
     .update(organizations)
-    .set({ status: 'churned', offboardingStartedAt: null, updatedAt: new Date() })
-    .where(and(eq(organizations.id, orgId), eq(organizations.status, 'offboarding')))
+    .set(terminalValues)
+    .where(buildOrganizationFinalizeCas(orgId, target))
     .returning({ id: organizations.id });
   if (flipped.length === 0) return null;
 
@@ -767,11 +993,15 @@ export async function finalizeOrganizationOffboarding(
   };
   writeOffboardingReportAudit(report, orgId);
 
-  if (await orgIsStillChurned(orgId)) {
-    await severAgentCredentialsForOrgIds([orgId]);
+  if (await orgIsStillStatus(orgId, terminalStatus)) {
+    if (target === 'archive') {
+      await suspendOrganizationTenantAccessReversibly(orgId);
+    } else {
+      await severAgentCredentialsForOrgIds([orgId]);
+    }
   } else {
     console.warn(
-      `[tenantOffboarding] org ${orgId} left churned during finalize — skipping credential sever`
+      `[tenantOffboarding] org ${orgId} left ${terminalStatus} during finalize — skipping credential cutoff`
     );
   }
   return report;
@@ -877,13 +1107,19 @@ export async function repairIncompleteEntry(
   // `offboarding_entry_repaired` with a success result, so nothing about it
   // looks wrong afterwards.
   let stillIncomplete: boolean;
+  let target: 'churn' | 'archive' = 'churn';
   if (scope === 'organization') {
     const [row] = await db
-      .select({ status: organizations.status, startedAt: organizations.offboardingStartedAt })
+      .select({
+        status: organizations.status,
+        startedAt: organizations.offboardingStartedAt,
+        target: organizations.offboardingTarget,
+      })
       .from(organizations)
       .where(eq(organizations.id, scopeId))
       .for('update');
     stillIncomplete = row?.status === 'offboarding' && row.startedAt === null;
+    target = row?.target === 'archive' ? 'archive' : 'churn';
   } else {
     const [row] = await db
       .select({ status: partners.status, startedAt: partners.offboardingStartedAt })
@@ -911,7 +1147,11 @@ export async function repairIncompleteEntry(
   // Drain prep FIRST, matching begin*Offboarding: #2785 made this step the one
   // that lifts a superseded token suspension, so queueing before it would leave
   // a window where the uninstall exists but the fleet is still 401ing.
-  await prepareAgentDrainForOrgIds(orgIds);
+  if (target === 'archive') {
+    await prepareAgentDrainForOrgIds(orgIds, { preserveEnrollmentKeys: true });
+  } else {
+    await prepareAgentDrainForOrgIds(orgIds);
+  }
   const queued = await queueDrainUninstalls(orgIds, null);
 
   // DB_NOW, not the sweep's JS `now`, for the same clock-skew reason as
@@ -963,6 +1203,9 @@ export async function sweepOffboardingTenants(
   mergeErasureReenqueued: number;
   mergeUnfenced: number;
   mergeShellsStamped: number;
+  archivePurgesEnqueued: number;
+  purgingRecoveryReenqueued: number;
+  purgingRecoveryExhausted: number;
 }> {
   const windowMs = OFFBOARDING_DRAIN_WINDOW_HOURS * 60 * 60 * 1000;
   let orgsFinalized = 0;
@@ -971,6 +1214,9 @@ export async function sweepOffboardingTenants(
   let mergeErasureReenqueued = 0;
   let mergeUnfenced = 0;
   let mergeShellsStamped = 0;
+  let archivePurgesEnqueued = 0;
+  let purgingRecoveryReenqueued = 0;
+  let purgingRecoveryExhausted = 0;
 
   const [
     offboardingOrgs,
@@ -978,6 +1224,10 @@ export async function sweepOffboardingTenants(
     mergeErasurePendingRows,
     mergeUnfenceCandidateRows,
     mergeShellStampPendingRows,
+    archivePurgeCandidateRows,
+    archiveWarn14CandidateRows,
+    archiveWarn1CandidateRows,
+    archivePurgingCandidateRows,
   ] = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
         const orgs = await db
@@ -1071,7 +1321,74 @@ export async function sweepOffboardingTenants(
               sql`EXISTS (SELECT 1 FROM org_merge_events e WHERE e.loser_org_id = ${organizations.id})`
             )
           );
-        return [orgs, ptrs, mergeErasurePending, mergeUnfenceCandidates, mergeShellStampPending] as const;
+        const archivePurgeCandidates = await db
+          .select({
+            id: organizations.id,
+            partnerId: organizations.partnerId,
+            name: organizations.name,
+            purgeAt: organizations.purgeAt,
+          })
+          .from(organizations)
+          .where(
+            and(
+              eq(organizations.status, 'archived'),
+              isNotNull(organizations.purgeAt),
+              sql`${organizations.purgeAt} <= now()`
+            )
+          );
+        const archiveWarn14Candidates = await db
+          .select({
+            id: organizations.id,
+            partnerId: organizations.partnerId,
+            name: organizations.name,
+            purgeAt: organizations.purgeAt,
+          })
+          .from(organizations)
+          .where(
+            and(
+              eq(organizations.status, 'archived'),
+              isNotNull(organizations.purgeAt),
+              sql`${organizations.purgeAt} > now()`,
+              sql`${organizations.purgeAt} <= now() + interval '14 days'`,
+              sql`${organizations.settings}->>${ARCHIVE_PURGE_WARN_14_SENT_AT_KEY} IS NULL`
+            )
+          );
+        const archiveWarn1Candidates = await db
+          .select({
+            id: organizations.id,
+            partnerId: organizations.partnerId,
+            name: organizations.name,
+            purgeAt: organizations.purgeAt,
+          })
+          .from(organizations)
+          .where(
+            and(
+              eq(organizations.status, 'archived'),
+              isNotNull(organizations.purgeAt),
+              sql`${organizations.purgeAt} > now()`,
+              sql`${organizations.purgeAt} <= now() + interval '1 day'`,
+              sql`${organizations.settings}->>${ARCHIVE_PURGE_WARN_1_SENT_AT_KEY} IS NULL`
+            )
+          );
+        // A crash or queue outage can land after the archived->purging CAS
+        // commits but before the erasure handoff succeeds. Keep every purging
+        // row flowing through enqueueTenantErasure's live-job reuse / stale-job
+        // replacement logic so that intermediate state cannot wedge forever.
+        const archivePurgingCandidates = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(buildArchivePurgingRecoveryCandidatesWhere());
+        return [
+          orgs,
+          ptrs,
+          mergeErasurePending,
+          mergeUnfenceCandidates,
+          mergeShellStampPending,
+          archivePurgeCandidates,
+          archiveWarn14Candidates,
+          archiveWarn1Candidates,
+          archivePurgingCandidates,
+        ] as const;
       })
     );
 
@@ -1291,6 +1608,267 @@ export async function sweepOffboardingTenants(
     }
   }
 
+  // --- Archive purge: claim archived -> purging, then hand off to erasure --
+  for (const org of archivePurgeCandidateRows) {
+    try {
+      const claimed = (await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() => db.execute(buildArchivePurgeCas(org.id)))
+      )) as unknown as Array<{ id: string }>;
+      if (claimed.length === 0) continue;
+
+      const erasureJob = await enqueueTenantErasure({
+        orgId: org.id,
+        performedBy: ANONYMOUS_ACTOR_ID,
+      });
+      archivePurgesEnqueued++;
+      writeAuditEvent(requestLikeFromSnapshot({}), {
+        orgId: null,
+        action: 'org.archive.purge_enqueued',
+        resourceType: 'organization',
+        resourceId: org.id,
+        resourceName: org.name,
+        actorType: 'system',
+        actorId: null,
+        result: 'success',
+        details: {
+          partnerId: org.partnerId,
+          purgeAt: org.purgeAt?.toISOString() ?? null,
+          erasureJobId: erasureJob.id,
+        },
+      });
+    } catch (err) {
+      failures++;
+      console.error(`[tenantOffboarding] Failed to enqueue archive purge for org ${org.id}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  // Recovery-only handoff. Candidate lists were snapshotted before the CAS
+  // loop, so a newly claimed row is not re-enqueued twice in this same pass.
+  // The helper collapses a live job and replaces a failed/completed record.
+  // The initial CAS path owns the counter and audit because this backstop
+  // cannot distinguish a reused live job from a newly-created replacement.
+  for (const org of archivePurgingCandidateRows) {
+    try {
+      // Claim + count this attempt BEFORE the handoff, so a crash inside
+      // enqueueTenantErasure still burns an attempt rather than looping free.
+      const claimed = (await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          db.execute(buildArchivePurgingRecoveryAttemptIncrement(org.id))
+        )
+      )) as unknown as Array<{ attempts: number }>;
+      // 0 rows = the row left `purging` between the snapshot and now (erasure
+      // finished, or an operator moved it). Nothing to recover.
+      if (claimed.length === 0) continue;
+
+      const attempts = Number(claimed[0]!.attempts);
+      if (attempts > ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS) {
+        // Exactly once: the candidate predicate excludes the row from here on.
+        console.error(
+          `[tenantOffboarding] Archive purge for org ${org.id} has failed ${ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS} recovery attempts; giving up. The tenant is stuck in 'purging' — neither erased nor restorable — and needs manual investigation (most likely a table missing from CORE_ORG_CASCADE_DELETE_ORDER).`
+        );
+        writeAuditEvent(requestLikeFromSnapshot({}), {
+          orgId: null,
+          action: 'org.archive.purge_recovery_exhausted',
+          resourceType: 'organization',
+          resourceId: org.id,
+          actorType: 'system',
+          actorId: null,
+          result: 'failure',
+          details: {
+            orgId: org.id,
+            attempts,
+            maxAttempts: ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS,
+            note: 'erasure handoff kept failing for a purging row; recovery abandoned and the org excluded from further sweeps',
+          },
+        });
+        purgingRecoveryExhausted++;
+        continue;
+      }
+
+      await enqueueTenantErasure({
+        orgId: org.id,
+        performedBy: ANONYMOUS_ACTOR_ID,
+      });
+      purgingRecoveryReenqueued++;
+      writeAuditEvent(requestLikeFromSnapshot({}), {
+        orgId: null,
+        action: 'org.archive.purge_recovery_reenqueued',
+        resourceType: 'organization',
+        resourceId: org.id,
+        actorType: 'system',
+        actorId: null,
+        result: 'success',
+        details: {
+          note: 'purging row past the 15-minute recovery grace window; re-ran the erasure handoff',
+        },
+      });
+    } catch (err) {
+      failures++;
+      console.error(`[tenantOffboarding] Failed to recover archive purge handoff for org ${org.id}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  const warningGroups = [
+    {
+      candidates: archiveWarn14CandidateRows,
+      days: 14,
+      marker: ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
+    },
+    {
+      candidates: archiveWarn1CandidateRows,
+      days: 1,
+      marker: ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
+    },
+  ] as const;
+  // Review hardening (I5): an outage catch-up pass can find the SAME org
+  // qualifying for BOTH buckets at once (both markers still absent, purge_at
+  // already inside the 1-day window). Sending the 14-day copy in that case
+  // would misstate how much time is actually left, so the more urgent (1-day)
+  // bucket wins the SEND. The 14-day bucket still claims its own marker below
+  // so it never re-fires on a later sweep once the 1-day marker is claimed
+  // and this org drops out of THAT candidate list.
+  const moreUrgentWarningOrgIds = new Set(archiveWarn1CandidateRows.map((org) => org.id));
+
+  for (const group of warningGroups) {
+    const isLeastUrgentGroup = group.marker === ARCHIVE_PURGE_WARN_14_SENT_AT_KEY;
+    for (const org of group.candidates) {
+      try {
+        if (isLeastUrgentGroup && moreUrgentWarningOrgIds.has(org.id)) {
+          const claimed = (await runOutsideDbContext(() =>
+            withSystemDbAccessContext(() =>
+              db.execute(buildArchiveWarningMarkerCas(org.id, group.marker))
+            )
+          )) as unknown as Array<{ id: string }>;
+          if (claimed.length > 0) {
+            console.warn(
+              `[tenantOffboarding] org ${org.id} qualifies for both purge-warning buckets in this pass; `
+              + 'claimed the 14-day marker without sending — the 1-day bucket is more urgent and accurate'
+            );
+          }
+          continue;
+        }
+
+        const emailService = getEmailService();
+        if (!emailService) {
+          console.warn(
+            `[tenantOffboarding] no email service configured — skipping the ${group.days}-day archive purge warning for org ${org.id}`
+          );
+          continue;
+        }
+
+        const recipients = await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            db
+              .select({ email: users.email })
+              .from(partnerUsers)
+              .innerJoin(users, eq(partnerUsers.userId, users.id))
+              .innerJoin(roles, eq(partnerUsers.roleId, roles.id))
+              .where(
+                and(
+                  eq(partnerUsers.partnerId, org.partnerId),
+                  eq(roles.name, 'Partner Admin'),
+                  eq(users.status, 'active')
+                )
+              )
+          )
+        );
+        const emails = [...new Set(recipients.map((recipient) => recipient.email).filter(Boolean))];
+        if (emails.length === 0) {
+          console.warn(
+            `[tenantOffboarding] no active Partner Admin recipients for org ${org.id}; `
+            + `skipping the ${group.days}-day archive purge warning`
+          );
+          continue;
+        }
+
+        // Claim before the outbound send, matching contractRenewal.ts's
+        // claimNotice -> dispatchNotice precedent. This is what makes two API
+        // replicas race-safe: only the jsonb_set winner sends the email.
+        const claimed = (await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            db.execute(buildArchiveWarningMarkerCas(org.id, group.marker))
+          )
+        )) as unknown as Array<{ id: string; claimed_value: string }>;
+        if (claimed.length === 0) continue;
+
+        // Review hardening (I5): the ACTUAL time remaining, not the fixed
+        // bucket label — an outage catch-up pass can run this well after the
+        // nominal threshold, and a stale "14 days" / "1 day" copy would
+        // misstate how much time is truly left.
+        const daysRemaining = org.purgeAt
+          ? Math.max(1, Math.round((org.purgeAt.getTime() - now.getTime()) / DAY_MS))
+          : group.days;
+        const dayLabel = daysRemaining === 1 ? '1 day' : `${daysRemaining} days`;
+        const purgeAt = org.purgeAt?.toISOString() ?? 'the scheduled purge time';
+        const safeName = escapeHtml(org.name);
+        const safePurgeAt = escapeHtml(purgeAt);
+        try {
+          await emailService.sendEmail({
+            to: emails,
+            subject: `Organization purge in ${dayLabel}: ${org.name}`,
+            text:
+              `${org.name} is archived and scheduled for permanent deletion at ${purgeAt}. `
+              + 'Restore the organization before then to cancel the purge.',
+            html: renderLayout({
+              title: `Organization purge in ${dayLabel}: ${org.name}`,
+              preheader: `${org.name} is scheduled for permanent deletion.`,
+              heading: `Organization purge in ${dayLabel}`,
+              body:
+                `<p><strong>${safeName}</strong> is archived and scheduled for permanent deletion at `
+                + `<strong>${safePurgeAt}</strong>.</p>`
+                + '<p>Restore the organization before then to cancel the purge.</p>',
+            }),
+          });
+        } catch (sendErr) {
+          // Claim-before-send keeps replicas from sending duplicates. If the
+          // outbound call itself fails, release only this exact DB-generated
+          // timestamp so a later sweep may retry without clobbering a newer
+          // marker from a restore/re-archive cycle.
+          const claimedValue = claimed[0]!.claimed_value;
+          if (claimedValue) {
+            try {
+              await runOutsideDbContext(() =>
+                withSystemDbAccessContext(() =>
+                  db.execute(buildArchiveWarningMarkerRelease(org.id, group.marker, claimedValue))
+                )
+              );
+            } catch (releaseErr) {
+              console.error(
+                `[tenantOffboarding] Failed to release ${group.days}-day archive warning marker for org ${org.id}:`,
+                releaseErr
+              );
+              captureException(releaseErr instanceof Error ? releaseErr : new Error(String(releaseErr)));
+            }
+          }
+          throw sendErr;
+        }
+
+        // Review hardening (I4): org-less audit on a successful send, mirror
+        // of every other archive-purge audit in this file.
+        writeAuditEvent(requestLikeFromSnapshot({}), {
+          orgId: null,
+          action: 'org.archive.purge_warning_sent',
+          resourceType: 'organization',
+          resourceId: org.id,
+          resourceName: org.name,
+          actorType: 'system',
+          actorId: null,
+          result: 'success',
+          details: { orgId: org.id, days: daysRemaining, bucketDays: group.days, purgeAt },
+        });
+      } catch (err) {
+        failures++;
+        console.error(
+          `[tenantOffboarding] Failed to send ${group.days}-day archive purge warning for org ${org.id}:`,
+          err
+        );
+        captureException(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+  }
+
   return {
     orgsFinalized,
     partnersFinalized,
@@ -1298,5 +1876,8 @@ export async function sweepOffboardingTenants(
     mergeErasureReenqueued,
     mergeUnfenced,
     mergeShellsStamped,
+    archivePurgesEnqueued,
+    purgingRecoveryReenqueued,
+    purgingRecoveryExhausted,
   };
 }
