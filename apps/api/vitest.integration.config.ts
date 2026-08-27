@@ -268,6 +268,14 @@ export default defineConfig({
       // already covered by the shared glob above; named here for discoverability
       // only.
       'src/__tests__/integration/alertNotificationSendIdentity.integration.test.ts',
+      // Wave 3.5b (#4084): real-Redis coverage for the socket-affinity command
+      // relay — fenced presence leases, the sealed AAD-bound envelope, the
+      // at-most-once send claim, owner/expiry fencing, and the
+      // dispatchCommandToAgent local-vs-relay facade. No Postgres fixtures;
+      // lives under src/__tests__/integration/** so it's already covered by
+      // the shared glob above; named here for discoverability only (same
+      // pattern staleBackupReaper.integration.test.ts uses).
+      'src/__tests__/integration/agentCommandRelay.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;
