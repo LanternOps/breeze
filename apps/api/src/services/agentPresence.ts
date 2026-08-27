@@ -76,6 +76,22 @@ export async function clearAgentPresence(agentId: string, connectionToken: strin
   }
 }
 
+/**
+ * Unconditional delete — no token fencing. Used only from `evictAgentSocket`
+ * (module-level in agentWs.ts), which has no `connectionToken` in scope. The
+ * pong-branch self-heal in the WS lifecycle bounds the collateral window: a
+ * reconnect racing this delete re-establishes its lease on its next pong.
+ */
+export async function clearAgentPresenceUnfenced(agentId: string): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis.del(presenceKey(agentId));
+  } catch (err) {
+    console.warn(`[AgentPresence] unfenced clear failed for ${agentId.slice(0, 12)}:`, err);
+  }
+}
+
 export async function readAgentPresence(agentId: string): Promise<AgentPresenceLease | null> {
   const redis = getRedis();
   if (!redis) return null;

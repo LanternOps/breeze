@@ -4,6 +4,7 @@ const redisMock = {
   set: vi.fn(),
   get: vi.fn(),
   eval: vi.fn(),
+  del: vi.fn(),
 };
 vi.mock('./redis', () => ({ getRedis: vi.fn(() => redisMock) }));
 
@@ -11,6 +12,7 @@ import { getRedis } from './redis';
 import {
   AGENT_PRESENCE_TTL_MS,
   clearAgentPresence,
+  clearAgentPresenceUnfenced,
   readAgentPresence,
   refreshAgentPresence,
   setAgentPresence,
@@ -62,12 +64,18 @@ describe('agentPresence', () => {
     expect(await readAgentPresence('agent-1')).toBeNull();
   });
 
+  it('clearAgentPresenceUnfenced unconditionally DELs the key (no token check)', async () => {
+    await clearAgentPresenceUnfenced('agent-1');
+    expect(redisMock.del).toHaveBeenCalledWith('agent-presence:agent-1');
+  });
+
   it('every helper is a safe no-op when Redis is unavailable', async () => {
     vi.mocked(getRedis).mockReturnValue(null as never);
     await expect(setAgentPresence('a', { instanceId: 'i', connectionToken: 't' })).resolves.toBeUndefined();
     await expect(refreshAgentPresence('a', 't')).resolves.toBe(false);
     await expect(clearAgentPresence('a', 't')).resolves.toBe(false);
     await expect(readAgentPresence('a')).resolves.toBeNull();
+    await expect(clearAgentPresenceUnfenced('a')).resolves.toBeUndefined();
   });
 
   it('helpers swallow Redis errors (log, never throw)', async () => {
