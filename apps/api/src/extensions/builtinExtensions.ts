@@ -43,7 +43,11 @@ import type {
 } from './contributionRegistry';
 import type { ExtensionStateStore } from './stateStore';
 import { defaultStageExtension } from './stageExtension';
-import { reconcileExtensionMigrations, type MigratableExtension } from './migrator';
+import {
+  checkExtensionMigrationParity,
+  reconcileExtensionMigrations,
+  type MigratableExtension,
+} from './migrator';
 import { registerRuntimeExtensionTenancy } from './tenancyRegistry';
 import { assertExtensionTenancyRls } from './tenancyTripwire';
 import { registerExtensionWebAsset, type RegisterableExtensionWebAsset } from './webAssets';
@@ -256,6 +260,14 @@ export interface BuiltinPorts {
     sql: postgres.Sql | null,
     stateStore: ExtensionStateStore,
   ): Promise<void>;
+  /**
+   * The `mode: 'worker'` counterpart to `runMigrations`: verifies (never
+   * applies) that this built-in's on-disk migrations are already fully
+   * reflected in the ledger. Throws if not — a worker-role process aborts
+   * boot rather than proceeding against a schema an api/all-role process
+   * hasn't finished migrating yet.
+   */
+  checkMigrationParity(builtin: BuiltinExtension, sql: postgres.Sql | null): Promise<void>;
   publishTenancy(manifest: ExtensionManifestV1): void;
   /**
    * WHICH of these public tables already exist — the present SUBSET, not a
@@ -348,6 +360,20 @@ export interface LoadBuiltinExtensionsArgs {
   stateStore: ExtensionStateStore;
   /** Test seam: overrides merged over {@link buildDefaultPorts}. */
   ports?: Partial<BuiltinPorts>;
+  /**
+   * `'full'` (default) is today's pipeline, unchanged: migrate → publish
+   * tenancy → stage → validate → seed state → activate → register web asset.
+   *
+   * `'worker'` (wave 3.5d-b, #4086) is for a `BREEZE_ROLE=worker` process,
+   * which has no HTTP server to serve a web asset from and must never apply
+   * migrations itself: the migrate step is replaced with a read-only parity
+   * CHECK (never applies — {@link checkExtensionMigrationParity}), and the
+   * final web-asset registration step is skipped entirely. Every other step
+   * (publish tenancy, stage, validate, seed state, activate) runs exactly as
+   * `'full'` does, because a worker process still needs the extension's
+   * staged job/tool contributions registered.
+   */
+  mode?: 'full' | 'worker';
 }
 
 function buildDefaultPorts(args: LoadBuiltinExtensionsArgs): BuiltinPorts {
@@ -376,6 +402,25 @@ function buildDefaultPorts(args: LoadBuiltinExtensionsArgs): BuiltinPorts {
         stateStore,
         BUILTIN_MIGRATION_ROLLOUT,
       );
+    },
+    checkMigrationParity: async (builtin, sql) => {
+      if (!sql) throw new Error('migration client is unavailable');
+      const root = resolveBuiltinRoot(builtin.packageDir);
+      const migrations = readDiskMigrations(root, builtin.manifest.migrationsDir);
+      const { missing, mismatched } = await checkExtensionMigrationParity(
+        { name: builtin.manifest.name, migrations },
+        sql,
+      );
+      if (missing.length > 0 || mismatched.length > 0) {
+        const parts: string[] = [];
+        if (missing.length > 0) parts.push(`missing from ledger: ${missing.join(', ')}`);
+        if (mismatched.length > 0) parts.push(`checksum mismatch: ${mismatched.join(', ')}`);
+        throw new Error(
+          `[extensions] built-in "${builtin.manifest.name}" is not at migration parity on a ` +
+            `worker-role process (${parts.join('; ')}) — an api/all-role process must apply its ` +
+            'migrations first',
+        );
+      }
     },
     publishTenancy: (manifest) => registerRuntimeExtensionTenancy(manifest.tenancy),
     existingDeclaredTables: defaultExistingDeclaredTables,
@@ -560,6 +605,7 @@ async function skipDisabledBuiltin(
  * away with those two paths.
  */
 export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Promise<void> {
+  const mode = args.mode ?? 'full';
   const ports: BuiltinPorts = { ...buildDefaultPorts(args), ...args.ports };
   const { registry, stateStore } = args;
   if (ports.builtins.length === 0) return;
@@ -579,11 +625,18 @@ export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Pr
       const { manifest } = builtin;
       const name = manifest.name;
 
-      await runBuiltinMigrations(builtin, sql, stateStore, ports);
+      if (mode === 'worker') {
+        // wave 3.5d-b (#4086): a worker-role process never applies
+        // migrations — it only verifies an api/all-role process already has.
+        await ports.checkMigrationParity(builtin, sql);
+      } else {
+        await runBuiltinMigrations(builtin, sql, stateStore, ports);
+      }
 
-      // Publish tenancy the instant migrations succeed — before staging — so
-      // cascade/device-move handling for the tables that now exist survives a
-      // later failure or a disable.
+      // Publish tenancy the instant migrations succeed (or, in worker mode,
+      // are confirmed already applied) — before staging — so cascade/
+      // device-move handling for the tables that now exist survives a later
+      // failure or a disable.
       ports.publishTenancy(manifest);
 
       const staged = await ports.stageExtension(builtin.module, manifest, {
@@ -620,9 +673,16 @@ export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Pr
       // NOTE: deliberately no registerExtensionRoot. Fault attribution keys on
       // per-extension root stack paths; a built-in is compiled into the core
       // image, so its faults correctly attribute to core.
-      registerBuiltinWebAsset(builtin, ports);
+      //
+      // Web-asset registration is skipped entirely in worker mode: a worker
+      // process has no HTTP server to serve it from (wave 3.5d-b, #4086).
+      if (mode !== 'worker') {
+        registerBuiltinWebAsset(builtin, ports);
+      }
 
-      console.log(`[extensions] loaded built-in "${name}" ${manifest.version}`);
+      console.log(
+        `[extensions] loaded built-in "${name}" ${manifest.version}${mode === 'worker' ? ' (worker mode)' : ''}`,
+      );
     }
   } finally {
     // Closing the privileged pool must never REPLACE the error that got us

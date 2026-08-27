@@ -3,27 +3,60 @@
  *
  * Deliberately imports NO route modules: the import-closure contract test
  * (`services/workerEntrypointClosure.contract.test.ts`, #4086 Task 5)
- * enforces this statically. `workerRegistry.ts`'s 104 entries are all behind
- * `load: () => import(...)` thunks specifically so this file's own STATIC
- * import graph never force-loads the route graph or `routes/agentWs.ts` —
- * only the entries actually selected for `role: 'worker'` (the `global`-
- * placement subset) get their modules loaded, and only at runtime.
+ * enforces this statically. Almost every heavier dependency below — the DB
+ * module, Redis, the migration-parity waiter, the extension loader, the
+ * worker registry, the event-dispatch/event-bus modules, the AI-agent
+ * enqueuer, the durable event-subscriber registry — is loaded via a dynamic
+ * `await import(...)` inside `main()` rather than a static top-of-file
+ * import. This isn't just style: several of those modules' own *static*
+ * transitive closures reach into `routes/` several hops down (for example
+ * `services/eventSubscribers.ts` → `jobs/automationWorker.ts` →
+ * `services/automationRuntime.ts` → `services/scriptDispatch.ts` →
+ * `routes/agentWs.ts`; and `jobs/aiAgentEnqueuer.ts` →
+ * `services/aiAgents/runService.ts` → `services/aiAgents/agentAuthContext.ts`
+ * → `middleware/auth.ts` → `routes/auth/schemas.ts`). The import-closure
+ * contract test's own STATIC-ONLY mode (used for exactly this file) does not
+ * follow dynamic `import()` edges, so keeping these behind `await import(...)`
+ * is what keeps this file's own closure clean — the same trick
+ * `workerRegistry.ts`'s 104 `load()` thunks use.
  *
- * THIS FILE IS A PLACEHOLDER SHELL for Task 6 of the wave 3.5d-b plan
- * (docs/superpowers/plans/ai-mcp/2026-08-27-ai-agents-wave3.5d-b-role-split.md).
- * Task 5 (this commit) only needs the file to exist, with the role guard and
- * no forbidden imports, so the closure contract test has a real static
- * import graph to walk instead of asserting against a file that doesn't
- * exist yet. Task 6 fills in the full boot pipeline described in the plan:
- * config validation, Sentry, DB + migration parity wait (never `autoMigrate`),
- * mandatory Redis check, extension tenancy registration, event subscribers,
- * `startRegisteredWorkers('worker', ...)`, a slim raw-`node:http` health
- * server, and phased shutdown. Task 6 MODIFIES this file's body — it does
- * not recreate it — and must preserve this header's "no route imports"
- * contract.
+ * Only genuinely leaf modules stay as static top-of-file imports:
+ * `config/env` (just `breezeRole`), `config/validate`, `services/sentry`,
+ * `services/readiness` (zero imports of its own), `services/shutdownPhases`
+ * (zero imports of its own), and `utils/envInt` (zero imports of its own) —
+ * each independently verified importable without pulling in the route graph.
+ *
+ * Boot order (the contract, see the plan doc's Task 6):
+ *   1. dotenv + role guard (fail closed — this binary runs ONLY as worker).
+ *   2. validateConfig(); initSentry().
+ *   3. Slim raw-node:http health server, started FIRST (before DB/Redis).
+ *   4. DB reachability probe, then `waitForMigrationParity()` — NEVER
+ *      `autoMigrate()`. A worker-role process never applies migrations.
+ *   5. Redis mandatory — exit non-zero if unreachable (no limp mode).
+ *   6. Extension runtime in `mode: 'worker'` (parity-check-never-apply,
+ *      publish tenancy, stage, validate, seed state, activate registry; no
+ *      web-asset registration — there is no HTTP server to serve it from).
+ *   7. Register the AI-agent enqueuer + durable event subscribers.
+ *   8. Start the registry's `global`-placement workers, then the
+ *      event-dispatch consumer (its own phase-2 special, same as index.ts) —
+ *      no relay consumer (socket-owner, stays on api/all).
+ *   9. Signal handlers → phased shutdown (drain → workers → queues →
+ *      eventbus → redis → db → sentry), mirroring index.ts's Part A
+ *      semantics.
  */
 import 'dotenv/config';
+import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
+import { sql } from 'drizzle-orm';
 import { breezeRole } from './config/env';
+import { validateConfig } from './config/validate';
+import { captureException, flushSentry, initSentry } from './services/sentry';
+import {
+  computeWorkersHealthy,
+  createReadinessEvaluator,
+  type WorkerInitPhase,
+} from './services/readiness';
+import { runShutdownPhases } from './services/shutdownPhases';
+import { envInt } from './utils/envInt';
 
 if (breezeRole() !== 'worker') {
   // This binary runs ONLY as the worker role — mirrors index.ts's inverse
@@ -32,4 +65,407 @@ if (breezeRole() !== 'worker') {
   process.exit(78); // EX_CONFIG
 }
 
-// TODO(#4086 Task 6): full boot pipeline — see the header comment above.
+// ---------------------------------------------------------------------------
+// Module-level boot state. Mirrors index.ts's shape (workerStatus,
+// workerInitPhase, shutdownInProgress) so `computeWorkersHealthy` — shared
+// with index.ts — sees the same input contract.
+// ---------------------------------------------------------------------------
+
+const workerStatus: Record<string, boolean> = {};
+let workerInitPhase: WorkerInitPhase = 'pending';
+let shuttingDown = false;
+/** Flips true once `waitForMigrationParity()` resolves (step 4). Before that,
+ *  `/health/ready` reports a fixed reason rather than consulting the live
+ *  evaluator, whose db/redis probes aren't wired up with real handles yet. */
+let migrationParityAchieved = false;
+let healthServer: Server | null = null;
+let auditRetryInterval: NodeJS.Timeout | null = null;
+
+// Assigned once the dynamically-imported db/redis modules are available
+// (start of main(), before any readiness probe can actually be reached).
+let probeDb: () => Promise<boolean> = async () => false;
+let probeRedis: () => Promise<boolean> = async () => false;
+
+/**
+ * Readiness cache TTL / probe timeout. Duplicated from index.ts rather than
+ * imported: index.ts's own module pulls in the entire route graph at its
+ * top, which this file must never do (see the header comment). Same values,
+ * same clamping — see index.ts's `READINESS_CACHE_TTL_MS` for the rationale.
+ */
+const READINESS_CACHE_TTL_MAX_MS = 30_000;
+const readinessTtlRaw = envInt('READINESS_CACHE_TTL_MS', 5_000);
+const READINESS_CACHE_TTL_MS = Math.min(Math.max(readinessTtlRaw, 0), READINESS_CACHE_TTL_MAX_MS);
+const READINESS_PROBE_TIMEOUT_MS = Math.max(envInt('READINESS_PROBE_TIMEOUT_MS', 3_000), 100);
+
+const readiness = createReadinessEvaluator({
+  checkDb: () => probeDb(),
+  checkRedis: () => probeRedis(),
+  workersHealthy: (redisOk) =>
+    computeWorkersHealthy({ phase: workerInitPhase, workerStatus, redisOk, shuttingDown }),
+  isShuttingDown: () => shuttingDown,
+  // ALWAYS true for a worker: `REQUIRE_REDIS_ON_STARTUP` is an api/all-role
+  // knob (index.ts:1354-1359's `skipped-no-redis` limp mode is deliberately
+  // NOT available here) — every tracked worker is BullMQ-backed, so a
+  // worker process with no Redis has no reason to exist.
+  requireRedis: true,
+  ttlMs: READINESS_CACHE_TTL_MS,
+  probeTimeoutMs: READINESS_PROBE_TIMEOUT_MS,
+  onProbeFailure: (probeName, error) => {
+    console.error(`[worker][ready] ${probeName} probe failed:`, error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Slim health server (raw node:http — no Hono, no route graph).
+// ---------------------------------------------------------------------------
+
+function writeJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(body));
+}
+
+function currentPhaseLabel(): string {
+  return shuttingDown ? 'shutting-down' : workerInitPhase;
+}
+
+/**
+ * `/health/ready`. Structured 503 bodies with a single `reason`:
+ * `'migrations-pending' | 'db' | 'redis' | 'workers-pending' | 'shutting-down'`.
+ * Before migration parity is reached, this answers directly (the live
+ * evaluator's db/redis probes aren't meaningful yet); afterward it delegates
+ * to `readiness.get()` and translates the snapshot into one reason.
+ */
+async function handleReadyRequest(res: ServerResponse): Promise<void> {
+  if (shuttingDown) {
+    writeJson(res, 503, { ready: false, reason: 'shutting-down' });
+    return;
+  }
+  if (!migrationParityAchieved) {
+    writeJson(res, 503, { ready: false, reason: 'migrations-pending' });
+    return;
+  }
+  try {
+    const snapshot = await readiness.get();
+    if (snapshot.ready) {
+      writeJson(res, 200, { role: 'worker', ...snapshot });
+      return;
+    }
+    const reason = !snapshot.db ? 'db' : !snapshot.redis ? 'redis' : 'workers-pending';
+    writeJson(res, 503, { reason, role: 'worker', ...snapshot });
+  } catch (error) {
+    console.error('[worker][ready] readiness evaluation failed:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    writeJson(res, 503, { ready: false, reason: 'db' });
+  }
+}
+
+function startHealthServer(port: number): Server {
+  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    const pathName = (req.url ?? '/').split('?')[0];
+    if (pathName === '/health') {
+      // Always 200 once listening — basic liveness, mirrors index.ts's
+      // `/health/live`. Never reflects DB/Redis/worker state.
+      writeJson(res, 200, { status: 'ok', role: 'worker', phase: currentPhaseLabel() });
+      return;
+    }
+    if (pathName === '/health/ready') {
+      void handleReadyRequest(res);
+      return;
+    }
+    writeJson(res, 404, { error: 'not found' });
+  });
+  server.listen(port, () => {
+    console.log(`[worker] health server listening on :${port}`);
+  });
+  return server;
+}
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+
+/**
+ * The full boot pipeline (steps 2-9; step 1's role guard runs at module load,
+ * above). Exported (rather than an anonymous IIFE) so `worker.boot.test.ts`
+ * can invoke it directly against mocked heavy dependencies and a mocked
+ * `process.exit` — see that file for the test-seam rationale.
+ */
+export async function bootWorker(): Promise<void> {
+  console.log('[worker] Breeze worker process starting...');
+
+  // Step 2.
+  initSentry();
+  const config = validateConfig();
+  console.log(`[worker] Validated config: NODE_ENV=${config.NODE_ENV}`);
+
+  // Step 3 — slim health server FIRST, before any DB/Redis/extension work.
+  const port = parseInt(process.env.API_PORT || '3001', 10);
+  healthServer = startHealthServer(port);
+
+  // Everything below is dynamically imported — see the header comment for
+  // why (several of these modules' own static closures reach `routes/`).
+  const dbModule = await import('./db');
+  const { getRedis, closeRedis } = await import('./services/redis');
+  const { waitForMigrationParity } = await import('./db/migrationParity');
+  const { loadBuiltinExtensions } = await import('./extensions/builtinExtensions');
+  const { extensionContributionRegistry } = await import('./extensions/contributionRegistry');
+  const { createExtensionStateStore } = await import('./extensions/stateStore');
+  const { registerAiAgentEnqueuer } = await import('./jobs/aiAgentEnqueuer');
+  const { registerAllEventSubscribers } = await import('./services/eventSubscribers');
+  const { buildWebhookFanoutDeps } = await import('./services/webhookFanoutDeps');
+  const { startRegisteredWorkers, buildWorkerShutdownTasks } = await import('./services/workerRegistry');
+  const { initializeEventDispatchWorker, shutdownEventDispatchWorker } = await import('./jobs/eventDispatchWorker');
+  const { shutdownEventDispatcher } = await import('./services/eventDispatcher');
+  const { shutdownEventDispatchQueue } = await import('./services/eventDispatchQueue');
+  const { getEventBus } = await import('./services/eventBus');
+  const { drainAuditRetryQueue } = await import('./services/auditService');
+
+  const { db, withSystemDbAccessContext } = dbModule;
+  const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+    return typeof withSystemDbAccessContext === 'function' ? withSystemDbAccessContext(fn) : fn();
+  };
+
+  probeDb = async () => {
+    try {
+      await runWithSystemDbAccess(async () => {
+        await db.execute(sql`select 1`);
+      });
+      return true;
+    } catch (error) {
+      console.error('[worker][startup] Database connectivity check failed:', error);
+      return false;
+    }
+  };
+  probeRedis = async () => {
+    try {
+      const redis = getRedis();
+      if (!redis) return false;
+      await redis.ping();
+      return true;
+    } catch (error) {
+      console.error('[worker][startup] Redis connectivity check failed:', error);
+      return false;
+    }
+  };
+
+  // Step 4: DB reachability, then migration parity wait. NEVER autoMigrate —
+  // a worker-role process is not the one that applies migrations.
+  const dbOk = await probeDb();
+  if (!dbOk) {
+    console.error('[worker] Database is required at startup but is unreachable — exiting.');
+    process.exit(1);
+    // `process.exit` never returns in production; the explicit `return` is
+    // belt-and-braces for a test environment where it's mocked as a no-op.
+    return;
+  }
+  try {
+    await waitForMigrationParity({ log: (message: string) => console.log(message) });
+  } catch (error) {
+    console.error('[worker] Migration parity wait failed:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    process.exit(1);
+    return;
+  }
+  migrationParityAchieved = true;
+
+  // Step 5: Redis mandatory — never the `skipped-no-redis` limp mode.
+  const redisOk = await probeRedis();
+  if (!redisOk) {
+    console.error('[worker] Redis is required for a worker-role process but is unreachable — exiting.');
+    process.exit(1);
+    return;
+  }
+
+  // Step 6: extension runtime, worker-safe mode (no web-asset registration —
+  // there is no HTTP server here to serve it from).
+  const extensionStateStore = createExtensionStateStore();
+  await loadBuiltinExtensions({
+    registry: extensionContributionRegistry,
+    stateStore: extensionStateStore,
+    mode: 'worker',
+  });
+
+  // Step 7 — must run before step 8 so a job enqueued mid-worker-boot (or any
+  // event published during it) always finds a registered enqueuer/subscriber.
+  registerAiAgentEnqueuer();
+  registerAllEventSubscribers(buildWebhookFanoutDeps());
+
+  // Step 8: the registry's `global`-placement workers, then the event-dispatch
+  // consumer (its own phase-2 special, mirroring index.ts). No relay consumer
+  // — that stays `socket-owner` (api/all only).
+  await startRegisteredWorkers('worker', {
+    onResult: (name, ok, error) => {
+      workerStatus[name] = ok;
+      if (!ok) {
+        console.error(`[CRITICAL][worker] Failed to initialize ${name}:`, error);
+        captureException(error instanceof Error ? error : new Error(String(error)));
+      }
+    },
+  });
+
+  try {
+    await initializeEventDispatchWorker();
+    workerStatus['eventDispatch'] = true;
+  } catch (error) {
+    workerStatus['eventDispatch'] = false;
+    console.error('[CRITICAL][worker] Failed to initialize eventDispatch:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+  }
+
+  workerInitPhase = 'started';
+  readiness.invalidate();
+
+  const failed = Object.entries(workerStatus).filter(([, ok]) => !ok).map(([n]) => n);
+  if (failed.length === 0) {
+    console.log('[worker] All workers initialized');
+  } else {
+    console.error(`[worker] ${failed.length} worker(s) failed to initialize: ${failed.join(', ')}`);
+  }
+
+  // Same 30s shape as index.ts's audit-retry drain.
+  auditRetryInterval = setInterval(() => {
+    void drainAuditRetryQueue().catch((err) => {
+      console.error('[worker][audit-retry] drain failed:', err);
+    });
+  }, 30_000);
+  auditRetryInterval.unref?.();
+
+  // Step 9: signal handlers → phased shutdown.
+  let shutdownStarted = false;
+  const shutdownRuntime = async (signal: NodeJS.Signals): Promise<void> => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    shuttingDown = true;
+    console.log(`[worker][shutdown] Received ${signal}, shutting down gracefully...`);
+
+    if (auditRetryInterval) {
+      clearInterval(auditRetryInterval);
+      auditRetryInterval = null;
+    }
+
+    // Close the health server in the preamble — readiness already flipped
+    // not-ready above (`shuttingDown = true`) before we stop accepting probes.
+    if (healthServer) {
+      const server = healthServer;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+
+    const boundedAuditDrainTask = async () => {
+      await Promise.race([
+        drainAuditRetryQueue().then(() => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+      ]);
+    };
+
+    // Sourced from the registry — same losslessness contract as index.ts's
+    // shutdown path (services/workerRegistry.ts's `runEntries` registers a
+    // shutdown as soon as a module LOADS, before init() runs).
+    const workerShutdownTasks = await buildWorkerShutdownTasks('worker');
+
+    const dbCloseTask = async () => {
+      const closeDb = dbModule.closeDb;
+      if (typeof closeDb === 'function') {
+        await closeDb();
+      }
+    };
+
+    const report = await runShutdownPhases([
+      // 1. Final local drains that need DB/Redis still up.
+      { name: 'drain', tasks: [boundedAuditDrainTask] },
+      // 2. Every worker/consumer close — concurrent, guaranteed to fully
+      //    settle before shared infrastructure goes away.
+      { name: 'workers', tasks: workerShutdownTasks },
+      // 3. Producer queues + dispatchers. No relay shutdown — never started here.
+      {
+        name: 'queues',
+        tasks: [shutdownEventDispatcher, shutdownEventDispatchWorker, shutdownEventDispatchQueue],
+      },
+      // 4. Event bus releases its borrowed connection reference.
+      { name: 'eventbus', tasks: [async () => getEventBus().close()] },
+      // 5. The ONLY owner of the Redis quits.
+      { name: 'redis', tasks: [closeRedis] },
+      // 6. DB pool.
+      { name: 'db', tasks: [dbCloseTask] },
+      // 7. Sentry flush (bounded internally at 2s).
+      { name: 'sentry', tasks: [() => flushSentry()], timeoutMs: 5_000 },
+    ]);
+
+    const timedOutSuffix = report.timedOutPhases.length > 0
+      ? ` (timed-out phase(s): ${report.timedOutPhases.join(', ')})`
+      : '';
+    const failedShutdown = report.failures.length > 0;
+    if (failedShutdown) {
+      console.error(`[worker][shutdown] Completed with ${report.failures.length} failure(s)${timedOutSuffix}`);
+    } else {
+      console.log(`[worker][shutdown] Complete${timedOutSuffix}`);
+    }
+    process.exit(failedShutdown ? 1 : 0);
+  };
+
+  const onSignal = (signal: NodeJS.Signals) => {
+    // Second signal while a graceful shutdown is running: force-exit now,
+    // identical to index.ts's semantics.
+    process.once(signal, () => {
+      console.error(`[worker][shutdown] Second ${signal} — forcing exit`);
+      process.exit(130);
+    });
+    void shutdownRuntime(signal);
+  };
+  process.once('SIGINT', () => onSignal('SIGINT'));
+  process.once('SIGTERM', () => onSignal('SIGTERM'));
+
+  process.on('unhandledRejection', (reason) => {
+    console.error('[worker][FATAL] Unhandled rejection:', reason);
+    captureException(reason instanceof Error ? reason : new Error(String(reason)));
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[worker][FATAL] Uncaught exception:', err);
+    captureException(err);
+    void flushSentry().finally(() => process.exit(1));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Test seams (worker.boot.test.ts). Not for production use.
+// ---------------------------------------------------------------------------
+
+/** @internal test seam — the health server's live handle, once started. */
+export function _getHealthServerForTest(): Server | null {
+  return healthServer;
+}
+
+/** @internal test seam — current boot-phase state, without an HTTP round-trip. */
+export function _getWorkerInitPhaseForTest(): WorkerInitPhase {
+  return workerInitPhase;
+}
+
+/** @internal test seam — the live readiness evaluator, for direct `.get()` calls. */
+export function _getReadinessForTest(): ReturnType<typeof createReadinessEvaluator> {
+  return readiness;
+}
+
+/** @internal test seam — resets module-level boot state between tests. */
+export function _resetBootStateForTest(): void {
+  workerInitPhase = 'pending';
+  shuttingDown = false;
+  migrationParityAchieved = false;
+  healthServer = null;
+  auditRetryInterval = null;
+  probeDb = async () => false;
+  probeRedis = async () => false;
+  for (const key of Object.keys(workerStatus)) delete workerStatus[key];
+  readiness.invalidate();
+}
+
+// The guard at the top of this file already exits (or, in a test with
+// `process.exit` mocked as a no-op, would fall through) when the role is
+// wrong — re-checking here means a mocked-exit test environment never
+// actually starts the boot pipeline against the wrong role, instead of
+// relying on the mock's behavior to stop it.
+if (breezeRole() === 'worker') {
+  void bootWorker().catch((error) => {
+    console.error('[worker][CRITICAL] Worker startup failed:', error);
+    process.exit(1);
+  });
+}
