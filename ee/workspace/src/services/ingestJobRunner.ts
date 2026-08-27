@@ -33,6 +33,13 @@ export interface EnrichRunResult {
   processed: number;
   remaining: number;
   errors: Array<{ fileIndexId: string; relPath: string; error: string }>;
+  /**
+   * Set when the run stopped because the deployment has no AI provider at all.
+   * `remaining` is reported as 0 so this phase drains and the job advances; the
+   * flag exists so a caller that asked for enrichment EXPLICITLY (the admin
+   * enrich-run route) can still answer honestly instead of "0 files, all done".
+   */
+  aiUnavailable?: true;
 }
 
 export interface AdvanceResult {

@@ -167,6 +167,35 @@ describe('run', () => {
     expect(invoke).toHaveBeenCalledTimes(1);
   });
 
+  it('degrades to a drained phase when the deployment has no AI provider at all', async () => {
+    const pending = [
+      { id: 'f1', rel_path: 'a.md', extracted_text: 'text a' },
+      { id: 'f2', rel_path: 'b.md', extracted_text: 'text b' },
+    ];
+    // count(*) answers non-zero so `remaining: 0` can only come from the
+    // short-circuit, never from the fake happening to report a drained queue.
+    const execute = vi.fn(async (query: unknown) => {
+      const text = sqlText(query);
+      if (text.includes('workspace_projects')) return [];
+      if (text.includes('SELECT fi.id, fi.rel_path')) return pending;
+      if (text.includes('count(*)')) return [{ n: 5 }];
+      return [];
+    });
+    const db = { execute } as unknown as WorkspaceDatabase;
+    const invoke: EnrichmentInvoke = vi.fn(async () => {
+      throw new ExtensionAiError('not_configured', 'AI is not configured on this deployment.');
+    });
+    const svc = createEnrichmentService(db, { invoke });
+
+    const result = await svc.run(ORG, 8);
+
+    // No AI configured is the default self-hosted shape, not a failure: report
+    // the phase drained so the ingest job advances to crosswalk instead of
+    // backing off to max_attempts and killing indexing/crosswalk with it.
+    expect(result).toMatchObject({ processed: 0, remaining: 0, errors: [], aiUnavailable: true });
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
   it('still fail-softs a plain Error from invoke into a per-file error, not an abort', async () => {
     const pending = [{ id: 'f1', rel_path: 'a.md', extracted_text: 'text a' }];
     const db = fakeDb(pending);

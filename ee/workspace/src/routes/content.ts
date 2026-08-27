@@ -161,6 +161,13 @@ export function createContentRoutes(deps: ContentRouteDeps): Hono<WorkspaceRoute
       }
       throw e;
     }
+    if (result.aiUnavailable) {
+      // The run degraded because this deployment has no AI provider (no
+      // platform key, no partner BYOK key). The ingest pipeline treats that as
+      // a drained phase, but a caller who explicitly asked to enrich gets the
+      // same 503 the pre-BYOK missing-credentials guard returned above.
+      return c.json({ error: 'enrichment unavailable (no model credentials configured)' }, 503);
+    }
     await deps.audit({
       actorType: 'user',
       actorId: auth.user.id,

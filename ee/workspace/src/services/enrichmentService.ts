@@ -14,7 +14,9 @@
 // file (an LLM hiccup marks the file unenriched, never throws out of the
 // batch) — EXCEPT for provider/billing problems (ExtensionAiError), which
 // must abort the whole run instead of burning every pending file into a
-// silent null-model row. See the `run()` invoke-loop below.
+// silent null-model row. The one ExtensionAiError that does NOT abort is
+// `not_configured` (no provider on this deployment at all): that degrades to a
+// drained phase, since retrying cannot help. See the `run()` invoke-loop below.
 //
 // DLP invariant (W2): this pass never re-runs DLP. It reads
 // workspace_file_content.extracted_text for status='extracted' rows only, and
@@ -165,6 +167,7 @@ export function createEnrichmentService(db: WorkspaceDatabase, deps: EnrichmentD
       processed: number;
       remaining: number;
       errors: Array<{ fileIndexId: string; relPath: string; error: string }>;
+      aiUnavailable?: true;
     }> {
       const projects = (await d.execute(sql`
         SELECT project_key, label FROM workspace_projects
@@ -209,6 +212,16 @@ export function createEnrichmentService(db: WorkspaceDatabase, deps: EnrichmentD
           // with a visible transient_error release; the admin enrich-run route
           // maps the same shape to a 503.
           if (err instanceof ExtensionAiError) {
+            if (err.code === 'not_configured') {
+              // The deployment has no AI provider at all (no platform key, no
+              // partner BYOK key) — the default self-hosted shape, and exactly
+              // what the pre-BYOK missing-ANTHROPIC_API_KEY guard covered by
+              // handing the runner a no-op enrichment service. Report the phase
+              // DRAINED so the ingest job advances to crosswalk. Retrying would
+              // burn all max_attempts and fail the job, taking indexing and
+              // crosswalk down with a feature that was merely absent.
+              return { processed, remaining: 0, errors, aiUnavailable: true };
+            }
             throw new TransientIngestError(
               `AI provider unavailable for this organization: ${err.code}`,
               { cause: err },

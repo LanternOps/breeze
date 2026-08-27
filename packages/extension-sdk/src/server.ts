@@ -19,8 +19,21 @@ export interface ExtensionRegistrar {
   registerAiTool(name: string, tool: ExtensionAiTool): void;
 }
 
-/** Outcome codes an extension can branch on. Anything else is an unexpected error. */
-export type ExtensionAiErrorCode = 'ai_unavailable' | 'budget_exceeded' | 'rate_limited';
+/**
+ * Outcome codes an extension can branch on. Anything else is an unexpected error.
+ *
+ * `not_configured` is deliberately distinct from `ai_unavailable`: it means the
+ * deployment has no AI provider at all (no platform key, no partner BYOK key) —
+ * the normal self-hosted shape — so a feature should DEGRADE (skip the AI step)
+ * rather than fail and retry. `ai_unavailable` means a provider was configured
+ * but is not usable right now (broken/rejected BYOK key, provider outage), which
+ * must stay visible instead of silently falling back to another billing source.
+ */
+export type ExtensionAiErrorCode =
+  | 'ai_unavailable'
+  | 'not_configured'
+  | 'budget_exceeded'
+  | 'rate_limited';
 
 export class ExtensionAiError extends Error {
   constructor(

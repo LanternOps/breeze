@@ -232,14 +232,23 @@ export async function getAnthropicClientForPartner(partnerId: string | null): Pr
     });
     throw error;
   }
-  return {
-    client: resolved.source === 'partner'
-      ? new Anthropic({
-          apiKey: resolved.apiKey,
-          authToken: null,
-          baseURL: 'https://api.anthropic.com',
-        })
-      : new Anthropic({ apiKey: resolved.apiKey }),
-    resolved,
-  };
+  return { client: buildAnthropicClient(resolved), resolved };
+}
+
+/**
+ * Construct the Anthropic client for an already-resolved config. The partner
+ * branch pins `baseURL` and clears `authToken` so a partner key can never be
+ * sent through a proxy base URL or alongside an ambient bearer token — that
+ * pinning is a security control, so callers that resolve for themselves
+ * (`resolveLlmConfigForOrg`) MUST come back through here rather than
+ * constructing their own client.
+ */
+export function buildAnthropicClient(resolved: UsableLlmConfig): Anthropic {
+  return resolved.source === 'partner'
+    ? new Anthropic({
+        apiKey: resolved.apiKey,
+        authToken: null,
+        baseURL: 'https://api.anthropic.com',
+      })
+    : new Anthropic({ apiKey: resolved.apiKey });
 }

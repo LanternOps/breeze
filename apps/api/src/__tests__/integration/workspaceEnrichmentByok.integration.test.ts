@@ -19,9 +19,10 @@
  *  - the FULL chain (resolver -> rate limit -> budget -> Anthropic call ->
  *    recordUsage) actually lands a real `ai_cost_usage` row tagged
  *    billing_source='partner_key' for a real BYOK partner, with zero calls to
- *    the billing-credit deduction path (recordUsage() never calls it, but the
- *    unit suites mock recordUsage itself, which would hide a regression that
- *    wired deduction into it);
+ *    the billing-credit deduction path — the host DOES draw prepaid credits
+ *    down for platform-funded extension spend, so this proves the partner-key
+ *    branch is excluded from it end to end (the unit suites mock both
+ *    recordUsage and the deduction, so only this one exercises the real wiring);
  *  - flipping the partner's config to status='error' makes the run fail LOUD
  *    (a visible TransientIngestError, mapped by the ingest runner to a
  *    transient release / by the admin route to a 503) instead of quietly
@@ -227,7 +228,12 @@ describe('workspace enrichment honors partner BYOK', () => {
         });
 
         const ai = buildExtensionAiContext();
-        const enrichment = createEnrichmentService(db, { invoke: ai.invoke });
+        // Same narrowing the host applies at registration (`asWorkspaceDatabase`):
+        // ee/workspace types its handle as a schema-less PostgresJsDatabase.
+        const enrichment = createEnrichmentService(
+          db as unknown as Parameters<typeof createEnrichmentService>[0],
+          { invoke: ai.invoke },
+        );
 
         // --- Success: BYOK partner key resolves and bills partner_key ---
         const firstRun = await withDbAccessContext(orgContext(org.id), () =>
