@@ -178,7 +178,7 @@ function preserveIpAllowlistOnOmit(
   return { ...incomingSettings, security: { ...security, ipAllowlist: currentList } };
 }
 
-const createOrganizationSchema = z.object({
+export const createOrganizationSchema = z.object({
   partnerId: z.string().guid().optional(),
   name: z.string().min(1),
   slug: z.string().min(1).max(100),
@@ -194,7 +194,7 @@ const createOrganizationSchema = z.object({
 // Update (not create) additionally accepts `offboarding` (#2774) — the
 // terminal-intent drain state. Creating an org directly in `offboarding`
 // makes no sense, so the create schema keeps the original set.
-const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partnerId: true }).extend({
+export const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partnerId: true }).extend({
   status: z.enum(['active', 'suspended', 'trial', 'churned', 'offboarding']).optional(),
 });
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { orgRoutes } from './orgs';
+import { orgRoutes, createOrganizationSchema, updateOrganizationSchema } from './orgs';
 
 vi.mock('../services', () => ({}));
 
@@ -5381,4 +5381,19 @@ describe('org routes', () => {
       expect(res.status).toBe(400);
     });
   });
+});
+
+describe('org status is not manually settable to lifecycle states', () => {
+  for (const status of ['merging', 'archived', 'purging']) {
+    it(`create rejects status='${status}'`, () => {
+      const r = createOrganizationSchema.safeParse({ name: 'X', slug: 'x', status });
+      expect(r.success).toBe(false);
+      expect(r.error!.issues.some(i => i.path[0] === 'status')).toBe(true);
+    });
+    it(`update rejects status='${status}'`, () => {
+      const r = updateOrganizationSchema.safeParse({ status });
+      expect(r.success).toBe(false);
+      expect(r.error!.issues.some(i => i.path[0] === 'status')).toBe(true);
+    });
+  }
 });
