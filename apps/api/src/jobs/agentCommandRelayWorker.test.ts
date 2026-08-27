@@ -108,6 +108,8 @@ describe('processAgentCommandRelayJob', () => {
   });
 
   it('acks owner_mismatch when the job target is not THIS instance', async () => {
+    vi.mocked(readAgentPresence).mockResolvedValue({ ...LEASE, instanceId: 'inst-2' });
+
     await processAgentCommandRelayJob(fakeJob({ targetInstanceId: 'inst-2' }));
 
     expect(writeRelayAck).toHaveBeenCalledWith('relay-1', { status: 'owner_mismatch' });
