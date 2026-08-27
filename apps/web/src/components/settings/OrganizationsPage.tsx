@@ -99,6 +99,17 @@ export function purgeCountdownDays(purgeAt: string | null | undefined, now: Date
  */
 export const RESTORE_PURGING_ERROR_TEXT = 'Organization is already purging and can no longer be restored';
 
+/**
+ * Debounce for the Archived section's search-driven refetch. Mirrors
+ * `DistributorLookup.tsx`'s `NIGHTLY_DEBOUNCE_MS` — a per-keystroke full page
+ * walk (`fetchAllOrganizations`) is expensive enough, and slow enough to
+ * overlap the NEXT keystroke's own fetch, that firing on every change is both
+ * wasteful and (without the request-token guard below) a genuine race: an
+ * older, broader request resolving after a newer, narrower one would clobber
+ * results the user already found. Exported for the test.
+ */
+export const ARCHIVED_SEARCH_DEBOUNCE_MS = 300;
+
 // Walking every page of GET /orgs/organizations moved to lib/ (#3446 follow-up)
 // so the org-switcher store — a second reader with the same first-50 truncation
 // — can share it without importing this page component. Re-exported here to
@@ -165,6 +176,16 @@ export default function OrganizationsPage() {
   // busy state — `submitting`/`siteSubmitting` are page/site-modal-scoped and
   // would incorrectly disable every other control if reused here.
   const [restoringOrgId, setRestoringOrgId] = useState<string | null>(null);
+  // Monotonic request id for the archived fetch. The search-driven refetch
+  // (see the debounced effect below) can overlap: a full page walk is slow
+  // enough that an OLDER (e.g. broader, pre-search) request can still be
+  // in flight when a NEWER (narrower) one is fired, and nothing guarantees
+  // they resolve in request order. Every call captures the id current at its
+  // own start and re-checks it before touching state, so a stale response
+  // — even one that resolves last — can never clobber a newer one's results
+  // (or its loading flag). A `ref`, not state: it's pure bookkeeping and must
+  // never itself trigger a re-render.
+  const archivedRequestIdRef = useRef(0);
 
   // Sites state
   const [sites, setSites] = useState<Site[]>([]);
@@ -285,6 +306,11 @@ export default function OrganizationsPage() {
    * page limit.
    */
   const fetchArchivedOrganizations = useCallback(async (search: string) => {
+    // Claim this call as "current" BEFORE the first await — a later call
+    // (another keystroke) bumps this again and thereby supersedes it. Every
+    // state-touching point below re-checks `requestId === archivedRequestIdRef.current`
+    // so a stale response is inert even if it resolves after the current one.
+    const requestId = ++archivedRequestIdRef.current;
     setArchivedLoading(true);
     setArchivedError(undefined);
     let truncated = false;
@@ -306,13 +332,22 @@ export default function OrganizationsPage() {
         if (typeof body?.archivedTruncated === 'boolean') truncated = body.archivedTruncated;
         return body;
       });
+      // A newer search/expand superseded this request while its page walk was
+      // still in flight. Applying these results now — even though they just
+      // arrived — would clobber whatever the newer request already rendered
+      // (or is about to): the exact race this guard exists to close.
+      if (requestId !== archivedRequestIdRef.current) return;
       if (all === null) return;
       setArchivedOrgs(all.filter((org) => org.archived === true));
       setArchivedTruncated(truncated);
     } catch (err) {
+      if (requestId !== archivedRequestIdRef.current) return;
       setArchivedError(err instanceof Error ? err.message : t('organizationsPage.errors.generic'));
     } finally {
-      setArchivedLoading(false);
+      // Only the current request may clear the busy flag — an old request's
+      // finally firing after a newer one started must not flip the spinner
+      // off out from under the request that's still actually in flight.
+      if (requestId === archivedRequestIdRef.current) setArchivedLoading(false);
     }
   }, [t]);
 
@@ -377,8 +412,20 @@ export default function OrganizationsPage() {
   // past the truncation cap. No "already fetched" cache: every expand/search
   // change re-issues the request, which is cheap next to a stale purge
   // countdown or an unreachable archived tenant.
+  //
+  // Debounced (mirrors `DistributorLookup.tsx`'s nightly search): a full page
+  // walk is real network work, expensive enough to still be in flight when
+  // the next keystroke fires another one. The debounce cuts the number of
+  // overlapping requests way down; the request-token guard inside
+  // `fetchArchivedOrganizations` is what makes an overlap that DOES still
+  // happen (e.g. a slow response outliving the 300ms window) harmless rather
+  // than a race where a stale reply can clobber a fresher one.
   useEffect(() => {
-    if (archivedExpanded) fetchArchivedOrganizations(searchQuery.trim());
+    if (!archivedExpanded) return;
+    const timer = setTimeout(() => {
+      void fetchArchivedOrganizations(searchQuery.trim());
+    }, ARCHIVED_SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
   }, [archivedExpanded, searchQuery, fetchArchivedOrganizations]);
 
   // Load the partner's default timezone once so new sites pre-select it.

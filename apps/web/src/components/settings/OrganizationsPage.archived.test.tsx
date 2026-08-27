@@ -115,9 +115,14 @@ function mockApi(opts: MockApiOptions = {}) {
   });
 }
 
-async function flush() {
+// Default advance covers the archived section's search debounce
+// (ARCHIVED_SEARCH_DEBOUNCE_MS = 300ms) plus whatever microtask chain a
+// resolved (non-held) mock fetch needs to settle. Tests that manually hold a
+// fetch open (the race test below) advance by smaller, explicit amounts of
+// their own instead of relying on this default.
+async function flush(ms = 350) {
   await act(async () => {
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(ms);
   });
 }
 
@@ -293,6 +298,94 @@ describe('OrganizationsPage — Archived section search reachability', () => {
     await flush();
 
     expect(archivedFetchWasIssued()).toBe(false);
+  });
+
+  it('does not issue a search fetch before the debounce window elapses', async () => {
+    mockApi({ archivedOrgs: [ARCHIVED_ORG] });
+    render(<OrganizationsPage />);
+    await flush();
+    await expandArchivedSection();
+    fetchMock.mockClear();
+
+    fireEvent.change(screen.getByPlaceholderText('Search...'), { target: { value: 'Gamma' } });
+    // Well under the 300ms debounce — nothing should have gone out yet.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(archivedFetchWasIssued()).toBe(false);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    expect(archivedFetchWasIssued()).toBe(true);
+  });
+});
+
+describe('OrganizationsPage — Archived section search race safety', () => {
+  it('drops a stale search response that resolves after a newer one, even though it started first (older-resolves-last)', async () => {
+    // Each distinct `search` value gets its own held-open promise, released
+    // explicitly by the test — same technique as
+    // MergeOrgModal.test.tsx's "stale preview race" suite.
+    const held: Record<string, (body: unknown) => void> = {};
+    fetchMock.mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method;
+
+      if (url.includes('includeArchived=true')) {
+        const search = new URL(url, 'http://localhost').searchParams.get('search') ?? '';
+        if (!search) {
+          // The initial (no-search) expand load resolves immediately.
+          return jsonResponse({ data: [...orgsState, ARCHIVED_ORG, DELTA_ARCHIVED_ORG], archivedTruncated: false });
+        }
+        return new Promise<Response>((resolve) => {
+          held[search] = (body: unknown) => resolve(jsonResponse(body));
+        });
+      }
+      if (url.startsWith('/orgs/organizations?') && !method) return jsonResponse({ data: orgsState });
+      if (url === '/orgs/partners/me') return jsonResponse({ settings: {} });
+      if (url.startsWith('/orgs/sites?organizationId=')) return jsonResponse({ data: [] });
+      return jsonResponse({ data: [] });
+    });
+
+    render(<OrganizationsPage />);
+    await flush();
+    await expandArchivedSection();
+    expect(screen.getAllByTestId('org-archived-row')).toHaveLength(2);
+
+    // Type "Gamma" — the OLDER request. Advance past the debounce so its
+    // fetch actually fires and hangs open (held, not yet resolved).
+    fireEvent.change(screen.getByPlaceholderText('Search...'), { target: { value: 'Gamma' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(320);
+    });
+    expect(held.Gamma).toBeDefined();
+
+    // Before it resolves, change the search again — the NEWER request. Its
+    // own debounced fetch fires and is ALSO held open.
+    fireEvent.change(screen.getByPlaceholderText('Search...'), { target: { value: 'Delta' } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(320);
+    });
+    expect(held.Delta).toBeDefined();
+
+    // Release the NEWER request first.
+    await act(async () => {
+      held.Delta({ data: [...orgsState, DELTA_ARCHIVED_ORG], archivedTruncated: false });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getAllByTestId('org-archived-row')).toHaveLength(1);
+    expect(screen.getByText('Delta Inc')).toBeInTheDocument();
+
+    // Now release the OLDER ("Gamma") request — it resolves LAST. It must be
+    // dropped by the request-token guard rather than clobbering the newer
+    // (Delta) results already on screen.
+    await act(async () => {
+      held.Gamma({ data: [...orgsState, ARCHIVED_ORG], archivedTruncated: false });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getAllByTestId('org-archived-row')).toHaveLength(1);
+    expect(screen.getByText('Delta Inc')).toBeInTheDocument();
+    expect(screen.queryByText('Gamma LLC')).not.toBeInTheDocument();
   });
 });
 
