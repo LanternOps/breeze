@@ -54,8 +54,8 @@ wave: W05 (#3826) — Part A (inert foundations)
 - `reconcileHungExecutions(sessionId: string): Promise<number>` — terminal-marks (status failed, errorMessage `'run finished with execution unresolved'`) every row still in-flight for the session; returns count.
 - `closeAgentRunSession(sessionId: string, status: 'completed' | 'failed'): Promise<void>`.
 
-- [ ] **Step 1: failing unit tests** (Drizzle mock pattern per `breeze-testing`): session insert carries `type:'agent'` + agentId + no userId; CAS second-session behavior; start/complete round-trip; reconcile only touches in-flight rows of THAT session; all writes run under the provided db handle (no ambient pool).
-- [ ] **Step 2: verify fail → Step 3: implement → Step 4: green + typecheck. Commit:** `feat(api): agent run execution ledger — session per run + real tool-execution rows (#3826)`
+- [x] **Step 1: failing unit tests** (Drizzle mock pattern per `breeze-testing`): session insert carries `type:'agent'` + agentId + no userId; CAS second-session behavior; start/complete round-trip; reconcile only touches in-flight rows of THAT session; all writes run under the provided db handle (no ambient pool).
+- [x] **Step 2: verify fail → Step 3: implement → Step 4: green + typecheck. Commit:** `feat(api): agent run execution ledger — session per run + real tool-execution rows (#3826)`
 
 ---
 
@@ -72,8 +72,8 @@ wave: W05 (#3826) — Part A (inert foundations)
 - `finishRun`: after the status CAS succeeds, `reconcileHungExecutions` + `closeAgentRunSession` (completed for `completed|awaiting_approval`, failed otherwise) — both best-effort (log, never change the run's terminal status).
 - Denied/proposed calls create NO ledger rows (they never execute).
 
-- [ ] **Step 1: failing tests** — session created once per run with the snapshot's model; executedActions carry real UUIDs; ledger failure doesn't block the call (tool still executes, executionId `'(inline)'`); reconcile invoked on finish; proposals produce no rows.
-- [ ] **Step 2-4: red → implement → green + typecheck. Commit:** `feat(api): run loop writes the execution ledger (#3826)`
+- [x] **Step 1: failing tests** — session created once per run with the snapshot's model; executedActions carry real UUIDs; ledger failure doesn't block the call (tool still executes, executionId `'(inline)'`); reconcile invoked on finish; proposals produce no rows.
+- [x] **Step 2-4: red → implement → green + typecheck. Commit:** `feat(api): run loop writes the execution ledger (#3826)`
 
 ---
 
@@ -89,8 +89,8 @@ wave: W05 (#3826) — Part A (inert foundations)
 - Audit: where these paths call `createAuditLog`, pass `actorType: 'ai_agent'` when the auth principal kind is `ai_agent` (`auth.principal.kind` — verify the field shape in `agentAuthContext.ts:71-105`), instead of the default `'user'` derivation.
 - Do NOT touch `routes/remediationSuggestions.ts` (human-only route; agents can't reach it — Part B builds the agent-safe service).
 
-- [ ] **Step 1: failing tests** — agent-shaped id (not a users row) → columns written null + metadata carries actorType/actorId; real user id → unchanged behavior byte-for-byte; audit actorType asserted via mock.
-- [ ] **Step 2-4: red → implement → green + typecheck. Commit:** `fix(api): agent principals no longer write synthetic ids into users-FK attribution columns (#3826)`
+- [x] **Step 1: failing tests** — agent-shaped id (not a users row) → columns written null + metadata carries actorType/actorId; real user id → unchanged behavior byte-for-byte; audit actorType asserted via mock.
+- [x] **Step 2-4: red → implement → green + typecheck. Commit:** `fix(api): agent principals no longer write synthetic ids into users-FK attribution columns (#3826)`
 
 ---
 
@@ -103,7 +103,7 @@ wave: W05 (#3826) — Part A (inert foundations)
 
 **Contract:** `maxActionsPerRun: number` — default **3**, validator `int().min(1).max(10)`. The `mergeLimits` loop (`effectivePolicy.ts:67-97`) handles new numeric fields generically (min-wins) — add a merge test proving partner 5 + org 2 → 2. NOTHING enforces the cap in this PR (Part B's loop does); the field exists so partners can pre-configure and snapshots carry it.
 
-- [ ] **Steps: red → implement → `pnpm --filter @breeze/shared test` + api effectivePolicy/runService tests + typecheck → green. Commit:** `feat(shared,api): maxActionsPerRun limit + agent policy snapshot v2 (#3826)`
+- [x] **Steps: red → implement → `pnpm --filter @breeze/shared test` + api effectivePolicy/runService tests + typecheck → green. Commit:** `feat(shared,api): maxActionsPerRun limit + agent policy snapshot v2 (#3826)`
 
 ---
 
@@ -116,7 +116,7 @@ wave: W05 (#3826) — Part A (inert foundations)
 
 **Contract:** device-bound agent run + sibling device in the SAME site → denied (today it passes — the site-level pin is the verified gap, `agentAuthContext.ts:71`). Interactive/user AuthContexts never set the field → zero behavior change. Non-device-bound agent runs (org-wide triage) don't set it either — their scoping stays org+site rules.
 
-- [ ] **Steps: red (the sibling-device test MUST fail against current code — that's the proof the gap is real) → implement → green + typecheck. Commit:** `fix(api): device-bound agent runs are pinned to the exact device, not the site (#3826)`
+- [x] **Steps: red (the sibling-device test MUST fail against current code — that's the proof the gap is real) → implement → green + typecheck. Commit:** `fix(api): device-bound agent runs are pinned to the exact device, not the site (#3826)`
 
 ---
 
@@ -132,15 +132,15 @@ wave: W05 (#3826) — Part A (inert foundations)
 - The worker re-loads the run + agent + snapshot from the DB and re-runs the same notify logic (extract the body into an exported `deliverRunFinishedNotifications(runId)` both paths call). Idempotent by construction: `createNotification`'s `(userId, dedupeKey)` conflict-ignore (`userNotifications.ts:78-94`) makes duplicate delivery a no-op.
 - Zero-recipients stays a silent return here (act-activation prerequisites are Part B) — but now logged at warn with the runId.
 
-- [ ] **Steps: red → implement → green (incl. registry snapshot updates: 105 → 106 names — update BOTH literals + counts, run the closure contract test for the placement verdict) + typecheck. Commit:** `feat(api): durable agent run-finished notifications via retry lane (#3826)`
+- [x] **Steps: red → implement → green (incl. registry snapshot updates: 105 → 106 names — update BOTH literals + counts, run the closure contract test for the placement verdict) + typecheck. Commit:** `feat(api): durable agent run-finished notifications via retry lane (#3826)`
 
 ---
 
 ### Task 7: Verification + PR
 
-- [ ] Full api unit suite (exact totals) + `pnpm --filter @breeze/shared test` + typecheck (heap bump).
-- [ ] Contract tests explicitly: workerEntrypointClosure + workerRegistry + agentDispatchBoundary + envComposeParity — green.
-- [ ] Repo-wide grep: no remaining `'(inline)'` writes outside the documented ledger-failure fallback; no new `auth.user.id` writes into users-FK columns in the three touched services.
+- [x] Full api unit suite (exact totals) + `pnpm --filter @breeze/shared test` + typecheck (heap bump).
+- [x] Contract tests explicitly: workerEntrypointClosure + workerRegistry + agentDispatchBoundary + envComposeParity — green.
+- [x] Repo-wide grep: no remaining `'(inline)'` writes outside the documented ledger-failure fallback; no new `auth.user.id` writes into users-FK columns in the three touched services.
 - [ ] Tick plan checkboxes. **Open the PR**: branch `feature/3821-ai-agents/wave-3826` → main, title `feat(api): wave 4 part A — act-mode foundations (execution ledger, attribution, durable notify, caps v2, device pinning)`, body: inertness statement (modes still off|shadow), the quorum pointer, per-task summary, and "Part A of #3826 — do NOT close the issue". **Stop after opening the PR.**
 
 ## Self-Review Notes
