@@ -819,6 +819,27 @@ describe('POST /tickets/draft', () => {
     );
   });
 
+  /**
+   * The SECOND fail-closed gate on this route (#3922 W3 review round 2). The
+   * client resolving fine says nothing about the MODEL: a pinned revision that
+   * dropped (or never verified) the partner's default model makes
+   * `resolveWireModel` throw, and without this branch the request would 500 —
+   * or, worse in an earlier shape, reach the provider with an untranslated id.
+   */
+  it('503s when the pinned revision has no verified mapping for the model', async () => {
+    hoisted.resolveWireModel.mockImplementationOnce(() => {
+      throw new LlmUnavailableError();
+    });
+
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    // Fail CLOSED: nothing is sent to the provider and nothing is metered.
+    expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
+    expect(hoisted.recordUsage).not.toHaveBeenCalled();
+  });
+
   it('403s when the partner has no AI-for-Office entitlement, before the key/DLP/model', async () => {
     partnerAiEnabled = false;
     const res = await postDraft(draftBody);

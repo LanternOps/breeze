@@ -52,8 +52,11 @@ async function buildCatalogSummary(): Promise<Array<{
     name: provider.name,
     dataNote: provider.dataNote,
     // Verified ∩ mapped: a verification recorded against a model no longer in
-    // this revision's modelMap must never appear selectable.
-    models: provider.verifiedModels.filter((modelId) => modelId in provider.modelMap),
+    // this revision's modelMap must never appear selectable. `Object.hasOwn`,
+    // not `in` — `modelMap` is a jsonb round-trip, so `'constructor' in
+    // modelMap` is true by inheritance and would offer the UI a model the
+    // revision has no wire id or pricing for (#3922 W3 review round 2).
+    models: provider.verifiedModels.filter((modelId) => Object.hasOwn(provider.modelMap, modelId)),
   }));
 }
 

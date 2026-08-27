@@ -14,7 +14,8 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
-import { db, withDbAccessContext, runOutsideDbContext } from '../db';
+import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
+import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
 import { aiSessions, aiMessages, aiBudgets } from '../db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -887,16 +888,39 @@ export class StreamingSessionManager {
     // the session is no longer using. Best-effort: provenance bookkeeping must
     // not take AI away from a partner whose traffic is already correctly pinned
     // and already audited in `llm_egress_events`.
+    //
+    // Self-contexted (#2190/#1375, mirroring `recordUsage`): the ambient
+    // request context can be closed or org-scoped by the time this runs, and a
+    // contextless write under forced RLS matches 0 rows SILENTLY. Wrapped in
+    // `dbWriteExpectingRows` so that 0-row case is loud, because the two
+    // directions of this write fail asymmetrically: a lost STAMP leaves a row
+    // with no claim (under-reported), while a lost CLEAR leaves a row still
+    // claiming a catalog the session no longer uses — a FALSE provenance
+    // claim, and the worse of the two. The row count is the only thing that
+    // makes either detectable.
     try {
-      await db
-        .update(aiSessions)
-        .set({
-          catalogEntryId: catalogEndpoint?.catalogEntryId ?? null,
-          catalogRevisionId: catalogEndpoint?.revisionId ?? null,
-        })
-        .where(eq(aiSessions.id, breezeSessionId));
+      await withSystemDbAccessContext(() => dbWriteExpectingRows(
+        'streamingSessionManager.stampCatalogProvenance',
+        () => db
+          .update(aiSessions)
+          .set({
+            catalogEntryId: catalogEndpoint?.catalogEntryId ?? null,
+            catalogRevisionId: catalogEndpoint?.revisionId ?? null,
+          })
+          .where(eq(aiSessions.id, breezeSessionId))
+          .returning({ id: aiSessions.id }),
+      ));
     } catch (err) {
-      captureException(err);
+      // `org_id` and `cas_label`, NOT `service`/`orgId`/`sessionId`:
+      // `setCallerTags` drops every key outside ALLOWED_TAG_NAMES, so a
+      // camelCase tag is a silent no-op. `cas_label` is the allowlist's
+      // designated call-site discriminator (hardcoded literal, no identifiers)
+      // and is what keeps this out of the manager's shared bare-capture bucket;
+      // the session id is high-cardinality and stays in the log line only.
+      captureException(err, undefined, {
+        org_id: dbSession.orgId,
+        cas_label: 'streamingSessionManager.stampCatalogProvenance',
+      });
       console.error(
         '[StreamingSessionManager] Failed to stamp catalog provenance on session:',
         breezeSessionId,

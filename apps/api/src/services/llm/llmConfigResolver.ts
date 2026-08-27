@@ -217,8 +217,19 @@ export function buildCatalogEndpointSnapshot(
   provider: ListedProvider,
   model: string,
 ): Extract<ResolvedLlmEndpoint, { kind: 'catalog' }> | null {
-  const models: Record<string, CatalogModelBinding> = {};
+  // Null-prototype, and every lookup into it (and into the jsonb-sourced
+  // `modelMap`) guarded by `Object.hasOwn` (#3922 W3 review round 2). Logical
+  // model ids are free-form client input — `ai_sessions.model` is
+  // `z.string().max(100)` — so `constructor`, `__proto__`, `toString` and the
+  // rest of Object.prototype otherwise resolve TRUTHY by inheritance. On a
+  // plain literal that fails OPEN three ways: `modelMap['constructor']`
+  // registers a binding whose wire id and every price are `undefined`;
+  // `models['__proto__'] = …` silently REPLACES the map's prototype instead of
+  // adding a key; and the `models[logicalModel]` gate below (and in
+  // `resolveWireModel`) skips its fail-closed throw.
+  const models: Record<string, CatalogModelBinding> = Object.create(null);
   for (const modelId of provider.verifiedModels) {
+    if (!Object.hasOwn(provider.modelMap, modelId)) continue;
     const mapped = provider.modelMap[modelId];
     if (!mapped) continue;
     models[modelId] = {
@@ -234,7 +245,7 @@ export function buildCatalogEndpointSnapshot(
     };
   }
 
-  const defaultBinding = models[model];
+  const defaultBinding = Object.hasOwn(models, model) ? models[model] : undefined;
   if (!defaultBinding) return null;
 
   return {
@@ -271,7 +282,12 @@ export function resolveWireModel(
   if (resolved.source !== 'partner' || resolved.endpoint.kind !== 'catalog') {
     return { model: logicalModel };
   }
-  const binding = resolved.endpoint.models[logicalModel];
+  // `Object.hasOwn` first: `logicalModel` is free-form client input, and a
+  // snapshot that crossed a serialization boundary may have regained
+  // Object.prototype even though the builder gives it a null one.
+  const binding = Object.hasOwn(resolved.endpoint.models, logicalModel)
+    ? resolved.endpoint.models[logicalModel]
+    : undefined;
   if (!binding) {
     throw new LlmUnavailableError(
       `The selected AI provider endpoint has no verified mapping for model "${logicalModel}".`,

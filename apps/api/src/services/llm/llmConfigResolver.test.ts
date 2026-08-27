@@ -132,6 +132,7 @@ vi.mock('../../db', () => ({
 }));
 
 import {
+  buildCatalogEndpointSnapshot,
   getAnthropicClientForPartner,
   getLlmBillingSourceForOrg,
   LlmOrgResolutionError,
@@ -999,5 +1000,76 @@ describe('resolveWireModel', () => {
     expect(() => resolveWireModel(resolved, 'claude-opus-4-8')).toThrow(LlmUnavailableError);
     // Never silently substituted with the partner default.
     expect(() => resolveWireModel(resolved, 'claude-opus-4-8')).toThrow(/claude-opus-4-8/);
+  });
+
+  /**
+   * Prototype-named logical models (#3922 W3 review round 2). `ai_sessions.model`
+   * is free-form client input (`createAiSessionSchema`: `z.string().max(100)`),
+   * so `constructor`, `__proto__`, `toString` and friends all reach here. Looked
+   * up on a plain object literal every one of them is TRUTHY by inheritance,
+   * which skipped the fail-closed throw and returned `{ model: undefined }`. On
+   * the SDK path `query({ options: { model: undefined } })` lets the SDK CLI
+   * substitute its OWN default id on the wire to the third-party endpoint, and
+   * the session then meters at Anthropic list rates instead of the revision's —
+   * a fail-OPEN that the pre-map `Array#includes` gate did not have.
+   */
+  it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf'])(
+    'fails closed for the prototype-named model %s instead of returning an inherited binding',
+    async (logicalModel) => {
+      const resolved = await catalogConfig();
+
+      expect(() => resolveWireModel(resolved, logicalModel)).toThrow(LlmUnavailableError);
+    },
+  );
+
+  it('never yields an undefined wire model for any prototype-named model', async () => {
+    const resolved = await catalogConfig();
+
+    for (const logicalModel of ['constructor', '__proto__', 'toString', 'valueOf']) {
+      let wire: { model: string } | undefined;
+      try {
+        wire = resolveWireModel(resolved, logicalModel);
+      } catch {
+        continue;
+      }
+      // Reaching here at all is the bug; assert the shape that made it dangerous.
+      expect(wire?.model).toBeTypeOf('string');
+    }
+  });
+});
+
+/**
+ * The snapshot builder is shared by the resolver, partner-facing endpoint
+ * selection and the rotation probe, so a fail-open here is a fail-open in all
+ * three (#3922 W3 review round 2).
+ */
+describe('buildCatalogEndpointSnapshot', () => {
+  it.each(['constructor', '__proto__', 'toString', 'valueOf'])(
+    'returns null for the prototype-named default model %s',
+    (model) => {
+      expect(buildCatalogEndpointSnapshot(listedProvider() as never, model)).toBeNull();
+    },
+  );
+
+  it('never synthesizes a binding from a prototype-named verified model', () => {
+    const snapshot = buildCatalogEndpointSnapshot(
+      listedProvider({
+        verifiedModels: ['claude-sonnet-4-6', 'constructor', '__proto__', 'toString'],
+      }) as never,
+      'claude-sonnet-4-6',
+    );
+
+    expect(snapshot).not.toBeNull();
+    // `provider.modelMap` is a jsonb round-trip — a plain object literal — so an
+    // unguarded `modelMap[modelId]` returns Object.prototype members and would
+    // register a binding whose providerModel and every price are `undefined`.
+    expect(Object.keys(snapshot!.models)).toEqual(['claude-sonnet-4-6']);
+  });
+
+  it('builds the model map with a null prototype so no logical id can inherit a binding', () => {
+    const snapshot = buildCatalogEndpointSnapshot(listedProvider() as never, 'claude-sonnet-4-6');
+
+    expect(snapshot).not.toBeNull();
+    expect(Object.getPrototypeOf(snapshot!.models)).toBeNull();
   });
 });

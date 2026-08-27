@@ -483,6 +483,34 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     expect(await res.json()).toEqual({ error: 'ai_unavailable' });
     expect(draftTicketFromTranscript).not.toHaveBeenCalled();
   });
+
+  /**
+   * The client resolving fine says nothing about the MODEL (#3922 W3 review
+   * round 2). `ai_sessions.model` is free-form client input, so a session can
+   * name a model the pinned revision never mapped or never verified — that
+   * throws from INSIDE the same try, and must land on the 503 branch rather
+   * than the generic 502 below it.
+   */
+  it('503s with ai_unavailable when the pinned revision has no mapping for the session model', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: 'claude-opus-4-8', createdAt: new Date(), contextSnapshot: null },
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'working' },
+      ],
+    } as any);
+    routeMocks.resolveWireModelMock.mockImplementationOnce(() => {
+      throw new LlmUnavailableError();
+    });
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    // Fail CLOSED: never re-pointed at the partner default, never metered.
+    expect(draftTicketFromTranscript).not.toHaveBeenCalled();
+    expect(recordUsage).not.toHaveBeenCalled();
+  });
 });
 
 describe('isOpenAICompatibleProvider', () => {

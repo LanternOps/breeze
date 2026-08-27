@@ -339,6 +339,41 @@ describe('AI provider routes', () => {
     }]);
   });
 
+  it('GET / never offers a prototype-named verified model that the model map does not own', async () => {
+    vi.mocked(getListedProviders).mockResolvedValue([
+      {
+        entryId: CATALOG_ENTRY_ID,
+        slug: 'openrouter',
+        name: 'OpenRouter',
+        revisionId: '66666666-6666-4666-8666-666666666666',
+        revision: 3,
+        baseUrl: 'https://openrouter.ai/api/v1',
+        authMode: 'x-api-key',
+        modelMap: {
+          'claude-sonnet-4-6': {
+            providerModel: 'anthropic/claude-sonnet-4-6',
+            inputCentsPerM: 300,
+            outputCentsPerM: 1500,
+            cacheReadCentsPerM: 30,
+            cacheWriteCentsPerM: 375,
+          },
+        },
+        dataNote: 'Prompts transit OpenRouter.',
+        // `modelMap` is a jsonb round-trip, so `'constructor' in modelMap` is
+        // TRUE by inheritance: an `in` intersection offers the UI a model the
+        // revision has no wire id or pricing for, and the resolver then fails
+        // closed on every session that selects it (#3922 W3 review round 2).
+        verifiedModels: ['claude-sonnet-4-6', 'constructor', '__proto__', 'toString'],
+      },
+    ] as any);
+
+    const response = await aiProviderRoutes.request('/', { method: 'GET' });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.catalog[0].models).toEqual(['claude-sonnet-4-6']);
+  });
+
   it('GET / returns an empty catalog and never calls getListedProviders when the flag is off', async () => {
     catalogFlagState.enabled = false;
 

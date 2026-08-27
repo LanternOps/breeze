@@ -25,6 +25,8 @@ const {
   getLlmEgressProxyMock,
   recordLlmEgressEventMock,
   sessionUpdates,
+  sessionUpdateContexts,
+  dbState,
 } = vi.hoisted(() => ({
   queryMock: vi.fn(),
   recordUsageMock: vi.fn(() => Promise.resolve()),
@@ -40,6 +42,21 @@ const {
   getLlmEgressProxyMock: vi.fn(),
   recordLlmEgressEventMock: vi.fn(),
   sessionUpdates: [] as Array<Record<string, unknown>>,
+  /**
+   * Same writes as `sessionUpdates`, but each paired with whether it ran inside
+   * a system DB access context. Under forced RLS a contextless write silently
+   * matches 0 rows and trips the #1375 guard, so "which context did this run
+   * in" is a property of the write, not a detail (#2190).
+   */
+  sessionUpdateContexts: [] as Array<{
+    values: Record<string, unknown>;
+    inSystemContext: boolean;
+  }>,
+  dbState: {
+    systemDepth: 0,
+    /** Rows the next `.returning()` yields; empty models the 0-row RLS denial. */
+    nextReturningRows: [] as Array<Array<{ id: string }>>,
+  },
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
@@ -56,12 +73,28 @@ vi.mock('../db', () => ({
     update: vi.fn(() => ({
       set: vi.fn((values: Record<string, unknown>) => {
         sessionUpdates.push(values);
-        return { where: vi.fn(() => Promise.resolve()) };
+        sessionUpdateContexts.push({ values, inSystemContext: dbState.systemDepth > 0 });
+        // Awaitable AND `.returning()`-able: the provenance stamp needs the row
+        // count back, everything else on this path just awaits the update.
+        return {
+          where: vi.fn(() => Object.assign(Promise.resolve(), {
+            returning: vi.fn(() =>
+              Promise.resolve(dbState.nextReturningRows.shift() ?? [{ id: 'row-1' }])),
+          })),
+        };
       }),
     })),
     insert: vi.fn(() => ({ values: vi.fn(() => Promise.resolve()) })),
   },
   withDbAccessContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => {
+    dbState.systemDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      dbState.systemDepth -= 1;
+    }
+  }),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
@@ -83,7 +116,7 @@ vi.mock('./aiCostTracker', () => ({
     ) / 100,
 }));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
-vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('./aiAgentSdkTools', () => ({
   createBreezeMcpServer: vi.fn(() => ({ type: 'sdk' })),
   BREEZE_MCP_TOOL_NAMES: ['mcp__breeze__query_devices'],
@@ -104,6 +137,8 @@ vi.mock('./llm/llmEgressRecorder', () => ({ recordLlmEgressEvent: recordLlmEgres
 import { StreamingSessionManager, buildClaudeSdkChildEnv } from './streamingSessionManager';
 import type { AuthContext } from '../middleware/auth';
 import type { UsableLlmConfig } from './llm/llmConfigResolver';
+import { captureException, captureMessage } from './sentry';
+import * as dbModule from '../db';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
 const PARTNER = '1a1a1a1a-1111-4222-8333-444455556666';
@@ -350,6 +385,9 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     vi.clearAllMocks();
     capturedQueryArgs.length = 0;
     sessionUpdates.length = 0;
+    sessionUpdateContexts.length = 0;
+    dbState.systemDepth = 0;
+    dbState.nextReturningRows.length = 0;
     grantMock.mockReturnValue({ proxyUrl: PROXY_URL });
     getLlmEgressProxyMock.mockResolvedValue({
       grant: grantMock,
@@ -461,6 +499,40 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     await session.processorPromise;
   });
 
+  /**
+   * The regression guard for the wire-model translation itself: on a
+   * direct-Anthropic partner (and the platform) `resolveWireModel` must be a
+   * pass-through. A translation that leaked onto the non-catalog paths would
+   * send an `anthropic/…`-shaped id to api.anthropic.com — a 404 on every turn
+   * for the partners who are NOT using the new feature at all.
+   */
+  it.each([
+    ['a direct-Anthropic partner', () => DIRECT_PARTNER_CONFIG],
+    ['the platform', () => PLATFORM_CONFIG],
+  ])('sends %s session model unchanged and meters it at list rates', async (_label, config) => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+
+    // A model that no catalog revision maps — the point being that nothing on
+    // this path consults a model map at all.
+    const session = await manager.getOrCreate(
+      `sess-passthrough-${_label.replace(/\W+/g, '-')}`,
+      { ...DB_SESSION, model: 'claude-opus-4-8' },
+      AUTH, undefined, 'BASE PROMPT', undefined, config(),
+    );
+
+    expect(capturedQueryArgs[0]!.options.model).toBe('claude-opus-4-8');
+    expect(session.model).toBe('claude-opus-4-8');
+    // No pricing snapshot => `recordUsage` falls back to the Anthropic list
+    // rates, which is exactly right for traffic that went to Anthropic.
+    expect(session.catalogPricing).toBeUndefined();
+    // And no provenance claim on a session that has no third party in it.
+    expect(sessionUpdates).toContainEqual({ catalogEntryId: null, catalogRevisionId: null });
+
+    gate.resolve();
+    await session.processorPromise;
+  });
+
   it('never touches the egress proxy for a platform session', async () => {
     const gate = deferred();
     gate.resolve();
@@ -552,6 +624,89 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     await session.processorPromise;
   });
 
+  /**
+   * The stamp is the ledger's ONLY record of which third party processed a
+   * session's content, so both halves of "best effort" have to hold: it must
+   * run in a context that can actually see the row, and a write that moves 0
+   * rows must be reported rather than swallowed (#3922 W3 review round 2).
+   */
+  it('stamps under a system DB context, never on the ambient request context', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+
+    const session = await manager.getOrCreate(
+      'sess-catalog-provenance-ctx', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+    );
+
+    // #2190/#1375: on the ambient context the write can be denied by forced RLS
+    // and match 0 rows silently — leaving the row claiming a routing it never
+    // had, or (worse, on the clear side) still claiming a catalog it left.
+    expect(sessionUpdateContexts).toContainEqual({
+      values: { catalogEntryId: ENTRY_ID, catalogRevisionId: REVISION_ID },
+      inSystemContext: true,
+    });
+
+    gate.resolve();
+    await session.processorPromise;
+  });
+
+  it('warns and reports to Sentry when the provenance stamp matches no row', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // The stamp is the only `.returning()` write on this path.
+    dbState.nextReturningRows.push([]);
+
+    const session = await manager.getOrCreate(
+      'sess-catalog-provenance-miss', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+    );
+
+    // A silent 0-row stamp is the asymmetric-clear hazard: on the CLEARING side
+    // it leaves a FALSE catalog claim on a session that is no longer routed
+    // there. The row count is what makes that detectable at all.
+    expect(warn).toHaveBeenCalled();
+    expect(captureMessage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'db_write_expecting_rows_zero' }),
+    );
+    // …and the session still starts: provenance bookkeeping must not take AI
+    // away from a partner whose traffic is already correctly pinned.
+    expect(queryMock).toHaveBeenCalled();
+
+    warn.mockRestore();
+    gate.resolve();
+    await session.processorPromise;
+  });
+
+  it('tags the provenance-stamp failure capture with names the Sentry allowlist keeps', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const boom = new Error('stamp exploded');
+    vi.mocked(dbModule.withSystemDbAccessContext).mockRejectedValueOnce(boom);
+
+    const session = await manager.getOrCreate(
+      'sess-catalog-provenance-throw', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, catalogConfig(),
+    );
+
+    // Untagged, this capture lands in the same Sentry bucket as every other
+    // bare `captureException(err)` in the manager and is untriageable. The tag
+    // NAMES matter as much as their presence: `setCallerTags` silently drops
+    // anything outside ALLOWED_TAG_NAMES, so a camelCase `orgId`/`service` tag
+    // would be a no-op that reads as a fix.
+    // `toEqual`, not `objectContaining`: an exact tag bag is what stops a
+    // dropped camelCase key from being added back alongside the working ones.
+    expect(captureException).toHaveBeenCalledWith(boom, undefined, {
+      org_id: ORG,
+      cas_label: 'streamingSessionManager.stampCatalogProvenance',
+    });
+    expect(queryMock).toHaveBeenCalled();
+
+    error.mockRestore();
+    gate.resolve();
+    await session.processorPromise;
+  });
+
   it('clears the provenance columns for a session that is not catalog-routed', async () => {
     const gate = deferred();
     mockSdkQuery([], gate.promise);
@@ -561,10 +716,12 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     );
 
     // A partner who unpins rotates their sessions; the row must not keep
-    // describing a routing the session no longer uses.
-    expect(sessionUpdates).toContainEqual({
-      catalogEntryId: null,
-      catalogRevisionId: null,
+    // describing a routing the session no longer uses. This is the asymmetric
+    // half: a stamp that fails leaves a row with no claim, but a CLEAR that
+    // fails leaves a FALSE one — so it runs self-contexted too.
+    expect(sessionUpdateContexts).toContainEqual({
+      values: { catalogEntryId: null, catalogRevisionId: null },
+      inSystemContext: true,
     });
 
     gate.resolve();
@@ -638,6 +795,9 @@ describe('getOrCreate — catalog revision rotation', () => {
     vi.clearAllMocks();
     capturedQueryArgs.length = 0;
     sessionUpdates.length = 0;
+    sessionUpdateContexts.length = 0;
+    dbState.systemDepth = 0;
+    dbState.nextReturningRows.length = 0;
     grantMock.mockReturnValue({ proxyUrl: PROXY_URL });
     getLlmEgressProxyMock.mockResolvedValue({
       grant: grantMock,
