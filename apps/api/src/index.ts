@@ -362,6 +362,8 @@ import { registerAllEventSubscribers } from './services/eventSubscribers';
 import { toWebhookConfig } from './services/webhookConfig';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
+import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
+import { shutdownEventDispatchQueue } from './services/eventDispatchQueue';
 import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
 import { drainAuditRetryQueue } from './services/auditService';
@@ -1505,6 +1507,24 @@ async function initializeWorkers(): Promise<void> {
   // real outcome immediately instead of waiting out the TTL.
   readiness.invalidate();
 
+  // Phase 2 (#4085): the event-dispatch worker (router + delivery) starts
+  // only AFTER every worker above has settled. registerAllEventSubscribers()
+  // already ran synchronously in bootstrap() before initializeWorkers() was
+  // even called — this ordering (sync registry -> allSettled inits -> dispatch
+  // worker) is what guarantees the dispatch worker never sees a
+  // partially-installed subscriber registry (codex Q3 hole #2). Still inside
+  // this function, so it inherits the same redis-availability guard at the
+  // top that gates the worker array above.
+  try {
+    await initializeEventDispatchWorker();
+    workerStatus['eventDispatch'] = true;
+  } catch (error) {
+    workerStatus['eventDispatch'] = false;
+    console.error('[CRITICAL] Failed to initialize eventDispatch:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+  }
+  readiness.invalidate();
+
   if (failed.length === 0) {
     console.log('All background workers initialized');
   } else {
@@ -1694,6 +1714,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownInvoiceWorkers,
     shutdownContractWorkers,
     shutdownEventDispatcher,
+    shutdownEventDispatchWorker,
+    shutdownEventDispatchQueue,
     async () => getEventBus().close(),
     closeRedis,
     async () => {
