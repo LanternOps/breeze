@@ -92,7 +92,7 @@ describe('resolveEffectiveAgent under real RLS', () => {
     expect(resolved!.effective.mode).toBe('shadow');            // org asked for 'act'
     expect(resolved!.effective.toolAllowlist).toEqual(['run_script']); // intersection
     expect(resolved!.effective.limits.maxDevicesPerRun).toBe(10);      // org asked for 50
-    expect(resolved!.schemaVersion).toBe(1);
+    expect(resolved!.schemaVersion).toBe(2);
   });
 
   it('the platform kill switch forces every resolved agent off', async () => {
