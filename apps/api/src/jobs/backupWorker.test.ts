@@ -610,6 +610,15 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
 
     expect(result).toEqual({ dispatched: false });
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/dispatch outcome indeterminate/i));
+    // The persisted job errorLog (not just the console.warn) must name the
+    // outcome so ops/dashboards can distinguish "maybe sent" (indeterminate)
+    // from a genuine "offline" — same distinct-message contract as
+    // discoveryWorker. Single target reuses the original jobId, so the only
+    // observable failure signal is the final markJobFailed UPDATE.
+    expect(
+      updateLog.some((u) => u.payload.errorLog === 'Failed to send command to agent (dispatch outcome indeterminate)')
+    ).toBe(true);
+    expect(updateLog.some((u) => u.payload.errorLog === 'Failed to send command to agent')).toBe(false);
     warn.mockRestore();
   });
 

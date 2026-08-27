@@ -577,6 +577,7 @@ async function processDispatchBackup(
       : providerConfig;
   let sentCount = 0;
   const failedTargets: string[] = [];
+  let lastNonOfflineOutcomeStatus: string | null = null;
 
   for (let i = 0; i < targets.length; i++) {
     if (await isBackupJobCancelled(data.jobId)) {
@@ -656,6 +657,9 @@ async function processDispatchBackup(
         : `Failed to send ${target.commandType} command to agent (dispatch outcome ${outcome.status})`;
       console.warn(`[BackupWorker] ${detail} for job ${commandJobId}`);
       failedTargets.push(target.commandType);
+      if (outcome.status !== 'offline') {
+        lastNonOfflineOutcomeStatus = outcome.status;
+      }
       if (commandJobId !== data.jobId) {
         await db
           .update(backupJobs)
@@ -670,7 +674,12 @@ async function processDispatchBackup(
   }
 
   if (sentCount === 0) {
-    await markJobFailed(data.jobId, 'Failed to send command to agent');
+    await markJobFailed(
+      data.jobId,
+      lastNonOfflineOutcomeStatus
+        ? `Failed to send command to agent (dispatch outcome ${lastNonOfflineOutcomeStatus})`
+        : 'Failed to send command to agent',
+    );
     return { dispatched: false };
   }
 
