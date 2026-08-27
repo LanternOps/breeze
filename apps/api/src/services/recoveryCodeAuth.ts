@@ -47,9 +47,9 @@ export function hashRecoveryCodes(codes: string[]): string[] {
  */
 function legacyRecoveryCodeHash(code: string): string {
   const normalized = normalizeRecoveryCode(code);
-  // lgtm[js/insufficient-password-hash] Intentional one-time legacy verifier;
-  // new recovery-code authority is never persisted with this digest.
   return createHash('sha256')
+    // codeql[js/insufficient-password-hash] Consume-only verifier for
+    // pre-scrypt one-time codes; new authority is never persisted this way.
     .update(`${getRecoveryCodePepper()}:${normalized}`)
     .digest('hex');
 }
