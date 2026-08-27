@@ -21,7 +21,12 @@ const {
   updateSetMock,
   updateWhereMock,
   updateReturningMock,
-  sendWebhookNotificationMock
+  sendWebhookNotificationMock,
+  isRedisAvailableMock,
+  getRedisMock,
+  rateLimiterMock,
+  checkNotificationThrottleMock,
+  createAuditLogAsyncMock
 } = vi.hoisted(() => ({
   selectResults: [] as unknown[][],
   selectWheres: [] as unknown[],
@@ -31,7 +36,12 @@ const {
   updateSetMock: vi.fn(),
   updateWhereMock: vi.fn(),
   updateReturningMock: vi.fn(),
-  sendWebhookNotificationMock: vi.fn()
+  sendWebhookNotificationMock: vi.fn(),
+  isRedisAvailableMock: vi.fn(() => false),
+  getRedisMock: vi.fn(() => ({})),
+  rateLimiterMock: vi.fn(),
+  checkNotificationThrottleMock: vi.fn(),
+  createAuditLogAsyncMock: vi.fn()
 }));
 
 vi.mock('../db', () => ({
@@ -77,11 +87,24 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('./redis', () => ({
-  getRedis: vi.fn(() => ({})),
+  getRedis: getRedisMock,
   getBullMQConnection: vi.fn(() => ({})),
-  // Rate limiting requires Redis; disabling it here keeps these tests focused
-  // on the send-identity state machine rather than the rate-limit branch.
-  isRedisAvailable: vi.fn(() => false)
+  // Rate limiting requires Redis; disabled by default so most tests stay
+  // focused on the send-identity state machine rather than the rate-limit
+  // branch. Individual tests flip this on to exercise that branch.
+  isRedisAvailable: isRedisAvailableMock
+}));
+
+vi.mock('./rate-limit', () => ({
+  rateLimiter: rateLimiterMock
+}));
+
+vi.mock('./notificationThrottle', () => ({
+  checkNotificationThrottle: checkNotificationThrottleMock
+}));
+
+vi.mock('./auditService', () => ({
+  createAuditLogAsync: createAuditLogAsyncMock
 }));
 
 vi.mock('./notificationChannelSecrets', () => ({
@@ -196,6 +219,11 @@ beforeEach(() => {
   updateWhereMock.mockReset();
   updateReturningMock.mockReset();
   sendWebhookNotificationMock.mockReset();
+  isRedisAvailableMock.mockReset().mockReturnValue(false);
+  getRedisMock.mockReset().mockReturnValue({});
+  rateLimiterMock.mockReset();
+  checkNotificationThrottleMock.mockReset();
+  createAuditLogAsyncMock.mockReset();
 });
 
 describe('processSendNotification send-identity state machine', () => {
@@ -296,17 +324,102 @@ describe('processSendNotification send-identity state machine', () => {
     expect(sendWebhookNotificationMock).not.toHaveBeenCalled();
   });
 
-  it('(d) a transport failure updates the row to failed AND throws (so BullMQ actually retries)', async () => {
+  it('rate-limit CAS: losing the race (another attempt already delivered) skips silently instead of reporting rate-limited failure', async () => {
+    isRedisAvailableMock.mockReturnValue(true);
+    rateLimiterMock.mockResolvedValue({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date('2026-09-11T01:00:00.000Z')
+    });
+    queuePrepareSelects();
+    const record = makeNotificationRow();
+    insertReturningMock.mockResolvedValueOnce([record]);
+    queueDeviceOrgSelects();
+    // Zero rows: the CAS excludes only 'sent' — another attempt already
+    // delivered this exact send identity between our claim and this write.
+    updateReturningMock.mockResolvedValueOnce([]);
+
+    const result = await processSendNotification(baseData);
+
+    expect(result).toEqual({ success: true, channelType: 'webhook', durationMs: expect.any(Number) });
+    expect(sendWebhookNotificationMock).not.toHaveBeenCalled();
+    expect(updateWhereMock.mock.calls[0]![0]).toEqual(buildAlertNotificationClaimCas('notif-1'));
+  });
+
+  it('throttle CAS: losing the race (another attempt already delivered) skips silently, no misleading audit log', async () => {
+    checkNotificationThrottleMock.mockResolvedValue({
+      allowed: false,
+      currentCount: 10,
+      windowExpiresAt: Date.parse('2026-09-11T01:00:00.000Z')
+    });
+    const channel = makeChannel({ throttleMaxPerWindow: 5 });
+    queuePrepareSelects(makeAlert(), { partnerId: null }, channel);
+    const record = makeNotificationRow();
+    insertReturningMock.mockResolvedValueOnce([record]);
+    queueDeviceOrgSelects();
+    // Zero rows: another attempt already delivered this exact send identity —
+    // nothing was actually suppressed by this throttle check.
+    updateReturningMock.mockResolvedValueOnce([]);
+
+    const result = await processSendNotification(baseData);
+
+    expect(result).toEqual({ success: true, channelType: 'webhook', durationMs: expect.any(Number) });
+    expect(sendWebhookNotificationMock).not.toHaveBeenCalled();
+    // No audit log for a suppression that didn't actually happen.
+    expect(createAuditLogAsyncMock).not.toHaveBeenCalled();
+    expect(updateWhereMock.mock.calls[0]![0]).toEqual(buildAlertNotificationClaimCas('notif-1'));
+  });
+
+  it('(d) a transport failure CASes the row to failed (guarded, status <> sent) AND throws (so BullMQ actually retries)', async () => {
     queuePrepareSelects();
     const record = makeNotificationRow();
     insertReturningMock.mockResolvedValueOnce([record]);
     queueDeviceOrgSelects();
     sendWebhookNotificationMock.mockResolvedValue({ success: false, error: 'endpoint unreachable' });
+    // The CAS matches (this attempt still holds the claim) — one row written.
+    updateReturningMock.mockResolvedValueOnce([{ ...record, status: 'failed' }]);
 
     await expect(processSendNotification(baseData)).rejects.toThrow('endpoint unreachable');
 
-    expect(updateSetMock).toHaveBeenCalledWith({ status: 'failed', errorMessage: 'endpoint unreachable' });
+    // sentAt: null guards against a failed row reading as failed-with-sentAt
+    // (only relevant if it was ever set, but keeps the row's shape honest).
+    expect(updateSetMock).toHaveBeenCalledWith({
+      status: 'failed',
+      sentAt: null,
+      errorMessage: 'endpoint unreachable'
+    });
     expect(updateWhereMock).toHaveBeenCalledTimes(1);
+    // Same predicate as the success CAS — NOT a bare `eq(id, ...)`. Two
+    // concurrent attempts can share one row id after the conflict-claim
+    // path, so an unguarded write here could stomp a 'sent' row written by
+    // the other (winning) attempt back to 'failed', and a subsequent retry
+    // would then re-claim and RE-SEND. Compiled-SQL proof of what this
+    // predicate actually means lives in notificationDispatcher.claimCasSql.test.ts.
+    expect(updateWhereMock.mock.calls[0]![0]).toEqual(buildAlertNotificationClaimCas('notif-1'));
+  });
+
+  it('(d2) losing the failure-write CAS (another attempt already delivered) resolves success instead of throwing', async () => {
+    queuePrepareSelects();
+    const record = makeNotificationRow();
+    insertReturningMock.mockResolvedValueOnce([record]);
+    queueDeviceOrgSelects();
+    sendWebhookNotificationMock.mockResolvedValue({ success: false, error: 'endpoint unreachable' });
+    // Zero rows: the CAS excludes only 'sent', so this can only mean the
+    // OTHER concurrent attempt already delivered this exact send identity
+    // between our claim and this write.
+    updateReturningMock.mockResolvedValueOnce([]);
+
+    const result = await processSendNotification(baseData);
+
+    // A spurious 'failed' job here would only trigger a pointless BullMQ
+    // retry (the dedupe skip would just no-op it again) — resolve success
+    // instead of throwing.
+    expect(result).toEqual({
+      success: true,
+      channelType: 'webhook',
+      error: undefined,
+      durationMs: expect.any(Number)
+    });
   });
 
   it('(e) success CASes the row to sent, guarded by status <> sent', async () => {

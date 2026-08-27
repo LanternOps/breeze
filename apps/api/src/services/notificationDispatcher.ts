@@ -529,11 +529,29 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
       const rateLimitResult = await rateLimiter(redis, rateKey, 60, 300); // 60 per 5 min
       if (!rateLimitResult.allowed) {
         console.warn(`[NotificationDispatcher] Rate limited for ${channel.type} channel in org ${alert.orgId}. Remaining: ${rateLimitResult.remaining}`);
-        // Update pending record to reflect rate limiting
+        // Update pending record to reflect rate limiting — guarded by the
+        // same claim CAS as every other terminal write on this row (#4085):
+        // two concurrent attempts can share one row id after the
+        // conflict-claim path above, so an unconditional `WHERE id = ?` here
+        // could stomp a 'sent' row written by the OTHER attempt back to
+        // 'failed', and a subsequent retry would then see a non-'sent' row
+        // and re-send.
         if (notificationRecord?.id) {
-          await db.update(alertNotifications)
-            .set({ status: 'failed', errorMessage: 'Rate limited' })
-            .where(eq(alertNotifications.id, notificationRecord.id));
+          const [written] = await db.update(alertNotifications)
+            .set({ status: 'failed', sentAt: null, errorMessage: 'Rate limited' })
+            .where(buildAlertNotificationClaimCas(notificationRecord.id))
+            .returning();
+          if (!written) {
+            // Zero rows: the only status the CAS excludes is 'sent', so this
+            // can only mean another attempt already delivered this exact
+            // send identity between our read and this write. That attempt's
+            // outcome stands — resolve success/skip rather than reporting a
+            // rate-limit failure that no longer reflects reality.
+            return {
+              send: false,
+              result: { success: true, channelType: channel.type }
+            } satisfies PrepareSendResult;
+          }
         }
         return {
           send: false,
@@ -564,12 +582,29 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
         // The alert_notifications.status column carries pending/sent/failed only;
         // 'suppressed' belongs to the separate alertStatusEnum and would render
         // as a phantom value here. (See #796 review.)
-        await db.update(alertNotifications)
+        //
+        // Guarded by the same claim CAS as every other terminal write on this
+        // row (#4085) — see the rate-limit write above for why an
+        // unconditional `WHERE id = ?` is unsafe here.
+        const [written] = await db.update(alertNotifications)
           .set({
             status: 'failed',
+            sentAt: null,
             errorMessage: throttleMessage
           })
-          .where(eq(alertNotifications.id, notificationRecord.id));
+          .where(buildAlertNotificationClaimCas(notificationRecord.id))
+          .returning();
+
+        if (!written) {
+          // Zero rows: another attempt already delivered this exact send
+          // identity. Nothing was actually suppressed by this throttle
+          // check anymore — skip the audit log and resolve success/skip.
+          return {
+            send: false,
+            result: { success: true, channelType: channel.type }
+          } satisfies PrepareSendResult;
+        }
+
         // Operator-visible audit event so a misconfigured cap silently eating
         // alerts is investigable instead of buried in stdout. (See #796 review.)
         createAuditLogAsync({
@@ -750,14 +785,34 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
     };
   }
 
-  await runWithSystemDbAccess(() =>
+  // Guarded by the same claim CAS as the success write above: two
+  // concurrent attempts can share one row id after the conflict-claim path,
+  // so an unconditional `WHERE id = ?` here could stomp a 'sent' row written
+  // by the OTHER (winning) attempt back to 'failed' — and a subsequent
+  // retry would then see a non-'sent' row, re-claim it, and RE-SEND (#4085).
+  const [failedRow] = await runWithSystemDbAccess(() =>
     db
       .update(alertNotifications)
-      .set({ status: 'failed', errorMessage: error || null })
-      .where(eq(alertNotifications.id, notificationRecord.id))
+      .set({ status: 'failed', sentAt: null, errorMessage: error || null })
+      .where(buildAlertNotificationClaimCas(notificationRecord.id))
+      .returning()
   );
 
   console.error(`[NotificationDispatcher] Failed to send ${channel.type} notification: ${error}`);
+
+  if (!failedRow) {
+    // Zero rows: the CAS excludes only 'sent', so this can only mean another
+    // attempt already delivered this exact send identity between our claim
+    // and this write. That attempt's outcome stands — a spurious 'failed'
+    // job here would only trigger a pointless BullMQ retry, so resolve
+    // success instead of throwing.
+    return {
+      success: true,
+      channelType: channel.type,
+      error: undefined,
+      durationMs: Date.now() - startTime
+    };
+  }
 
   // Throw so BullMQ's attempts+backoff actually retries a transport failure.
   // This path used to return a resolved {success:false}, which BullMQ treats
