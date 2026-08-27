@@ -10,9 +10,11 @@
 // may only ADD person/org entities and never touches regex-origin rows.
 //
 // Pattern follows hive's extractor-model/classifier shape: injectable
-// Anthropic-like client, system prompt + JSON extraction + strict Zod,
-// fail-soft per file (an LLM hiccup marks the file unenriched, never throws
-// out of the batch).
+// invoke() call, system prompt + JSON extraction + strict Zod, fail-soft per
+// file (an LLM hiccup marks the file unenriched, never throws out of the
+// batch) — EXCEPT for provider/billing problems (ExtensionAiError), which
+// must abort the whole run instead of burning every pending file into a
+// silent null-model row. See the `run()` invoke-loop below.
 //
 // DLP invariant (W2): this pass never re-runs DLP. It reads
 // workspace_file_content.extracted_text for status='extracted' rows only, and
@@ -20,6 +22,7 @@
 // once, before persistence). DLP-blocked files never reach status='extracted',
 // so they are never enriched. Every enrichment prompt is therefore built from
 // stored, already-redacted text — no raw sensitive value can reach the LLM here.
+import { ExtensionAiError } from '@breeze/extension-sdk';
 import type { WorkspaceDatabase } from '../hostTypes';
 import { sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
@@ -28,26 +31,23 @@ import { deriveDeclaredProject } from '../content/projects';
 import { TransientIngestError } from './ingestErrors';
 
 /**
- * An Anthropic-style APIError we must treat as transient: a 429 (rate cap) or
- * any 5xx (provider outage). These must back the whole ingest job off with
- * retry — NOT fail-soft into a null-model row on every pending file (which would
- * park those files out of the enrichment queue until a manual re-run). Every
- * other failure (bad JSON, schema miss, 4xx, generic error) stays fail-soft.
+ * The host's metered `context.ai.invoke` capability, narrowed to exactly what
+ * enrichment needs. This is intentionally NOT the full `ExtensionAiInvokeInput`
+ * shape — `model` selection (default + WORKSPACE_CONTENT_LLM_MODEL override) is
+ * the host's job, not this call site's; see `run()`'s local `model` constant,
+ * which mirrors that same resolution purely for the recorded DB column.
  */
-function isRetryableApiError(err: unknown): err is { status: number } {
-  const status = (err as { status?: unknown } | null | undefined)?.status;
-  return typeof status === 'number' && (status === 429 || status >= 500);
-}
-
-export interface AnthropicLike {
-  messages: {
-    create: (args: unknown) => Promise<{ content: Array<{ type: string; text?: string }> }>;
-  };
-}
+export type EnrichmentInvoke = (input: {
+  orgId: string;
+  surface: 'workspace_enrichment';
+  principal: { type: 'system'; id: null };
+  system: string;
+  messages: Array<{ role: 'user'; content: string }>;
+  maxTokens: number;
+}) => Promise<{ text: string }>;
 
 export interface EnrichmentDeps {
-  client: AnthropicLike;
-  model?: string;
+  invoke: EnrichmentInvoke;
 }
 
 const DEFAULT_MODEL = 'claude-haiku-4-5';
@@ -123,28 +123,32 @@ interface PendingEnrichmentRow {
 
 export function createEnrichmentService(db: WorkspaceDatabase, deps: EnrichmentDeps) {
   const d = db;
-  const model = deps.model ?? process.env.WORKSPACE_CONTENT_LLM_MODEL ?? DEFAULT_MODEL;
+  // Recorded (not authoritative) model label: mirrors the same env-var/default
+  // resolution the host's invoke() applies, purely for the DB column — the
+  // host is the single source of truth for which model actually ran.
+  const model = process.env.WORKSPACE_CONTENT_LLM_MODEL ?? DEFAULT_MODEL;
 
   async function classifyOne(
+    orgId: string,
     relPath: string,
     text: string,
     projects: Array<{ key: string; label: string }>,
   ): Promise<EnrichmentResult | null> {
     try {
-      const res = await deps.client.messages.create({
-        model,
-        max_tokens: 1024,
+      const result = await deps.invoke({
+        orgId,
+        surface: 'workspace_enrichment',
+        principal: { type: 'system', id: null },
         system: SYSTEM,
         messages: [{ role: 'user', content: buildEnrichmentPrompt({ relPath, text, projects }) }],
+        maxTokens: 1024,
       });
-      const raw = res.content.find((c) => c.type === 'text')?.text ?? '';
-      return resultSchema.parse(extractJson(raw, 'workspace-enrich'));
+      return resultSchema.parse(extractJson(result.text, 'workspace-enrich'));
     } catch (err) {
-      // Rate cap / provider outage must back the job off (the runner releases it
-      // with backoff), not burn a null-model row into every pending file.
-      if (isRetryableApiError(err)) {
-        throw new TransientIngestError(`enrich_provider_${err.status}`, { cause: err });
-      }
+      // Provider/billing problems (broken BYOK key, exhausted budget, rate cap)
+      // must abort the run, not burn a null-model row into every pending file —
+      // rethrow past this fail-soft catch. `run()` wraps it as TransientIngestError.
+      if (err instanceof ExtensionAiError) throw err;
       return null; // fail-soft: an LLM/parse hiccup never breaks the batch
     }
   }
@@ -194,7 +198,24 @@ export function createEnrichmentService(db: WorkspaceDatabase, deps: EnrichmentD
         const declaredLabel = declared
           ? (declared.label ?? projectByKey.get(declared.key) ?? null)
           : null;
-        const result = await classifyOne(file.rel_path, file.extracted_text, projects);
+        let result: EnrichmentResult | null;
+        try {
+          result = await classifyOne(orgId, file.rel_path, file.extracted_text, projects);
+        } catch (err) {
+          // ExtensionAiError escaped classifyOne's fail-soft catch on purpose
+          // (broken BYOK key / exhausted budget / provider rate cap): abort the
+          // whole run rather than mark the rest of the batch as per-file errors.
+          // The ingest runner's isTransientIngestError catch backs the job off
+          // with a visible transient_error release; the admin enrich-run route
+          // maps the same shape to a 503.
+          if (err instanceof ExtensionAiError) {
+            throw new TransientIngestError(
+              `AI provider unavailable for this organization: ${err.code}`,
+              { cause: err },
+            );
+          }
+          throw err;
+        }
         const inferredKey = result?.projectKey ?? null;
         const inferredLabel = result?.projectLabel
           ?? (inferredKey ? projectByKey.get(inferredKey) ?? null : null);
