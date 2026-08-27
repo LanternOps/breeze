@@ -118,12 +118,22 @@ describe('agent command relay — real Redis (wave 3.5b, #4084)', () => {
     expect(await clearAgentPresence(id, 'wrong-token')).toBe(false);
     expect(await readAgentPresence(id)).not.toBeNull();
 
-    // Right token refreshes.
-    expect(await refreshAgentPresence(id, 'tok-a')).toBe(true);
+    // Shrink the TTL first so a refresh has something to measure — otherwise
+    // the initial setAgentPresence's own PX 90000 would satisfy the same
+    // bounds regardless of whether the refresh's PEXPIRE actually ran.
+    const key = 'agent-presence:' + id;
     const redis = getRedis();
     expect(redis).not.toBeNull();
-    const pttl = await redis!.pttl('agent-presence:' + id);
-    expect(pttl).toBeGreaterThan(0);
+    await redis!.pexpire(key, 3_000);
+
+    // Wrong token must NOT extend the shrunk TTL (fencing survives refresh too).
+    expect(await refreshAgentPresence(id, 'wrong-token')).toBe(false);
+    expect(await redis!.pttl(key)).toBeLessThanOrEqual(3_000);
+
+    // Right token refreshes — and actually extends the lease back out.
+    expect(await refreshAgentPresence(id, 'tok-a')).toBe(true);
+    const pttl = await redis!.pttl(key);
+    expect(pttl).toBeGreaterThan(AGENT_PRESENCE_TTL_MS - 5_000);
     expect(pttl).toBeLessThanOrEqual(AGENT_PRESENCE_TTL_MS);
 
     // Right token clears.
