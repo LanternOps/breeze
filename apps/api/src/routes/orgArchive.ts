@@ -25,6 +25,7 @@ import {
 } from '../services/orgArchive';
 import { partnerMemberMayReachOrg } from '../services/partnerOrgSelection';
 import { PERMISSIONS } from '../services/permissions';
+import { PG_UUID_REGEX } from '../utils/uuid';
 
 export const orgArchiveRoutes = new Hono();
 
@@ -171,6 +172,17 @@ orgArchiveRoutes.post(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const orgId = c.req.param('id')!;
+
+    // Shape-check BEFORE anything touches the database. `id` is a raw path
+    // segment and every lookup below feeds it to a `uuid` column, where a
+    // non-UUID raises Postgres 22P02 — an uncaught 500 (and a Sentry event) that
+    // any unauthenticated-shaped URL like `/organizations/undefined` can pump.
+    // A malformed id cannot name a real org, so it is a 404, same as a valid id
+    // for an org that doesn't exist. Mirrors the detail route in routes/orgs.ts.
+    if (!PG_UUID_REGEX.test(orgId)) {
+      return c.json({ error: 'Organization not found' }, 404);
+    }
+
     const { retentionDays } = c.req.valid('json');
     const authz = await authorizeArchiveTarget(auth, orgId);
     if (!authz.ok) {
@@ -225,6 +237,14 @@ orgArchiveRoutes.post(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const orgId = c.req.param('id')!;
+
+    // Same shape-check-before-any-DB-access as the archive route above (and the
+    // detail route in routes/orgs.ts): a non-UUID path segment would reach a
+    // `uuid` column and raise 22P02 — a pumpable 500 plus a Sentry event.
+    if (!PG_UUID_REGEX.test(orgId)) {
+      return c.json({ error: 'Organization not found' }, 404);
+    }
+
     const authz = await authorizeArchiveTarget(auth, orgId);
     if (!authz.ok) {
       return c.json({ error: authz.error }, authz.status);

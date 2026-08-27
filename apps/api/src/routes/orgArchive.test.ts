@@ -118,6 +118,7 @@ vi.mock('../middleware/auth', () => ({
   }),
 }));
 
+import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { OrgArchiveStateError } from '../services/orgArchive';
 import { orgArchiveRoutes } from './orgArchive';
@@ -613,5 +614,42 @@ describe('org archive routes', () => {
 
       expect(writeAuditEventMock).not.toHaveBeenCalled();
     });
+  });
+  // ── malformed :id (review fix, flagged concern) ──────────────────────────
+  // `:id` is a raw path segment and `loadArchiveOrg` feeds it straight to a
+  // `uuid` column, where a non-UUID raises Postgres 22P02 — an uncaught 500
+  // plus a Sentry event that anyone can pump with `/organizations/undefined`.
+  // A malformed id cannot name a real org, so it 404s, and it must do so
+  // BEFORE any DB access. Mirrors the detail route in routes/orgs.ts.
+  describe('malformed organization id', () => {
+    it.each(['archive', 'restore'])(
+      '404s %s for a non-uuid id without touching the database',
+      async (action) => {
+        const res = await postJson(`/orgs/organizations/not-a-uuid/${action}`, {});
+
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: 'Organization not found' });
+        // The guard runs before the target load, the selection check, the
+        // service call and the audits.
+        expect(db.select).not.toHaveBeenCalled();
+        expect(mayReachOrgMock).not.toHaveBeenCalled();
+        expect(beginOrgArchiveMock).not.toHaveBeenCalled();
+        expect(restoreOrgFromArchiveMock).not.toHaveBeenCalled();
+        expect(writeRouteAuditMock).not.toHaveBeenCalled();
+        expect(writeAuditEventMock).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['archive', 'restore'])(
+      'still reaches the service for a well-formed id on %s',
+      async (action) => {
+        orgRows.current[0]!.status = action === 'restore' ? 'archived' : 'active';
+
+        const res = await postJson(`/orgs/organizations/${ORG_ID}/${action}`, {});
+
+        expect([200, 202]).toContain(res.status);
+        expect(db.select).toHaveBeenCalled();
+      },
+    );
   });
 });
