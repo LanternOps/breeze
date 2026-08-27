@@ -48,6 +48,7 @@ import { ticketResponseTemplateRoutes } from './routes/tickets/ticketResponseTem
 import { ticketFormRoutes } from './routes/tickets/forms';
 import { tenantVariableRoutes } from './routes/tenantVariables';
 import { orgRoutes } from './routes/orgs';
+import { orgMergeRoutes } from './routes/orgMerge';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
 import { oauthInteractionRoutes } from './routes/oauthInteraction';
@@ -224,6 +225,7 @@ import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
 import { drainAuditRetryQueue } from './services/auditService';
 import { runShutdownPhases } from './services/shutdownPhases';
+import { drainLlmEgressQueue } from './services/llm/llmEgressRecorder';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
@@ -878,6 +880,7 @@ api.route('/', ticketResponseTemplateRoutes);
 api.route('/', ticketFormRoutes);
 api.route('/', tenantVariableRoutes);
 api.route('/orgs', orgRoutes);
+api.route('/orgs', orgMergeRoutes);
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
 api.route('/permissions', permissionsCatalogRoutes);
@@ -1287,6 +1290,21 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     ]);
   };
 
+  // #3922: the LLM egress audit queue is in-process and fire-and-forget, so
+  // anything still pending at SIGTERM is simply lost unless we wait for it.
+  // Same 5s ceiling as the audit retry drain above — an unreachable database
+  // must not turn a rolling restart into a hang. Runs in the `drain` phase,
+  // which fully settles before the `db` phase closes the pool, so a pending
+  // write no longer races the teardown; anything still outstanding at the 5s
+  // ceiling is swallowed and reported by the recorder rather than failing
+  // shutdown.
+  const boundedLlmEgressDrainTask = async () => {
+    await Promise.race([
+      drainLlmEgressQueue(),
+      new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+  };
+
   const dbCloseTask = async () => {
     const closeDb = dbModule.closeDb;
     if (typeof closeDb === 'function') {
@@ -1333,7 +1351,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
 
   const report = await runShutdownPhases([
     // 1. Final local drains that need DB/Redis still up.
-    { name: 'drain', tasks: [boundedAuditDrainTask] },
+    { name: 'drain', tasks: [boundedAuditDrainTask, boundedLlmEgressDrainTask] },
     // 2. Every worker/consumer close — concurrent, as today, but now
     //    guaranteed to fully settle before shared infrastructure goes away.
     { name: 'workers', tasks: workerShutdownTasks },

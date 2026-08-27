@@ -14,9 +14,15 @@
 // file (an LLM hiccup marks the file unenriched, never throws out of the
 // batch) — EXCEPT for provider/billing problems (ExtensionAiError), which
 // must abort the whole run instead of burning every pending file into a
-// silent null-model row. The one ExtensionAiError that does NOT abort is
-// `not_configured` (no provider on this deployment at all): that degrades to a
-// drained phase, since retrying cannot help. See the `run()` invoke-loop below.
+// silent null-model row.
+//
+// Whether that abort is RETRYABLE is the host's call, carried on
+// `ExtensionAiError.permanent` — not something this file can infer from the
+// code, because `budget_exceeded` and `ai_unavailable` each cover both a
+// condition that clears on its own and one that never does. A PERMANENT error
+// (no provider configured, AI switched off for the org, partner plan without
+// AI, an unpriced model id) degrades to a drained phase; anything else throws
+// a TransientIngestError and backs the job off. See the `run()` invoke-loop.
 //
 // DLP invariant (W2): this pass never re-runs DLP. It reads
 // workspace_file_content.extracted_text for status='extracted' rows only, and
@@ -212,16 +218,26 @@ export function createEnrichmentService(db: WorkspaceDatabase, deps: EnrichmentD
           // with a visible transient_error release; the admin enrich-run route
           // maps the same shape to a 503.
           if (err instanceof ExtensionAiError) {
-            if (err.code === 'not_configured') {
-              // The deployment has no AI provider at all (no platform key, no
-              // partner BYOK key) — the default self-hosted shape, and exactly
-              // what the pre-BYOK missing-ANTHROPIC_API_KEY guard covered by
-              // handing the runner a no-op enrichment service. Report the phase
-              // DRAINED so the ingest job advances to crosswalk. Retrying would
-              // burn all max_attempts and fail the job, taking indexing and
-              // crosswalk down with a feature that was merely absent.
+            // PERMANENT means no retry can clear it: the deployment has no AI
+            // provider at all (`not_configured` — the default self-hosted
+            // shape, exactly what the pre-BYOK missing-ANTHROPIC_API_KEY guard
+            // covered by handing the runner a no-op enrichment service), the
+            // org or its partner's plan has AI switched off, or the configured
+            // model id is not a priced model. Report the phase DRAINED so the
+            // ingest job advances to crosswalk. Retrying instead burns all
+            // max_attempts and fails the job, taking indexing and crosswalk
+            // down with a feature that was merely absent or switched off — and
+            // the next job repeats it forever.
+            //
+            // `=== true` on purpose: an ExtensionAiError from a host built
+            // before the flag existed carries `undefined`, which must read as
+            // transient (retry may help), never as "drain the phase".
+            if (err.code === 'not_configured' || err.permanent === true) {
               return { processed, remaining: 0, errors, aiUnavailable: true };
             }
+            // Everything else — a provider rate cap, an outage, a rejected
+            // partner BYOK key, a spend cap that rolls over — stays LOUD and
+            // retryable.
             throw new TransientIngestError(
               `AI provider unavailable for this organization: ${err.code}`,
               { cause: err },

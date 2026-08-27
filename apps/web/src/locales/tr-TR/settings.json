@@ -159,7 +159,22 @@
     "disconnectFailed": "Anthropic anahtarının bağlantısı kesilemedi.",
     "permissionDenied": "Yapay zeka sağlayıcısını yönetmek için faturalama izinleri ve tüm kuruluşlara erişim gerekir.",
     "loadFailed": "Yapay zeka sağlayıcısı yapılandırması yüklenemedi.",
-    "workspaceDisclosure": "Workspace içerik zenginleştirme, yapılandırdığınız AI sağlayıcısını kullanır ve AI kullanımınızda görünür."
+    "workspaceDisclosure": "Workspace içerik zenginleştirme, yapılandırdığınız AI sağlayıcısını kullanır ve AI kullanımınızda görünür.",
+    "endpointCardTitle": "Uç Nokta",
+    "endpointCardSubtitle": "Yapay zeka trafiğinizin nereye gönderileceğini seçin. Breeze her seçeneği burada görünmeden önce denetler.",
+    "directOptionLabel": "Anthropic (doğrudan)",
+    "verifiedModelsLabel": "Doğrulanmış modeller: {{models}}",
+    "noVerifiedModels": "Henüz doğrulanmış model yok",
+    "viewDataNote": "Veri işleme notunu görüntüle",
+    "hideDataNote": "Veri işleme notunu gizle",
+    "confirmDialogTitle": "{{name}} olarak değiştirilsin mi?",
+    "confirmDialogMessageWithNote": "Yapay zeka trafiğiniz {{name}} üzerinden geçmeden önce verilerinizin nasıl işlendiğini gözden geçirin:",
+    "confirmDialogMessageNoNote": "Yapay zeka trafiğiniz {{name}} olarak değiştirilsin mi?",
+    "consentCheckboxLabel": "Yapay zeka trafiğimin ve içeriğimin {{name}} tarafından işleneceğini anlıyorum",
+    "endpointUpdated": "Yapay zeka uç noktası güncellendi.",
+    "endpointUpdateFailed": "Yapay zeka uç noktası güncellenemedi.",
+    "endpointDelistedBanner": "Bu uç nokta Breeze tarafından listeden kaldırıldı — başka birini seçene kadar yapay zeka duraklatıldı",
+    "endpointModelUnverifiedBanner": "{{model}} modeli bu uç noktada doğrulanmadı. Yapay zekayı sürdürmek için farklı bir model veya uç nokta seçin."
   },
   "partnerDefaults": {
     "notSet": "Ayarlanmadı — kuruluşlar ayrı ayrı yapılandırılır",
@@ -1305,7 +1320,8 @@
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tier 2 araçları, denetim günlüğüyle otomatik olarak yürütülür. 3. Katman araçlarının hâlâ onaylanması gerekiyor.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Eylem Planını beğenin, artı adımlar arasında canlı ekran görüntüleri ve kalıcı Durdur düğmesi.",
     "untitled": "Başlıksız",
-    "billedToPartnerKey": "Anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır"
+    "billedToPartnerKey": "Anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır",
+    "billedToPartnerKeyViaEndpoint": "{{name}} üzerinden anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır"
   },
   "aiAgentsPage": {
     "title": "Yapay Zeka Aracıları",
@@ -2982,7 +2998,10 @@
       "trial": "Deneme",
       "suspended": "Askıya alındı",
       "churned": "Çalkalanmış",
-      "offboarding": "Ayrılma"
+      "offboarding": "Ayrılma",
+      "merging": "Birleştirme",
+      "archived": "Arşivlendi",
+      "purging": "Temizleme"
     },
     "columns": {
       "devices": "Cihazlar"
@@ -3075,7 +3094,10 @@
       "trial": "Deneme",
       "suspended": "Askıya alındı",
       "churned": "Çalkalanmış",
-      "offboarding": "Ayrılma"
+      "offboarding": "Ayrılma",
+      "merging": "Birleştirme",
+      "archived": "Arşivlendi",
+      "purging": "Temizleme"
     },
     "deviceCount": "{{count}} cihazlar",
     "list": {

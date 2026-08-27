@@ -483,6 +483,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // org-lifecycle Wave 2, Task 4 (#4111): Phase C (audit + erasure handoff)
+    // of a completed org merge. Added during the 3.5d-b merge with main —
+    // main's static array placed it exactly here, before desktopSessionFinalization.
+    // socket-owner: its closure reaches routes/agentWs via services/orgMerge
+    // (closure contract test verdict) — same class as the tenant-offboarding family.
+    name: 'orgMerge',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/orgMerge');
+      return { init: m.initializeOrgMergeWorker, shutdown: m.shutdownOrgMergeWorker };
+    },
+  },
+  {
     name: 'desktopSessionFinalization',
     placement: 'socket-owner',
     load: async () => {

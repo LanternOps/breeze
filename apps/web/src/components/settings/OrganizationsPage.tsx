@@ -42,20 +42,27 @@ export function shouldShowDeviceCount(count: number | undefined): boolean {
   return typeof count === 'number' && Number.isFinite(count);
 }
 
-const statusLabelKeys: Record<Organization['status'], string> = {
+// Exported for test — see OrganizationsPage.statusMaps.test.tsx.
+export const statusLabelKeys: Record<Organization['status'], string> = {
   active: 'organizationsPage.status.active',
   trial: 'organizationsPage.status.trial',
   suspended: 'organizationsPage.status.suspended',
   churned: 'organizationsPage.status.churned',
   offboarding: 'organizationsPage.status.offboarding',
+  merging: 'organizationsPage.status.merging',
+  archived: 'organizationsPage.status.archived',
+  purging: 'organizationsPage.status.purging',
 };
 
-const statusColors: Record<Organization['status'], string> = {
+export const statusColors: Record<Organization['status'], string> = {
   active: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
   trial: 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-400',
   suspended: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400',
   churned: 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400',
   offboarding: 'border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-400',
+  merging: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400',
+  archived: 'border-gray-500/30 bg-gray-500/10 text-gray-700 dark:text-gray-400',
+  purging: 'border-red-400/30 bg-red-400/10 text-red-600 dark:text-red-300',
 };
 
 // Walking every page of GET /orgs/organizations moved to lib/ (#3446 follow-up)

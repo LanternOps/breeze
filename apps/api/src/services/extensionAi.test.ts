@@ -4,8 +4,10 @@ import { ExtensionAiError, type ExtensionAiInvokeInput } from '@breeze/extension
 const {
   buildAnthropicClient,
   calculateCostCents,
+  captureException,
+  captureMessage,
   checkAiRateLimit,
-  checkBudget,
+  checkBudgetDetailed,
   checkSystemAiRateLimit,
   create,
   deductBillingCredits,
@@ -15,8 +17,12 @@ const {
 } = vi.hoisted(() => ({
   buildAnthropicClient: vi.fn(),
   calculateCostCents: vi.fn<() => number>(),
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
   checkAiRateLimit: vi.fn<() => Promise<string | null>>(),
-  checkBudget: vi.fn<() => Promise<string | null>>(),
+  checkBudgetDetailed: vi.fn<() => Promise<{
+    message: string; reason: string; permanent: boolean;
+  } | null>>(),
   checkSystemAiRateLimit: vi.fn<() => Promise<string | null>>(),
   create: vi.fn(),
   deductBillingCredits: vi.fn<() => Promise<void>>(),
@@ -28,7 +34,7 @@ const {
 vi.mock('./aiCostTracker', () => ({
   calculateCostCents,
   checkAiRateLimit,
-  checkBudget,
+  checkBudgetDetailed,
   checkSystemAiRateLimit,
   deductBillingCredits,
   isPricedModel: (model: string) => [
@@ -37,6 +43,8 @@ vi.mock('./aiCostTracker', () => ({
   ].includes(model),
   recordUsage,
 }));
+
+vi.mock('./sentry', () => ({ captureException, captureMessage }));
 
 const { LlmOrgResolutionError } = vi.hoisted(() => ({
   LlmOrgResolutionError: class LlmOrgResolutionError extends Error {
@@ -115,7 +123,7 @@ beforeEach(() => {
   buildAnthropicClient.mockReturnValue({ messages: { create } });
   checkAiRateLimit.mockResolvedValue(null);
   checkSystemAiRateLimit.mockResolvedValue(null);
-  checkBudget.mockResolvedValue(null);
+  checkBudgetDetailed.mockResolvedValue(null);
   create.mockResolvedValue(response());
   recordUsage.mockResolvedValue(undefined);
   deductBillingCredits.mockResolvedValue(undefined);
@@ -136,7 +144,7 @@ describe('buildExtensionAiContext', () => {
     expect(resolveLlmConfigForOrg).toHaveBeenCalledWith(ORG_ID);
     expect(buildAnthropicClient).toHaveBeenCalledWith(PARTNER_CONFIG);
     expect(checkAiRateLimit).toHaveBeenCalledWith(USER_ID, ORG_ID);
-    expect(checkBudget).toHaveBeenCalledWith(ORG_ID, 'partner_key');
+    expect(checkBudgetDetailed).toHaveBeenCalledWith(ORG_ID, 'partner_key');
     expect(create).toHaveBeenCalledWith({
       model: 'claude-haiku-4-5',
       max_tokens: 512,
@@ -239,12 +247,18 @@ describe('buildExtensionAiContext', () => {
   });
 
   it('rejects an exceeded budget before calling the client', async () => {
-    checkBudget.mockResolvedValueOnce('Monthly AI budget exceeded');
+    checkBudgetDetailed.mockResolvedValueOnce({
+      message: 'Monthly AI budget exceeded',
+      reason: 'monthly_budget',
+      permanent: false,
+    });
 
     await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
       name: 'ExtensionAiError',
       code: 'budget_exceeded',
       message: 'Monthly AI budget exceeded',
+      // A spend cap rolls over — the caller may retry after the period key does.
+      permanent: false,
     });
     expect(create).not.toHaveBeenCalled();
   });
@@ -257,7 +271,7 @@ describe('buildExtensionAiContext', () => {
       code: 'rate_limited',
       message: 'Rate limit exceeded',
     });
-    expect(checkBudget).not.toHaveBeenCalled();
+    expect(checkBudgetDetailed).not.toHaveBeenCalled();
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -272,7 +286,7 @@ describe('buildExtensionAiContext', () => {
 
     expect(resolveLlmConfigForOrg).not.toHaveBeenCalled();
     expect(checkAiRateLimit).not.toHaveBeenCalled();
-    expect(checkBudget).not.toHaveBeenCalled();
+    expect(checkBudgetDetailed).not.toHaveBeenCalled();
     expect(create).not.toHaveBeenCalled();
     expect(recordUsage).not.toHaveBeenCalled();
   });
@@ -360,6 +374,182 @@ describe('buildExtensionAiContext', () => {
       expect(recordUsage).not.toHaveBeenCalled();
       expect(markPartnerLlmError).not.toHaveBeenCalled();
     });
+  });
+
+  /**
+   * PERMANENT vs TRANSIENT.
+   *
+   * The `code` alone never answered "can retrying help?", and the workspace
+   * ingest job treated every ExtensionAiError as retryable. A deployment whose
+   * WORKSPACE_CONTENT_LLM_MODEL is a typo, or a tenant who simply switched AI
+   * off, therefore burned all `max_attempts`, failed the job, and had a fresh
+   * job repeat it forever — crosswalk never ran. Each of these pins which side
+   * of that line one failure falls on.
+   */
+  describe('permanent-vs-transient classification', () => {
+    it('marks an unpriced model PERMANENT (a deployment typo no retry can fix)', async () => {
+      const error = await buildExtensionAiContext()
+        .invoke({ ...input, model: 'not-a-real-model' })
+        .catch((caught) => caught);
+
+      expect(error).toMatchObject({ code: 'ai_unavailable', permanent: true });
+    });
+
+    it('marks not_configured PERMANENT (no provider exists on this deployment)', async () => {
+      resolveLlmConfigForOrg.mockResolvedValueOnce({
+        source: 'platform',
+        apiKey: '  ',
+        model: 'claude-sonnet-4-6',
+      });
+
+      const error = await buildExtensionAiContext().invoke(input).catch((caught) => caught);
+
+      expect(error).toMatchObject({ code: 'not_configured', permanent: true });
+    });
+
+    it('propagates a PERMANENT budget denial (org has AI switched off)', async () => {
+      checkBudgetDetailed.mockResolvedValueOnce({
+        message: 'AI features are disabled for this organization',
+        reason: 'ai_disabled',
+        permanent: true,
+      });
+
+      const error = await buildExtensionAiContext().invoke(input).catch((caught) => caught);
+
+      expect(error).toMatchObject({ code: 'budget_exceeded', permanent: true });
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('propagates a PERMANENT budget denial (partner plan has no AI)', async () => {
+      checkBudgetDetailed.mockResolvedValueOnce({
+        message: 'AI assistant requires the Community plan.',
+        reason: 'plan_gate',
+        permanent: true,
+      });
+
+      const error = await buildExtensionAiContext().invoke(input).catch((caught) => caught);
+
+      expect(error).toMatchObject({ code: 'budget_exceeded', permanent: true });
+    });
+
+    it('propagates a TRANSIENT budget denial (exhausted prepaid credits)', async () => {
+      checkBudgetDetailed.mockResolvedValueOnce({
+        message: 'You are out of AI credits. Purchase more credits to continue.',
+        reason: 'credits_exhausted',
+        permanent: false,
+      });
+
+      const error = await buildExtensionAiContext().invoke(input).catch((caught) => caught);
+
+      expect(error).toMatchObject({ code: 'budget_exceeded', permanent: false });
+    });
+
+    it('keeps rate_limited TRANSIENT', async () => {
+      checkAiRateLimit.mockResolvedValueOnce('Rate limit exceeded');
+
+      const error = await buildExtensionAiContext().invoke(input).catch((caught) => caught);
+
+      expect(error).toMatchObject({ code: 'rate_limited', permanent: false });
+    });
+
+    it('keeps a broken partner BYOK key TRANSIENT so it stays loud', async () => {
+      // Deliberately NOT permanent: a partner whose key stopped working must
+      // keep seeing a visible failure, never a quietly degraded feature (and
+      // never a fallback to the platform key).
+      resolveLlmConfigForOrg.mockResolvedValueOnce({
+        source: 'unavailable',
+        partnerId: PARTNER_ID,
+        reason: 'key_error',
+      });
+
+      const error = await buildExtensionAiContext().invoke(input).catch((caught) => caught);
+
+      expect(error).toMatchObject({ code: 'ai_unavailable', permanent: false });
+    });
+
+    it.each([429, 503])('keeps a provider-side %i TRANSIENT', async (status) => {
+      create.mockRejectedValueOnce(apiError(status));
+
+      const error = await buildExtensionAiContext().invoke(input).catch((caught) => caught);
+
+      expect(error).toMatchObject({ permanent: false });
+    });
+
+    it('keeps an unresolvable organization TRANSIENT', async () => {
+      // A missing/unreadable organization row can be an RLS-context fault, not
+      // a settled configuration state — degrading a feature over it would hide
+      // a real bug.
+      resolveLlmConfigForOrg.mockRejectedValueOnce(new LlmOrgResolutionError(ORG_ID));
+
+      const error = await buildExtensionAiContext().invoke(input).catch((caught) => caught);
+
+      expect(error).toMatchObject({ code: 'ai_unavailable', permanent: false });
+    });
+  });
+
+  describe('partner credential rejection stamping', () => {
+    it('reports a stamping THROW to Sentry without masking the original 401', async () => {
+      create.mockRejectedValueOnce(apiError(401, 'invalid x-api-key'));
+      markPartnerLlmError.mockRejectedValueOnce(new Error('db down'));
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        name: 'ExtensionAiError',
+        code: 'ai_unavailable',
+        message: 'invalid x-api-key',
+      });
+      expect(captureException).toHaveBeenCalled();
+    });
+
+    it('reports a LOST stamp (config version moved) instead of treating it as stamped', async () => {
+      // markPartnerLlmError resolves false when the row id/version no longer
+      // match — the partner rotated the key mid-flight. Nothing was written, so
+      // their AI settings still advertise a key Anthropic is rejecting.
+      create.mockRejectedValueOnce(apiError(401, 'invalid x-api-key'));
+      markPartnerLlmError.mockResolvedValueOnce(false);
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        code: 'ai_unavailable',
+      });
+      expect(captureMessage).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ eventCode: 'ai_partner_key_error_stamp_stale' }),
+      );
+    });
+
+    it('says nothing when the stamp lands', async () => {
+      create.mockRejectedValueOnce(apiError(401, 'invalid x-api-key'));
+      markPartnerLlmError.mockResolvedValueOnce(true);
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        code: 'ai_unavailable',
+      });
+      expect(captureMessage).not.toHaveBeenCalled();
+      expect(captureException).not.toHaveBeenCalled();
+    });
+  });
+
+  it('does not resolve until the platform credit deduction has completed', async () => {
+    // Same deferred-promise discrimination as the recordUsage test above: a
+    // `void deductBillingCredits(...)` would resolve invoke() before the org's
+    // prepaid balance moved, so a caller could observe a completed, charged
+    // call whose charge had not landed yet.
+    resolveLlmConfigForOrg.mockResolvedValueOnce(PLATFORM_CONFIG);
+    let releaseDeduction!: () => void;
+    deductBillingCredits.mockReturnValueOnce(new Promise<void>((resolve) => {
+      releaseDeduction = () => resolve();
+    }));
+
+    let settled = false;
+    const invocation = buildExtensionAiContext().invoke(input).then((value) => {
+      settled = true;
+      return value;
+    });
+
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releaseDeduction();
+    await expect(invocation).resolves.toMatchObject({ billingSource: 'platform' });
   });
 
   describe('rate-limit actor', () => {

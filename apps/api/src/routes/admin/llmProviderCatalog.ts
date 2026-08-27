@@ -13,7 +13,11 @@ import {
   recordVerification,
   setEntryStatus,
 } from '../../services/llmProviderCatalog';
-import { runFidelityCheck } from '../../services/llm/providerFidelityHarness';
+import {
+  LlmEgressViolationError,
+  runFidelityCheck,
+} from '../../services/llm/providerFidelityHarness';
+import { SsrfBlockedError } from '../../services/urlSafety';
 import { createAuditLogAsync } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { captureException } from '../../services/sentry';
@@ -73,6 +77,37 @@ function redactSecret(value: string, secret: string): string {
 }
 
 /**
+ * Our own egress controls refusing to make the request, as opposed to the
+ * provider failing the check.
+ *
+ * `LlmEgressViolationError` is the harness's origin pin (the client was steered
+ * off the revision's own origin); `SsrfBlockedError` is `safeFetch` refusing to
+ * dial a loopback/RFC1918/link-local/metadata address. Both mean the base URL
+ * on the revision is not a legitimate egress target — an operator-fixable 400,
+ * not the 502 "the provider failed its fidelity check" that would send them to
+ * the provider's support desk instead.
+ *
+ * Note on reachability: `runFidelityCheck` currently catches everything the
+ * Anthropic client throws and folds it into a failing STEP, so today an egress
+ * block usually surfaces as `passed:false` with the reason in `steps[].detail`
+ * rather than as a throw. This branch is the correct handling for the throw
+ * path (a guard raised before or around the SDK call, and any future harness
+ * change that stops swallowing), and it must not regress to the generic 502.
+ */
+function isEgressBlocked(error: unknown): error is Error {
+  return error instanceof LlmEgressViolationError || error instanceof SsrfBlockedError;
+}
+
+/** Host only — never the path, query, or anything the operator pasted a key into. */
+function hostOf(value: string): string | null {
+  try {
+    return new URL(value.trim()).host;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * `platformAdminMiddleware` audits every admin request, but only with method +
  * path — which makes list and delist indistinguishable in the trail and records
  * no revision id for an activation. Catalog activation deliberately has no
@@ -114,8 +149,14 @@ llmProviderCatalogMutationRoutes.post(
   '/',
   zValidator('json', createEntrySchema),
   async (c) => {
+    const data = c.req.valid('json');
     try {
-      return c.json(await createCatalogEntry(c.req.valid('json')), 201);
+      const created = await createCatalogEntry(data);
+      auditCatalogMutation(c, 'entry_created', created.id, {
+        slug: data.slug,
+        name: data.name,
+      });
+      return c.json(created, 201);
     } catch (error) {
       return mapCatalogError(error, c);
     }
@@ -131,11 +172,23 @@ llmProviderCatalogMutationRoutes.post(
     const data = c.req.valid('json');
     const auth = c.get('auth');
     try {
-      return c.json(await createRevision({
+      const created = await createRevision({
         entryId,
         ...data,
         createdBy: auth.user.id,
-      }), 201);
+      });
+      // The base URL decides where partner prompts are sent, and catalog
+      // authoring deliberately has no four-eyes approval — so the decisive
+      // value has to be in the trail. Host only: the path is operator-typed
+      // free text and must not become a place a key can land in audit_logs.
+      auditCatalogMutation(c, 'revision_created', entryId, {
+        revisionId: created.id,
+        revision: created.revision,
+        baseUrlHost: hostOf(data.baseUrl),
+        authMode: data.authMode,
+        modelIds: Object.keys(data.modelMap).sort(),
+      });
+      return c.json(created, 201);
     } catch (error) {
       return mapCatalogError(error, c);
     }
@@ -222,6 +275,31 @@ llmProviderCatalogMutationRoutes.post(
         harnessVersion: redactSecret(result.harnessVersion, apiKey),
       };
     } catch (error) {
+      // Our egress controls refusing the target is a different verdict from
+      // the provider failing the check: 502 "Fidelity check failed" points the
+      // operator at the provider, when what actually needs fixing is the base
+      // URL on the revision. It also gets its own audit row — an operator
+      // repeatedly aiming a catalog revision at metadata/RFC1918 space is a
+      // signal worth keeping, and the platform-admin middleware's method+path
+      // row cannot distinguish it from an ordinary failed verification.
+      if (isEgressBlocked(error)) {
+        captureException(error, undefined, {
+          route: 'admin.llm_provider_catalog.verify',
+          stage: 'egress_blocked',
+        });
+        auditCatalogMutation(c, 'verify_egress_blocked', revision.entryId, {
+          revisionId,
+          modelId,
+          baseUrlHost: hostOf(revision.baseUrl),
+          // Bounded: `details` is jsonb, and an error message is not a place to
+          // let an unbounded upstream string into audit_logs.
+          reason: redactSecret(error.message, apiKey).slice(0, 300),
+        });
+        return c.json({
+          error: 'The revision base URL is not a permitted egress target.',
+          code: 'egress_blocked',
+        }, 400);
+      }
       captureException(error, undefined, {
         route: 'admin.llm_provider_catalog.verify',
         stage: 'fidelity_check',

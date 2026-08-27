@@ -283,6 +283,12 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // hard DELETEs as breeze_app under a system RLS context (no role switch).
   // Functional cross-partner forge proof: officeAddinBindingsRls.integration.test.ts.
   ['office_addin_user_bindings', 'partner_id'],
+  // org_merge_events (spec 2026-08-26, org-lifecycle): durable merge record,
+  // survives loser-org erasure (loser_org_id has no FK). Partner-axis (Shape 3),
+  // no org_id column — so no cascade/export registration. GRANT includes DELETE
+  // for cascadeDeletePartner's dynamic partner_id sweep.
+  // Functional cross-partner forge proof: orgMergeEventsRls.integration.test.ts.
+  ['org_merge_events', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`

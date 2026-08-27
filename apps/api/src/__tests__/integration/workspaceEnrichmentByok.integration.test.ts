@@ -125,10 +125,19 @@ const REQUIRED_WORKSPACE_MIGRATIONS = [
 ];
 
 /**
- * EVERY table the three migrations above create — the teardown contract.
- * Keep in sync when `REQUIRED_WORKSPACE_MIGRATIONS` changes; anything missing
- * here leaks into `public` and reds `tenantCascade.integration.test.ts`.
- * Dropped in one statement with CASCADE, so declaration order is irrelevant.
+ * The tables the three migrations above create — the DROP MECHANISM, not the
+ * guard. Dropped in one statement with CASCADE, so declaration order is
+ * irrelevant.
+ *
+ * This list used to be the contract as well, which made the teardown assertion
+ * vacuous in exactly the case that matters: a migration that starts creating a
+ * NEW table is invisible here, so the assertion below would have happily
+ * reported "nothing survived" while the new relation leaked into `public` and
+ * red `tenantCascade.integration.test.ts` minutes later, in another file. The
+ * guard is now a before/after snapshot of every public BASE TABLE (see
+ * `assertPublicSchemaRestored`), which needs no maintenance and catches any
+ * table these migrations grow. Keeping this list current still matters — it is
+ * what actually removes them — but forgetting to now fails HERE, by name.
  */
 const WORKSPACE_FIXTURE_TABLES = [
   // 2026-07-10-workspace-foundation.sql
@@ -183,12 +192,8 @@ async function dropWorkspaceSchema(): Promise<void> {
   });
 }
 
-/**
- * Proves the teardown actually landed. Without this, a silently-failed drop
- * resurfaces as a baffling failure in a DIFFERENT file (`tenantCascade`)
- * potentially minutes later; here it names the leaking tables directly.
- */
-async function assertWorkspaceSchemaGone(): Promise<void> {
+/** Every public BASE TABLE currently in the shared integration database. */
+async function listPublicBaseTables(): Promise<Set<string>> {
   // Deliberately unparameterised + filtered in JS: binding a `text[]` into this
   // kind of probe is the exact shape that shipped `malformed array literal` once
   // before (see extensions/builtinTableProbe.integration.test.ts's header).
@@ -199,24 +204,72 @@ async function assertWorkspaceSchemaGone(): Promise<void> {
       WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
     `,
   );
-  const remaining = new Set(present.map((row) => row.table_name));
-  const survivors = WORKSPACE_FIXTURE_TABLES.filter((table) => remaining.has(table));
-  if (survivors.length > 0) {
+  return new Set(present.map((row) => row.table_name));
+}
+
+/**
+ * The `public` schema this suite inherited, snapshotted before its own
+ * migrations run. `null` when the suite is skipped for want of a DATABASE_URL.
+ *
+ * `vitest.integration.config.ts` sets `fileParallelism: false` and
+ * `sequence.concurrent: false`, so nothing else is creating or dropping tables
+ * between the two snapshots and set-equality is a sound contract.
+ */
+let publicTablesBeforeFixture: Set<string> | null = null;
+
+/**
+ * Proves the teardown actually landed — by COMPARING the schema, not by
+ * re-reading the same hand-maintained list the drop used.
+ *
+ * Without a real comparison, a silently-failed drop resurfaces as a baffling
+ * failure in a DIFFERENT file (`tenantCascade`) potentially minutes later. And
+ * a list-based assertion cannot see the case most likely to happen: one of
+ * these three shipped migrations growing a new `CREATE TABLE`, which would leak
+ * while the assertion reported success. Set-equality against the pre-fixture
+ * snapshot catches any table the migrations create, with no list to maintain,
+ * and reports it here by name.
+ */
+async function assertPublicSchemaRestored(): Promise<void> {
+  if (!publicTablesBeforeFixture) return;
+  const after = await listPublicBaseTables();
+
+  const leaked = [...after].filter((t) => !publicTablesBeforeFixture!.has(t)).sort();
+  const removed = [...publicTablesBeforeFixture].filter((t) => !after.has(t)).sort();
+
+  if (leaked.length > 0) {
     throw new Error(
-      `workspaceEnrichmentByok teardown leaked ee/workspace tables into the shared ` +
-        `integration database: ${survivors.join(', ')}. ` +
-        `Every org_id-columned public table is enumerated by ` +
-        `tenantCascade.integration.test.ts, so these WILL red the core GDPR cascade ` +
-        `contract for the rest of this run.`,
+      `workspaceEnrichmentByok teardown leaked tables into the shared integration ` +
+        `database: ${leaked.join(', ')}. Every org_id-columned public table is ` +
+        `enumerated by tenantCascade.integration.test.ts, so these WILL red the core ` +
+        `GDPR cascade contract for the rest of this run. If a shipped ee/workspace ` +
+        `migration grew a new table, add it to WORKSPACE_FIXTURE_TABLES.`,
+    );
+  }
+  if (removed.length > 0) {
+    throw new Error(
+      `workspaceEnrichmentByok teardown dropped tables it did not create: ` +
+        `${removed.join(', ')}. WORKSPACE_FIXTURE_TABLES names a relation that ` +
+        `belongs to the CORE schema — the CASCADE drop just destroyed it for every ` +
+        `suite that runs after this one.`,
     );
   }
 }
 
+/**
+ * Bring the fixture schema up, snapshotting the inherited `public` schema in
+ * between the defensive drop and the migrations.
+ *
+ * Snapshot ordering is load-bearing: it must come AFTER the defensive drop (a
+ * previous run killed mid-flight leaves workspace tables behind, and baking
+ * those into the baseline would make the teardown assertion accept them) and
+ * BEFORE the migrations (so every relation they create counts as this suite's).
+ */
 async function ensureWorkspaceSchema(): Promise<void> {
   // Defensive: a run killed mid-flight (Ctrl-C, CI timeout, an unhandled
   // rejection before afterAll) leaves the schema behind. Start from a known
   // state rather than inheriting a half-migrated one.
   await dropWorkspaceSchema();
+  publicTablesBeforeFixture = await listPublicBaseTables();
   await withWorkspaceAdmin(async (admin) => {
     for (const filename of REQUIRED_WORKSPACE_MIGRATIONS) {
       const content = readFileSync(join(WORKSPACE_MIGRATIONS_DIR, filename), 'utf8');
@@ -281,7 +334,7 @@ describe('workspace enrichment honors partner BYOK', () => {
   afterAll(async () => {
     if (!process.env.DATABASE_URL) return;
     await dropWorkspaceSchema();
-    await assertWorkspaceSchemaGone();
+    await assertPublicSchemaRestored();
   });
 
   runDb(

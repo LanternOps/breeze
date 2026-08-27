@@ -159,7 +159,22 @@
     "disconnectFailed": "Could not disconnect the Anthropic key.",
     "permissionDenied": "Managing the AI provider requires billing permissions and access to all organizations.",
     "loadFailed": "Could not load the AI provider configuration.",
-    "workspaceDisclosure": "Workspace content enrichment uses your configured AI provider and appears in your AI usage."
+    "workspaceDisclosure": "Workspace content enrichment uses your configured AI provider and appears in your AI usage.",
+    "endpointCardTitle": "Endpoint",
+    "endpointCardSubtitle": "Choose where your AI traffic is sent. Breeze vets every option before it appears here.",
+    "directOptionLabel": "Anthropic (direct)",
+    "verifiedModelsLabel": "Verified models: {{models}}",
+    "noVerifiedModels": "No verified models yet",
+    "viewDataNote": "View data-handling note",
+    "hideDataNote": "Hide data-handling note",
+    "confirmDialogTitle": "Switch to {{name}}?",
+    "confirmDialogMessageWithNote": "Before your AI traffic routes through {{name}}, review how it handles your data:",
+    "confirmDialogMessageNoNote": "Switch your AI traffic to {{name}}?",
+    "consentCheckboxLabel": "I understand my AI traffic and content will be processed by {{name}}",
+    "endpointUpdated": "AI endpoint updated.",
+    "endpointUpdateFailed": "Could not update the AI endpoint.",
+    "endpointDelistedBanner": "This endpoint was delisted by Breeze — AI is paused until you choose another",
+    "endpointModelUnverifiedBanner": "The model {{model}} isn't verified on this endpoint. Choose a different model or endpoint to resume AI."
   },
   "partnerDefaults": {
     "notSet": "Not set — orgs configure individually",
@@ -1305,7 +1320,8 @@
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tier 2 tools auto-execute with audit logging. Tier 3 tools still require approval.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Like Action Plan, plus live screenshots between steps and a persistent Stop button.",
     "untitled": "Untitled",
-    "billedToPartnerKey": "Billed to your key — AI usage goes to your own Anthropic account, not Breeze AI credits"
+    "billedToPartnerKey": "Billed to your key — AI usage goes to your own Anthropic account, not Breeze AI credits",
+    "billedToPartnerKeyViaEndpoint": "Billed to your key via {{name}} — AI usage goes to your own Anthropic account, not Breeze AI credits"
   },
   "aiAgentsPage": {
     "title": "AI Agents",
@@ -2982,7 +2998,10 @@
       "trial": "Trial",
       "suspended": "Suspended",
       "churned": "Churned",
-      "offboarding": "Offboarding"
+      "offboarding": "Offboarding",
+      "merging": "Merging…",
+      "archived": "Archived",
+      "purging": "Purging"
     },
     "columns": {
       "devices": "Devices"
@@ -3075,7 +3094,10 @@
       "trial": "Trial",
       "suspended": "Suspended",
       "churned": "Churned",
-      "offboarding": "Offboarding"
+      "offboarding": "Offboarding",
+      "merging": "Merging…",
+      "archived": "Archived",
+      "purging": "Purging"
     },
     "deviceCount": "{{count}} devices",
     "list": {

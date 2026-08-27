@@ -452,7 +452,8 @@
         "createdAt": "Créée",
         "notVerified": "Non vérifiée",
         "verified": "Vérifiée",
-        "activateBlocked": "Chaque modèle mappé doit réussir sa vérification avant que cette révision puisse être activée."
+        "activateBlocked": "Chaque modèle mappé doit réussir sa vérification avant que cette révision puisse être activée.",
+        "listBlocked": "Chaque modèle mappé de la révision active doit réussir sa vérification avant que ce fournisseur puisse être répertorié."
       },
       "authModeOptions": {
         "x-api-key": "En-tête de clé API",

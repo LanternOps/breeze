@@ -35,13 +35,46 @@ export type ExtensionAiErrorCode =
   | 'budget_exceeded'
   | 'rate_limited';
 
+export interface ExtensionAiErrorOptions {
+  /**
+   * `true` when no amount of retrying can clear this failure — only a human
+   * changing configuration, a plan, or a budget will. See the class doc.
+   */
+  permanent?: boolean;
+}
+
+/**
+ * An expected AI failure, carrying BOTH a code (what went wrong) and a
+ * `permanent` flag (whether retrying can ever help).
+ *
+ * The two are deliberately orthogonal, because the code alone does not answer
+ * the retry question and treating it as if it did is what burned an ingest job
+ * to `failed` on a config typo:
+ *
+ *  - `budget_exceeded` is transient when it comes from a daily/monthly spend
+ *    cap (those roll over) and PERMANENT when it comes from the org's AI switch
+ *    being off or the partner being on a plan without AI.
+ *  - `ai_unavailable` is transient for a provider outage or a rejected partner
+ *    key (an operator must see those stay loud) and PERMANENT when the
+ *    configured model id simply is not a priced model — a deployment typo that
+ *    every retry will reproduce exactly.
+ *
+ * Callers that retry (job runners, ingest phases) must branch on `permanent`,
+ * not on the code. `permanent` defaults to `false`: a host built before this
+ * field existed, or any two-argument construction, keeps the old "retry may
+ * help" meaning rather than silently draining a phase.
+ */
 export class ExtensionAiError extends Error {
+  readonly permanent: boolean;
+
   constructor(
     public readonly code: ExtensionAiErrorCode,
     message: string,
+    options: ExtensionAiErrorOptions = {},
   ) {
     super(message);
     this.name = 'ExtensionAiError';
+    this.permanent = options.permanent ?? false;
   }
 }
 

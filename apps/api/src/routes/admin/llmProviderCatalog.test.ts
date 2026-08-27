@@ -27,9 +27,15 @@ vi.mock('../../services/llmProviderCatalog', () => ({
   },
 }));
 
-vi.mock('../../services/llm/providerFidelityHarness', () => ({
-  runFidelityCheck: runFidelityCheckMock,
-}));
+// Only `runFidelityCheck` is stubbed: the route branches on the harness's REAL
+// error classes, so a locally re-declared `LlmEgressViolationError` here would
+// make the instanceof check pass against a class the harness never throws.
+vi.mock('../../services/llm/providerFidelityHarness', async () => {
+  const actual = await vi.importActual<typeof import('../../services/llm/providerFidelityHarness')>(
+    '../../services/llm/providerFidelityHarness',
+  );
+  return { ...actual, runFidelityCheck: runFidelityCheckMock };
+});
 
 const { createAuditLogAsyncMock, captureExceptionMock } = vi.hoisted(() => ({
   createAuditLogAsyncMock: vi.fn(async () => undefined),
@@ -64,6 +70,9 @@ vi.mock('../../middleware/auth', async () => {
 
 import { Hono } from 'hono';
 import { adminRoutes } from './index';
+import { LlmEgressViolationError } from '../../services/llm/providerFidelityHarness';
+import { SsrfBlockedError } from '../../services/urlSafety';
+import { LlmProviderCatalogError } from '../../services/llmProviderCatalog';
 
 type FakeAuth = {
   user: { id: string; email: string; name: string; isPlatformAdmin: boolean };
@@ -390,6 +399,190 @@ describe('admin LLM provider catalog routes', () => {
 
     expect(response.status).toBe(502);
     expect(captureExceptionMock).toHaveBeenCalledWith(harnessError, undefined, expect.any(Object));
+  });
+
+  describe('verify route guards', () => {
+    it('404s without running the harness when the revision does not exist', async () => {
+      serviceMocks.getCatalogRevisionById.mockResolvedValue(null);
+
+      const response = await jsonRequest(
+        buildApp(platformAdmin),
+        `/admin/llm-provider-catalog/revisions/${REVISION_ID}/verify`,
+        'POST',
+        { modelId: 'claude-sonnet-4-6', apiKey: TEST_API_KEY },
+      );
+
+      expect(response.status).toBe(404);
+      // The transient key must not reach an outbound client for a revision the
+      // caller cannot even name.
+      expect(runFidelityCheckMock).not.toHaveBeenCalled();
+      expect(serviceMocks.recordVerification).not.toHaveBeenCalled();
+      expect(await response.text()).not.toContain(TEST_API_KEY);
+    });
+
+    it('400s without running the harness when the model is not mapped by the revision', async () => {
+      const response = await jsonRequest(
+        buildApp(platformAdmin),
+        `/admin/llm-provider-catalog/revisions/${REVISION_ID}/verify`,
+        'POST',
+        { modelId: 'claude-opus-4-8', apiKey: TEST_API_KEY },
+      );
+
+      expect(response.status).toBe(400);
+      // Without this guard the harness would be handed `undefined.providerModel`
+      // — and a verification could be banked against a model the revision never
+      // mapped, which the activation gate would then read as satisfied.
+      expect(runFidelityCheckMock).not.toHaveBeenCalled();
+      expect(serviceMocks.recordVerification).not.toHaveBeenCalled();
+      expect(await response.text()).not.toContain(TEST_API_KEY);
+    });
+  });
+
+  describe('blocked egress verdicts', () => {
+    const egressCases = [
+      [
+        'an origin-pinning refusal from the harness fetch',
+        () => new LlmEgressViolationError(
+          'blocked egress to http://169.254.169.254; this client is pinned to https://llm.example.test',
+        ),
+      ],
+      [
+        'an SSRF policy rejection from safeFetch',
+        () => new SsrfBlockedError(
+          'all resolved IPs for llm.example.test are private/loopback/link-local',
+        ),
+      ],
+    ] as const;
+
+    it.each(egressCases)(
+      'reports %s as a 400 egress_blocked verdict, not a generic upstream 502',
+      async (_label, makeError) => {
+        const error = makeError();
+        runFidelityCheckMock.mockRejectedValue(error);
+
+        const response = await jsonRequest(
+          buildApp(platformAdmin),
+          `/admin/llm-provider-catalog/revisions/${REVISION_ID}/verify`,
+          'POST',
+          { modelId: 'claude-sonnet-4-6', apiKey: TEST_API_KEY },
+        );
+
+        // 502 "the provider failed its fidelity check" sends the operator to
+        // the provider; this is OUR egress policy refusing the base URL, which
+        // is a different diagnosis and their own to fix.
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({ code: 'egress_blocked' });
+        expect(serviceMocks.recordVerification).not.toHaveBeenCalled();
+        expect(captureExceptionMock).toHaveBeenCalledWith(
+          error,
+          undefined,
+          expect.objectContaining({ stage: 'egress_blocked' }),
+        );
+        expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({
+          action: 'platform_admin.llm_provider_catalog.verify_egress_blocked',
+          resourceId: ENTRY_ID,
+          details: expect.objectContaining({
+            revisionId: REVISION_ID,
+            modelId: 'claude-sonnet-4-6',
+          }),
+        }));
+      },
+    );
+
+    it('redacts the transient key from the egress-blocked response and audit row', async () => {
+      runFidelityCheckMock.mockRejectedValue(
+        new LlmEgressViolationError(`blocked egress while presenting ${TEST_API_KEY}`),
+      );
+
+      const response = await jsonRequest(
+        buildApp(platformAdmin),
+        `/admin/llm-provider-catalog/revisions/${REVISION_ID}/verify`,
+        'POST',
+        { modelId: 'claude-sonnet-4-6', apiKey: TEST_API_KEY },
+      );
+
+      expect(await response.text()).not.toContain(TEST_API_KEY);
+      expect(JSON.stringify(createAuditLogAsyncMock.mock.calls)).not.toContain(TEST_API_KEY);
+    });
+
+    it('still reports an ordinary harness failure as a 502', async () => {
+      runFidelityCheckMock.mockRejectedValue(new Error('upstream returned 500'));
+
+      const response = await jsonRequest(
+        buildApp(platformAdmin),
+        `/admin/llm-provider-catalog/revisions/${REVISION_ID}/verify`,
+        'POST',
+        { modelId: 'claude-sonnet-4-6', apiKey: TEST_API_KEY },
+      );
+
+      expect(response.status).toBe(502);
+      expect(createAuditLogAsyncMock).not.toHaveBeenCalledWith(expect.objectContaining({
+        action: 'platform_admin.llm_provider_catalog.verify_egress_blocked',
+      }));
+    });
+  });
+
+  describe('authoring audit trail', () => {
+    it('audits the slug of a created catalog entry', async () => {
+      await jsonRequest(
+        buildApp(platformAdmin),
+        '/admin/llm-provider-catalog',
+        'POST',
+        { slug: 'openrouter', name: 'OpenRouter' },
+      );
+
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'platform_admin.llm_provider_catalog.entry_created',
+        resourceId: ENTRY_ID,
+        details: expect.objectContaining({ slug: 'openrouter', name: 'OpenRouter' }),
+        result: 'success',
+      }));
+    });
+
+    it('audits the base URL host a new revision points partner prompts at', async () => {
+      await jsonRequest(
+        buildApp(platformAdmin),
+        `/admin/llm-provider-catalog/${ENTRY_ID}/revisions`,
+        'POST',
+        { baseUrl: 'https://llm.example.test/v1', authMode: 'bearer', modelMap },
+      );
+
+      // The base URL is the value that decides where partner prompts go, and
+      // catalog authoring has no four-eyes approval — the middleware's
+      // method+path row cannot tell two revisions apart.
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'platform_admin.llm_provider_catalog.revision_created',
+        resourceId: ENTRY_ID,
+        details: expect.objectContaining({
+          revisionId: REVISION_ID,
+          revision: 1,
+          baseUrlHost: 'llm.example.test',
+        }),
+        result: 'success',
+      }));
+    });
+
+    it.each([
+      ['create entry', '/admin/llm-provider-catalog', { slug: 'x', name: 'X' }, 'createCatalogEntry', 'entry_created'],
+      [
+        'create revision',
+        `/admin/llm-provider-catalog/${ENTRY_ID}/revisions`,
+        { baseUrl: 'https://llm.example.test/v1', authMode: 'bearer', modelMap },
+        'createRevision',
+        'revision_created',
+      ],
+    ] as const)('does not audit a rejected %s as a success', async (_label, path, body, mock, action) => {
+      serviceMocks[mock].mockRejectedValue(
+        new LlmProviderCatalogError('Base URL host is not a permitted egress target.', 400),
+      );
+
+      const response = await jsonRequest(buildApp(platformAdmin), path, 'POST', body);
+
+      expect(response.status).toBe(400);
+      expect(createAuditLogAsyncMock).not.toHaveBeenCalledWith(expect.objectContaining({
+        action: `platform_admin.llm_provider_catalog.${action}`,
+      }));
+    });
   });
 
   it('rejects malformed model pricing before calling the service', async () => {

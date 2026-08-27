@@ -214,6 +214,25 @@ const ALLOWED_TAG_NAMES = new Set([
   // so proving every current and future path passes a hardcoded literal is a
   // real sweep, not a glance. Unproven means not allowlisted.
   'dbContextOpener',
+  // The AI billing calls (services/aiCostTracker.ts) are deliberately
+  // FAIL-OPEN, so the only thing separating "billing said no" from "billing
+  // never answered" is this tag. Its value is either an HTTP status rendered
+  // from `Response.status` (a 3-digit number) or one of two hardcoded literals
+  // — `transport_error` (fetch rejected: DNS, socket, timeout) and `none` (the
+  // failure happened before any request was made). Bounded by construction and
+  // carrying no tenant, partner, URL or credential; `scrubEvent` deletes
+  // `message` and `extra`, so without it a deduction that quietly dropped
+  // platform-funded spend is indistinguishable from one that succeeded.
+  'ai_billing_http_status',
+  // #3922: how many `llm_egress_events` rows the in-process audit queue shed
+  // during one DB outage. An integer produced by the recorder's own arithmetic
+  // (`queue.length - LLM_EGRESS_QUEUE_LIMIT`) — no tenant, org, host or session
+  // identifier can reach it. Allowlisted rather than left in the message text
+  // because `scrubEvent` deletes `message`, and "the audit trail has gaps" is
+  // not actionable without knowing whether that means five rows or fifty
+  // thousand. Cardinality is bounded in practice by the throttle: at most one
+  // event per outage.
+  'llm_egress_dropped',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;

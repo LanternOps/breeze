@@ -101,6 +101,7 @@ import {
   createCatalogEntry,
   createRevision,
   getAllCatalogEntriesForAdmin,
+  getCatalogEntryName,
   getCatalogRevisionById,
   getListedProviders,
   invalidateLlmProviderCatalogCache,
@@ -321,18 +322,111 @@ describe('LLM provider catalog service', () => {
   it('discards an in-flight listed-provider read that a mutation invalidated mid-flight', async () => {
     let release!: () => void;
     dbState.gate = new Promise<void>((resolve) => { release = resolve; });
+    // The gated read is queued the PRE-mutation rows: it will genuinely see the
+    // entry as listed. Emptying the queue instead would make this pass with the
+    // epoch check deleted, because the stale read would return [] on its own.
     queueListedRead();
 
     const inflight = getListedProviders();
-    // The mutation lands while the read is still on the wire; the rows it is
-    // about to see predate the mutation, so they must never become the cache.
+    // The delisting lands while that read is still on the wire.
     invalidateLlmProviderCatalogCache();
-    dbState.selectResults.length = 0;
+    // Appended AFTER the pre-mutation rows, so the parked read still consumes
+    // those and only the post-invalidation retry sees the delisted world.
+    dbState.selectResults.push([]);
     dbState.gate = null;
     release();
 
+    // Neither the caller's own result nor the cache may carry rows that predate
+    // the delisting — returning them would keep a revoked provider offerable.
     await expect(inflight).resolves.toEqual([]);
     expect(await getListedProviders()).toEqual([]);
+  });
+
+  it('lists an entry whose active revision has every mapped model verified', async () => {
+    dbState.selectResults.push(
+      [{ id: ENTRY_ID, activeRevisionId: REVISION_ID }],
+      [{ modelMap }],
+      [
+        { modelId: 'claude-sonnet-4-6', passed: true, createdAt: T0 },
+        { modelId: 'claude-haiku-4-5', passed: true, createdAt: T0 },
+      ],
+    );
+    dbState.updateResults.push([{ id: ENTRY_ID }]);
+
+    await expect(setEntryStatus({ entryId: ENTRY_ID, status: 'listed' }))
+      .resolves.toBeUndefined();
+    expect(dbState.updateSets[0]).toMatchObject({ status: 'listed' });
+
+    // The active revision must be re-read scoped to THIS entry: an activeRevisionId
+    // pointing at another entry's revision would otherwise be gated against that
+    // revision's verifications.
+    const revisionLookup = renderSql(dbState.selectWheres[1]);
+    expect(revisionLookup.sql).toContain('"llm_provider_catalog_revisions"."id" = $');
+    expect(revisionLookup.sql).toContain('"llm_provider_catalog_revisions"."catalog_entry_id" = $');
+    expect(revisionLookup.params).toEqual([REVISION_ID, ENTRY_ID]);
+
+    // Listing re-runs the SAME verification gate activation uses, at the current
+    // harness version — a pass banked under an older harness must not list.
+    const gate = renderSql(dbState.selectWheres[2]);
+    expect(gate.sql).toContain('"llm_provider_verifications"."revision_id" = $');
+    expect(gate.sql).toContain('"llm_provider_verifications"."harness_version" = $');
+    expect(gate.params).toEqual([REVISION_ID, CURRENT_HARNESS_VERSION]);
+  });
+
+  it('blocks listing when the active revision has a model with no passing verification', async () => {
+    dbState.selectResults.push(
+      [{ id: ENTRY_ID, activeRevisionId: REVISION_ID }],
+      [{ modelMap }],
+      [{ modelId: 'claude-sonnet-4-6', passed: true, createdAt: T0 }],
+    );
+
+    await expect(setEntryStatus({ entryId: ENTRY_ID, status: 'listed' }))
+      .rejects.toThrow(/claude-haiku-4-5/);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('blocks listing when the latest attempt for a mapped model failed', async () => {
+    dbState.selectResults.push(
+      [{ id: ENTRY_ID, activeRevisionId: REVISION_ID }],
+      [{ modelMap }],
+      [
+        // A revocation banked after activation must also stop a later listing —
+        // the entry could have been activated while it still passed.
+        { modelId: 'claude-sonnet-4-6', passed: false, createdAt: T1 },
+        { modelId: 'claude-sonnet-4-6', passed: true, createdAt: T0 },
+        { modelId: 'claude-haiku-4-5', passed: true, createdAt: T0 },
+      ],
+    );
+
+    await expect(setEntryStatus({ entryId: ENTRY_ID, status: 'listed' }))
+      .rejects.toThrow(/claude-sonnet-4-6/);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses to list an entry whose activeRevisionId resolves to no revision row', async () => {
+    dbState.selectResults.push(
+      [{ id: ENTRY_ID, activeRevisionId: REVISION_ID }],
+      // Orphaned pointer (revision deleted, or belonging to another entry).
+      [],
+    );
+
+    await expect(setEntryStatus({ entryId: ENTRY_ID, status: 'listed' }))
+      .rejects.toMatchObject({
+        message: expect.stringMatching(/active catalog revision not found/i),
+        status: 409,
+      });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('does not run the verification gate when delisting', async () => {
+    dbState.updateResults.push([{ id: ENTRY_ID }]);
+
+    await expect(setEntryStatus({ entryId: ENTRY_ID, status: 'delisted' }))
+      .resolves.toBeUndefined();
+    // Delisting is the fail-safe direction; it must never be blocked by a
+    // revision that can no longer be verified.
+    expect(db.select).not.toHaveBeenCalled();
+    expect(dbState.updateSets[0]).toMatchObject({ status: 'delisted' });
   });
 
   it('rejects an empty model map before writing', async () => {
@@ -494,6 +588,21 @@ describe('LLM provider catalog service', () => {
       baseUrl: 'https://llm.example.test/v1',
       authMode: 'bearer',
       modelMap,
+    });
+  });
+
+  describe('getCatalogEntryName (#3922 W4)', () => {
+    it('resolves a name by id independent of listing status', async () => {
+      dbState.selectResults.push([{ name: 'OpenRouter' }]);
+
+      await expect(getCatalogEntryName(ENTRY_ID)).resolves.toBe('OpenRouter');
+      expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns null for an id with no matching row', async () => {
+      dbState.selectResults.push([]);
+
+      await expect(getCatalogEntryName(ENTRY_ID)).resolves.toBeNull();
     });
   });
 });
