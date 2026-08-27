@@ -32,17 +32,27 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
-vi.mock('./tenantOffboarding', () => ({
-  ARCHIVE_PURGE_WARN_14_SENT_AT_KEY: 'archivePurgeWarn14SentAt',
-  ARCHIVE_PURGE_WARN_1_SENT_AT_KEY: 'archivePurgeWarn1SentAt',
-  beginOrganizationOffboarding: vi.fn(async () => ({
-    revocation: {},
-    devicesTargeted: 0,
-    uninstallsQueued: 0,
-    otherCommandsCancelled: 0,
-  })),
-  finalizeOrganizationOffboarding: vi.fn(async () => ({ scopeType: 'organization' })),
-}));
+// Review hardening (M6, round 2): spread the REAL module's exports (via
+// importActual) and override only the two functions this suite needs
+// stubbed. The prior version re-declared the marker key strings as literals
+// here, so the "imported constants" the assertions below read were actually
+// this mock's own copy — a rename of the real constant would have left this
+// suite green while every other consumer broke. Spreading `actual` means the
+// constants come from the one real source of truth, and a rename reddens
+// this file too.
+vi.mock('./tenantOffboarding', async () => {
+  const actual = await vi.importActual<typeof import('./tenantOffboarding')>('./tenantOffboarding');
+  return {
+    ...actual,
+    beginOrganizationOffboarding: vi.fn(async () => ({
+      revocation: {},
+      devicesTargeted: 0,
+      uninstallsQueued: 0,
+      otherCommandsCancelled: 0,
+    })),
+    finalizeOrganizationOffboarding: vi.fn(async () => ({ scopeType: 'organization' })),
+  };
+});
 
 vi.mock('./tenantLifecycle', () => ({
   liftArchiveSuspension: vi.fn(async () => ({ agentTokensRestored: 1 })),

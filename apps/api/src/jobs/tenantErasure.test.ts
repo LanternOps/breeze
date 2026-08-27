@@ -255,35 +255,19 @@ describe('tenantErasure worker', () => {
     expect(cascadeDeleteOrgMock).toHaveBeenCalledTimes(1);
   });
 
-  it('permits a pre-deployment admin-route job without source when its actor is still a platform admin', async () => {
-    orgStateRows.splice(0, orgStateRows.length, [{ status: 'active', deletedAt: null }]);
-    actorStateRows.splice(0, actorStateRows.length, [{ isPlatformAdmin: true }]);
-    createTenantErasureWorker();
-    const processor = capturedWorkerProcessor.current!;
-
-    await processor({
-      name: 'tenant-erasure',
-      id: 'tenant-erasure-org-xyz',
-      // A year-old timestamp stands in for "enqueued before this worker
-      // process (this deployment) started" — the only case a source-less
-      // payload is still trusted (I2).
-      timestamp: Date.now() - 1000 * 60 * 60 * 24 * 365,
-      data: { orgId: 'org-xyz', performedBy: 'admin-1' },
-    });
-
-    expect(cascadeDeleteOrgMock).toHaveBeenCalledTimes(1);
-  });
-
   /**
-   * I2 review hardening: the old guard trusted ANY source-less payload as
-   * long as the actor was currently a platform admin, which also trusts a
-   * hand-crafted `{ orgId, performedBy: <platform-admin-id> }` job dropped
-   * straight onto the queue post-deploy — every real caller has tagged
-   * `source` for a while now. A NEW source-less job (timestamp at/after this
-   * worker process's boot, which module-load time approximates) must be
-   * refused even though its actor is a genuine platform admin.
+   * I2 review hardening, round 2: the source-less compat bypass was removed
+   * entirely (a "predates this worker's boot" bound is process-relative, not
+   * deployment-relative — a restart re-arms it, so a source-less job
+   * enqueued between a deploy and a LATER restart would still slip through).
+   * A source-less payload is refused now even when its actor is a genuine
+   * platform admin — the admin route always stamps `source: 'platform_admin'`
+   * on every enqueue, so a source-less job reaching this guard is either
+   * stale pre-change backlog (refused once, harmlessly — see the module
+   * comment) or a hand-crafted/spoofed payload, and both get the same
+   * refusal.
    */
-  it('refuses a NEW source-less job even when its actor is a platform admin', async () => {
+  it('refuses a source-less job even when its actor is a platform admin', async () => {
     orgStateRows.splice(0, orgStateRows.length, [{ status: 'active', deletedAt: null }]);
     actorStateRows.splice(0, actorStateRows.length, [{ isPlatformAdmin: true }]);
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -293,7 +277,6 @@ describe('tenantErasure worker', () => {
     const result = await processor({
       name: 'tenant-erasure',
       id: 'tenant-erasure-org-xyz',
-      timestamp: Date.now(),
       data: { orgId: 'org-xyz', performedBy: 'admin-1' },
     });
 

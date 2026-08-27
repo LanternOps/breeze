@@ -37,23 +37,6 @@ import { eq } from 'drizzle-orm';
 const QUEUE_NAME = 'tenant-erasure';
 const JOB_NAME = 'tenant-erasure';
 
-/**
- * Review hardening (Task 4 fix round 1, I2): captured once, at module load —
- * which is effectively "this deployment's boot time," since a fresh process
- * is what every new deploy always looks like. It exists ONLY to bound the
- * source-less admin bypass below: every CURRENT caller
- * (`routes/admin/tenantErasure.ts`) stamps `source: 'platform_admin'`
- * explicitly, so the sole legitimate reason a job could ever lack `source`
- * AND still need the admin bypass is that it was enqueued by the
- * PRE-DEPLOYMENT version of that route, before source-tagging shipped, and is
- * still sitting in the queue when this worker process starts up. A
- * source-less job with `timestamp >= WORKER_BOOT_TIME` was necessarily
- * enqueued during THIS deployment's lifetime, when every caller already
- * tags `source` — so it cannot be a legitimate in-flight admin job, only a
- * hand-crafted/spoofed payload, and must be refused.
- */
-const WORKER_BOOT_TIME = Date.now();
-
 export interface TenantErasureJobPayload {
   orgId: string;
   performedBy: string;
@@ -140,10 +123,25 @@ export function createTenantErasureWorker(): Worker {
         || organization.deletedAt !== null;
       // `/admin/tenant-erasure` does not soft-delete first; it authenticates a
       // platform admin, requires MFA + confirmEmail, verifies the org exists,
-      // and then enqueues. Re-check durable actor provenance here for both new
-      // source-tagged jobs and jobs queued before the source field shipped.
-      // This preserves already-queued admin work without treating every
-      // user-attributed payload as an administrative erasure.
+      // and then enqueues, always stamping `source: 'platform_admin'`. Require
+      // that tag STRICTLY — no source-less compat window.
+      //
+      // Review hardening (Task 4 fix round 2, I2): a prior version of this
+      // guard tried to bound a source-less bypass to "jobs older than this
+      // worker process's boot time," but that's process-relative, not
+      // deployment-relative: every restart re-arms the window, so a
+      // source-less job enqueued between a deploy and a LATER restart would
+      // still pass `job.timestamp < bootTime` and could erase a live org.
+      // There is no safe way to date a job against "the deployment that
+      // shipped source-tagging" from inside the worker process itself, so the
+      // bypass is removed entirely instead of bounded. Any in-flight
+      // source-less job from before this change is refused once (with the
+      // refusal audit below) rather than silently trusted; the org itself is
+      // untouched, the org-shell backstops in tenantOffboarding.ts's sweep
+      // (cases 1/3) re-enqueue with a proper `purging`/stamped-merge state if
+      // this was actually an archive-purge or merge handoff, and a genuine
+      // admin erasure is trivially re-run from `/admin/tenant-erasure` (its
+      // own jobId collapses the retry). No compat window is needed.
       let adminRouteAllowsErasure = false;
       if (!statusAllowsErasure) {
         const [actor] = await runOutsideDbContext(() =>
@@ -155,20 +153,7 @@ export function createTenantErasureWorker(): Worker {
               .limit(1)
           )
         );
-        // Review hardening (I2): the old form trusted ANY source-less payload
-        // as long as the actor was currently a platform admin — which also
-        // trusts a hand-crafted `{ orgId, performedBy: <platform-admin-id> }`
-        // job dropped straight onto the queue post-deploy, since every real
-        // caller has tagged `source` for a while now. Require the explicit tag
-        // UNLESS the job predates this worker process (see WORKER_BOOT_TIME
-        // above) — that's the one case a source-less payload can still be
-        // genuine backlog from before source-tagging shipped.
-        const predatesThisDeployment =
-          source === undefined
-          && typeof job.timestamp === 'number'
-          && job.timestamp < WORKER_BOOT_TIME;
-        adminRouteAllowsErasure = actor?.isPlatformAdmin === true
-          && (source === 'platform_admin' || predatesThisDeployment);
+        adminRouteAllowsErasure = actor?.isPlatformAdmin === true && source === 'platform_admin';
       }
 
       if (!statusAllowsErasure && !adminRouteAllowsErasure) {
