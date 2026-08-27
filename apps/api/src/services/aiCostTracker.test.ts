@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
+  calculateCatalogCostCents,
   calculateCostCents,
   checkAiRateLimit,
   checkBillingCredits,
@@ -287,11 +288,96 @@ describe('calculateCostCents', () => {
   });
 });
 
+describe('calculateCatalogCostCents', () => {
+  it('prices each token type from the catalog snapshot rates', () => {
+    const catalogPricing = {
+      catalogEntryId: 'cat-1',
+      revisionId: 'rev-1',
+      inputCentsPerM: 200,
+      outputCentsPerM: 1000,
+      cacheReadCentsPerM: 20,
+      cacheWriteCentsPerM: 250,
+    };
+
+    // 500,001 input = 100.0002 cents, 250,001 output = 250.001 cents,
+    // 100,001 cache-read = 2.00002 cents, 200,001 cache-write = 50.00025
+    // cents. The 402.00147-cent total rounds to exactly 402 cents.
+    expect(calculateCatalogCostCents(
+      catalogPricing,
+      500_001,
+      250_001,
+      100_001,
+      200_001,
+    )).toBe(402);
+  });
+});
+
 // ============================================
 // recordUsageFromSdkResult — token-based fallback (issue #1326)
 // ============================================
 
 describe('recordUsageFromSdkResult', () => {
+  it('uses catalog snapshot pricing instead of a nonzero SDK-reported cost', async () => {
+    const captured = setupDbMocks(null);
+    const catalogPricing = {
+      catalogEntryId: 'cat-1',
+      revisionId: 'rev-1',
+      inputCentsPerM: 200,
+      outputCentsPerM: 1000,
+      cacheReadCentsPerM: 20,
+      cacheWriteCentsPerM: 250,
+    };
+
+    await recordUsageFromSdkResult('sess-catalog', 'org-1', {
+      total_cost_usd: 3.5,
+      usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+    }, 'partner_key', catalogPricing);
+
+    expect(recordedCostCents(captured.sessionSet)).toBe(1200);
+    expect(recordedCostCents(captured.sessionSet)).not.toBe(350);
+  });
+
+  it('prices cache tokens from the catalog snapshot cache rates', async () => {
+    const captured = setupDbMocks(null);
+    const catalogPricing = {
+      catalogEntryId: 'cat-1',
+      revisionId: 'rev-1',
+      inputCentsPerM: 200,
+      outputCentsPerM: 1000,
+      cacheReadCentsPerM: 20,
+      cacheWriteCentsPerM: 250,
+    };
+
+    await recordUsageFromSdkResult('sess-catalog-cache', 'org-1', {
+      total_cost_usd: 3.5,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 1_000_000,
+        cache_creation_input_tokens: 1_000_000,
+      },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+    }, 'partner_key', catalogPricing);
+
+    expect(recordedCostCents(captured.sessionSet)).toBe(270);
+  });
+
+  it('keeps the SDK-reported cost when catalog pricing is omitted', async () => {
+    const captured = setupDbMocks(null);
+
+    await recordUsageFromSdkResult('sess-no-catalog', 'org-1', {
+      total_cost_usd: 0.1234,
+      usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+    }, 'platform');
+
+    expect(recordedCostCents(captured.sessionSet)).toBe(12.34);
+  });
+
   it('stamps partner-key usage on the session and aggregate upsert without deducting credits', async () => {
     const fetchMock = enableBillingService();
     const captured = setupDbMocks(null);
@@ -660,6 +746,47 @@ describe('sumInputTokens', () => {
 // ============================================
 
 describe('recordUsage', () => {
+  it('uses catalog snapshot pricing instead of MODEL_PRICING', async () => {
+    const captured = setupDbMocks(null);
+    const catalogPricing = {
+      catalogEntryId: 'cat-1',
+      revisionId: 'rev-1',
+      inputCentsPerM: 200,
+      outputCentsPerM: 1000,
+      cacheReadCentsPerM: 20,
+      cacheWriteCentsPerM: 250,
+    };
+
+    await recordUsage(
+      'sess-catalog',
+      'org-1',
+      'claude-sonnet-4-6',
+      1_000_000,
+      1_000_000,
+      false,
+      'partner_key',
+      catalogPricing,
+    );
+
+    expect(recordedCostCents(captured.sessionSet)).toBe(1200);
+  });
+
+  it('keeps MODEL_PRICING cost when catalog pricing is omitted', async () => {
+    const captured = setupDbMocks(null);
+
+    await recordUsage(
+      'sess-no-catalog',
+      'org-1',
+      'claude-sonnet-4-6',
+      1_000_000,
+      1_000_000,
+      false,
+      'platform',
+    );
+
+    expect(recordedCostCents(captured.sessionSet)).toBe(1800);
+  });
+
   it('stamps partner-key on insert and conflict-update values without invoking billing deduction', async () => {
     const fetchMock = enableBillingService();
     const captured = setupDbMocks(null);

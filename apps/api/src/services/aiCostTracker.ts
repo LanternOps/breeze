@@ -15,6 +15,15 @@ import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
 
 export type AiBillingSource = 'platform' | 'partner_key';
 
+export interface CatalogPricingSnapshot {
+  catalogEntryId: string;
+  revisionId: string;
+  inputCentsPerM: number;
+  outputCentsPerM: number;
+  cacheReadCentsPerM: number;
+  cacheWriteCentsPerM: number;
+}
+
 // Cost per million tokens, expressed in cents (USD * 100).
 // Source: official Anthropic pricing — https://platform.claude.com/docs/en/about-claude/models/overview
 // (input / output $/MTok): opus-4-8 $5/$25, sonnet-4-6 $3/$15, haiku-4-5 $1/$5, fable-5 $10/$50.
@@ -240,6 +249,22 @@ export function calculateCostCents(
   return Math.round((inputCost + outputCost + cacheReadCost + cacheWriteCost) * 100) / 100;
 }
 
+export function calculateCatalogCostCents(
+  catalogPricing: CatalogPricingSnapshot,
+  inputTokens: number,
+  outputTokens: number,
+  cacheReadInputTokens = 0,
+  cacheCreationInputTokens = 0,
+): number {
+  const inputCost = (inputTokens / 1_000_000) * catalogPricing.inputCentsPerM;
+  const outputCost = (outputTokens / 1_000_000) * catalogPricing.outputCentsPerM;
+  const cacheReadCost =
+    (cacheReadInputTokens / 1_000_000) * catalogPricing.cacheReadCentsPerM;
+  const cacheWriteCost =
+    (cacheCreationInputTokens / 1_000_000) * catalogPricing.cacheWriteCentsPerM;
+  return Math.round((inputCost + outputCost + cacheReadCost + cacheWriteCost) * 100) / 100;
+}
+
 /**
  * Check if the org is within budget limits before sending a message.
  * Returns null if allowed, or an error message if blocked.
@@ -401,8 +426,11 @@ export async function recordUsage(
   outputTokens: number,
   isToolExecution: boolean,
   billingSource: AiBillingSource,
+  catalogPricing?: CatalogPricingSnapshot,
 ): Promise<void> {
-  const costCents = calculateCostCents(model, inputTokens, outputTokens);
+  const costCents = catalogPricing
+    ? calculateCatalogCostCents(catalogPricing, inputTokens, outputTokens)
+    : calculateCostCents(model, inputTokens, outputTokens);
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
   const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -485,9 +513,10 @@ export async function recordUsage(
 /**
  * Record usage from the Claude Agent SDK result message.
  *
- * Cost comes from the SDK's self-reported `total_cost_usd` when it is present and
- * non-zero. The SDK computes that from its own bundled model→price table, so a
- * model id newer than that table makes it report `total_cost_usd: 0`. To avoid
+ * Catalog-backed sessions are always priced from their immutable pricing snapshot.
+ * Otherwise, cost comes from the SDK's self-reported `total_cost_usd` when it is
+ * present and non-zero. The SDK computes that from its own bundled model→price table,
+ * so a model id newer than that table makes it report `total_cost_usd: 0`. To avoid
  * silently recording $0.00 in that case (issue #1326), we fall back to pricing the
  * reported `input_tokens`/`output_tokens` ourselves via MODEL_PRICING. The model id
  * is taken from `result.model` when available, otherwise looked up from the session row.
@@ -517,6 +546,7 @@ export async function recordUsageFromSdkResult(
     toolExecutionCount?: number;
   },
   billingSource: AiBillingSource,
+  catalogPricing?: CatalogPricingSnapshot,
 ): Promise<void> {
   if (!orgId) {
     console.warn(`[AI] Skipping recordUsageFromSdkResult — empty orgId for session=${sessionId}`);
@@ -534,38 +564,49 @@ export async function recordUsageFromSdkResult(
   // variables above, which stay split because each is billed at its own rate.
   const recordedInputTokens = sumInputTokens(result.usage);
 
-  // Prefer the SDK's self-reported cost. Fall back to token-based pricing only when
-  // the SDK reports 0/missing cost but actually consumed tokens — this is the case
-  // that was silently producing $0.00 sessions (the SDK can't price a model id newer
-  // than its bundled table).
-  let costCents = Math.round(result.total_cost_usd * 100 * 100) / 100; // USD → cents, 2 decimal places
-  if (
-    costCents <= 0 &&
-    (inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0 || cacheCreationTokens > 0)
-  ) {
-    const model = result.model ?? (await getSessionModel(sessionId));
-    if (model) {
-      // Include cache read/creation tokens — pricing only input+output here would
-      // systematically undercount cost for cached requests (issue #1326 follow-up).
-      costCents = calculateCostCents(
-        model,
-        inputTokens,
-        outputTokens,
-        cacheReadTokens,
-        cacheCreationTokens
-      );
-      console.warn(
-        `[AI] SDK reported total_cost_usd=${result.total_cost_usd} for session=${sessionId} ` +
-        `(${inputTokens} in / ${outputTokens} out / ${cacheReadTokens} cache-read / ` +
-        `${cacheCreationTokens} cache-write tokens). Priced from MODEL_PRICING ` +
-        `for model "${model}" → ${costCents} cents.`
-      );
-    } else {
-      console.warn(
-        `[AI] SDK reported total_cost_usd=${result.total_cost_usd} for session=${sessionId} ` +
-        `with ${inputTokens} in / ${outputTokens} out tokens but no model id available — ` +
-        `cannot price tokens, recording 0 cents.`
-      );
+  let costCents: number;
+  if (catalogPricing) {
+    costCents = calculateCatalogCostCents(
+      catalogPricing,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+    );
+  } else {
+    // Prefer the SDK's self-reported cost. Fall back to token-based pricing only when
+    // the SDK reports 0/missing cost but actually consumed tokens — this is the case
+    // that was silently producing $0.00 sessions (the SDK can't price a model id newer
+    // than its bundled table).
+    costCents = Math.round(result.total_cost_usd * 100 * 100) / 100; // USD → cents, 2 decimal places
+    if (
+      costCents <= 0 &&
+      (inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0 || cacheCreationTokens > 0)
+    ) {
+      const model = result.model ?? (await getSessionModel(sessionId));
+      if (model) {
+        // Include cache read/creation tokens — pricing only input+output here would
+        // systematically undercount cost for cached requests (issue #1326 follow-up).
+        costCents = calculateCostCents(
+          model,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheCreationTokens
+        );
+        console.warn(
+          `[AI] SDK reported total_cost_usd=${result.total_cost_usd} for session=${sessionId} ` +
+          `(${inputTokens} in / ${outputTokens} out / ${cacheReadTokens} cache-read / ` +
+          `${cacheCreationTokens} cache-write tokens). Priced from MODEL_PRICING ` +
+          `for model "${model}" → ${costCents} cents.`
+        );
+      } else {
+        console.warn(
+          `[AI] SDK reported total_cost_usd=${result.total_cost_usd} for session=${sessionId} ` +
+          `with ${inputTokens} in / ${outputTokens} out tokens but no model id available — ` +
+          `cannot price tokens, recording 0 cents.`
+        );
+      }
     }
   }
   const now = new Date();
