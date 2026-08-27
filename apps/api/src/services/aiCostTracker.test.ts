@@ -107,9 +107,16 @@ const mockDb = db as unknown as {
  * `db.update(aiSessions).set({...})` — the cost recorded on the session row.
  * `sessionModel` is returned by the session-model lookup `db.select(...).limit(1)`.
  */
-function setupDbMocks(sessionModel: string | null, recentCatalogEntryId: string | null = null) {
+/**
+ * `recentCatalogEntryId`: `undefined` = the org has no sessions at all;
+ * `null` = its most recent session ran direct (no catalog entry stamped);
+ * a string = its most recent session routed through that catalog entry.
+ */
+function setupDbMocks(sessionModel: string | null, recentCatalogEntryId?: string | null) {
   const capture: {
     sessionSet?: Record<string, unknown>;
+    /** The `where` condition of the recent-session catalog-entry lookup. */
+    catalogLookupWhere?: unknown;
     aggregateValues: Array<Record<string, unknown>>;
     // The `set` object passed to onConflictDoUpdate on each aggregate upsert —
     // what actually gets applied when the (orgId, period, periodKey) row
@@ -148,7 +155,7 @@ function setupDbMocks(sessionModel: string | null, recentCatalogEntryId: string 
       ? [{ model: sessionModel }]
       : isPartnerLookup
         ? [{ partnerId: 'partner-1' }]
-        : isCatalogEntryLookup && recentCatalogEntryId
+        : isCatalogEntryLookup && recentCatalogEntryId !== undefined
           ? [{ catalogEntryId: recentCatalogEntryId }]
           : [];
     // The recent-catalog-session lookup adds an `.orderBy()` step between
@@ -157,12 +164,15 @@ function setupDbMocks(sessionModel: string | null, recentCatalogEntryId: string 
     // either chain shape resolves to the same queued result.
     return {
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn().mockResolvedValue(result),
-          orderBy: vi.fn(() => ({
+        where: vi.fn((condition: unknown) => {
+          if (isCatalogEntryLookup) capture.catalogLookupWhere = condition;
+          return {
             limit: vi.fn().mockResolvedValue(result),
-          })),
-        })),
+            orderBy: vi.fn(() => ({
+              limit: vi.fn().mockResolvedValue(result),
+            })),
+          };
+        }),
       })),
     };
   });
@@ -1042,12 +1052,40 @@ describe('getUsageSummary catalog endpoint provenance (#3922 W4)', () => {
 
   it('is null when billed to the partner key but no session ever used a catalog endpoint', async () => {
     getLlmBillingSourceForOrgMock.mockResolvedValueOnce('partner_key');
+    setupDbMocks(null, undefined);
+
+    await expect(getUsageSummary('org-1')).resolves.toMatchObject({
+      catalogEndpointName: null,
+    });
+    expect(getCatalogEntryNameMock).not.toHaveBeenCalled();
+  });
+
+  // Filtering the lookup to sessions that HAVE a catalog entry makes the note
+  // sticky forever: once any session ever routed through an endpoint, the
+  // usage page keeps claiming "billed to your key via <name>" in the present
+  // tense after the partner has switched back to Anthropic (direct) or to a
+  // different endpoint. The lookup must read the org's LATEST session.
+  it('is null once the org\'s most recent session ran direct again after a catalog-routed one', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('partner_key');
     setupDbMocks(null, null);
 
     await expect(getUsageSummary('org-1')).resolves.toMatchObject({
       catalogEndpointName: null,
     });
     expect(getCatalogEntryNameMock).not.toHaveBeenCalled();
+  });
+
+  it('never narrows the lookup to catalog-routed sessions', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('partner_key');
+    getCatalogEntryNameMock.mockResolvedValueOnce('OpenRouter');
+    const captured = setupDbMocks(null, 'entry-1');
+
+    await getUsageSummary('org-1');
+
+    // `isNotNull` is mocked to `{ _isNotNull: [...] }`, so an unfiltered
+    // lookup leaves no such marker anywhere in the captured condition.
+    expect(captured.catalogLookupWhere).toBeDefined();
+    expect(JSON.stringify(captured.catalogLookupWhere)).not.toContain('_isNotNull');
   });
 
   it('is null without a lookup when billed to the platform key', async () => {

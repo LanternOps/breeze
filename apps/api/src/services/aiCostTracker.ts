@@ -1244,18 +1244,25 @@ export async function getSessionHistory(orgId: string, options: { limit?: number
 }
 
 /**
- * Most recent catalog entry a session on this org used, or null if none of
- * the org's sessions ever routed through a catalog endpoint (#3922 W4). Reads
- * the raw `catalog_entry_id` stamped on session create
+ * The catalog entry the org's MOST RECENT session used, or null when that
+ * session ran direct (or the org has no sessions at all) (#3922 W4). Reads the
+ * raw `catalog_entry_id` stamped on session create
  * ({@link streamingSessionManager.ts}) — independent of the entry's current
  * listing status, since a delisted-but-previously-used endpoint should still
  * be nameable on the usage page.
+ *
+ * Deliberately NOT filtered to sessions that have a catalog entry: the usage
+ * page renders this in the present tense ("Billed to your key via <name>"), so
+ * narrowing to catalog-routed sessions would pin the note to the last endpoint
+ * ever used and keep asserting it after the partner switched back to Anthropic
+ * (direct) or to a different endpoint — a misstatement that never self-corrects
+ * on the exact surface this wave designates for routing provenance.
  */
 async function getRecentCatalogEntryIdForOrg(orgId: string): Promise<string | null> {
   const [row] = await db
     .select({ catalogEntryId: aiSessions.catalogEntryId })
     .from(aiSessions)
-    .where(and(eq(aiSessions.orgId, orgId), isNotNull(aiSessions.catalogEntryId)))
+    .where(eq(aiSessions.orgId, orgId))
     .orderBy(desc(aiSessions.lastActivityAt))
     .limit(1);
   return row?.catalogEntryId ?? null;

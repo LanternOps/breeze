@@ -5,6 +5,7 @@ import { zValidator } from '../lib/validation';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { OFFERABLE_AI_MODELS } from '../services/aiCostTracker';
+import { resolveDefaultModel } from '../services/aiModel';
 import { isLlmProviderCatalogEnabled } from '../services/llm/llmConfigResolver';
 import { getListedProviders } from '../services/llmProviderCatalog';
 import {
@@ -82,6 +83,12 @@ aiProviderRoutes.get(
       provider: status.provider,
       keyLast4: status.keyLast4,
       defaultModel: status.defaultModel,
+      // What `resolveLlmConfig` will actually send (`defaultModel ??
+      // resolveDefaultModel()`). The stored pin alone is not enough for the UI
+      // to decide whether the selected catalog endpoint still verifies the
+      // model in play: an unpinned partner routes the deployment default and
+      // can hit `model_unverified` just the same (#3922 W4).
+      effectiveDefaultModel: status.defaultModel ?? resolveDefaultModel(),
       status: status.status,
       verifiedAt: status.verifiedAt?.toISOString() ?? null,
       lastError: status.lastError,

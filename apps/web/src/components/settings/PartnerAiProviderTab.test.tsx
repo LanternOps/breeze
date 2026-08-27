@@ -399,5 +399,78 @@ describe('PartnerAiProviderTab', () => {
       await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-card')).toBeInTheDocument());
       expect(screen.queryByTestId('ai-provider-endpoint-delisted-banner')).toBeNull();
     });
+
+    // The recovery path the API's `catalogEntryId: null` escape hatch exists
+    // for: the pinned entry is delisted (or the catalog flag was switched off),
+    // so `catalog` comes back EMPTY. Gating the card on catalog length alone
+    // rendered a healthy "your key, verified" page with no banner and no
+    // control able to send `catalogEntryId: null`, while the resolver 503s
+    // every AI request and key rotation 409s — leaving DELETE (which destroys
+    // the stored key) as the only way out.
+    it('still renders the card, the delisted banner, and the direct radio when the catalog comes back empty', async () => {
+      mockApi({ ...connectedStatus, catalogEntryId: 'entry-gone', catalog: [] });
+      render(<PartnerAiProviderTab />);
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-card')).toBeInTheDocument());
+      expect(screen.getByTestId('ai-provider-endpoint-delisted-banner')).toBeInTheDocument();
+      expect(screen.getByTestId('ai-provider-endpoint-direct-radio')).toBeInTheDocument();
+    });
+
+    it('lets a partner with an empty catalog escape back to Anthropic (direct)', async () => {
+      mockApi(
+        { ...connectedStatus, catalogEntryId: 'entry-gone', catalog: [] },
+        { 'POST /ai/provider/endpoint': () => jsonRes({ catalogEntryId: null, configVersion: 4 }) },
+      );
+      render(<PartnerAiProviderTab />);
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-direct-radio')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('ai-provider-endpoint-direct-radio'));
+
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/ai/provider/endpoint', {
+        method: 'POST',
+        body: JSON.stringify({ catalogEntryId: null, acknowledgeDataNote: false }),
+      }));
+    });
+
+    it('hides the endpoint card entirely when the catalog is empty and nothing is pinned', async () => {
+      mockApi({ ...connectedStatus, catalogEntryId: null, catalog: [] });
+      render(<PartnerAiProviderTab />);
+
+      await waitFor(() => expect(screen.getByTestId('partner-ai-provider-tab')).toBeInTheDocument());
+      expect(screen.queryByTestId('ai-provider-endpoint-card')).toBeNull();
+    });
+
+    // The resolver evaluates `defaultModel ?? resolveDefaultModel()`, so a
+    // partner who never pinned a model can still hit `model_unverified` when a
+    // re-verification shrinks the entry's verified models. Comparing against
+    // the stored (null) pin rendered no banner at all while AI 503'd.
+    it('renders the model-unverified banner for an unpinned partner using the effective default model', async () => {
+      mockApi({
+        ...connectedStatus,
+        defaultModel: null,
+        effectiveDefaultModel: 'claude-opus-4-8',
+        catalogEntryId: 'entry-1',
+        catalog: [CATALOG_ENTRY],
+      });
+      render(<PartnerAiProviderTab />);
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-model-unverified-banner')).toBeInTheDocument());
+      expect(screen.getByTestId('ai-provider-endpoint-model-unverified-banner').textContent)
+        .toContain('claude-opus-4-8');
+    });
+
+    it('does not render the model-unverified banner when the effective default model is verified', async () => {
+      mockApi({
+        ...connectedStatus,
+        defaultModel: null,
+        effectiveDefaultModel: 'claude-sonnet-4-6',
+        catalogEntryId: 'entry-1',
+        catalog: [CATALOG_ENTRY],
+      });
+      render(<PartnerAiProviderTab />);
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-card')).toBeInTheDocument());
+      expect(screen.queryByTestId('ai-provider-endpoint-model-unverified-banner')).toBeNull();
+    });
   });
 });

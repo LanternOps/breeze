@@ -24,6 +24,10 @@ type ProviderStatus = {
   provider: string | null;
   keyLast4: string | null;
   defaultModel: string | null;
+  /** The model the resolver will actually send (`defaultModel ?? platform
+   *  default`). Verification banners must compare against this, not the
+   *  stored pin — an unpinned partner still routes a concrete model (#3922 W4). */
+  effectiveDefaultModel: string | null;
   status: 'platform' | 'active' | 'error';
   verifiedAt: string | null;
   lastError: string | null;
@@ -36,8 +40,11 @@ type ProviderStatus = {
   catalog: CatalogEntry[];
 };
 
-/** Mutation responses (POST /key, DELETE) omit supportedModels/catalog — preserve them. */
-type ProviderMutationResult = Omit<Partial<ProviderStatus>, 'supportedModels' | 'catalog'>;
+/** Mutation responses (POST /key, DELETE) omit these read-only fields — preserve them. */
+type ProviderMutationResult = Omit<
+  Partial<ProviderStatus>,
+  'supportedModels' | 'catalog' | 'effectiveDefaultModel'
+>;
 
 export default function PartnerAiProviderTab() {
   const { t } = useTranslation('settings');
@@ -66,6 +73,7 @@ export default function PartnerAiProviderTab() {
         supportedModels: Array.isArray(data.supportedModels) ? data.supportedModels : [],
         catalog: Array.isArray(data.catalog) ? data.catalog : [],
         catalogEntryId: data.catalogEntryId ?? null,
+        effectiveDefaultModel: data.effectiveDefaultModel ?? null,
       });
     } catch {
       setLoadError('failed');
@@ -80,7 +88,13 @@ export default function PartnerAiProviderTab() {
 
   const applyMutationResult = (result: ProviderMutationResult) => {
     setStatus(prev => prev
-      ? { ...prev, ...result, supportedModels: prev.supportedModels, catalog: prev.catalog }
+      ? {
+          ...prev,
+          ...result,
+          supportedModels: prev.supportedModels,
+          catalog: prev.catalog,
+          effectiveDefaultModel: prev.effectiveDefaultModel,
+        }
       : prev);
   };
 
@@ -236,10 +250,15 @@ export default function PartnerAiProviderTab() {
     return status.catalog.find(entry => entry.entryId === status.catalogEntryId) ?? null;
   }, [status]);
   const isEndpointDelisted = !!status && status.catalogEntryId !== null && selectedCatalogEntry === null;
+  // The resolver routes `defaultModel ?? platform default`, so an unpinned
+  // partner still has a concrete model that can fall out of an entry's
+  // verified set. Prefer the stored pin (kept live by the optimistic model
+  // select) and fall back to the server-reported effective default.
+  const effectiveModel = status ? status.defaultModel ?? status.effectiveDefaultModel : null;
   const isEndpointModelUnverified = !!status
     && selectedCatalogEntry !== null
-    && status.defaultModel !== null
-    && !selectedCatalogEntry.models.includes(status.defaultModel);
+    && effectiveModel !== null
+    && !selectedCatalogEntry.models.includes(effectiveModel);
 
   if (loading) {
     return (
@@ -326,10 +345,16 @@ export default function PartnerAiProviderTab() {
         </div>
       )}
 
-      {/* Endpoint card: only when the platform-vetted catalog has entries.
+      {/* Endpoint card: whenever the platform-vetted catalog has entries, OR
+          this partner is still pinned to one. The second half is the recovery
+          path — a delisted entry (or a switched-off catalog flag) returns an
+          EMPTY catalog while the resolver 503s every AI request and key
+          rotation 409s, so the "Anthropic (direct)" radio below must stay
+          reachable; without it, DELETE (which destroys the stored key) is the
+          only way out.
           Selecting an endpoint requires a saved key — attempting it without
           one fails loud via the API's own message, surfaced by runAction. */}
-      {status.catalog.length > 0 && (
+      {(status.catalog.length > 0 || status.catalogEntryId !== null) && (
         <div className="space-y-3 rounded-md border p-4" data-testid="ai-provider-endpoint-card">
           <div className="space-y-1">
             <h3 className="text-sm font-semibold">{t('partnerAiProvider.endpointCardTitle')}</h3>
@@ -346,14 +371,14 @@ export default function PartnerAiProviderTab() {
               <span>{t('partnerAiProvider.endpointDelistedBanner')}</span>
             </div>
           )}
-          {!isEndpointDelisted && isEndpointModelUnverified && status.defaultModel && (
+          {!isEndpointDelisted && isEndpointModelUnverified && effectiveModel && (
             <div
               role="alert"
               className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
               data-testid="ai-provider-endpoint-model-unverified-banner"
             >
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{t('partnerAiProvider.endpointModelUnverifiedBanner', { model: status.defaultModel })}</span>
+              <span>{t('partnerAiProvider.endpointModelUnverifiedBanner', { model: effectiveModel })}</span>
             </div>
           )}
 

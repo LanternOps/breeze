@@ -283,10 +283,42 @@ describe('AI provider routes', () => {
       status: 'active',
       verifiedAt: '2026-08-23T12:00:00.000Z',
       lastError: null,
+      effectiveDefaultModel: 'claude-sonnet-4-6',
       supportedModels: ['claude-sonnet-4-6', 'claude-haiku-4-5'],
       catalogEntryId: null,
       catalog: [],
     });
+  });
+
+  // The resolver routes `defaultModel ?? resolveDefaultModel()`. Without the
+  // effective model on this payload the UI cannot tell that an unpinned
+  // partner is about to send a model the selected endpoint no longer verifies,
+  // so it renders no `model_unverified` banner while AI 503s.
+  it('GET / reports the effective default model the resolver will use when the partner pinned none', async () => {
+    const previous = process.env.ANTHROPIC_MODEL;
+    process.env.ANTHROPIC_MODEL = 'deployment-default-model';
+    try {
+      vi.mocked(getPartnerLlmStatus).mockResolvedValue({
+        configured: true,
+        provider: 'anthropic',
+        keyLast4: '7890',
+        defaultModel: null,
+        status: 'active',
+        verifiedAt: new Date('2026-08-23T12:00:00.000Z'),
+        lastError: null,
+        catalogEntryId: null,
+      });
+
+      const response = await aiProviderRoutes.request('/', { method: 'GET' });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.defaultModel).toBeNull();
+      expect(body.effectiveDefaultModel).toBe('deployment-default-model');
+    } finally {
+      if (previous === undefined) delete process.env.ANTHROPIC_MODEL;
+      else process.env.ANTHROPIC_MODEL = previous;
+    }
   });
 
   it('GET / returns the listed catalog with verified models intersected against the model map, and the current selection', async () => {
