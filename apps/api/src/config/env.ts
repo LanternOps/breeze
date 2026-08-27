@@ -233,6 +233,22 @@ export function eventDispatchQueueSubscribers(): ReadonlySet<SubscriberId> {
   return out;
 }
 
+export type BreezeRole = 'all' | 'api' | 'worker';
+
+/**
+ * Process role for the 3.5d split (#4086). `all` (default) = today's
+ * all-in-one process. Introduced in 3.5b (#4084) so socket-local dispatch can
+ * fail LOUDLY in a worker-role process instead of silently reporting every
+ * agent offline.
+ */
+export function breezeRole(): BreezeRole {
+  const raw = (process.env.BREEZE_ROLE ?? '').trim().toLowerCase();
+  if (raw === '' || raw === 'all') return 'all';
+  if (raw === 'api' || raw === 'worker') return raw;
+  console.warn(`[config] BREEZE_ROLE="${raw}" is not all|api|worker — treating as all`);
+  return 'all';
+}
+
 // Recognizes an AFFIRMATIVE self-host declaration: IS_HOSTED explicitly set to
 // a recognized falsey signal ('false'/'0'/'no'/'off'). Unset / empty / garbage /
 // truthy all return false, so security-weakening, self-host-only features stay

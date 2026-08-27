@@ -610,6 +610,13 @@ const envObjectSchema = z
     EVENT_DISPATCH_MODE: z.string().optional(),
     EVENT_DISPATCH_QUEUE_SUBSCRIBERS: z.string().optional(),
 
+    // Process role for the 3.5d socket/worker split (wave 3.5b, #4084). all
+    // (default) = today's all-in-one process. Read at runtime by
+    // breezeRole() in env.ts. Validated here for format only — absence means
+    // 'all', and this is NOT required-in-production in this wave (that lands
+    // with 3.5d once the split is actually exercised in prod topology).
+    BREEZE_ROLE: z.string().optional(),
+
     // M365 Tier-3 write-action AI tools (m365_disable_user, m365_reset_password)
     // and the action-intents release worker's headless dispatch. Dark by
     // default. Read at runtime by writeActionRuntimeConfig.ts; declared here so
