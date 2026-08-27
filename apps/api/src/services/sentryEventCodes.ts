@@ -87,6 +87,16 @@ export const SENTRY_EVENT_CODES = [
   /** No usable platform LLM key is configured on this deployment. */
   'llm_platform_key_missing',
 
+  // --- ai spend / billing -----------------------------------------------
+  /** The billing service's AI-credit check failed; the gate fell open. */
+  'ai_billing_credits_check_failed',
+  /** A platform-funded AI deduction did not land — that spend went unbilled. */
+  'ai_billing_credits_deduct_failed',
+  /** An org reached the AI billing path with no partner row to bill. */
+  'ai_billing_org_partner_missing',
+  /** A rejected partner AI key could not be stamped (config moved under us). */
+  'ai_partner_key_error_stamp_stale',
+
   // --- backup -----------------------------------------------------------
   /** A backup result matched no job row (deleted, or invisible under RLS). */
   'backup_result_job_not_found',

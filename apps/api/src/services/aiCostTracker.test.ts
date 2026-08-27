@@ -4,7 +4,11 @@ import {
   calculateCostCents,
   checkAiRateLimit,
   checkBillingCredits,
+  checkBillingCreditsDetailed,
   checkBudget,
+  checkBudgetDetailed,
+  checkSystemAiRateLimit,
+  deductBillingCredits,
   getUsageSummary,
   recordSessionlessSdkUsage,
   recordUsage,
@@ -14,6 +18,7 @@ import {
 import { db, withSystemDbAccessContext } from '../db';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { rateLimiter } from './rate-limit';
+import { captureException, captureMessage } from './sentry';
 
 // ============================================
 // Mocks
@@ -72,6 +77,7 @@ vi.mock('../db/schema', () => ({
 vi.mock('./redis', () => ({ getRedis: vi.fn(() => ({})) }));
 vi.mock('./rate-limit', () => ({ rateLimiter: vi.fn() }));
 vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
 const { getLlmBillingSourceForOrgMock } = vi.hoisted(() => ({
   getLlmBillingSourceForOrgMock: vi.fn(),
@@ -1075,5 +1081,335 @@ describe('#2190 self-contexted DB ops', () => {
     // awaited upserts).
     expect(captured.aggregateValues.length).toBe(2);
     expect(vi.mocked(withSystemDbAccessContext).mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ============================================
+// checkSystemAiRateLimit — org-scoped bucket for SYSTEM principals
+// ============================================
+//
+// Reached from `buildExtensionAiContext` whenever the acting principal is not a
+// user (an extension's bulk enrichment batch). It deliberately skips the
+// per-USER bucket `checkAiRateLimit` also consults — that bucket is keyed
+// `ai:msg:user:<id>` with no org component, so a synthetic actor id would put
+// every tenant's automation in ONE deployment-wide 20/min bucket. These tests
+// pin the three properties that makes load-bearing: the key it uses, the
+// ceiling it reads, and the fact that it never touches the user bucket.
+
+describe('checkSystemAiRateLimit', () => {
+  const orgBudget = (over: Record<string, unknown> = {}) => ({
+    enabled: true,
+    monthlyBudgetCents: null,
+    dailyBudgetCents: null,
+    maxTurnsPerSession: 50,
+    messagesPerMinutePerUser: 20,
+    messagesPerHourPerOrg: 200,
+    approvalMode: 'per_step',
+    ...over,
+  }) as Awaited<ReturnType<typeof getEffectiveAiBudget>>;
+
+  it('checks exactly one bucket — ai:msg:org:<id> at the org hourly ceiling', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(orgBudget({ messagesPerHourPerOrg: 750 }));
+    vi.mocked(rateLimiter).mockResolvedValue(
+      { allowed: true, resetAt: new Date() } as Awaited<ReturnType<typeof rateLimiter>>,
+    );
+
+    await expect(checkSystemAiRateLimit('org-sys-1')).resolves.toBeNull();
+
+    // Exactly one call: the per-user bucket must NOT be consulted for a system
+    // principal (it is deployment-global for a synthetic actor id).
+    expect(vi.mocked(rateLimiter)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(rateLimiter)).toHaveBeenCalledWith(
+      expect.anything(),
+      'ai:msg:org:org-sys-1',
+      750,
+      3600,
+    );
+  });
+
+  it('falls back to a 200/hr ceiling when no effective budget row is available', async () => {
+    // getEffectiveAiBudget can resolve nullish for an org with no budget row;
+    // the ceiling must not collapse to `undefined` (which rateLimiter would
+    // treat as no limit at all).
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(
+      undefined as unknown as Awaited<ReturnType<typeof getEffectiveAiBudget>>,
+    );
+    vi.mocked(rateLimiter).mockResolvedValue(
+      { allowed: true, resetAt: new Date() } as Awaited<ReturnType<typeof rateLimiter>>,
+    );
+
+    await expect(checkSystemAiRateLimit('org-sys-2')).resolves.toBeNull();
+    expect(vi.mocked(rateLimiter)).toHaveBeenCalledWith(
+      expect.anything(),
+      'ai:msg:org:org-sys-2',
+      200,
+      3600,
+    );
+  });
+
+  it('rejects with the reset time once the org hourly ceiling is exceeded', async () => {
+    const resetAt = new Date('2026-08-27T12:00:00.000Z');
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(orgBudget());
+    vi.mocked(rateLimiter).mockResolvedValue(
+      { allowed: false, resetAt } as Awaited<ReturnType<typeof rateLimiter>>,
+    );
+
+    await expect(checkSystemAiRateLimit('org-sys-3')).resolves.toBe(
+      `Organization rate limit exceeded. Try again at ${resetAt.toISOString()}`,
+    );
+  });
+
+  it('self-contexts its effective-budget read (#2190 — it is NOT Redis-only)', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(orgBudget());
+    vi.mocked(rateLimiter).mockResolvedValue(
+      { allowed: true, resetAt: new Date() } as Awaited<ReturnType<typeof rateLimiter>>,
+    );
+
+    await checkSystemAiRateLimit('org-sys-4');
+
+    // Contextless (the enrichment/agent paths hold no ambient request
+    // transaction) this read RLS-filters to 0 rows and throws a 404.
+    expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(getEffectiveAiBudget)).toHaveBeenCalledWith('org-sys-4');
+  });
+});
+
+// ============================================
+// Permanent-vs-transient AI denials (review round 2)
+// ============================================
+//
+// `checkBudget`/`checkBillingCredits` answer "is this org allowed to spend?" with
+// a human string, which erases WHY. A caller that retries (the workspace ingest
+// job) needs the why: a daily cap rolls over, an org with AI switched off or a
+// partner on a plan without AI never does. Collapsing both into one retryable
+// shape burned every ingest attempt and stalled the whole pipeline behind a
+// feature the tenant had simply turned off.
+
+describe('checkBillingCreditsDetailed', () => {
+  it('classifies the free/starter plan gate as PERMANENT', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: false, remainingCredits: 0, plan: 'starter',
+    }));
+    setupDbMocks(null);
+
+    await expect(checkBillingCreditsDetailed('org-cd-1', 'platform')).resolves.toEqual({
+      message: 'AI assistant requires the Community plan.',
+      reason: 'plan_gate',
+      permanent: true,
+    });
+  });
+
+  it('classifies exhausted prepaid credits as TRANSIENT (a top-up clears it)', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: false, remainingCredits: 0, plan: 'community',
+    }));
+    setupDbMocks(null);
+
+    await expect(checkBillingCreditsDetailed('org-cd-2', 'platform')).resolves.toMatchObject({
+      reason: 'credits_exhausted',
+      permanent: false,
+    });
+  });
+
+  it('keeps the legacy string-or-null wrapper in step with the detailed result', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValue(billingCreditsResponse({
+      allowed: false, remainingCredits: 0, plan: 'starter',
+    }));
+    setupDbMocks(null);
+
+    await expect(checkBillingCredits('org-cd-3', 'platform')).resolves.toBe(
+      'AI assistant requires the Community plan.',
+    );
+  });
+});
+
+describe('checkBudgetDetailed', () => {
+  const budget = (over: Record<string, unknown> = {}) => ({
+    enabled: true,
+    monthlyBudgetCents: null,
+    dailyBudgetCents: null,
+    maxTurnsPerSession: 50,
+    messagesPerMinutePerUser: 20,
+    messagesPerHourPerOrg: 200,
+    approvalMode: 'per_step',
+    ...over,
+  }) as Awaited<ReturnType<typeof getEffectiveAiBudget>>;
+
+  it('classifies an org with AI switched off as PERMANENT', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(budget({ enabled: false }));
+    setupDbMocks(null);
+
+    await expect(checkBudgetDetailed('org-bd-1', 'platform')).resolves.toEqual({
+      message: 'AI features are disabled for this organization',
+      reason: 'ai_disabled',
+      permanent: true,
+    });
+  });
+
+  it('classifies a spent daily cap as TRANSIENT (it rolls over at UTC midnight)', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(budget({ dailyBudgetCents: 1000 }));
+    mockDb.select.mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ totalCostCents: 1000 }]) })),
+      })),
+    }));
+
+    await expect(checkBudgetDetailed('org-bd-2', 'platform')).resolves.toMatchObject({
+      reason: 'daily_budget',
+      permanent: false,
+    });
+  });
+
+  it('classifies a spent monthly cap as TRANSIENT', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(
+      budget({ dailyBudgetCents: null, monthlyBudgetCents: 5000 }),
+    );
+    mockDb.select.mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ totalCostCents: 5000 }]) })),
+      })),
+    }));
+
+    await expect(checkBudgetDetailed('org-bd-3', 'platform')).resolves.toMatchObject({
+      reason: 'monthly_budget',
+      permanent: false,
+    });
+  });
+
+  it('propagates a PERMANENT plan gate from the credit check ahead of any budget read', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: false, remainingCredits: 0, plan: 'free',
+    }));
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(budget());
+    setupDbMocks(null);
+
+    await expect(checkBudgetDetailed('org-bd-4', 'partner_key')).resolves.toMatchObject({
+      reason: 'plan_gate',
+      permanent: true,
+    });
+    // The plan gate short-circuits — no budget row is read at all.
+    expect(vi.mocked(getEffectiveAiBudget)).not.toHaveBeenCalled();
+  });
+
+  it('resolves null (and the wrapper stays null) when the org is within budget', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(budget({ dailyBudgetCents: 1000 }));
+    mockDb.select.mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([{ totalCostCents: 1 }]) })),
+      })),
+    }));
+
+    await expect(checkBudgetDetailed('org-bd-5', 'platform')).resolves.toBeNull();
+    await expect(checkBudget('org-bd-5', 'platform')).resolves.toBeNull();
+  });
+});
+
+// ============================================
+// Billing-service telemetry (review round 2)
+// ============================================
+//
+// Both billing calls are deliberately FAIL-OPEN: a billing outage must not take
+// AI down for every tenant. The defect was that they were also fail-SILENT —
+// `deductBillingCredits` ignored the HTTP status entirely, so a 500 or a 403
+// from the billing service dropped platform-funded spend on the floor with no
+// console line and no Sentry event, and `checkBillingCredits` returned a bare
+// `null` (= allowed) from four different failure branches. The behaviour stays
+// fail-open; only the silence goes away.
+//
+// Every test uses a DISTINCT org id on purpose: the capture helper throttles to
+// one event per key per hour, and the key is org-scoped, so reusing an id would
+// make a later assertion pass or fail depending on test ORDER.
+
+describe('billing telemetry', () => {
+  it('deductBillingCredits reports a non-2xx billing response with its status, without throwing', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(new Response('nope', { status: 502 }));
+    setupDbMocks(null);
+
+    await expect(deductBillingCredits('org-tel-1', 42)).resolves.toBeUndefined();
+
+    expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        eventCode: 'ai_billing_credits_deduct_failed',
+        tags: expect.objectContaining({ ai_billing_http_status: '502' }),
+      }),
+    );
+  });
+
+  it('deductBillingCredits stays silent on a 2xx deduction', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    setupDbMocks(null);
+
+    await deductBillingCredits('org-tel-2', 7);
+
+    expect(vi.mocked(captureMessage)).not.toHaveBeenCalled();
+    expect(vi.mocked(captureException)).not.toHaveBeenCalled();
+  });
+
+  it('deductBillingCredits reports a transport failure and still does not throw', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    setupDbMocks(null);
+
+    await expect(deductBillingCredits('org-tel-3', 42)).resolves.toBeUndefined();
+    expect(vi.mocked(captureException)).toHaveBeenCalled();
+  });
+
+  it('deductBillingCredits reports an org with no partner to bill', async () => {
+    enableBillingService();
+    mockDb.select.mockImplementation(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([]) })), // org row absent
+      })),
+    }));
+
+    await expect(deductBillingCredits('org-tel-4', 42)).resolves.toBeUndefined();
+    expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'ai_billing_org_partner_missing' }),
+    );
+  });
+
+  it('checkBillingCredits reports a non-2xx credit check but still fails OPEN', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(new Response('nope', { status: 500 }));
+    setupDbMocks(null);
+
+    // Fail-open is the point: a billing outage must not block AI for everyone.
+    await expect(checkBillingCredits('org-tel-5', 'platform')).resolves.toBeNull();
+    expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        eventCode: 'ai_billing_credits_check_failed',
+        tags: expect.objectContaining({ ai_billing_http_status: '500' }),
+      }),
+    );
+  });
+
+  it('checkBillingCredits reports a transport failure but still fails OPEN', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockRejectedValueOnce(new Error('socket hang up'));
+    setupDbMocks(null);
+
+    await expect(checkBillingCredits('org-tel-6', 'platform')).resolves.toBeNull();
+    expect(vi.mocked(captureException)).toHaveBeenCalled();
+  });
+
+  it('says nothing when the billing service is simply not configured (self-hosted default)', async () => {
+    delete process.env.BILLING_SERVICE_URL;
+    delete process.env.BILLING_SERVICE_API_KEY;
+    setupDbMocks(null);
+
+    await expect(checkBillingCredits('org-tel-7', 'platform')).resolves.toBeNull();
+    await expect(deductBillingCredits('org-tel-7', 42)).resolves.toBeUndefined();
+    // A deployment mode, not a failure — reporting it would be pure noise.
+    expect(vi.mocked(captureMessage)).not.toHaveBeenCalled();
+    expect(vi.mocked(captureException)).not.toHaveBeenCalled();
   });
 });
