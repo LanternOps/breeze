@@ -48,6 +48,10 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *                            per-day distinct-device count against org fleet
  *                            size, which only means something once an agent can
  *                            touch more than one device.
+ *  - maxActionsPerRun      — DEFERRED to Part B (#3826): the field ships in
+ *                            wave 4a so partners can pre-configure it and
+ *                            snapshots carry it; Part B's run loop is what
+ *                            enforces it.
  */
 
 export interface CreateAgentRunInput {

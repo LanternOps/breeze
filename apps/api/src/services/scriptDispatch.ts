@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { canonicalizeScriptParameters, hasVariableTokens } from '@breeze/shared';
 
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { devices, organizations, scriptExecutions, scripts, sites, users } from '../db/schema';
 import {
   claimPendingCommandForDelivery,
@@ -340,9 +340,12 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   // schema/scripts.ts:126) and `createdBy` (forwarded to queueCommand, whose
   // `device_commands.created_by` is the SAME FK shape) would otherwise die on
   // a 23503 the first time an agent-released run reaches here. Mirrors the
-  // shipped `commandQueue.ts:855-889` probe precedent exactly: one indexed
-  // PK lookup on whichever id is present, and any id that isn't a users row
-  // degrades to NULL on both columns rather than aborting the dispatch.
+  // shipped `commandQueue.ts:855-889` probe precedent: one indexed PK lookup
+  // on whichever id is present, run inside `withSystemDbAccessContext` (same
+  // as the precedent) since `users` is an RLS-forced dual-axis table and a
+  // contextless read DENIES rather than bypassing — any id that isn't a
+  // users row degrades to NULL on both columns rather than aborting the
+  // dispatch.
   //
   // Single probe for both columns: every real caller passes the SAME id for
   // triggeredBy and createdBy (or supplies only one — automation's raw
@@ -351,15 +354,16 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   // preferred as the probe candidate since it is the one that always reaches
   // queueCommand.
   const actorCandidateId = input.createdBy ?? input.triggeredBy ?? null;
-  let actorIsRealUser = true;
-  if (actorCandidateId) {
-    const [userRow] = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.id, actorCandidateId))
-      .limit(1);
-    actorIsRealUser = Boolean(userRow);
-  }
+  const actorIsRealUser = actorCandidateId
+    ? await withSystemDbAccessContext(async () => {
+        const [userRow] = await db
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.id, actorCandidateId))
+          .limit(1);
+        return Boolean(userRow);
+      })
+    : true;
   const safeTriggeredBy = actorIsRealUser ? input.triggeredBy ?? null : null;
   const safeCreatedBy = actorIsRealUser ? input.createdBy ?? null : null;
   // Attribution for a degraded id survives in the execution record's
