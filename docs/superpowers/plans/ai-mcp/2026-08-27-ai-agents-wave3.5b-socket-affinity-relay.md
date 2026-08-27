@@ -727,6 +727,8 @@ export async function dispatchCommandToAgent(
 
 - [ ] **Step 4: Run tests + typecheck** — PASS. Commit: `feat(api): dispatchCommandToAgent facade — local-first with presence-admitted relay (wave 3.5b #4084)`
 
+**Post-landing review fix (Tasks 4/5, `fix(api): review fixes for wave 3.5b relay-core (#4084)`):** `sealRelayCommand` throws when `APP_ENCRYPTION_KEY_ID` is unset (the AAD binding is the tamper defense, so it must never silently fall back to unbound v1 ciphertext) — but that made the whole relay path boot-time-invisible-dead on a stock deployment (`.env.example` ships the key id empty). Fixed by (a) moving the seal call inside the facade's guarded region so a throw maps to `{ status: 'infrastructure_error' }` instead of escaping as an unhandled exception, and (b) a new `validate.ts` superRefine pairing rule: `BREEZE_ROLE` of `api`/`worker` now requires a non-blank `APP_ENCRYPTION_KEY_ID` at boot. **Task 6 does not need to add this pairing rule — it already exists.**
+
 ---
 
 ### Task 6: Relay consumer worker + boot registration + runtime role assertions

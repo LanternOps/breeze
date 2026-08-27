@@ -1739,6 +1739,29 @@ const envSchema = envObjectSchema
       });
     }
 
+    // BREEZE_ROLE ↔ APP_ENCRYPTION_KEY_ID pairing (wave 3.5b, #4084). Once a
+    // process is split into 'api' or 'worker', cross-process agent command
+    // dispatch goes through agentCommandRelay.ts, which seals every relay job
+    // with AAD-bound v3 ciphertext and REFUSES to seal without a configured
+    // key id (sealRelayCommand throws rather than silently degrading to the
+    // AAD-ignoring v1 fallback). Without this check, a 'api'/'worker' split
+    // deployment boots clean and then fails every single relay dispatch at
+    // runtime with zero boot-time signal — turn that into a boot refusal, same
+    // shape as the M365 pairing rule above. 'all' (default) is unaffected: it
+    // never takes the relay branch for a locally-connected agent.
+    const breezeRoleRaw = (data.BREEZE_ROLE ?? '').trim().toLowerCase();
+    if (
+      (breezeRoleRaw === 'api' || breezeRoleRaw === 'worker')
+      && !data.APP_ENCRYPTION_KEY_ID?.trim()
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['APP_ENCRYPTION_KEY_ID'],
+        message:
+          'APP_ENCRYPTION_KEY_ID is required when BREEZE_ROLE is "api" or "worker" (the cross-process agent command relay envelope requires AAD-bound v3 ciphertext).',
+      });
+    }
+
     // --- Native APNs push (all-or-none) ---
     // Push is optional, so an empty APNS_* set is fine. But a partial set
     // (e.g. team + bundle without the signing key) would silently fail to

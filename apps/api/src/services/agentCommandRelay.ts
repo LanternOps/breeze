@@ -206,10 +206,19 @@ export async function dispatchCommandToAgent(
   const binding: RelayEnvelopeBinding = {
     agentId, commandId: command.id, targetInstanceId: lease.instanceId, expiresAt,
   };
+  let sealedCommand: string;
+  try {
+    sealedCommand = sealRelayCommand(command, binding);
+  } catch (err) {
+    return {
+      status: 'infrastructure_error',
+      message: `relay envelope seal failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
   const data: RelayJobData = {
     relayId, agentId, commandId: command.id,
     targetInstanceId: lease.instanceId, connectionToken: lease.connectionToken,
-    expiresAt, sealedCommand: sealRelayCommand(command, binding),
+    expiresAt, sealedCommand,
   };
   try {
     await getAgentCommandRelayQueue().add('relay-send', data, {

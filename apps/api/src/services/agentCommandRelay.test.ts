@@ -202,6 +202,21 @@ describe('dispatchCommandToAgent facade', () => {
     expect((result as { message: string }).message).toContain('redis down');
   });
 
+  it('sealRelayCommand throws (no APP_ENCRYPTION_KEY_ID) → infrastructure_error, not offline, no enqueue', async () => {
+    vi.mocked(isAgentConnected).mockReturnValue(false);
+    vi.mocked(readAgentPresence).mockResolvedValue({ instanceId: 'inst-9', connectionToken: 'tok-9' });
+    const priorKeyId = process.env.APP_ENCRYPTION_KEY_ID;
+    delete process.env.APP_ENCRYPTION_KEY_ID;
+    try {
+      const result = await dispatchCommandToAgent('agent-1', command);
+      expect(result.status).toBe('infrastructure_error');
+      expect((result as { message: string }).message).toMatch(/seal/i);
+    } finally {
+      process.env.APP_ENCRYPTION_KEY_ID = priorKeyId;
+    }
+    expect(fakeQueue.add).not.toHaveBeenCalled();
+  });
+
   it('forceRelay:true skips the local-first branch even when a local socket exists', async () => {
     vi.mocked(isAgentConnected).mockReturnValue(true);
     vi.mocked(readAgentPresence).mockResolvedValue({ instanceId: 'inst-9', connectionToken: 'tok-9' });
