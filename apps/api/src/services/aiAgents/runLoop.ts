@@ -442,6 +442,16 @@ export function createAgentRunPreToolUse(args: {
       };
     }
 
+    if (check.disposition === 'act') {
+      // Task 3 replaces this with revalidate + reserve + pin. Until then an
+      // 'act' verdict must never reach the allow path below: it would execute
+      // unrevalidated, unpinned and uncounted. Fail closed so no task-ordering
+      // accident (Task 6 landing first) can produce unattended execution.
+      const reason = 'Act-mode execution is not yet wired (revalidation pending)';
+      outcome.deniedActions.push({ tool: toolName, reason });
+      return { allowed: false, error: reason };
+    }
+
     allowedPending.set(toolName, (allowedPending.get(toolName) ?? 0) + 1);
 
     // Ledger write is best-effort: the tool call is already decided ALLOWED

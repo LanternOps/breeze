@@ -246,6 +246,14 @@ function seedRows(options: {
   /** What the partner-baseline agent ROW carries (never the merged set). */
   recipients?: { userIds: string[]; roleIds: string[] };
   agentOrgId?: string | null;
+  /**
+   * `checkAgentGuardrails` reasons about `run.modeAtStart`, NOT
+   * `effective.mode` (runLoop.ts pins the guardrail policy to the mode the
+   * run itself started under). Defaults to 'shadow' to match `policy()`'s
+   * default; pass this whenever a test's `effective.mode` diverges (e.g.
+   * 'act') so the guardrail check actually sees it.
+   */
+  modeAtStart?: AiAgentPolicy['mode'];
 } = {}) {
   const effective = options.effective ?? policy();
   const deviceId = options.deviceId === undefined ? DEVICE_ID : options.deviceId;
@@ -258,7 +266,7 @@ function seedRows(options: {
     deviceId,
     alertId,
     status: 'queued',
-    modeAtStart: 'shadow',
+    modeAtStart: options.modeAtStart ?? 'shadow',
     triggerKind: 'alert',
     policySnapshot: snapshot(effective),
   }]];
@@ -518,6 +526,38 @@ describe('executeAgentRun', () => {
     };
     expect(outcome.deniedActions).toHaveLength(1);
     // A denial is neither an execution nor a proposal.
+    expect(outcome.executedActions).toEqual([]);
+    expect(outcome.proposedActions).toEqual([]);
+  });
+
+  it("act disposition is fail-closed: never reaches allowedPending/startToolExecution (Task 3 not yet wired)", async () => {
+    seedRows({
+      effective: policy({ mode: 'act', toolAllowlist: ['manage_services'] }),
+      modeAtStart: 'act',
+    });
+    scriptQuery({
+      toolCalls: [{ tool: 'manage_services', input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'Spooler' } }],
+      assistantText: 'Could not restart; recorded the finding.',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    // A manifest-matched act op must never be admitted as an allowed tool
+    // call: no ledger write, no action-intent, and the model is told no.
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(startToolExecution).not.toHaveBeenCalled();
+    expect(preVerdicts[0]!.allowed).toBe(false);
+    expect(preVerdicts[0]!.error).toMatch(/act-mode execution is not yet wired/i);
+
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    const outcome = final.patch.outcome as {
+      deniedActions: Array<Record<string, unknown>>;
+      executedActions: unknown[];
+      proposedActions: unknown[];
+    };
+    expect(outcome.deniedActions).toHaveLength(1);
+    expect(outcome.deniedActions[0]!.tool).toBe('manage_services');
     expect(outcome.executedActions).toEqual([]);
     expect(outcome.proposedActions).toEqual([]);
   });
