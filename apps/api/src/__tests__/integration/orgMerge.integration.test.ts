@@ -364,9 +364,9 @@ async function seedFixture(): Promise<Fixture> {
     await db.execute(sql`
       INSERT INTO partners (id, name, slug) VALUES (${f.partner}::uuid, 'Gauntlet MSP', ${`gauntlet-${suffix}`})`);
     await db.execute(sql`
-      INSERT INTO organizations (id, partner_id, name, slug, status) VALUES
-        (${f.loser}::uuid,    ${f.partner}::uuid, 'Loser Co',    ${`loser-${suffix}`},    'active'),
-        (${f.survivor}::uuid, ${f.partner}::uuid, 'Survivor Co', ${`survivor-${suffix}`}, 'active')`);
+      INSERT INTO organizations (id, partner_id, name, slug, status, currency_code) VALUES
+        (${f.loser}::uuid,    ${f.partner}::uuid, 'Loser Co',    ${`loser-${suffix}`},    'active', 'USD'),
+        (${f.survivor}::uuid, ${f.partner}::uuid, 'Survivor Co', ${`survivor-${suffix}`}, 'active', 'USD')`);
 
     // --- principals ------------------------------------------------------
     await db.execute(sql`
@@ -407,7 +407,7 @@ async function seedFixture(): Promise<Fixture> {
 
     // --- repoint + composite-FK chain (deferrable (id, org_id) FKs) --------
     await db.execute(sql`
-      INSERT INTO quotes (id, partner_id, org_id) VALUES (${f.quote}::uuid, ${f.partner}::uuid, ${f.loser}::uuid)`);
+      INSERT INTO quotes (id, partner_id, org_id, currency_code) VALUES (${f.quote}::uuid, ${f.partner}::uuid, ${f.loser}::uuid, 'USD')`);
     await db.execute(sql`
       INSERT INTO quote_lines (id, quote_id, org_id, source_type, quantity, unit_price, line_total)
       VALUES (${f.quoteLine}::uuid, ${f.quote}::uuid, ${f.loser}::uuid, 'manual', 2, 100, 200)`);
@@ -420,7 +420,7 @@ async function seedFixture(): Promise<Fixture> {
       INSERT INTO quote_order_lines (id, order_id, quote_id, org_id, quote_line_id, ordered_qty)
       VALUES (${f.quoteOrderLine}::uuid, ${f.quoteOrder}::uuid, ${f.quote}::uuid, ${f.loser}::uuid, ${f.quoteLine}::uuid, 2)`);
     await db.execute(sql`
-      INSERT INTO invoices (id, partner_id, org_id) VALUES (${f.invoice}::uuid, ${f.partner}::uuid, ${f.loser}::uuid)`);
+      INSERT INTO invoices (id, partner_id, org_id, currency_code) VALUES (${f.invoice}::uuid, ${f.partner}::uuid, ${f.loser}::uuid, 'USD')`);
     await db.execute(sql`
       INSERT INTO invoice_lines (id, invoice_id, org_id, source_type, quantity, unit_price, line_total) VALUES
         (${f.invoiceLineA}::uuid, ${f.invoice}::uuid, ${f.loser}::uuid, 'manual', 1, 50, 50),
@@ -432,9 +432,9 @@ async function seedFixture(): Promise<Fixture> {
         (${f.brandingL}::uuid, ${f.loser}::uuid),
         (${f.brandingS}::uuid, ${f.survivor}::uuid)`);
     await db.execute(sql`
-      INSERT INTO org_ticket_settings (id, org_id) VALUES
-        (${f.ticketSettingsL}::uuid, ${f.loser}::uuid),
-        (${f.ticketSettingsS}::uuid, ${f.survivor}::uuid)`);
+      INSERT INTO org_ticket_settings (id, org_id, rate_currency) VALUES
+        (${f.ticketSettingsL}::uuid, ${f.loser}::uuid, 'USD'),
+        (${f.ticketSettingsS}::uuid, ${f.survivor}::uuid, 'USD')`);
     await db.execute(sql`
       INSERT INTO ai_budgets (id, org_id) VALUES (${f.aiBudgetL}::uuid, ${f.loser}::uuid)`);
 

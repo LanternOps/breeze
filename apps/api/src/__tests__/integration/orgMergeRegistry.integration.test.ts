@@ -170,6 +170,55 @@ const KEY_SUPERSET_EXCEPTIONS = new Set(['remediation_suggestions']);
 // for this table below — only the predicate-equality check is skipped.
 const PREDICATE_CHECK_EXCEPTIONS = new Set(['tenant_variables']);
 
+/**
+ * Every BEFORE UPDATE row trigger living on a table that has an `org_id`
+ * column, split by whether it stops the merge's `UPDATE ... SET org_id`.
+ * Bodies read on a live database; the contract test below fails on anything
+ * present in neither map, so a trigger arriving from main has to be reviewed
+ * rather than guessed at.
+ *
+ * BLOCKING = the repoint cannot happen. Either the trigger RAISEs, or it
+ * silently writes the old value back — equally fatal, and quieter.
+ */
+const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
+  // Conditional immutability guards: RAISE iff org_id changed.
+  action_intents: 'action_intents_immutable_trg',
+  ai_agent_runs: 'ai_agent_runs_immutable_trg',
+  // Unconditional append-only guards: RAISE on any UPDATE (the retention job's
+  // `breeze.allow_audit_retention` GUC is the only bypass, and it is DELETE-path
+  // machinery, not something a merge may set).
+  audit_logs: 'audit_log_block_update',
+  audit_log_chain: 'audit_log_chain_block_update',
+  audit_chain_anchors: 'audit_chain_anchor_block_update',
+  ml_feedback_events: 'ml_feedback_events_block_update',
+  // Silent revert: `NEW.org_id := OLD.org_id` on every direct UPDATE. Scoped
+  // to `WHEN (pg_trigger_depth() = 0)`, so the ON UPDATE CASCADE from
+  // devices/sites still flows through — which is exactly why these two are
+  // `derived` and the engine must never write them itself.
+  partner_export_device_material_state: 'breeze_partner_export_guard_direct_write',
+  partner_export_site_material_state: 'breeze_partner_export_guard_direct_write',
+};
+
+/** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
+const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Validates NEW.org_id against backup_configs(storage_config_id) and raises
+  // 23503 on a mismatch. It constrains the ORDER of the walk, not the write:
+  // c2c_backup_configs.storage_config_id -> backup_configs(id) is a real FK, so
+  // the parents-first topological walk repoints backup_configs first and the
+  // check passes. If that FK ever goes away, this moves to BLOCKING.
+  c2c_backup_configs: 'cross-table org-match check; satisfied by parents-first ordering via a real FK to backup_configs',
+  // Partner-export watermark freezes — they pin partner_export_updated_at, and
+  // touch no other column.
+  devices: 'partner-export watermark freeze',
+  sites: 'partner-export watermark freeze',
+  device_hardware: 'partner-export watermark freeze',
+  // Plain updated_at bumps.
+  elevation_requests: 'updated_at bump',
+  incidents: 'updated_at bump',
+  ticket_parts: 'updated_at bump',
+  time_entries: 'updated_at bump',
+};
+
 describe('Org merge policy registry contract', () => {
   const policies = getOrgMergePolicies();
   const required = new Set([...getOrgCascadeDeleteOrder(), ...EXTRA_REQUIRED]);
@@ -306,6 +355,91 @@ describe('Org merge policy registry contract', () => {
     ).toEqual([]);
   });
 
+  /**
+   * The sibling of the FK guard above, for the other way a policy can be
+   * physically impossible rather than merely wrong.
+   *
+   * `repoint`, `repoint-dedupe`, `keep-survivor` and every `custom` executor
+   * finish by UPDATEing `org_id`. A BEFORE UPDATE row trigger that RAISEs when
+   * `org_id` changes makes that statement unrunnable — and unlike a constraint,
+   * a trigger has no deferral and no bypass the merge can reach:
+   * `ALTER TABLE ... DISABLE TRIGGER` needs table ownership and
+   * `session_replication_role = 'replica'` needs superuser, while the merge
+   * runs as the unprivileged `breeze_app`. The only correct classification for
+   * such a table is one that never writes `org_id` at all.
+   *
+   * Two tables failed this when it was written. `ai_agent_runs` arrived
+   * unclassified with main's AI-agents work. `action_intents` was worse: it had
+   * been `repoint-dedupe` since Wave 2, keyed on a correctly-read unique index,
+   * while `action_intents_block_content_update()` had listed `org_id` in its
+   * immutable set since 2026-07-18 — so any merge of an org holding a single
+   * action intent would have died with `action_intents content is immutable`
+   * after the fence and the drain. The gauntlet missed it for the usual reason
+   * a gauntlet misses things: its fixture creates no rows in that table.
+   *
+   * Detection is deliberately narrow — a NEW-vs-OLD `org_id` comparison in a
+   * function that RAISEs. That is the shape all three known immutability guards
+   * use, and it excludes validators that merely read `NEW.org_id` to check it
+   * against a parent row (`c2c_backup_configs`' storage-config org-match
+   * guard), which constrain the ORDER of the walk rather than forbidding the
+   * write.
+   */
+  it('no org_id-mutating policy sits on a table whose org_id a trigger blocks', async () => {
+    // Kinds that never issue an `UPDATE ... SET org_id`. Everything else does,
+    // `custom` included — every custom executor ends in buildRepoint().
+    const NON_MUTATING = new Set(['leave-for-erasure', 'derived', 'follows-parent', 'loser-shell']);
+
+    const rows = (await db.execute(sql`
+      SELECT c.relname AS table_name, t.tgname AS trigger_name
+        FROM pg_trigger t
+        JOIN pg_class c ON c.oid = t.tgrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+       WHERE NOT t.tgisinternal
+         AND (t.tgtype & 2)  <> 0   -- BEFORE
+         AND (t.tgtype & 16) <> 0   -- UPDATE
+         AND (t.tgtype & 1)  <> 0   -- FOR EACH ROW
+         AND EXISTS (
+           SELECT 1 FROM pg_attribute a
+            WHERE a.attrelid = c.oid AND a.attname = 'org_id' AND NOT a.attisdropped
+         )
+       ORDER BY 1, 2`)) as unknown as Array<{ table_name: string; trigger_name: string }>;
+
+    // Vacuity guard: the enumeration must actually find things. A bitmask slip
+    // or a schema filter typo would otherwise make every assertion below pass
+    // over an empty list.
+    expect(rows.length).toBeGreaterThanOrEqual(10);
+
+    // Anything discovered but unreviewed fails here FIRST, so a new BEFORE
+    // UPDATE trigger arriving from main forces a decision instead of silently
+    // landing in whichever bucket a heuristic guessed.
+    const unreviewed = rows
+      .filter((r) => !(r.table_name in ORG_ID_BLOCKING_TRIGGERS) && !(r.table_name in ORG_ID_BENIGN_TRIGGERS))
+      .map((r) => `${r.table_name}.${r.trigger_name}`);
+    expect(
+      unreviewed,
+      'new BEFORE UPDATE row trigger(s) on an org_id table — read each body and add it to ORG_ID_BLOCKING_TRIGGERS (it RAISEs on, or silently reverts, an org_id change) or ORG_ID_BENIGN_TRIGGERS (with the reason it does not stop a repoint)',
+    ).toEqual([]);
+
+    // Neither map may name a trigger that no longer exists — a stale entry is
+    // how an allowlist quietly stops covering anything.
+    const live = new Set(rows.map((r) => r.table_name));
+    const stale = [...Object.keys(ORG_ID_BLOCKING_TRIGGERS), ...Object.keys(ORG_ID_BENIGN_TRIGGERS)]
+      .filter((t) => !live.has(t));
+    expect(stale, 'allowlisted tables with no BEFORE UPDATE row trigger any more — drop the entry').toEqual([]);
+
+    const violations = Object.keys(ORG_ID_BLOCKING_TRIGGERS)
+      .filter((table) => {
+        const kind = policies.get(table)?.kind;
+        return kind !== undefined && !NON_MUTATING.has(kind);
+      })
+      .map((table) => `${table} (${policies.get(table)?.kind}) blocked by ${ORG_ID_BLOCKING_TRIGGERS[table]}`);
+
+    expect(
+      violations,
+      'these tables are classified with a policy that UPDATEs org_id, but a BEFORE UPDATE trigger stops an org_id change — the merge would abort (or silently no-op) mid-walk. Reclassify them `leave-for-erasure`: there is no bypass available to breeze_app',
+    ).toEqual([]);
+  });
+
   it('every repoint-dedupe key matches a real unique index (columns and partial predicate)', async () => {
     for (const [table, policy] of policies) {
       if (policy.kind !== 'repoint-dedupe') continue;
@@ -349,7 +483,7 @@ describe('Org merge policy registry contract', () => {
 // only to prove each statement is syntactically valid against the table's
 // real schema and exercises every real key/keyWhere literal, including the
 // expression-key forms (`lower({name})`, the tunnel_allowlists COALESCE key)
-// and the keyWhere IN-list (action_intents). Real Postgres is the arbiter
+// and the keyWhere forms. Real Postgres is the arbiter
 // here, matching the "compiled-SQL asserts have been wrong before" caveat in
 // the task brief.
 describe('Org merge repoint-dedupe executors run against real Postgres', () => {

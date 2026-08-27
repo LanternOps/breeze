@@ -1,11 +1,12 @@
 /**
  * Hand-written org-merge executors (org-lifecycle Wave 2, Task 3).
  *
- * The registry (`orgMergeRegistry.ts`) classifies thirteen tables as `custom`.
+ * The registry (`orgMergeRegistry.ts`) classifies fourteen tables as `custom`.
  * Four were custom from the start (`contacts`, `backup_configs`,
- * `audit_baselines`, `pax8_orders`); the other nine were reclassified by review,
- * in three groups. Each entry's registry note is this file's spec — read them
- * together.
+ * `audit_baselines`, `pax8_orders`); nine were reclassified by review, in the
+ * three groups below; `ai_agents` arrived with main's AI-agents work and hits
+ * both of the last two at once. Each entry's registry note is this file's
+ * spec — read them together.
  *
  *   - spec compliance: `api_keys` and `enrollment_keys` must be REVOKED rather
  *     than repointed (controller ruling R2), which no generic policy expresses;
@@ -33,9 +34,9 @@
  *     children whose collisions must be resolved before their parent moves.
  *
  * NEVER add a DELETE to `contacts`, `backup_configs`, `audit_baselines`,
- * `fleet_findings` or `incidents`: their registry notes each record the
- * cascade, the credential material or the case file that a delete would take
- * with it.
+ * `fleet_findings`, `ai_agents` or `incidents`: their registry notes each
+ * record the cascade, the credential material, the RESTRICT child or the case
+ * file that a delete would take with it.
  */
 import { sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
@@ -595,6 +596,47 @@ const mergeFleetFindings: CustomMergeExecutor = async (loser, survivor) => {
 };
 
 // ---------------------------------------------------------------------------
+// ai_agents — `ai_agents_org_kind_uq ON ai_agents(org_id, kind) WHERE
+// disabled_at IS NULL`. Disable (never delete) the loser's colliding agents so
+// they leave the partial index, then repoint everything.
+//
+// Deleting is not an option: ai_agent_runs.agent_id, ai_sessions.agent_id and
+// automations.managed_by_agent_id are all ON DELETE RESTRICT, and the loser's
+// runs are `leave-for-erasure` — they are still pointing at the row when the
+// merge runs, so the DELETE would raise 23503 and abort the whole merge.
+//
+// The write mirrors agentService.disableAgent (`disabled_at`, `enabled=false`,
+// `updated_at`) so a merge-disabled agent is indistinguishable from a
+// hand-disabled one to every reader. `disabled_by` is deliberately left NULL:
+// no user disabled it, the merge did, and the note below is what tells the
+// operator. The partner-wide rows (org_id IS NULL) are out of merge scope
+// entirely, so `ai_agents_partner_kind_uq` cannot collide.
+// ---------------------------------------------------------------------------
+const mergeAiAgents: CustomMergeExecutor = async (loser, survivor) => {
+  const disabled = await run(sql`
+    UPDATE ai_agents AS t
+       SET disabled_at = now(),
+           enabled = false,
+           updated_at = now()
+     WHERE t.org_id = ${uuid(loser)}
+       AND t.disabled_at IS NULL
+       AND EXISTS (
+         SELECT 1 FROM ai_agents AS s
+          WHERE s.org_id = ${uuid(survivor)}
+            AND s.disabled_at IS NULL
+            AND s.kind = t.kind
+       )`);
+  const moved = await run(buildRepoint('ai_agents', loser, survivor));
+  return {
+    moved,
+    dropped: 0,
+    notes: disabled > 0
+      ? [`ai_agents: disabled ${disabled} agent from the merged-away org that duplicated an active survivor agent of the same kind (configuration kept — re-enable it manually if it was the one you wanted)`]
+      : [],
+  };
+};
+
+// ---------------------------------------------------------------------------
 // organization_users — a membership row carries per-org access scoping in
 // `site_ids` / `device_group_ids`. A plain dedupe DELETE would discard the
 // loser row's grants outright, so union them into the surviving membership
@@ -713,6 +755,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   audit_baselines: mergeAuditBaselines,
   pax8_orders: mergePax8Orders,
   fleet_findings: mergeFleetFindings,
+  ai_agents: mergeAiAgents,
   organization_users: mergeOrganizationUsers,
   api_keys: mergeApiKeys,
   enrollment_keys: mergeEnrollmentKeys,
@@ -767,7 +810,8 @@ export const CUSTOM_WOULD_REVOKE_COUNTS: Readonly<Record<string, (loser: string)
  * Read-only `SELECT count(*)` mirrors of every custom executor that DELETEs,
  * for `previewOrgMerge`. Tables absent from this map drop nothing, so preview
  * reports `wouldDrop: 0` for them (`contacts`, `backup_configs`,
- * `audit_baselines`, `fleet_findings` and `incidents` all mutate instead).
+ * `audit_baselines`, `fleet_findings`, `ai_agents` and `incidents` all mutate
+ * instead).
  */
 export const CUSTOM_WOULD_DROP_COUNTS: Readonly<Record<string, (loser: string, survivor: string) => SQL>> = {
   discovered_assets: collidingRowCount('discovered_assets', DISCOVERED_ASSET_KEY),

@@ -56,9 +56,9 @@ describe('org merge engine SQL against real Postgres', () => {
         await db.execute(sql`
           INSERT INTO partners (id, name, slug) VALUES (${P}::uuid, ${'Smoke MSP'}, ${`smoke-${suffix}`})`);
         await db.execute(sql`
-          INSERT INTO organizations (id, partner_id, name, slug, status)
-          VALUES (${L}::uuid, ${P}::uuid, ${'Loser'}, ${`loser-${suffix}`}, 'active'),
-                 (${S}::uuid, ${P}::uuid, ${'Survivor'}, ${`survivor-${suffix}`}, 'active')`);
+          INSERT INTO organizations (id, partner_id, name, slug, status, currency_code)
+          VALUES (${L}::uuid, ${P}::uuid, ${'Loser'}, ${`loser-${suffix}`}, 'active', 'USD'),
+                 (${S}::uuid, ${P}::uuid, ${'Survivor'}, ${`survivor-${suffix}`}, 'active', 'USD')`);
 
         // --- epoch target query ---------------------------------------------
         const epochUsers = (await db.execute(sql`
@@ -164,8 +164,8 @@ describe('org merge engine SQL against real Postgres', () => {
       await withSystemDbAccessContext(async () => {
         await db.execute(sql`INSERT INTO partners (id, name, slug) VALUES (${P}::uuid, 'Fence', ${`fence-${suffix}`})`);
         await db.execute(sql`
-          INSERT INTO organizations (id, partner_id, name, slug, status)
-          VALUES (${L}::uuid, ${P}::uuid, 'Fenced', ${`fenced-${suffix}`}, 'suspended')`);
+          INSERT INTO organizations (id, partner_id, name, slug, status, currency_code)
+          VALUES (${L}::uuid, ${P}::uuid, 'Fenced', ${`fenced-${suffix}`}, 'suspended', 'USD')`);
       });
 
       const candidate = {
@@ -252,9 +252,9 @@ describe('org merge engine SQL against real Postgres', () => {
     await withSystemDbAccessContext(async () => {
       await db.execute(sql`INSERT INTO partners (id, name, slug) VALUES (${P}::uuid, 'Prev', ${`prev-${suffix}`})`);
       await db.execute(sql`
-        INSERT INTO organizations (id, partner_id, name, slug, status)
-        VALUES (${L}::uuid, ${P}::uuid, 'PL', ${`pl-${suffix}`}, 'active'),
-               (${S}::uuid, ${P}::uuid, 'PS', ${`ps-${suffix}`}, 'active')`);
+        INSERT INTO organizations (id, partner_id, name, slug, status, currency_code)
+        VALUES (${L}::uuid, ${P}::uuid, 'PL', ${`pl-${suffix}`}, 'active', 'USD'),
+               (${S}::uuid, ${P}::uuid, 'PS', ${`ps-${suffix}`}, 'active', 'USD')`);
     });
 
     // I3: the pair is validated before a single count runs.
@@ -355,6 +355,10 @@ describe('org merge engine SQL against real Postgres', () => {
     const siteA = randomUUID();
     const siteB = randomUUID();
     const dgA = randomUUID();
+    const agentLTriage = randomUUID();
+    const agentLPatch = randomUUID();
+    const agentSTriage = randomUUID();
+    const runL = randomUUID();
     const suffix = L.slice(0, 8);
     let asserted = 0;
 
@@ -362,9 +366,9 @@ describe('org merge engine SQL against real Postgres', () => {
       await withSystemDbAccessContext(async () => {
         await db.execute(sql`INSERT INTO partners (id, name, slug) VALUES (${P}::uuid, 'Smoke', ${`smoke2-${suffix}`})`);
         await db.execute(sql`
-          INSERT INTO organizations (id, partner_id, name, slug, status)
-          VALUES (${L}::uuid, ${P}::uuid, 'L', ${`l2-${suffix}`}, 'active'),
-                 (${S}::uuid, ${P}::uuid, 'S', ${`s2-${suffix}`}, 'active')`);
+          INSERT INTO organizations (id, partner_id, name, slug, status, currency_code)
+          VALUES (${L}::uuid, ${P}::uuid, 'L', ${`l2-${suffix}`}, 'active', 'USD'),
+                 (${S}::uuid, ${P}::uuid, 'S', ${`s2-${suffix}`}, 'active', 'USD')`);
         await db.execute(sql`
           INSERT INTO users (id, email, name, partner_id) VALUES (${U}::uuid, ${`u-${suffix}@x.test`}, 'U', ${P}::uuid)`);
         await db.execute(sql`
@@ -428,6 +432,21 @@ describe('org merge engine SQL against real Postgres', () => {
             (${L}::uuid, 'L enroll', ${`lk-${suffix}`}, NULL),
             (${S}::uuid, 'S enroll', ${`sk-${suffix}`}, NULL)`);
 
+        // ai_agents: an ACTIVE agent of the same `kind` in both orgs (the
+        // ai_agents_org_kind_uq collision), plus an L-only kind that must stay
+        // active. The loser's triage agent also owns an ai_agent_runs row —
+        // that table is `leave-for-erasure` (its org_id is trigger-immutable),
+        // and its agent_id FK is ON DELETE RESTRICT, so this row is exactly
+        // what makes a dedupe DELETE impossible and the disable path necessary.
+        await db.execute(sql`
+          INSERT INTO ai_agents (id, org_id, kind, name, created_by, enabled, mode) VALUES
+            (${agentLTriage}::uuid, ${L}::uuid, 'triage',   'L triage', ${U}::uuid, true, 'act'),
+            (${agentLPatch}::uuid,  ${L}::uuid, 'patch',    'L patch',  ${U}::uuid, true, 'act'),
+            (${agentSTriage}::uuid, ${S}::uuid, 'triage',   'S triage', ${U}::uuid, true, 'act')`);
+        await db.execute(sql`
+          INSERT INTO ai_agent_runs (id, agent_id, org_id, trigger_kind, dedupe_key, mode_at_start, policy_snapshot)
+          VALUES (${runL}::uuid, ${agentLTriage}::uuid, ${L}::uuid, 'manual', ${`dk-${suffix}`}, 'act', '{}'::jsonb)`);
+
         await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
 
         // --- contacts --------------------------------------------------------
@@ -487,6 +506,39 @@ describe('org merge engine SQL against real Postgres', () => {
             FROM fleet_findings WHERE org_id = ${S}::uuid`)) as unknown as Array<{ total: number; unresolved: number }>;
         expect(Number(live[0]?.total)).toBe(3); // NEVER deleted
         expect(Number(live[0]?.unresolved)).toBe(2); // k1 (survivor's) + k2 (L-only)
+        asserted++;
+
+        // --- ai_agents ----------------------------------------------------------
+        const agents = await CUSTOM_EXECUTORS.ai_agents!(L, S);
+        expect(agents.moved).toBe(2); // both loser agents move; NEITHER is deleted
+        expect(agents.dropped).toBe(0);
+        expect(agents.notes.join('\n')).toMatch(/disabled 1 agent/);
+        const agentRows = (await db.execute(sql`
+          SELECT kind, count(*)::int AS total, count(*) FILTER (WHERE disabled_at IS NULL)::int AS active
+            FROM ai_agents WHERE org_id = ${S}::uuid GROUP BY 1 ORDER BY 1`)) as unknown as Array<{
+          kind: string; total: number; active: number;
+        }>;
+        // patch: L-only, still active. triage: both rows present, but only the
+        // SURVIVOR's stays active — one active per kind is what the partial
+        // unique index allows, and dropping to zero would silently disable the
+        // survivor's own agent.
+        expect(agentRows.map((r) => [r.kind, Number(r.total), Number(r.active)])).toEqual([
+          ['patch', 1, 1], ['triage', 2, 1],
+        ]);
+        const survivingTriage = (await db.execute(sql`
+          SELECT id FROM ai_agents WHERE org_id = ${S}::uuid AND kind = 'triage' AND disabled_at IS NULL`)) as unknown as Array<{ id: string }>;
+        expect(survivingTriage.map((r) => r.id)).toEqual([agentSTriage]);
+        // The merge-disabled row must carry the same shape agentService.disableAgent
+        // writes, or a reader that gates on `enabled` would still treat it as live.
+        const disabledRow = (await db.execute(sql`
+          SELECT enabled, (disabled_at IS NOT NULL) AS is_disabled
+            FROM ai_agents WHERE id = ${agentLTriage}::uuid`)) as unknown as Array<{ enabled: boolean; is_disabled: boolean }>;
+        expect(disabledRow[0]).toMatchObject({ enabled: false, is_disabled: true });
+        // The RESTRICT child survived untouched, and stayed with the LOSER —
+        // ai_agent_runs is leave-for-erasure, so the merge must not move it.
+        const runRow = (await db.execute(sql`
+          SELECT org_id FROM ai_agent_runs WHERE id = ${runL}::uuid`)) as unknown as Array<{ org_id: string }>;
+        expect(runRow.map((r) => r.org_id)).toEqual([L]);
         asserted++;
 
         // --- organization_users --------------------------------------------------
@@ -571,7 +623,7 @@ describe('org merge engine SQL against real Postgres', () => {
         asserted++;
 
         // No loser rows left anywhere the custom executors touched.
-        for (const table of ['contacts', 'backup_configs', 'audit_baselines', 'fleet_findings', 'organization_users', 'pax8_orders', 'api_keys', 'enrollment_keys']) {
+        for (const table of ['contacts', 'backup_configs', 'audit_baselines', 'fleet_findings', 'ai_agents', 'organization_users', 'pax8_orders', 'api_keys', 'enrollment_keys']) {
           const left = (await db.execute(
             sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${L}::uuid`,
           )) as unknown as Array<{ n: number }>;
@@ -583,7 +635,7 @@ describe('org merge engine SQL against real Postgres', () => {
     } catch (err) {
       if (!(err instanceof Rollback)) throw err;
     }
-    expect(asserted).toBe(8);
+    expect(asserted).toBe(9);
   }, 120_000);
 
   /**
@@ -616,9 +668,9 @@ describe('org merge engine SQL against real Postgres', () => {
       await withSystemDbAccessContext(async () => {
         await db.execute(sql`INSERT INTO partners (id, name, slug) VALUES (${P}::uuid, 'Rehome', ${`rehome-${suffix}`})`);
         await db.execute(sql`
-          INSERT INTO organizations (id, partner_id, name, slug, status)
-          VALUES (${L}::uuid, ${P}::uuid, 'L', ${`rl-${suffix}`}, 'active'),
-                 (${S}::uuid, ${P}::uuid, 'S', ${`rs-${suffix}`}, 'active')`);
+          INSERT INTO organizations (id, partner_id, name, slug, status, currency_code)
+          VALUES (${L}::uuid, ${P}::uuid, 'L', ${`rl-${suffix}`}, 'active', 'USD'),
+                 (${S}::uuid, ${P}::uuid, 'S', ${`rs-${suffix}`}, 'active', 'USD')`);
         await db.execute(sql`
           INSERT INTO sites (id, org_id, name) VALUES
             (${ids.siteL}::uuid, ${L}::uuid, 'L site'),
