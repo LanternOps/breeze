@@ -186,20 +186,32 @@ describe('PartnerAiProviderTab', () => {
   });
 
   it('PATCHes the default model on change and keeps the select bound', async () => {
-    mockApi(connectedStatus, {
-      'PATCH /ai/provider': () => jsonRes({ defaultModel: 'claude-haiku-4-5', configVersion: 4 }),
+    // The GET persists the pin, as the real route does — the post-PATCH refetch
+    // is what the select ends up bound to.
+    let stored: string | null = 'claude-sonnet-4-6';
+    fetchWithAuth.mockImplementation((url: string, options?: RequestInit) => {
+      const method = options?.method ?? 'GET';
+      if (method === 'PATCH' && url === '/ai/provider') {
+        stored = JSON.parse(String(options?.body)).defaultModel;
+        return Promise.resolve(jsonRes({ defaultModel: stored, configVersion: 4 }));
+      }
+      if (method === 'GET' && url === '/ai/provider') {
+        return Promise.resolve(jsonRes({ ...connectedStatus, defaultModel: stored }));
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
     });
     render(<PartnerAiProviderTab />);
 
     await waitFor(() => expect(screen.getByTestId('ai-provider-model-select')).toBeInTheDocument());
-    const select = screen.getByTestId('ai-provider-model-select') as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: 'claude-haiku-4-5' } });
+    fireEvent.change(screen.getByTestId('ai-provider-model-select'), { target: { value: 'claude-haiku-4-5' } });
 
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/ai/provider', {
       method: 'PATCH',
       body: JSON.stringify({ defaultModel: 'claude-haiku-4-5' }),
     }));
-    expect(select.value).toBe('claude-haiku-4-5');
+    await waitFor(() => expect(
+      (screen.getByTestId('ai-provider-model-select') as HTMLSelectElement).value,
+    ).toBe('claude-haiku-4-5'));
   });
 
   it('sends defaultModel null when "Platform default" is selected', async () => {
@@ -215,6 +227,50 @@ describe('PartnerAiProviderTab', () => {
       method: 'PATCH',
       body: JSON.stringify({ defaultModel: null }),
     }));
+  });
+
+  // Un-pinning changes the model the resolver ACTUALLY routes (stored pin ->
+  // platform default), so the endpoint verification banner has to be recomputed
+  // from the server's new effectiveDefaultModel. Merging only the optimistic
+  // `defaultModel: null` leaves the pre-un-pin effectiveDefaultModel in state,
+  // which suppresses the banner while every AI call 503s (#3922 W4 review).
+  it('refetches status after un-pinning so the model-unverified banner reflects the new effective model', async () => {
+    let unpinned = false;
+    fetchWithAuth.mockImplementation((url: string, options?: RequestInit) => {
+      const method = options?.method ?? 'GET';
+      if (method === 'PATCH' && url === '/ai/provider') {
+        unpinned = true;
+        return Promise.resolve(jsonRes({ defaultModel: null, configVersion: 7 }));
+      }
+      if (method === 'GET' && url === '/ai/provider') {
+        return Promise.resolve(jsonRes({
+          ...connectedStatus,
+          // Pinned to a verified model; un-pinning falls back to a platform
+          // default that sits OUTSIDE the entry's verified set.
+          defaultModel: unpinned ? null : 'claude-haiku-4-5',
+          effectiveDefaultModel: unpinned ? 'claude-opus-4-8' : 'claude-haiku-4-5',
+          catalogEntryId: 'entry-1',
+          catalog: [CATALOG_ENTRY],
+        }));
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    render(<PartnerAiProviderTab />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-provider-model-select')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-provider-endpoint-model-unverified-banner')).toBeNull();
+
+    fireEvent.change(screen.getByTestId('ai-provider-model-select'), { target: { value: '' } });
+
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/ai/provider', {
+      method: 'PATCH',
+      body: JSON.stringify({ defaultModel: null }),
+    }));
+    await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-model-unverified-banner')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-provider-endpoint-model-unverified-banner').textContent)
+      .toContain('claude-opus-4-8');
+    // Two GETs: the initial load plus the post-PATCH refetch.
+    expect(fetchWithAuth.mock.calls.filter(([url, opts]) => url === '/ai/provider' && !opts)).toHaveLength(2);
   });
 
   it('reverts the model selection when the PATCH fails', async () => {
@@ -341,6 +397,65 @@ describe('PartnerAiProviderTab', () => {
         method: 'POST',
         body: JSON.stringify({ catalogEntryId: 'entry-1', acknowledgeDataNote: true }),
       }));
+    });
+
+    // Belt-and-braces: the confirm button is `disabled` while consent is
+    // missing AND handleConfirmEntry re-checks it. This pins the outcome a user
+    // can observe — a click with the box unchecked must send nothing — so
+    // dropping either protection alone leaves the other holding the line, and
+    // dropping both turns this red.
+    it('sends no request when the confirm button is clicked without consent', async () => {
+      mockApi(connectedWithCatalogStatus);
+      render(<PartnerAiProviderTab />);
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-radio-entry-1')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('ai-provider-endpoint-radio-entry-1'));
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-consent-checkbox')).toBeInTheDocument());
+      expect((screen.getByTestId('ai-provider-endpoint-consent-checkbox') as HTMLInputElement).checked).toBe(false);
+
+      fireEvent.click(screen.getByTestId('ai-provider-endpoint-confirm-submit'));
+      await Promise.resolve();
+
+      expect(fetchWithAuth).not.toHaveBeenCalledWith('/ai/provider/endpoint', expect.anything());
+      // mockApi throws on an unexpected request, which runAction would turn into
+      // an error toast — a second, independent detector for a leaked POST.
+      expect(showToast).not.toHaveBeenCalled();
+      // The dialog is still waiting on consent, not dismissed.
+      expect(screen.getByTestId('ai-provider-endpoint-confirm-dialog')).toBeInTheDocument();
+    });
+
+    // A 400 here is reachable in the wild: the catalog entry gained a data note
+    // server-side after this page loaded, so the client submits
+    // acknowledgeDataNote:false in good faith. The dialog must stay open with
+    // the reason shown, not vanish leaving the old selection and no explanation.
+    it('keeps the confirm dialog open and surfaces the API error when the endpoint switch is rejected', async () => {
+      mockApi(connectedWithCatalogStatus, {
+        'POST /ai/provider/endpoint': () => jsonRes(
+          { error: 'You must acknowledge the data-handling note for this endpoint.' },
+          400,
+        ),
+      });
+      render(<PartnerAiProviderTab />);
+
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-radio-entry-2')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('ai-provider-endpoint-radio-entry-2'));
+      await waitFor(() => expect(screen.getByTestId('ai-provider-endpoint-confirm-dialog')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('ai-provider-endpoint-confirm-submit'));
+
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          message: 'You must acknowledge the data-handling note for this endpoint.',
+        }),
+      ));
+      expect(screen.getByTestId('ai-provider-endpoint-confirm-dialog')).toBeInTheDocument();
+      // switchingEndpoint reset — the dialog is usable again, not stuck spinning.
+      await waitFor(() => expect(
+        (screen.getByTestId('ai-provider-endpoint-confirm-submit') as HTMLButtonElement).disabled,
+      ).toBe(false));
+      // The rejected switch changed nothing: still on Anthropic (direct).
+      expect((screen.getByTestId('ai-provider-endpoint-direct-radio') as HTMLInputElement).checked).toBe(true);
     });
 
     it('selecting an entry with no data note needs no consent checkbox', async () => {

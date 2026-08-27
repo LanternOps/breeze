@@ -75,7 +75,12 @@ export default function PartnerAiProviderTab() {
         catalogEntryId: data.catalogEntryId ?? null,
         effectiveDefaultModel: data.effectiveDefaultModel ?? null,
       });
-    } catch {
+    } catch (err) {
+      // This load IS the recovery surface for a delisted endpoint pin (the
+      // "Anthropic (direct)" escape hatch lives on it), so a silent failure is
+      // the same dead end it exists to prevent. The banner below tells the
+      // user; the log tells whoever has to explain why.
+      console.error('[PartnerAiProviderTab] failed to load /ai/provider', err);
       setLoadError('failed');
     } finally {
       setLoading(false);
@@ -144,6 +149,12 @@ export default function PartnerAiProviderTab() {
         errorFallback: t('partnerAiProvider.modelUpdateFailed'),
         onUnauthorized,
       });
+      // Refetch like every other mutation here: changing the pin changes the
+      // model the resolver ACTUALLY routes (`defaultModel ?? platform default`),
+      // and the endpoint verification banner is computed from that. Un-pinning
+      // without a refetch keeps the pre-un-pin effectiveDefaultModel, which
+      // hides (or falsely keeps) the banner while every AI call 503s.
+      await fetchStatus();
     } catch (err) {
       // Revert the optimistic selection — the server kept the old model.
       setStatus(prev => (prev ? { ...prev, defaultModel: previous } : prev));
@@ -254,6 +265,10 @@ export default function PartnerAiProviderTab() {
   // partner still has a concrete model that can fall out of an entry's
   // verified set. Prefer the stored pin (kept live by the optimistic model
   // select) and fall back to the server-reported effective default.
+  // Deliberate: null means "unknown", and the banner stays suppressed. An older
+  // API image mid rolling-deploy omits `effectiveDefaultModel` entirely, so for
+  // an unpinned partner this is null until the next refetch lands on a new pod
+  // — a transient false negative we accept over a banner we cannot substantiate.
   const effectiveModel = status ? status.defaultModel ?? status.effectiveDefaultModel : null;
   const isEndpointModelUnverified = !!status
     && selectedCatalogEntry !== null
