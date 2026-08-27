@@ -3209,6 +3209,7 @@
       "sectionTitle": "Archived",
       "loading": "Loading archived organizations...",
       "empty": "No archived organizations.",
+      "noMatches": "No archived organizations match your search.",
       "badge": "Archived",
       "keptIndefinitely": "Kept indefinitely",
       "purgeToday": "Purges today",

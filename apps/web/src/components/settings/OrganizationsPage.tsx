@@ -189,6 +189,22 @@ export default function OrganizationsPage() {
     return organizations.filter(org => org.name.toLowerCase().includes(q));
   }, [organizations, searchQuery]);
 
+  /**
+   * Client-side re-filter of whatever archived rows are already loaded, using
+   * the SAME search box as `filteredOrgs` above. This is deliberately in
+   * addition to — not instead of — forwarding `search` to the server fetch
+   * (see `fetchArchivedOrganizations`): the network round trip means
+   * `archivedOrgs` can briefly still hold the previous query's results after a
+   * keystroke, and filtering client-side too avoids flashing those stale rows
+   * before the fresh, server-filtered set lands. Once it lands this filter is
+   * a no-op (the loaded rows already match), so it costs nothing steady-state.
+   */
+  const filteredArchivedOrgs = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return archivedOrgs;
+    return archivedOrgs.filter(org => org.name.toLowerCase().includes(q));
+  }, [archivedOrgs, searchQuery]);
+
   /** Renders an archived org's purge countdown, shared by the row and the
    *  read-only detail pane. `purgeAt: null` (retention "Never") and an
    *  unparseable timestamp both collapse to "kept indefinitely" via
@@ -258,14 +274,24 @@ export default function OrganizationsPage() {
    * (`orgStore.ts`) or `fetchOrganizations` above: both stay on the plain
    * unarchived query every other caller of them expects, and this is the one
    * reader that opts in to `includeArchived=true`.
+   *
+   * `search` is forwarded as the API's own `search` query param (same one
+   * `fetchOrganizations`'s active-list query would use, and the one
+   * `listArchivedOrgs` filters archived rows by server-side — orgs.ts,
+   * archivedOrgReads.ts). Without this, the truncation note's "search to
+   * narrow the list" was a dead end: the page's search box only filtered
+   * whatever was already loaded, so an archived org past the truncation cap
+   * could never be reached by any partner with more archived orgs than the
+   * page limit.
    */
-  const fetchArchivedOrganizations = useCallback(async () => {
+  const fetchArchivedOrganizations = useCallback(async (search: string) => {
     setArchivedLoading(true);
     setArchivedError(undefined);
     let truncated = false;
     try {
       const all = await fetchAllOrganizations<Organization>(async (page, limit) => {
-        const response = await fetchWithAuth(`/orgs/organizations?page=${page}&limit=${limit}&includeArchived=true`);
+        const searchParam = search ? `&search=${encodeURIComponent(search)}` : '';
+        const response = await fetchWithAuth(`/orgs/organizations?page=${page}&limit=${limit}&includeArchived=true${searchParam}`);
         if (!response.ok) {
           if (response.status === 401) {
             handleSessionExpired();
@@ -344,13 +370,16 @@ export default function OrganizationsPage() {
 
   // Fetch-on-expand: the Archived section starts collapsed and empty, and only
   // issues the `includeArchived=true` request the moment it's opened — not on
-  // page mount. Re-fires on every expand (no "already fetched" cache) so a
-  // reopen after a restore/archive elsewhere always shows current data; that
-  // costs one extra request per open, which is cheap next to a stale purge
-  // countdown.
+  // page mount. Also re-fires whenever the page's own search box changes
+  // while expanded, forwarding the term as the API's `search` param — the
+  // same box that filters the active list above doubles as the archived
+  // section's search, so a >100-row partner can still reach an archived org
+  // past the truncation cap. No "already fetched" cache: every expand/search
+  // change re-issues the request, which is cheap next to a stale purge
+  // countdown or an unreachable archived tenant.
   useEffect(() => {
-    if (archivedExpanded) fetchArchivedOrganizations();
-  }, [archivedExpanded, fetchArchivedOrganizations]);
+    if (archivedExpanded) fetchArchivedOrganizations(searchQuery.trim());
+  }, [archivedExpanded, searchQuery, fetchArchivedOrganizations]);
 
   // Load the partner's default timezone once so new sites pre-select it.
   // Best-effort: on any failure we silently fall back to the form's UTC default.
@@ -502,15 +531,26 @@ export default function OrganizationsPage() {
   };
 
   /**
-   * Restores an archived org. LIST-STATE UPDATE ONLY, mirroring the
-   * archive/merge complete handlers above: drop it from `archivedOrgs`, add it
-   * back to the active `organizations` list under the status the API reports
-   * (its PRE-archive status — restoring a suspended org lands it back
-   * suspended, not active), and re-select it so the detail pane switches out
-   * of read-only immediately. No `refreshOrgs()` call: that would re-fetch the
-   * plain (unarchived) list and could race this optimistic update, and
-   * everything the active list needs (id/name/status/deviceCount/createdAt)
-   * already rode along on the archived row itself.
+   * Restores an archived org. This page's OWN list state is updated
+   * synchronously/optimistically, mirroring the archive/merge complete
+   * handlers above: drop it from `archivedOrgs`, add it back to the active
+   * `organizations` list under the status the API reports (its PRE-archive
+   * status — restoring a suspended org lands it back suspended, not active),
+   * and re-select it so the detail pane switches out of read-only
+   * immediately. Deliberately not a `refreshOrgs()` (which also re-fetches
+   * this page's OWN list): that would re-fetch the plain list and could race
+   * this optimistic update, and everything the active list needs
+   * (id/name/status/deviceCount/createdAt) already rode along on the archived
+   * row itself.
+   *
+   * The global org store (`orgStore.ts`, feeds the org-switcher/sidebar) is a
+   * SEPARATE concern from this page's own state and doesn't share that
+   * optimistic update — it has to hear about the restored org from the server
+   * to pick up fields this page never had (partnerId, currencyCode, trial
+   * end date). Fired fire-and-forget, same as `refreshOrgs` does for org
+   * create: it must not block clearing `restoringOrgId` or block/replace the
+   * success toast, and a failure here is a stale switcher entry, not a
+   * failed restore — the restore itself already committed.
    */
   const handleRestore = async (org: Organization) => {
     setRestoringOrgId(org.id);
@@ -528,6 +568,9 @@ export default function OrganizationsPage() {
       setArchivedOrgs(prev => prev.filter(o => o.id !== org.id));
       setOrganizations(prev => [...prev, restoredOrg]);
       setSelectedOrg(restoredOrg);
+      useOrgStore.getState().fetchOrganizations().catch((storeErr) => {
+        console.warn('[OrganizationsPage] org store refresh failed after restore', storeErr);
+      });
 
       const parts = [t('organizationsPage.restore.success', { name: org.name, status: t(/* i18n-dynamic */ statusLabelKeys[restoredStatus]) })];
       if (data.recreateRequired.length > 0) {
@@ -1090,9 +1133,16 @@ export default function OrganizationsPage() {
                   <div className="px-4 py-4 text-sm text-destructive">
                     {archivedError}
                   </div>
-                ) : archivedOrgs.length === 0 ? (
+                ) : filteredArchivedOrgs.length === 0 ? (
                   <div className="px-4 py-6 text-center text-sm text-muted-foreground">
-                    {t('organizationsPage.archived.empty')}
+                    {/* Keyed on whether a search is active, NOT on `archivedOrgs.length`:
+                        once a search term is present, `archivedOrgs` IS the
+                        server-filtered result (see fetchArchivedOrganizations), so an
+                        empty array there no longer means "there are truly zero
+                        archived orgs" — it means "zero matched this search". */}
+                    {searchQuery.trim()
+                      ? t('organizationsPage.archived.noMatches')
+                      : t('organizationsPage.archived.empty')}
                   </div>
                 ) : (
                   <>
@@ -1102,7 +1152,7 @@ export default function OrganizationsPage() {
                       </p>
                     )}
                     <ul className="divide-y">
-                      {archivedOrgs.map(org => (
+                      {filteredArchivedOrgs.map(org => (
                         <li
                           key={org.id}
                           data-testid="org-archived-row"

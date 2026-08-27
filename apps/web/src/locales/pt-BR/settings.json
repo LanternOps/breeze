@@ -3209,6 +3209,7 @@
       "sectionTitle": "Arquivadas",
       "loading": "Carregando organizações arquivadas...",
       "empty": "Nenhuma organização arquivada.",
+      "noMatches": "Nenhuma organização arquivada corresponde à sua pesquisa.",
       "badge": "Arquivada",
       "keptIndefinitely": "Mantida indefinidamente",
       "purgeToday": "Excluída definitivamente hoje",

@@ -3204,6 +3204,7 @@
       "sectionTitle": "Archiviate",
       "loading": "Caricamento delle organizzazioni archiviate...",
       "empty": "Nessuna organizzazione archiviata.",
+      "noMatches": "Nessuna organizzazione archiviata corrisponde alla ricerca.",
       "badge": "Archiviata",
       "keptIndefinitely": "Conservata indefinitamente",
       "purgeToday": "Eliminata definitivamente oggi",

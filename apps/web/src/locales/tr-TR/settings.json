@@ -3209,6 +3209,7 @@
       "sectionTitle": "Arşivlenenler",
       "loading": "Arşivlenen kuruluşlar yükleniyor...",
       "empty": "Arşivlenmiş kuruluş yok.",
+      "noMatches": "Aramanızla eşleşen arşivlenmiş kuruluş yok.",
       "badge": "Arşivlendi",
       "keptIndefinitely": "Süresiz olarak saklanıyor",
       "purgeToday": "Bugün kalıcı olarak silinecek",

@@ -3156,6 +3156,7 @@
       "sectionTitle": "Archivées",
       "loading": "Chargement des organisations archivées...",
       "empty": "Aucune organisation archivée.",
+      "noMatches": "Aucune organisation archivée ne correspond à votre recherche.",
       "badge": "Archivée",
       "keptIndefinitely": "Conservée indéfiniment",
       "purgeToday": "Suppression définitive aujourd'hui",
