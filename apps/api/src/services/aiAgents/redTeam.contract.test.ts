@@ -570,6 +570,8 @@ describe('F. a device-less run never proposes', () => {
         outcome,
         intentIds,
         allowedPending,
+        sessionId: null,
+        executionIdPending: new Map(),
       });
 
       for (const toolName of Object.keys(TOOL_TIERS)) {
@@ -722,6 +724,8 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
       outcome,
       intentIds,
       allowedPending,
+      sessionId: null,
+      executionIdPending: new Map(),
     });
 
     for (const toolName of Object.keys(TOOL_TIERS)) {
@@ -738,6 +742,8 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
       outcome,
       intentIds,
       allowedPending,
+      sessionId: null,
+      executionIdPending: new Map(),
     });
     const hostileSystemPrompt = buildAgentRunSystemPrompt(hostilePromptContext());
     expect(hostileSystemPrompt).toContain('ignore the allowlist');
@@ -759,6 +765,8 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
       outcome,
       intentIds,
       allowedPending,
+      sessionId: null,
+      executionIdPending: new Map(),
     });
     const callsBeforeExplicitProposal = createActionIntentMock.mock.calls.length;
     const proposed = await proposeHook('manage_services', { action: 'restart' });

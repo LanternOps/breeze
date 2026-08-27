@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { canonicalizeScriptParameters, hasVariableTokens } from '@breeze/shared';
 
-import { db } from '../db';
-import { devices, organizations, scriptExecutions, scripts, sites } from '../db/schema';
+import { db, withSystemDbAccessContext } from '../db';
+import { devices, organizations, scriptExecutions, scripts, sites, users } from '../db/schema';
 import {
   claimPendingCommandForDelivery,
   releaseClaimedCommandDelivery,
@@ -332,6 +332,44 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     }
   }
 
+  // #3826 Wave 4A Task 3: agent principals reach dispatch through the SAME
+  // handlers humans use (an `ai_agent` AuthContext's `auth.user.id` is the
+  // agent's `ai_agents.id`, not a `users.id` — see
+  // services/aiAgents/agentAuthContext.ts). Both `triggeredBy` (inserted
+  // below into `script_executions.triggered_by`, FK -> users.id,
+  // schema/scripts.ts:126) and `createdBy` (forwarded to queueCommand, whose
+  // `device_commands.created_by` is the SAME FK shape) would otherwise die on
+  // a 23503 the first time an agent-released run reaches here. Mirrors the
+  // shipped `commandQueue.ts:855-889` probe precedent: one indexed PK lookup
+  // on whichever id is present, run inside `withSystemDbAccessContext` (same
+  // as the precedent) since `users` is an RLS-forced dual-axis table and a
+  // contextless read DENIES rather than bypassing — any id that isn't a
+  // users row degrades to NULL on both columns rather than aborting the
+  // dispatch.
+  //
+  // Single probe for both columns: every real caller passes the SAME id for
+  // triggeredBy and createdBy (or supplies only one — automation's raw
+  // command action has no execution row and so no triggeredBy at all), so
+  // one lookup on whichever is present settles both writes. `createdBy` is
+  // preferred as the probe candidate since it is the one that always reaches
+  // queueCommand.
+  const actorCandidateId = input.createdBy ?? input.triggeredBy ?? null;
+  const actorIsRealUser = actorCandidateId
+    ? await withSystemDbAccessContext(async () => {
+        const [userRow] = await db
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.id, actorCandidateId))
+          .limit(1);
+        return Boolean(userRow);
+      })
+    : true;
+  const safeTriggeredBy = actorIsRealUser ? input.triggeredBy ?? null : null;
+  const safeCreatedBy = actorIsRealUser ? input.createdBy ?? null : null;
+  // Attribution for a degraded id survives in the execution record's
+  // `parameters` sidecar (below) — never on the users-FK column itself.
+  const degradedActorId = actorIsRealUser ? null : actorCandidateId;
+
   let executionId: string | null = null;
   if (source.kind === 'saved') {
     // Child rows always take the DEVICE's org (partner-wide fan-out rule).
@@ -341,7 +379,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         scriptId: source.script.id,
         deviceId: device.id,
         orgId: device.orgId,
-        triggeredBy: input.triggeredBy ?? null,
+        triggeredBy: safeTriggeredBy,
         triggerType: input.triggerType ?? 'manual',
         ...(source.automationRunId ? { automationRunId: source.automationRunId } : {}),
         // #3409 PR3 P4: the CALLER's raw parameters, never the resolved map.
@@ -352,7 +390,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         // (`{key, source, variableId?, ownerScope?, version?}`), so history
         // can answer "which variable fed this run" without carrying what it
         // was worth.
-        parameters: buildExecutionParameters(parameters, parameterBindings),
+        parameters: buildExecutionParameters(parameters, parameterBindings, degradedActorId),
         status: 'pending',
       })
       .returning({ id: scriptExecutions.id });
@@ -440,7 +478,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),
     }, { commandId: reservedCommandId, deviceId: device.id });
     stage = 'queueCommand';
-    command = await queueCommand(device.id, 'script', payload, input.createdBy ?? undefined, {
+    command = await queueCommand(device.id, 'script', payload, safeCreatedBy ?? undefined, {
       commandId: reservedCommandId,
     });
   } catch (err) {
@@ -564,10 +602,20 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, ignoredParameters };
 }
 
+// #3826 Wave 4A Task 3: reserved sidecar key for the users-FK probe-and-degrade
+// above. Same rationale as EXECUTION_PARAMETER_BINDINGS_KEY (no migration, no
+// new column) — `$` can never start a real parameter name, so this can never
+// collide with caller-supplied data. Written ONLY when the probe actually
+// degraded an id, so a real-user dispatch never gains this key.
+const EXECUTION_PARAMETER_ACTOR_KEY = '$actor';
+
 /**
  * The value written to `script_executions.parameters` — the caller's raw
  * parameters, plus the binding descriptors under a reserved `$bindings` key
- * when there are any (#3409 PR3 P4).
+ * when there are any (#3409 PR3 P4), plus a reserved `$actor` key when the
+ * users-FK probe above degraded `triggeredBy`/`createdBy` to NULL (#3826 Wave
+ * 4A Task 3) — attribution for the agent that actually ran this survives here
+ * instead of on the users-FK column.
  *
  * The descriptors ride INSIDE the existing jsonb rather than in a new sibling
  * column because PR3 ships no migration: `script_executions` carries an
@@ -576,15 +624,25 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
  * bugs on five times), and a `jsonb` column would land in `excludedOpen`
  * anyway. `$` can never start a parameter name
  * (`SCRIPT_PARAMETER_KEY_PATTERN`), so the reserved key cannot collide with a
- * real one; when there are no bindings the stored value is byte-identical to
- * what PR2 wrote.
+ * real one; when there are no bindings and no degraded actor, the stored
+ * value is byte-identical to what PR2 wrote.
  */
 function buildExecutionParameters(
   callerParameters: Record<string, unknown>,
   bindings: ScriptParameterBindingDescriptor[],
+  degradedActorId: string | null,
 ): Record<string, unknown> {
-  if (bindings.length === 0) return callerParameters;
-  return { ...callerParameters, [EXECUTION_PARAMETER_BINDINGS_KEY]: bindings };
+  let result = callerParameters;
+  if (bindings.length > 0) {
+    result = { ...result, [EXECUTION_PARAMETER_BINDINGS_KEY]: bindings };
+  }
+  if (degradedActorId) {
+    result = {
+      ...result,
+      [EXECUTION_PARAMETER_ACTOR_KEY]: { actorType: 'ai_agent', actorId: degradedActorId },
+    };
+  }
+  return result;
 }
 
 /**

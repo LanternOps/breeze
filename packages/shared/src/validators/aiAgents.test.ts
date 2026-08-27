@@ -15,6 +15,16 @@ describe('aiAgents validators', () => {
     expect(aiAgentLimitsSchema.safeParse({ maxDevicesPerRun: 0 }).success).toBe(false);
   });
 
+  it('maxActionsPerRun defaults to 3 and clamps to [1,10]', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun).toBe(3);
+    expect(aiAgentLimitsSchema.parse({}).maxActionsPerRun).toBe(3);
+    expect(aiAgentLimitsSchema.safeParse({ maxActionsPerRun: 1 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxActionsPerRun: 10 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxActionsPerRun: 0 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxActionsPerRun: 11 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxActionsPerRun: 2.5 }).success).toBe(false);
+  });
+
   it('rejects instructions over 2000 chars and unknown allowlist shapes', () => {
     expect(aiAgentPolicyFieldsSchema.safeParse({ instructions: 'x'.repeat(2001) }).success).toBe(false);
     expect(aiAgentPolicyFieldsSchema.safeParse({ toolAllowlist: ['run_script', 'manage_services:restart'] }).success).toBe(true);

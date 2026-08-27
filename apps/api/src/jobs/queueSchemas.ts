@@ -300,6 +300,17 @@ export const aiAgentQueueJobDataSchema = z.discriminatedUnion('type', [
   }).strict(),
 ]);
 
+/**
+ * The `agent-notify-retry` queue's only payload (AI agents wave 4a, Task 6,
+ * #3826). Carries the run id and nothing else — same reasoning as the
+ * `ai-agent` queue above: `deliverRunFinishedNotifications` re-reads the run,
+ * agent, and policy snapshot fresh from the DB, so a stale copy in the job
+ * payload can never drift from what actually got committed.
+ */
+export const agentNotifyRetryQueueJobDataSchema = z.object({
+  runId: z.string().min(1),
+}).strict();
+
 export const sensitiveDataQueueJobDataSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('dispatch-scan'),
@@ -396,6 +407,7 @@ export type AutomationQueueJobData = z.infer<typeof automationQueueJobDataSchema
 export type AutomationAssignmentLevel = z.infer<typeof automationAssignmentLevelSchema>;
 export type SensitiveDataQueueJobData = z.infer<typeof sensitiveDataQueueJobDataSchema>;
 export type AiAgentQueueJobData = z.infer<typeof aiAgentQueueJobDataSchema>;
+export type AgentNotifyRetryQueueJobData = z.infer<typeof agentNotifyRetryQueueJobDataSchema>;
 export type DrExecutionQueueJobData = z.infer<typeof drExecutionQueueJobDataSchema>;
 export type RecoveryMediaQueueJobData = z.infer<typeof recoveryMediaQueueJobDataSchema>;
 export type RecoveryBootMediaQueueJobData = z.infer<typeof recoveryBootMediaQueueJobDataSchema>;

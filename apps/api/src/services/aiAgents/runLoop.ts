@@ -74,12 +74,24 @@ import { publishEvent } from '../eventBus';
 import { resolveLlmConfigForOrg } from '../llm/llmConfigResolver';
 import type { UsableLlmConfig } from '../llm/llmConfigResolver';
 import { buildClaudeSdkChildEnv } from '../streamingSessionManager';
-import { createNotification } from '../userNotifications';
 import type { AuthContext } from '../../middleware/auth';
 import { AgentRunOwnershipError, buildAgentAuthContext } from './agentAuthContext';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
-import { resolveRecipientUserIds } from './recipients';
+import {
+  closeAgentRunSession,
+  completeToolExecution,
+  createAgentRunSession,
+  reconcileHungExecutions,
+  startToolExecution,
+} from './executionLedger';
+import { deliverRunFinishedNotifications } from './runFinishedNotify';
 import { transitionRunStatus } from './runService';
+// jobs/, not services/ — the durable retry lane for a notify failure (Task 6,
+// #3826). BullMQ-touching but harmless to import here: `enqueueAgentNotifyRetry`
+// itself lazily constructs its Queue only when actually called (services/redis.ts
+// never connects at import time), and this module does NOT import runLoop.ts
+// back — see runFinishedNotify.ts's header for why that direction would cycle.
+import { enqueueAgentNotifyRetry } from '../../jobs/agentNotifyRetryWorker';
 import {
   buildAgentRunSystemPrompt,
   buildAgentRunTaskPrompt,
@@ -122,9 +134,13 @@ export interface OutcomeExecutedAction {
   tool: string;
   action?: string;
   /**
-   * '(inline)' for wave 3: an agent tool call executes inside the MCP handler
-   * and has no `ai_tool_executions` row of its own yet (that ledger is written
-   * by the chat session path). Wave 6's transcript work gives these real ids.
+   * The real `ai_tool_executions` row id (wave 4a's execution ledger), or
+   * `'(inline)'` when the ledger write itself failed — a ledger failure must
+   * never block the tool call, so the call still executes and is recorded
+   * with the placeholder id (see `executionLedger.ts` and the pre/post hooks
+   * below). Correlation between the pre and post hook is per-tool FIFO order
+   * (same assumption `allowedPending` already made) — genuine per-invocation
+   * ids need SDK hook support the loop doesn't have yet.
    */
   executionId: string;
   result: 'ok' | 'failed';
@@ -188,6 +204,14 @@ interface RunContext {
   orgPartnerId: string;
   device: { id: string; siteId: string; hostname: string; osType: string } | null;
   alert: { title: string; severity: string; message: string | null } | null;
+  /**
+   * The execution-ledger `ai_sessions` row for this run (Task 1/2). Set once,
+   * inside `driveSdkLoop`, right after the model is resolved — `null` until
+   * then, and stays `null` for the lifetime of the run if session creation
+   * itself failed (a best-effort write: see `driveSdkLoop`). `finishRun` reads
+   * it back to reconcile/close the session.
+   */
+  sessionId: string | null;
 }
 
 /**
@@ -301,7 +325,14 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       }
     }
 
-    return { run: run as RunRow, agent: agent as AgentRow, orgPartnerId: org.partnerId, device, alert };
+    return {
+      run: run as RunRow,
+      agent: agent as AgentRow,
+      orgPartnerId: org.partnerId,
+      device,
+      alert,
+      sessionId: null,
+    };
   });
 }
 
@@ -326,8 +357,19 @@ export function createAgentRunPreToolUse(args: {
   intentIds: string[];
   /** Per-tool count of calls the gate ALLOWED, consumed by the post hook. */
   allowedPending: Map<string, number>;
+  /** The run's execution-ledger session, or `null` if session creation itself failed. */
+  sessionId: string | null;
+  /**
+   * Per-tool FIFO of `ai_tool_executions` ids (or `null` sentinels for a
+   * failed/skipped ledger write), shifted by the post hook. Same ordering
+   * assumption as `allowedPending`.
+   */
+  executionIdPending: Map<string, Array<string | null>>;
 }): PreToolUseCallback {
-  const { run, agentName, agentAuth, guardrailPolicy, outcome, intentIds, allowedPending } = args;
+  const {
+    run, agentName, agentAuth, guardrailPolicy, outcome, intentIds, allowedPending, sessionId,
+    executionIdPending,
+  } = args;
 
   return async (toolName, input) => {
     const check = checkAgentGuardrails(toolName, input, guardrailPolicy);
@@ -401,6 +443,27 @@ export function createAgentRunPreToolUse(args: {
     }
 
     allowedPending.set(toolName, (allowedPending.get(toolName) ?? 0) + 1);
+
+    // Ledger write is best-effort: the tool call is already decided ALLOWED
+    // above, and a failure here must never turn that into a denial. A failed
+    // (or skipped, when the session itself never got created) write pushes a
+    // `null` sentinel so the post hook's FIFO stays aligned with the calls
+    // that actually happened.
+    let executionId: string | null = null;
+    if (sessionId) {
+      try {
+        executionId = await startToolExecution({ sessionId, toolName, toolInput: input });
+      } catch (error) {
+        console.error('[aiAgentRunLoop] execution-ledger write failed — tool call still executes', {
+          runId: run.id, toolName, error,
+        });
+        executionId = null;
+      }
+    }
+    const pending = executionIdPending.get(toolName) ?? [];
+    pending.push(executionId);
+    executionIdPending.set(toolName, pending);
+
     return { allowed: true };
   };
 }
@@ -414,19 +477,35 @@ export function createAgentRunPreToolUse(args: {
 export function createAgentRunPostToolUse(args: {
   outcome: AgentRunOutcome;
   allowedPending: Map<string, number>;
+  executionIdPending: Map<string, Array<string | null>>;
 }): PostToolUseCallback {
-  const { outcome, allowedPending } = args;
+  const { outcome, allowedPending, executionIdPending } = args;
 
   return async (toolName, input, _output, isError, durationMs) => {
     const remaining = allowedPending.get(toolName) ?? 0;
     if (remaining <= 0) return;
     allowedPending.set(toolName, remaining - 1);
 
+    let executionId: string | null = null;
+    const pending = executionIdPending.get(toolName);
+    if (pending && pending.length > 0) {
+      executionId = pending.shift() ?? null;
+    }
+    if (executionId) {
+      try {
+        await completeToolExecution({ executionId, isError, durationMs });
+      } catch (error) {
+        console.error('[aiAgentRunLoop] failed to complete execution-ledger row (non-fatal)', {
+          toolName, executionId, error,
+        });
+      }
+    }
+
     const action = readToolAction(toolName, input);
     outcome.executedActions.push({
       tool: toolName,
       ...(action ? { action } : {}),
-      executionId: '(inline)',
+      executionId: executionId ?? '(inline)',
       result: isError ? 'failed' : 'ok',
       durationMs,
     });
@@ -524,60 +603,6 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
   };
 }
 
-async function notifyRunFinished(
-  ctx: RunContext,
-  finished: { status: string; summary: string; intentIds: string[] },
-): Promise<void> {
-  try {
-    // The run's immutable snapshot, NOT `ctx.agent.recipients`. The agent row
-    // loaded by `run.agent_id` is always the PARTNER BASELINE
-    // (resolveEffectiveAgentSystem pins `agentId: partnerRow.id`), so its raw
-    // recipients column silently drops every recipient an organization added
-    // through its override — and notifies nobody at all when only the override
-    // configured any. `mergeAgentPolicies` already unions the two sets into
-    // `effective.recipients`, and `resolveRecipientUserIds` re-derives
-    // membership against the RUN org, so the merged set is the correct input.
-    const userIds = await resolveRecipientUserIds(
-      {
-        orgId: ctx.agent.orgId,
-        partnerId: ctx.agent.partnerId,
-        recipients: ctx.run.policySnapshot.effective.recipients,
-      },
-      ctx.run.orgId,
-    );
-    if (userIds.length === 0) return;
-
-    const firstLine = finished.summary.split('\n')[0]?.trim() ?? '';
-    // AFTER the status commit and outside any held transaction (#1105).
-    await inSystemDbContext(async () => {
-      for (const userId of userIds) {
-        await createNotification({
-          userId,
-          orgId: ctx.run.orgId,
-          type: 'ai',
-          title: 'Agent run finished',
-          message: `${ctx.agent.name}: ${firstLine || finished.status}`,
-          // There is no run-detail page until wave 6; link to the approvals
-          // queue only when there is actually something waiting there.
-          link: finished.intentIds.length > 0 ? '/approvals' : null,
-          metadata: {
-            runId: ctx.run.id,
-            agentId: ctx.agent.id,
-            intentIds: finished.intentIds,
-            status: finished.status,
-          },
-          dedupeKey: `agent-run:${ctx.run.id}`,
-        });
-      }
-    });
-  } catch (error) {
-    // A notification failure must never redefine the run's outcome.
-    console.error('[aiAgentRunLoop] failed to notify run recipients', {
-      runId: ctx.run.id, error,
-    });
-  }
-}
-
 interface LoopResult {
   summary: string;
   costCents: number;
@@ -636,6 +661,30 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     { id: run.orgId, partnerId: ctx.orgPartnerId },
   );
 
+  // Execution-ledger session: created here — AFTER the ownership check above
+  // can no longer throw, so an ownership_mismatch failure never leaks an
+  // orphaned `active` session row nothing will ever close (that failure path
+  // returns straight to `executeAgentRun`'s catch block, not `finishRun`).
+  // Stored on `ctx` so `finishRun` can reconcile and close it once the loop
+  // below is done. Best-effort: a failure here must not fail the run — it
+  // just means every tool call below skips its ledger row (see the pre-hook's
+  // `sessionId` guard) and falls back to the `'(inline)'` executionId, same as
+  // before wave 4a.
+  try {
+    ctx.sessionId = await createAgentRunSession({
+      runId: run.id,
+      agentId: ctx.agent.id,
+      orgId: run.orgId,
+      deviceId: run.deviceId,
+      model,
+      maxTurns: Math.max(1, limits.maxTurnsPerRun),
+    });
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to create the execution-ledger session', {
+      runId: run.id, error,
+    });
+  }
+
   const outcome: AgentRunOutcome = {
     findings: [],
     proposedActions: [],
@@ -645,11 +694,13 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   };
   const intentIds: string[] = [];
   const allowedPending = new Map<string, number>();
+  const executionIdPending = new Map<string, Array<string | null>>();
 
   const preToolUse = createAgentRunPreToolUse({
     run, agentName: ctx.agent.name, agentAuth, guardrailPolicy, outcome, intentIds, allowedPending,
+    sessionId: ctx.sessionId, executionIdPending,
   });
-  const postToolUse = createAgentRunPostToolUse({ outcome, allowedPending });
+  const postToolUse = createAgentRunPostToolUse({ outcome, allowedPending, executionIdPending });
 
   // No getActiveSession: a headless run has no ActiveSession, and the
   // session-aware tools (M365/Google) correctly refuse without one.
@@ -872,6 +923,11 @@ export async function executeAgentRun(runId: string): Promise<void> {
 
   const effective = run.policySnapshot.effective;
 
+  // Tracks what to log the ledger session as closing under (see
+  // `cleanupExecutionLedger`) — defaults to 'failed' so a throw anywhere below,
+  // including one before this is ever reassigned, closes it correctly.
+  let ledgerOutcome: 'completed' | 'failed' = 'failed';
+
   try {
     const result = await driveSdkLoop(ctx, effective);
     const { outcome, intentIds } = result;
@@ -908,6 +964,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // Awaiting approval is a REAL terminal-ish state for the run: the agent is
     // done thinking and a human now owns the decision. Release of an approved
     // intent is 3b's machinery, not a continuation of this run.
+    ledgerOutcome = 'completed';
     await finishRun(ctx, intentIds.length > 0 ? 'awaiting_approval' : 'completed', null, result);
   } catch (error) {
     const errorCode = error instanceof AgentRunError
@@ -925,6 +982,13 @@ export async function executeAgentRun(runId: string): Promise<void> {
         runId, agentId: run.agentId, errorCode,
       });
     }
+  } finally {
+    // Fires on every path that got far enough to create a session — the
+    // normal finish, the `!moved` early return inside `finishRun`, AND a throw
+    // between session creation and `finishRun` (see `cleanupExecutionLedger`'s
+    // docstring). A crashed process (SIGKILL) is the one path this cannot
+    // cover; `reapStalledAgentRuns` (`runService.ts`) covers that one instead.
+    await cleanupExecutionLedger(ctx, ledgerOutcome);
   }
 }
 
@@ -967,11 +1031,68 @@ async function finishRun(
     ...(errorCode ? { errorCode } : {}),
   });
 
-  await notifyRunFinished(ctx, {
-    status,
-    summary: result.summary,
-    intentIds: result.intentIds,
-  });
+  // Ledger cleanup happens in `executeAgentRun`'s `finally`, not here — this
+  // function is skipped entirely on the `!moved` branch above (another
+  // executor or `reapStalledAgentRuns` already owns this run), which is
+  // exactly the case the ledger cleanup exists for. See the note there.
+
+  // `deliverRunFinishedNotifications` re-reads the run row it just committed
+  // above (Task 6, #3826) rather than taking `status`/`result` in-process —
+  // see runFinishedNotify.ts's header for why the retry worker needs the
+  // SAME by-id entry point. A failure here must never redefine the run's
+  // terminal status, so it's caught here and durably retried instead of
+  // left to just fail silently as the old inline version did.
+  try {
+    await deliverRunFinishedNotifications(ctx.run.id);
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to notify run recipients — enqueuing durable retry', {
+      runId: ctx.run.id, error,
+    });
+    await enqueueAgentNotifyRetry(ctx.run.id);
+  }
+}
+
+/**
+ * Best-effort execution-ledger cleanup, called from `executeAgentRun`'s
+ * `finally` so it fires on EVERY path out of a run that got as far as
+ * creating a session — not just the happy in-process finish. Covers:
+ *  - `finishRun`'s `!moved` branch (another executor, or `reapStalledAgentRuns`,
+ *    already transitioned this run out of `running`);
+ *  - a throw between session creation and `finishRun` (e.g. `createBreezeMcpServer`
+ *    or `transitionRunStatus` itself throwing), caught by `executeAgentRun`'s
+ *    own catch block;
+ *  - the normal path, where `finishRun` already committed the terminal status.
+ *
+ * `outcome` only distinguishes 'completed'/'failed' for `closeAgentRunSession`'s
+ * log line — the same two-way collapse `finishRun` used to do inline
+ * (`awaiting_approval` reads as 'completed': the agent is done thinking either
+ * way, a human owning the follow-up is not the session continuing).
+ */
+async function cleanupExecutionLedger(
+  ctx: RunContext,
+  outcome: 'completed' | 'failed',
+): Promise<void> {
+  if (!ctx.sessionId) return;
+  const sessionId = ctx.sessionId;
+  try {
+    const hungCount = await reconcileHungExecutions(sessionId);
+    if (hungCount > 0) {
+      console.warn('[aiAgentRunLoop] reconciled tool executions left in-flight at run finish', {
+        runId: ctx.run.id, sessionId, hungCount,
+      });
+    }
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to reconcile hung executions (non-fatal)', {
+      runId: ctx.run.id, sessionId, error,
+    });
+  }
+  try {
+    await closeAgentRunSession(sessionId, outcome);
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to close the execution-ledger session (non-fatal)', {
+      runId: ctx.run.id, sessionId, error,
+    });
+  }
 }
 
 /**

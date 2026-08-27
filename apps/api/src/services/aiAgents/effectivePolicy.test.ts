@@ -282,6 +282,14 @@ describe('mergeAgentPolicies — tighten only', () => {
       .toBe('org-model');
   });
 
+  it('mergeLimits min-wins on maxActionsPerRun: partner 5 + org 2 -> 2', () => {
+    const partner = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxActionsPerRun: 5 } });
+    const org = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxActionsPerRun: 2 } });
+
+    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.limits.maxActionsPerRun)
+      .toBe(2);
+  });
+
   it('fills JSONB defaults when normalizing a sparse row', () => {
     const normalized = normalizeAgentPolicy({
       enabled: false,
