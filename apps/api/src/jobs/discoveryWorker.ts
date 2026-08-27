@@ -27,7 +27,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
 import type { AgentCommand } from '../routes/agentWs';
-import { isCronDue } from '../services/automationRuntime';
+import { isCronDue } from '../services/cronDue';
 import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
 import {
   buildClassificationWrite,

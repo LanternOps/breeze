@@ -521,7 +521,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'discoveryWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/discoveryWorker');
       return { init: m.initializeDiscoveryWorker, shutdown: m.shutdownDiscoveryWorker };
@@ -529,7 +529,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'networkBaselineWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/networkBaselineWorker');
       return { init: m.initializeNetworkBaselineWorker, shutdown: m.shutdownNetworkBaselineWorker };
@@ -537,7 +537,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'snmpWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/snmpWorker');
       return { init: m.initializeSnmpWorker, shutdown: m.shutdownSnmpWorker };
@@ -545,7 +545,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'monitorWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/monitorWorker');
       return { init: m.initializeMonitorWorker, shutdown: m.shutdownMonitorWorker };
@@ -689,7 +689,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'backupWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/backupWorker');
       return { init: m.initializeBackupWorker, shutdown: m.shutdownBackupWorker };

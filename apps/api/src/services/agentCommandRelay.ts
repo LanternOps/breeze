@@ -22,8 +22,22 @@ import { decryptSecret, encryptSecret, getActiveSecretEncryptionKeyId } from './
 import { breezeRole } from '../config/env';
 import { createInstrumentedQueue } from './bullmqQueue';
 import { readAgentPresence } from './agentPresence';
-import { isAgentConnected, sendCommandToAgent } from '../routes/agentWs';
 import type { AgentCommand } from '../routes/agentWs';
+
+// Socket-local dispatch, loaded LAZILY (#4141). The static value-import of
+// routes/agentWs.ts was the single edge pinning every facade caller
+// (monitor/snmp/backup/discovery/networkBaseline workers) to socket-owner
+// placement in the worker registry's mechanical closure classification —
+// runtime was already safe (both call sites sit behind breezeRole() !==
+// 'worker' guards, so a worker-role process never touches the socket map).
+// The dynamic import is module-cached by Node after the first call; the
+// extra await on the local-first hot path is a cache hit thereafter.
+async function socketLocal(): Promise<{
+  isAgentConnected: (agentId: string) => boolean;
+  sendCommandToAgent: (agentId: string, command: AgentCommand) => boolean;
+}> {
+  return import('../routes/agentWs');
+}
 
 export const AGENT_COMMAND_RELAY_QUEUE = 'agent-command-relay';
 export const RELAY_DELIVERY_DEADLINE_MS = 5_000;
@@ -173,7 +187,7 @@ export async function shutdownAgentCommandRelayQueue(): Promise<void> {
 }
 
 export async function isAgentConnectedAnywhere(agentId: string): Promise<boolean> {
-  if (breezeRole() !== 'worker' && isAgentConnected(agentId)) return true;
+  if (breezeRole() !== 'worker' && (await socketLocal()).isAgentConnected(agentId)) return true;
   return (await readAgentPresence(agentId)) !== null;
 }
 
@@ -192,10 +206,13 @@ export async function dispatchCommandToAgent(
   command: AgentCommand,
   opts: { priority?: 'probe' | 'normal'; forceRelay?: boolean } = {},
 ): Promise<DispatchOutcome> {
-  if (!opts.forceRelay && breezeRole() !== 'worker' && isAgentConnected(agentId)) {
-    return sendCommandToAgent(agentId, command)
-      ? { status: 'sent', via: 'local' }
-      : { status: 'offline' };
+  if (!opts.forceRelay && breezeRole() !== 'worker') {
+    const local = await socketLocal();
+    if (local.isAgentConnected(agentId)) {
+      return local.sendCommandToAgent(agentId, command)
+        ? { status: 'sent', via: 'local' }
+        : { status: 'offline' };
+    }
   }
 
   const lease = await readAgentPresence(agentId);
