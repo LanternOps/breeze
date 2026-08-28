@@ -415,14 +415,16 @@ describe('handleTicketEvent', () => {
 
   it('ticket.status_changed to resolved sends email with internal number and HTML-escaped resolution note', async () => {
     const xssNote = '<script>alert("xss")</script>';
+    // #3828 wave-6-3 task 2: resolutionNote no longer rides the event payload
+    // — the worker reads it off THIS ticket row instead.
     selectMock.mockResolvedValueOnce([{
       id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0099', subject: 'Slow VPN',
-      submitterEmail: 'user@acme.example'
+      submitterEmail: 'user@acme.example', resolutionNote: xssNote
     }]);
 
     await handleTicketEvent({
       type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { from: 'open', to: 'resolved', resolutionNote: xssNote }
+      actorUserId: 'u-1', payload: { from: 'open', to: 'resolved' }
     });
 
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
@@ -452,7 +454,7 @@ describe('handleTicketEvent', () => {
 
     await handleTicketEvent({
       type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { from: 'open', to: 'pending', resolutionNote: null }
+      actorUserId: 'u-1', payload: { from: 'open', to: 'pending' }
     });
 
     expect(sendEmailMock).not.toHaveBeenCalled();
@@ -461,12 +463,12 @@ describe('handleTicketEvent', () => {
   it('ticket.status_changed to resolved with null submitterEmail resolves without sending email', async () => {
     selectMock.mockResolvedValueOnce([{
       id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0099', subject: 'Slow VPN',
-      submitterEmail: null
+      submitterEmail: null, resolutionNote: 'All done'
     }]);
 
     await expect(handleTicketEvent({
       type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { from: 'open', to: 'resolved', resolutionNote: 'All done' }
+      actorUserId: 'u-1', payload: { from: 'open', to: 'resolved' }
     })).resolves.toBeUndefined();
 
     expect(sendEmailMock).not.toHaveBeenCalled();
@@ -479,7 +481,7 @@ describe('handleTicketEvent', () => {
 
     await handleTicketEvent({
       type: 'ticket.created', ticketId: 't-2', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { internalNumber: 'T-2026-0100', subject: 'New ticket', assigneeId: 'u-3', source: 'manual' }
+      actorUserId: 'u-1', payload: { internalNumber: 'T-2026-0100', assigneeId: 'u-3', source: 'manual' }
     });
 
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({

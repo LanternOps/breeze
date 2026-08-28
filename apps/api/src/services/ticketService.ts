@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, ticketStatusEnum, ticketSourceEnum } from '../db/schema';
+import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, ticketStatusEnum, ticketSourceEnum, ticketOutbox, type TicketOutboxEvent } from '../db/schema';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
@@ -77,6 +77,32 @@ async function getTicketOrThrow(ticketId: string) {
   const ticket = rows[0];
   if (!ticket) throw new TicketServiceError('Ticket not found', 404);
   return ticket;
+}
+
+/**
+ * Transactional outbox write (#3828 wave-6-3 task 2 —
+ * docs/superpowers/plans/ai-mcp/2026-08-28-ai-agents-wave6-3-ticket-shadow.md).
+ * Deliberately a PLAIN `db.insert` through the ambient `db` handle — the same
+ * one every other write in this file uses — so the row lands in whatever
+ * transaction the caller is already inside (the request's `withDbAccessContext`
+ * transaction). It must NEVER be wrapped in `runOutsideDbContext` /
+ * `withSystemDbAccessContext` (that is what `createAuditLogAsync` does, and is
+ * exactly why an audit row survives a request rollback while this one must
+ * NOT): if the surrounding transaction later rolls back, this row must roll
+ * back with it, or a published event could announce a ticket mutation that
+ * never actually committed.
+ *
+ * `payload` is id-only by construction (never subject/description/content/
+ * resolutionNote — see ticketOutbox.ts's export-policy note) — callers pass
+ * only structured ids/enum labels, never ticket free-text.
+ */
+async function writeTicketOutbox(
+  orgId: string,
+  ticketId: string,
+  eventType: TicketOutboxEvent,
+  payload: Record<string, unknown> = {}
+): Promise<void> {
+  await db.insert(ticketOutbox).values({ orgId, ticketId, eventType, payload });
 }
 
 /**
@@ -483,8 +509,9 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     orgId: input.orgId,
     partnerId: org.partnerId ?? null,
     actorUserId: actor.userId,
-    payload: { internalNumber, subject, assigneeId: input.assigneeId ?? null, source: input.source }
+    payload: { internalNumber, assigneeId: input.assigneeId ?? null, source: input.source }
   });
+  await writeTicketOutbox(input.orgId, ticket.id, 'ticket.created');
   await createAuditLogAsync({
     orgId: input.orgId,
     actorId: actor.userId,
@@ -670,8 +697,9 @@ export async function changeTicketStatus(
     orgId: ticket.orgId,
     partnerId: ticket.partnerId ?? null,
     actorUserId: actor.userId,
-    payload: { from: fromStatus, to: toStatus, resolutionNote: opts.resolutionNote ?? null }
+    payload: { from: fromStatus, to: toStatus }
   });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', { from: fromStatus, to: toStatus });
   await createAuditLogAsync({
     orgId: ticket.orgId,
     actorId: actor.userId,
@@ -849,6 +877,7 @@ export async function updateTicketFields(
     actorUserId: actor.userId,
     payload: { changed: changedForLog }
   });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.updated');
   await createAuditLogAsync({
     orgId: ticket.orgId,
     actorId: actor.userId,
@@ -934,6 +963,7 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
     actorUserId: actor.userId,
     payload: { assigneeId }
   });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.assigned', { assigneeId });
   await createAuditLogAsync({
     orgId: ticket.orgId,
     actorId: actor.userId,
@@ -996,6 +1026,7 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
     actorUserId: actor.userId,
     payload: { commentId: comment.id, isPublic: input.isPublic }
   });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: input.isPublic });
   // Record the comment id + visibility only — the comment body can carry
   // sensitive/large content, so it stays out of the audit details (matching the
   // sibling pattern of keeping details lean).
@@ -1305,6 +1336,12 @@ export async function restoreTicket(ticketId: string, actor: TicketActor): Promi
     .where(and(eq(tickets.id, ticketId), sql`${tickets.deletedAt} IS NOT NULL`))
     .returning();
   if (!updated) throw new TicketServiceError('Ticket is not deleted', 409);
+
+  // No emitTicketEvent here (restore never had a legacy-queue event — the
+  // notify worker has no ticket.restored branch). The outbox row is new for
+  // this PR: it exists purely so the durable-subscriber path (Task 3) and any
+  // future consumer can observe a restore, mirroring the other 5 sites.
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.restored');
 
   await createAuditLogAsync({
     orgId: ticket.orgId,

@@ -132,10 +132,15 @@ async function collectAssigneeNotification(
  * email from emitting a bare-anchor Message-ID that would collide with the
  * autoresponse's Message-ID and confuse the requester's mail client + PR1's
  * thread-key resolver.
+ *
+ * `bodyHtml` accepts a plain string OR a builder `(ticket) => string` (#3828
+ * wave-6-3 task 2). The builder form exists so the Resolved-email caller can
+ * compose its body from `ticket.resolutionNote` — fetched here from the DB —
+ * instead of from the event payload, which no longer carries that field.
  */
 async function collectRequesterEmail(
   event: TicketEvent,
-  bodyHtml: string,
+  bodyHtml: string | ((ticket: NonNullable<Awaited<ReturnType<typeof getTicket>>>) => string),
   subjectPrefix: string,
   commentId?: string
 ): Promise<EmailPayload[]> {
@@ -147,6 +152,7 @@ async function collectRequesterEmail(
 
   if (!ticket.submitterEmail) return [];
 
+  const html = typeof bodyHtml === 'function' ? bodyHtml(ticket) : bodyHtml;
   const label = ticket.internalNumber ?? ticket.ticketNumber ?? ticket.id;
 
   // Customer-facing reply routing: if this partner has a connected M365 mailbox, send
@@ -159,7 +165,7 @@ async function collectRequesterEmail(
     return [{
       to: ticket.submitterEmail,
       subject: `[${label}] ${subjectPrefix}: ${ticket.subject}`,
-      html: bodyHtml,
+      html,
       graphMailbox
     }];
   }
@@ -193,7 +199,7 @@ async function collectRequesterEmail(
   return [{
     to: ticket.submitterEmail,
     subject: `[${label}] ${subjectPrefix}: ${ticket.subject}`,
-    html: bodyHtml,
+    html,
     replyTo,
     headers,
     graphMailbox
@@ -368,11 +374,16 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
         return;
       }
       case 'ticket.status_changed': {
+        // #3828 wave-6-3 task 2: resolutionNote no longer rides the event
+        // payload (it is free-text ticket content) — read it off the ticket
+        // row that collectRequesterEmail fetches instead.
         if (event.payload.to === 'resolved') {
-          const note = event.payload.resolutionNote ?? '';
           emailPayloads = await collectRequesterEmail(
             event,
-            `<p>Your ticket has been resolved.</p>${note ? `<p>${escapeHtml(note)}</p>` : ''}`,
+            (ticket) => {
+              const note = ticket.resolutionNote ?? '';
+              return `<p>Your ticket has been resolved.</p>${note ? `<p>${escapeHtml(note)}</p>` : ''}`;
+            },
             'Resolved'
           );
         }

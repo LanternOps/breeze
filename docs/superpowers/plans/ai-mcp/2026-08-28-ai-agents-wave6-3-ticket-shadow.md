@@ -54,7 +54,7 @@ wave: W07 (#3828) — PR 3 of 4 (Ticket helpdesk shadow)
 - `ticketService.ts`: in-transaction `ticket_outbox` insert at the 6 sites (created/status/fields/assign/comment/restore); `emitTicketEvent` stays for `ticketNotifyWorker` but its `ticket.created`/`ticket.status_changed` payloads drop `subject`/`resolutionNote` (sweep `ticketNotifyWorker.ts` for reads of the dropped fields first — it must fetch from DB instead if it uses them).
 - `ticketOutboxPublisher.ts`: clone the intent publisher (5s poll, claim ≤200 FOR UPDATE SKIP LOCKED + attempt bump, publish via `publishEvent` OUTSIDE db context, mark published, alarm `publish_attempts > 5`); registry entry + snapshots 110 + shutdown export.
 - eventBus `EventType` additions; comment payloads id-only asserted by test (no subject/description/content field ever on the bus — regression test greps the publish sites' payload types).
-- [ ] TDD (in-txn atomicity: rollback leaves no outbox row; publisher idempotency; trimmed payloads; notify worker unaffected) → commit: `feat(api): transactional ticket-event outbox + id-only bus payloads (#3828)`
+- [x] TDD (in-txn atomicity: rollback leaves no outbox row; publisher idempotency; trimmed payloads; notify worker unaffected) → commit: `feat(api): transactional ticket-event outbox + id-only bus payloads (#3828)`
 
 ### Task 3: Subscriber + forced-shadow admission + loop guard
 
