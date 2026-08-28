@@ -172,7 +172,22 @@ describe('/api/v1/ai/agents', () => {
     expect(effective.data.effective.enabled).toBe(false);
   });
 
-  it("refuses mode 'act' until that mode is supported", async () => {
+  /**
+   * Wave 4 Part B (#4148) flipped SUPPORTED_AGENT_MODES to ['off','shadow','act'],
+   * so the pre-wave-4 contract this test used to assert — a bare
+   * `mode_not_supported` refusal — no longer exists. The payload below is still
+   * refused, but now by the act-ACTIVATION prerequisites
+   * (assertActPrerequisites, agentService.ts): a row that will persist as
+   * `mode: 'act'` needs at least one recipient that currently resolves to a
+   * real user AND at least one act-eligible surface, and this payload declares
+   * neither.
+   *
+   * Asserting `missing` rather than the code alone is what keeps this honest:
+   * the two prerequisites are checked independently, so a regression that
+   * dropped either one would still 422 on the survivor and slip past a
+   * code-only assertion.
+   */
+  it("refuses mode 'act' when neither act prerequisite is met", async () => {
     const app = buildApp();
     const { partnerAdmin } = await createSamePartnerClients(app);
 
@@ -185,8 +200,9 @@ describe('/api/v1/ai/agents', () => {
     });
 
     expect(res.status).toBe(422);
-    const body = await res.json() as { code: string };
-    expect(body.code).toBe('mode_not_supported');
+    const body = await res.json() as { code: string; missing: string[] };
+    expect(body.code).toBe('act_prerequisites_not_met');
+    expect([...body.missing].sort()).toEqual(['act_eligible_tool', 'recipient']);
   });
 
   it('lets an organization tighten a partner baseline to off', async () => {
