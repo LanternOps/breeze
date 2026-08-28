@@ -78,13 +78,14 @@ import { buildClaudeSdkChildEnv } from '../streamingSessionManager';
 import type { ToolExecutionContext } from '../toolExecutionContext';
 import type { AuthContext } from '../../middleware/auth';
 import { AgentRunOwnershipError, buildAgentAuthContext } from './agentAuthContext';
-import { resolveActOperation } from './actManifest';
+import { resolveActOperation, type ActTarget } from './actManifest';
 import {
   revalidateActExecution,
   type ActAssetPin,
   type ActReservationState,
 } from './actRevalidation';
 import { actTargetSummary, recordActVerifyFailureAlert, verifyActExecution } from './actVerify';
+import { executeBuiltInPlaybookForRun } from './playbookActExecutor';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
 import {
   closeAgentRunSession,
@@ -412,10 +413,19 @@ export function createAgentRunPreToolUse(args: {
   /** In-run `maxActionsPerRun` reservation counter, shared across every
    *  act-mode call in this run (Task 3). */
   actReservation: ActReservationState;
+  /**
+   * Absolute epoch ms the run's wall-clock ceiling expires at (Global
+   * Constraints: playbook executor wall-clock is bounded by the run's
+   * REMAINING budget, not a fresh timer per playbook) — same value the SDK
+   * loop's own `wallClockTimer` aborts on (see `driveSdkLoop`), threaded
+   * through so `playbookActExecutor.ts` can enforce it independently of the
+   * SDK's `abortController` (which this synchronous hook does not observe).
+   */
+  deadlineMs: number;
 }): PreToolUseCallback {
   const {
     run, agentName, agentAuth, agentKind, guardrailPolicy, outcome, intentIds, allowedPending,
-    sessionId, executionIdPending, actPinPending, actReservation,
+    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs,
   } = args;
 
   /** Shared by the ordinary 'propose' disposition AND an act-mode downgrade
@@ -588,12 +598,83 @@ export function createAgentRunPreToolUse(args: {
       if ('downgrade' in revalidated) {
         // Drift (act → shadow) or a cap-exhausted reservation — falls into
         // the EXACT same recording path as an ordinary unmatched-mutation
-        // proposal under act mode (aiGuardrails.ts's own act branch).
+        // proposal under act mode (aiGuardrails.ts's own act branch). Also
+        // covers a CUSTOM (non-built-in) `execute_playbook` call: `pinPlaybook`
+        // (actRevalidation.ts) downgrades those to a proposal before this
+        // function is ever reached, so the executor below only ever sees a
+        // playbookId already proven built-in.
         return recordProposal(check, toolName, input);
       }
 
-      // ok: the ONLY path that actually dispatches — through the normal
-      // tool implementation, exactly like a plain 'allow'.
+      if (op.key === 'execute_playbook') {
+        // Task 5 (#3826): the ONLY op where the manifest owns execution. The
+        // ordinary `execute_playbook` tool is a STUB that hands the model the
+        // step list to run turn-by-turn — never a rule-equivalent shape for
+        // unattended act mode. The deterministic executor replaces it
+        // entirely: it does NOT dispatch through `recordAllowedExecution`
+        // (the SDK tool never runs), so `actPinPending`/`executionIdPending`
+        // never see an entry for this call and the post-hook's FIFO guard
+        // (`remaining <= 0`) makes its no-op safe. The outcome is recorded
+        // here, directly, in the SAME shape the post-hook would have used.
+        const target = revalidated.pin.target as Extract<ActTarget, { kind: 'playbook' }>;
+        const playbookDigest = revalidated.pin.playbookDigest;
+        if (!playbookDigest) {
+          // Defense in depth: `pinPlaybook` always sets this on an `ok`
+          // pin — never reachable via real dispatch.
+          const reason = 'Act-mode playbook execution has no pinned digest to execute against';
+          console.error('[aiAgentRunLoop] execute_playbook pin missing playbookDigest', { runId: run.id });
+          outcome.deniedActions.push({ tool: toolName, reason });
+          return { allowed: false, error: reason };
+        }
+
+        const dispatchStartedAt = Date.now();
+        const result = await executeBuiltInPlaybookForRun({
+          run: {
+            id: run.id,
+            orgId: run.orgId,
+            agentId: run.agentId,
+            agentKind,
+            deviceId: guardrailPolicy.deviceId,
+            deviceSiteId: guardrailPolicy.deviceSiteId ?? null,
+          },
+          agentAuth,
+          playbookId: target.playbookId,
+          expectedDigest: playbookDigest,
+          variables: (input.variables as Record<string, unknown> | undefined) ?? {},
+          reserved: actReservation,
+          deadlineMs,
+        });
+        const durationMs = Date.now() - dispatchStartedAt;
+
+        outcome.executedActions.push({
+          tool: toolName,
+          executionId: '(inline)',
+          result: result.execution === 'succeeded' ? 'ok' : 'failed',
+          durationMs,
+          execution: result.execution,
+          verification: result.verification,
+          ...(result.verifyDetail ? { verifyDetail: result.verifyDetail } : {}),
+          actOpKey: op.key,
+          actTargetName: actTargetSummary(target),
+        });
+        outcome.toolExecutionCount += 1;
+
+        if (result.verification === 'failed') {
+          await recordActVerifyFailureAlert({
+            run: { id: run.id, orgId: run.orgId, deviceId: guardrailPolicy.deviceId, agentId: run.agentId },
+            op: { key: op.key },
+            target,
+            detail: result.verifyDetail,
+          });
+        }
+
+        // Worded as success, matching PROPOSAL_RECORDED_TEXT's convention —
+        // the playbook already ran; a model reading "denied" here would retry.
+        return { allowed: false, error: result.summary };
+      }
+
+      // ok: the ONLY remaining path that actually dispatches — through the
+      // normal tool implementation, exactly like a plain 'allow'.
       return recordAllowedExecution(toolName, input, revalidated.pin);
     }
 
@@ -832,6 +913,13 @@ interface LoopResult {
 async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<LoopResult> {
   const { run } = ctx;
   const limits = effective.limits;
+  // Computed here (not by the SDK-loop timer below) so the pre-hook's
+  // act-mode playbook executor (Task 5, #3826) can enforce the SAME
+  // wall-clock ceiling independently of the SDK's `abortController` — a
+  // synchronous tool-use hook does not observe that abort while it's still
+  // awaiting inside `executeBuiltInPlaybookForRun`.
+  const wallClockMs = Math.max(1, Math.round(limits.wallClockSeconds * 1000));
+  const deadlineMs = Date.now() + wallClockMs;
 
   const llm = await resolveLlmConfigForOrg(run.orgId);
   if (llm.source === 'unavailable') {
@@ -913,7 +1001,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   const preToolUse = createAgentRunPreToolUse({
     run, agentName: ctx.agent.name, agentAuth, agentKind: ctx.agent.kind, guardrailPolicy, outcome,
     intentIds, allowedPending, sessionId: ctx.sessionId, executionIdPending, actPinPending,
-    actReservation,
+    actReservation, deadlineMs,
   });
   const postToolUse = createAgentRunPostToolUse({
     outcome, allowedPending, executionIdPending, actPinPending,
@@ -929,7 +1017,6 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   const abortController = new AbortController();
   let wallClockExceeded = false;
   let budgetExceeded = false;
-  const wallClockMs = Math.max(1, Math.round(limits.wallClockSeconds * 1000));
   const wallClockTimer = setTimeout(() => {
     wallClockExceeded = true;
     abortController.abort();

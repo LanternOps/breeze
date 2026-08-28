@@ -180,6 +180,23 @@ vi.mock('./actVerify', async (importOriginal) => {
   return { ...actual, verifyActExecution, recordActVerifyFailureAlert };
 });
 
+// `playbookActExecutor.ts` has its own dedicated, deep unit suite
+// (playbookActExecutor.test.ts) — mocked here at the module boundary, same
+// precedent as `revalidateActExecution`/`verifyActExecution` above, so this
+// file only exercises the run-loop's WIRING contract for `execute_playbook`
+// (args passed through, outcome entry shape, no SDK-stub dispatch, alert on
+// verify-failure) rather than re-driving the real step loop.
+const executeBuiltInPlaybookForRun = vi.hoisted(() =>
+  vi.fn<(args: Record<string, unknown>) => Promise<{
+    execution: string;
+    verification: string;
+    verifyDetail?: string;
+    playbookExecutionId: string | null;
+    playbookName: string;
+    summary: string;
+  }>>());
+vi.mock('./playbookActExecutor', () => ({ executeBuiltInPlaybookForRun }));
+
 const publishEvent = vi.hoisted(() =>
   vi.fn<(type: string, orgId: string, payload: unknown, source: string) => Promise<string>>(
     async () => 'event-1'));
@@ -432,6 +449,7 @@ beforeEach(() => {
   revalidateActExecution.mockReset();
   verifyActExecution.mockReset().mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
   recordActVerifyFailureAlert.mockReset().mockResolvedValue(undefined);
+  executeBuiltInPlaybookForRun.mockReset();
   createBreezeMcpServer.mockImplementation((getAuth: () => unknown, pre: Hooks['pre'], post: Hooks['post']) => {
     hooks.getAuth = getAuth;
     hooks.pre = pre;
@@ -772,6 +790,119 @@ describe('executeAgentRun', () => {
       expect(revalidateActExecution).not.toHaveBeenCalled();
       expect(createActionIntent).toHaveBeenCalledTimes(1);
       expect(preVerdicts[0]).toEqual({ allowed: false, error: PROPOSAL_RECORDED_TEXT });
+    });
+  });
+
+  describe('execute_playbook (built-in) routes to the deterministic executor (Task 5, #3826)', () => {
+    function seedActRun() {
+      return seedRows({
+        effective: policy({ mode: 'act', toolAllowlist: ['execute_playbook'] }),
+        modeAtStart: 'act',
+      });
+    }
+
+    const PLAYBOOK_ID = '00000000-0000-4000-8000-0000000000e1';
+    const PLAYBOOK_CALL = {
+      tool: 'execute_playbook',
+      input: { playbookId: PLAYBOOK_ID, deviceId: DEVICE_ID, variables: { serviceName: 'Spooler' } },
+    };
+
+    it('ok revalidation routes to the executor instead of the SDK stub — no ledger write, no allow', async () => {
+      seedActRun();
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true,
+        pin: {
+          op: args.op, target: { kind: 'playbook', playbookId: PLAYBOOK_ID }, playbookDigest: 'digest-abc',
+        },
+      }));
+      executeBuiltInPlaybookForRun.mockResolvedValue({
+        execution: 'succeeded', verification: 'passed', playbookExecutionId: 'pbexec-1',
+        playbookName: 'Service Restart with Health Check', summary: 'Built-in playbook ran and verified.',
+      });
+      scriptQuery({ toolCalls: [PLAYBOOK_CALL], assistantText: 'Ran the built-in service restart playbook.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(executeBuiltInPlaybookForRun).toHaveBeenCalledTimes(1);
+      const execArgs = executeBuiltInPlaybookForRun.mock.calls[0]![0] as Record<string, unknown>;
+      expect(execArgs.playbookId).toBe(PLAYBOOK_ID);
+      expect(execArgs.expectedDigest).toBe('digest-abc');
+      expect(execArgs.variables).toEqual({ serviceName: 'Spooler' });
+      expect(typeof execArgs.deadlineMs).toBe('number');
+      expect((execArgs.reserved as { count: number }).count).toBeDefined();
+      expect((execArgs.run as Record<string, unknown>).deviceId).toBe(DEVICE_ID);
+
+      // The SDK stub never dispatches for this op — no ledger write, and the
+      // pre-hook returns allowed:false (the model reads the executor's own
+      // success-shaped summary as the tool result).
+      expect(startToolExecution).not.toHaveBeenCalled();
+      expect(preVerdicts[0]).toEqual({ allowed: false, error: 'Built-in playbook ran and verified.' });
+
+      const final = finalTransition()!;
+      expect(final.to).toBe('completed');
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.deniedActions).toEqual([]);
+      expect(outcome.proposedActions).toEqual([]);
+      expect(outcome.executedActions).toHaveLength(1);
+      expect(outcome.executedActions[0]).toMatchObject({
+        tool: 'execute_playbook',
+        executionId: '(inline)',
+        result: 'ok',
+        execution: 'succeeded',
+        verification: 'passed',
+        actOpKey: 'execute_playbook',
+        actTargetName: PLAYBOOK_ID,
+      });
+      expect(outcome.toolExecutionCount).toBe(1);
+      expect(outcome.runVerdict).toBe('remediated');
+      expect(recordActVerifyFailureAlert).not.toHaveBeenCalled();
+    });
+
+    it('verification failure from the executor raises the rule-less alert and rolls up to needs_attention', async () => {
+      seedActRun();
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true,
+        pin: {
+          op: args.op, target: { kind: 'playbook', playbookId: PLAYBOOK_ID }, playbookDigest: 'digest-abc',
+        },
+      }));
+      executeBuiltInPlaybookForRun.mockResolvedValue({
+        execution: 'succeeded', verification: 'failed', verifyDetail: 'service status is "stopped"',
+        playbookExecutionId: 'pbexec-2', playbookName: 'Service Restart with Health Check',
+        summary: 'Built-in playbook ran but did not verify.',
+      });
+      scriptQuery({ toolCalls: [PLAYBOOK_CALL], assistantText: 'Ran the built-in service restart playbook.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(recordActVerifyFailureAlert).toHaveBeenCalledTimes(1);
+      const alertArgs = recordActVerifyFailureAlert.mock.calls[0]![0] as Record<string, unknown>;
+      expect((alertArgs.run as Record<string, unknown>).deviceId).toBe(DEVICE_ID);
+      expect((alertArgs.op as Record<string, unknown>).key).toBe('execute_playbook');
+      expect(alertArgs.detail).toBe('service status is "stopped"');
+
+      const final = finalTransition()!;
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.executedActions[0]).toMatchObject({ execution: 'succeeded', verification: 'failed' });
+      expect(outcome.runVerdict).toBe('needs_attention');
+    });
+
+    it('a custom (non-built-in) playbook downgrades to a proposal — the executor is never called', async () => {
+      seedActRun();
+      revalidateActExecution.mockResolvedValue({ ok: false, downgrade: 'propose' });
+      scriptQuery({ toolCalls: [PLAYBOOK_CALL], assistantText: 'Proposed the playbook for review.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(executeBuiltInPlaybookForRun).not.toHaveBeenCalled();
+      expect(startToolExecution).not.toHaveBeenCalled();
+      expect(preVerdicts[0]).toEqual({ allowed: false, error: PROPOSAL_RECORDED_TEXT });
+
+      const final = finalTransition()!;
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.proposedActions).toHaveLength(1);
+      expect(outcome.proposedActions[0]!.tool).toBe('execute_playbook');
+      expect(outcome.executedActions).toEqual([]);
     });
   });
 
