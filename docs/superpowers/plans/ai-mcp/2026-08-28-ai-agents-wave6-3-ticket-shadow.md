@@ -62,7 +62,7 @@ wave: W07 (#3828) — PR 3 of 4 (Ticket helpdesk shadow)
 - `runService.ts`: `ticketId` input + persist; force `modeAtStart = 'shadow'` when `triggerKind === 'ticket'` (regardless of effective mode — test act-mode agent yields shadow run); ticket runs bypass device-centric trigger filters but respect siteIds where resolvable — v1: no device filters for ticket runs (no device); maintenance-window check skipped for ticket runs (no device axis) — document.
 - Shadow ticket runs write NOTHING to tickets: verify shadow-mode tool gating denies `manage_tickets` mutations for ticket runs and add an explicit contract test (dossier: `manage_tickets` uses `actorFrom(auth)` users-row actor — an agent run must never reach it in shadow).
 - Automations regression test: ticket events on the bus do NOT reach `automation-worker` handlers as trigger events (wildcard subscriber sees them; assert its handler no-ops on `ticket.*` — grep its event switch) — the "keep+test" clause.
-- [ ] TDD (dedupe on duplicate delivery, forced shadow, loop-guard skip on agent-origin, circuit/kill-switch precedence unchanged) → commit: `feat(api): ticket-shadow admission — durable subscriber, forced shadow, origin loop guard (#3828)`
+- [x] TDD (dedupe on duplicate delivery, forced shadow, loop-guard skip on agent-origin, circuit/kill-switch precedence unchanged) → commit: `feat(api): ticket-shadow admission — durable subscriber, forced shadow, origin loop guard (#3828)`
 
 ### Task 4: Bounded context + ticketProposal outcome + shared types + PR
 

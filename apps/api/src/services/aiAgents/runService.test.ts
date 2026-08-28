@@ -20,6 +20,7 @@ const RULE_A = '00000000-0000-4000-8000-0000000000a9';
 const RULE_B = '00000000-0000-4000-8000-0000000000b1';
 const OTHER_ORG_ID = '00000000-0000-4000-8000-0000000000b2';
 const OTHER_PARTNER_ID = '00000000-0000-4000-8000-0000000000b3';
+const TICKET_ID = '00000000-0000-4000-8000-0000000000b4';
 
 interface CapturedSelect {
   table: string;
@@ -794,6 +795,87 @@ describe('createAndEnqueueAgentRun admission success', () => {
       'enqueue_failed',
       null,
     );
+  });
+});
+
+// Wave 6 PR 3 (#3828) — ticket-shadow admission. Ticket-triggered runs are
+// device-less (deviceId always null — v1 has no device axis for tickets) and
+// MUST always start in shadow, regardless of the agent's configured
+// effective mode: the design authority is explicit that a ticket admission
+// never produces an autonomous ticket write, even for an 'act'-mode agent.
+describe('createAndEnqueueAgentRun — ticket-triggered admission (#3828 wave-6-3 task 3)', () => {
+  function ticketInput(over: Partial<CreateAgentRunInput> = {}): CreateAgentRunInput {
+    return input({
+      kind: 'helpdesk',
+      triggerKind: 'ticket',
+      deviceId: null,
+      ticketId: TICKET_ID,
+      triggerRef: { ticketId: TICKET_ID },
+      dedupeKey: `ticket-created:${TICKET_ID}`,
+      ...over,
+    });
+  }
+
+  it('forces modeAtStart to shadow even when the effective policy mode is act', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(
+      snapshot({ mode: 'act' }),
+    );
+    seedAdmissionReads();
+    const result = await createAndEnqueueAgentRun(ticketInput());
+
+    expect(result.created).toBe(true);
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values).toMatchObject({
+      triggerKind: 'ticket',
+      deviceId: null,
+      ticketId: TICKET_ID,
+      modeAtStart: 'shadow',
+    });
+  });
+
+  it('persists shadow modeAtStart when the effective policy mode is already shadow', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'shadow' }));
+    seedAdmissionReads();
+    await createAndEnqueueAgentRun(ticketInput());
+
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values.modeAtStart).toBe('shadow');
+  });
+
+  it('does not consult maintenance windows for a ticket-triggered (device-less) run', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(
+      snapshot({ mode: 'act', triggers: triggers({ respectMaintenanceWindows: true }) }),
+    );
+    seedAdmissionReads();
+    await createAndEnqueueAgentRun(ticketInput());
+    expect(isDeviceInMaintenanceWindow).not.toHaveBeenCalled();
+  });
+
+  it('kill_switch_off still precedes the forced-shadow override', async () => {
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'false');
+    const result = await createAndEnqueueAgentRun(ticketInput());
+    expect(result).toEqual({ created: false, skipped: 'kill_switch_off' });
+    expect(resolveEffectiveAgentSystem).not.toHaveBeenCalled();
+  });
+
+  it('circuit_open still precedes the forced-shadow override', async () => {
+    isCircuitOpen.mockResolvedValue(true);
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'act' }));
+    const result = await createAndEnqueueAgentRun(ticketInput());
+    expect(result).toEqual({ created: false, skipped: 'circuit_open' });
+    // The forced-shadow assignment happens before the circuit check, but must
+    // never short-circuit it — the insert must never be reached.
+    expect(dbMockState.insertValues).toHaveLength(0);
+  });
+
+  it('a duplicate ticket-created delivery collapses onto the same dedupe key (no second row)', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'act' }));
+    seedAdmissionReads();
+    dbMockState.insertRows = []; // ON CONFLICT DO NOTHING — the row already exists
+    dbMockState.updateRows = []; // not an enqueue_failed reclaim either — genuinely a repeat
+
+    const result = await createAndEnqueueAgentRun(ticketInput());
+    expect(result).toEqual({ created: false, skipped: 'duplicate' });
   });
 });
 

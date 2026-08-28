@@ -85,6 +85,12 @@ export interface CreateAgentRunInput {
     siteId: string | null;
     deviceTags: string[];
   };
+  /**
+   * The triggering ticket for `triggerKind: 'ticket'` runs (wave 6 PR 3,
+   * #3828). Ticket runs carry no device — `deviceId` is always null for
+   * them — so this is the run's only trigger-target identity.
+   */
+  ticketId?: string | null;
   /** e.g. `alert:${alertId}`, `manual:${randomUUID()}`. Unique per org. */
   dedupeKey: string;
 }
@@ -380,7 +386,18 @@ export async function createAndEnqueueAgentRun(
   const effective = resolved.effective;
   if (!effective.enabled) return skip('agent_disabled');
   if (effective.mode === 'off') return skip('mode_off');
-  const modeAtStart = effective.mode;
+  // Wave 6 PR 3 (#3828) — design authority: a ticket-triggered run is ALWAYS
+  // shadow, regardless of the agent's configured effective mode. This is a
+  // downgrade only ('off' already skipped above at mode_off — a ticket
+  // trigger can never turn a disabled agent on). Placed here (immediately
+  // after the mode_off check, before the circuit breaker / trigger filter /
+  // maintenance-window / admission-counter gates below) so every earlier and
+  // later admission rule sees the SAME modeAtStart a real 'act'-mode agent
+  // would have produced for any other trigger kind — forcing shadow changes
+  // only what the run records and how the guardrail tool gate treats it
+  // (aiGuardrails.ts's shadow branch + the device-less-mutation deny, since
+  // ticket runs are also always device-less), never admission precedence.
+  const modeAtStart = triggerKind === 'ticket' ? 'shadow' : effective.mode;
 
   // 2b. Circuit breaker (wave 6 PR 2, #3828). Placed as early as possible
   // after the kill switch — this is the first point `resolved.agentId` is
@@ -405,6 +422,13 @@ export async function createAndEnqueueAgentRun(
   // connection `idle in transaction` across Redis is what exhausted the pool on
   // 2026-05-21 (see the same note on eventBus.publish).
   const admission: CreateAgentRunResult = await inSystemDbContext(async () => {
+    // Ticket-triggered runs are always deviceId: null (no device axis for
+    // tickets in v1 — wave 6 PR 3, #3828), so this already skips for them
+    // with no ticket-specific branch needed: there is no device to be inside
+    // a maintenance window of. Same reasoning covers siteIds — ticket runs
+    // have no device to resolve a site from, so the siteIds trigger filter
+    // (evaluated only when an alertContext is supplied, which ticket
+    // admissions never are) is likewise inert for this trigger kind in v1.
     if (effective.triggers.respectMaintenanceWindows && deviceId) {
       if (await isDeviceInMaintenanceWindow(deviceId)) return skip('maintenance_window');
     }
@@ -563,6 +587,7 @@ export async function createAndEnqueueAgentRun(
         orgId,
         deviceId,
         alertId: input.alertId ?? null,
+        ticketId: input.ticketId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
         triggerRef: input.triggerRef ?? {},
@@ -598,6 +623,7 @@ export async function createAndEnqueueAgentRun(
         agentId: resolved.agentId,
         deviceId,
         alertId: input.alertId ?? null,
+        ticketId: input.ticketId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
         triggerRef: input.triggerRef ?? {},
