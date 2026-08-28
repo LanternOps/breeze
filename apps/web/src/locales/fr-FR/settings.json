@@ -2782,6 +2782,12 @@
       "title": "Aucune organisation sélectionnée",
       "description": "Veuillez sélectionner une organisation dans le sélecteur de l’en-tête pour afficher les paramètres."
     },
+    "archived": {
+      "banner": "Cette organisation est archivée et en lecture seule. Restaurez-la pour effectuer des modifications.",
+      "bannerWithDate": "Cette organisation est archivée ; la purge est prévue pour le {{date}}. Restaurez-la pour effectuer des modifications.",
+      "restoreLink": "Restaurer cette organisation",
+      "saveBlocked": "Cette organisation est archivée et ne peut pas être modifiée. Restaurez-la d’abord."
+    },
     "actions": {
       "save": "Enregistrer",
       "tryAgain": "Réessayer"

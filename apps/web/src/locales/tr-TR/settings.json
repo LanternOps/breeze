@@ -2835,6 +2835,12 @@
       "title": "Kuruluş Seçilmedi",
       "description": "Ayarları görüntülemek için lütfen başlıktaki değiştiriciden bir kuruluş seçin."
     },
+    "archived": {
+      "banner": "Bu kuruluş arşivlendi ve salt okunur durumda. Değişiklik yapmak için geri yükleyin.",
+      "bannerWithDate": "Bu kuruluş arşivlendi — silme işlemi {{date}} tarihinde planlandı. Değişiklik yapmak için geri yükleyin.",
+      "restoreLink": "Bu kuruluşu geri yükle",
+      "saveBlocked": "Bu kuruluş arşivlendi ve düzenlenemez. Önce geri yükleyin."
+    },
     "actions": {
       "save": "Kaydet",
       "tryAgain": "Tekrar deneyin"

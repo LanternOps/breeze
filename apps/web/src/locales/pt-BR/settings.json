@@ -2835,6 +2835,12 @@
       "title": "Nenhuma organização selecionada",
       "description": "Selecione uma organização no alternador no cabeçalho para visualizar as configurações."
     },
+    "archived": {
+      "banner": "Esta organização está arquivada e é somente leitura. Restaure-a para fazer alterações.",
+      "bannerWithDate": "Esta organização está arquivada — a exclusão está agendada para {{date}}. Restaure-a para fazer alterações.",
+      "restoreLink": "Restaurar esta organização",
+      "saveBlocked": "Esta organização está arquivada e não pode ser editada. Restaure-a primeiro."
+    },
     "actions": {
       "save": "Salvar",
       "tryAgain": "Tente novamente"

@@ -2830,6 +2830,12 @@
       "title": "Nessuna organizzazione selezionata",
       "description": "Seleziona un'organizzazione dal selettore nell'header per visualizzare le impostazioni."
     },
+    "archived": {
+      "banner": "Questa organizzazione è archiviata ed è di sola lettura. Ripristinala per apportare modifiche.",
+      "bannerWithDate": "Questa organizzazione è archiviata: l'eliminazione è prevista per il {{date}}. Ripristinala per apportare modifiche.",
+      "restoreLink": "Ripristina questa organizzazione",
+      "saveBlocked": "Questa organizzazione è archiviata e non può essere modificata. Ripristinala prima."
+    },
     "actions": {
       "save": "Salva",
       "tryAgain": "Riprova"

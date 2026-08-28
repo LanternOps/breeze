@@ -2782,6 +2782,12 @@
       "title": "Ninguna organización seleccionada",
       "description": "Seleccione una organización del selector en el encabezado para ver la configuración."
     },
+    "archived": {
+      "banner": "Esta organización está archivada y es de solo lectura. Restáurela para realizar cambios.",
+      "bannerWithDate": "Esta organización está archivada; la eliminación está programada para el {{date}}. Restáurela para realizar cambios.",
+      "restoreLink": "Restaurar esta organización",
+      "saveBlocked": "Esta organización está archivada y no se puede editar. Restáurela primero."
+    },
     "actions": {
       "save": "Guardar",
       "tryAgain": "Intentar otra vez"
