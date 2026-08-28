@@ -76,7 +76,7 @@ describe('verifyActExecution — manage_services.restart (service_running)', () 
     });
     expect(result).toEqual({ execution: 'succeeded', verification: 'passed' });
     expect(executeCommand).toHaveBeenCalledWith('device-1', 'list_services', { search: 'Spooler' }, {
-      userId: AGENT_USER_ID, timeoutMs: 30_000,
+      userId: AGENT_USER_ID, timeoutMs: 8_000,
     });
   });
 
@@ -156,7 +156,7 @@ describe('verifyActExecution — manage_processes.kill (process_absent)', () => 
     });
     expect(result).toEqual({ execution: 'succeeded', verification: 'failed', verifyDetail: 'process with the pinned pid is still present' });
     expect(executeCommand).toHaveBeenCalledWith('device-1', 'list_processes', { search: 'notepad.exe', limit: 200 }, {
-      userId: AGENT_USER_ID, timeoutMs: 30_000,
+      userId: AGENT_USER_ID, timeoutMs: 8_000,
     });
   });
 
@@ -167,6 +167,35 @@ describe('verifyActExecution — manage_processes.kill (process_absent)', () => 
       isError: false, run: RUN, agentUserId: AGENT_USER_ID,
     });
     expect(result).toEqual({ execution: 'succeeded', verification: 'passed' });
+  });
+
+  // Review fix: an unparseable read-back must never be scored as "absence
+  // proven" — that is absence of evidence, not evidence of absence, and the
+  // sibling verifyServiceRunning already treats it conservatively.
+  it('read-back stdout is not JSON at all → inconclusive, not passed', async () => {
+    executeCommand.mockResolvedValue({ status: 'completed', stdout: 'not json' });
+    const result = await verifyActExecution({
+      pin: pin(killOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
+      isError: false, run: RUN, agentUserId: AGENT_USER_ID,
+    });
+    expect(result).toEqual({
+      execution: 'succeeded',
+      verification: 'inconclusive',
+      verifyDetail: 'process list read-back was not parseable',
+    });
+  });
+
+  it('read-back stdout parses but carries no `processes` array → inconclusive, not passed', async () => {
+    executeCommand.mockResolvedValue({ status: 'completed', stdout: '{}' });
+    const result = await verifyActExecution({
+      pin: pin(killOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
+      isError: false, run: RUN, agentUserId: AGENT_USER_ID,
+    });
+    expect(result).toEqual({
+      execution: 'succeeded',
+      verification: 'inconclusive',
+      verifyDetail: 'process list read-back was not parseable',
+    });
   });
 });
 

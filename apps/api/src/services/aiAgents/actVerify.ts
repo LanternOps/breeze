@@ -42,8 +42,30 @@ async function getCommandQueue() {
   return _commandQueue;
 }
 
-/** Each verification read is bounded independently of the tool call it verifies. */
-const VERIFY_READ_TIMEOUT_MS = 30_000;
+/**
+ * Reserved, within the SAME outer budget as the verification read (see
+ * below), for `recordActVerifyFailureAlert`'s DB insert — it runs AFTER the
+ * read resolves, still inside the same postToolUse call.
+ */
+const ALERT_INSERT_BUDGET_MS = 1_000;
+
+/**
+ * Each verification read is bounded independently of the tool call it
+ * verifies — but it also runs INSIDE the run-loop's postToolUse hook, which
+ * `safePostToolUse` caps as a whole at `POST_TOOL_USE_TIMEOUT_MS` (10s;
+ * aiAgentSdkTools.ts). This budget, plus `ALERT_INSERT_BUDGET_MS` above,
+ * MUST stay under that outer cap — otherwise a read-back that is well within
+ * ITS OWN budget still gets abandoned mid-flight because the hook that
+ * contains it already timed out (see the wave-4b review fix; runLoop.ts's
+ * post-hook now records the executed-action entry before this read even
+ * starts, so that failure mode can no longer lose the record entirely, but
+ * a read that never finishes is still a read that never verified anything).
+ * Not imported from aiAgentSdkTools.ts on purpose — that module pulls in a
+ * large, largely-unmocked service graph; the invariant is instead asserted
+ * in runLoop.test.ts, which already mocks aiAgentSdkTools.ts wholesale and
+ * spreads this module's real exports through its own `./actVerify` mock.
+ */
+export const VERIFY_READ_TIMEOUT_MS = 8_000;
 
 export interface ActOutcome {
   execution: ActExecutionVerdict;
@@ -124,9 +146,17 @@ async function verifyProcessAbsent(
   if (result.status !== 'completed') {
     return { verification: 'inconclusive', detail: `process list read did not complete (${result.status})` };
   }
-  const parsed = parseCommandResult(result.stdout ?? '{}');
-  const processes = Array.isArray(parsed?.processes) ? parsed!.processes as unknown[] : [];
-  const stillPresent = processes.some((p) =>
+  const parsed = parseCommandResult(result.stdout ?? '');
+  // Absence of evidence is not evidence of absence: only a well-formed
+  // `processes` array can prove the pid is gone. An unparseable body, a
+  // shape change, or an error payload that still reported `status:
+  // 'completed'` must never be scored as a silent pass — see
+  // verifyServiceRunning, which already treats the analogous case
+  // conservatively.
+  if (!parsed || !Array.isArray(parsed.processes)) {
+    return { verification: 'inconclusive', detail: 'process list read-back was not parseable' };
+  }
+  const stillPresent = parsed.processes.some((p) =>
     typeof p === 'object' && p !== null
     && String((p as { pid?: unknown }).pid) === target.pid);
 

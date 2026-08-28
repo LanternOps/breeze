@@ -653,6 +653,17 @@ export function createAgentRunPostToolUse(args: {
       durationMs,
     };
 
+    // Recorded BEFORE the verification await below, not after: this whole
+    // hook runs under `safePostToolUse`'s POST_TOOL_USE_TIMEOUT_MS cap
+    // (aiAgentSdkTools.ts), which is independent of — and can be shorter
+    // than — `verifyActExecution`'s own per-read budget. If the outer cap
+    // fires while a verify read is still in flight, the entry must already
+    // be in `outcome.executedActions` (the action really did execute) rather
+    // than lost entirely. The object is mutated in place as verification
+    // resolves, never pushed twice.
+    outcome.executedActions.push(entry);
+    outcome.toolExecutionCount += 1;
+
     if (actPin && run.deviceId) {
       try {
         const verified = await verifyActExecution({
@@ -689,9 +700,6 @@ export function createAgentRunPostToolUse(args: {
         entry.actTargetName = actTargetSummary(actPin.target);
       }
     }
-
-    outcome.executedActions.push(entry);
-    outcome.toolExecutionCount += 1;
   };
 }
 
@@ -705,8 +713,14 @@ export function computeRunVerdict(
 ): AgentRunVerdict {
   const acted = outcome.executedActions.filter((a) => a.verification !== undefined);
   if (acted.length === 0) return 'no_action';
-  const needsAttention = acted.some((a) => a.verification === 'failed' || a.verification === 'inconclusive');
-  if (needsAttention) return 'needs_attention';
+  // The rollup is over the (execution, verification) PAIR, not verification
+  // alone: a dispatch that itself failed/timed out/is unknown is not "clean"
+  // even when its read-back reports 'passed' (rare, but not proof), and a
+  // read-back that never ran ('skipped' — e.g. dispatch failed before the
+  // script could produce an exit code) must not roll up as a quiet success
+  // just because it isn't literally 'failed'/'inconclusive'.
+  const allClean = acted.every((a) => a.verification === 'passed' && a.execution === 'succeeded');
+  if (!allClean) return 'needs_attention';
   return outcome.proposedActions.length > 0 ? 'partial' : 'remediated';
 }
 

@@ -194,6 +194,10 @@ const createBreezeMcpServer = vi.hoisted(() =>
 vi.mock('../aiAgentSdkTools', () => ({
   createBreezeMcpServer,
   BREEZE_MCP_TOOL_NAMES: ['mcp__breeze__query_devices'],
+  // The REAL value (aiAgentSdkTools.ts) — kept in sync here so the timeout-
+  // budget invariant test below asserts against the actual cap, not a
+  // hardcoded guess. See that test for why.
+  POST_TOOL_USE_TIMEOUT_MS: 10_000,
 }));
 
 const createActionIntent = vi.hoisted(() =>
@@ -236,8 +240,12 @@ vi.mock('../aiCostTracker', () => ({ recordSessionlessSdkUsage, calculateCostCen
 // the real module would require mocking it; instead the contract is asserted by
 // the red-team suite (Task 5). Here we assert the loop never imports it by
 // asserting on the guardrail path it DOES take.
-import { computeRunVerdict, executeAgentRun, PROPOSAL_RECORDED_TEXT } from './runLoop';
+import {
+  computeRunVerdict, createAgentRunPostToolUse, executeAgentRun, PROPOSAL_RECORDED_TEXT,
+} from './runLoop';
 import type { AgentRunOutcome } from './runLoop';
+import { VERIFY_READ_TIMEOUT_MS } from './actVerify';
+import { POST_TOOL_USE_TIMEOUT_MS } from '../aiAgentSdkTools';
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -688,6 +696,62 @@ describe('executeAgentRun', () => {
       const outcome = final.patch.outcome as AgentRunOutcome;
       expect(outcome.executedActions[0]).toMatchObject({ execution: 'succeeded', verification: 'failed' });
       expect(outcome.runVerdict).toBe('needs_attention');
+    });
+
+    // Review fix: `safePostToolUse` (aiAgentSdkTools.ts) caps the WHOLE
+    // post-hook at POST_TOOL_USE_TIMEOUT_MS (10s), but the pre-fix code only
+    // pushed the executed-action entry into `outcome.executedActions` AFTER
+    // `await verifyActExecution(...)` resolved. A verify read slow enough to
+    // trip that outer cap (its OWN budget is a separate, longer 30s) would
+    // then lose the entire execution record — the action really ran, but
+    // `outcome` never learns about it. This test drives
+    // `createAgentRunPostToolUse` directly (bypassing the full SDK-mocked
+    // harness, which currently calls the hook with no timeout wrapper at
+    // all — see the file-level comment) and proves the entry lands
+    // synchronously, before verification has any chance to resolve.
+    it('records the executed-action entry BEFORE awaiting verification, so a slow verify read can never lose it', async () => {
+      let resolveVerify!: (v: { execution: string; verification: string }) => void;
+      verifyActExecution.mockReset().mockImplementation(
+        () => new Promise((resolve) => { resolveVerify = resolve; }),
+      );
+
+      const outcome: AgentRunOutcome = {
+        findings: [], proposedActions: [], executedActions: [], deniedActions: [], toolExecutionCount: 0,
+      };
+      const allowedPending = new Map<string, number>([['manage_services', 1]]);
+      const executionIdPending = new Map<string, Array<string | null>>([['manage_services', ['exec-1']]]);
+      const actPin = {
+        op: { key: 'manage_services.restart' },
+        target: { kind: 'service' as const, serviceName: 'Spooler' },
+      };
+      const actPinPending = new Map([['manage_services', [actPin]]]);
+
+      const post = createAgentRunPostToolUse({
+        outcome, allowedPending, executionIdPending, actPinPending,
+        run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, deviceId: DEVICE_ID },
+        agentUserId: USER_A,
+      } as never);
+
+      const pending = post('manage_services', { action: 'restart' }, '{"ok":true}', false, 5);
+      // Flush pending microtasks WITHOUT resolving verifyActExecution's
+      // promise — this is the moment a real 10s post-hook timeout would fire.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(outcome.executedActions).toHaveLength(1);
+      expect(outcome.executedActions[0]).toMatchObject({
+        tool: 'manage_services', executionId: 'exec-1', result: 'ok',
+      });
+      expect(outcome.executedActions[0]!.verification).toBeUndefined();
+      expect(outcome.toolExecutionCount).toBe(1);
+
+      resolveVerify({ execution: 'succeeded', verification: 'passed' });
+      await pending;
+
+      // Same object, mutated in place — never a second entry.
+      expect(outcome.executedActions).toHaveLength(1);
+      expect(outcome.executedActions[0]).toMatchObject({ execution: 'succeeded', verification: 'passed' });
     });
 
     it('an unmatched mutation under act mode still proposes exactly like shadow (no revalidation call)', async () => {
@@ -1300,6 +1364,18 @@ describe('executeAgentRun', () => {
   });
 });
 
+describe('act verification timeout budget (review fix)', () => {
+  it('the verification read leaves headroom under the post-hook timeout for the failed-verification alert insert', () => {
+    // safePostToolUse (aiAgentSdkTools.ts) caps the WHOLE postToolUse hook
+    // at POST_TOOL_USE_TIMEOUT_MS. The verification read that runs inside
+    // it (actVerify.ts's VERIFY_READ_TIMEOUT_MS) — plus the alert insert
+    // that can follow it — must never be allowed to exceed that outer cap,
+    // or a read well within its OWN budget still gets abandoned mid-flight.
+    const ALERT_INSERT_BUDGET_MS = 1_000;
+    expect(VERIFY_READ_TIMEOUT_MS + ALERT_INSERT_BUDGET_MS).toBeLessThan(POST_TOOL_USE_TIMEOUT_MS);
+  });
+});
+
 describe('computeRunVerdict', () => {
   function executed(overrides: Partial<AgentRunOutcome['executedActions'][number]> = {}) {
     return { tool: 'manage_services', executionId: 'exec-1', result: 'ok' as const, durationMs: 5, ...overrides };
@@ -1346,6 +1422,27 @@ describe('computeRunVerdict', () => {
       proposedActions: [{ tool: 'run_script', args: {} }],
     };
     expect(computeRunVerdict(outcome)).toBe('needs_attention');
+  });
+
+  // Review fix: the (execution, verification) rollup is a PAIR — a clean
+  // verdict requires BOTH halves, not verification alone. Otherwise a
+  // dispatch failure whose read-back never ran ('skipped') rolls up as a
+  // success.
+  it('needs_attention when verification is skipped, even with no failure/inconclusive present', () => {
+    const outcome = {
+      executedActions: [executed({ verification: 'skipped', execution: 'failed' })],
+      proposedActions: [],
+    };
+    expect(computeRunVerdict(outcome)).toBe('needs_attention');
+  });
+
+  it('needs_attention when verification passed but execution itself did not succeed', () => {
+    for (const execution of ['failed', 'timeout', 'unknown'] as const) {
+      expect(computeRunVerdict({
+        executedActions: [executed({ verification: 'passed', execution })],
+        proposedActions: [],
+      })).toBe('needs_attention');
+    }
   });
 });
 

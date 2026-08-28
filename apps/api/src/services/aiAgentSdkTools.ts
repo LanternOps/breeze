@@ -290,7 +290,11 @@ export const BREEZE_MCP_TOOL_NAMES = Object.keys(TOOL_TIERS).map(
 // Helper: Create tool handler that delegates to executeTool
 // ============================================
 
-const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
+// Exported so callers that schedule I/O INSIDE a postToolUse hook (e.g. the
+// headless agent run loop's act-mode verification read, actVerify.ts) can
+// size their own budget with headroom under this cap instead of picking an
+// unrelated number — see the wave-4b review fix.
+export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
 
 /**
  * Fire postToolUse with a timeout — if DB writes hang, don't block the conversation.
