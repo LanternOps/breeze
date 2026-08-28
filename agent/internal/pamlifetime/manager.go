@@ -148,7 +148,7 @@ func (m *lifecycleManager) apply(ctx context.Context, cmd ApplyCommand, handoff 
 	defer releaseTarget()
 	decision, err := m.store.PrepareApply(cmd)
 	if err != nil {
-		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "invalid_command")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, storeFailureCode(err))
 	}
 	if decision == DecisionDuplicate {
 		entry, _ := m.store.Entry(cmd.ActuationID)
@@ -257,7 +257,7 @@ func (m *lifecycleManager) cleanupLocked(ctx context.Context, cmd CleanupCommand
 	}
 	_, err := m.store.PrepareCleanup(cmd)
 	if err != nil {
-		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "invalid_command")
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, storeFailureCode(err))
 	}
 	entry, ok := m.store.Entry(cmd.ActuationID)
 	if !ok {
@@ -596,6 +596,21 @@ func (m *lifecycleManager) currentBootID(ctx context.Context) (string, error) {
 		return "windows-boot-unavailable", errors.New("current Windows boot identity unavailable")
 	}
 	return bootID, nil
+}
+
+// storeFailureCode separates "the ledger rejected this command" from "the
+// ledger could not be written" and "the ledger could not be read". All three
+// used to surface as invalid_command, which made a total ledger outage
+// (issue #4184) indistinguishable from a malformed request on the server side.
+func storeFailureCode(err error) string {
+	switch {
+	case errors.Is(err, ErrLedgerPersist):
+		return "ledger_persist_failed"
+	case errors.Is(err, ErrLedgerUnavailable):
+		return "ledger_unavailable"
+	default:
+		return "invalid_command"
+	}
 }
 
 func (m *lifecycleManager) failed(actuationID string, generation uint64, bootID, code string) Result {

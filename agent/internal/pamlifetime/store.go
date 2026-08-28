@@ -16,6 +16,20 @@ import (
 	"github.com/google/uuid"
 )
 
+// ErrLedgerPersist marks a failure to durably WRITE the ledger, as opposed to a
+// command the ledger rejected. Callers must map it to its own failure code:
+// reporting a broken write path as "invalid_command" is what hid issue #4184
+// (a pinned parent directory made every ledger rename fail) from v0.96.0
+// through v0.108.0.
+var ErrLedgerPersist = errors.New("pam lifetime ledger persist failed")
+
+// ErrLedgerUnavailable is the read-side sibling of ErrLedgerPersist. load runs
+// once in NewStore and its failure is sticky for the store's lifetime, so a
+// corrupt or unreadable ledger rejects every later apply and cleanup. That is
+// an agent-side storage outage, not a malformed command, and callers must map
+// it to its own failure code for the same reason.
+var ErrLedgerUnavailable = errors.New("pam lifetime ledger unavailable")
+
 type Decision string
 
 const (
@@ -62,7 +76,9 @@ type Store struct {
 
 func NewStore(path string) *Store {
 	s := &Store{path: path, entries: make(map[string]LedgerEntry)}
-	s.loadErr = s.load()
+	if err := s.load(); err != nil {
+		s.loadErr = fmt.Errorf("%w: %w", ErrLedgerUnavailable, err)
+	}
 	return s
 }
 
@@ -241,7 +257,7 @@ func (s *Store) replaceLocked(key string, next LedgerEntry) error {
 		} else {
 			delete(s.entries, key)
 		}
-		return err
+		return fmt.Errorf("%w: %w", ErrLedgerPersist, err)
 	}
 	return nil
 }
