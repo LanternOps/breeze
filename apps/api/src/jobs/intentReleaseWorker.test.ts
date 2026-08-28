@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 import type { AgentReleaseAuthority } from '../services/actionIntents/agentReleaseAuthority';
 
@@ -6,7 +6,7 @@ import type { AgentReleaseAuthority } from '../services/actionIntents/agentRelea
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock } = vi.hoisted(() => {
+const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
@@ -62,6 +62,7 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
       recordActionIntentMetric: vi.fn(),
     },
     sentryMock: { captureException: vi.fn() },
+    policyDecideMock: { attemptPolicyDecision: vi.fn(async () => {}) },
     // getToolTimeout is mocked (per-test override); withToolTimeout is kept
     // REAL (see vi.mock below) so the timeout test's timer actually fires.
     toolTimeoutsMock: { getToolTimeout: vi.fn() },
@@ -164,6 +165,9 @@ vi.mock('../services/actionIntents/metrics', () => ({
 }));
 vi.mock('../services/actionIntents/intentService', () => ({
   transitionIntent: intentServiceMock.transitionIntent,
+}));
+vi.mock('../services/actionIntents/policyDecide', () => ({
+  attemptPolicyDecision: policyDecideMock.attemptPolicyDecision,
 }));
 vi.mock('../services/actionIntents/actorContext', () => ({
   buildAuthContextForIntent: actorContextMock.buildAuthContextForIntent,
@@ -1464,6 +1468,43 @@ describe('processIntentReleaseJob', () => {
 
     expect(result).toEqual({ released: false });
     expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+  });
+
+  // Wave 5 Part B (#3827) — the intent_created outbox recovery branch.
+  describe('intent_created — policy-decide recovery (#3827)', () => {
+    const FLAG = 'BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED';
+    const original = process.env[FLAG];
+    afterEach(() => {
+      if (original === undefined) delete process.env[FLAG];
+      else process.env[FLAG] = original;
+    });
+
+    it('flag off: never even calls attemptPolicyDecision — byte-identical to the pre-existing no-op', async () => {
+      delete process.env[FLAG];
+      const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' });
+
+      expect(result).toEqual({ released: false });
+      expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    });
+
+    it('flag on: calls attemptPolicyDecision with the intent id and still reports a no-op release', async () => {
+      process.env[FLAG] = 'true';
+      const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' });
+
+      expect(result).toEqual({ released: false });
+      expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledWith('intent-1');
+    });
+
+    it('flag on: a thrown attemptPolicyDecision failure is swallowed (logged to Sentry), never thrown to the caller', async () => {
+      process.env[FLAG] = 'true';
+      policyDecideMock.attemptPolicyDecision.mockRejectedValueOnce(new Error('db blip'));
+
+      await expect(
+        processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' }),
+      ).resolves.toEqual({ released: false });
+      expect(sentryMock.captureException).toHaveBeenCalled();
+    });
   });
 
   it('THE LIE GUARD: an intent that did NOT run is never reported as running', async () => {

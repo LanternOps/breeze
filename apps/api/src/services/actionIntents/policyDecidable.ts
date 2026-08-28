@@ -218,6 +218,18 @@ const BY_KEY: ReadonlyMap<string, PolicyDecidableEntry> = new Map(
   POLICY_DECIDABLE_TIER3.map((entry) => [entry.key, entry]),
 );
 
+/**
+ * Version of the POLICY_DECIDABLE_TIER3 registry that produced a given
+ * policy decision, stamped into `action_intents.policy_classification_version`
+ * (Part B, policyDecide.ts) the same way `intentService.ts`'s
+ * `CLASSIFICATION_VERSION` pins the tier3-supervised-four-eyes ruleset. Bump
+ * when the registry's membership or its `rejectionReasonFor` re-classification
+ * logic changes in a materially observable way — a decision made under v1
+ * must stay distinguishable from one made under a future, differently-scoped
+ * v2 (e.g. if `maxTargetCardinality` ever admits >1 or a new tool joins).
+ */
+export const POLICY_DECIDABLE_TIER3_VERSION = 1;
+
 export function isPolicyDecidableKey(key: string): boolean {
   return BY_KEY.has(key);
 }

@@ -4,6 +4,7 @@ import type { AssuranceLevel } from '@breeze/shared';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type Database, type DbAccessContext } from '../../db';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
+import { policyDecideEnabled } from '../../config/env';
 import {
   actionIntents,
   intentOutbox,
@@ -313,21 +314,23 @@ interface CreationResult {
 }
 
 /**
- * Wave 5 Part A (#3827) — PR-A STUB. Always returns 'human_required': the
- * unattended policy-decide path does not exist yet in this PR, so every
- * intent gets exactly the treatment it always got — fanned out for human
- * approval. This makes the createActionIntent refactor around it (deferring
- * `runHumanFanout` behind this call) behaviorally INERT: the full
- * intentService + approvals suites pass unchanged because this function's
- * output never varies.
+ * Wave 5 Part B (#3827) — the real decision-state gate. `'unattempted'` iff
+ * ALL THREE hold: the sub-flag is on, the intent is agent-originated (a
+ * human-authored chat/MCP intent means a human already decided — there is
+ * nothing for policy to authorize), and the intent classified `supervised`
+ * (four_eyes requires a SECOND human by definition; policy is a mechanism,
+ * not a principal, and cannot stand in for that reviewer — locked quorum
+ * decision, plan header). Every other case returns `'human_required'`,
+ * exactly Part A's stub output — so flag-off is BYTE-IDENTICAL to Part A: no
+ * other condition below is even evaluated once the flag check fails.
  *
- * The signature is already shaped for what Part B's real
- * `attemptPolicyDecision` will need to read: the guardrail verdict + scope,
- * the loaded/verified agent run (only an agent-originated proposal is ever a
- * policy-decision candidate — a human-authored chat/MCP intent means a human
- * already decided), and the tool/action pair to check against
- * POLICY_DECIDABLE_TIER3 (see policyDecidable.ts). Part B replaces this
- * function's BODY only — no call-site change in createActionIntent below.
+ * Deliberately NOT checked here (Task 5, #3827 — a later task in this same
+ * plan): the run's `mode`. `attemptPolicyDecision` (policyDecide.ts) is the
+ * only consumer of the `'unattempted'` state this function produces, and it
+ * re-verifies the LIVE effective policy (registry membership, per-agent
+ * authorization, guardrails, kill state, caps) before ever authorizing
+ * anything — an `'unattempted'` intent from a shadow-mode run degrades to
+ * `human_required` there, it does not execute unattended.
  */
 function resolvePolicyDecisionState(args: {
   guardrail: GuardrailCheck;
@@ -336,8 +339,13 @@ function resolvePolicyDecisionState(args: {
   toolName: string;
   input: Record<string, unknown>;
 }): ActionIntentPolicyDecisionState {
-  void args;
-  return 'human_required';
+  void args.guardrail;
+  void args.toolName;
+  void args.input;
+  if (!policyDecideEnabled()) return 'human_required';
+  if (!args.agentRun) return 'human_required';
+  if (args.approvalScope !== 'supervised') return 'human_required';
+  return 'unattempted';
 }
 
 interface HumanFanoutArgs {
@@ -501,6 +509,106 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
   }
 
   return { approvalRequestIds, requesterApprovalRequestId, fanOutUserIds, finalIntent };
+}
+
+interface NotifyFannedOutApproversArgs {
+  orgId: string;
+  intentId: string;
+  approvalRequestIds: string[];
+  fanOutUserIds: string[];
+  requestingClientLabel: string;
+  targetSummary: string;
+  /** Passed to `withDbAccessContext` for the push-token read only — the
+   *  in-app notification always runs system-scoped (see the call below).
+   *  `userId` on it may be null (agent-originated fan-out has no requester);
+   *  the token read is keyed on the loop's OWN `userId` param, not this
+   *  context's — see db/index.ts's `DbAccessContext.userId` doc comment. */
+  dbContext: DbAccessContext;
+}
+
+/**
+ * Best-effort in-app + push notification for a just-fanned-out set of
+ * approval rows, AFTER whatever transaction created them commits (#1105) —
+ * never hold a DB transaction open across the push network round-trip.
+ * Extracted (wave 5 Part B, #3827) so `runDeferredHumanFanout` below can
+ * deliver the SAME notifications a normal creation-time human fan-out would
+ * have, instead of a second, drifting copy of this loop.
+ */
+async function notifyFannedOutApprovers(args: NotifyFannedOutApproversArgs): Promise<void> {
+  const { orgId, intentId, approvalRequestIds, fanOutUserIds, requestingClientLabel, targetSummary, dbContext } = args;
+  for (let i = 0; i < approvalRequestIds.length; i++) {
+    const approvalId = approvalRequestIds[i];
+    const userId = fanOutUserIds[i];
+    if (!approvalId || !userId) continue;
+    // In-app FIRST, then push. getUserPushTokens reads mobile_devices
+    // exclusively, so before wave 2 an approver with no enrolled phone was
+    // notified by NOTHING — no row, no email, no event — while the push
+    // failure was swallowed to console.error. The in-app row is the channel
+    // that always exists, so it must not be downstream of the phone lookup.
+    try {
+      // runOutsideDbContext first: a bare system wrapper inside an ambient
+      // request context is a passthrough (db/index.ts ~440), and this
+      // cross-user insert would then 42501 into the catch below.
+      await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+        createNotification({
+          userId,
+          orgId,
+          type: 'approval',
+          priority: 'high',
+          title: 'Approval requested',
+          message: `${requestingClientLabel}: ${targetSummary}`,
+          link: '/approvals',
+          metadata: { approvalId, intentId },
+          // Survives outbox/BullMQ redelivery: one approver, one intent, one
+          // row in the bell.
+          dedupeKey: `intent-approval:${intentId}`,
+        })));
+    } catch (err) {
+      // Sentry, not just console.error. This is the highest-stakes swallow in
+      // the wave: it is the ONLY channel a phoneless approver has, and the
+      // wave exists because the equivalent push failure was console.error-only
+      // and nobody found out for months. Every neighbouring file in this
+      // subsystem pairs the log with captureException; this one must too.
+      captureException(err instanceof Error ? err : new Error(String(err)));
+      console.error(
+        `[intentService] in-app approval notification failed ` +
+          `(intent=${intentId} approval=${approvalId} user=${userId})`,
+        err,
+      );
+    }
+
+    try {
+      const tokens = await withDbAccessContext(dbContext, () => getUserPushTokens(userId));
+      await dispatchApprovalPushToTokens(tokens, {
+        approvalId,
+        actionLabel: targetSummary,
+        requestingClientLabel,
+      });
+    } catch (err) {
+      console.error('[intentService] approval push dispatch failed', approvalId, err);
+    }
+  }
+}
+
+/**
+ * Fire-and-forget trigger for a freshly-`'unattempted'` intent (wave 5 Part
+ * B, #3827). Dynamic `import()` — NOT a static import of `./policyDecide` —
+ * is load-bearing, not stylistic: `policyDecide.ts` statically imports
+ * `runDeferredHumanFanout` from THIS file (its deterministic-failure degrade
+ * path), so a static import here in the other direction would be a genuine
+ * circular module dependency between the two. Resolved lazily, inside a
+ * function body, after both modules have finished evaluating, this never
+ * cycles. Errors are swallowed here (never rejected back to the caller) —
+ * the outbox's `intent_created` recovery branch (intentReleaseWorker.ts) is
+ * the at-least-once safety net for a dropped/failed attempt, not this call.
+ */
+function triggerPolicyDecisionAttempt(intentId: string): void {
+  import('./policyDecide')
+    .then((mod) => mod.attemptPolicyDecision(intentId))
+    .catch((err) => {
+      captureException(err instanceof Error ? err : new Error(String(err)));
+      console.error(`[intentService] attemptPolicyDecision failed for intent ${intentId}:`, err);
+    });
 }
 
 export async function createActionIntent(
@@ -997,6 +1105,19 @@ export async function createActionIntent(
   // isNew below); the final `return toSnapshot(...)` covers it identically to
   // the new-intent path.
 
+  // Wave 5 Part B (#3827): a freshly `'unattempted'` intent has no fan-out to
+  // notify (runHumanFanout above was skipped entirely) — instead, kick off
+  // the policy-decide attempt AFTER the creation transaction has committed
+  // (never inside it: the attempt does its own DB work under its own
+  // transaction). Fire-and-forget by design (see triggerPolicyDecisionAttempt's
+  // doc comment) — the caller (chat SDK / MCP / agent run loop) gets back the
+  // `pending_approval` snapshot exactly as it always did; the attempt's
+  // outcome surfaces later via the intent's own state, not this call's return
+  // value.
+  if (creation.isNew && creation.intent.policyDecisionState === 'unattempted') {
+    triggerPolicyDecisionAttempt(creation.intent.id);
+  }
+
   // Best-effort push AFTER the creation transaction commits (#1105) — never
   // hold a DB transaction open across the push network round-trip. Token
   // reads happen inside a fresh context per approver; the sends happen after.
@@ -1005,63 +1126,23 @@ export async function createActionIntent(
   // that created it. Agent intents notify at EVERY scope (wave 3b): the
   // proposal is headless — nobody is watching a chat pane, so without this
   // widened gate a supervised agent proposal would notify NOBODY (gap 4).
+  // An `'unattempted'` intent has empty approvalRequestIds/fanOutUserIds
+  // (fan-out was skipped), so this loop naturally no-ops for it without any
+  // extra gating — see notifyFannedOutApprovers.
   if (
     creation.isNew &&
     creation.intent.status === 'pending_approval' &&
     (creation.intent.approvalScope === 'four_eyes' || creation.intent.source === 'ai_agent')
   ) {
-    for (let i = 0; i < creation.approvalRequestIds.length; i++) {
-      const approvalId = creation.approvalRequestIds[i];
-      const userId = creation.fanOutUserIds[i];
-      if (!approvalId || !userId) continue;
-      // In-app FIRST, then push. getUserPushTokens reads mobile_devices
-      // exclusively, so before wave 2 an approver with no enrolled phone was
-      // notified by NOTHING — no row, no email, no event — while the push
-      // failure was swallowed to console.error. The in-app row is the channel
-      // that always exists, so it must not be downstream of the phone lookup.
-      try {
-        // runOutsideDbContext first: a bare system wrapper inside an ambient
-        // request context is a passthrough (db/index.ts ~440), and this
-        // cross-user insert would then 42501 into the catch below.
-        await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-          createNotification({
-            userId,
-            orgId,
-            type: 'approval',
-            priority: 'high',
-            title: 'Approval requested',
-            message: `${requestingClientLabel}: ${targetSummary}`,
-            link: '/approvals',
-            metadata: { approvalId, intentId: creation.intent.id },
-            // Survives outbox/BullMQ redelivery: one approver, one intent, one
-            // row in the bell.
-            dedupeKey: `intent-approval:${creation.intent.id}`,
-          })));
-      } catch (err) {
-        // Sentry, not just console.error. This is the highest-stakes swallow in
-        // the wave: it is the ONLY channel a phoneless approver has, and the
-        // wave exists because the equivalent push failure was console.error-only
-        // and nobody found out for months. Every neighbouring file in this
-        // subsystem pairs the log with captureException; this one must too.
-        captureException(err instanceof Error ? err : new Error(String(err)));
-        console.error(
-          `[intentService] in-app approval notification failed ` +
-            `(intent=${creation.intent.id} approval=${approvalId} user=${userId})`,
-          err,
-        );
-      }
-
-      try {
-        const tokens = await withDbAccessContext(dbContext, () => getUserPushTokens(userId));
-        await dispatchApprovalPushToTokens(tokens, {
-          approvalId,
-          actionLabel: targetSummary,
-          requestingClientLabel,
-        });
-      } catch (err) {
-        console.error('[intentService] approval push dispatch failed', approvalId, err);
-      }
-    }
+    await notifyFannedOutApprovers({
+      orgId,
+      intentId: creation.intent.id,
+      approvalRequestIds: creation.approvalRequestIds,
+      fanOutUserIds: creation.fanOutUserIds,
+      requestingClientLabel,
+      targetSummary,
+      dbContext,
+    });
   }
 
   // An intent that SHOULD have been pinned but wasn't (a resolver exists for
@@ -1130,6 +1211,172 @@ export async function createActionIntent(
   }
 
   return toSnapshot(creation.intent, creation.approvalRequestIds, creation.requesterApprovalRequestId, creation.fanOutUserIds);
+}
+
+// ---------------------------------------------------------------------------
+// runDeferredHumanFanout — the human-fallback degrade path (wave 5 Part B, #3827)
+// ---------------------------------------------------------------------------
+
+/** Mirrors createActionIntent's own tier→riskTier mapping (line ~666 above) —
+ *  kept as a private one-liner rather than a shared export because the two
+ *  call sites take DIFFERENT inputs (a live `GuardrailCheck.tier` at creation
+ *  vs. a persisted `action_intents.risk_tier` column here) and the shared
+ *  formula is a single ternary, not enough surface to be worth a public seam. */
+function riskTierLabel(tier: number): 'medium' | 'high' | 'critical' {
+  return tier >= 4 ? 'critical' : tier >= 3 ? 'high' : 'medium';
+}
+
+/**
+ * The `unattempted → human_required` degrade path (wave 5 Part B, #3827):
+ * `attemptPolicyDecision` (policyDecide.ts) calls this for every DETERMINISTIC
+ * reason a policy decision cannot authorize an intent (key not registry-
+ * decidable, not agent-authorized, guardrail/kill denial, caps exhausted, or
+ * the intent expired before an attempt landed). It re-derives the SAME
+ * approver pool and produces the SAME approval_requests rows + notifications
+ * `runHumanFanout` would have produced at creation time, had the stub (or a
+ * flag-off `resolvePolicyDecisionState`) sent this intent straight to
+ * `'human_required'` in the first place — the agent's proposal still gets a
+ * human decision, just a turn late.
+ *
+ * CAS-guarded (`policyDecisionState: 'unattempted' -> 'human_required'`,
+ * inside the SAME transaction as the fan-out) against double-attempt: the
+ * post-commit fire-and-forget trigger and the outbox `intent_created`
+ * recovery branch can both reach this for the same intent. Whichever call
+ * wins the CAS performs the fan-out; the loser's `db.update(...).returning()`
+ * comes back empty and this function returns having written nothing and
+ * notified nobody — exactly the "no double-fanout" property the plan's
+ * design-authority section requires.
+ *
+ * No-op (silently) when the intent no longer exists, is not agent-originated,
+ * or the CAS is lost — every one of those is "someone/something else already
+ * has this intent," never a caller error to surface.
+ */
+export async function runDeferredHumanFanout(intentId: string): Promise<void> {
+  // Pre-transaction reads (system-scoped; released before opening the write
+  // transaction below — #1105): the intent + its run, so the eligible-approver
+  // resolvers (which manage their own system contexts and must NOT be called
+  // from inside a held transaction) can run first, exactly like
+  // createActionIntent itself does.
+  const loaded = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const [intent] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId)).limit(1);
+      if (!intent || !intent.requestingAgentRunId) return null;
+      const [run] = await db
+        .select({
+          id: aiAgentRuns.id,
+          agentId: aiAgentRuns.agentId,
+          orgId: aiAgentRuns.orgId,
+          deviceId: aiAgentRuns.deviceId,
+        })
+        .from(aiAgentRuns)
+        .where(eq(aiAgentRuns.id, intent.requestingAgentRunId))
+        .limit(1);
+      if (!run || run.orgId !== intent.orgId) return null;
+      return { intent, run };
+    }),
+  );
+  if (!loaded) return;
+  const { intent, run } = loaded;
+
+  let targetScope: IntentTargetScope;
+  try {
+    targetScope = await resolveIntentTargetScope(
+      intent.actionName,
+      intent.arguments as Record<string, unknown>,
+      { deviceId: run.deviceId },
+      intent.orgId,
+    );
+  } catch {
+    // A cited device that no longer exists (deleted/moved since the intent
+    // was proposed): fail closed to the same 'indirect' rule
+    // resolveIntentTargetScope itself uses for an unresolvable target — only
+    // site-unrestricted approvers qualify, never "nobody at all can decide."
+    targetScope = { kind: 'indirect' };
+  }
+
+  const agentEligibleApprovers = await resolveAgentIntentApprovers({
+    orgId: intent.orgId,
+    toolName: intent.actionName,
+    input: intent.arguments as Record<string, unknown>,
+    targetScope,
+  });
+
+  const agentRun: AgentRunRef = { id: run.id, agentId: run.agentId, orgId: run.orgId, deviceId: run.deviceId };
+
+  const fanoutResult = await withSystemDbAccessContext(async (): Promise<HumanFanoutResult | null> => {
+    // The CAS: only the caller that actually flips unattempted -> human_required
+    // gets to fan out. `.returning()` empty means a concurrent caller already
+    // won (or the intent moved on some other way) — this transaction commits
+    // having written nothing.
+    const [updated] = await db
+      .update(actionIntents)
+      .set({ policyDecisionState: 'human_required' })
+      .where(and(eq(actionIntents.id, intentId), eq(actionIntents.policyDecisionState, 'unattempted')))
+      .returning();
+    if (!updated) return null;
+
+    return runHumanFanout({
+      db,
+      inserted: updated,
+      toolName: updated.actionName,
+      actionArguments: updated.arguments as Record<string, unknown>,
+      argumentDigest: updated.argumentDigest,
+      requestingClientLabel: updated.requestingClientLabel ?? 'AI Agent',
+      targetSummary: updated.targetSummary,
+      riskTier: riskTierLabel(updated.riskTier),
+      impactSummary: updated.impactSummary,
+      // The SAME deadline creation stamped — not a freshly recomputed one; a
+      // punted-to-human intent keeps whatever approval window it always had,
+      // it does not get a new one for having been attempted first.
+      expiresAt: updated.approvalExpiresAt ?? updated.expiresAt,
+      agentRun,
+      approvalScope: updated.approvalScope,
+      // resolvePolicyDecisionState only ever admits approvalScope ===
+      // 'supervised' into 'unattempted' — the four_eyes pool is structurally
+      // unreachable here, but threaded through (empty) so runHumanFanout's
+      // signature doesn't need a narrower agent-only variant.
+      eligibleApprovers: [],
+      agentEligibleApprovers,
+      requesterEligible: false,
+      // Agent-originated intents are requester-less by construction
+      // (requestedByUserId is NULL) — runHumanFanout's `agentRun` branch
+      // never reads this value, but the field is non-optional on
+      // HumanFanoutArgs so a placeholder is threaded through rather than
+      // widening that type for one caller.
+      requesterId: '',
+    });
+  });
+  if (!fanoutResult) return;
+
+  if (fanoutResult.finalIntent.status === 'cancelled') {
+    // Same audit shape as createActionIntent's own no-eligible-approver
+    // branch — this IS that branch, reached a turn later.
+    recordActionIntentEvent({
+      orgId: intent.orgId,
+      intentId: intent.id,
+      actionName: intent.actionName,
+      argumentDigest: intent.argumentDigest,
+      source: intent.source,
+      outcome: 'cancelled',
+      actorType: 'ai_agent',
+      details: {
+        errorCode: fanoutResult.finalIntent.errorCode ?? 'no_eligible_approvers',
+        agentId: run.agentId,
+        agentRunId: run.id,
+      },
+    });
+    return;
+  }
+
+  await notifyFannedOutApprovers({
+    orgId: intent.orgId,
+    intentId: intent.id,
+    approvalRequestIds: fanoutResult.approvalRequestIds,
+    fanOutUserIds: fanoutResult.fanOutUserIds,
+    requestingClientLabel: intent.requestingClientLabel ?? 'AI Agent',
+    targetSummary: intent.targetSummary,
+    dbContext: { scope: 'organization', orgId: intent.orgId, accessibleOrgIds: [intent.orgId], userId: null },
+  });
 }
 
 // ---------------------------------------------------------------------------

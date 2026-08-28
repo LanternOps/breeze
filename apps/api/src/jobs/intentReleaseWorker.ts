@@ -12,6 +12,8 @@ import { recordActionIntentEvent, recordActionIntentMetric } from '../services/a
 import { createNotification } from '../services/userNotifications';
 import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent } from '../services/actionIntents/intentService';
+import { attemptPolicyDecision } from '../services/actionIntents/policyDecide';
+import { policyDecideEnabled } from '../config/env';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
@@ -54,9 +56,10 @@ import {
  * categorized `error_code` and skips execution entirely. Never a silent
  * no-op, never a downgrade to "execute anyway."
  *
- * Job data: `{ intentId, eventType }`. Only `eventType === 'intent_approved'`
- * is acted on; anything else is acknowledged as a no-op (forward-compat with
- * `intent_created`, which this worker does not consume).
+ * Job data: `{ intentId, eventType }`. `eventType === 'intent_approved'` is
+ * the release trigger; `intent_created` is the wave 5 Part B (#3827)
+ * policy-decide recovery hook (flag-gated, otherwise a no-op); anything else
+ * is acknowledged as a no-op.
  *
  * CAS-idempotent by construction: the `approved -> executing` transition at
  * step 1 is a single-use release guard (mirrors the PAM `actuating` pattern).
@@ -909,12 +912,39 @@ async function notifyRequesterOfOutcome(
  *
  * `intent_approved` is the release trigger AND an outcome to report.
  * `intent_rejected` / `intent_expired` are outcome-only. `intent_created` is
- * acknowledged as a no-op rather than thrown on, so it doesn't retry forever
- * (intentOutboxPublisher.ts shares this queue but not this consumer role).
+ * the policy-decide recovery hook (wave 5 Part B, #3827) — flag-gated,
+ * always acknowledged as a no-op rather than thrown on either way, so it
+ * doesn't retry forever (intentOutboxPublisher.ts shares this queue but not
+ * this consumer role).
  */
 export async function processIntentReleaseJob(data: IntentReleaseJobData): Promise<{ released: boolean }> {
   if (data.eventType === 'intent_rejected' || data.eventType === 'intent_expired') {
     await notifyRequesterOfOutcome(data.intentId, data.eventType);
+    return { released: false };
+  }
+
+  // Wave 5 Part B (#3827) — the outbox at-least-once recovery branch for a
+  // policy-decide attempt that never ran (the creation-time fire-and-forget
+  // trigger was dropped by a crash/restart) or that only got as far as a
+  // TRANSIENT failure (left `unattempted` on purpose — see
+  // policyDecide.ts's header). Flag-gated here too, not just inside
+  // `attemptPolicyDecision` itself: flag off must not even attempt the call,
+  // for byte-identical dark-ship inertness with every other `intent_created`
+  // delivery. `attemptPolicyDecision` re-derives every precondition itself
+  // (state === 'unattempted', status === 'pending_approval', agent-originated),
+  // so a human-authored or already-decided intent's `intent_created` event
+  // reaches it and no-ops — this call site does not need to duplicate those
+  // checks. Acknowledged as a no-op either way (never thrown on), exactly
+  // like the pre-existing `intent_created` handling below.
+  if (data.eventType === 'intent_created') {
+    if (policyDecideEnabled()) {
+      try {
+        await attemptPolicyDecision(data.intentId);
+      } catch (err) {
+        console.error(`[IntentReleaseWorker] attemptPolicyDecision failed for intent ${data.intentId}:`, err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
     return { released: false };
   }
 
