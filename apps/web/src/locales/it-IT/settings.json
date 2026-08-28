@@ -619,7 +619,7 @@
     "retrySites": "Riprova",
     "createASite": "Crea un sito",
     "maxUsage": "Utilizzo massimo (opzionale)",
-    "unlimited": "Illimitato",
+    "defaultDeviceLimit": "50 (predefinito)",
     "maxUsageHelp": "Numero massimo di agent che possono registrarsi con questa chiave.",
     "expiresAt": "Scade il (opzionale)",
     "creating": "Creazione in corso...",

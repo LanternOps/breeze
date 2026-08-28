@@ -619,7 +619,7 @@
     "retrySites": "Tekrar dene",
     "createASite": "Bir site oluşturun",
     "maxUsage": "Maksimum Kullanım (isteğe bağlı)",
-    "unlimited": "Sınırsız",
+    "defaultDeviceLimit": "50 (varsayılan)",
     "maxUsageHelp": "Bu anahtarla kaydolabilecek maksimum temsilci sayısı.",
     "expiresAt": "Sona Erme Tarihi (isteğe bağlı)",
     "creating": "Oluşturuluyor...",

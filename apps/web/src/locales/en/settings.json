@@ -619,7 +619,7 @@
     "retrySites": "Retry",
     "createASite": "Create a site",
     "maxUsage": "Max Usage (optional)",
-    "unlimited": "Unlimited",
+    "defaultDeviceLimit": "50 (default)",
     "maxUsageHelp": "Maximum number of agents that can enroll with this key.",
     "expiresAt": "Expires At (optional)",
     "creating": "Creating...",

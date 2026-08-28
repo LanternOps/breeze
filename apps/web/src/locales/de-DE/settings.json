@@ -619,7 +619,7 @@
     "retrySites": "Erneut versuchen",
     "createASite": "Standort erstellen",
     "maxUsage": "Maximale Nutzung (optional)",
-    "unlimited": "Unbegrenzt",
+    "defaultDeviceLimit": "50 (Standard)",
     "maxUsageHelp": "Maximale Anzahl von Agenten, die sich mit diesem Schlüssel registrieren können.",
     "expiresAt": "Läuft ab um (optional)",
     "creating": "Erstellen...",
