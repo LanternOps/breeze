@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { History } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency } from '@/lib/i18n/format';
 import type { AiAgentRunListItemDto, AiAgentRunStatus } from '@breeze/shared';
@@ -117,6 +118,15 @@ function triggerLabel(t: (key: string) => string, value: string): string {
  */
 export default function RunsListPage() {
   const { t } = useTranslation('settings');
+  // Honor the global Current/All-orgs scope toggle, same as AlertsPage:
+  // `fetchWithAuth` auto-injects `?orgId=<currentOrgId>` whenever one org is
+  // selected, so a scope change must trigger a refetch or the list keeps
+  // showing the previous scope's rows.
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const allOrgs = useOrgStore((s) => s.allOrgs);
+  // Fleet (All-organizations) view — show an Organization column so cross-org
+  // rows stay legible (mirrors AlertsPage/AlertList's showOrgColumn).
+  const isFleetView = !currentOrgId && allOrgs;
   const [runs, setRuns] = useState<AiAgentRunListItemDto[]>([]);
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -207,7 +217,7 @@ export default function RunsListPage() {
         }
       }
     },
-    [agentFilter, statusFilter, t],
+    [agentFilter, statusFilter, currentOrgId, t],
   );
 
   useEffect(() => {
@@ -298,6 +308,7 @@ export default function RunsListPage() {
               <thead className="bg-muted/40">
                 <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.agent')}</th>
+                  {isFleetView && <th className="px-4 py-3">{t('common:labels.organization')}</th>}
                   <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.status')}</th>
                   <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.trigger')}</th>
                   <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.verdict')}</th>
@@ -318,6 +329,9 @@ export default function RunsListPage() {
                         {run.agentName ?? t('aiAgentsPage.runs.noAgent')}
                       </a>
                     </td>
+                    {isFleetView && (
+                      <td className="px-4 py-3 text-muted-foreground">{run.orgName ?? '—'}</td>
+                    )}
                     <td className="px-4 py-3">
                       <span
                         className={`inline-flex rounded px-1.5 py-0.5 text-xs font-medium ${statusBadgeClass(run.status)}`}

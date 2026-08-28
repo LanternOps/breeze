@@ -3,6 +3,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 
+// Pin the org-scope selectors so the page doesn't try to read a real store —
+// same pattern as AlertsPage.test.tsx. Defaults to a single org selected
+// (not fleet view); a test flips both to exercise the Organization column.
+let mockCurrentOrgId: string | null = 'org-1';
+let mockAllOrgs = false;
+vi.mock('../../stores/orgStore', () => ({
+  useOrgStore: (selector: (s: { currentOrgId: string | null; allOrgs: boolean }) => unknown) =>
+    selector({ currentOrgId: mockCurrentOrgId, allOrgs: mockAllOrgs }),
+}));
+
 import RunsListPage from './RunsListPage';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -16,6 +26,8 @@ const RUN_1 = {
   id: 'run-1',
   agentId: 'a1',
   agentName: 'Triage',
+  orgId: 'org-1',
+  orgName: 'Acme Corp',
   deviceId: 'd1',
   status: 'completed' as const,
   triggerKind: 'alert' as const,
@@ -30,6 +42,8 @@ const RUN_2 = {
   id: 'run-2',
   agentId: 'a1',
   agentName: 'Triage',
+  orgId: 'org-1',
+  orgName: 'Acme Corp',
   deviceId: null,
   status: 'failed' as const,
   triggerKind: 'manual' as const,
@@ -66,6 +80,8 @@ function mockEndpoints(opts: {
 
 beforeEach(() => {
   fetchMock.mockReset();
+  mockCurrentOrgId = 'org-1';
+  mockAllOrgs = false;
 });
 
 describe('RunsListPage', () => {
@@ -142,5 +158,27 @@ describe('RunsListPage', () => {
     await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
     const link = screen.getByTestId('runs-list-row-link-run-1');
     expect(link).toHaveAttribute('href', '/ai-agents/runs/run-1');
+  });
+
+  // Review fix (#3828): the route is registered `org-or-all` in
+  // routeScope.ts, whose contract requires an Organization column in
+  // All-organizations view — mirrors AlertsPage/AlertList's showOrgColumn.
+  it('shows an Organization column with each row\'s orgName in All-organizations (fleet) view', async () => {
+    mockCurrentOrgId = null;
+    mockAllOrgs = true;
+    mockEndpoints();
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+    expect(screen.getByRole('columnheader', { name: 'Organization' })).toBeInTheDocument();
+    expect(screen.getAllByText('Acme Corp')).toHaveLength(2);
+  });
+
+  it('hides the Organization column when a single org is selected', async () => {
+    mockEndpoints();
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+    expect(screen.queryByText('Acme Corp')).not.toBeInTheDocument();
   });
 });

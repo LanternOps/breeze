@@ -62,6 +62,17 @@ export interface AiAgentRunListItemDto {
    * loaded even when this is non-null.
    */
   agentName: string | null;
+  orgId: string;
+  /**
+   * Left-joined from `organizations.name` — the web list's fleet
+   * (All-organizations) view shows an Organization column so cross-org rows
+   * stay legible, mirroring `routes/alerts/alerts.ts`'s `orgName` join. Runs
+   * are plain org-scoped (`ai_agent_runs.org_id` is NOT NULL, unlike the
+   * dual-ownership `ai_agents` row), so this is null only in the
+   * practically-unreachable case of a deleted/renamed organizations row, not
+   * for the partner-wide-agent RLS gap `agentName` above documents.
+   */
+  orgName: string | null;
   deviceId: string | null;
   status: AiAgentRunStatus;
   triggerKind: AiAgentTriggerKind;

@@ -16,7 +16,9 @@ import {
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { db } from '../db';
-import { actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices, type AiAgentRow } from '../db/schema';
+import {
+  actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations, type AiAgentRow,
+} from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { policyDecideEnabled } from '../config/env';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE, PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
@@ -296,6 +298,8 @@ function mapRunListItem(row: {
   id: string;
   agentId: string;
   agentName: string | null;
+  orgId: string;
+  orgName: string | null;
   deviceId: string | null;
   status: AiAgentRunListItemDto['status'];
   triggerKind: AiAgentRunListItemDto['triggerKind'];
@@ -309,6 +313,8 @@ function mapRunListItem(row: {
     id: row.id,
     agentId: row.agentId,
     agentName: row.agentName,
+    orgId: row.orgId,
+    orgName: row.orgName,
     deviceId: row.deviceId,
     status: row.status,
     triggerKind: row.triggerKind,
@@ -337,19 +343,31 @@ aiAgentsRoutes.get(
     limit: z.coerce.number().int().min(1).max(50).default(25),
     agentId: z.string().guid().optional(),
     status: z.enum(AI_AGENT_RUN_STATUSES).optional(),
+    orgId: z.string().guid().optional(),
   })),
   async (c) => {
     const auth = c.get('auth');
-    const { cursor: cursorToken, limit, agentId, status } = c.req.valid('query');
+    const { cursor: cursorToken, limit, agentId, status, orgId } = c.req.valid('query');
 
     const cursor = decodeRunsCursor(cursorToken);
     if (cursorToken && !cursor) {
       return c.json({ error: 'Invalid or malformed cursor' }, 400);
     }
 
+    // Optional single-org filter (must be accessible) — mirrors
+    // routes/devices/core.ts's fleet-list pattern. `fetchWithAuth` auto-injects
+    // `?orgId=<selected>` whenever the org switcher has one org selected
+    // (apps/web/src/stores/auth.ts); without this the query schema silently
+    // stripped it and the org switcher never narrowed the list (review fix,
+    // #3828 — this route is registered `org-or-all` in routeScope.ts).
+    if (orgId && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+
     const conditions: (SQL | undefined)[] = [auth.orgCondition(aiAgentRuns.orgId)];
     if (agentId) conditions.push(eq(aiAgentRuns.agentId, agentId));
     if (status) conditions.push(eq(aiAgentRuns.status, status));
+    if (orgId) conditions.push(eq(aiAgentRuns.orgId, orgId));
     if (cursor) conditions.push(buildRunsKeysetPredicate(cursor));
 
     // Peek one extra row past `limit` to detect "is there a next page" —
@@ -360,6 +378,11 @@ aiAgentsRoutes.get(
         id: aiAgentRuns.id,
         agentId: aiAgentRuns.agentId,
         agentName: aiAgents.name,
+        orgId: aiAgentRuns.orgId,
+        // Org name for the fleet (All-organizations) view, where the web list
+        // shows an Organization column so cross-org rows stay legible —
+        // mirrors routes/alerts/alerts.ts's `orgName` join (review fix, #3828).
+        orgName: organizations.name,
         deviceId: aiAgentRuns.deviceId,
         status: aiAgentRuns.status,
         triggerKind: aiAgentRuns.triggerKind,
@@ -387,6 +410,7 @@ aiAgentsRoutes.get(
       // a partner-wide agent from this list. agentName instead comes back
       // null for those rows (see AiAgentRunListItemDto.agentName).
       .leftJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
+      .leftJoin(organizations, eq(aiAgentRuns.orgId, organizations.id))
       .where(and(...conditions))
       .orderBy(desc(aiAgentRuns.queuedAt), desc(aiAgentRuns.id))
       .limit(limit + 1);
@@ -534,13 +558,37 @@ aiAgentsRoutes.get(
     // owned by the DEVICE's org, not the agent's, so filtering by the agent
     // alone would show a partner admin every org's runs for that baseline
     // regardless of which orgs they can actually reach.
+    //
+    // Review fix (#3828): projected through the same list-item mapper as the
+    // org-wide `GET /runs` above. The prior `db.select()` (no projection)
+    // put the whole `outcome` jsonb on the wire under the identical
+    // ai_agents:read gate the hardened routes enforce — including
+    // proposedActions[].args, the verbatim raw tool input the model
+    // proposed. No in-repo consumer of the raw shape exists (apps/web,
+    // apps/portal, apps/mobile, e2e-tests grepped clean), so there is no
+    // legacy wire shape to preserve.
     const runs = await db
-      .select()
+      .select({
+        id: aiAgentRuns.id,
+        agentId: aiAgentRuns.agentId,
+        orgId: aiAgentRuns.orgId,
+        orgName: organizations.name,
+        deviceId: aiAgentRuns.deviceId,
+        status: aiAgentRuns.status,
+        triggerKind: aiAgentRuns.triggerKind,
+        runVerdict: sql<string | null>`${aiAgentRuns.outcome}->>'runVerdict'`,
+        queuedAt: aiAgentRuns.queuedAt,
+        finishedAt: aiAgentRuns.finishedAt,
+        costCents: aiAgentRuns.costCents,
+      })
       .from(aiAgentRuns)
+      .leftJoin(organizations, eq(aiAgentRuns.orgId, organizations.id))
       .where(and(eq(aiAgentRuns.agentId, row.id), auth.orgCondition(aiAgentRuns.orgId)))
       .orderBy(desc(aiAgentRuns.queuedAt))
       .limit(limit);
-    return c.json({ data: runs });
+    // agentName comes from the already-loaded, RLS-visible `row` (this route
+    // is scoped to one agent), not a join — every run here shares it.
+    return c.json({ data: runs.map((r) => mapRunListItem({ ...r, agentName: row.name })) });
   },
 );
 

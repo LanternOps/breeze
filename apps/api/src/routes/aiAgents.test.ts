@@ -332,6 +332,55 @@ describe('POST /ai-agents/:id/runs', () => {
   });
 });
 
+// Review fix (#3828): the LEAK PROBE that found this — a bare `db.select()`
+// on `ai_agent_runs` put the whole `outcome` jsonb on the wire, including
+// `proposedActions[].args` (the verbatim raw tool input the model proposed),
+// under the identical ai_agents:read gate the hardened routes below enforce.
+// The route now projects through the same `mapRunListItem` mapper as the
+// org-wide `GET /runs` list.
+describe('GET /ai-agents/:id/runs (legacy per-agent list, review fix #3828)', () => {
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request(`/ai-agents/${AGENT_ID}/runs`);
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('returns a uniform 404 for a foreign-tenant/missing agent', async () => {
+    getAgentMock.mockResolvedValue(null);
+    const res = await buildApp().request(`/ai-agents/${AGENT_ID}/runs`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Agent not found' });
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('never carries the raw outcome payload — no args, proposedActions, session, or policy internals', async () => {
+    selectMock.mockReturnValueOnce(selectChain([runRow({ orgName: 'Acme Corp' })]));
+
+    const res = await buildApp().request(`/ai-agents/${AGENT_ID}/runs`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]).toMatchObject({
+      id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp',
+    });
+    expect(body.data[0]).not.toHaveProperty('outcome');
+    expect(body.data[0]).not.toHaveProperty('trace');
+    expect(body.data[0]).not.toHaveProperty('sessionId');
+    expect(body.data[0]).not.toHaveProperty('intentIds');
+    expect(body.data[0]).not.toHaveProperty('policySnapshot');
+    expect(body.data[0]).not.toHaveProperty('dedupeKey');
+
+    const json = JSON.stringify(body);
+    for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+      expect(json).not.toContain(`"${forbidden}"`);
+    }
+    expect(json).not.toContain('do-not-leak-me');
+    expect(json).not.toContain('scriptId');
+  });
+});
+
 describe('GET /ai-agents/policy-decidable-keys (Task 5, #3827)', () => {
   it('returns the POLICY_DECIDABLE_TIER3 registry, one entry per headless-compatible key', async () => {
     const res = await buildApp().request('/ai-agents/policy-decidable-keys');
@@ -571,6 +620,8 @@ const runListResponseSchema = z.object({
     id: z.string(),
     agentId: z.string(),
     agentName: z.string().nullable(),
+    orgId: z.string(),
+    orgName: z.string().nullable(),
     deviceId: z.string().nullable(),
     status: z.string(),
     triggerKind: z.string(),
@@ -728,7 +779,8 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
   it('returns a page with no nextCursor when fewer rows than the limit come back', async () => {
     selectMock.mockReturnValueOnce(selectChain([
       {
-        id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', deviceId: DEVICE_ID,
+        id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp',
+        deviceId: DEVICE_ID,
         status: 'completed', triggerKind: 'manual', runVerdict: 'remediated',
         queuedAt: new Date('2026-08-28T10:00:00.000Z'),
         queuedAtRaw: '2026-08-28T10:00:00.000000Z',
@@ -743,13 +795,15 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
     const parsed = runListResponseSchema.parse(body);
     expect(parsed.data).toHaveLength(1);
     expect(parsed.nextCursor).toBeNull();
-    expect(parsed.data[0]).toMatchObject({ id: RUN_ID, agentName: 'Triage', runVerdict: 'remediated' });
+    expect(parsed.data[0]).toMatchObject({
+      id: RUN_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp', runVerdict: 'remediated',
+    });
   });
 
   it('returns a nextCursor and trims the peeked row when a full extra page comes back', async () => {
     const makeRow = (i: number) => ({
       id: `cccccccc-cccc-4ccc-8ccc-${String(i).padStart(12, '0')}`,
-      agentId: AGENT_ID, agentName: 'Triage', deviceId: null,
+      agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp', deviceId: null,
       status: 'completed', triggerKind: 'schedule', runVerdict: null,
       queuedAt: new Date(Date.UTC(2026, 7, 28, 10, 0, i)),
       queuedAtRaw: `2026-08-28T10:00:${String(i).padStart(2, '0')}.000000Z`,
@@ -774,7 +828,7 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
     const microPrecise = '2026-08-28T10:00:00.123456Z';
     const makeRow = (i: number) => ({
       id: `dddddddd-dddd-4ddd-8ddd-${String(i).padStart(12, '0')}`,
-      agentId: AGENT_ID, agentName: 'Triage', deviceId: null,
+      agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp', deviceId: null,
       status: 'completed', triggerKind: 'schedule', runVerdict: null,
       // Every row shares the same millisecond-truncated Date — the last
       // (limit+1-th, trimmed) row's true value differs only in microseconds.
@@ -803,7 +857,8 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
   it('includes a run whose agent row is RLS-invisible (partner-wide agent), with agentName null', async () => {
     selectMock.mockReturnValueOnce(selectChain([
       {
-        id: RUN_ID, agentId: AGENT_ID, agentName: null, deviceId: DEVICE_ID,
+        id: RUN_ID, agentId: AGENT_ID, agentName: null, orgId: ORG_ID, orgName: 'Acme Corp',
+        deviceId: DEVICE_ID,
         status: 'completed', triggerKind: 'schedule', runVerdict: 'remediated',
         queuedAt: new Date('2026-08-28T10:00:00.000Z'),
         queuedAtRaw: '2026-08-28T10:00:00.000000Z',
@@ -818,6 +873,55 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
     expect(body.data).toHaveLength(1);
     expect(body.data[0].id).toBe(RUN_ID);
     expect(body.data[0].agentName).toBeNull();
+  });
+
+  // Review fix (#3828): `?orgId=` is what `fetchWithAuth` auto-injects when
+  // the org switcher has one org selected (apps/web/src/stores/auth.ts) —
+  // before this fix the query schema silently stripped it and selecting an
+  // org never narrowed the fleet-wide list.
+  it('rejects an orgId the caller cannot access, before touching the database', async () => {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        scope: 'organization', orgId: ORG_ID, partnerId: null, accessibleOrgIds: [ORG_ID],
+        user: { id: USER_ID, email: 'tech@example.com', name: 'Tech' },
+        canAccessOrg: (id: string) => id === ORG_ID,
+        orgCondition: () => undefined,
+      } as never);
+      await next();
+    });
+    app.route('/ai-agents', aiAgentsRoutes);
+
+    const res = await app.request(`/ai-agents/runs?orgId=${OTHER_ORG_ID}`);
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('applies an accessible orgId filter and returns its rows', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      {
+        id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp',
+        deviceId: DEVICE_ID,
+        status: 'completed', triggerKind: 'manual', runVerdict: 'remediated',
+        queuedAt: new Date('2026-08-28T10:00:00.000Z'),
+        queuedAtRaw: '2026-08-28T10:00:00.000000Z',
+        finishedAt: new Date('2026-08-28T10:00:30.000Z'),
+        costCents: 12,
+      },
+    ]));
+
+    const res = await buildApp().request(`/ai-agents/runs?orgId=${ORG_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runListResponseSchema.parse(body);
+    expect(parsed.data).toHaveLength(1);
+    expect(parsed.data[0]).toMatchObject({ id: RUN_ID, orgId: ORG_ID, orgName: 'Acme Corp' });
+  });
+
+  it('rejects a malformed orgId', async () => {
+    const res = await buildApp().request('/ai-agents/runs?orgId=not-a-uuid');
+    expect(res.status).toBe(400);
+    expect(selectMock).not.toHaveBeenCalled();
   });
 
   it('rejects a malformed cursor with 400 before touching the database', async () => {
@@ -841,7 +945,8 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
   it('never carries an outcome/trace payload on the list item, even though runVerdict is derived from the outcome column', async () => {
     selectMock.mockReturnValueOnce(selectChain([
       {
-        id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', deviceId: DEVICE_ID,
+        id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp',
+        deviceId: DEVICE_ID,
         status: 'completed', triggerKind: 'manual', runVerdict: 'remediated',
         queuedAt: new Date('2026-08-28T10:00:00.000Z'),
         finishedAt: new Date('2026-08-28T10:00:30.000Z'),
