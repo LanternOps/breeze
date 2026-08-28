@@ -29,3 +29,22 @@ or a real shipping caller is identified, integrated into its winning transaction
 - Real PostgreSQL exposed and drove fixes for two raw-SQL binding defects: explicit `timestamptz` expiry binding and explicit cleanup-cause text typing.
 
 This evidence does not claim endpoint cleanup, deployment, hosted reachability, physical enforcement, customer rollout, or an entitlement disposition.
+
+## Task E8 fixed-unverified disposition
+
+RMM-QA-445 is `fixed-unverified` at implementation commit
+`3de86327032d7c335c09689878fa086bba1cfdf7`. The two-organization
+real-PostgreSQL matrix, durable-ledger state-machine/fuzz coverage, full API and
+Go race gates, RLS coverage/runtime gates, typecheck, and four Windows amd64
+cross-compiles passed. The matrix also proved exact retry idempotence for a
+valid accepted `cleaned` observation and drove the minimal transaction-order
+fix recorded in the parent Track E plan.
+
+The private exact-candidate harness exists only under the gitignored
+`internal/qa/pam-actuation/` boundary and was syntax-checked, not executed. No
+explicit lab authorization, disposable signed-Windows fixture, private evidence
+directory, or Security/Product/Operations candidate-target decision was
+provided. Therefore native Windows execution, the 20-case physical evidence
+packet, zero-surviving-process/token physical proof, and the candidate latency
+result remain unverified. The entitlement-owner disposition above is also still
+open. None of these missing external gates is inferred from automated CI.

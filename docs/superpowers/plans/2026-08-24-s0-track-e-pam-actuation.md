@@ -726,11 +726,11 @@ No additional Task 6 or Task 7 reviewer may be dispatched.
 - Produces a private disposable-Windows runner and evidence template under the repository's gitignored `internal/` boundary; it does not contain customer data, secrets, internal infrastructure addresses, or prewritten PASS claims, and it is not force-added to Git.
 - Produces measured cleanup latency from durable agent `received` acknowledgement to accepted `cleaned` result, reported against the candidate 2-second p95/5-second maximum target without calling it an adopted production SLO.
 
-- [ ] **Step 1: Write the failure-matrix RED tests**
+- [x] **Step 1: Write the failure-matrix RED tests**
 
 For two organizations and two devices, enumerate command/result permutations and assert: no cross-tenant row/command/audit side effect; no stale apply at or below a cleanup tombstone; no false cleaned result; duplicate delivery is idempotent; offline cleanup remains queued; reconnect dispatches current cleanup generation only; clock skew cannot extend server-bounded lifetime; crash/restart/reboot never regress desired state. Go state-machine/property tests generate sequences of apply, cleanup, duplicate, reorder, restart, reboot, disable, and result emission and preserve the same invariants.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/pamActuationFailureMatrix.integration.test.ts
@@ -739,21 +739,22 @@ cd agent && go test -race ./internal/pamlifetime -run 'TestStateMachine|FuzzStat
 
 Expected: FAIL until the matrix harness and any missing edge-case handling exist.
 
-- [ ] **Step 3: Complete only the edge-case implementation required by the matrix**
+- [x] **Step 3: Complete only the edge-case implementation required by the matrix**
 
 Fix uncovered compare-and-set, retry, offline, clock-bound, restart, or result-ordering gaps without weakening any earlier invariant. Do not add a bypass for unsupported agents, legacy rows, helper loss, or unverifiable endpoint state. Rerun the smallest failing case after each change, then the full matrix.
 
-- [ ] **Step 4: Add the private Windows exact-candidate harness**
+- [x] **Step 4: Add the private Windows exact-candidate harness**
 
 The PowerShell harness must require a disposable signed Windows fixture and capture candidate Git SHA, agent/API artifact digests, OS build, boot ID, device/org IDs redacted to fixture aliases, command generations, API/worker/agent logs, and relevant database rows. It must execute at least 20 normal/failure/restart cases including normal cleanup, child/grandchild processes, offline/reconnect, duplicate/reordered commands/results, helper loss, agent crash/restart, endpoint reboot, and two organizations. It must independently inspect Job Object membership, account enabled/admin state, PID/process creation identity, and privileged-token absence.
 
 The harness calculates p95 and maximum from durable cleanup receipt to accepted cleaned evidence. It reports `candidate_target_passed` or `candidate_target_failed`; it may report `production_slo_adopted` only when a named Security/Product/Operations decision reference is supplied. `legacy_untracked` cases remain `blocked_manual_remediation` and require an operator-entered independent verification disposition; the harness never converts them automatically.
 
-- [ ] **Step 5: Run the complete automated gate**
+- [x] **Step 5: Run the complete automated gate**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/pamActuationLifecycle.integration.test.ts src/__tests__/integration/pamActuationTransitions.integration.test.ts src/__tests__/integration/pamActuationResults.integration.test.ts src/__tests__/integration/pamActuationFailureMatrix.integration.test.ts
-pnpm --filter @breeze/api exec vitest run --config vitest.config.rls.ts src/__tests__/integration/rls-coverage.integration.test.ts
+pnpm --filter @breeze/api test:rls-coverage
+pnpm --filter @breeze/api test:rls
 pnpm --filter @breeze/api test
 NODE_OPTIONS=--max-old-space-size=8192 pnpm exec tsc --noEmit --project apps/api/tsconfig.json
 cd agent && go test -race ./...
@@ -773,7 +774,7 @@ powershell -ExecutionPolicy Bypass -File internal/qa/pam-actuation/run-windows-c
 
 Expected: at least 20 executed cases, two fixture organizations, zero surviving privileged token/process tree after every accepted cleanup, no terminal claim before proof, and measured candidate target results. Replace angle-bracket arguments with the lab's values; never commit them.
 
-- [ ] **Step 7: Record closure disposition and commit**
+- [x] **Step 7: Record closure disposition and commit**
 
 Record RMM-QA-445 as `fixed-unverified` unless all of these are present: exact-candidate Windows evidence, executed real-Postgres suites, explicit candidate-target adoption/revision, and a resolved entitlement-removal disposition. The code commit remains valid while closure is blocked.
 
@@ -781,6 +782,34 @@ Record RMM-QA-445 as `fixed-unverified` unless all of these are present: exact-c
 git add apps/api/src/__tests__/integration/pamActuationFailureMatrix.integration.test.ts agent/internal/pamlifetime/state_machine_test.go agent/internal/pamlifetime/state_machine_fuzz_test.go
 git commit -m "test(pam): prove actuation cleanup matrix"
 ```
+
+Implementation closure (2026-08-28): commit
+`3de86327032d7c335c09689878fa086bba1cfdf7` adds the two-organization
+real-PostgreSQL failure matrix and the durable-ledger state-machine/fuzz tests.
+The RED matrix exposed one exact edge case: an already-accepted `cleaned`
+observation was classified `stale` before observation-identity deduplication.
+The minimal fix keeps schema, generation, desired-state, independent-cleanup,
+command, device, agent, organization, and tenant checks ahead of deduplication,
+then classifies an already-present valid observation as `duplicate` before the
+reordered-state check. No ownership check or frozen transaction input changed.
+
+The four named PAM integration files executed 21 tests against real PostgreSQL;
+RLS coverage passed 75 checks and the configured RLS runtime suite passed 22;
+API typecheck passed; the repository-pinned Node 22.23.2 API suite passed 1,493
+files and 25,763 tests with only its expected skips; `go test -race ./...` passed;
+the bounded state-machine fuzz campaign passed; and the `pamlifetime`,
+`pamactuator`, `elevaccount`, and `agentapp` Windows amd64 test binaries compiled.
+The gitignored private harness and templates are syntax-checked and require an
+explicit lab authorization reference, a disposable signed fixture, two
+organization aliases, distinct execution/inspection adapters, 20-plus executed
+cases, independent process/account/token inspection, and real latency evidence.
+
+RMM-QA-445 remains `fixed-unverified`. Step 6 is deliberately unchecked because
+no authorized disposable signed-Windows fixture or private evidence directory
+was supplied. The candidate 2-second p95/5-second maximum remains unadopted, and
+the shipping entitlement-removal disposition remains unresolved. This closure
+does not claim native Windows execution, physical enforcement, deployment,
+hosted reachability, customer mutation, production SLO adoption, or rollout.
 
 ## Dependency and Rollout Gate
 
@@ -811,11 +840,11 @@ Track D complete
 - [x] Missing or unsupported heartbeat capability prevents v2 apply admission.
 - [x] REST and WebSocket results use the same registered service.
 - [ ] Only token-launch v2 uses the named kill-on-close Job Object contract; SendInput remains v1 only.
-- [ ] Cleanup tombstones reject delayed older apply commands across restart/reboot.
+- [x] Cleanup tombstones reject delayed older apply commands across restart/reboot.
 - [x] Only verified current-generation endpoint evidence advances session/terminal cleanup truth.
 - [ ] Entitlement removal names a wired shipping caller or a Product-owned shipping-SKU non-applicability disposition.
 - [x] Real-Postgres suites execute rather than skip and prove two-org isolation and zero side effects.
-- [ ] Go race/state-machine tests pass and Windows binaries cross-compile.
+- [x] Go race/state-machine tests pass and Windows binaries cross-compile.
 - [ ] Disposable signed-Windows evidence covers at least 20 cases and proves zero surviving privileged token/process tree.
 - [ ] The 2-second p95/5-second maximum remains labeled a candidate target until explicitly adopted.
 - [x] No production deployment, customer rollout, or destructive production migration occurred from this branch.
