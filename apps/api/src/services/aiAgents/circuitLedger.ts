@@ -98,7 +98,14 @@ export async function recordCircuitFailure(
 ): Promise<RecordCircuitFailureResult> {
   const { orgId, agentId, deviceId, opKey, targetFingerprint, source, reason } = args;
   const now = args.now ?? new Date();
-  const windowFloor = new Date(now.getTime() - CIRCUIT_FAILURE_WINDOW_MS);
+  // ISO strings, not Date objects, for the raw `sql` interpolations below.
+  // Drizzle serializes a Date correctly when it flows through a typed column
+  // (`.values({...})`/`.set({...})`), but a bare `${date}` inside a sql template
+  // reaches the postgres driver untouched and its Bind step throws
+  // ERR_INVALID_ARG_TYPE. The explicit ::timestamptz cast keeps the comparison
+  // typed rather than relying on inference from a text literal.
+  const windowFloor = new Date(now.getTime() - CIRCUIT_FAILURE_WINDOW_MS).toISOString();
+  const nowIso = now.toISOString();
 
   return inSystemDbContext(async () => {
     const [row] = await db
@@ -127,11 +134,11 @@ export async function recordCircuitFailure(
           // Restart the count when the previous window has decayed, otherwise
           // add to it. Done in SQL so the read and the write are one statement.
           failureCount: sql`CASE
-            WHEN ${aiAgentCircuits.windowStartedAt} < ${windowFloor} THEN 1
+            WHEN ${aiAgentCircuits.windowStartedAt} < ${windowFloor}::timestamptz THEN 1
             ELSE ${aiAgentCircuits.failureCount} + 1
           END`,
           windowStartedAt: sql`CASE
-            WHEN ${aiAgentCircuits.windowStartedAt} < ${windowFloor} THEN ${now}
+            WHEN ${aiAgentCircuits.windowStartedAt} < ${windowFloor}::timestamptz THEN ${nowIso}::timestamptz
             ELSE ${aiAgentCircuits.windowStartedAt}
           END`,
           lastFailureAt: now,

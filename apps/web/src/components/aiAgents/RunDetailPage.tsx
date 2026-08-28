@@ -524,7 +524,13 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
         <ExposureBudgetCard orgId={run.orgId} kind={run.agentKind} t={t} />
       )}
 
-      {run.fixWatches.length > 0 && (
+      {/* Optional-chained on purpose. The DTO declares `fixWatches` as
+          required, but during a rolling deploy this page can be served a
+          response from an API replica that predates wave 6.2a and omits it —
+          the same mixed-version case the sweeper's contract_version guard
+          handles on the write side. A missing field must render nothing, not
+          crash the whole run-detail page. */}
+      {(run.fixWatches?.length ?? 0) > 0 && (
         <div className="rounded-lg border bg-card p-4" data-testid="run-detail-fix-watch-card">
           <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.detail.fixWatch.title')}</h2>
           <p className="mt-1 text-xs text-muted-foreground">

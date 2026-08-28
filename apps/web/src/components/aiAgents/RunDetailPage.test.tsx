@@ -64,6 +64,22 @@ const RUN_DETAIL = {
       decidedVia: null,
     },
   ],
+  fixWatches: [
+    {
+      schemaVersion: 1 as const,
+      id: 'watch-1',
+      runId: 'run-1',
+      watchKind: 'postcondition' as const,
+      status: 'regressed' as const,
+      opKey: 'manage_services.restart',
+      targetName: 'service:spooler',
+      baselineAt: '2026-08-28T10:00:30.000Z',
+      dueAt: '2026-08-28T10:30:30.000Z',
+      checkedAt: '2026-08-28T11:02:00.000Z',
+      attempts: 1,
+      detail: 'Spooler: service status is "stopped"',
+    },
+  ],
 };
 
 const BUDGET = {
@@ -167,5 +183,26 @@ describe('RunDetailPage', () => {
     for (const forbidden of ['toolInput', 'toolOutput', 'args', 'arguments']) {
       expect(html).not.toContain(forbidden);
     }
+  });
+
+  it('renders the fix-held watch outcome (#3828)', async () => {
+    mockEndpoints();
+    render(<RunDetailPage runId="run-1" />);
+
+    expect(await screen.findByTestId('run-detail-fix-watch-card')).toBeInTheDocument();
+    expect(screen.getByTestId('run-detail-fix-watch-watch-1')).toBeInTheDocument();
+    expect(screen.getByTestId('fix-watch-detail')).toHaveTextContent('service status is "stopped"');
+  });
+
+  it('survives an API response that omits fixWatches entirely', async () => {
+    // Mixed-version deploy: this page can be served a DTO from a replica that
+    // predates wave 6.2a. A missing field must render nothing, not take the
+    // whole run-detail page down with it.
+    const { fixWatches: _omitted, ...legacyDetail } = RUN_DETAIL;
+    mockEndpoints({ detail: legacyDetail });
+    render(<RunDetailPage runId="run-1" />);
+
+    expect(await screen.findByTestId('run-detail-header')).toBeInTheDocument();
+    expect(screen.queryByTestId('run-detail-fix-watch-card')).not.toBeInTheDocument();
   });
 });
