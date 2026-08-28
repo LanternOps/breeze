@@ -224,7 +224,6 @@ export default function RunsListPage() {
     setRuns([]);
     setNextCursor(null);
     void fetchPage(null, false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchPage]);
 
   return (
