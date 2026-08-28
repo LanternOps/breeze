@@ -47,7 +47,7 @@ wave: W07 (#3828) — PR 2 of 4 (Safety controls)
 - `ai_agent_fix_watches`: id, org_id NOT NULL, partner_id NOT NULL (composite org FK CASCADE), agent_id FK ai_agents CASCADE, run_id FK ai_agent_runs CASCADE, alert_id FK alerts SET NULL, rule_id uuid NULL (denormalized from the triggering alert — survives alert deletion), device_id uuid NOT NULL (no FK, exposure precedent), config_item_name varchar(200) NULL, state text NOT NULL DEFAULT 'pending' CHECK IN ('pending','watching','recurred','held_qualified','inconclusive','cancelled'), recovery_observed_at timestamptz, due_at timestamptz, evaluated_at timestamptz, recurrence_alert_id uuid FK alerts SET NULL, notified_at timestamptz, created_at timestamptz DEFAULT now(); UNIQUE (run_id); indexes (org_id, created_at DESC), (state, due_at). RLS org policy.
 - `ai_agent_circuit_state`: org_id NOT NULL + agent_id NOT NULL FK ai_agents CASCADE, PRIMARY KEY (org_id, agent_id), partner_id NOT NULL + composite org FK CASCADE, consecutive_failures int NOT NULL DEFAULT 0, state text NOT NULL DEFAULT 'closed' CHECK IN ('closed','open'), opened_at timestamptz, opened_reason text, last_run_id uuid NULL, last_transition_at timestamptz NOT NULL DEFAULT now(), reset_by uuid NULL, reset_at timestamptz. RLS org policy.
 - All ceremony registrations per Global Constraints; drift check clean; shared field + validator + defaults + v4 bump (grep every snapshot-version read site → tolerate 1-4) + limits-coverage line (`maxConsecutiveFailures — agentCircuit.ts via transitionRunStatus`).
-- [ ] TDD → commit: `feat(api,shared): fix-watch + circuit-state schema, ceremonies, maxConsecutiveFailures (#3828)`
+- [x] TDD → commit: `feat(api,shared): fix-watch + circuit-state schema, ceremonies, maxConsecutiveFailures (#3828)`
 
 ### Task 2: Circuit service + terminalization chokepoint + admission + reset route
 
@@ -69,7 +69,7 @@ wave: W07 (#3828) — PR 2 of 4 (Safety controls)
 
 - `routes/admin/aiKillState.ts`: `GET /` (state + epoch), `POST /` `requireMfa()` body `{ killed: boolean, reason: string }` → `bumpAiKillState` + platform_admin audit; mount in admin/index.ts. Runbook: the SQL fallback AND the API, the ≤5s propagation bound, the zero-platform-admins caveat verbatim.
 - Full battery: api suite + shared + typecheck + lint (both packages) + drift + contract suites + migration naming; terminalization contract green; registry snapshots consistent.
-- [ ] Tick checkboxes. **Open the PR**: branch `feature/3821-ai-agents/wave-3828-2` → main, title `feat(api): wave 6.2 — safety controls: fix-held watch, per-org circuit breaker, kill-state admin API`, body: "PR 2 of 4 for #3828 — do NOT close", the constants-v1 watch-window deferral, the no-new-event-type note, the zero-platform-admins flag. **Stop after opening the PR.**
+- [x] Tick checkboxes. **Open the PR**: branch `feature/3821-ai-agents/wave-3828-2` → main, title `feat(api): wave 6.2 — safety controls: fix-held watch, per-org circuit breaker, kill-state admin API`, body: "PR 2 of 4 for #3828 — do NOT close", the constants-v1 watch-window deferral, the no-new-event-type note, the zero-platform-admins flag. **Stop after opening the PR.**
 
 ## Self-Review Notes
 
