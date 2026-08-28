@@ -164,5 +164,15 @@ END$$;
 -- Seed the single row, not-killed, epoch 0. Default pass — nothing in this
 -- PR flips it; the only flip surface is a direct SQL UPDATE (Task 2's
 -- bumpAiKillState is added but called by nobody yet).
-INSERT INTO ai_kill_state (id, killed, epoch) VALUES ('global', false, 0)
-  ON CONFLICT (id) DO NOTHING;
+DO $$
+BEGIN
+  -- ai_kill_state is FORCE ROW LEVEL SECURITY and FORCE applies to the table
+  -- owner too. A migration carries no request context (no breeze.scope set),
+  -- so the plain INSERT below is denied under a non-superuser migrator (the
+  -- hosted DO-managed doadmin role — autoMigrate.ts:117). Take the system
+  -- branch explicitly. `true` = transaction-local, reverted with this block.
+  PERFORM set_config('breeze.scope', 'system', true);
+
+  INSERT INTO ai_kill_state (id, killed, epoch) VALUES ('global', false, 0)
+    ON CONFLICT (id) DO NOTHING;
+END$$;
