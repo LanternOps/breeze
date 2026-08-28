@@ -687,13 +687,28 @@ REST route into the existing frozen PAM result transaction. It does not change
 the Manager interface, command/result schemas, durable ledger, WebSocket result
 path, or command ownership checks.
 
-- [ ] **Step 1: Add and prove the authenticated supplemental server route**
-- [ ] **Step 2: Add and prove the invocation-scoped durable manager handoff**
-- [ ] **Step 3: Bind exact command ownership, acknowledged retry, and apply-only readiness**
-- [ ] **Step 4: Pass focused, real-PostgreSQL, race/cross-compile, governance, and exact-head CI gates; synchronize issue #4060 and PR #4105**
+- [x] **Step 1: Add and prove the authenticated supplemental server route**
+- [x] **Step 2: Add and prove the invocation-scoped durable manager handoff**
+- [x] **Step 3: Bind exact command ownership, acknowledged retry, and apply-only readiness**
+- [x] **Step 4: Pass focused, real-PostgreSQL, race/cross-compile, governance, and exact-head CI gates; synchronize issue #4060 and PR #4105**
 
-Task 8 remains blocked until all four boxes are complete. No additional Task 6
-or Task 7 reviewer may be dispatched.
+Implementation closure (2026-08-28): commits `5c0e15556`, `b5f21747b`,
+`12585acfd`, `2b5a0bb3b`, `757c6a3a5`, and CI-governance fix
+`efd34dfe3` implement the approved exact-command `received` handoff and
+acknowledged supplemental route without changing the frozen ledger, result
+transaction, Manager interface, or WebSocket path. Exact implementation
+candidate `efd34dfe3a523d3999e12ed1bc1437bc37c0ea9a` passed 450 focused API
+tests, 16 real-PostgreSQL tests, 7 site-scope checks, 75 RLS checks, API
+TypeScript no-emit, race gates for agentapp/pamlifetime/heartbeat, Windows
+amd64 agentapp cross-compile, 576-file migration drift, migration naming,
+whitespace, and Task 7C scope guards. Manual core run
+[`33179007091`](https://github.com/LanternOps/breeze/actions/runs/33179007091)
+passed 41 jobs with only the expected skipped Main Red Alert; the exact head
+was pushed, the stacked draft PR remained mergeable/CLEAN, and all three
+attached checks passed. Task 8 is unstarted, and entitlement disposition
+remains open. No native signed-Windows execution, physical enforcement,
+deployment, hosted/customer mutation, canary, or rollout evidence is claimed.
+No additional Task 6 or Task 7 reviewer may be dispatched.
 
 ### Task 8: Prove the failure matrix and produce exact-candidate Windows evidence
 

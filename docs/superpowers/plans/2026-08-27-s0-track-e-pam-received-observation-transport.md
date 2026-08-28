@@ -43,6 +43,7 @@
 - Create: `apps/api/src/routes/agents/pamObservations.ts`
 - Create: `apps/api/src/routes/agents/pamObservations.test.ts`
 - Modify: `apps/api/src/routes/agents/index.ts`
+- Modify: `apps/api/src/middleware/bodyLimit.test.ts`
 - Create: `apps/api/src/__tests__/integration/pamReceivedObservation.integration.test.ts`
 - Modify: `apps/api/src/__tests__/integration/site-scope-coverage.integration.test.ts`
 - Modify: `apps/api/src/routes/agents.test.ts`
@@ -54,7 +55,7 @@
 - Produces `POST /:id/commands/:commandId/pam-observations` with strict `{ protocolVersion: 1, observation: PamAgentResultV2 & { state: 'received' } }` input and `{ protocolVersion: 1, classification }` output.
 - Produces no command write, alternate audit transaction, new persistence service, or WebSocket behavior.
 
-- [ ] **Step 1: Write route RED tests**
+- [x] **Step 1: Write route RED tests**
 
 Create this exact fixture:
 
@@ -89,7 +90,7 @@ expect(mocks.recordResult).toHaveBeenCalledWith({
 });
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/routes/agents/pamObservations.test.ts
@@ -97,7 +98,7 @@ pnpm --filter @breeze/api exec vitest run src/routes/agents/pamObservations.test
 
 Expected: FAIL because the module and route do not exist.
 
-- [ ] **Step 3: Implement and mount the route**
+- [x] **Step 3: Implement and mount the route**
 
 Use streaming body limiting:
 
@@ -162,15 +163,15 @@ return c.json({ protocolVersion: 1 as const, classification });
 
 Mount after `commandsRoutes`. Do not add the path to a drain allowlist or `FALLBACK_AUDIT_EXCLUDE_PATHS`.
 
-- [ ] **Step 4: Run route GREEN and unchanged-transport regressions**
+- [x] **Step 4: Run route GREEN and unchanged-transport regressions**
 
 ```bash
-pnpm --filter @breeze/api exec vitest run src/routes/agents/pamObservations.test.ts src/routes/agents.test.ts src/routes/agents/commands.test.ts src/routes/agentWs.test.ts
+pnpm --filter @breeze/api exec vitest run src/routes/agents/pamObservations.test.ts src/routes/agents.test.ts src/routes/agents/commands.test.ts src/routes/agentWs.test.ts src/middleware/bodyLimit.test.ts
 ```
 
 Expected: all pass; ordinary `/result` and WebSocket behavior stays unchanged.
 
-- [ ] **Step 5: Write and run the real-PostgreSQL ownership RED/GREEN test**
+- [x] **Step 5: Write and run the real-PostgreSQL ownership RED/GREEN test**
 
 Create two org/device/primary-agent/actuation/agent-targeted-command fixtures.
 Make command A terminal before submission (`status='completed'`, non-null
@@ -232,7 +233,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 
 Expected RED before the route is wired; expected GREEN with exact command immutability and zero foreign side effects.
 
-- [ ] **Step 6: Register route-scan scope and commit**
+- [x] **Step 6: Register route-scan scope and commit**
 
 Add the exact site-scope exemption with an agent-token/exact-device justification:
 
@@ -243,8 +244,9 @@ Add the exact site-scope exemption with an agent-token/exact-device justificatio
 Run and commit:
 
 ```bash
-pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/pamReceivedObservation.integration.test.ts src/__tests__/integration/site-scope-coverage.integration.test.ts
-git add apps/api/src/routes/agents/pamObservations.ts apps/api/src/routes/agents/pamObservations.test.ts apps/api/src/routes/agents/index.ts apps/api/src/routes/agents.test.ts apps/api/src/__tests__/integration/pamReceivedObservation.integration.test.ts apps/api/src/__tests__/integration/site-scope-coverage.integration.test.ts
+pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/pamReceivedObservation.integration.test.ts
+pnpm --filter @breeze/api test:site-scope-coverage
+git add apps/api/src/routes/agents/pamObservations.ts apps/api/src/routes/agents/pamObservations.test.ts apps/api/src/routes/agents/index.ts apps/api/src/routes/agents.test.ts apps/api/src/middleware/bodyLimit.test.ts apps/api/src/__tests__/integration/pamReceivedObservation.integration.test.ts apps/api/src/__tests__/integration/site-scope-coverage.integration.test.ts
 git commit -m "fix(api): accept PAM received observations"
 ```
 
@@ -261,7 +263,7 @@ git commit -m "fix(api): accept PAM received observations"
 - Preserves the four-method `Manager` interface byte-for-byte.
 - Handoff occurs after resume and before verify only for a new process; duplicate apply never calls it.
 
-- [ ] **Step 1: Write ordering/failure RED tests**
+- [x] **Step 1: Write ordering/failure RED tests**
 
 Add:
 
@@ -273,7 +275,7 @@ func TestApplyWithReceivedObservationDuplicateDoesNotHandoff(t *testing.T)
 
 Success order is `Resume`, `ClosePrimaryThread`, `Handoff(received with canonical UUID)`, `VerifyActive`, `Return(verified_active)`. Callback error must yield `received_observation_handoff_failed`, zero VerifyActive calls, exactly one Job/process close, one deprovision attempt, and `Available()==false`. Duplicate apply returns existing singular received and invokes callback zero times.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 cd agent && go test -count=1 ./internal/pamlifetime -run 'TestApplyWithReceivedObservation'
@@ -281,7 +283,7 @@ cd agent && go test -count=1 ./internal/pamlifetime -run 'TestApplyWithReceivedO
 
 Expected: FAIL because the concrete method is absent.
 
-- [ ] **Step 3: Refactor through one private implementation**
+- [x] **Step 3: Refactor through one private implementation**
 
 ```go
 func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
@@ -300,7 +302,7 @@ to `func (m *lifecycleManager) apply(ctx context.Context, cmd ApplyCommand, hand
 Keep that body verbatim except for the received block in Step 4. Do not store
 the callback on the manager or add it to the constructor.
 
-- [ ] **Step 4: Implement the post-resume barrier**
+- [x] **Step 4: Implement the post-resume barrier**
 
 ```go
 received := m.result(cmd.ActuationID, cmd.Generation, ResultReceived, evidenceFromProcess(process.Identity, nil))
@@ -316,7 +318,7 @@ if handoff != nil {
 
 Leave VerifyActive, verified emission, ownership transfer, and all pre-resume paths unchanged. Existing defers remain armed on callback failure.
 
-- [ ] **Step 5: Run GREEN/race/frozen-interface gates and commit**
+- [x] **Step 5: Run GREEN/race/frozen-interface gates and commit**
 
 ```bash
 cd agent && go test -count=1 ./internal/pamlifetime -run 'TestApplyWithReceivedObservation|TestApplyFailureClosesEachOwnedHandleExactlyOnce|TestHigherGenerationApplyCannotOverwriteLiveOwnership'
@@ -342,7 +344,7 @@ Expected: tests pass and the frozen-file diff prints nothing.
 - Synchronously enqueues `outbox.Enqueue(cmd.ID, received)` before verification.
 - Sends received to `/pam-observations`; verified/cleaned/failed keep the existing `/result` envelope.
 
-- [ ] **Step 1: Write handler and route-selection RED tests**
+- [x] **Step 1: Write handler and route-selection RED tests**
 
 Add:
 
@@ -372,7 +374,7 @@ In `pam_reconciliation_outbox_test.go`, load a pre-change JSON entry containing
 only the existing fields and prove Snapshot plus submission works without a
 source/version migration.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 cd agent && go test -count=1 ./internal/heartbeat -run 'TestPamApplyV2.*Received|TestPamCleanupV2DoesNotRequire|TestPamReconciliation.*Route|TestPamReconciliation.*Acknowledgement'
@@ -380,7 +382,7 @@ cd agent && go test -count=1 ./internal/heartbeat -run 'TestPamApplyV2.*Received
 
 Expected: FAIL because handler uses `Manager.Apply` and submission always uses `/result`.
 
-- [ ] **Step 3: Add the narrow interface and exact-command callback**
+- [x] **Step 3: Add the narrow interface and exact-command callback**
 
 ```go
 type pamReceivedObservationManager interface {
@@ -412,7 +414,7 @@ h.refreshPamLifetimeAvailability()
 
 Do not call the resolver or network from the callback.
 
-- [ ] **Step 4: Branch the existing submitter only by result state**
+- [x] **Step 4: Branch the existing submitter only by result state**
 
 ```go
 var requestURL string
@@ -440,7 +442,7 @@ if result.State == pamlifetime.ResultReceived {
 
 Keep the submitter seam, strict acknowledgement decoder, and re-resolution logic. Add a test proving startup `Reconcile` currently emits no received state and stays on `/result`.
 
-- [ ] **Step 5: Run GREEN/race gates and commit**
+- [x] **Step 5: Run GREEN/race gates and commit**
 
 ```bash
 cd agent && go test -count=1 ./internal/heartbeat -run 'TestPamApplyV2|TestPamCleanupV2|TestPamReconciliation|TestPamOutbox'
@@ -468,7 +470,7 @@ git commit -m "fix(agent): transport PAM received observations"
 - Adds optional `receivedObservationPendingCount` and reason `received_observation_transport`.
 - Preserves `pamReconciled` as local manager/startup gate used by apply and cleanup.
 
-- [ ] **Step 1: Write readiness and telemetry RED tests**
+- [x] **Step 1: Write readiness and telemetry RED tests**
 
 Cover: clean local/outbox -> both flags true/protocol 2; pending received on startup -> reconciled true/received false/protocol 0; final ack -> received true/protocol 2; route failure/quarantine/unreadable -> received false/apply refused; cleanup invokes manager with reconciled true/received false; ordinary acknowledged non-received pending keeps existing non-blocking behavior; a non-received blocked or quarantined entry leaves `pamReconciled` true but sets received-transport readiness false, closes apply/protocol advertisement, and leaves cleanup callable; local reconciliation unresolved keeps reconciled false for both.
 
@@ -486,7 +488,7 @@ Assert exact telemetry:
 
 Malformed/negative/string count or unknown reason drops only `pamReconciliation`.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 cd agent && go test -count=1 ./internal/heartbeat -run 'TestPamReceivedObservationReadiness|TestPamCleanupV2.*Received|TestPamReconciliationStatus|TestSecurityCapabilitiesControlProtocolJSON'
@@ -495,7 +497,7 @@ pnpm --filter @breeze/api exec vitest run src/routes/agents/schemas.test.ts src/
 
 Expected: FAIL because separate readiness/count/reason do not exist.
 
-- [ ] **Step 3: Implement the apply-only predicate**
+- [x] **Step 3: Implement the apply-only predicate**
 
 Add the atomic beside `pamReconciled`; set it false in `SetStatePath`, before startup reconciliation, and after received enqueue. Recompute separately:
 
@@ -529,7 +531,7 @@ outbox follows the same rule. Require both flags in apply and
 non-`received` observations that are neither blocked nor quarantined preserve
 their existing non-blocking behavior.
 
-- [ ] **Step 4: Implement telemetry and safe logs**
+- [x] **Step 4: Implement telemetry and safe logs**
 
 Count only pending `received`. Select `received_observation_transport` when a received entry cannot obtain ack, a received entry is quarantined, or the outbox is unreadable. Preserve staged resolver/binding/enqueue reasons.
 
@@ -548,7 +550,7 @@ blockingReason: z.enum([
 
 Logs remain limited to counts, reason, outbox path, actuation ID, generation, observation ID; never command ID, username, path, credential, token, or evidence.
 
-- [ ] **Step 5: Update the server-first runbook**
+- [x] **Step 5: Update the server-first runbook**
 
 Add:
 
@@ -562,7 +564,7 @@ Add:
 
 Missing route/ack is transport failure; never delete evidence for outage recovery; only the reviewed ledger-reset procedure clears genuine invariant quarantine.
 
-- [ ] **Step 6: Run GREEN/race gates and commit**
+- [x] **Step 6: Run GREEN/race gates and commit**
 
 ```bash
 cd agent && go test -count=1 ./internal/heartbeat -run 'TestPamReceivedObservationReadiness|TestPamCleanupV2|TestPamReconciliationStatus|TestSecurityCapabilitiesControlProtocolJSON'
@@ -584,11 +586,12 @@ git commit -m "fix(pam): gate apply on received transport"
 - Produces exact-head focused, real-PostgreSQL, race, Windows compile, governance, attached-check, and core-CI evidence.
 - Closes only Task 6 received transport; Task 8 and entitlement disposition remain open.
 
-- [ ] **Step 1: Run complete local gates**
+- [x] **Step 1: Run complete local gates**
 
 ```bash
-pnpm --filter @breeze/api exec vitest run src/routes/agents/pamObservations.test.ts src/routes/agents/pamReconciliation.test.ts src/routes/agents/commands.test.ts src/routes/agents.test.ts src/routes/agentWs.test.ts src/routes/agents/schemas.test.ts src/routes/agents/schemas.heartbeatTolerance.test.ts src/routes/agents/heartbeat.test.ts src/services/pamActuationResult.test.ts src/services/commandResultHandlers.test.ts
-pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/pamReceivedObservation.integration.test.ts src/__tests__/integration/pamActuationResults.integration.test.ts src/__tests__/integration/pamReconciliationBinding.integration.test.ts src/__tests__/integration/pamActuationDispatchWire.integration.test.ts src/__tests__/integration/site-scope-coverage.integration.test.ts
+pnpm --filter @breeze/api exec vitest run src/routes/agents/pamObservations.test.ts src/routes/agents/pamReconciliation.test.ts src/routes/agents/commands.test.ts src/routes/agents.test.ts src/routes/agentWs.test.ts src/routes/agents/schemas.test.ts src/routes/agents/schemas.heartbeatTolerance.test.ts src/routes/agents/heartbeat.test.ts src/services/pamActuationResult.test.ts src/services/commandResultHandlers.test.ts src/middleware/bodyLimit.test.ts
+pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/pamReceivedObservation.integration.test.ts src/__tests__/integration/pamActuationResults.integration.test.ts src/__tests__/integration/pamReconciliationBinding.integration.test.ts src/__tests__/integration/pamActuationDispatchWire.integration.test.ts
+pnpm --filter @breeze/api test:site-scope-coverage
 pnpm --filter @breeze/api test:rls-coverage
 NODE_OPTIONS=--max-old-space-size=8192 pnpm exec tsc --noEmit --project apps/api/tsconfig.json
 cd agent && go test -count=1 -race ./internal/agentapp ./internal/pamlifetime ./internal/heartbeat/...
@@ -597,19 +600,22 @@ cd agent && GOOS=windows GOARCH=amd64 go test -c ./internal/agentapp -o /tmp/bre
 
 Expected: all named files execute/pass; ordinary REST/WS stays unchanged; Windows compile is not native execution.
 
-- [ ] **Step 2: Run governance/scope gates**
+- [x] **Step 2: Run governance/scope gates**
 
 ```bash
 pnpm --filter @breeze/api db:check-drift
 bash scripts/check-migration-naming.sh
 git diff --check
 git status --short
-git diff --name-only origin/fix/s0-device-control-lifecycle...HEAD | rg '(^apps/api/migrations/|pam-lifetime-ledger|state_machine|failureMatrix)' && exit 1 || true
+git diff --name-only 562f578e315dd0b7a533ff7e51002fd91971e2d7...HEAD | rg '(^apps/api/migrations/|pam-lifetime-ledger|state_machine|failureMatrix)' && exit 1 || true
 ```
 
-Expected: no drift/migration/whitespace/unplanned file, ledger expansion, or Task 8 file.
+Expected: no Task 7C drift/migration/whitespace/unplanned file, ledger expansion,
+or Task 8 file. Track D is the overall stacked-PR base and necessarily shows
+Track E's two already-approved migrations, so `562f578e...HEAD` is the exact
+Task 7C scope boundary for this guard.
 
-- [ ] **Step 3: Push and dispatch exact-head core CI**
+- [x] **Step 3: Push and dispatch exact-head core CI**
 
 ```bash
 candidate_sha=$(git rev-parse HEAD)
@@ -627,7 +633,7 @@ gh run view "$run_id" --repo LanternOps/breeze --json headSha,status,conclusion,
 
 Verify exact SHA. Only expected Main Red Alert may skip. Record manual-run jobs separately from PR-attached checks.
 
-- [ ] **Step 4: Confirm remote/PR/attached checks before claims**
+- [x] **Step 4: Confirm remote/PR/attached checks before claims**
 
 ```bash
 git fetch origin --prune
@@ -637,7 +643,7 @@ gh pr view 4105 --repo LanternOps/breeze \
   --jq '{state,isDraft,mergeStateStatus,headRefOid,baseRefName,url,checks:[.statusCheckRollup[]|{name,status,conclusion}]}'
 ```
 
-- [ ] **Step 5: Record closure without Task 8 and commit**
+- [x] **Step 5: Record closure without Task 8 and commit**
 
 In the parent plan mark only Task 7C complete and record exact implementation SHA, executed test counts, race/compile results, manual run ID/jobs, and attached checks. Update `/tmp/s0-fleet-integrity-tracker.md`, issue #4060, and PR #4105 to the same exact state. Keep entitlement and Task 8 open; do not edit/push QA.
 
@@ -648,3 +654,12 @@ git push origin fix/s0-pam-actuation-lifecycle
 ```
 
 Expected: Track E remains `fixed-unverified`; Task 8 stays unchecked/unstarted.
+
+Execution closure (2026-08-28): exact implementation candidate
+`efd34dfe3a523d3999e12ed1bc1437bc37c0ea9a` passed the complete local gates
+and manual core run
+[`33179007091`](https://github.com/LanternOps/breeze/actions/runs/33179007091)
+with 41 successful jobs, only the expected skipped Main Red Alert, and no
+failures. All three stacked-PR checks attached at that SHA passed. Task 8 and
+the shipping entitlement disposition remain open; no endpoint deployment or
+native signed-Windows evidence is claimed.
