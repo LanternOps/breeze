@@ -35,7 +35,7 @@
  * proposal. This module is where that distinction is actually drawn.
  */
 import { createHash } from 'node:crypto';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, gt, sql } from 'drizzle-orm';
 import type { AiAgentKind } from '@breeze/shared';
 import {
   db,
@@ -45,10 +45,14 @@ import {
 } from '../../db';
 import { deviceFilesystemCleanupRuns } from '../../db/schema/filesystem';
 import { playbookDefinitions } from '../../db/schema/playbooks';
+import { organizations } from '../../db/schema/orgs';
+import { aiUnattendedExposure } from '../../db/schema/aiUnattendedExposure';
 import { readPlanPreviewCandidates } from '../filesystemAnalysis';
 import { computeEffectDigestForRelease } from '../actionIntents/effectDigest';
 import { checkAgentGuardrails, type AgentGuardrailPolicy } from '../aiGuardrails';
 import { readAiKillState } from '../aiKillState';
+import { policyDecideEnabled } from '../../config/env';
+import { countContractDevices } from '../contractQuantities';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
 import type { ActOperation, ActTarget } from './actManifest';
 import type { ToolExecutionContext } from '../toolExecutionContext';
@@ -270,6 +274,98 @@ async function pinAsset(
   }
 }
 
+type ExposureReservationResult = { ok: true } | { ok: false; reason: 'fleet_cap_exceeded' };
+
+/**
+ * Wave 5 Part B (#3827) — unattended-exposure ledger accounting for the act
+ * lane. Writes ONE `ai_unattended_exposure` row (`source: 'act'`, `intentId:
+ * null`) per act-mode call that actually reserves a slot, and — ONLY while
+ * `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` is on — enforces the SAME
+ * org-wide fleet-percent cap `policyDecide.ts`'s `runAuthorizeTransaction`
+ * enforces for the policy-decide lane (advisory-lock + floor, duplicated
+ * locally here rather than imported — this directory's established leaf-
+ * module convention; see `inSystemDbContext`'s own header comment). The two
+ * lanes share ONE ledger table and must agree on how the fleet-wide
+ * numerator (distinct devices exposed org-wide, trailing 24h, act + policy
+ * combined) is computed.
+ *
+ * Flag-independence (plan Task 4): the WRITE is unconditional — an act-mode
+ * execution accounts for itself in the ledger whether or not the
+ * policy-decide flag is on, so the ledger's own 24h trailing window already
+ * has real history the moment an operator flips the flag on, rather than
+ * starting from zero. Only the CAP ENFORCEMENT is flag-gated, which is what
+ * keeps wave-4 act-mode behavior byte-identical (bounded solely by
+ * `maxActionsPerRun`) until wave 5 turns the sub-flag on.
+ *
+ * Called from Step 5 AFTER the `maxActionsPerRun` in-memory check already
+ * passed, so an already-exhausted run never reaches this DB-backed check —
+ * and, symmetrically, a call that fails the fleet cap here never reaches
+ * (never increments) the `maxActionsPerRun` counter either.
+ */
+async function reserveActUnattendedExposure(args: {
+  run: RevalidateActExecutionArgs['run'];
+  maxFleetPercentPerDay: number;
+}): Promise<ExposureReservationResult> {
+  const { run, maxFleetPercentPerDay } = args;
+  const enforceCap = policyDecideEnabled();
+
+  return inSystemDbContext(async (): Promise<ExposureReservationResult> => {
+    if (enforceCap) {
+      // Per-org advisory lock — same key shape as policyDecide.ts's
+      // `runAuthorizeTransaction`, serializing concurrent act+policy
+      // reservations for the SAME org so the check below can't overshoot by
+      // more than one device per race. Released automatically on
+      // commit/rollback of this call's own transaction (withSystemDbAccessContext
+      // opens one) — no separate unlock call.
+      await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ai-exposure:${run.orgId}`}, 0))`);
+
+      const windowStart = sql`now() - interval '24 hours'`;
+      const exposedDeviceRows = await db
+        .select({ deviceId: aiUnattendedExposure.deviceId })
+        .from(aiUnattendedExposure)
+        .where(and(eq(aiUnattendedExposure.orgId, run.orgId), gt(aiUnattendedExposure.reservedAt, windowStart)));
+      const exposedDevices = new Set(exposedDeviceRows.map((r) => r.deviceId));
+      const deviceAlreadyExposed = exposedDevices.has(run.deviceId);
+
+      const contractDeviceCount = await countContractDevices(run.orgId, null);
+      // floor(), no max(1, ·) — same locked quorum decision policyDecide.ts
+      // enforces: a tiny fleet with a sub-1-device allowance gets ZERO
+      // unattended executions, act or policy.
+      const allowance = Math.floor((contractDeviceCount * maxFleetPercentPerDay) / 100);
+      const projectedDistinctDevices = exposedDevices.size + (deviceAlreadyExposed ? 0 : 1);
+      if (projectedDistinctDevices > allowance) {
+        return { ok: false, reason: 'fleet_cap_exceeded' };
+      }
+    }
+
+    // The org's OWNING partner — needed for the exposure row's composite
+    // (org_id, partner_id) FK, independent of whether this particular agent
+    // is org- or partner-owned (mirrors policyDecide.ts's own lookup).
+    const [org] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, run.orgId))
+      .limit(1);
+    if (!org) {
+      // Structurally unreachable: the run's own org row must exist for the
+      // run to have been admitted at all.
+      throw new Error(`reserveActUnattendedExposure: org ${run.orgId} not found`);
+    }
+
+    await db.insert(aiUnattendedExposure).values({
+      orgId: run.orgId,
+      partnerId: org.partnerId,
+      agentId: run.agentId,
+      runId: run.id,
+      deviceId: run.deviceId,
+      intentId: null,
+      source: 'act',
+    });
+
+    return { ok: true };
+  });
+}
+
 /**
  * Revalidate a manifest-matched act-mode call immediately before dispatch,
  * and reserve a `maxActionsPerRun` slot for it. See the module header for the
@@ -381,7 +477,9 @@ export async function revalidateActExecution(
   // Step 5: reserve a maxActionsPerRun slot against the LIVE cap — slotted
   // BEFORE dispatch, and never released: a failed/timeout/unknown dispatch
   // still consumed the slot (Global Constraints), only a read-only call
-  // never reaches this function at all.
+  // never reaches this function at all. The cheap in-memory check runs
+  // first so an already-exhausted run never reaches the DB-backed exposure
+  // accounting below.
   const cap = current.effective.limits.maxActionsPerRun;
   if (reserved.count >= cap) {
     // Exhausted. Mode is confirmed 'act' and the call mutates, so the
@@ -390,6 +488,42 @@ export async function revalidateActExecution(
     // where a proposal is unavailable.
     return { ok: false, downgrade: 'propose' };
   }
+
+  // Step 5.5 (#3827 Task 4): unattended-exposure ledger accounting — writes
+  // the shared `ai_unattended_exposure` row (unconditional) and, only while
+  // the policy-decide sub-flag is on, enforces the org-wide fleet-percent
+  // cap the policy-decide lane also reads. Exhaustion downgrades to a
+  // proposal exactly like an exhausted maxActionsPerRun slot — mode is
+  // confirmed 'act' and the call mutates, so a proposal is always available.
+  //
+  // The reserve call itself is wrapped: a DB error here (the `organizations`
+  // lookup, the insert, pool exhaustion) must NOT propagate out of this
+  // function — an uncaught throw is turned into a hard tool DENY by the
+  // caller (aiAgentSdkTools.ts) that never lands in `outcome.deniedActions`,
+  // and on the flag-OFF path (production today) this row is pure accounting
+  // with zero enforcement value, so a transient failure must never convert a
+  // previously-succeeding act execution into a denial — same best-effort
+  // contract runLoop.ts's `recordAllowedExecution` uses for its own ledger
+  // write. Flag ON is different: the fleet cap is a LIVE safety gate, so a
+  // failed check must fail closed (degrade to a proposal, the same shape an
+  // exhausted cap already uses) rather than silently grant capacity.
+  let exposureReservation: ExposureReservationResult;
+  try {
+    exposureReservation = await reserveActUnattendedExposure({
+      run,
+      maxFleetPercentPerDay: current.effective.limits.maxFleetPercentPerDay,
+    });
+  } catch (error) {
+    console.error('[actRevalidation] unattended-exposure reservation failed', {
+      runId: run.id, toolName, error,
+    });
+    if (policyDecideEnabled()) return { ok: false, downgrade: 'propose' };
+    exposureReservation = { ok: true };
+  }
+  if (!exposureReservation.ok) {
+    return { ok: false, downgrade: 'propose' };
+  }
+
   reserved.count += 1;
 
   return { ok: true, pin: { op, target: normalized.target, ...pinned.extra } };

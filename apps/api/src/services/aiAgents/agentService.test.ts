@@ -18,6 +18,7 @@ const state = vi.hoisted(() => ({
   ensureManagedTriageAutomation: vi.fn(),
   setManagedAutomationEnabled: vi.fn(),
   syncManagedAutomation: vi.fn(),
+  validateAuthorizationKeys: vi.fn(),
 }));
 
 const schema = vi.hoisted(() => ({
@@ -91,6 +92,17 @@ vi.mock('./recipients', () => {
   };
 });
 
+// Real POLICY_DECIDABLE_TIER3 membership/registry semantics have their own
+// exhaustive suite (policyDecidable.test.ts). Real aiTools.ts/aiGuardrails.ts
+// also pull in the full db/schema barrel (peripheralEventTypeEnum et al.),
+// which this file's minimal `../../db/schema` mock does not provide — so this
+// is isolated the same way ./recipients is above: a controllable stub whose
+// CONTRACT (called with exactly the keys this write is setting, before
+// anything is written) is what agentService.ts owns and this suite asserts.
+vi.mock('../actionIntents/policyDecidable', () => ({
+  validateAuthorizationKeys: state.validateAuthorizationKeys,
+}));
+
 vi.mock('./managedAutomation', () => ({
   ensureManagedTriageAutomation: state.ensureManagedTriageAutomation,
   setManagedAutomationEnabled: state.setManagedAutomationEnabled,
@@ -122,6 +134,7 @@ vi.mock('./effectivePolicy', () => ({
 import {
   ActPrerequisitesNotMetError,
   AgentKindConflictError,
+  InvalidSupervisedActionKeysError,
   UnsupportedAgentModeError,
   createAgent,
   disableAgent,
@@ -221,6 +234,8 @@ beforeEach(() => {
   state.validateRecipients.mockResolvedValue(undefined);
   state.hasResolvableAgentRecipient.mockReset();
   state.hasResolvableAgentRecipient.mockResolvedValue(true);
+  state.validateAuthorizationKeys.mockReset();
+  state.validateAuthorizationKeys.mockImplementation((keys: string[]) => ({ ok: keys, rejected: [] }));
   state.currentRow = null;
   state.listRows = [];
   state.returnedRow = null;
@@ -527,6 +542,42 @@ describe('agent mutations', () => {
       expect(state.updatedValues).toMatchObject({ mode: 'act' });
     });
 
+    it("a non-null supervisedActionKeys set alone satisfies act_eligible_tool — a policy-decide-only agent (no run_script/manage_services/disk_cleanup/execute_playbook manifest surface) must still be able to enter act mode (Task 5, #3827)", async () => {
+      // security_scan is POLICY_DECIDABLE_TIER3-eligible but is NOT in
+      // ACT_MANIFEST/ACT_ELIGIBLE_TOOL_NAMES (that set is the wave-4
+      // rule-equivalent-operation manifest, a different lane) — before this
+      // fix, an agent configured ONLY for policy-decide on security_scan/
+      // manage_startup_items/manage_scheduled_tasks (no wave-4 act-lane
+      // surface at all) could never activate act mode: hasActEligibleSurface
+      // would see an empty intersection with ACT_ELIGIBLE_TOOL_NAMES and
+      // reject with act_eligible_tool even though supervisedActionKeys was
+      // correctly configured.
+      const actReady = {
+        ...storedRow,
+        toolAllowlist: ['security_scan'],
+        actAssets: { scriptIds: [], supervisedActionKeys: ['security_scan:quarantine'] },
+      };
+      state.currentRow = actReady;
+      state.returnedRow = { ...actReady, mode: 'act' };
+
+      await updateAgent(auth(), 'a1', { mode: 'act' } as never);
+
+      expect(state.updatedValues).toMatchObject({ mode: 'act' });
+    });
+
+    it('an empty supervisedActionKeys does NOT satisfy act_eligible_tool on its own — still requires a real wave-4 manifest surface', async () => {
+      state.currentRow = {
+        ...storedRow,
+        toolAllowlist: ['security_scan'],
+        actAssets: { scriptIds: [], supervisedActionKeys: [] },
+      };
+
+      const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['act_eligible_tool']);
+      expect(state.updatedValues).toBeNull();
+    });
+
     it('refuses an update to act mode with no resolvable recipient', async () => {
       state.hasResolvableAgentRecipient.mockResolvedValue(false);
       state.currentRow = { ...storedRow, toolAllowlist: ['manage_services'] };
@@ -590,6 +641,109 @@ describe('agent mutations', () => {
       );
 
       expect(state.insertedValues).toMatchObject({ mode: 'act' });
+    });
+  });
+
+  describe('supervisedActionKeys write-time validation (wave 5 Part B, #3827)', () => {
+    it('refuses a create whose supervisedActionKeys is rejected by validateAuthorizationKeys, before the insert runs', async () => {
+      state.returnedRow = storedRow;
+      state.validateAuthorizationKeys.mockReturnValue({
+        ok: [],
+        rejected: [{ key: 'bogus_key', reason: 'not registered in POLICY_DECIDABLE_TIER3' }],
+      });
+
+      const err = await createAgent(
+        auth(),
+        { orgId: 'o1', partnerId: null },
+        { ...createInput, actAssets: { scriptIds: [], supervisedActionKeys: ['bogus_key'] } } as never,
+      ).catch((e) => e);
+
+      expect(err).toBeInstanceOf(InvalidSupervisedActionKeysError);
+      expect((err as InvalidSupervisedActionKeysError).rejected).toEqual([
+        { key: 'bogus_key', reason: 'not registered in POLICY_DECIDABLE_TIER3' },
+      ]);
+      expect(state.validateAuthorizationKeys).toHaveBeenCalledWith(['bogus_key']);
+      expect(state.insertedValues).toBeNull();
+      expect(state.audit).not.toHaveBeenCalled();
+    });
+
+    it('accepts a create whose supervisedActionKeys validateAuthorizationKeys accepts', async () => {
+      state.returnedRow = { ...storedRow, actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services:restart'] } };
+
+      await createAgent(
+        auth(),
+        { orgId: 'o1', partnerId: null },
+        { ...createInput, actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services:restart'] } } as never,
+      );
+
+      expect(state.validateAuthorizationKeys).toHaveBeenCalledWith(['manage_services:restart']);
+      expect(state.insertedValues).toMatchObject({
+        actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services:restart'] },
+      });
+    });
+
+    it('an absent or empty supervisedActionKeys is a no-op — validateAuthorizationKeys is never called', async () => {
+      state.returnedRow = storedRow;
+
+      await createAgent(auth(), { orgId: 'o1', partnerId: null }, createInput as never);
+
+      expect(state.validateAuthorizationKeys).not.toHaveBeenCalled();
+      expect(state.insertedValues).not.toBeNull();
+    });
+
+    it('refuses an update whose supervisedActionKeys patch is rejected, before the update runs', async () => {
+      state.currentRow = storedRow;
+      state.validateAuthorizationKeys.mockReturnValue({
+        ok: [],
+        rejected: [{ key: 'bogus_key', reason: 'not registered in POLICY_DECIDABLE_TIER3' }],
+      });
+
+      const err = await updateAgent(auth(), 'a1', {
+        actAssets: { supervisedActionKeys: ['bogus_key'] },
+      } as never).catch((e) => e);
+
+      expect(err).toBeInstanceOf(InvalidSupervisedActionKeysError);
+      expect(state.updatedValues).toBeNull();
+    });
+
+    it('accepts an update whose supervisedActionKeys patch validateAuthorizationKeys accepts, merged onto stored actAssets', async () => {
+      state.currentRow = { ...storedRow, actAssets: { scriptIds: ['s-1'] } };
+      state.returnedRow = storedRow;
+
+      await updateAgent(auth(), 'a1', {
+        actAssets: { supervisedActionKeys: ['security_scan:quarantine'] },
+      } as never);
+
+      expect(state.validateAuthorizationKeys).toHaveBeenCalledWith(['security_scan:quarantine']);
+      expect(state.updatedValues).toMatchObject({
+        actAssets: { scriptIds: ['s-1'], supervisedActionKeys: ['security_scan:quarantine'] },
+      });
+    });
+
+    it('does NOT re-validate a stored supervisedActionKeys value on an update that never touches actAssets — stored-but-registry-dropped keys are tolerated-but-inert, not write-blocking', async () => {
+      state.currentRow = {
+        ...storedRow,
+        actAssets: { scriptIds: [], supervisedActionKeys: ['now_dropped_from_registry'] },
+      };
+      state.returnedRow = { ...storedRow, instructions: 'Updated' };
+
+      await updateAgent(auth(), 'a1', { instructions: 'Updated' } as never);
+
+      expect(state.validateAuthorizationKeys).not.toHaveBeenCalled();
+      expect(state.updatedValues).toMatchObject({ instructions: 'Updated' });
+    });
+
+    it('an update patch that sets actAssets but omits supervisedActionKeys does not re-validate the untouched stored value', async () => {
+      state.currentRow = {
+        ...storedRow,
+        actAssets: { scriptIds: [], supervisedActionKeys: ['now_dropped_from_registry'] },
+      };
+      state.returnedRow = storedRow;
+
+      await updateAgent(auth(), 'a1', { actAssets: { scriptIds: ['s-2'] } } as never);
+
+      expect(state.validateAuthorizationKeys).not.toHaveBeenCalled();
+      expect(state.updatedValues).not.toBeNull();
     });
   });
 

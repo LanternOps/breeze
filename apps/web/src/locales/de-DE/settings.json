@@ -1337,7 +1337,9 @@
       "modeNotSupported": "Dieser Modus ist noch nicht verfügbar. Agenten können derzeit untersuchen und vorschlagen, aber nicht handeln.",
       "actPrerequisitesNotMet": "Dieser Agent ist noch nicht bereit für den Handlungsmodus.",
       "actMissingRecipient": "Fügen Sie mindestens einen Benachrichtigungsempfänger hinzu, bevor Sie den Handlungsmodus aktivieren.",
-      "actMissingTool": "Lassen Sie mindestens ein für den Handlungsmodus geeignetes Tool zu, oder autorisieren Sie ein Skript, bevor Sie ihn aktivieren."
+      "actMissingTool": "Lassen Sie mindestens ein für den Handlungsmodus geeignetes Tool zu, oder autorisieren Sie ein Skript, bevor Sie ihn aktivieren.",
+      "invalidSupervisedActionKeys": "Eine oder mehrere ausgewählte Aktionen können nicht per Richtlinie autorisiert werden.",
+      "supervisedKeyRejected": "{{key}}: {{reason}}"
     },
     "actions": {
       "add": "Neuer Agent",
@@ -1370,6 +1372,7 @@
     "sections": {
       "scope": "Wann er ausgeführt wird",
       "permissions": "Berechtigungen",
+      "policyDecide": "Unbeaufsichtigte Richtlinienautorisierung",
       "limits": "Grenzwerte",
       "notifications": "Benachrichtigungen",
       "instructions": "Anweisungen"
@@ -1423,7 +1426,10 @@
       "recipientRolesEmpty": "Keine Rollen verfügbar.",
       "instructionsHint": "Nur zur Orientierung — Tonfall, was zuerst zu prüfen ist, interne Gepflogenheiten. Es werden dadurch keine Berechtigungen erteilt.",
       "charactersLeft": "Noch {{count}} Zeichen",
-      "recipientRolesFailed": "Rollen konnten nicht geladen werden; Benachrichtigungsempfänger lassen sich derzeit nicht ändern."
+      "recipientRolesFailed": "Rollen konnten nicht geladen werden; Benachrichtigungsempfänger lassen sich derzeit nicht ändern.",
+      "supervisedActionKeysHint": "Vorgänge, die dieser Agent OHNE einen menschlichen Klick auf Genehmigen ausführen darf, wenn eine passende Richtlinie existiert und im Expositionslimit der Organisation noch Spielraum ist. Jeder Vorgang durchläuft zur Ausführungszeit weiterhin die Live-Schutzmechanismen, den Kill-Switch und die Organisationslimits.",
+      "supervisedActionKeysEmpty": "Es sind keine per Richtlinie entscheidbaren Aktionen registriert.",
+      "supervisedActionKeysFailed": "Die Liste der per Richtlinie entscheidbaren Aktionen konnte nicht geladen werden, daher kann die unbeaufsichtigte Autorisierung derzeit nicht geändert werden."
     },
     "loading": "Agenten werden geladen …"
   },

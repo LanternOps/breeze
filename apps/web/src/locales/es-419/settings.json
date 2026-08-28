@@ -1337,7 +1337,9 @@
       "modeNotSupported": "Ese modo aún no está disponible. Por ahora los agentes pueden investigar y proponer, pero no actuar.",
       "actPrerequisitesNotMet": "Este agente aún no está listo para el modo Actuar.",
       "actMissingRecipient": "Agregue al menos un destinatario de notificación antes de habilitar el modo Actuar.",
-      "actMissingTool": "Permita al menos una herramienta apta para el modo Actuar, o autorice un script, antes de habilitarlo."
+      "actMissingTool": "Permita al menos una herramienta apta para el modo Actuar, o autorice un script, antes de habilitarlo.",
+      "invalidSupervisedActionKeys": "Una o más acciones seleccionadas no se pueden autorizar mediante la política.",
+      "supervisedKeyRejected": "{{key}}: {{reason}}"
     },
     "actions": {
       "add": "Nuevo agente",
@@ -1370,6 +1372,7 @@
     "sections": {
       "scope": "Cuándo se ejecuta",
       "permissions": "Permisos",
+      "policyDecide": "Autorización de política no supervisada",
       "limits": "Límites",
       "notifications": "Notificaciones",
       "instructions": "Instrucciones"
@@ -1423,7 +1426,10 @@
       "recipientRolesEmpty": "No hay roles disponibles.",
       "instructionsHint": "Solo orientación: tono, qué revisar primero, convenciones internas. Nunca otorga permisos.",
       "charactersLeft": "Quedan {{count}} caracteres",
-      "recipientRolesFailed": "No se pudieron cargar los roles, así que por ahora no se pueden cambiar los destinatarios de las notificaciones."
+      "recipientRolesFailed": "No se pudieron cargar los roles, así que por ahora no se pueden cambiar los destinatarios de las notificaciones.",
+      "supervisedActionKeysHint": "Operaciones que este agente puede ejecutar SIN que una persona haga clic en aprobar, cuando existe una política coincidente y el límite de exposición de la organización tiene margen. Cada una igual pasa por las protecciones en vivo, el interruptor de apagado y los límites por organización en el momento de la ejecución.",
+      "supervisedActionKeysEmpty": "No hay acciones decidibles por política registradas.",
+      "supervisedActionKeysFailed": "No se pudo cargar la lista de acciones decidibles por política, así que la autorización no supervisada no se puede cambiar en este momento."
     },
     "loading": "Cargando agentes…"
   },

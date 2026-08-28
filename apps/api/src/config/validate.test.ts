@@ -2922,3 +2922,53 @@ describe('EVENT_DISPATCH_MODE / EVENT_DISPATCH_QUEUE_SUBSCRIBERS guard', () => {
     warn.mockRestore();
   });
 });
+
+// Wave 5 Part B (#3827) sub-flag. Same guard, same reasoning as
+// AGENT_AUTO_PROMOTE/ABUSE_SIGNALS_ENABLED above: this silently governs
+// whether attemptPolicyDecision ever runs, so a typo must be caught at boot
+// rather than silently reading as off at the envFlag reader.
+describe('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED boolean guard', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED');
+    expect(
+      buildEnvParseInput({ BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: 'sentinel' })
+        .BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED,
+    ).toBe('sentinel');
+  });
+
+  it.each(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', 'FALSE', ' off '])(
+    'accepts the recognized boolean %j',
+    (value) => {
+      withEnv({ ...validEnv, BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: value }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    },
+  );
+
+  it('leaves the value unset when unset', () => {
+    withEnv(validEnv, () => {
+      withoutEnv(['BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED'], () => {
+        expect(validateConfig().BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED).toBeUndefined();
+      });
+    });
+  });
+
+  // Both compose api-env anchors map this as
+  // `${BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED:-false}` — a default-bearing
+  // interpolation, so the key reaches the container but the .env.example
+  // documents it commented-out. Either way "" must never refuse boot.
+  it.each(['', '   '])('treats an empty value (%j) as unset', (value) => {
+    withEnv({ ...validEnv, BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(['ture', 'enabled', 'disabled', 'TRUE!', 'y'])(
+    'refuses boot on the near-miss value %s',
+    (value) => {
+      withEnv({ ...validEnv, BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: value }, () => {
+        expect(() => validateConfig()).toThrow(/BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED/);
+      });
+    },
+  );
+});

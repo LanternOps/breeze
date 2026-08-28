@@ -610,6 +610,12 @@ const envObjectSchema = z
     EVENT_DISPATCH_MODE: z.string().optional(),
     EVENT_DISPATCH_QUEUE_SUBSCRIBERS: z.string().optional(),
 
+    // Wave 5 Part B (#3827) sub-flag of BREEZE_AI_AGENTS_ENABLED. Gates
+    // attemptPolicyDecision — read at runtime by policyDecideEnabled() in
+    // env.ts. Validated here for boolean format only, same class as
+    // AGENT_AUTO_PROMOTE above.
+    BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: z.string().optional(),
+
     // Process role for the 3.5d socket/worker split (wave 3.5b, #4084). all
     // (default) = today's all-in-one process. Read at runtime by
     // breezeRole() in env.ts. Validated here for format only — absence means
@@ -1701,6 +1707,23 @@ const envSchema = envObjectSchema
       console.warn(
         '[config] EVENT_DISPATCH_MODE=enforce but EVENT_DISPATCH_QUEUE_SUBSCRIBERS is empty — no subscriber will deliver via the queue.',
       );
+    }
+
+    // BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED (wave 5 Part B, #3827). Sub-flag
+    // of BREEZE_AI_AGENTS_ENABLED gating attemptPolicyDecision — unattended
+    // policy-decided authorization of a supervised-scope action-intent, no
+    // human fanout. Same treatment as AGENT_AUTO_PROMOTE/ABUSE_SIGNALS_ENABLED
+    // above: a typo must be caught at boot rather than silently reading as
+    // off at the envFlag reader. Empty/unset is allowed (defaults to false —
+    // dark-ship). Mirrors policyDecideEnabled() in env.ts.
+    const policyDecideRaw = (data.BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED ?? '').trim().toLowerCase();
+    if (policyDecideRaw && !boolValues.has(policyDecideRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED'],
+        message:
+          'BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (unattended policy-decided authorization is dark).',
+      });
     }
 
     // TRUST_CF_CONNECTING_IP. Same class as the two flags above: the runtime

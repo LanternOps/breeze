@@ -189,6 +189,21 @@ export async function checkAgentReleaseAuthority(
   // `readAiKillState()` that bypasses the TTL — not implemented here.
   const killState = await readAiKillState();
 
+  // Wave 5 Part B (#3827): for a policy-decided intent, "not denied" is not
+  // the bar release must clear — no human ever reviewed this call, so the
+  // ONLY thing standing in for a decision is the operator's own
+  // `supervisedActionKeys` opt-in, re-checked here exactly like Task 2's
+  // `attemptPolicyDecision` re-checked it at decision time (mode === 'act'
+  // AND the stored key still listed). `checkAgentGuardrails` returns
+  // 'propose' — not 'deny' — for a POLICY_DECIDABLE_TIER3 key that isn't
+  // also matched by the (disjoint) act-mode manifest, and 'propose' for a
+  // mutating call under `mode: 'shadow'` too; both mean "record a proposal
+  // for a human", which is meaningless with no human in the loop. Treating
+  // either as an ok verdict here would let a downgrade to shadow, or an
+  // operator opting a key back out, execute unattended anyway as long as
+  // guardrails merely declined to hard-deny it.
+  const isPolicyDecided = intent.decidedVia === 'policy';
+
   const candidates = [
     { policy: 'snapshot' as const, effective: run.policySnapshot?.effective },
     { policy: 'current' as const, effective: resolved.effective },
@@ -236,6 +251,57 @@ export async function checkAgentReleaseAuthority(
         details: { policy, reason: verdict.reason ?? 'denied' },
       };
     }
+
+    if (isPolicyDecided) {
+      const authorizedKeys = effective?.actAssets?.supervisedActionKeys ?? [];
+      const keyStillAuthorized = effective?.mode === 'act'
+        && !!intent.policyAuthorizationKey
+        && authorizedKeys.includes(intent.policyAuthorizationKey);
+      if (!keyStillAuthorized) {
+        // Terminal, like `agent_policy_denied` (never the kill-derived,
+        // pausable code) — a revoked opt-in is a real, durable decision
+        // change, not a transient blip. `revalidateApprovedIntentForRelease`
+        // uses this SAME errorCode for its own registry/provenance/flag
+        // checks (see revalidateRelease.ts) so every "the authorization
+        // behind this decision no longer holds" failure reads as one thing.
+        return {
+          ok: false,
+          errorCode: 'policy_authorization_revoked',
+          details: { policy, key: intent.policyAuthorizationKey, mode: effective?.mode },
+        };
+      }
+    }
+  }
+
+  // Review fix: kill-epoch sanity. `intent.policyKillEpoch` is the epoch
+  // `runAuthorizeTransaction` stamped into the intent, atomically, at
+  // authorization time (policyDecide.ts) — the plan's architecture line
+  // calls this check out by name ("kill-epoch sanity") specifically because
+  // `killState.killed` alone is NOT enough: an operator can hit the
+  // emergency kill (epoch N -> N+1) and then CLEAR it (epoch N+1 -> N+2)
+  // before this unattended release is delivered, and `killState.killed`
+  // would read false throughout. Comparing the epoch instead of the flag
+  // means ANY kill-and-clear cycle since authorization revokes it, exactly
+  // as the durable epoch — rather than a boolean — is supposed to.
+  // Deliberately placed AFTER the candidates loop above, not alongside the
+  // `killState.killed` read: a genuinely LIVE kill must still surface as
+  // `kill_switch_engaged` (pausable) via that loop, never get preempted by
+  // this terminal epoch check — an epoch bump caused by the kill itself
+  // would otherwise race this comparison and misreport a live pause as a
+  // stale, non-recoverable revocation. This only fires once every candidate
+  // has already cleared cleanly. Terminal, not kill-derived-pausable: the
+  // agent re-proposes fresh on its next run rather than sitting `approved`
+  // waiting for an epoch that will never come back down.
+  if (isPolicyDecided && killState.epoch !== intent.policyKillEpoch) {
+    return {
+      ok: false,
+      errorCode: 'policy_authorization_revoked',
+      details: {
+        reason: 'kill epoch advanced since authorization',
+        authorizedEpoch: intent.policyKillEpoch,
+        currentEpoch: killState.epoch,
+      },
+    };
   }
 
   return { ok: true };

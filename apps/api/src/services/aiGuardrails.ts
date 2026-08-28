@@ -1209,6 +1209,26 @@ export type GuardrailDisposition = 'allow' | 'propose' | 'deny' | 'act';
 export type AgentGuardrailCheck = GuardrailCheck & { disposition: GuardrailDisposition };
 
 /**
+ * The sub-operation discriminator for a tool call, resolved EXACTLY the way
+ * `checkGuardrails` and `checkAgentGuardrails` each used to do inline (two
+ * byte-identical copies, now one). `TOOL_ACTION_INPUT_KEYS` overrides the
+ * default `action` key for a multiplexer keyed on something else
+ * (`execute_command`'s `commandType`, #3088). A non-string value at that key
+ * resolves to `undefined`, not a coerced string — callers fall back to
+ * whatever "no action" means for them (checkGuardrails: the tool's base
+ * tier; checkAgentGuardrails: a hard deny on a multiplexed tool;
+ * policyDecide.ts: no `tool:action` key, so a bare-tool registry lookup).
+ *
+ * Exported so `policyDecide.ts`'s canonical-key derivation reuses this
+ * instead of a third inline copy (wave 5 Part B, #3827).
+ */
+export function resolveActionForTool(toolName: string, input: Record<string, unknown>): string | undefined {
+  const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
+  const actionValue = input[actionKey];
+  return typeof actionValue === 'string' ? actionValue : undefined;
+}
+
+/**
  * Check guardrails for a tool invocation.
  * Returns the effective tier and whether approval is needed.
  */
@@ -1236,13 +1256,9 @@ export function checkGuardrails(
     };
   }
 
-  // Check for action-based tier escalation. The discriminator is `action` for
-  // most tools; a TOOL_ACTION_INPUT_KEYS entry overrides the key (#3088 —
-  // execute_command multiplexes on `commandType`). Non-string values resolve
-  // to undefined, which falls through to the base tier (fail-closed).
-  const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
-  const actionValue = input[actionKey];
-  const action = typeof actionValue === 'string' ? actionValue : undefined;
+  // Check for action-based tier escalation. Non-string values resolve to
+  // undefined, which falls through to the base tier (fail-closed).
+  const action = resolveActionForTool(toolName, input);
 
   // Tier 1 downgrade: read-only actions on otherwise-high-tier tools
   if (action && TIER1_ACTIONS[toolName]?.includes(action)) {
@@ -1590,8 +1606,7 @@ export function checkAgentGuardrails(
   if (policy.mode === 'off') return deny('Agent mode is off');
 
   const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
-  const actionValue = input[actionKey];
-  const action = typeof actionValue === 'string' ? actionValue : undefined;
+  const action = resolveActionForTool(toolName, input);
 
   // A non-string action (`action: ['write']`) makes checkGuardrails skip its
   // TIER3_ACTIONS escalation and fall back to the tool's REGISTERED BASE TIER —
@@ -1600,7 +1615,7 @@ export function checkAgentGuardrails(
   // allowlist entirely. An unresolvable action on a multiplexed tool denies.
   if (action === undefined && isActionMultiplexedTool(toolName)) {
     return deny(
-      `Tool "${toolName}" requires a string "${actionKey}"; got ${describeType(actionValue)}`,
+      `Tool "${toolName}" requires a string "${actionKey}"; got ${describeType(input[actionKey])}`,
     );
   }
 

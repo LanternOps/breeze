@@ -64,6 +64,11 @@ const ORG_AGENT = {
 
 function mockEndpoints(agents: unknown[] = [PARTNER_AGENT]) {
   fetchMock.mockImplementation((url: string) => {
+    // Registered BEFORE the generic '/ai/agents' prefix check below — that
+    // check's startsWith would otherwise swallow this literal path too and
+    // hand the agents LIST back as the policy-key registry, since
+    // '/ai/agents/policy-decidable-keys'.startsWith('/ai/agents') is true.
+    if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
     if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: agents }));
     // The real route answers { data }, not { roles } — mocking the dead branch
     // is how the production branch stayed untested.
@@ -397,6 +402,97 @@ describe('AiAgentsPage', () => {
     );
     const body = JSON.parse((post?.[1] as RequestInit).body as string);
     expect(Number.isFinite(body.limits.maxDevicesPerRun)).toBe(true);
+  });
+
+  it('renders supervisedActionKeys grouped by tool from the registry, only in act mode, and includes selections in the save body (wave 5 Part B, #3827)', async () => {
+    const actAgent = { ...PARTNER_AGENT, supportedModes: ['off', 'shadow', 'act'] as const };
+    const registry = [
+      { key: 'manage_services:restart', toolName: 'manage_services', action: 'restart', note: 'Restarts a service.' },
+      { key: 'manage_services:stop', toolName: 'manage_services', action: 'stop', note: 'Stops a service.' },
+      { key: 'security_scan:quarantine', toolName: 'security_scan', action: 'quarantine', note: 'Quarantines a threat.' },
+    ];
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: registry }));
+      if (url === '/ai/agents/a1' && init?.method === 'PATCH') return Promise.resolve(json({ data: actAgent }));
+      if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [actAgent] }));
+      if (url === '/roles') return Promise.resolve(json({ data: [] }));
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+
+    // Not offered before the operator has selected act — matches the
+    // existing act-warning gating pattern.
+    expect(screen.queryByTestId('ai-agent-supervised-key-manage_services:restart')).toBeNull();
+
+    fireEvent.change(await screen.findByTestId('ai-agent-mode'), { target: { value: 'act' } });
+
+    expect(await screen.findByTestId('ai-agent-supervised-key-manage_services:restart')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-supervised-key-manage_services:stop')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-supervised-key-security_scan:quarantine')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('ai-agent-supervised-key-manage_services:restart'));
+    fireEvent.click(screen.getByTestId('ai-agent-act-ack'));
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH')).toBe(true),
+    );
+    const patch = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH');
+    const body = JSON.parse((patch?.[1] as RequestInit).body as string);
+    expect(body.actAssets).toEqual({ supervisedActionKeys: ['manage_services:restart'] });
+  });
+
+  it('surfaces the invalid_supervised_action_keys 422 body as structured, per-key issues (wave 5 Part B, #3827)', async () => {
+    const actAgent = { ...PARTNER_AGENT, supportedModes: ['off', 'shadow', 'act'] as const };
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
+      if (url === '/ai/agents/a1' && init?.method === 'PATCH') {
+        return Promise.resolve(
+          json(
+            {
+              error: 'invalid_supervised_action_keys: bogus_key',
+              code: 'invalid_supervised_action_keys',
+              rejected: [{ key: 'bogus_key', reason: 'not registered in POLICY_DECIDABLE_TIER3' }],
+            },
+            false,
+            422,
+          ),
+        );
+      }
+      if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [actAgent] }));
+      if (url === '/roles') return Promise.resolve(json({ data: [] }));
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.change(await screen.findByTestId('ai-agent-mode'), { target: { value: 'act' } });
+    fireEvent.click(screen.getByTestId('ai-agent-act-ack'));
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-issues')).toBeInTheDocument());
+    expect(screen.getByText('bogus_key: not registered in POLICY_DECIDABLE_TIER3')).toBeInTheDocument();
+  });
+
+  it('says the policy-decidable action list could not be loaded rather than rendering an empty registry', async () => {
+    const actAgent = { ...PARTNER_AGENT, supportedModes: ['off', 'shadow', 'act'] as const };
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ error: 'nope' }, false, 500));
+      if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [actAgent] }));
+      if (url === '/roles') return Promise.resolve(json({ data: [] }));
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.change(await screen.findByTestId('ai-agent-mode'), { target: { value: 'act' } });
+
+    expect(await screen.findByTestId('ai-agent-policy-keys-failed')).toBeInTheDocument();
   });
 
   it('requires a confirming second click before disabling an agent', async () => {

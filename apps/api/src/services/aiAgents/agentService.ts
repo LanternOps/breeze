@@ -6,6 +6,7 @@ import type { AuthContext } from '../../middleware/auth';
 import { createAuditLog } from '../auditService';
 import { captureException } from '../sentry';
 import { getEventBus } from '../eventBus';
+import { type RejectedAuthorizationKey, validateAuthorizationKeys } from '../actionIntents/policyDecidable';
 import { ACT_ELIGIBLE_TOOL_NAMES } from './actManifest';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 import { isSupportedAgentMode } from './constants';
@@ -52,6 +53,24 @@ export class AgentKindConflictError extends Error {
 }
 
 /**
+ * Wave 5 Part B (#3827). `actAssets.supervisedActionKeys` is the operator's
+ * explicit per-agent authorization for `attemptPolicyDecision` to resolve a
+ * matching Tier-3 intent WITHOUT human fanout — so an unknown, four_eyes,
+ * Tier-4/blocked, or secret-bearing key must never be persisted here. `rejected`
+ * names exactly which keys failed and why (validateAuthorizationKeys,
+ * policyDecidable.ts) so the client (Task 5's editor) can render an actionable
+ * message rather than a bare 422.
+ */
+export class InvalidSupervisedActionKeysError extends Error {
+  readonly code = 'invalid_supervised_action_keys';
+
+  constructor(public rejected: RejectedAuthorizationKey[]) {
+    super(`invalid_supervised_action_keys: ${rejected.map((r) => r.key).join(', ')}`);
+    this.name = 'InvalidSupervisedActionKeysError';
+  }
+}
+
+/**
  * Wave 4 Part B (Task 6, #3826). A write that would leave the row with
  * `mode: 'act'` must clear two prerequisites BEFORE anything is persisted:
  * at least one recipient that currently resolves to a real user (an
@@ -91,12 +110,40 @@ function hasActEligibleSurface(
   toolAllowlist: string[],
   actAssets: Partial<AiAgentActAssets>,
 ): boolean {
+  // Wave 5 Part B (#3827): a non-empty supervisedActionKeys set is ITSELF a
+  // real act-eligible surface — exactly what makes the agent act unattended
+  // for those keys — independent of the wave-4 ACT_MANIFEST/toolAllowlist
+  // check below. Without this branch, an agent configured ONLY for
+  // policy-decide on a tool ACT_MANIFEST doesn't cover (security_scan,
+  // manage_startup_items, manage_scheduled_tasks all qualify;
+  // manage_services happens to overlap both lanes) could never satisfy this
+  // prerequisite and so could never enter act mode at all — the write-time
+  // key validation (assertSupervisedActionKeysValid) already guarantees any
+  // non-empty value here is genuine POLICY_DECIDABLE_TIER3 membership, so
+  // trusting length alone is safe.
+  if ((actAssets.supervisedActionKeys?.length ?? 0) > 0) return true;
+
   const eligible = new Set(ACT_ELIGIBLE_TOOL_NAMES);
   const baseName = (entry: string): string => entry.split(':', 1)[0] ?? entry;
   const intersecting = toolAllowlist.filter((entry) => eligible.has(baseName(entry)));
   if (intersecting.some((entry) => baseName(entry) !== 'run_script')) return true;
   if (!intersecting.some((entry) => baseName(entry) === 'run_script')) return false;
   return (actAssets.scriptIds?.length ?? 0) > 0;
+}
+
+/**
+ * Wave 5 Part B (#3827) write-time gate. Validates exactly the keys THIS
+ * write is setting — never the merged/stored value — so a key the registry
+ * has since dropped stays stored-but-inert (Design authority, plan header:
+ * "stored authorization keys tolerated-but-inert when the registry drops
+ * them") rather than retroactively blocking an unrelated future edit that
+ * never touches actAssets.supervisedActionKeys at all. No-op on an absent or
+ * empty array.
+ */
+function assertSupervisedActionKeysValid(keys: string[] | undefined): void {
+  if (!keys || keys.length === 0) return;
+  const { rejected } = validateAuthorizationKeys(keys);
+  if (rejected.length > 0) throw new InvalidSupervisedActionKeysError(rejected);
 }
 
 /**
@@ -361,6 +408,11 @@ export async function createAgent(
   // silently never hears anything.
   await validateAgentRecipients(owner, input.recipients ?? {});
 
+  // Wave 5 Part B (#3827): a create-supplied supervisedActionKeys set is
+  // validated against POLICY_DECIDABLE_TIER3 before anything is written, same
+  // reason as recipients above — a rejected key must never be persisted.
+  assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
+
   // Task 6 (#3826): a create that would land with mode: 'act' must already
   // have a resolvable recipient and an act-eligible surface — checked against
   // exactly what THIS create will persist (input's own fields are already
@@ -436,6 +488,12 @@ export async function updateAgent(
     : { ...stored.recipients, ...input.recipients };
   if (input.recipients !== undefined) {
     await validateAgentRecipients(owner, mergedRecipients);
+  }
+
+  // Wave 5 Part B (#3827): validate only the keys THIS patch is setting, not
+  // the merged/stored value — see assertSupervisedActionKeysValid's doc.
+  if (input.actAssets?.supervisedActionKeys !== undefined) {
+    assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
   }
 
   // Task 6 (#3826): prerequisites are checked against what the update will

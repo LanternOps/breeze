@@ -39,11 +39,17 @@ vi.mock('../middleware/auth', () => ({
   ),
 }));
 
-const { ActPrerequisitesNotMetError } = vi.hoisted(() => ({
+const { ActPrerequisitesNotMetError, InvalidSupervisedActionKeysError } = vi.hoisted(() => ({
   ActPrerequisitesNotMetError: class ActPrerequisitesNotMetError extends Error {
     readonly code = 'act_prerequisites_not_met';
     constructor(public missing: string[]) {
       super(`act_prerequisites_not_met: ${missing.join(', ')}`);
+    }
+  },
+  InvalidSupervisedActionKeysError: class InvalidSupervisedActionKeysError extends Error {
+    readonly code = 'invalid_supervised_action_keys';
+    constructor(public rejected: Array<{ key: string; reason: string }>) {
+      super(`invalid_supervised_action_keys: ${rejected.map((r) => r.key).join(', ')}`);
     }
   },
 }));
@@ -53,6 +59,7 @@ vi.mock('../services/aiAgents/agentService', () => ({
   AgentKindConflictError: class AgentKindConflictError extends Error {},
   UnsupportedAgentModeError: class UnsupportedAgentModeError extends Error {},
   ActPrerequisitesNotMetError,
+  InvalidSupervisedActionKeysError,
   createAgent: vi.fn(),
   updateAgent: vi.fn(),
   disableAgent: vi.fn(),
@@ -319,6 +326,40 @@ describe('POST /ai-agents/:id/runs', () => {
   });
 });
 
+describe('GET /ai-agents/policy-decidable-keys (Task 5, #3827)', () => {
+  it('returns the POLICY_DECIDABLE_TIER3 registry, one entry per headless-compatible key', async () => {
+    const res = await buildApp().request('/ai-agents/policy-decidable-keys');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Array<{ key: string; toolName: string; action: string | null }> };
+    expect(body.data.length).toBeGreaterThan(0);
+    // Every real registry entry, not a filtered/renamed subset — e.g. the
+    // multiplexed manage_services actions must be present with their real
+    // tool:action key, exactly what the client needs to group by tool and
+    // POST back into actAssets.supervisedActionKeys unchanged.
+    expect(body.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'manage_services:restart', toolName: 'manage_services', action: 'restart' }),
+        expect.objectContaining({ key: 'security_scan:quarantine', toolName: 'security_scan', action: 'quarantine' }),
+      ]),
+    );
+    // No internal registry-review fields (maxTargetCardinality,
+    // requiresEffectPin, headlessCompatible) leak onto the wire — those are
+    // implementation notes for whoever edits policyDecidable.ts, not client
+    // data.
+    for (const entry of body.data) {
+      expect(entry).not.toHaveProperty('maxTargetCardinality');
+      expect(entry).not.toHaveProperty('requiresEffectPin');
+      expect(entry).not.toHaveProperty('headlessCompatible');
+    }
+  });
+
+  it('is gated on ai_agents:read like every other agent-config read', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request('/ai-agents/policy-decidable-keys');
+    expect(res.status).toBe(403);
+  });
+});
+
 describe('mapError — act-mode activation prerequisites (Task 6, #3826)', () => {
   it('maps ActPrerequisitesNotMetError to a 422 naming exactly what is missing', async () => {
     const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
@@ -330,6 +371,24 @@ describe('mapError — act-mode activation prerequisites (Task 6, #3826)', () =>
       expect.objectContaining({
         code: 'act_prerequisites_not_met',
         missing: ['recipient', 'act_eligible_tool'],
+      }),
+      422,
+    );
+  });
+});
+
+describe('mapError — supervisedActionKeys write-time rejection (wave 5 Part B, #3827)', () => {
+  it('maps InvalidSupervisedActionKeysError to a 422 naming exactly which keys were rejected and why', async () => {
+    const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
+    const ctx = { json: jsonMock } as unknown as Parameters<typeof mapError>[0];
+    const rejected = [{ key: 'bogus_key', reason: 'not registered in POLICY_DECIDABLE_TIER3' }];
+
+    mapError(ctx, new InvalidSupervisedActionKeysError(rejected));
+
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'invalid_supervised_action_keys',
+        rejected,
       }),
       422,
     );

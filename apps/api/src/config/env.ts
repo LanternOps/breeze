@@ -99,6 +99,19 @@ export const GOOGLE_WORKSPACE_ENABLED = envFlag('GOOGLE_WORKSPACE_ENABLED', fals
 // Default OFF until the wave-3 runner ships.
 export const AI_AGENTS_ENABLED = envFlag('BREEZE_AI_AGENTS_ENABLED', false);
 
+// Wave 5 Part B (#3827). Sub-flag of BREEZE_AI_AGENTS_ENABLED: gates
+// attemptPolicyDecision (policyDecide.ts) — an agent-originated, supervised-
+// scope action-intent whose operation is in the operator's per-agent
+// actAssets.supervisedActionKeys ⊆ POLICY_DECIDABLE_TIER3 is authorized by
+// policy instead of human fanout. Default OFF (dark-ship): when false,
+// resolvePolicyDecisionState returns 'human_required' exactly as Part A —
+// byte-identical to the merged behavior before this wave (Global
+// Constraints, plan header). Read at CALL time, like isHosted()/breezeRole()
+// above, so a test can flip it per-case without vi.resetModules().
+export function policyDecideEnabled(): boolean {
+  return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
+}
+
 // Microsoft 365 identity tools. Defaults OFF everywhere; an org must also have
 // an explicit m365_connections row before any tool is usable. Gates tool
 // registration (aiAgentSdkTools.ts) and the connect routes.

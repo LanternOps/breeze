@@ -101,6 +101,24 @@ export interface AiAgentProtectedResources {
  */
 export interface AiAgentActAssets {
   scriptIds: string[];
+  /**
+   * Wave 5 Part B (#3827) — the closed set of `POLICY_DECIDABLE_TIER3`
+   * (apps/api/src/services/actionIntents/policyDecidable.ts) keys an operator
+   * has explicitly authorized for THIS agent to have policy-decided (no human
+   * fanout) when `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` is on. Same
+   * tighten-only shape as `scriptIds`: membership here is necessary but never
+   * sufficient — `attemptPolicyDecision` still gates on live guardrails, kill
+   * state, and the exposure caps.
+   *
+   * Optional, unlike `scriptIds`: this field did not exist before this wave,
+   * and `AI_AGENT_POLICY_SNAPSHOT_VERSION` was NOT bumped for it (v3 is
+   * already tolerant of a new key inside `actAssets` — see the version
+   * history below). A run enqueued before this deploy, and a partner/org row
+   * written before this deploy, both carry an `actAssets` object with no
+   * `supervisedActionKeys` key at all — every read site must treat that as
+   * "authorizes nothing" (`?? []`), never throw on its absence.
+   */
+  supervisedActionKeys?: string[];
 }
 
 /** The policy fields that the resolver merges (everything on ai_agents that governs a run). */

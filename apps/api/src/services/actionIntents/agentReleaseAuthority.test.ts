@@ -395,4 +395,157 @@ describe('checkAgentReleaseAuthority', () => {
       expect(result).toMatchObject({ ok: false, errorCode: 'agent_policy_denied' });
     });
   });
+
+  // ---------------------------------------------------------------------
+  // Wave 5 Part B (#3827): the stricter predicate for a policy-decided
+  // intent — `checkAgentGuardrails` returning 'propose' (not 'deny') must
+  // NOT be treated as authorization once no human is in the loop.
+  // `manage_startup_items:disable` is deliberately used here rather than
+  // `manage_services:restart` (this file's default fixture): the latter IS
+  // matched by ACT_MANIFEST (actManifest.ts), so under mode 'act' it would
+  // yield disposition 'act', not the 'propose' this block exists to probe —
+  // POLICY_DECIDABLE_TIER3 and ACT_MANIFEST are disjoint asset classes on
+  // purpose (policyDecidable.ts's header).
+  // ---------------------------------------------------------------------
+
+  describe('policy-decided stricter predicate (wave 5b, #3827)', () => {
+    const POLICY_KEY = 'manage_startup_items:disable';
+    const policyArgs = { deviceId: 'dev-1', action: 'disable', itemId: 'startup-1' };
+
+    const actPolicy = (overrides: Partial<AiAgentPolicy> = {}): AiAgentPolicy => effectivePolicy({
+      mode: 'act',
+      toolAllowlist: ['manage_startup_items'],
+      actAssets: { scriptIds: [], supervisedActionKeys: [POLICY_KEY] },
+      ...overrides,
+    });
+
+    function policyIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
+      return intentFixture({
+        actionName: 'manage_startup_items',
+        arguments: policyArgs,
+        decidedVia: 'policy',
+        policyAuthorizationKey: POLICY_KEY,
+        // Matches `dbState.killStateRows`'s default epoch (0, set in
+        // `beforeEach`) so every pre-existing test in this block that does
+        // NOT specifically exercise the epoch-sanity veto below keeps
+        // passing through it unaffected.
+        policyKillEpoch: 0,
+        ...overrides,
+      });
+    }
+
+    it('passes when BOTH snapshot and current policy authorize the exact key under mode act', async () => {
+      seedHappyRows({ run: runRow(actPolicy()) });
+      policyState.resolveEffectiveAgent.mockResolvedValue(resolvedAgent(actPolicy()));
+
+      const result = await checkAgentReleaseAuthority(policyIntent());
+
+      expect(result).toEqual({ ok: true });
+    });
+
+    it('a HUMAN-approved intent for the identical call still passes on propose alone (decidedVia !== policy is untouched)', async () => {
+      // Same mode/allowlist/actAssets as the passing case above, but WITHOUT
+      // supervisedActionKeys covering the key AND WITHOUT decidedVia: 'policy'
+      // — proves the new predicate is opt-in per intent, not a global
+      // tightening of the guardrail-disposition check.
+      seedHappyRows({ run: runRow(actPolicy({ actAssets: { scriptIds: [] } })) });
+      policyState.resolveEffectiveAgent.mockResolvedValue(
+        resolvedAgent(actPolicy({ actAssets: { scriptIds: [] } })),
+      );
+
+      const result = await checkAgentReleaseAuthority(
+        intentFixture({ actionName: 'manage_startup_items', arguments: policyArgs }),
+      );
+
+      expect(result).toEqual({ ok: true });
+    });
+
+    it('vetoes policy_authorization_revoked when the CURRENT policy no longer lists the key (operator revoked it)', async () => {
+      seedHappyRows({ run: runRow(actPolicy()) });
+      policyState.resolveEffectiveAgent.mockResolvedValue(
+        resolvedAgent(actPolicy({ actAssets: { scriptIds: [] } })),
+      );
+
+      const result = await checkAgentReleaseAuthority(policyIntent());
+
+      expect(result).toMatchObject({
+        ok: false,
+        errorCode: 'policy_authorization_revoked',
+        details: { policy: 'current', key: POLICY_KEY },
+      });
+    });
+
+    it('vetoes policy_authorization_revoked when the SNAPSHOT never listed the key (defense-in-depth on stored provenance)', async () => {
+      seedHappyRows({ run: runRow(actPolicy({ actAssets: { scriptIds: [] } })) });
+      policyState.resolveEffectiveAgent.mockResolvedValue(resolvedAgent(actPolicy()));
+
+      const result = await checkAgentReleaseAuthority(policyIntent());
+
+      expect(result).toMatchObject({
+        ok: false,
+        errorCode: 'policy_authorization_revoked',
+        details: { policy: 'snapshot', key: POLICY_KEY },
+      });
+    });
+
+    it('vetoes policy_authorization_revoked when the CURRENT mode downgraded to shadow, even though the key is still listed', async () => {
+      // A mutating call under shadow ALSO yields disposition 'propose', not
+      // 'deny' — this proves the predicate is mode-aware, not merely a key
+      // membership check that a downgrade-to-shadow could sail past.
+      seedHappyRows({ run: runRow(actPolicy()) });
+      policyState.resolveEffectiveAgent.mockResolvedValue(
+        resolvedAgent(actPolicy({ mode: 'shadow' })),
+      );
+
+      const result = await checkAgentReleaseAuthority(policyIntent());
+
+      expect(result).toMatchObject({
+        ok: false,
+        errorCode: 'policy_authorization_revoked',
+        details: { policy: 'current', mode: 'shadow' },
+      });
+    });
+
+    it('a real kill-switch veto still wins over the stricter predicate (kill_switch_engaged, not policy_authorization_revoked)', async () => {
+      dbState.killStateRows = [{ killed: true, epoch: 3 }];
+      seedHappyRows({ run: runRow(actPolicy()) });
+      policyState.resolveEffectiveAgent.mockResolvedValue(resolvedAgent(actPolicy()));
+
+      const result = await checkAgentReleaseAuthority(policyIntent());
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'kill_switch_engaged' });
+    });
+
+    // Review fix: kill-epoch sanity. `killState.killed` alone misses a
+    // kill-then-clear cycle that happened entirely between authorization and
+    // release — the flag is back to false by the time this runs, but the
+    // epoch the operator's emergency stop advanced never comes back down to
+    // what the intent was authorized under.
+    it('vetoes policy_authorization_revoked when the CURRENT kill epoch has advanced past the authorized one, even though killed is false', async () => {
+      // Authorized at epoch 4; the current (post kill-then-clear) epoch is 6
+      // and NOT killed — proves this is a genuinely separate veto from the
+      // kill_switch_engaged path above, not a restatement of it.
+      dbState.killStateRows = [{ killed: false, epoch: 6 }];
+      seedHappyRows({ run: runRow(actPolicy()) });
+      policyState.resolveEffectiveAgent.mockResolvedValue(resolvedAgent(actPolicy()));
+
+      const result = await checkAgentReleaseAuthority(policyIntent({ policyKillEpoch: 4 }));
+
+      expect(result).toMatchObject({
+        ok: false,
+        errorCode: 'policy_authorization_revoked',
+        details: { reason: 'kill epoch advanced since authorization', authorizedEpoch: 4, currentEpoch: 6 },
+      });
+    });
+
+    it('passes when the current kill epoch matches the epoch the intent was authorized under', async () => {
+      dbState.killStateRows = [{ killed: false, epoch: 4 }];
+      seedHappyRows({ run: runRow(actPolicy()) });
+      policyState.resolveEffectiveAgent.mockResolvedValue(resolvedAgent(actPolicy()));
+
+      const result = await checkAgentReleaseAuthority(policyIntent({ policyKillEpoch: 4 }));
+
+      expect(result).toEqual({ ok: true });
+    });
+  });
 });

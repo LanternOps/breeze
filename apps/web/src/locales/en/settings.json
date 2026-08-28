@@ -1337,7 +1337,9 @@
       "modeNotSupported": "That mode is not available yet. Agents can currently investigate and propose, but not act.",
       "actPrerequisitesNotMet": "This agent isn't ready for act mode yet.",
       "actMissingRecipient": "Add at least one notification recipient before enabling act mode.",
-      "actMissingTool": "Allow at least one act-eligible tool, or authorize a script, before enabling act mode."
+      "actMissingTool": "Allow at least one act-eligible tool, or authorize a script, before enabling act mode.",
+      "invalidSupervisedActionKeys": "One or more selected actions can't be authorized by policy.",
+      "supervisedKeyRejected": "{{key}}: {{reason}}"
     },
     "actions": {
       "add": "New agent",
@@ -1370,6 +1372,7 @@
     "sections": {
       "scope": "When it runs",
       "permissions": "Permissions",
+      "policyDecide": "Unattended policy authorization",
       "limits": "Limits",
       "notifications": "Notifications",
       "instructions": "Instructions"
@@ -1423,7 +1426,10 @@
       "recipientRolesEmpty": "No roles available.",
       "instructionsHint": "Guidance only — tone, what to check first, house conventions. It never grants permissions.",
       "charactersLeft": "{{count}} characters left",
-      "recipientRolesFailed": "Couldn't load roles, so notification recipients can't be changed right now."
+      "recipientRolesFailed": "Couldn't load roles, so notification recipients can't be changed right now.",
+      "supervisedActionKeysHint": "Operations this agent may execute WITHOUT a human clicking approve, when a matching policy exists and the org's exposure cap has room. Each one still passes live guardrails, the kill switch, and per-org caps at execution time.",
+      "supervisedActionKeysEmpty": "No policy-decidable actions are registered.",
+      "supervisedActionKeysFailed": "Couldn't load the policy-decidable action list, so unattended authorization can't be changed right now."
     },
     "loading": "Loading agents…"
   },
