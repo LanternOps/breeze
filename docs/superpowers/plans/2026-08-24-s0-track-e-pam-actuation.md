@@ -672,6 +672,29 @@ result transaction, migration, alternate transport, Task 6 `received` path,
 Task 8 work, native Windows evidence, deployment, hosted mutation, or customer
 mutation is claimed.
 
+### Task 7C: Transport the internally ordered Task 6 `received` observation
+
+**Authoritative design:** [`2026-08-27-s0-track-e-pam-received-observation-transport-design.md`](../specs/2026-08-27-s0-track-e-pam-received-observation-transport-design.md)
+
+**Executable plan:** [`2026-08-27-s0-track-e-pam-received-observation-transport.md`](2026-08-27-s0-track-e-pam-received-observation-transport.md)
+
+The Windows manager already emits `received` after `ResumeThread` and before
+active Job Object verification, but production has only the frozen singular
+returned result. This pre-Task-8 repair uses an invocation-scoped concrete
+manager callback to durably enqueue that observation with the exact authenticated
+command-envelope ID, then submits it through a primary-agent-only supplemental
+REST route into the existing frozen PAM result transaction. It does not change
+the Manager interface, command/result schemas, durable ledger, WebSocket result
+path, or command ownership checks.
+
+- [ ] **Step 1: Add and prove the authenticated supplemental server route**
+- [ ] **Step 2: Add and prove the invocation-scoped durable manager handoff**
+- [ ] **Step 3: Bind exact command ownership, acknowledged retry, and apply-only readiness**
+- [ ] **Step 4: Pass focused, real-PostgreSQL, race/cross-compile, governance, and exact-head CI gates; synchronize issue #4060 and PR #4105**
+
+Task 8 remains blocked until all four boxes are complete. No additional Task 6
+or Task 7 reviewer may be dispatched.
+
 ### Task 8: Prove the failure matrix and produce exact-candidate Windows evidence
 
 **Files:**
