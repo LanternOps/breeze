@@ -221,6 +221,26 @@ describe('org archive routes', () => {
       );
     });
 
+    it('serializes purgeAt as an ISO string in the audit details, not a Date object', async () => {
+      await postJson(`/orgs/organizations/${ORG_ID}/archive`, { retentionDays: 30 });
+
+      const isoPurgeAt = expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/);
+      expect(writeRouteAuditMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'org.archive.requested',
+          details: expect.objectContaining({ purgeAt: isoPurgeAt }),
+        }),
+      );
+      expect(writeAuditEventMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'org.archive.requested',
+          details: expect.objectContaining({ purgeAt: isoPurgeAt }),
+        }),
+      );
+    });
+
     it('passes null retention through as never purge', async () => {
       beginOrgArchiveMock.mockResolvedValueOnce({ status: 'archived', purgeAt: null });
       const res = await postJson(`/orgs/organizations/${ORG_ID}/archive`, {
@@ -246,7 +266,7 @@ describe('org archive routes', () => {
         expect.objectContaining({
           details: expect.objectContaining({
             retentionDays: 'default',
-            purgeAt: PURGE_AT,
+            purgeAt: PURGE_AT.toISOString(),
           }),
         }),
       );

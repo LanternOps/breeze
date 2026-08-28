@@ -26,8 +26,9 @@
  *     and writes the completion audits once this function returns.
  *
  * Any Phase-B failure rolls the whole transaction back, unfences the loser
- * back to its prior status, and writes an org-less `org.merge.failed` audit —
- * a partially merged org is never observable.
+ * back to its prior status, and writes an `org.merge.failed` audit scoped to
+ * the (still fully live) survivor org — a partially merged org is never
+ * observable.
  *
  * `withSystemDbAccessContext` itself opens the transaction (`db/index.ts`), so
  * Phase B is exactly one such call and never nests `db.transaction`.
@@ -926,6 +927,10 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
     await self.writeMergeAudit(input, {
       action: 'org.merge.failed',
       result: 'failure',
+      // Both orgs are still live at this point (the loser was just unfenced),
+      // so — unlike the post-commit merge events — this must not be org-less:
+      // attribute it to the survivor, mirroring org.merge.requested.
+      orgId: survivor.id,
       details: {
         loserOrgId: loser.id,
         loserOrgName: loser.name,
@@ -1045,18 +1050,30 @@ export async function stampTerminalShell(
 }
 
 /**
- * Org-less (`orgId: null`) audit, mirroring `tenant.erasure.*`: the loser's
- * own audit rows are erased with it, so a merge record scoped to the loser
- * would not survive Phase C. Never throws — a lost audit must not turn a
+ * Org-less (`orgId: null`) by default, mirroring `tenant.erasure.*`: the
+ * loser's own audit rows are erased with it, so a merge record scoped to the
+ * loser would not survive Phase C. That default only holds once Phase B has
+ * committed (`org.merge.shell_stamp_failed`), or once completion has been
+ * disposed (`org.merge.completed`, `jobs/orgMerge.ts`) — the loser is on its
+ * way to erasure either way. A pre-commit failure (`org.merge.failed`) is
+ * different: nothing moved, the loser gets unfenced back to its prior status,
+ * and BOTH orgs remain live tenants — so that call site passes `orgId`
+ * explicitly, mirroring `routes/orgMerge.ts`'s `org.merge.requested`
+ * (`orgId: survivorId`). Never throws — a lost audit must not turn a
  * successful merge into a failed one, nor mask a real failure.
  */
 export async function writeMergeAudit(
   input: ExecuteOrgMergeInput,
-  entry: { action: string; result: 'success' | 'failure'; details: Record<string, unknown> },
+  entry: {
+    action: string;
+    result: 'success' | 'failure';
+    details: Record<string, unknown>;
+    orgId?: string | null;
+  },
 ): Promise<void> {
   try {
     await createAuditLog({
-      orgId: null,
+      orgId: entry.orgId ?? null,
       actorType: 'user',
       actorId: input.performedBy,
       actorEmail: input.performedByEmail,

@@ -198,7 +198,10 @@ orgArchiveRoutes.post(
 
       const archiveDetails = {
         retentionDays: retentionDays === undefined ? 'default' : retentionDays,
-        purgeAt: result.purgeAt,
+        // ISO string, not the raw Date: sanitizeAuditPayload treats a Date as
+        // a plain object (Object.entries(date) is empty), so an unconverted
+        // Date silently persists as `{}` in the immutable audit record.
+        purgeAt: result.purgeAt ? result.purgeAt.toISOString() : null,
         partnerId: authz.partnerId,
       };
       writeRouteAudit(c, {

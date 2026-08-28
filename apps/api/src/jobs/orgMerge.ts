@@ -25,8 +25,9 @@
  *
  * On failure: `executeOrgMerge` throws BEFORE this worker's Phase-C code
  * below ever runs — it has already unfenced the loser back to its prior
- * status and written its own org-less `org.merge.failed` audit internally
- * (see orgMerge.ts). This worker does not catch that throw: it must
+ * status and written its own `org.merge.failed` audit internally, scoped to
+ * the still-live survivor org (see orgMerge.ts). This worker does not catch
+ * that throw: it must
  * propagate untouched so BullMQ records the job failed and — critically —
  * so NO erasure job is ever enqueued for a merge that never committed. The
  * three failure modes this can't self-heal are the `tenantOffboarding.ts`
