@@ -1,4 +1,4 @@
-# Track E Task 6 PAM `received` Observation Transport Implementation Plan
+# Track E Task 7C PAM `received` Observation Transport Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Do not use subagent-driven development and do not dispatch another Task 6 or Task 7 reviewer; each implementation's single independent boundary review has already been consumed.
 
@@ -17,7 +17,7 @@
 - Do not weaken agent/device/org/command/actuation/generation/desired-state/target-role ownership checks.
 - Add no migration, table, alternate transaction, unauthenticated route, WebSocket supplemental path, decoder relaxation, command-ID bypass, or outbox migration.
 - A durable enqueue failure after resume must prevent active verification, mark the generation unresolved, close owned process/Job handles, attempt deprovision, and return `received_observation_handoff_failed`; never claim `cleaned`.
-- Received transport readiness is a separate apply-only gate. It must not set `pamReconciled` false merely for received pending/quarantine/unreadable state; cleanup and startup reconciliation remain callable.
+- Durable observation transport readiness is a separate apply-only gate. `pamReconciled` represents only local manager/startup readiness and must not become false for any pending, blocked, quarantined, or unreadable durable observation state. The separate gate blocks apply and protocol advertisement for every blocked or quarantined observation kind, while cleanup and startup reconciliation remain callable. Ordinary acknowledged non-`received` pending entries retain their existing non-blocking behavior; pending `received` entries additionally block until acknowledged.
 - The route is server-first, primary-agent-only, drain-blocked, streaming-body-limited to 32 KiB, strict-schema validated, and rate-limited by authenticated device ID.
 - Do not start Task 8 or claim native Windows, signed artifact, physical enforcement, deployment, hosted, customer, canary, or rollout evidence.
 - Do not dispatch an independent reviewer. Stop if execution would touch a boundary or file outside this plan.
@@ -470,7 +470,7 @@ git commit -m "fix(agent): transport PAM received observations"
 
 - [ ] **Step 1: Write readiness and telemetry RED tests**
 
-Cover: clean local/outbox -> both flags true/protocol 2; pending received on startup -> reconciled true/received false/protocol 0; final ack -> received true/protocol 2; route failure/quarantine/unreadable -> received false/apply refused; cleanup invokes manager with reconciled true/received false; non-received pending keeps existing behavior; local reconciliation unresolved keeps reconciled false for both.
+Cover: clean local/outbox -> both flags true/protocol 2; pending received on startup -> reconciled true/received false/protocol 0; final ack -> received true/protocol 2; route failure/quarantine/unreadable -> received false/apply refused; cleanup invokes manager with reconciled true/received false; ordinary acknowledged non-received pending keeps existing non-blocking behavior; a non-received blocked or quarantined entry leaves `pamReconciled` true but sets received-transport readiness false, closes apply/protocol advertisement, and leaves cleanup callable; local reconciliation unresolved keeps reconciled false for both.
 
 Assert exact telemetry:
 
@@ -519,11 +519,15 @@ h.pamReceivedObservationReady.Store(
 ```
 
 Nil outbox sets received readiness to `localReady && blockedCount == 0`.
-`pamReconciliationBlocked` remains an apply-admission condition through the
-separate predicate; it no longer sets `pamReconciled=false`, so a rejected
-received observation cannot disable cleanup. Never set `pamReconciled=false`
-solely for received pending/quarantine/snapshot error. Require both flags in
-apply and `pamLifetimeProtocolVersion`; require only `pamReconciled` in cleanup.
+`pamReconciliationBlocked` and every quarantined outbox entry remain
+apply-admission conditions through the separate predicate, regardless of
+observation state. Neither may set `pamReconciled=false`: cleanup is a
+privilege-reducing recovery path and must remain available for rejected
+`received`, `verified_active`, `cleaned`, or `failed` evidence. An unreadable
+outbox follows the same rule. Require both flags in apply and
+`pamLifetimeProtocolVersion`; require only `pamReconciled` in cleanup. Pending
+non-`received` observations that are neither blocked nor quarantined preserve
+their existing non-blocking behavior.
 
 - [ ] **Step 4: Implement telemetry and safe logs**
 

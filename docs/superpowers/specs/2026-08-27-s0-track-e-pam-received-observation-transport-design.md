@@ -1,4 +1,4 @@
-# Track E Task 6 PAM `received` Observation Transport Design
+# Track E Task 7C PAM `received` Observation Transport Design
 
 ## Purpose
 
@@ -298,15 +298,22 @@ The system must produce these outcomes:
 
 ## Capability and Telemetry
 
-Received-observation transport readiness is an apply-admission prerequisite,
-not a cleanup prerequisite. A transport failure, unreadable outbox, or
-quarantined received observation drops advertised PAM lifetime capability to
-zero and blocks `pam_apply_v2`, while `pam_cleanup_v2`, disable cleanup, and
-startup reconciliation remain able to reduce privilege.
+Durable observation transport readiness is an apply-admission prerequisite,
+not a cleanup prerequisite. `pamReconciled` represents only local lifecycle
+manager and startup reconciliation readiness. A transport failure, unreadable
+outbox, or blocked or quarantined observation of any state drops advertised
+PAM lifetime capability to zero and blocks `pam_apply_v2`, while
+`pam_cleanup_v2`, disable cleanup, and startup reconciliation remain able to
+reduce privilege. An ordinary acknowledged non-`received` pending observation
+retains its existing non-blocking behavior; a pending `received` observation
+blocks apply until acknowledged because this transport is the pre-verification
+durable handoff barrier.
 
-This is a separate apply-only readiness predicate. It must not set the existing
-`pamReconciled` gate false because `handlePamCleanupV2` relies on that gate and
-must remain available to reduce privilege.
+These conditions live in a separate apply-only readiness predicate. They must
+not set the existing `pamReconciled` gate false because
+`handlePamCleanupV2` relies on that gate and must remain available to reduce
+privilege, including when the blocked or quarantined evidence is
+`verified_active`, `cleaned`, or `failed` rather than `received`.
 
 The existing PAM reconciliation heartbeat object gains one optional count:
 
