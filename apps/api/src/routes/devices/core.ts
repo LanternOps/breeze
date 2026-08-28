@@ -182,7 +182,29 @@ export function getDeviceOrgDenormalizedTables(): readonly string[] {
   return withExtensionDeviceOrgDenormalized(CORE_DEVICE_ORG_DENORMALIZED_TABLES);
 }
 
-const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [];
+/**
+ * Device-scoped tables whose rows are DELETED on a cross-org device move
+ * rather than re-stamped into the destination org.
+ *
+ * Wave 6.2a (#3828) added the first two entries. Re-stamping either would be a
+ * tenant-isolation hazard, not merely untidy bookkeeping:
+ *
+ *  - a pending `ai_agent_fix_watches` row schedules a real device command
+ *    (the `service_running` postcondition re-check). Re-stamped, the SOURCE
+ *    org's agent would fire that command against a device now owned by a
+ *    DIFFERENT tenant.
+ *  - both tables carry the source tenant's target data (`target`,
+ *    `target_fingerprint`, `last_failure_reason`), which must not follow the
+ *    device across a tenant boundary.
+ *
+ * A moved device therefore starts with a clean remediation history under its
+ * new owner, which is also the honest semantic: the new org has observed
+ * nothing about this device yet.
+ */
+const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
+  'ai_agent_fix_watches',
+  'ai_agent_circuits',
+];
 
 export function getDeviceOrgMoveDeleteTables(): readonly string[] {
   return withExtensionDeviceOrgMoveDelete(CORE_DEVICE_ORG_MOVE_DELETE_TABLES);
@@ -284,6 +306,13 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // situation as fleet_finding_devices below: the app-level DELETE is the
   // only thing that reclaims these rows.
   'ai_unattended_exposure',
+  // Fix-held watches + the circuit ledger they feed (Wave 6.2a, #3828). Both
+  // carry device_id FK -> devices.id ON DELETE CASCADE and are leaf tables
+  // (nothing references either). Listed for the explicit-cascade coverage
+  // contract. Unlike ai_agent_runs above, these are DELETED rather than
+  // detached: a watch against a deleted device has nothing left to re-check,
+  // and a circuit for a device that no longer exists can never be consulted.
+  'ai_agent_fix_watches', 'ai_agent_circuits',
   // Analytics & reliability
   'device_reliability_history', 'device_reliability',
   'playbook_executions', 'time_series_metrics', 'capacity_predictions',

@@ -136,6 +136,18 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // orgs' partners differ. No writer exists yet in this PR either way.
   ai_unattended_exposure: { kind: 'leave-for-erasure', note: 'unattended-exposure history is per-org (like llm_egress_events); composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
 
+  // ai_agent_fix_watches / ai_agent_circuits (Wave 6.2a, #3828): same
+  // disposition as ai_unattended_exposure, and for the sharper version of the
+  // same reason. A pending fix-watch schedules a real device command; repointed
+  // onto the survivor org it would let the loser org's agent act against the
+  // survivor's device. A circuit is live safety state derived from the loser
+  // org's own observations and means nothing under the survivor. Both are also
+  // deleted (not re-stamped) on a cross-org DEVICE move — see
+  // CORE_DEVICE_ORG_MOVE_DELETE_TABLES in routes/devices/core.ts, which these
+  // two tables' entries created.
+  ai_agent_fix_watches: { kind: 'leave-for-erasure', note: 'a pending watch schedules a device command — repointing it would let the loser org’s agent act against the survivor’s device; rows die with the loser shell' },
+  ai_agent_circuits: { kind: 'leave-for-erasure', note: 'live breaker state derived from the loser org’s own observations; meaningless under the survivor — rows die with the loser shell' },
+
   // partner_export_configuration_org_state is trigger-maintained (SECURITY
   // DEFINER triggers on the policy tables regenerate it — verified in
   // migrations/2026-07-25-partner-export-canonical-configuration.sql);

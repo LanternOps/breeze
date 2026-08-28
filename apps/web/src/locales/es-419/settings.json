@@ -1562,6 +1562,24 @@
           "partialNote": "Contabilización parcial mientras la autorización de política desatendida está deshabilitada — esto puede subestimar la exposición real.",
           "unavailable": "No hay una política de agente activa para la organización de esta ejecución.",
           "loading": "Cargando presupuesto…"
+        },
+        "fixWatch": {
+          "title": "¿La solución se mantuvo?",
+          "caption": "Cada remediación verificada se vuelve a comprobar más tarde. Un resultado no concluyente significa que la comprobación no se resolvió, no que la solución haya fallado.",
+          "checkedAt": "Comprobado {{when}}",
+          "dueAt": "Programado {{when}}",
+          "kinds": {
+            "alert_recurrence": "Reaparición de alerta",
+            "postcondition": "Reverificación del servicio"
+          },
+          "statuses": {
+            "pending": "En espera",
+            "checking": "Comprobando",
+            "held": "Se mantuvo",
+            "regressed": "No se mantuvo",
+            "inconclusive": "No concluyente",
+            "cancelled": "Cancelado"
+          }
         }
       }
     }

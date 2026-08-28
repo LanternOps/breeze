@@ -1562,6 +1562,24 @@
           "partialNote": "Contabilizzazione parziale finché l'autorizzazione delle policy non presidiate è disattivata — l'esposizione reale potrebbe essere sottostimata.",
           "unavailable": "Nessuna policy agente attiva per l'organizzazione di questa esecuzione.",
           "loading": "Caricamento del budget…"
+        },
+        "fixWatch": {
+          "title": "La correzione ha retto?",
+          "caption": "Ogni rimedio verificato viene ricontrollato in seguito. Un esito non conclusivo significa che il controllo stesso non si è risolto, non che la correzione sia fallita.",
+          "checkedAt": "Controllato {{when}}",
+          "dueAt": "Previsto {{when}}",
+          "kinds": {
+            "alert_recurrence": "Ricomparsa dell'avviso",
+            "postcondition": "Ricontrollo del servizio"
+          },
+          "statuses": {
+            "pending": "In attesa",
+            "checking": "Controllo in corso",
+            "held": "Ha retto",
+            "regressed": "Non ha retto",
+            "inconclusive": "Non conclusivo",
+            "cancelled": "Annullato"
+          }
         }
       }
     }

@@ -1562,6 +1562,24 @@
           "partialNote": "Partial accounting while unattended policy authorization is disabled — this may understate actual exposure.",
           "unavailable": "No active agent policy for this run's organization.",
           "loading": "Loading budget…"
+        },
+        "fixWatch": {
+          "title": "Did the fix hold?",
+          "caption": "Each verified remediation is re-checked later. An inconclusive check means the check itself did not resolve — not that the fix failed.",
+          "checkedAt": "Checked {{when}}",
+          "dueAt": "Due {{when}}",
+          "kinds": {
+            "alert_recurrence": "Alert recurrence",
+            "postcondition": "Service re-check"
+          },
+          "statuses": {
+            "pending": "Waiting",
+            "checking": "Checking",
+            "held": "Held",
+            "regressed": "Did not hold",
+            "inconclusive": "Inconclusive",
+            "cancelled": "Cancelled"
+          }
         }
       }
     }

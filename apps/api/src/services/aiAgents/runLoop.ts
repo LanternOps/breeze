@@ -85,6 +85,7 @@ import {
   type ActReservationState,
 } from './actRevalidation';
 import { actTargetSummary, recordActVerifyFailureAlert, verifyActExecution } from './actVerify';
+import { loadAlertIdentity, scheduleFixWatches, type FixWatchActRecord } from './fixWatch';
 import { executeBuiltInPlaybookForRun } from './playbookActExecutor';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
 import { readAiKillState } from '../aiKillState';
@@ -431,10 +432,17 @@ export function createAgentRunPreToolUse(args: {
    * SDK's `abortController` (which this synchronous hook does not observe).
    */
   deadlineMs: number;
+  /**
+   * Structured act targets for the fix-held watches (#3828). The pre-hook
+   * contributes only the `execute_playbook` path, which the manifest executes
+   * INLINE and which therefore never reaches the post-hook. Optional so the
+   * existing direct-construction call sites in tests keep compiling.
+   */
+  fixWatchActs?: FixWatchActRecord[];
 }): PreToolUseCallback {
   const {
     run, agentName, agentAuth, agentKind, guardrailPolicy, outcome, intentIds, allowedPending,
-    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs,
+    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs, fixWatchActs,
   } = args;
 
   /** Shared by the ordinary 'propose' disposition AND an act-mode downgrade
@@ -673,6 +681,16 @@ export function createAgentRunPreToolUse(args: {
         });
         outcome.toolExecutionCount += 1;
 
+        // Fix-held watch (#3828). This path executes INLINE and never reaches
+        // the post-hook, so without this push a playbook remediation would be
+        // the one act mode silently never watches.
+        fixWatchActs?.push({
+          opKey: op.key,
+          verifySpecKind: op.verifySpec.kind,
+          verification: result.verification,
+          target,
+        });
+
         if (result.verification === 'failed') {
           await recordActVerifyFailureAlert({
             run: { id: run.id, orgId: run.orgId, deviceId: guardrailPolicy.deviceId, agentId: run.agentId },
@@ -710,8 +728,14 @@ export function createAgentRunPostToolUse(args: {
   run: { id: string; orgId: string; agentId: string; deviceId: string | null };
   /** For `verifyActExecution`'s `executeCommand` calls — attribution only. */
   agentUserId: string;
+  /** Structured act targets for the fix-held watches (#3828). Optional so the
+   *  existing direct-construction call sites in tests keep compiling. */
+  fixWatchActs?: FixWatchActRecord[];
 }): PostToolUseCallback {
-  const { outcome, allowedPending, executionIdPending, actPinPending, run, agentUserId } = args;
+  const {
+    outcome, allowedPending, executionIdPending, actPinPending, run, agentUserId,
+    fixWatchActs,
+  } = args;
 
   return async (toolName, input, output, isError, durationMs) => {
     const remaining = allowedPending.get(toolName) ?? 0;
@@ -773,6 +797,18 @@ export function createAgentRunPostToolUse(args: {
         if (verified.verifyDetail) entry.verifyDetail = verified.verifyDetail;
         entry.actOpKey = actPin.op.key;
         entry.actTargetName = actTargetSummary(actPin.target);
+
+        // Record the STRUCTURED target for the fix-held watch (#3828) —
+        // `entry.actTargetName` above is a display summary and cannot be
+        // re-checked against. `selectFixWatches` decides which of these
+        // actually earn a watch; recording every verified act here keeps that
+        // judgement in one pure, tested place.
+        fixWatchActs?.push({
+          opKey: actPin.op.key,
+          verifySpecKind: actPin.op.verifySpec.kind,
+          verification: verified.verification,
+          target: actPin.target,
+        });
 
         if (verified.verification === 'failed') {
           await recordActVerifyFailureAlert({
@@ -916,6 +952,16 @@ interface LoopResult {
   outcome: AgentRunOutcome;
   intentIds: string[];
   /**
+   * Structured act targets for the wave-6.2a fix-held watches (#3828), pushed
+   * by whichever path actually dispatched. Deliberately NOT derived from
+   * `outcome.executedActions`: that only carries `actTargetName`, a lossy
+   * DISPLAY summary ("3 path(s)"), which would collapse unrelated targets onto
+   * one circuit. Carried alongside the outcome rather than inside it so the
+   * structured target never lands in the persisted `outcome` jsonb, where the
+   * 6.1 run-detail DTO would have to start excluding it by hand.
+   */
+  fixWatchActs: FixWatchActRecord[];
+  /**
    * Set when the SDK loop itself threw. Carried back rather than rethrown so
    * the tokens already burned still land on the run row — a crashed run that
    * recorded `cost_cents: 0` would make the agent's daily budget cap
@@ -1011,16 +1057,22 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   const actPinPending = new Map<string, Array<ActAssetPin | null>>();
   // Shared across every act-mode call in THIS run — see actRevalidation.ts.
   const actReservation: ActReservationState = { count: 0 };
+  // Structured act targets for the fix-held watches (#3828). Both dispatch
+  // paths push here: the post-hook for ordinary tool dispatch, and the
+  // pre-hook for `execute_playbook`, which the manifest executes inline and
+  // which therefore never reaches the post-hook at all.
+  const fixWatchActs: FixWatchActRecord[] = [];
 
   const preToolUse = createAgentRunPreToolUse({
     run, agentName: ctx.agent.name, agentAuth, agentKind: ctx.agent.kind, guardrailPolicy, outcome,
     intentIds, allowedPending, sessionId: ctx.sessionId, executionIdPending, actPinPending,
-    actReservation, deadlineMs,
+    actReservation, deadlineMs, fixWatchActs,
   });
   const postToolUse = createAgentRunPostToolUse({
     outcome, allowedPending, executionIdPending, actPinPending,
     run: { id: run.id, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId },
     agentUserId: agentAuth.user.id,
+    fixWatchActs,
   });
 
   // No getActiveSession: a headless run has no ActiveSession, and the
@@ -1193,6 +1245,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     turnCount,
     outcome,
     intentIds,
+    fixWatchActs,
     ...(failure ? { failure } : {}),
   };
 }
@@ -1359,6 +1412,45 @@ async function finishRun(
   // function is skipped entirely on the `!moved` branch above (another
   // executor or `reapStalledAgentRuns` already owns this run), which is
   // exactly the case the ledger cleanup exists for. See the note there.
+
+  // Fix-held watches (#3828), scheduled AFTER the terminal status commits and
+  // BEFORE the notification: a watch is only meaningful for a run that
+  // actually finished, and `finishedAt` is the baseline every recurrence
+  // window is measured from.
+  //
+  // Deliberately not silent on a shortfall. An act that verified `passed` is
+  // reported to the operator as remediated, and the watch is what would later
+  // contradict that — so a watch we failed to record is a claim we can no
+  // longer check, not a missing nice-to-have. It cannot fail the run (the
+  // actions already happened), but it must be loud enough to find in the logs.
+  try {
+    const finishedAt = new Date();
+    const alertIdentity = ctx.run.alertId ? await loadAlertIdentity(ctx.run.alertId) : null;
+    const { planned, inserted } = await scheduleFixWatches(
+      {
+        id: ctx.run.id,
+        orgId: ctx.run.orgId,
+        agentId: ctx.run.agentId,
+        deviceId: ctx.run.deviceId,
+        alertId: ctx.run.alertId,
+        alertRuleId: alertIdentity?.alertRuleId ?? null,
+        alertConfigItemName: alertIdentity?.alertConfigItemName ?? null,
+        finishedAt,
+      },
+      result.fixWatchActs,
+    );
+    if (planned > 0 && inserted < planned) {
+      // Not necessarily a bug: `onConflictDoNothing` also lands here when a
+      // retried finishRun re-plans watches an earlier attempt already wrote.
+      console.warn('[aiAgentRunLoop] not every planned fix-held watch was recorded', {
+        runId: ctx.run.id, planned, inserted,
+      });
+    }
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to schedule fix-held watches — this run’s verified actions will never be re-checked', {
+      runId: ctx.run.id, error,
+    });
+  }
 
   // `deliverRunFinishedNotifications` re-reads the run row it just committed
   // above (Task 6, #3826) rather than taking `status`/`result` in-process —

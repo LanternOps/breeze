@@ -1562,6 +1562,24 @@
           "partialNote": "Gözetimsiz politika yetkilendirmesi devre dışıyken kısmi muhasebeleştirme yapılır — bu, gerçek maruziyeti olduğundan az gösterebilir.",
           "unavailable": "Bu çalıştırmanın organizasyonu için etkin bir aracı politikası yok.",
           "loading": "Bütçe yükleniyor…"
+        },
+        "fixWatch": {
+          "title": "Düzeltme kalıcı oldu mu?",
+          "caption": "Doğrulanan her düzeltme daha sonra yeniden kontrol edilir. Sonuçsuz bir kontrol, düzeltmenin başarısız olduğu anlamına gelmez; kontrolün kendisi sonuçlanmamıştır.",
+          "checkedAt": "Kontrol edildi {{when}}",
+          "dueAt": "Planlanan {{when}}",
+          "kinds": {
+            "alert_recurrence": "Uyarı yinelenmesi",
+            "postcondition": "Servis yeniden kontrolü"
+          },
+          "statuses": {
+            "pending": "Bekliyor",
+            "checking": "Kontrol ediliyor",
+            "held": "Kalıcı oldu",
+            "regressed": "Kalıcı olmadı",
+            "inconclusive": "Sonuçsuz",
+            "cancelled": "İptal edildi"
+          }
         }
       }
     }

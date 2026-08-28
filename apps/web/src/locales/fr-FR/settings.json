@@ -1562,6 +1562,24 @@
           "partialNote": "Comptabilisation partielle tant que l'autorisation de politique sans surveillance est désactivée — l'exposition réelle peut être sous-estimée.",
           "unavailable": "Aucune politique d'agent active pour l'organisation de cette exécution.",
           "loading": "Chargement du budget…"
+        },
+        "fixWatch": {
+          "title": "Le correctif a-t-il tenu ?",
+          "caption": "Chaque remédiation vérifiée est revérifiée plus tard. Un résultat non concluant signifie que la vérification elle-même n'a pas abouti, et non que le correctif a échoué.",
+          "checkedAt": "Vérifié {{when}}",
+          "dueAt": "Prévu {{when}}",
+          "kinds": {
+            "alert_recurrence": "Récurrence d'alerte",
+            "postcondition": "Revérification du service"
+          },
+          "statuses": {
+            "pending": "En attente",
+            "checking": "Vérification",
+            "held": "A tenu",
+            "regressed": "N'a pas tenu",
+            "inconclusive": "Non concluant",
+            "cancelled": "Annulé"
+          }
         }
       }
     }

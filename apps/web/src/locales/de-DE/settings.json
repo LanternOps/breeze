@@ -1562,6 +1562,24 @@
           "partialNote": "Teilweise Erfassung, solange die unbeaufsichtigte Richtlinienautorisierung deaktiviert ist — die tatsächliche Nutzung kann höher sein.",
           "unavailable": "Keine aktive Agentenrichtlinie für die Organisation dieses Laufs.",
           "loading": "Budget wird geladen…"
+        },
+        "fixWatch": {
+          "title": "Hat die Behebung Bestand?",
+          "caption": "Jede verifizierte Behebung wird später erneut geprüft. Ein nicht eindeutiges Ergebnis bedeutet, dass die Prüfung selbst nicht abgeschlossen wurde — nicht, dass die Behebung fehlgeschlagen ist.",
+          "checkedAt": "Geprüft {{when}}",
+          "dueAt": "Fällig {{when}}",
+          "kinds": {
+            "alert_recurrence": "Erneute Warnung",
+            "postcondition": "Dienst-Nachprüfung"
+          },
+          "statuses": {
+            "pending": "Ausstehend",
+            "checking": "Wird geprüft",
+            "held": "Bestand",
+            "regressed": "Hat nicht Bestand",
+            "inconclusive": "Nicht eindeutig",
+            "cancelled": "Abgebrochen"
+          }
         }
       }
     }

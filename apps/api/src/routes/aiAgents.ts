@@ -17,7 +17,8 @@ import {
 import { zValidator } from '../lib/validation';
 import { db } from '../db';
 import {
-  actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations, type AiAgentRow,
+  actionIntents, aiAgentFixWatches, aiAgentRuns, aiAgents, aiToolExecutions, devices,
+  organizations, type AiAgentRow,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { policyDecideEnabled } from '../config/env';
@@ -522,12 +523,37 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   const agent = run.agentName !== null && run.agentKind !== null
     ? { name: run.agentName, kind: run.agentKind }
     : null;
+  // Fix-held watches (wave 6.2a, #3828). `target` (jsonb) is deliberately NOT
+  // selected — the projection cannot leak what the query never loads. The org
+  // predicate is defence-in-depth beside RLS, matching the reads above.
+  const fixWatchRows = await db
+    .select({
+      id: aiAgentFixWatches.id,
+      runId: aiAgentFixWatches.runId,
+      watchKind: aiAgentFixWatches.watchKind,
+      status: aiAgentFixWatches.status,
+      opKey: aiAgentFixWatches.opKey,
+      targetFingerprint: aiAgentFixWatches.targetFingerprint,
+      baselineAt: aiAgentFixWatches.baselineAt,
+      dueAt: aiAgentFixWatches.dueAt,
+      checkedAt: aiAgentFixWatches.checkedAt,
+      attempts: aiAgentFixWatches.attempts,
+      detail: aiAgentFixWatches.detail,
+    })
+    .from(aiAgentFixWatches)
+    .where(and(
+      eq(aiAgentFixWatches.runId, runId),
+      auth.orgCondition(aiAgentFixWatches.orgId),
+    ))
+    .orderBy(asc(aiAgentFixWatches.dueAt));
+
   const detail = buildRunTrace(
     run,
     agent,
     run.deviceHostname ? { hostname: run.deviceHostname } : null,
     ledgerRows,
     intentRows,
+    fixWatchRows,
   );
   return c.json({ data: detail });
 });

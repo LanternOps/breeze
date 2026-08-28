@@ -219,6 +219,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Fix-held watch sweep + retention (wave 6.2a, #3828). `socket-owner`
+    // because the postcondition re-check reaches `commandQueue` through
+    // actVerify's shared service read — workerEntrypointClosure.contract.test.ts
+    // is the authority on that, not this comment.
+    name: 'aiAgentFixWatch',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/aiAgentFixWatchWorker');
+      return { init: m.initializeAiAgentFixWatchWorker, shutdown: m.shutdownAiAgentFixWatchWorker };
+    },
+  },
+  {
     // Durable retry lane for run-finished notifications (wave 4a Task 6,
     // #3826). Its only real dependency is `services/aiAgents/runFinishedNotify.ts`
     // (db + recipients + userNotifications) — deliberately NOT `runLoop.ts`'s

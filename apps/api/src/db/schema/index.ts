@@ -52,6 +52,7 @@ export * from './auditBaselines';
 export * from './reliability';
 export * from './userRisk';
 export * from './ai';
+export * from './aiAgentFixWatches';
 export * from './aiAgents';
 export * from './aiUnattendedExposure';
 export * from './aiKillState';

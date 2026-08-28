@@ -6,6 +6,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import type {
+  AiAgentFixWatchDto,
   AiAgentRunDetailDto,
   AiAgentRunTraceEntryDto,
   ExposureBudgetDto,
@@ -308,6 +309,55 @@ function ExposureBudgetCard({ orgId, kind, t }: { orgId: string; kind: string; t
 }
 
 /**
+ * One "did the fix hold" row (wave 6.2a, #3828).
+ *
+ * `inconclusive` deliberately reads as neutral, not as a failure: it means the
+ * CHECK did not resolve (an offline device, an unparseable read-back), which is
+ * not evidence about the agent. Colouring it like a regression would tell an
+ * operator the remediation broke when nothing of the sort was established.
+ */
+function FixWatchRow({
+  watch,
+  t,
+}: {
+  watch: AiAgentFixWatchDto;
+  t: (key: string, params?: Record<string, unknown>) => string;
+}) {
+  const tone =
+    watch.status === 'regressed' ? 'text-destructive'
+      : watch.status === 'held' ? 'text-emerald-700'
+        : 'text-muted-foreground';
+
+  return (
+    <li data-testid={`run-detail-fix-watch-${watch.id}`} className="rounded border p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`font-medium ${tone}`} data-testid="fix-watch-status">
+          {t(`aiAgentsPage.runs.detail.fixWatch.statuses.${watch.status}`)}
+        </span>
+        <span className="text-muted-foreground">
+          {t(`aiAgentsPage.runs.detail.fixWatch.kinds.${watch.watchKind}`)}
+        </span>
+        <span className="text-xs text-muted-foreground">{watch.opKey}</span>
+      </div>
+      {watch.detail && (
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="fix-watch-detail">
+          {watch.detail}
+        </p>
+      )}
+      <p className="mt-1 text-xs text-muted-foreground">
+        {watch.checkedAt
+          ? t('aiAgentsPage.runs.detail.fixWatch.checkedAt', {
+            when: new Date(watch.checkedAt).toLocaleString(),
+          })
+          : t('aiAgentsPage.runs.detail.fixWatch.dueAt', {
+            when: new Date(watch.dueAt).toLocaleString(),
+          })}
+      </p>
+    </li>
+  );
+}
+
+/**
  * Wave 6 PR 1 (#3828) — the execution-trace run detail: `GET
  * /ai/agents/runs/:runId`. Renders the stitched `AiAgentRunDetailDto` — the
  * run header, the SAFE trace timeline, the tool-execution ledger, linked
@@ -472,6 +522,20 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
 
       {run.orgId && run.agentKind && (
         <ExposureBudgetCard orgId={run.orgId} kind={run.agentKind} t={t} />
+      )}
+
+      {run.fixWatches.length > 0 && (
+        <div className="rounded-lg border bg-card p-4" data-testid="run-detail-fix-watch-card">
+          <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.detail.fixWatch.title')}</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t('aiAgentsPage.runs.detail.fixWatch.caption')}
+          </p>
+          <ul data-testid="run-detail-fix-watches" className="mt-2 space-y-2 text-sm">
+            {run.fixWatches.map((watch) => (
+              <FixWatchRow key={watch.id} watch={watch} t={t} />
+            ))}
+          </ul>
+        </div>
       )}
 
       <div className="rounded-lg border bg-card p-4">

@@ -1,4 +1,5 @@
 import type { AiApprovalScope, AiToolStatus } from './ai';
+import type { AiAgentFixWatchDto } from './aiAgentFixWatches';
 import type {
   ActExecutionVerdict,
   ActVerificationVerdict,
@@ -239,4 +240,13 @@ export interface AiAgentRunDetailDto {
   trace: AiAgentRunTraceEntryDto[];
   ledger: AiAgentRunLedgerEntryDto[];
   intents: AiAgentRunIntentSummaryDto[];
+  /**
+   * "Did the fix hold" (wave 6.2a, #3828). Empty for every run that predates
+   * the feature, and for any run that took no watchable action — the UI must
+   * treat an empty array as "nothing to say", never as "the fix failed".
+   *
+   * A deliberate additive change to this DTO, per the hand-enumerated-fields
+   * rule this type was created under.
+   */
+  fixWatches: AiAgentFixWatchDto[];
 }

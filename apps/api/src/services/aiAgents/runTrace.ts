@@ -22,6 +22,14 @@ import type {
   OutcomeExecutedAction,
   OutcomeProposedAction,
 } from './runLoop';
+import type {
+  AiAgentFixWatchKind,
+  AiAgentFixWatchStatus,
+} from '../../db/schema/aiAgentFixWatches';
+import {
+  AI_AGENT_FIX_WATCH_DTO_SCHEMA_VERSION,
+  type AiAgentFixWatchDto,
+} from '@breeze/shared';
 import {
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
   type AiAgentKind,
@@ -148,6 +156,24 @@ function buildTraceEntries(outcome: Partial<AgentRunOutcome>): AiAgentRunTraceEn
   ];
 }
 
+/**
+ * The columns the route selects from `ai_agent_fix_watches`. `target` (jsonb)
+ * is deliberately absent: the projection cannot leak what it never loads.
+ */
+export interface RunTraceFixWatchRowInput {
+  id: string;
+  runId: string;
+  watchKind: AiAgentFixWatchKind;
+  status: AiAgentFixWatchStatus;
+  opKey: string;
+  targetFingerprint: string;
+  baselineAt: Date;
+  dueAt: Date;
+  checkedAt: Date | null;
+  attempts: number;
+  detail: string | null;
+}
+
 function mapLedgerRow(row: RunTraceLedgerRowInput): AiAgentRunLedgerEntryDto {
   return {
     toolName: row.toolName,
@@ -169,6 +195,29 @@ function mapIntentRow(row: RunTraceIntentRowInput): AiAgentRunIntentSummaryDto {
   };
 }
 
+/**
+ * The fix-held watch projection (wave 6.2a, #3828). `target` (jsonb) is read
+ * from the row and deliberately never assigned — `targetName` is the short,
+ * sanitized identity the UI shows, and `AiAgentFixWatchDto` has no field that
+ * could carry the structured target even by accident.
+ */
+function mapFixWatchRow(row: RunTraceFixWatchRowInput): AiAgentFixWatchDto {
+  return {
+    schemaVersion: AI_AGENT_FIX_WATCH_DTO_SCHEMA_VERSION,
+    id: row.id,
+    runId: row.runId,
+    watchKind: row.watchKind,
+    status: row.status,
+    opKey: row.opKey,
+    targetName: row.targetFingerprint,
+    baselineAt: row.baselineAt.toISOString(),
+    dueAt: row.dueAt.toISOString(),
+    checkedAt: row.checkedAt ? row.checkedAt.toISOString() : null,
+    attempts: row.attempts,
+    detail: row.detail,
+  };
+}
+
 export function buildRunTrace(
   run: RunTraceRunInput,
   // `null` when the agent row is RLS-invisible to the caller — a partner-wide
@@ -180,6 +229,10 @@ export function buildRunTrace(
   device: RunTraceDeviceInput | null,
   ledgerRows: RunTraceLedgerRowInput[],
   intents: RunTraceIntentRowInput[],
+  // Defaulted: every pre-6.2a caller (and every test fixture written against
+  // the wave-6.1 signature) keeps compiling, and an empty array is the honest
+  // answer for a run that took no watchable action.
+  fixWatches: RunTraceFixWatchRowInput[] = [],
 ): AiAgentRunDetailDto {
   const outcome = run.outcome as Partial<AgentRunOutcome>;
   return {
@@ -209,5 +262,6 @@ export function buildRunTrace(
     trace: buildTraceEntries(outcome),
     ledger: ledgerRows.map(mapLedgerRow),
     intents: intents.map(mapIntentRow),
+    fixWatches: fixWatches.map(mapFixWatchRow),
   };
 }

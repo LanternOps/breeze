@@ -37,6 +37,14 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // the (org_id, partner_id) composite FK across partners — see the
   // CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
   'ai_unattended_exposure',
+  // Have org_id, but are DELETED on a cross-org move rather than re-stamped —
+  // they are the two entries of CORE_DEVICE_ORG_MOVE_DELETE_TABLES (core.ts,
+  // Wave 6.2a #3828). Re-stamping a pending fix-watch would let the SOURCE
+  // org's agent fire a device command against a device now owned by a
+  // different tenant, and would carry the source tenant's target data across
+  // the boundary. See that list's comment for the full reasoning.
+  'ai_agent_fix_watches',
+  'ai_agent_circuits',
   'automation_policy_compliance',
   'deployment_devices',
   'deployment_results',

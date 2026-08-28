@@ -1562,6 +1562,24 @@
           "partialNote": "Contabilização parcial enquanto a autorização de política não supervisionada está desativada — isso pode subestimar a exposição real.",
           "unavailable": "Nenhuma política de agente ativa para a organização desta execução.",
           "loading": "Carregando orçamento…"
+        },
+        "fixWatch": {
+          "title": "A correção se manteve?",
+          "caption": "Cada remediação verificada é reavaliada mais tarde. Um resultado inconclusivo significa que a verificação não foi concluída, não que a correção falhou.",
+          "checkedAt": "Verificado {{when}}",
+          "dueAt": "Previsto {{when}}",
+          "kinds": {
+            "alert_recurrence": "Reincidência do alerta",
+            "postcondition": "Reverificação do serviço"
+          },
+          "statuses": {
+            "pending": "Aguardando",
+            "checking": "Verificando",
+            "held": "Manteve-se",
+            "regressed": "Não se manteve",
+            "inconclusive": "Inconclusivo",
+            "cancelled": "Cancelado"
+          }
         }
       }
     }

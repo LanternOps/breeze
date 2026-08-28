@@ -105,14 +105,24 @@ function commandExecutionVerdict(output: string, isError: boolean): ActExecution
   return isError ? 'failed' : 'succeeded';
 }
 
-async function verifyServiceRunning(
-  target: Extract<ActTarget, { kind: 'service' }>,
-  run: VerifyActExecutionArgs['run'],
+/**
+ * The `service_running` read-back, factored out of `verifyActExecution` so the
+ * DELAYED fix-held re-check (wave 6.2a, `fixWatchCheck.ts`) asks the device the
+ * exact same question the immediate verify asked.
+ *
+ * That sharing is load-bearing, not tidiness: "the fix held" is only a
+ * meaningful claim if it is measured against the same predicate that produced
+ * the original "passed". Two parsers that drift apart would let a watch report
+ * `held` for a state the immediate verify would have called `failed`.
+ */
+export async function readServiceRunningState(
+  deviceId: string,
+  serviceName: string,
   agentUserId: string,
 ): Promise<{ verification: ActVerificationVerdict; detail?: string }> {
   const { executeCommand } = await getCommandQueue();
   const result = await inSystemDbContext(() =>
-    executeCommand(run.deviceId, 'list_services', { search: target.serviceName }, {
+    executeCommand(deviceId, 'list_services', { search: serviceName }, {
       userId: agentUserId, timeoutMs: VERIFY_READ_TIMEOUT_MS,
     }));
 
@@ -124,12 +134,20 @@ async function verifyServiceRunning(
   const match = services.find((s): s is { name: string; status: string } =>
     typeof s === 'object' && s !== null
     && typeof (s as { name?: unknown }).name === 'string'
-    && (s as { name: string }).name.toLowerCase() === target.serviceName.toLowerCase());
+    && (s as { name: string }).name.toLowerCase() === serviceName.toLowerCase());
 
   if (match && match.status.toLowerCase() === 'running') {
     return { verification: 'passed' };
   }
   return { verification: 'failed', detail: match ? `service status is "${match.status}"` : 'service not found in read-back' };
+}
+
+async function verifyServiceRunning(
+  target: Extract<ActTarget, { kind: 'service' }>,
+  run: VerifyActExecutionArgs['run'],
+  agentUserId: string,
+): Promise<{ verification: ActVerificationVerdict; detail?: string }> {
+  return readServiceRunningState(run.deviceId, target.serviceName, agentUserId);
 }
 
 async function verifyProcessAbsent(

@@ -131,6 +131,49 @@ describe('buildRunTrace — safe projection (#3828)', () => {
     expect(json).not.toContain('zzz-leak-marker-zzz');
   });
 
+  it('projects fix-held watches without ever carrying the structured target (#3828)', () => {
+    const detail = buildRunTrace(baseRun(), AGENT, DEVICE, [], [], [
+      {
+        id: 'watch-1',
+        runId: RUN_ID,
+        watchKind: 'postcondition',
+        status: 'regressed',
+        opKey: 'manage_services.restart',
+        targetFingerprint: 'service:spooler',
+        baselineAt: new Date('2026-08-28T12:00:00.000Z'),
+        dueAt: new Date('2026-08-28T12:15:00.000Z'),
+        checkedAt: new Date('2026-08-28T12:16:00.000Z'),
+        attempts: 1,
+        detail: 'Spooler: service status is "stopped"',
+      },
+    ]);
+
+    expect(detail.fixWatches).toEqual([
+      {
+        schemaVersion: 1,
+        id: 'watch-1',
+        runId: RUN_ID,
+        watchKind: 'postcondition',
+        status: 'regressed',
+        opKey: 'manage_services.restart',
+        targetName: 'service:spooler',
+        baselineAt: '2026-08-28T12:00:00.000Z',
+        dueAt: '2026-08-28T12:15:00.000Z',
+        checkedAt: '2026-08-28T12:16:00.000Z',
+        attempts: 1,
+        detail: 'Spooler: service status is "stopped"',
+      },
+    ]);
+    // The DTO has no `target` field at all — the leak is impossible by
+    // construction, and the route never even selects the column.
+    expect(JSON.stringify(detail)).not.toContain('"target"');
+  });
+
+  it('reports an empty fixWatches array for a run that predates the feature', () => {
+    // Load-bearing: the UI must read "nothing to say", never "the fix failed".
+    expect(buildRunTrace(baseRun(), AGENT, DEVICE, [], []).fixWatches).toEqual([]);
+  });
+
   it('tolerates a wave-3-era outcome with no runVerdict/execution/verification fields at all', () => {
     const detail = buildRunTrace(
       baseRun({

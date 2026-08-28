@@ -117,12 +117,20 @@ export const JOB_SCHEDULES = {
   'sso-domain-recheck': '23 16 * * *',
   'exchange-rate-sync': '13 17 * * *',
   'ai-unattended-exposure-retention': '8 18 * * *',
+  'ai-fix-watch-retention': '28 18 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0
   // belongs to the hourly risk-score refresh alone — nothing daily may sit on
   // it, or the two co-fire once a day (that was the #3793 128-second pool hold).
   'vulnerability-risk-score-refresh': '0 * * * *',
+  // Twice-hourly, on the two free minutes of the ≡2 (mod 5) grid. The fix-held
+  // sweep wants to be frequent (the postcondition window is 15 minutes), but
+  // the grid is what keeps it off minute 0 — sharing that slot with the hourly
+  // risk-score refresh is the co-fire that produced the #3793 pool hold.
+  // Sweep latency is therefore up to 30 minutes on top of the watch's own
+  // window, which is fine: soak time only makes "did it hold" a stronger claim.
+  'ai-fix-watch-sweep': '2,32 * * * *',
   'security-posture-scan': '7 * * * *',
   'snmp-retention': '12 1,7,13,19 * * *',
   'software-upload-session-cleanup': '15 * * * *',
