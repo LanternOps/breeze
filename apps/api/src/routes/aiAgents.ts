@@ -229,7 +229,7 @@ aiAgentsRoutes.get('/policy-decidable-keys', scopes, requireAiRead, async (c) =>
 function mapRunListItem(row: {
   id: string;
   agentId: string;
-  agentName: string;
+  agentName: string | null;
   deviceId: string | null;
   status: AiAgentRunListItemDto['status'];
   triggerKind: AiAgentRunListItemDto['triggerKind'];
@@ -304,11 +304,23 @@ aiAgentsRoutes.get(
         // caller asked to see in detail.
         runVerdict: sql<string | null>`${aiAgentRuns.outcome}->>'runVerdict'`,
         queuedAt: aiAgentRuns.queuedAt,
+        // Full microsecond-precision text of the same column, for the
+        // cursor only — never put on the DTO. See runsListCursor.ts's
+        // AiAgentRunsCursor.q docstring for why `queuedAt.toISOString()`
+        // (millisecond-truncating) must never be what seeds the cursor.
+        queuedAtRaw: sql<string>`to_char(${aiAgentRuns.queuedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
         finishedAt: aiAgentRuns.finishedAt,
         costCents: aiAgentRuns.costCents,
       })
       .from(aiAgentRuns)
-      .innerJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
+      // LEFT, not INNER: ai_agents is a dual-ownership table (#2135) whose RLS
+      // policy denies partner-wide rows to an org-scoped caller entirely
+      // (breeze_has_partner_access is false — org tokens carry no accessible
+      // partner ids). ai_agent_runs itself is plain org-scoped and stays
+      // visible, so an inner join would silently drop every run produced by
+      // a partner-wide agent from this list. agentName instead comes back
+      // null for those rows (see AiAgentRunListItemDto.agentName).
+      .leftJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
       .where(and(...conditions))
       .orderBy(desc(aiAgentRuns.queuedAt), desc(aiAgentRuns.id))
       .limit(limit + 1);
@@ -367,7 +379,11 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       deviceHostname: devices.hostname,
     })
     .from(aiAgentRuns)
-    .innerJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
+    // LEFT, not INNER — same RLS-visibility gap as `GET /runs` above: a
+    // partner-wide agent's ai_agents row is invisible to an org-scoped
+    // caller, but the run it produced must still be returned rather than
+    // 404ing (see buildRunTrace's `agent: RunTraceAgentInput | null` param).
+    .leftJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
     .leftJoin(devices, eq(aiAgentRuns.deviceId, devices.id))
     .where(and(eq(aiAgentRuns.id, runId), auth.orgCondition(aiAgentRuns.orgId)))
     .limit(1);
@@ -411,9 +427,14 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       .where(and(inArray(actionIntents.id, run.intentIds), auth.orgCondition(actionIntents.orgId)))
     : [];
 
+  // Both fields come from the same left-joined ai_agents row, so they are
+  // either both present or both null together.
+  const agent = run.agentName !== null && run.agentKind !== null
+    ? { name: run.agentName, kind: run.agentKind }
+    : null;
   const detail = buildRunTrace(
     run,
-    { name: run.agentName, kind: run.agentKind },
+    agent,
     run.deviceHostname ? { hostname: run.deviceHostname } : null,
     ledgerRows,
     intentRows,

@@ -429,8 +429,8 @@ const runDetailResponseSchema = z.object({
     schemaVersion: z.literal(1),
     id: z.string(),
     agentId: z.string(),
-    agentName: z.string(),
-    agentKind: z.string(),
+    agentName: z.string().nullable(),
+    agentKind: z.string().nullable(),
     orgId: z.string(),
     deviceId: z.string().nullable(),
     deviceHostname: z.string().nullable(),
@@ -473,7 +473,7 @@ const runListResponseSchema = z.object({
     schemaVersion: z.literal(1),
     id: z.string(),
     agentId: z.string(),
-    agentName: z.string(),
+    agentName: z.string().nullable(),
     deviceId: z.string().nullable(),
     status: z.string(),
     triggerKind: z.string(),
@@ -600,6 +600,24 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     // Only the run-row select ran — no second/third db.select for ledger/intents.
     expect(selectMock).toHaveBeenCalledTimes(1);
   });
+
+  // Review fix (#3828): ai_agents is dual-ownership (#2135) — a partner-wide
+  // agent's row is RLS-invisible to an org-scoped caller even though the run
+  // it produced (plain org-scoped) stays visible. Before this fix the route
+  // innerJoin'd ai_agents, so this case 404'd instead of returning the run.
+  it('returns the run (not 404) when its agent row is RLS-invisible, with agentName/agentKind null', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      runRow({ sessionId: null, intentIds: [], agentName: null, agentKind: null }),
+    ]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runDetailResponseSchema.parse(body);
+    expect(parsed.data.id).toBe(RUN_ID);
+    expect(parsed.data.agentName).toBeNull();
+    expect(parsed.data.agentKind).toBeNull();
+  });
 });
 
 describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
@@ -616,6 +634,7 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
         id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', deviceId: DEVICE_ID,
         status: 'completed', triggerKind: 'manual', runVerdict: 'remediated',
         queuedAt: new Date('2026-08-28T10:00:00.000Z'),
+        queuedAtRaw: '2026-08-28T10:00:00.000000Z',
         finishedAt: new Date('2026-08-28T10:00:30.000Z'),
         costCents: 12,
       },
@@ -636,6 +655,7 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
       agentId: AGENT_ID, agentName: 'Triage', deviceId: null,
       status: 'completed', triggerKind: 'schedule', runVerdict: null,
       queuedAt: new Date(Date.UTC(2026, 7, 28, 10, 0, i)),
+      queuedAtRaw: `2026-08-28T10:00:${String(i).padStart(2, '0')}.000000Z`,
       finishedAt: null, costCents: 0,
     });
     // Default limit is 25 — return 26 rows to trigger the peek.
@@ -648,6 +668,59 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
     const parsed = runListResponseSchema.parse(body);
     expect(parsed.data).toHaveLength(25);
     expect(parsed.nextCursor).not.toBeNull();
+  });
+
+  // Review fix (#3828): built from the row's `queuedAtRaw` microsecond text,
+  // never `queuedAt.toISOString()` — a JS Date truncates to milliseconds,
+  // which would silently drop same-millisecond siblings from the next page.
+  it('seeds nextCursor from the peeked row\'s queuedAtRaw, not the millisecond-truncated queuedAt Date', async () => {
+    const microPrecise = '2026-08-28T10:00:00.123456Z';
+    const makeRow = (i: number) => ({
+      id: `dddddddd-dddd-4ddd-8ddd-${String(i).padStart(12, '0')}`,
+      agentId: AGENT_ID, agentName: 'Triage', deviceId: null,
+      status: 'completed', triggerKind: 'schedule', runVerdict: null,
+      // Every row shares the same millisecond-truncated Date — the last
+      // (limit+1-th, trimmed) row's true value differs only in microseconds.
+      queuedAt: new Date('2026-08-28T10:00:00.123Z'),
+      // limit is 25, so pageRows is indices 0..24 and index 24 is `last` —
+      // the seed for nextCursor. Index 25 is the peeked/trimmed row.
+      queuedAtRaw: i === 24 ? microPrecise : '2026-08-28T10:00:00.123999Z',
+      finishedAt: null, costCents: 0,
+    });
+    const rows = Array.from({ length: 26 }, (_, i) => makeRow(i));
+    selectMock.mockReturnValueOnce(selectChain(rows));
+
+    const res = await buildApp().request('/ai-agents/runs');
+    const body = await res.json();
+    const parsed = runListResponseSchema.parse(body);
+    expect(parsed.nextCursor).not.toBeNull();
+
+    const decoded = JSON.parse(Buffer.from(parsed.nextCursor as string, 'base64url').toString('utf8'));
+    expect(decoded.q).toBe(microPrecise);
+  });
+
+  // Review fix (#3828): ai_agents is dual-ownership (#2135) — a partner-wide
+  // agent's row is RLS-invisible to an org-scoped caller even though the run
+  // it produced (plain org-scoped) stays visible. The route left-joins
+  // ai_agents so the run survives; agentName comes back null instead.
+  it('includes a run whose agent row is RLS-invisible (partner-wide agent), with agentName null', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      {
+        id: RUN_ID, agentId: AGENT_ID, agentName: null, deviceId: DEVICE_ID,
+        status: 'completed', triggerKind: 'schedule', runVerdict: 'remediated',
+        queuedAt: new Date('2026-08-28T10:00:00.000Z'),
+        queuedAtRaw: '2026-08-28T10:00:00.000000Z',
+        finishedAt: new Date('2026-08-28T10:00:30.000Z'),
+        costCents: 12,
+      },
+    ]));
+
+    const res = await buildApp().request('/ai-agents/runs');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].id).toBe(RUN_ID);
+    expect(body.data[0].agentName).toBeNull();
   });
 
   it('rejects a malformed cursor with 400 before touching the database', async () => {

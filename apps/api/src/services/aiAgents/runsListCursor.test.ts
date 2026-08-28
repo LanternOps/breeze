@@ -15,10 +15,23 @@ describe('runsListCursor (#3828)', () => {
   });
 
   it('builds a cursor from a row via runsCursorFromRow, matching encode/decode round-trip', () => {
-    const row = { id: RUN_ID, queuedAt: new Date('2026-08-28T10:00:00.000Z') };
+    const row = { id: RUN_ID, queuedAtRaw: '2026-08-28T10:00:00.000000Z' };
     const cursor = runsCursorFromRow(row);
-    expect(cursor).toEqual({ v: 1, q: '2026-08-28T10:00:00.000Z', id: RUN_ID });
+    expect(cursor).toEqual({ v: 1, q: '2026-08-28T10:00:00.000000Z', id: RUN_ID });
     expect(decodeRunsCursor(encodeRunsCursor(cursor))).toEqual(cursor);
+  });
+
+  // Review fix (#3828): runsCursorFromRow must carry the row's full
+  // microsecond-precision text verbatim — never derive it from (or truncate
+  // it through) a JS Date, which only has millisecond resolution. Two rows
+  // that queue in the same millisecond but different microseconds must
+  // produce distinguishable cursors, or the keyset walk silently skips one.
+  it('preserves microsecond precision through runsCursorFromRow — does not round-trip via a JS Date', () => {
+    const a = runsCursorFromRow({ id: RUN_ID, queuedAtRaw: '2026-08-28T10:00:00.123456Z' });
+    const b = runsCursorFromRow({ id: RUN_ID, queuedAtRaw: '2026-08-28T10:00:00.123200Z' });
+    expect(a.q).toBe('2026-08-28T10:00:00.123456Z');
+    expect(b.q).toBe('2026-08-28T10:00:00.123200Z');
+    expect(a.q).not.toBe(b.q);
   });
 
   it('returns null for an absent token', () => {

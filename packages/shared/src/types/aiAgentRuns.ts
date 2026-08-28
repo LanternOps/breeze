@@ -52,8 +52,16 @@ export interface AiAgentRunListItemDto {
   schemaVersion: 1;
   id: string;
   agentId: string;
-  /** Joined from `ai_agents.name` — never assume the caller already has the agent list loaded. */
-  agentName: string;
+  /**
+   * Left-joined from `ai_agents.name` — null when the agent row is invisible
+   * under the caller's RLS context. `ai_agents` is a dual-ownership table
+   * (#2135): an org-scoped caller's `breeze_has_partner_access` is always
+   * false (their token carries no accessible partner ids), so a partner-wide
+   * agent's row never joins for them even though the run itself (plain
+   * org-scoped) does. Never assume the caller already has the agent list
+   * loaded even when this is non-null.
+   */
+  agentName: string | null;
   deviceId: string | null;
   status: AiAgentRunStatus;
   triggerKind: AiAgentTriggerKind;
@@ -154,8 +162,10 @@ export interface AiAgentRunDetailDto {
   schemaVersion: 1;
   id: string;
   agentId: string;
-  agentName: string;
-  agentKind: AiAgentKind;
+  /** Left-joined from `ai_agents` — null under the same RLS-visibility gap
+   *  documented on `AiAgentRunListItemDto.agentName` above. */
+  agentName: string | null;
+  agentKind: AiAgentKind | null;
   orgId: string;
   deviceId: string | null;
   deviceHostname: string | null;

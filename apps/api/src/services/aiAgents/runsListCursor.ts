@@ -22,7 +22,17 @@ import { UUID_REGEX } from '../../utils/uuid';
  *  bumped if the shape ever changes incompatibly. */
 export interface AiAgentRunsCursor {
   v: 1;
-  /** Last-row `queued_at`, ISO-8601. */
+  /**
+   * Last-row `queued_at`, ISO-8601 — MUST carry full microsecond precision.
+   * `ai_agent_runs.queued_at` is a bare `timestamptz` (microsecond
+   * resolution, no precision modifier), while a JS `Date` truncates to
+   * milliseconds. Building this from `row.queuedAt.toISOString()` would
+   * round the true value down, so the keyset predicate (below) could exclude
+   * a sibling row that queued in the same millisecond as the page boundary —
+   * permanently, with no duplicate and no error. The route projects a
+   * `queuedAtRaw` text column via `to_char(...)` specifically to avoid ever
+   * routing this value through a `Date`.
+   */
   q: string;
   /** Tiebreaker — last-row `ai_agent_runs.id`. */
   id: string;
@@ -65,7 +75,14 @@ export function buildRunsKeysetPredicate(cursor: AiAgentRunsCursor): SQL {
   return sql`(${aiAgentRuns.queuedAt}, ${aiAgentRuns.id}) < (${cursor.q}::timestamptz, ${cursor.id}::uuid)`;
 }
 
-/** Pull the cursor-shaped `{q, id}` pair out of the last-returned row. */
-export function runsCursorFromRow(row: { id: string; queuedAt: Date }): AiAgentRunsCursor {
-  return { v: 1, q: row.queuedAt.toISOString(), id: row.id };
+/**
+ * Pull the cursor-shaped `{q, id}` pair out of the last-returned row.
+ * Deliberately takes `queuedAtRaw` — the microsecond-precision `to_char(...)`
+ * text projected by the route's query — NOT a JS `Date`. A `Date` truncates
+ * to millisecond precision (see `AiAgentRunsCursor.q`'s docstring); building
+ * the cursor from one would silently drop same-millisecond siblings from the
+ * next page.
+ */
+export function runsCursorFromRow(row: { id: string; queuedAtRaw: string }): AiAgentRunsCursor {
+  return { v: 1, q: row.queuedAtRaw, id: row.id };
 }

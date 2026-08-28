@@ -249,4 +249,16 @@ describe('buildRunTrace — safe projection (#3828)', () => {
     expect(detail.deviceId).toBeNull();
     expect(detail.deviceHostname).toBeNull();
   });
+
+  // Review fix (#3828): the route left-joins ai_agents (not innerJoin) because
+  // a partner-wide agent's row (#2135) is RLS-invisible to an org-scoped
+  // caller even though the run it produced stays visible. `agent: null` is
+  // how that shows up here — the run must still produce a full DTO, with
+  // agentName/agentKind null rather than the run vanishing (404).
+  it('is null for agentName/agentKind when the agent is null (RLS-hidden partner-wide agent)', () => {
+    const detail = buildRunTrace(baseRun(), null, DEVICE, [], []);
+    expect(detail.agentName).toBeNull();
+    expect(detail.agentKind).toBeNull();
+    expect(detail.id).toBe(RUN_ID);
+  });
 });
