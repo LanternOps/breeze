@@ -21,7 +21,7 @@
  * This suite proves both hold for every `manage_tickets` mutation action.
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { checkAgentGuardrails, type AgentGuardrailPolicy } from '../aiGuardrails';
+import { checkAgentGuardrails, TIER2_ACTIONS, type AgentGuardrailPolicy } from '../aiGuardrails';
 
 const BASE_POLICY: AgentGuardrailPolicy = {
   enabled: true,
@@ -36,21 +36,13 @@ const BASE_POLICY: AgentGuardrailPolicy = {
   deviceSiteId: null,
 };
 
-// Every mutating manage_tickets action (TIER2_ACTIONS.manage_tickets in
-// aiGuardrails.ts). list/get are deliberately excluded — they are read-only
-// and legitimately reach 'allow', which is correct and not what this suite
-// is about.
-const MUTATING_ACTIONS = [
-  'create',
-  'comment',
-  'assign',
-  'update_status',
-  'update_fields',
-  'link_alert',
-  'unlink_alert',
-  'create_from_alert',
-  'edit_comment',
-] as const;
+// Every mutating manage_tickets action: all of TIER2_ACTIONS.manage_tickets
+// (aiGuardrails.ts — derived, not restated, so this suite can't silently
+// drift from the real tier table) plus the Tier-3 `move_org` (tenant-shape
+// mutation, gated separately from the TIER2 table). list/get are
+// deliberately excluded — they are read-only and legitimately reach 'allow',
+// which is correct and not what this suite is about.
+const MUTATING_ACTIONS = [...TIER2_ACTIONS.manage_tickets!, 'move_org'] as const;
 
 beforeEach(() => {
   process.env.BREEZE_AI_AGENTS_ENABLED = 'true';

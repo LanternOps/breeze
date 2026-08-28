@@ -9,6 +9,7 @@
  * origin-based loop guard, and calling admission with the right shape.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../../db', () => ({
   db: { select: vi.fn() },
@@ -49,13 +50,21 @@ function ticketCreatedEvent(over: Partial<BreezeEvent> = {}): BreezeEvent {
   } as BreezeEvent;
 }
 
+// Captures the most recent `.where()` mock so a test can pull its call
+// argument and compile it to real SQL (see the `loop guard WHERE clause`
+// test below) — asserting on the predicate that DEFINES the guard, not just
+// on which rows the (entirely mocked) query happens to resolve to.
+let lastWhereMock: ReturnType<typeof vi.fn> | undefined;
+
 /** db.select().from().where().limit() -> rows (the origin-guard probe). */
 function mockOriginProbe(rows: unknown[]) {
+  const whereMock = vi.fn().mockReturnValue({
+    limit: vi.fn().mockResolvedValue(rows),
+  });
+  lastWhereMock = whereMock;
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(rows),
-      }),
+      where: whereMock,
     }),
   } as never);
 }
@@ -100,6 +109,31 @@ describe('handleTicketCreatedEvent', () => {
     await handleTicketCreatedEvent(ticketCreatedEvent());
 
     expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  // Compiles the actual `.where()` argument to real parameterized SQL via
+  // `PgDialect().sqlToQuery(...)` and asserts on both `.sql` and `.params` —
+  // a bare `toContain(...)` substring check (or asserting only on the rows
+  // the mock resolves to) passes identically whether the code wrote
+  // `and()`/`or()` correctly, swapped them, or dropped the ticket-id scope
+  // entirely, so structure is what's under test, not just presence. The
+  // mocked schema's columns (see the `vi.mock('../../db/schema', ...)`
+  // above) are plain strings rather than real Drizzle Column instances,
+  // which is exactly what compiles them to bound parameters below instead of
+  // quoted identifiers.
+  it('loop guard WHERE clause: scopes to the ticket AND requires the origin OR (non-human origin OR a set agent_run_id)', async () => {
+    mockOriginProbe([]);
+
+    await handleTicketCreatedEvent(ticketCreatedEvent());
+
+    const whereArg = lastWhereMock!.mock.calls[0]?.[0];
+    const { sql: sqlText, params } = new PgDialect().sqlToQuery(whereArg as never);
+
+    // `($1 = $2 and ($3 <> $4 or $5 is not null))` — the ticket-id scope
+    // ANDed with an OR of the two origin arms, i.e. deleting either the
+    // ticket-id scope, the AND, or either OR arm changes this string.
+    expect(sqlText).toBe('($1 = $2 and ($3 <> $4 or $5 is not null))');
+    expect(params).toEqual(['ticket_id', TICKET_ID, 'origin_principal_kind', 'user', 'agent_run_id']);
   });
 
   it('a duplicate delivery of the same ticket.created event calls admission twice with the same dedupe key (admission itself collapses it)', async () => {
