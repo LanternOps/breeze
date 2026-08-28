@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import { z } from 'zod';
+import { AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
 
 const {
   selectMock,
@@ -357,6 +359,330 @@ describe('GET /ai-agents/policy-decidable-keys (Task 5, #3827)', () => {
     hasPermMock.mockReturnValue(false);
     const res = await buildApp().request('/ai-agents/policy-decidable-keys');
     expect(res.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wave 6 PR 1 (#3828) — execution-trace runs list + detail
+// ---------------------------------------------------------------------------
+
+/**
+ * A minimal chainable stand-in for a Drizzle `db.select(...)` call. Every
+ * chain method returns the same object; `then` resolves it to `rows` so
+ * `await db.select({...}).from(...).where(...).orderBy(...).limit(...)`
+ * resolves exactly like the real query would. The route under test never
+ * inspects the arguments passed to `.where`/`.orderBy`/etc in these unit
+ * tests — those are exercised for real (no mocking) inside
+ * runsListCursor.ts/runTrace.ts's own suites and by the RLS/integration
+ * contract tests.
+ */
+function selectChain<T>(rows: T) {
+  const chain = {
+    from: () => chain,
+    innerJoin: () => chain,
+    leftJoin: () => chain,
+    where: () => chain,
+    orderBy: () => chain,
+    limit: () => chain,
+    offset: () => chain,
+    then: (resolve: (v: T) => unknown, reject?: (e: unknown) => unknown) =>
+      Promise.resolve(rows).then(resolve, reject),
+  };
+  return chain;
+}
+
+// Strict response-shape schemas (DTO rule, Global Constraints): a route that
+// starts spreading a raw row again — pulling in dedupeKey, policySnapshot,
+// the outcome column itself, sessionId, intentIds, or any tool-input field —
+// fails `.strict().parse()` here even though the specific leaked field was
+// never anticipated by name.
+const traceEntryResponseSchema = z.union([
+  z.object({
+    kind: z.literal('executed'),
+    tool: z.string(),
+    action: z.string().optional(),
+    result: z.enum(['ok', 'failed']),
+    durationMs: z.number(),
+    execution: z.enum(['succeeded', 'failed', 'timeout', 'unknown']).optional(),
+    verification: z.enum(['passed', 'failed', 'inconclusive', 'skipped']).optional(),
+    verifyDetail: z.string().optional(),
+    actOpKey: z.string().optional(),
+    actTargetName: z.string().optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('proposed'),
+    tool: z.string(),
+    action: z.string().optional(),
+    intentId: z.string().optional(),
+    intentError: z.string().optional(),
+    downgradeReason: z.string().optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('denied'),
+    tool: z.string(),
+    reason: z.string(),
+  }).strict(),
+]);
+
+const runDetailResponseSchema = z.object({
+  data: z.object({
+    schemaVersion: z.literal(1),
+    id: z.string(),
+    agentId: z.string(),
+    agentName: z.string(),
+    agentKind: z.string(),
+    orgId: z.string(),
+    deviceId: z.string().nullable(),
+    deviceHostname: z.string().nullable(),
+    alertId: z.string().nullable(),
+    triggerKind: z.string(),
+    modeAtStart: z.string(),
+    status: z.string(),
+    summary: z.string().nullable(),
+    runVerdict: z.string().nullable(),
+    turnCount: z.number(),
+    costCents: z.number(),
+    errorCode: z.string().nullable(),
+    queuedAt: z.string(),
+    startedAt: z.string().nullable(),
+    finishedAt: z.string().nullable(),
+    budgetExceeded: z.boolean(),
+    wallClockExceeded: z.boolean(),
+    maxTurnsExceeded: z.boolean(),
+    trace: z.array(traceEntryResponseSchema),
+    ledger: z.array(z.object({
+      toolName: z.string(),
+      status: z.string(),
+      durationMs: z.number().nullable(),
+      createdAt: z.string(),
+      completedAt: z.string().nullable(),
+      errorMessage: z.string().nullable(),
+    }).strict()),
+    intents: z.array(z.object({
+      id: z.string(),
+      status: z.string(),
+      actionName: z.string(),
+      approvalScope: z.string(),
+      decidedVia: z.string().nullable(),
+    }).strict()),
+  }).strict(),
+}).strict();
+
+const runListResponseSchema = z.object({
+  data: z.array(z.object({
+    schemaVersion: z.literal(1),
+    id: z.string(),
+    agentId: z.string(),
+    agentName: z.string(),
+    deviceId: z.string().nullable(),
+    status: z.string(),
+    triggerKind: z.string(),
+    runVerdict: z.string().nullable(),
+    queuedAt: z.string(),
+    finishedAt: z.string().nullable(),
+    costCents: z.number(),
+  }).strict()),
+  nextCursor: z.string().nullable(),
+}).strict();
+
+function runRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: RUN_ID,
+    agentId: AGENT_ID,
+    orgId: ORG_ID,
+    deviceId: DEVICE_ID,
+    alertId: null,
+    sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    triggerKind: 'manual',
+    modeAtStart: 'shadow',
+    status: 'completed',
+    summary: 'Restarted the print spooler.',
+    outcome: {
+      findings: [],
+      executedActions: [{
+        tool: 'manage_services', action: 'restart', executionId: 'exec-1',
+        result: 'ok', durationMs: 340, execution: 'succeeded', verification: 'passed',
+        verifyDetail: 'service running', actOpKey: 'manage_services.restart', actTargetName: 'Spooler',
+      }],
+      proposedActions: [{
+        tool: 'run_script', action: 'invoke',
+        args: { scriptId: 'abc', secretParam: 'do-not-leak-me' },
+        intentId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      }],
+      deniedActions: [{ tool: 'delete_registry_key', reason: 'protected resource' }],
+      toolExecutionCount: 2,
+      runVerdict: 'partial',
+    },
+    intentIds: ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'],
+    turnCount: 3,
+    costCents: 12,
+    errorCode: null,
+    queuedAt: new Date('2026-08-28T10:00:00.000Z'),
+    startedAt: new Date('2026-08-28T10:00:01.000Z'),
+    finishedAt: new Date('2026-08-28T10:00:30.000Z'),
+    agentName: 'Triage',
+    agentKind: 'triage',
+    deviceHostname: 'WKS-042',
+    ...overrides,
+  };
+}
+
+describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
+  it('returns 404 for a run outside the caller\'s org (or that does not exist)', async () => {
+    selectMock.mockReturnValueOnce(selectChain([]));
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Run not found' });
+  });
+
+  it('rejects a non-uuid run id without touching the database', async () => {
+    const res = await buildApp().request('/ai-agents/runs/not-a-uuid');
+    expect(res.status).toBe(404);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('stitches run + ledger + intents into the safe-projected trace DTO, matching the strict wire schema', async () => {
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow()])) // run + agent + device join
+      .mockReturnValueOnce(selectChain([{
+        toolName: 'run_script', status: 'completed', durationMs: 210,
+        createdAt: new Date('2026-08-28T10:00:05.000Z'),
+        completedAt: new Date('2026-08-28T10:00:06.000Z'),
+        errorMessage: null,
+      }])) // ledger
+      .mockReturnValueOnce(selectChain([{
+        id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        status: 'pending_approval',
+        actionName: 'run_script.invoke',
+        approvalScope: 'four_eyes',
+        decidedVia: null,
+      }])); // intents
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    const parsed = runDetailResponseSchema.parse(body);
+    expect(parsed.data.id).toBe(RUN_ID);
+    expect(parsed.data.agentName).toBe('Triage');
+    expect(parsed.data.deviceHostname).toBe('WKS-042');
+    expect(parsed.data.runVerdict).toBe('partial');
+    expect(parsed.data.trace).toHaveLength(3);
+    expect(parsed.data.ledger).toHaveLength(1);
+    expect(parsed.data.intents).toHaveLength(1);
+
+    // The leak tripwire: the raw tool input the model proposed
+    // (`{ scriptId: 'abc', secretParam: 'do-not-leak-me' }`) must never reach
+    // the wire, under any key name.
+    const json = JSON.stringify(body);
+    for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+      expect(json).not.toContain(`"${forbidden}"`);
+    }
+    expect(json).not.toContain('do-not-leak-me');
+    expect(json).not.toContain('scriptId');
+  });
+
+  it('skips the ledger/intents queries when the run has no session and no intent ids', async () => {
+    selectMock.mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.ledger).toEqual([]);
+    expect(body.data.intents).toEqual([]);
+    // Only the run-row select ran — no second/third db.select for ledger/intents.
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request('/ai-agents/runs');
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('returns a page with no nextCursor when fewer rows than the limit come back', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      {
+        id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', deviceId: DEVICE_ID,
+        status: 'completed', triggerKind: 'manual', runVerdict: 'remediated',
+        queuedAt: new Date('2026-08-28T10:00:00.000Z'),
+        finishedAt: new Date('2026-08-28T10:00:30.000Z'),
+        costCents: 12,
+      },
+    ]));
+
+    const res = await buildApp().request('/ai-agents/runs');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runListResponseSchema.parse(body);
+    expect(parsed.data).toHaveLength(1);
+    expect(parsed.nextCursor).toBeNull();
+    expect(parsed.data[0]).toMatchObject({ id: RUN_ID, agentName: 'Triage', runVerdict: 'remediated' });
+  });
+
+  it('returns a nextCursor and trims the peeked row when a full extra page comes back', async () => {
+    const makeRow = (i: number) => ({
+      id: `cccccccc-cccc-4ccc-8ccc-${String(i).padStart(12, '0')}`,
+      agentId: AGENT_ID, agentName: 'Triage', deviceId: null,
+      status: 'completed', triggerKind: 'schedule', runVerdict: null,
+      queuedAt: new Date(Date.UTC(2026, 7, 28, 10, 0, i)),
+      finishedAt: null, costCents: 0,
+    });
+    // Default limit is 25 — return 26 rows to trigger the peek.
+    const rows = Array.from({ length: 26 }, (_, i) => makeRow(i));
+    selectMock.mockReturnValueOnce(selectChain(rows));
+
+    const res = await buildApp().request('/ai-agents/runs');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runListResponseSchema.parse(body);
+    expect(parsed.data).toHaveLength(25);
+    expect(parsed.nextCursor).not.toBeNull();
+  });
+
+  it('rejects a malformed cursor with 400 before touching the database', async () => {
+    const res = await buildApp().request('/ai-agents/runs?cursor=not-valid-base64url!!!');
+    expect(res.status).toBe(400);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a limit above the 50 ceiling', async () => {
+    const res = await buildApp().request('/ai-agents/runs?limit=51');
+    expect(res.status).toBe(400);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unrecognized status filter', async () => {
+    const res = await buildApp().request('/ai-agents/runs?status=bogus_status');
+    expect(res.status).toBe(400);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('never carries an outcome/trace payload on the list item, even though runVerdict is derived from the outcome column', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      {
+        id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', deviceId: DEVICE_ID,
+        status: 'completed', triggerKind: 'manual', runVerdict: 'remediated',
+        queuedAt: new Date('2026-08-28T10:00:00.000Z'),
+        finishedAt: new Date('2026-08-28T10:00:30.000Z'),
+        costCents: 12,
+      },
+    ]));
+    const res = await buildApp().request('/ai-agents/runs');
+    const body = await res.json();
+    expect(body.data[0]).not.toHaveProperty('trace');
+    expect(body.data[0]).not.toHaveProperty('outcome');
+    expect(body.data[0]).not.toHaveProperty('ledger');
   });
 });
 

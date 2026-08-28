@@ -1,17 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import {
   AI_AGENT_KINDS,
+  AI_AGENT_RUN_DTO_SCHEMA_VERSION,
+  AI_AGENT_RUN_STATUSES,
+  type AgentRunVerdict,
   type AiAgentDto,
+  type AiAgentRunListItemDto,
   createAiAgentSchema,
   triggerAgentRunSchema,
   updateAiAgentSchema,
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { db } from '../db';
-import { aiAgentRuns, type AiAgentRow } from '../db/schema';
+import { actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices, type AiAgentRow } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE, PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
 import { AgentAccessDeniedError } from '../services/aiAgents/access';
@@ -25,6 +29,10 @@ import { POLICY_DECIDABLE_TIER3 } from '../services/actionIntents/policyDecidabl
 import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
 import { InvalidAgentRecipientsError } from '../services/aiAgents/recipients';
 import { SUPPORTED_AGENT_MODES } from '../services/aiAgents/constants';
+import { buildRunTrace } from '../services/aiAgents/runTrace';
+import {
+  buildRunsKeysetPredicate, decodeRunsCursor, encodeRunsCursor, runsCursorFromRow,
+} from '../services/aiAgents/runsListCursor';
 import { verifyDeviceAccess } from '../services/aiTools';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
@@ -212,6 +220,118 @@ aiAgentsRoutes.get('/policy-decidable-keys', scopes, requireAiRead, async (c) =>
   });
 });
 
+/**
+ * The wire shape of one `GET /runs` row. Deliberately NOT `{ ...row }` for
+ * the same reason `mapRow` (above) isn't: this is a list-item projection, no
+ * outcome payload at all — the detail route below is where a caller goes for
+ * the trace, ledger, and intents.
+ */
+function mapRunListItem(row: {
+  id: string;
+  agentId: string;
+  agentName: string;
+  deviceId: string | null;
+  status: AiAgentRunListItemDto['status'];
+  triggerKind: AiAgentRunListItemDto['triggerKind'];
+  runVerdict: string | null;
+  queuedAt: Date;
+  finishedAt: Date | null;
+  costCents: number;
+}): AiAgentRunListItemDto {
+  return {
+    schemaVersion: AI_AGENT_RUN_DTO_SCHEMA_VERSION,
+    id: row.id,
+    agentId: row.agentId,
+    agentName: row.agentName,
+    deviceId: row.deviceId,
+    status: row.status,
+    triggerKind: row.triggerKind,
+    runVerdict: (row.runVerdict as AgentRunVerdict | null) ?? null,
+    queuedAt: row.queuedAt.toISOString(),
+    finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
+    costCents: row.costCents,
+  };
+}
+
+/**
+ * Org-wide keyset-paginated runs list (Wave 6 PR 1, #3828) — every run this
+ * caller's accessible orgs produced, across every agent, newest first.
+ * Distinct from `GET /:id/runs` (agent-scoped, offset-limited) below: that
+ * route answers "what has THIS agent done", this one answers "what has
+ * happened across the fleet", which is what the runs list page (Task 4)
+ * needs. Registered ahead of `GET /:id` — a literal `runs` path segment must
+ * never fall into the `:id` param route.
+ */
+aiAgentsRoutes.get(
+  '/runs',
+  scopes,
+  requireAiRead,
+  zValidator('query', z.object({
+    cursor: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(50).default(25),
+    agentId: z.string().guid().optional(),
+    status: z.enum(AI_AGENT_RUN_STATUSES).optional(),
+  })),
+  async (c) => {
+    const auth = c.get('auth');
+    const { cursor: cursorToken, limit, agentId, status } = c.req.valid('query');
+
+    const cursor = decodeRunsCursor(cursorToken);
+    if (cursorToken && !cursor) {
+      return c.json({ error: 'Invalid or malformed cursor' }, 400);
+    }
+
+    const conditions: (SQL | undefined)[] = [auth.orgCondition(aiAgentRuns.orgId)];
+    if (agentId) conditions.push(eq(aiAgentRuns.agentId, agentId));
+    if (status) conditions.push(eq(aiAgentRuns.status, status));
+    if (cursor) conditions.push(buildRunsKeysetPredicate(cursor));
+
+    // Peek one extra row past `limit` to detect "is there a next page" —
+    // mirrors routes/devices/core.ts's cursor-mode convention. The
+    // (limit+1)th row becomes the nextCursor seed and is trimmed from data.
+    const rows = await db
+      .select({
+        id: aiAgentRuns.id,
+        agentId: aiAgentRuns.agentId,
+        agentName: aiAgents.name,
+        deviceId: aiAgentRuns.deviceId,
+        status: aiAgentRuns.status,
+        triggerKind: aiAgentRuns.triggerKind,
+        // Pulled straight out of the outcome jsonb by key rather than
+        // selecting the whole column — this is a list endpoint, and the
+        // full outcome (which is where the SAFE-projection risk lives) has
+        // no business leaving Postgres for a row that isn't the one the
+        // caller asked to see in detail.
+        runVerdict: sql<string | null>`${aiAgentRuns.outcome}->>'runVerdict'`,
+        queuedAt: aiAgentRuns.queuedAt,
+        finishedAt: aiAgentRuns.finishedAt,
+        costCents: aiAgentRuns.costCents,
+      })
+      .from(aiAgentRuns)
+      .innerJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
+      .where(and(...conditions))
+      .orderBy(desc(aiAgentRuns.queuedAt), desc(aiAgentRuns.id))
+      .limit(limit + 1);
+
+    let nextCursor: string | null = null;
+    let pageRows = rows;
+    if (rows.length > limit) {
+      pageRows = rows.slice(0, limit);
+      const last = pageRows[pageRows.length - 1];
+      if (last) nextCursor = encodeRunsCursor(runsCursorFromRow(last));
+    }
+
+    return c.json({ data: pageRows.map(mapRunListItem), nextCursor });
+  },
+);
+
+/**
+ * The stitched execution-trace detail (Wave 6 PR 1, #3828): the run row's
+ * display-safe fields plus the SAFE outcome projection, execution ledger,
+ * and linked-intent summary — see `buildRunTrace` (services/aiAgents/runTrace.ts)
+ * for the safety property this route depends on. Replaces the prior raw-row
+ * response; org scoping and 404 semantics are unchanged.
+ */
 aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   const runId = uuidParam(c, 'runId');
   if (!runId) return c.json({ error: 'Run not found' }, 404);
@@ -223,12 +343,82 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   // policy's every branch is false and the read returns nothing. The predicate
   // stays because the unit-test path mocks the db and has no RLS at all.
   const [run] = await db
-    .select()
+    .select({
+      id: aiAgentRuns.id,
+      agentId: aiAgentRuns.agentId,
+      orgId: aiAgentRuns.orgId,
+      deviceId: aiAgentRuns.deviceId,
+      alertId: aiAgentRuns.alertId,
+      sessionId: aiAgentRuns.sessionId,
+      triggerKind: aiAgentRuns.triggerKind,
+      modeAtStart: aiAgentRuns.modeAtStart,
+      status: aiAgentRuns.status,
+      summary: aiAgentRuns.summary,
+      outcome: aiAgentRuns.outcome,
+      intentIds: aiAgentRuns.intentIds,
+      turnCount: aiAgentRuns.turnCount,
+      costCents: aiAgentRuns.costCents,
+      errorCode: aiAgentRuns.errorCode,
+      queuedAt: aiAgentRuns.queuedAt,
+      startedAt: aiAgentRuns.startedAt,
+      finishedAt: aiAgentRuns.finishedAt,
+      agentName: aiAgents.name,
+      agentKind: aiAgents.kind,
+      deviceHostname: devices.hostname,
+    })
     .from(aiAgentRuns)
+    .innerJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
+    .leftJoin(devices, eq(aiAgentRuns.deviceId, devices.id))
     .where(and(eq(aiAgentRuns.id, runId), auth.orgCondition(aiAgentRuns.orgId)))
     .limit(1);
   if (!run) return c.json({ error: 'Run not found' }, 404);
-  return c.json({ data: run });
+
+  // The execution ledger is keyed by session, not run — `run.session_id` is
+  // set once, inside `driveSdkLoop`, right after the model resolves
+  // (runLoop.ts), and stays null for the lifetime of the run if that
+  // best-effort write itself failed.
+  const ledgerRows = run.sessionId
+    ? await db
+      .select({
+        toolName: aiToolExecutions.toolName,
+        status: aiToolExecutions.status,
+        durationMs: aiToolExecutions.durationMs,
+        createdAt: aiToolExecutions.createdAt,
+        completedAt: aiToolExecutions.completedAt,
+        errorMessage: aiToolExecutions.errorMessage,
+      })
+      .from(aiToolExecutions)
+      .where(eq(aiToolExecutions.sessionId, run.sessionId))
+      .orderBy(asc(aiToolExecutions.createdAt))
+    : [];
+
+  // `run.intent_ids` only ever lists PENDING intents (see the column's
+  // docstring in schema/aiAgents.ts and OutcomeProposedAction.intentId's in
+  // runLoop.ts) — an intent that was decided or expired drops out of the
+  // array, so this summary reflects "what's still awaiting a human", not
+  // the full proposal history. The org predicate is defence-in-depth beside
+  // RLS, matching the run read above.
+  const intentRows = run.intentIds.length > 0
+    ? await db
+      .select({
+        id: actionIntents.id,
+        status: actionIntents.status,
+        actionName: actionIntents.actionName,
+        approvalScope: actionIntents.approvalScope,
+        decidedVia: actionIntents.decidedVia,
+      })
+      .from(actionIntents)
+      .where(and(inArray(actionIntents.id, run.intentIds), auth.orgCondition(actionIntents.orgId)))
+    : [];
+
+  const detail = buildRunTrace(
+    run,
+    { name: run.agentName, kind: run.agentKind },
+    run.deviceHostname ? { hostname: run.deviceHostname } : null,
+    ledgerRows,
+    intentRows,
+  );
+  return c.json({ data: detail });
 });
 
 aiAgentsRoutes.get('/:id', scopes, requireAiRead, async (c) => {
