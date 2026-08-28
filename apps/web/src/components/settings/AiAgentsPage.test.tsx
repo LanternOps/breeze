@@ -141,6 +141,21 @@ describe('AiAgentsPage', () => {
     expect(await screen.findByTestId('ai-agent-mode-act')).not.toBeDisabled();
   });
 
+  it("does NOT permanently disable the 'act' mode option on the CREATE form — falls back to SUPPORTED_AGENT_MODES, not [] (final-review fix, #3826)", async () => {
+    // Create has no `agent` DTO yet (agent === null until the first save), so
+    // there is no `supportedModes` to read from a real row — the form must
+    // fall back to the shared `SUPPORTED_AGENT_MODES` constant, not an empty
+    // array, or an operator can never create an act-mode agent through the UI
+    // even once the API accepts one.
+    mockEndpoints();
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-create-button'));
+    fireEvent.click(screen.getByTestId('ai-agent-create-button'));
+
+    expect(await screen.findByTestId('ai-agent-mode-act')).not.toBeDisabled();
+  });
+
   it('shows the act warning banner and requires acknowledgement before saving a transition into act mode', async () => {
     mockEndpoints([{ ...PARTNER_AGENT, supportedModes: ['off', 'shadow', 'act'] }]);
     render(<AiAgentsPage />);

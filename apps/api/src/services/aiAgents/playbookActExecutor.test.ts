@@ -64,6 +64,21 @@ vi.mock('../../db', () => ({
       dbMockState.ambientContext = previous;
     }
   }),
+  // Review fix (#3826 final-review): `withAuthDbAccessContext`
+  // (middleware/auth.ts) — which every `executeToolFn` dispatch now goes
+  // through — calls this directly. Mirrors `withSystemDbAccessContext`'s
+  // save/restore shape but records whatever context object it was given so
+  // tests can assert a non-system, agent-scoped context was active at
+  // dispatch time.
+  withDbAccessContext: vi.fn(async (ctx: unknown, fn: () => Promise<unknown>) => {
+    const previous = dbMockState.ambientContext;
+    dbMockState.ambientContext = ctx as { scope: string };
+    try {
+      return await fn();
+    } finally {
+      dbMockState.ambientContext = previous;
+    }
+  }),
 }));
 
 import { ACT_MANIFEST } from './actManifest';
@@ -132,6 +147,85 @@ describe('runPlaybookSteps — diagnose', () => {
     expect(outcome.verification).toBe('skipped');
     expect(deps.revalidate).not.toHaveBeenCalled();
     expect(outcome.results[0]).toMatchObject({ status: 'completed', toolUsed: 'analyze_disk_usage' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Final-review fix (#3826): every `executeToolFn` dispatch must run with the
+// agent's own tenant-scoped DB access context active — not the system
+// context `reloadAndVerifyDigest`/`insertPlaybookExecutionRow` use, and not
+// no context at all (which is what `getCurrentDb()` falls back to unscoped,
+// and is exactly what made `verifyDeviceAccess` — and every other
+// RLS-guarded read `executeTool` performs — deny outright). These tests
+// drive `runPlaybookSteps` directly and assert, from INSIDE the stubbed
+// `executeToolFn`, that a real (non-system, non-undefined) context is open
+// at the moment of dispatch — the thing the pre-fix code never provided.
+// ---------------------------------------------------------------------------
+describe('runPlaybookSteps — DB access context wiring', () => {
+  const SCOPED_AGENT_AUTH = {
+    principal: { kind: 'ai_agent', agentId: 'agent-1', runId: 'run-1' },
+    user: { id: 'agent-1', email: 'agent+agent-1@breeze.internal', name: 'Agent', isPlatformAdmin: false },
+    token: null,
+    partnerId: 'partner-1',
+    orgId: 'org-1',
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+  } as unknown as AuthContext;
+
+  it('opens an org-scoped DB access context around a diagnose dispatch, and closes it after', async () => {
+    let scopeDuringDispatch: string | undefined;
+    const deps = makeDeps({
+      executeToolFn: vi.fn(async () => {
+        scopeDuringDispatch = dbMockState.ambientContext?.scope;
+        return JSON.stringify({ ok: true });
+      }),
+    });
+    const steps: PlaybookStep[] = [
+      { type: 'diagnose', name: 'baseline', description: '', tool: 'analyze_disk_usage', toolInput: { deviceId: 'device-1' } },
+    ];
+    await runPlaybookSteps(steps, {
+      run: RUN, agentAuth: SCOPED_AGENT_AUTH, deps, reserved: { count: 0 }, deadlineMs: FAR_FUTURE_DEADLINE,
+    });
+    expect(scopeDuringDispatch).toBe('organization');
+    expect(dbMockState.ambientContext).toBeUndefined();
+  });
+
+  it('opens an org-scoped DB access context around a mutating act-step dispatch', async () => {
+    let scopeDuringDispatch: string | undefined;
+    const deps = makeDeps({
+      revalidate: vi.fn(async () => okRevalidation(restartOp)),
+      executeToolFn: vi.fn(async () => {
+        scopeDuringDispatch = dbMockState.ambientContext?.scope;
+        return JSON.stringify({ status: 'completed' });
+      }),
+    });
+    const steps: PlaybookStep[] = [
+      {
+        type: 'act', name: 'restart svc', description: '', tool: 'manage_services',
+        toolInput: { deviceId: 'device-1', action: 'restart', serviceName: 'Spooler' },
+      },
+    ];
+    await runPlaybookSteps(steps, {
+      run: RUN, agentAuth: SCOPED_AGENT_AUTH, deps, reserved: { count: 0 }, deadlineMs: FAR_FUTURE_DEADLINE,
+    });
+    expect(scopeDuringDispatch).toBe('organization');
+  });
+
+  it('opens an org-scoped DB access context around the known-safe non-mutating disk_cleanup preview read', async () => {
+    let scopeDuringDispatch: string | undefined;
+    const deps = makeDeps({
+      executeToolFn: vi.fn(async () => {
+        scopeDuringDispatch = dbMockState.ambientContext?.scope;
+        return JSON.stringify({ candidates: [] });
+      }),
+    });
+    const steps: PlaybookStep[] = [
+      { type: 'act', name: 'preview', description: '', tool: 'disk_cleanup', toolInput: { deviceId: 'device-1', action: 'preview' } },
+    ];
+    await runPlaybookSteps(steps, {
+      run: RUN, agentAuth: SCOPED_AGENT_AUTH, deps, reserved: { count: 0 }, deadlineMs: FAR_FUTURE_DEADLINE,
+    });
+    expect(scopeDuringDispatch).toBe('organization');
   });
 });
 

@@ -713,6 +713,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     action: z.enum(['list', 'kill']),
     deviceId: uuid,
     processId: z.string().max(20).optional(),
+    // Optional at the tool-schema level (kill still works without it, same
+    // as before) — but required for the manage_processes.kill act-manifest
+    // entry to admit the call (actManifest.ts): a bare PID alone is never
+    // sufficient identity for an unattended kill.
+    processName: z.string().max(500).optional(),
     search: z.string().max(255).optional(),
     sortBy: z.enum(['cpu', 'memory', 'name', 'pid']).optional(),
     limit: z.number().int().min(1).max(200).optional(),

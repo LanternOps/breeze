@@ -316,7 +316,21 @@ export async function revalidateActExecution(
   // the model's device argument twice.
   const normalized = op.normalizeTarget(input, run.deviceId);
   if (!normalized.ok) {
-    return { ok: false, deny: `Act revalidation: ${normalized.reason}` };
+    // Review fix (#3826 final-review): a device-arg mismatch is a genuine
+    // safety boundary and stays a hard deny, fail-closed. Anything else
+    // (a missing/malformed identity field the manifest requires — e.g.
+    // `manage_processes.kill` sent with no `processName`, which the tool's
+    // own input_schema does not yet surface to the model on every call site)
+    // is a malformed-but-legitimate call for an op the manifest DOES cover:
+    // denying it outright would give act mode a NARROWER human-approval
+    // surface than shadow mode has for that exact same call. Downgrade to a
+    // proposal instead — the same "legitimate call, not currently
+    // executable unattended" shape Step 3.5 and the playbook-pin step below
+    // already use.
+    if (normalized.deviceMismatch) {
+      return { ok: false, deny: `Act revalidation: ${normalized.reason}` };
+    }
+    return { ok: false, downgrade: 'propose' };
   }
 
   // Step 3.5 (Task 6, #3826): per-script act authorization. run_script's

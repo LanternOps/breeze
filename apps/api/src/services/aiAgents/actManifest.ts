@@ -80,7 +80,7 @@ export interface ActOperation {
   normalizeTarget(
     input: Record<string, unknown>,
     runDeviceId: string,
-  ): { ok: true; target: ActTarget } | { ok: false; reason: string };
+  ): { ok: true; target: ActTarget } | { ok: false; reason: string; deviceMismatch?: boolean };
   verifySpec: ActVerifySpec;
 }
 
@@ -93,6 +93,24 @@ function deviceMatches(input: Record<string, unknown>, key: string, runDeviceId:
   return readString(input, key) === runDeviceId;
 }
 
+/**
+ * Review fix (#3826 final-review): a device-arg mismatch and a missing/
+ * malformed identity field are NOT the same failure and must not collapse to
+ * the same `actRevalidation.ts` outcome. A device mismatch means the model
+ * targeted (or drifted onto) a device this run is not pinned to — that is a
+ * genuine safety boundary, fail-closed, hard `deny`, never softened into a
+ * proposal. A missing identity field (no `serviceName`, no `processName`
+ * alongside a pid, empty `paths`, …) is a malformed-but-legitimate call for
+ * an op the manifest DOES cover — denying it outright would give act mode a
+ * NARROWER human-approval surface than shadow mode has for the exact same
+ * call, which is backwards (shadow always records a reviewable proposal).
+ * `deviceMismatch: true` is the discriminator `revalidateActExecution`'s
+ * step 3 branches on to decide deny vs. downgrade-to-propose.
+ */
+function deviceMismatch(reason: string): { ok: false; reason: string; deviceMismatch: true } {
+  return { ok: false, reason, deviceMismatch: true };
+}
+
 const manageServicesRestart: ActOperation = {
   key: 'manage_services.restart',
   toolName: 'manage_services',
@@ -101,7 +119,7 @@ const manageServicesRestart: ActOperation = {
   matches: (input) => input.action === 'restart',
   normalizeTarget: (input, runDeviceId) => {
     if (!deviceMatches(input, 'deviceId', runDeviceId)) {
-      return { ok: false, reason: 'deviceId does not match the run device' };
+      return deviceMismatch('deviceId does not match the run device');
     }
     const serviceName = readString(input, 'serviceName');
     if (!serviceName) return { ok: false, reason: 'serviceName is required' };
@@ -116,7 +134,7 @@ const diskCleanupExecute: ActOperation = {
   matches: (input) => input.action === 'execute',
   normalizeTarget: (input, runDeviceId) => {
     if (!deviceMatches(input, 'deviceId', runDeviceId)) {
-      return { ok: false, reason: 'deviceId does not match the run device' };
+      return deviceMismatch('deviceId does not match the run device');
     }
     const rawPaths = input.paths;
     if (!Array.isArray(rawPaths) || rawPaths.length === 0) {
@@ -137,7 +155,7 @@ const manageProcessesKill: ActOperation = {
   matches: (input) => input.action === 'kill',
   normalizeTarget: (input, runDeviceId) => {
     if (!deviceMatches(input, 'deviceId', runDeviceId)) {
-      return { ok: false, reason: 'deviceId does not match the run device' };
+      return deviceMismatch('deviceId does not match the run device');
     }
     const pid = readString(input, 'processId');
     if (!pid) return { ok: false, reason: 'processId is required' };
@@ -166,7 +184,12 @@ const runScript: ActOperation = {
     if (!scriptId) return { ok: false, reason: 'scriptId is required' };
     const deviceIds = input.deviceIds;
     if (!Array.isArray(deviceIds) || deviceIds.length !== 1 || deviceIds[0] !== runDeviceId) {
-      return { ok: false, reason: 'deviceIds must equal exactly [runDeviceId] under act mode' };
+      // Targeting (or drifting onto) a different/additional device is the
+      // device-mismatch safety boundary, not a missing-identity-field
+      // shape problem — this is the explicit "sibling-device arg → deny"
+      // case (Task 3 contract), so it keeps deny even after the review fix
+      // that softens other normalizeTarget failures to a proposal.
+      return deviceMismatch('deviceIds must equal exactly [runDeviceId] under act mode');
     }
     return { ok: true, target: { kind: 'script', scriptId } };
   },
@@ -191,7 +214,7 @@ const executePlaybook: ActOperation = {
   matches: (input) => readString(input, 'playbookId') !== null && readString(input, 'deviceId') !== null,
   normalizeTarget: (input, runDeviceId) => {
     if (!deviceMatches(input, 'deviceId', runDeviceId)) {
-      return { ok: false, reason: 'deviceId does not match the run device' };
+      return deviceMismatch('deviceId does not match the run device');
     }
     const playbookId = readString(input, 'playbookId');
     if (!playbookId) return { ok: false, reason: 'playbookId is required' };

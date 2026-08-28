@@ -116,6 +116,7 @@ describe('normalizeTarget — device-arg pinning (single-device act mode is fail
     expect(op).not.toBeNull();
     const result = op!.normalizeTarget({ deviceId: OTHER_DEVICE_ID, action: 'restart', serviceName: 'spooler' }, RUN_DEVICE_ID);
     expect(result.ok).toBe(false);
+    expect((result as { deviceMismatch?: boolean }).deviceMismatch).toBe(true);
   });
 
   it('manage_services.restart accepts a matching deviceId and extracts the service target', () => {
@@ -128,12 +129,14 @@ describe('normalizeTarget — device-arg pinning (single-device act mode is fail
     const op = ACT_MANIFEST.find((o) => o.key === 'disk_cleanup.execute')!;
     const result = op.normalizeTarget({ deviceId: OTHER_DEVICE_ID, action: 'execute', paths: ['/tmp/a'] }, RUN_DEVICE_ID);
     expect(result.ok).toBe(false);
+    expect((result as { deviceMismatch?: boolean }).deviceMismatch).toBe(true);
   });
 
   it('disk_cleanup.execute rejects empty paths', () => {
     const op = ACT_MANIFEST.find((o) => o.key === 'disk_cleanup.execute')!;
     const result = op.normalizeTarget({ deviceId: RUN_DEVICE_ID, action: 'execute', paths: [] }, RUN_DEVICE_ID);
     expect(result.ok).toBe(false);
+    expect((result as { deviceMismatch?: boolean }).deviceMismatch).toBeFalsy();
   });
 
   it('manage_processes.kill rejects a mismatched device', () => {
@@ -143,12 +146,19 @@ describe('normalizeTarget — device-arg pinning (single-device act mode is fail
       RUN_DEVICE_ID,
     );
     expect(result.ok).toBe(false);
+    expect((result as { deviceMismatch?: boolean }).deviceMismatch).toBe(true);
   });
 
   it('manage_processes.kill rejects a bare pid with no processName — identity revalidation, not bare PID', () => {
     const op = ACT_MANIFEST.find((o) => o.key === 'manage_processes.kill')!;
     const result = op.normalizeTarget({ deviceId: RUN_DEVICE_ID, action: 'kill', processId: '4242' }, RUN_DEVICE_ID);
     expect(result.ok).toBe(false);
+    // Review fix (#3826 final-review): missing processName is a
+    // missing-identity-field failure, NOT a device mismatch — it must not
+    // carry `deviceMismatch: true`, or actRevalidation.ts would hard-deny it
+    // instead of downgrading to a proposal (a narrower approval surface than
+    // shadow mode gives the exact same call).
+    expect((result as { deviceMismatch?: boolean }).deviceMismatch).toBeFalsy();
   });
 
   it('manage_processes.kill accepts pid + processName on the matching device', () => {
@@ -162,10 +172,20 @@ describe('normalizeTarget — device-arg pinning (single-device act mode is fail
 
   it('run_script rejects deviceIds that do not equal exactly [runDeviceId] — the plan\'s literal requirement', () => {
     const op = ACT_MANIFEST.find((o) => o.key === 'run_script')!;
-    expect(op.normalizeTarget({ scriptId: 's-1', deviceIds: [OTHER_DEVICE_ID] }, RUN_DEVICE_ID).ok).toBe(false);
-    expect(op.normalizeTarget({ scriptId: 's-1', deviceIds: [RUN_DEVICE_ID, OTHER_DEVICE_ID] }, RUN_DEVICE_ID).ok).toBe(false);
-    expect(op.normalizeTarget({ scriptId: 's-1', deviceIds: [] }, RUN_DEVICE_ID).ok).toBe(false);
-    expect(op.normalizeTarget({ scriptId: 's-1' }, RUN_DEVICE_ID).ok).toBe(false);
+    for (const input of [
+      { scriptId: 's-1', deviceIds: [OTHER_DEVICE_ID] },
+      { scriptId: 's-1', deviceIds: [RUN_DEVICE_ID, OTHER_DEVICE_ID] },
+      { scriptId: 's-1', deviceIds: [] },
+      { scriptId: 's-1' },
+    ]) {
+      const result = op.normalizeTarget(input, RUN_DEVICE_ID);
+      expect(result.ok).toBe(false);
+      // A sibling/extra/missing device arg is treated as a device-mismatch
+      // safety boundary, not a soft identity gap — actRevalidation.ts must
+      // hard-deny it, exactly as the plan's "sibling-device arg → deny"
+      // Task 3 contract requires (final-review fix, #3826).
+      expect((result as { deviceMismatch?: boolean }).deviceMismatch).toBe(true);
+    }
   });
 
   it('run_script accepts deviceIds === [runDeviceId] exactly', () => {
@@ -178,6 +198,7 @@ describe('normalizeTarget — device-arg pinning (single-device act mode is fail
     const op = ACT_MANIFEST.find((o) => o.key === 'execute_playbook')!;
     const result = op.normalizeTarget({ deviceId: OTHER_DEVICE_ID, playbookId: 'pb-1' }, RUN_DEVICE_ID);
     expect(result.ok).toBe(false);
+    expect((result as { deviceMismatch?: boolean }).deviceMismatch).toBe(true);
   });
 
   it('execute_playbook accepts a matching device', () => {

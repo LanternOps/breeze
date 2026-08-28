@@ -54,7 +54,7 @@ import {
 } from '../../db/schema/playbooks';
 import { deviceDisks } from '../../db/schema/devices';
 import { users } from '../../db/schema/users';
-import type { AuthContext } from '../../middleware/auth';
+import { withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { executeTool } from '../aiTools';
 import { resolveActOperation } from './actManifest';
 import { revalidateActExecution, type ActReservationState } from './actRevalidation';
@@ -62,6 +62,33 @@ import { revalidateActExecution, type ActReservationState } from './actRevalidat
 function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
   if (getCurrentDbAccessContext()?.scope === 'system') return fn();
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+}
+
+/**
+ * Review fix (#3826 final-review): every `deps.executeToolFn` dispatch below
+ * MUST run with the agent's own tenant-scoped DB access context active, the
+ * same as the ordinary SDK tool path (`aiAgentSdkTools.ts`'s `makeHandler`
+ * re-enters `withDbAccessContext(dbAccessContextFromAuth(auth), ...)` around
+ * every `executeTool` call). Without it, `getCurrentDb()` falls back to the
+ * unscoped pool, `breeze_current_scope()` reads 'none', and every RLS-guarded
+ * read (starting with `verifyDeviceAccess`) denies — the built-in Disk
+ * Cleanup / Service Restart playbooks would die on their first diagnose step.
+ *
+ * `withAuthDbAccessContext` (middleware/auth.ts) is the canonical helper for
+ * exactly this shape — "a background worker replaying a captured
+ * AuthContext" — and it escapes any ambient context first
+ * (`runOutsideDbContext`) before opening the fresh one, so it composes safely
+ * whether called from inside `inSystemDbContext` (it never is, here) or from
+ * no ambient context at all (the normal case, since the SDK's own
+ * `makeHandler` already ran `runOutsideDbContext` before this executor was
+ * ever reached).
+ *
+ * Wrapped PER CALL, not around the whole playbook loop: a `wait` step can
+ * sleep up to 60s, and pinning a pooled connection idle-in-transaction across
+ * that sleep is exactly the #1105 pool-poison class this repo has hit before.
+ */
+function withAgentToolDbContext<T>(agentAuth: AuthContext, fn: () => Promise<T>): Promise<T> {
+  return withAuthDbAccessContext(agentAuth, fn);
 }
 
 /** Lazy, cached import — same pattern as actVerify.ts's `getCommandQueue`.
@@ -449,9 +476,9 @@ async function readRamUsagePercent(
   run: PlaybookExecutorRun,
   agentAuth: AuthContext,
 ): Promise<MetricRead> {
-  const output = await deps.executeToolFn(
+  const output = await withAgentToolDbContext(agentAuth, () => deps.executeToolFn(
     'analyze_metrics', { deviceId: run.deviceId, metric: 'ram', hoursBack: 1 }, agentAuth,
-  );
+  ));
   const parsed = parseJsonObject(output);
   const summary = parsed && typeof parsed.summary === 'object' && parsed.summary !== null
     ? (parsed.summary as Record<string, unknown>) : null;
@@ -580,7 +607,8 @@ export async function runPlaybookSteps(steps: PlaybookStep[], ctx: StepCtx): Pro
 
     try {
       if (step.type === 'diagnose') {
-        const output = await ctx.deps.executeToolFn(step.tool ?? '', step.toolInput ?? {}, ctx.agentAuth);
+        const output = await withAgentToolDbContext(ctx.agentAuth, () =>
+          ctx.deps.executeToolFn(step.tool ?? '', step.toolInput ?? {}, ctx.agentAuth));
         results.push(stepResult(i, step, 'completed', output, startedAt));
       } else if (step.type === 'act') {
         const stepInput = step.toolInput ?? {};
@@ -601,12 +629,12 @@ export async function runPlaybookSteps(steps: PlaybookStep[], ctx: StepCtx): Pro
             detail = `step "${step.name}" could not be revalidated: ${reason}`;
             stop = true;
           } else {
-            const output = await ctx.deps.executeToolFn(
+            const output = await withAgentToolDbContext(ctx.agentAuth, () => ctx.deps.executeToolFn(
               step.tool!,
               stepInput,
               ctx.agentAuth,
               revalidated.pin.toolExecutionContext ? { context: revalidated.pin.toolExecutionContext } : undefined,
-            );
+            ));
             const stepExec = classifyMutatingStepExecution(step.tool!, output);
             results.push(stepResult(i, step, stepExec === 'succeeded' ? 'completed' : 'failed', output, startedAt));
             if (stepExec !== 'succeeded') {
@@ -616,7 +644,8 @@ export async function runPlaybookSteps(steps: PlaybookStep[], ctx: StepCtx): Pro
             }
           }
         } else if (isKnownSafeNonMutatingActStep(step.tool ?? '', stepInput)) {
-          const output = await ctx.deps.executeToolFn(step.tool ?? '', stepInput, ctx.agentAuth);
+          const output = await withAgentToolDbContext(ctx.agentAuth, () =>
+            ctx.deps.executeToolFn(step.tool ?? '', stepInput, ctx.agentAuth));
           results.push(stepResult(i, step, 'completed', output, startedAt));
         } else {
           const reason = `act step "${step.name}" (${step.tool ?? 'unknown tool'}) is not a manifest-admitted `

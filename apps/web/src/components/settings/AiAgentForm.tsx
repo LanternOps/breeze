@@ -4,6 +4,7 @@ import {
   AI_AGENT_KINDS,
   AI_AGENT_LIMIT_DEFAULTS,
   ALERT_SEVERITIES,
+  SUPPORTED_AGENT_MODES,
   type AiAgentDto,
   type AiAgentKind,
   type AiAgentMode,
@@ -513,10 +514,16 @@ export default function AiAgentForm({
                 server's create/update prerequisites (recipient +
                 act-eligible surface) are the authoritative gate; the warning
                 banner and acknowledgement below are this form's contribution
-                on top of that. */}
+                on top of that. Review fix (#3826 final-review): the CREATE
+                path has no `agent` DTO yet (it is null until the first save),
+                so the fallback must be the shared `SUPPORTED_AGENT_MODES`
+                constant — not `[]` — or the option is permanently disabled on
+                every create form regardless of what the API actually
+                supports, which is exactly the drift the constant's own
+                docstring exists to prevent. */}
             <option
               value="act"
-              disabled={!(agent?.supportedModes ?? []).includes('act')}
+              disabled={!(agent?.supportedModes ?? SUPPORTED_AGENT_MODES).includes('act')}
               data-testid="ai-agent-mode-act"
             >
               {t('aiAgentsPage.modes.act')}

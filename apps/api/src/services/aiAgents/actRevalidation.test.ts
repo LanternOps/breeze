@@ -245,6 +245,29 @@ describe('revalidateActExecution — step 3: device pinning', () => {
     expect(result.ok).toBe(false);
     expect((result as { deny: string }).deny).toMatch(/Act revalidation/);
   });
+
+  // Final-review fix (#3826): a missing identity field the manifest requires
+  // (manage_processes.kill's processName — not yet surfaced on every model
+  // call site) must downgrade to a proposal, never hard-deny — a device
+  // mismatch is the only normalizeTarget failure that stays a deny.
+  it('manage_processes.kill with no processName (identity field missing, not a device mismatch) → downgrades to a proposal', async () => {
+    const result = await revalidateActExecution({
+      run: runArgs(), op: killOp, toolName: 'manage_processes',
+      input: { deviceId: DEVICE_ID, action: 'kill', processId: '4242' },
+      reserved: reservation(),
+    });
+    expect(result).toEqual({ ok: false, downgrade: 'propose' });
+  });
+
+  it('run_script targeting a sibling device (deviceIds mismatch) still hard-denies — never softened', async () => {
+    const result = await revalidateActExecution({
+      run: runArgs(), op: runScriptOp, toolName: 'run_script',
+      input: { scriptId: SCRIPT_ID, deviceIds: ['some-other-device'] },
+      reserved: reservation(),
+    });
+    expect(result.ok).toBe(false);
+    expect((result as { deny: string }).deny).toMatch(/Act revalidation/);
+  });
 });
 
 describe('revalidateActExecution — step 4: run_script asset pin', () => {
