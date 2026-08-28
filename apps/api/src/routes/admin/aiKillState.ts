@@ -23,7 +23,7 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { requireMfa } from '../../middleware/auth';
 import { bumpAiKillState, readAiKillStateRow } from '../../services/aiKillState';
-import { createAuditLog } from '../../services/auditService';
+import { createAuditLogAsync } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 
 export const aiKillStateAdminRoutes = new Hono();
@@ -50,7 +50,12 @@ aiKillStateAdminRoutes.post(
 
     const snapshot = await bumpAiKillState(killed, reason, auth.user.id);
 
-    await createAuditLog({
+    // Non-throwing (retry-queued) audit: once the bump commits, the response
+    // MUST reflect the real switch state. A throwing audit under exactly the
+    // DB stress that prompts an emergency kill would 500 a flip that already
+    // took effect — inviting a retry (double epoch bump reads as a second
+    // revocation downstream) or an unnecessary jump to the SQL fallback.
+    await createAuditLogAsync({
       orgId: null,
       actorType: 'user',
       actorId: auth.user.id,

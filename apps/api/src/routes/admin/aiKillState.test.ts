@@ -47,7 +47,7 @@ vi.mock('../../middleware/auth', async () => {
 
 import { Hono } from 'hono';
 import { adminRoutes } from './index';
-import { createAuditLog } from '../../services/auditService';
+import { createAuditLogAsync } from '../../services/auditService';
 
 type FakeAuth = {
   user: { id: string; email: string; name: string; isPlatformAdmin: boolean };
@@ -181,8 +181,14 @@ describe('admin AI kill-state routes', () => {
       expect(bumpMock).toHaveBeenCalledTimes(1);
       expect(bumpMock).toHaveBeenCalledWith(true, 'incident 123', 'admin-1');
 
-      expect(createAuditLog).toHaveBeenCalledTimes(1);
-      const audit = vi.mocked(createAuditLog).mock.calls[0]![0]!;
+      // createAuditLogAsync deliberately: the flip is already committed, so
+      // an audit-write failure must never 500 the response (retry queue +
+      // Sentry cover the trail). platformAdminMiddleware writes its own
+      // `platform_admin.*` row through the same fn — filter to the flip's.
+      const flipAudits = vi.mocked(createAuditLogAsync).mock.calls
+        .filter((call) => call[0]!.action === 'ai_kill_state.updated');
+      expect(flipAudits).toHaveLength(1);
+      const audit = flipAudits[0]![0]!;
       expect(audit).toMatchObject({
         orgId: null,
         actorType: 'user',
@@ -203,11 +209,15 @@ describe('admin AI kill-state routes', () => {
       expect(bumpMock).toHaveBeenCalledWith(false, 'incident resolved', 'admin-1');
     });
 
-    it('does not audit when the bump itself fails', async () => {
+    it('does not write a flip audit when the bump itself fails', async () => {
       bumpMock.mockRejectedValue(new Error("seed row (id='global') is missing"));
       const res = await post(buildApp(platformAdmin), { killed: true, reason: 'incident 123' });
       expect(res.status).toBe(500);
-      expect(createAuditLog).not.toHaveBeenCalled();
+      // platformAdminMiddleware still audits the request itself; only the
+      // route's ai_kill_state.updated row must be absent.
+      const flipAudits = vi.mocked(createAuditLogAsync).mock.calls
+        .filter((call) => call[0]!.action === 'ai_kill_state.updated');
+      expect(flipAudits).toHaveLength(0);
     });
   });
 });

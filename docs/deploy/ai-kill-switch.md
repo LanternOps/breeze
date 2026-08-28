@@ -20,15 +20,20 @@ executes interactively.
 
 Every API/worker process re-reads the row on its hot paths through a **5-second
 TTL cache** (`apps/api/src/services/aiKillState.ts`). A flip is therefore
-effective everywhere within **~5 seconds** — no restart, no deploy. The read
-fails **closed**: if a process cannot read the row, it behaves as killed.
+effective within **~5 seconds** in any process exercising those hot paths
+(run admission, act-mode dispatch, intent release) — which is every process
+that could act unattended; a process that has never hit one since boot only
+picks the flip up on its first admission check, which is also the first
+moment it could matter. No restart, no deploy. The read fails **closed**: if
+a process cannot read the row, it behaves as killed.
 
 Each write increments `epoch` (monotonic, audit-traceable). The admin `GET`
 below bypasses the cache and always shows database truth.
 
 ## Path 1 — Admin API (preferred)
 
-Requires a **platform admin** session with **MFA satisfied**.
+Requires a **platform admin** session; **MFA is additionally required for the
+POST** (the GET is readable without it).
 
 > **Production caveat (flagged 2026-08-26): production currently has ZERO
 > platform admins in both regions**, so all `/admin/*` surfaces — including
@@ -59,10 +64,18 @@ curl -s -X POST https://<region>.2breeze.app/api/v1/admin/ai-kill-state \
 ## Path 2 — SQL fallback
 
 The table is **FORCE ROW LEVEL SECURITY** with a system-only policy, so a bare
-`UPDATE` as `breeze_app` is denied. Set the system scope inside a transaction:
+`UPDATE` — as `breeze_app` or any non-superuser — is denied. Set the system
+scope inside a transaction (the SQL body is identical on every deployment;
+only how you reach `psql` differs).
+
+**Hosted droplets** (production): there is **no local postgres container** —
+`DATABASE_URL` points at a managed database, and connecting requires the
+credentials from the droplet's env. Run a throwaway client against the app
+DSN:
 
 ```bash
-ssh root@<droplet> "docker exec -i breeze-postgres psql -U breeze_app -d breeze" <<'SQL'
+ssh root@<droplet> 'cd /opt/breeze && set -a && . ./.env && set +a && \
+  docker run --rm -i --network host postgres:16 psql "${DATABASE_URL_APP:-$DATABASE_URL}"' <<'SQL'
 BEGIN;
 SET LOCAL breeze.scope = 'system';
 -- KILL (for RESTORE, set killed = false)
@@ -77,16 +90,31 @@ COMMIT;
 SQL
 ```
 
-Verify:
+**Self-hosted / dev** (stock compose with the `breeze-postgres` container):
 
 ```bash
-ssh root@<droplet> "docker exec -i breeze-postgres psql -U breeze_app -d breeze" <<'SQL'
+docker exec -i breeze-postgres psql -U breeze_app -d breeze <<'SQL'
+BEGIN;
+SET LOCAL breeze.scope = 'system';
+UPDATE ai_kill_state
+SET killed = true, epoch = epoch + 1, reason = '<incident ref / why>',
+    updated_by = NULL, updated_at = now()
+WHERE id = 'global';
+COMMIT;
+SQL
+```
+
+Verify (same connection method, either deployment):
+
+```sql
 BEGIN;
 SET LOCAL breeze.scope = 'system';
 SELECT killed, epoch, reason, updated_at FROM ai_kill_state WHERE id = 'global';
 COMMIT;
-SQL
 ```
+
+**The SQL path writes no audit row** (only the API path does). Record the
+flip — who, when, why, and the resulting epoch — in the incident ticket.
 
 Always increment `epoch` in the same statement as the flip (the API does this
 automatically) — downstream release checks compare epochs, and a flip that

@@ -153,6 +153,38 @@ describe('readAiKillStateRow', () => {
     expect(getCachedAiKillStateSnapshot()).toEqual({ killed: false, epoch: 0 });
   });
 
+  it('escapes a request-scoped ambient context via runOutsideDbContext (load-bearing)', async () => {
+    // In a real admin request the ambient context is org/partner-scoped, and
+    // ai_kill_state's system-only RLS policy returns ZERO rows under it — the
+    // read only works because runOutsideDbContext exits the request context
+    // first. Dropping that call keeps a pass-through mock green, so pin it.
+    const dbMod = await import('../db');
+    vi.mocked(dbMod.runOutsideDbContext).mockClear();
+    vi.mocked(dbMod.getCurrentDbAccessContext).mockReturnValue({ scope: 'org' } as never);
+    const limit = await getLimitMock();
+    limit.mockResolvedValueOnce([{
+      killed: false, epoch: 1, reason: null, updatedBy: null, updatedAt: new Date(),
+    }]);
+
+    await readAiKillStateRow();
+    expect(dbMod.runOutsideDbContext).toHaveBeenCalledTimes(1);
+    vi.mocked(dbMod.getCurrentDbAccessContext).mockReturnValue(undefined as never);
+  });
+
+  it('reads directly (no context escape) when the ambient scope is already system', async () => {
+    const dbMod = await import('../db');
+    vi.mocked(dbMod.runOutsideDbContext).mockClear();
+    vi.mocked(dbMod.getCurrentDbAccessContext).mockReturnValue({ scope: 'system' } as never);
+    const limit = await getLimitMock();
+    limit.mockResolvedValueOnce([{
+      killed: false, epoch: 1, reason: null, updatedBy: null, updatedAt: new Date(),
+    }]);
+
+    await readAiKillStateRow();
+    expect(dbMod.runOutsideDbContext).not.toHaveBeenCalled();
+    vi.mocked(dbMod.getCurrentDbAccessContext).mockReturnValue(undefined as never);
+  });
+
   it('throws (no fail-closed synthesis) when the seed row is missing', async () => {
     const limit = await getLimitMock();
     limit.mockResolvedValueOnce([]);

@@ -140,7 +140,9 @@ export function getCachedAiKillStateSnapshot(): AiKillStateSnapshot {
   return cachedSnapshot;
 }
 
-export interface AiKillStateRow extends AiKillStateSnapshot {
+// Named to avoid colliding with the schema module's `AiKillStateRow`
+// ($inferSelect, includes `id`) — this is the admin-facing projection.
+export interface AiKillStateAdminRow extends AiKillStateSnapshot {
   reason: string | null;
   updatedBy: string | null;
   updatedAt: Date;
@@ -156,7 +158,7 @@ export interface AiKillStateRow extends AiKillStateSnapshot {
  * seed row here is a deployment bug the admin should see as an error, not a
  * synthetic `killed: true` that reads like a real state.
  */
-export async function readAiKillStateRow(): Promise<AiKillStateRow> {
+export async function readAiKillStateRow(): Promise<AiKillStateAdminRow> {
   const query = () =>
     db
       .select({
