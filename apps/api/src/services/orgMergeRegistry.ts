@@ -126,6 +126,15 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // Same disposition as ai_agent_runs: history stays with the source org and
   // dies with the loser shell; the preview discloses the row count.
   llm_egress_events: { kind: 'leave-for-erasure', note: 'egress telemetry is per-org history; composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
+  // ai_unattended_exposure (Wave 5 Part A, #3827): the blast-cap reservation
+  // ledger shared by the act lane and the policy-decide lane. Same
+  // disposition as llm_egress_events for the same two reasons: it is
+  // per-org exposure HISTORY (repointing would attribute the loser org's
+  // unattended-action count to the survivor, corrupting the cap it exists
+  // to enforce), and it carries the identical composite (org_id, partner_id)
+  // FK to organizations, so a bare org_id UPDATE breaks the moment the two
+  // orgs' partners differ. No writer exists yet in this PR either way.
+  ai_unattended_exposure: { kind: 'leave-for-erasure', note: 'unattended-exposure history is per-org (like llm_egress_events); composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
 
   // partner_export_configuration_org_state is trigger-maintained (SECURITY
   // DEFINER triggers on the policy tables regenerate it — verified in

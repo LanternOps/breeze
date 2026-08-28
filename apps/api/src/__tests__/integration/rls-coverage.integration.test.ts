@@ -58,6 +58,7 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
   'abuse_script_hosts',
   'abuse_sweep_state',
   'abuse_endpoint_fingerprints',
+  'ai_kill_state',
 ]);
 
 // System-scoped tables: forced RLS with either no permissive policies at all,
@@ -99,6 +100,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'abuse_script_hosts', // Cross-partner download-host corpus for the script-content abuse detector. Carries partner_id but is deliberately operator-only (mirrors partner_abuse_signals). Forced RLS, system-only policy.
   'abuse_sweep_state', // Abuse-sweep scan state (incremental execution-scan high-water mark). No tenant column. Forced RLS, system-only policy.
   'abuse_endpoint_fingerprints', // Cross-partner endpoint-fingerprint corpus for the recidivist-endpoint abuse detector. Carries partner_id but is deliberately operator-only (mirrors abuse_script_hosts). Forced RLS, system-only policy.
+  'ai_kill_state', // Wave 5 Part A (#3827): system-scoped, single-row (id='global'), epoch'd AI-agent kill switch. Mirrors abuse_sweep_state verbatim — no tenant column, forced RLS, single system-only policy. Flipped only via SQL by ops (or a future admin route); no org/partner/user axis applies.
   'sso_sessions', // Pre-auth SSO CSRF/PKCE transaction store (state/nonce/code_verifier + link binding). No tenant column; written/consumed only by unauthenticated callback + system-context routes. Forced RLS, system-only policy → only system context.
   'installed_extensions', // Global runtime-extension operational state (version/trust/lifecycle/enabled). No tenant axis. Forced RLS, system-only policy → only system context.
   'extension_schema_history', // Global append-only record of the schema-compatibility floor each extension bundle version applied. No tenant axis. Forced RLS, system-only policy → only system context.

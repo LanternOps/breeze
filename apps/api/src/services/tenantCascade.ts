@@ -74,6 +74,14 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_cost_usage',
   'ai_screenshots',
   'ai_sessions',
+  // ai_unattended_exposure (Wave 5 Part A, #3827): blast-cap ledger. Sorts
+  // here alphabetically (after ai_sessions, before alert_correlation_groups)
+  // even though it FK-references ai_agents/ai_agent_runs, which sort BEFORE
+  // it — position-independent because every FK on this table carries an
+  // explicit ON DELETE (CASCADE for agent_id/run_id/the org composite, SET
+  // NULL for intent_id), so topologicalCascadeOrder()'s runtime pg_constraint
+  // read is what actually orders the DELETE, not this list's alphabetization.
+  'ai_unattended_exposure',
   'alert_correlation_groups',
   'alert_correlation_members',
   'alert_rules',
