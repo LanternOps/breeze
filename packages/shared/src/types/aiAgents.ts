@@ -169,9 +169,9 @@ export interface AiAgentPolicySnapshot {
 }
 
 /**
- * Modes the API accepts on WRITE today. `act` is admitted by the DB CHECK and
- * is a member of AI_AGENT_MODES, but the API refuses it with 422
- * `mode_not_supported` until wave 4 ships bounded execution.
+ * Modes the API accepts on WRITE today — all three. `mode_not_supported` is
+ * now reached only by a mode that is not a member of this list at all; it is
+ * no longer the answer for `act`, which wave 4 Part B admitted (see below).
  *
  * This lives in shared rather than in the API because it is a wire contract:
  * the settings form has to know which modes a create will be allowed to pick,
