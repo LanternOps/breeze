@@ -79,9 +79,15 @@ export default function AiUsagePage() {
       const sessionsUrl = showFlaggedOnly
         ? '/ai/admin/sessions?limit=50&flagged=true'
         : '/ai/admin/sessions?limit=50';
-      const [usageRes, sessionsRes] = await Promise.all([
+      const [usageRes, sessionsRes, effRes] = await Promise.all([
         fetchWithAuth('/ai/usage'),
-        fetchWithAuth(sessionsUrl)
+        fetchWithAuth(sessionsUrl),
+        currentOrgId
+          ? fetchWithAuth(`/orgs/organizations/${currentOrgId}/effective-settings`).catch((err) => {
+              console.warn('[AiUsagePage] Error fetching effective settings:', err);
+              return null;
+            })
+          : Promise.resolve(null),
       ]);
 
       if (usageRes.ok) {
@@ -105,17 +111,10 @@ export default function AiUsagePage() {
         setSessions(data.data || []);
       }
 
-      // Fetch locked fields from partner
-      if (currentOrgId) {
-        try {
-          const effRes = await fetchWithAuth(`/orgs/organizations/${currentOrgId}/effective-settings`);
-          if (effRes.ok) {
-            const effData = await effRes.json();
-            setLocked(effData.locked || []);
-          }
-        } catch (err) {
-          console.warn('[AiUsagePage] Error fetching effective settings:', err);
-        }
+      // Locked fields from partner (effective-settings), fetched in parallel above.
+      if (effRes && effRes.ok) {
+        const effData = await effRes.json();
+        setLocked(effData.locked || []);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : t('aiUsagePage.failedToLoadData'));
