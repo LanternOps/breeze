@@ -103,6 +103,10 @@ import { transitionRunStatus } from './runService';
 // never connects at import time), and this module does NOT import runLoop.ts
 // back — see runFinishedNotify.ts's header for why that direction would cycle.
 import { enqueueAgentNotifyRetry } from '../../jobs/agentNotifyRetryWorker';
+// Same "harmless to import here" reasoning as `enqueueAgentNotifyRetry` above
+// (jobs/, not services/): the fix-watch Queue is constructed lazily and this
+// module does not import runLoop.ts back — see fixWatchWorker.ts's header.
+import { scheduleFixWatch } from '../../jobs/fixWatchWorker';
 import {
   buildAgentRunSystemPrompt,
   buildAgentRunTaskPrompt,
@@ -1373,6 +1377,20 @@ async function finishRun(
       runId: ctx.run.id, error,
     });
     await enqueueAgentNotifyRetry(ctx.run.id);
+  }
+
+  // Fix-held watch scheduling (wave 6 PR 2, Task 3, #3828) — best-effort and
+  // deliberately never affects this run's own status: `scheduleFixWatch`
+  // swallows every failure internally (see its header). Only a clean
+  // `completed` finish is eligible at all (`awaiting_approval`/`failed` never
+  // are — `isFixWatchEligible` would reject them anyway via `modeAtStart`/
+  // `verification`, but gating on `status` here avoids the query entirely on
+  // the common non-completed paths).
+  if (status === 'completed') {
+    await scheduleFixWatch(
+      { id: ctx.run.id, orgId: ctx.run.orgId, agentId: ctx.run.agentId, alertId: ctx.run.alertId, modeAtStart: ctx.run.modeAtStart },
+      result.outcome,
+    );
   }
 }
 

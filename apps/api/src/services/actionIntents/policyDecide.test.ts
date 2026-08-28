@@ -235,6 +235,7 @@ const POLICY_SNAPSHOT: AiAgentPolicySnapshot = {
       maxFleetPercentPerDay: 5,
       maxActionsPerRun: 3,
       maxPolicyDecisionsPerDay: 10,
+      maxConsecutiveFailures: 3,
     },
     triggers: { alertSeverities: [], respectMaintenanceWindows: false },
     recipients: { userIds: ['recipient-1'], roleIds: [] },

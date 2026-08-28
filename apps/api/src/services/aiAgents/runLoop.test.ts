@@ -258,6 +258,14 @@ const enqueueAgentNotifyRetry = vi.hoisted(() =>
   vi.fn<(runId: string) => Promise<void>>(async () => undefined));
 vi.mock('../../jobs/agentNotifyRetryWorker', () => ({ enqueueAgentNotifyRetry }));
 
+// Fix-held watch scheduling (Task 3, #3828) — same reasoning as the
+// notify-retry mock above: unmocked, this pulls in `jobs/fixWatchWorker.ts`'s
+// REAL bullmq/redis module graph, exactly what this suite's guardrail-hook
+// tests must stay free of (runLoop.ts's own header comment).
+const scheduleFixWatch = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined));
+vi.mock('../../jobs/fixWatchWorker', () => ({ scheduleFixWatch }));
+
 const resolveLlmConfigForOrg = vi.hoisted(() =>
   vi.fn<(orgId: string) => Promise<{ source: string; apiKey?: string; model: string }>>());
 vi.mock('../llm/llmConfigResolver', () => ({ resolveLlmConfigForOrg }));
@@ -662,6 +670,13 @@ describe('executeAgentRun', () => {
       });
       expect(outcome.runVerdict).toBe('remediated');
       expect(recordActVerifyFailureAlert).not.toHaveBeenCalled();
+
+      // Fix-held watch scheduling (Task 3, #3828): a clean, alert-triggered,
+      // act-lane, verified-passed completion is exactly the eligible shape.
+      expect(scheduleFixWatch).toHaveBeenCalledTimes(1);
+      const [watchRun, watchOutcome] = scheduleFixWatch.mock.calls[0]!;
+      expect(watchRun).toMatchObject({ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, alertId: ALERT_ID, modeAtStart: 'act' });
+      expect((watchOutcome as AgentRunOutcome).executedActions).toHaveLength(1);
     });
 
     it('deny revalidation NEVER dispatches — no ledger write, no proposal, recorded as a denial', async () => {
@@ -708,6 +723,10 @@ describe('executeAgentRun', () => {
       expect(outcome.executedActions).toEqual([]);
       expect(outcome.deniedActions).toEqual([]);
       expect(outcome.runVerdict).toBe('no_action');
+
+      // Fix-held watch scheduling only ever runs off a 'completed' finish —
+      // `awaiting_approval` never schedules one (Task 3, #3828).
+      expect(scheduleFixWatch).not.toHaveBeenCalled();
     });
 
     it('#3826 cheap nonblocking fix: a downgrade carrying a normalizeTarget reason threads it onto the recorded proposal', async () => {

@@ -41,8 +41,18 @@ describe('aiAgents validators', () => {
     expect(aiAgentLimitsSchema.safeParse({ maxPolicyDecisionsPerDay: 2.5 }).success).toBe(false);
   });
 
-  it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 3 (wave 5 Part A bump, #3827)', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(3);
+  it('maxConsecutiveFailures defaults to 3 and clamps to [1,10], no 0-disables (wave 6 PR 2, #3828)', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxConsecutiveFailures).toBe(3);
+    expect(aiAgentLimitsSchema.parse({}).maxConsecutiveFailures).toBe(3);
+    expect(aiAgentLimitsSchema.safeParse({ maxConsecutiveFailures: 1 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxConsecutiveFailures: 10 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxConsecutiveFailures: 0 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxConsecutiveFailures: 11 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxConsecutiveFailures: 2.5 }).success).toBe(false);
+  });
+
+  it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 4 (wave 6 PR 2 bump, #3828)', () => {
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(4);
   });
 
   it('rejects instructions over 2000 chars and unknown allowlist shapes', () => {

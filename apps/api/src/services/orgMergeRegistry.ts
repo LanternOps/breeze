@@ -118,6 +118,23 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // are erased together (tenantCascade deletes action_intents first —
   // alphabetical order happens to be the correct child-before-parent order).
   ai_agent_runs: { kind: 'leave-for-erasure', note: 'org_id is trigger-immutable (ai_agent_runs_immutable_guard); run history stays with the source org per the 2026-08-23 owner decision' },
+  // ai_agent_fix_watches (Wave 6 PR 2, #3828): a fix-held watch is per-run
+  // HISTORY tied to a specific ai_agent_runs row that itself never follows
+  // an org merge (see ai_agent_runs above) — repointing the watch while its
+  // run stays under the loser shell would split one remediation's story
+  // across two orgs. Same composite (org_id, partner_id) FK fragility as
+  // llm_egress_events/ai_unattended_exposure applies too.
+  ai_agent_fix_watches: { kind: 'leave-for-erasure', note: 'watch history is tied to a run that itself stays with the source org (ai_agent_runs disposition); composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
+  // ai_agent_circuit_state (Wave 6 PR 2, #3828): per-(org_id, agent_id)
+  // failure-streak STATE, not a config row to carry forward — repointing
+  // would let a loser org's failure streak silently open (or mask) a
+  // circuit for an agent now living in the survivor org, attributing one
+  // org's reliability history to another. Same composite (org_id,
+  // partner_id) FK fragility as the tables above. The PRIMARY KEY is
+  // (org_id, agent_id) itself, so there is no single-column org_id repoint
+  // available anyway — the row would need to be reinserted under the new
+  // key, i.e. a fresh circuit, which is exactly what closed+erased achieves.
+  ai_agent_circuit_state: { kind: 'leave-for-erasure', note: 'per-org failure-streak state, not carried config; composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
   // llm_egress_events (#3922 phase 2, landed on main 2026-08-27): per-request
   // egress telemetry — which org attempted which outbound LLM dial, allowed or
   // blocked. Repointing would attribute the loser org's egress history to the

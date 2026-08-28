@@ -37,6 +37,11 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // the (org_id, partner_id) composite FK across partners — see the
   // CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
   'ai_unattended_exposure',
+  // Has org_id AND device_id, but org_id is intentionally NOT re-stamped on
+  // move: a fix-held watch's org attribution stays with the run it watches,
+  // which itself never follows a device move (ai_agent_runs above) — see
+  // the CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
+  'ai_agent_fix_watches',
   'automation_policy_compliance',
   'deployment_devices',
   'deployment_results',

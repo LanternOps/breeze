@@ -68,6 +68,15 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'action_intents',
   'agent_logs',
   'ai_action_plans',
+  // ai_agent_circuit_state / ai_agent_fix_watches (Wave 6 PR 2, #3828): sort
+  // here alphabetically (before ai_agent_runs) even though
+  // ai_agent_fix_watches FK-references ai_agent_runs/ai_agents, which sort
+  // AFTER it — position-independent because every FK on both tables carries
+  // an explicit ON DELETE, so topologicalCascadeOrder()'s runtime
+  // pg_constraint read is what actually orders the DELETE, not this list's
+  // alphabetization (same reasoning as ai_unattended_exposure below).
+  'ai_agent_circuit_state',
+  'ai_agent_fix_watches',
   'ai_agent_runs',
   'ai_agents',
   'ai_budgets',

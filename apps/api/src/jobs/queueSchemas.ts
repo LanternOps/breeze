@@ -311,6 +311,18 @@ export const agentNotifyRetryQueueJobDataSchema = z.object({
   runId: z.string().min(1),
 }).strict();
 
+/**
+ * The `fix-watch` queue's payload (AI agents wave 6 PR 2, Task 3, #3828).
+ * `phase` discriminates the two delayed checks a watch goes through — the
+ * job body re-reads the watch (and the alert it references) fresh from the
+ * DB by id, so the payload carries nothing beyond identity, same reasoning
+ * as `agentNotifyRetryQueueJobDataSchema` above.
+ */
+export const fixWatchQueueJobDataSchema = z.object({
+  phase: z.enum(['phase1', 'phase2']),
+  watchId: z.string().min(1),
+}).strict();
+
 export const sensitiveDataQueueJobDataSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('dispatch-scan'),
@@ -408,6 +420,7 @@ export type AutomationAssignmentLevel = z.infer<typeof automationAssignmentLevel
 export type SensitiveDataQueueJobData = z.infer<typeof sensitiveDataQueueJobDataSchema>;
 export type AiAgentQueueJobData = z.infer<typeof aiAgentQueueJobDataSchema>;
 export type AgentNotifyRetryQueueJobData = z.infer<typeof agentNotifyRetryQueueJobDataSchema>;
+export type FixWatchQueueJobData = z.infer<typeof fixWatchQueueJobDataSchema>;
 export type DrExecutionQueueJobData = z.infer<typeof drExecutionQueueJobDataSchema>;
 export type RecoveryMediaQueueJobData = z.infer<typeof recoveryMediaQueueJobDataSchema>;
 export type RecoveryBootMediaQueueJobData = z.infer<typeof recoveryBootMediaQueueJobDataSchema>;

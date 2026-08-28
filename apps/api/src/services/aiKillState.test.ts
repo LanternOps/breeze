@@ -24,6 +24,7 @@ import {
   bumpAiKillState,
   getCachedAiKillStateSnapshot,
   readAiKillState,
+  readAiKillStateRow,
 } from './aiKillState';
 
 async function getLimitMock() {
@@ -131,6 +132,64 @@ describe('bumpAiKillState', () => {
     returning.mockResolvedValueOnce([]);
 
     await expect(bumpAiKillState(true)).rejects.toThrow(/seed row/);
+  });
+});
+
+describe('readAiKillStateRow', () => {
+  it('returns the full row without touching the TTL cache', async () => {
+    const limit = await getLimitMock();
+    const row = {
+      killed: true,
+      epoch: 7,
+      reason: 'incident 42',
+      updatedBy: 'admin-1',
+      updatedAt: new Date('2026-08-28T12:00:00Z'),
+    };
+    limit.mockResolvedValueOnce([row]);
+
+    await expect(readAiKillStateRow()).resolves.toEqual(row);
+    // The admin read is a side-channel: the guardrail cache must stay at its
+    // default until readAiKillState() itself runs.
+    expect(getCachedAiKillStateSnapshot()).toEqual({ killed: false, epoch: 0 });
+  });
+
+  it('escapes a request-scoped ambient context via runOutsideDbContext (load-bearing)', async () => {
+    // In a real admin request the ambient context is org/partner-scoped, and
+    // ai_kill_state's system-only RLS policy returns ZERO rows under it — the
+    // read only works because runOutsideDbContext exits the request context
+    // first. Dropping that call keeps a pass-through mock green, so pin it.
+    const dbMod = await import('../db');
+    vi.mocked(dbMod.runOutsideDbContext).mockClear();
+    vi.mocked(dbMod.getCurrentDbAccessContext).mockReturnValue({ scope: 'org' } as never);
+    const limit = await getLimitMock();
+    limit.mockResolvedValueOnce([{
+      killed: false, epoch: 1, reason: null, updatedBy: null, updatedAt: new Date(),
+    }]);
+
+    await readAiKillStateRow();
+    expect(dbMod.runOutsideDbContext).toHaveBeenCalledTimes(1);
+    vi.mocked(dbMod.getCurrentDbAccessContext).mockReturnValue(undefined as never);
+  });
+
+  it('reads directly (no context escape) when the ambient scope is already system', async () => {
+    const dbMod = await import('../db');
+    vi.mocked(dbMod.runOutsideDbContext).mockClear();
+    vi.mocked(dbMod.getCurrentDbAccessContext).mockReturnValue({ scope: 'system' } as never);
+    const limit = await getLimitMock();
+    limit.mockResolvedValueOnce([{
+      killed: false, epoch: 1, reason: null, updatedBy: null, updatedAt: new Date(),
+    }]);
+
+    await readAiKillStateRow();
+    expect(dbMod.runOutsideDbContext).not.toHaveBeenCalled();
+    vi.mocked(dbMod.getCurrentDbAccessContext).mockReturnValue(undefined as never);
+  });
+
+  it('throws (no fail-closed synthesis) when the seed row is missing', async () => {
+    const limit = await getLimitMock();
+    limit.mockResolvedValueOnce([]);
+
+    await expect(readAiKillStateRow()).rejects.toThrow(/seed row/);
   });
 });
 

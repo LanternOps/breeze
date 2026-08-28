@@ -45,6 +45,17 @@ export interface AiAgentLimits {
    * is the enforcer (see runService.ts's limits-coverage inventory).
    */
   maxPolicyDecisionsPerDay: number;
+  /**
+   * Wave 6 PR 2 (#3828) — the per-org circuit breaker's threshold: how many
+   * consecutive terminal-failure runs an agent may accumulate in one org
+   * before `recordRunTerminal` (agentCircuit.ts) auto-opens the circuit and
+   * admission starts refusing new runs with `skip('circuit_open')`. Bounded
+   * 1-10 deliberately with NO 0-disables value — a circuit breaker that can
+   * be configured off is not a safety control (wave-6 quorum, 2026-08-28).
+   * Enforced in `transitionRunStatus` via `agentCircuit.ts` — see
+   * runService.ts's limits-coverage inventory.
+   */
+  maxConsecutiveFailures: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -58,6 +69,7 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   maxFleetPercentPerDay: 5,
   maxActionsPerRun: 3,
   maxPolicyDecisionsPerDay: 10,
+  maxConsecutiveFailures: 3,
 });
 
 export interface AiAgentTriggers {
@@ -150,17 +162,26 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * `schemaVersion` or `effective.limits` has to tolerate a v1 row, never
  * reject it.
  *
- * v3 (this bump, wave 5 Part A #3827): `effective.limits` gained
+ * v3 (wave 5 Part A #3827): `effective.limits` gained
  * `maxPolicyDecisionsPerDay`. Same rule: an in-flight run's v1 or v2 snapshot
  * lacks the field and MUST still execute — nothing reads it yet (unenforced
  * this PR), but every site that switches on `schemaVersion` must tolerate
- * 1, 2, AND 3. Write side always stamps the current version.
+ * 1, 2, AND 3.
+ *
+ * v4 (this bump, wave 6 PR 2 #3828): `effective.limits` gained
+ * `maxConsecutiveFailures` (the circuit breaker's threshold). Same rule
+ * again: a v1/v2/v3 in-flight run's snapshot lacks the field and MUST still
+ * execute — `recordRunTerminal` (agentCircuit.ts) resolves the effective
+ * threshold at transition time via `resolveEffectiveAgentSystem`, never off
+ * the stored run snapshot, so a pre-v4 run's missing field never blocks
+ * circuit accounting. Every site that switches on `schemaVersion` must
+ * tolerate 1, 2, 3, AND 4. Write side always stamps the current version.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 3 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 4 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), or 3 (current). Read sites must tolerate all three. */
-  schemaVersion: 1 | 2 | 3;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), or 4 (current). Read sites must tolerate all four. */
+  schemaVersion: 1 | 2 | 3 | 4;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;

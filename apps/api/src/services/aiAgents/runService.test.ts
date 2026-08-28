@@ -159,6 +159,23 @@ const closeAgentRunSession = vi.hoisted(() =>
   vi.fn<(sessionId: string, status: 'completed' | 'failed') => Promise<void>>());
 vi.mock('./executionLedger', () => ({ reconcileHungExecutions, closeAgentRunSession }));
 
+// Wave 6 PR 2 (#3828): the circuit breaker's own classification/threshold/
+// notify logic is unit-tested in full in `agentCircuit.test.ts`. Mocked here
+// so admission and `transitionRunStatus` tests exercise only the WIRING
+// (called with the right args, at the right time, non-fatal on throw) without
+// re-fighting this file's already-elaborate table-agnostic insert/update mock
+// (which has no `onConflictDoUpdate` support — agentCircuit.ts's upsert needs
+// one — and no notion of per-table row shape for a second, unrelated table).
+const isCircuitOpen = vi.hoisted(() => vi.fn());
+const recordRunTerminal = vi.hoisted(() => vi.fn());
+vi.mock('./agentCircuit', () => ({
+  isCircuitOpen,
+  recordRunTerminal,
+  // Small and pure enough to just re-assert here rather than import — the
+  // real implementation has its own dedicated coverage in agentCircuit.test.ts.
+  isTerminalRunStatus: (status: string) => status !== 'queued' && status !== 'running',
+}));
+
 import {
   createAndEnqueueAgentRun,
   evaluateAgentTriggerFilters,
@@ -236,6 +253,14 @@ function seedAdmissionReads(options: {
   agentMissing?: boolean;
   /** The (device, org) ownership probe: false means the device is not in the org. */
   deviceInOrg?: boolean;
+  /**
+   * Rows `reapStalledAgentRuns`'s own candidate SELECT returns (wave 6 PR 2,
+   * #3828 — it now selects candidates before CAS-ing each one through
+   * `transitionRunStatus`, rather than one bulk UPDATE). Defaults to none:
+   * most admission tests don't care about reaping, and an empty candidate
+   * set means the reap step does no UPDATE at all.
+   */
+  staleCandidates?: Array<{ id: string; sessionId: string | null }>;
 } = {}): void {
   const {
     cooldownHit = false,
@@ -247,9 +272,11 @@ function seedAdmissionReads(options: {
     orgPartnerId = PARTNER_ID,
     agentMissing = false,
     deviceInOrg = true,
+    staleCandidates = [],
   } = options;
 
   dbMockState.rowQueues.ai_agent_runs = [
+    staleCandidates,
     cooldownHit ? [{ id: RUN_ID }] : [],
     [{ value: concurrent }],
     [{ value: perHour }],
@@ -294,6 +321,8 @@ beforeEach(() => {
   getLlmBillingSourceForOrg.mockResolvedValue('platform');
   isDeviceInMaintenanceWindow.mockResolvedValue(false);
   publishEvent.mockResolvedValue('event-id');
+  isCircuitOpen.mockResolvedValue(false);
+  recordRunTerminal.mockResolvedValue(undefined);
   enqueueAgentRunJob = vi.fn<AgentRunEnqueuer>(async () => {
     dbMockState.contextAtEnqueue = dbMockState.systemContextDepth > 0 ? 'system' : 'none';
     return { enqueued: true, jobId: `ai-agent-run-${RUN_ID}` };
@@ -359,6 +388,7 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
     const result = await createAndEnqueueAgentRun(input());
     expect(result).toEqual({ created: false, skipped: 'kill_switch_off' });
     expect(resolveEffectiveAgentSystem).not.toHaveBeenCalled();
+    expect(isCircuitOpen).not.toHaveBeenCalled();
   });
 
   it('no_effective_agent when there is no partner baseline', async () => {
@@ -367,6 +397,7 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
       created: false,
       skipped: 'no_effective_agent',
     });
+    expect(isCircuitOpen).not.toHaveBeenCalled();
   });
 
   it('agent_disabled when the effective policy is disabled', async () => {
@@ -375,6 +406,7 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
       created: false,
       skipped: 'agent_disabled',
     });
+    expect(isCircuitOpen).not.toHaveBeenCalled();
   });
 
   it('mode_off when the effective mode is off', async () => {
@@ -383,6 +415,28 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
       created: false,
       skipped: 'mode_off',
     });
+    expect(isCircuitOpen).not.toHaveBeenCalled();
+  });
+
+  it('circuit_open when the (org, agent) circuit has tripped — checked right after the kill switch/mode gates', async () => {
+    isCircuitOpen.mockResolvedValue(true);
+    const result = await createAndEnqueueAgentRun(input());
+    expect(result).toEqual({ created: false, skipped: 'circuit_open' });
+    expect(isCircuitOpen).toHaveBeenCalledWith(ORG_ID, AGENT_ID);
+    // Admission never even reaches the trigger-filter/maintenance/cooldown
+    // gates once the circuit is open — no DB reads for those happen at all.
+    expect(dbMockState.calls).toHaveLength(0);
+  });
+
+  it('is admission-only: an open circuit is published as a genuine skip, not merely logged', async () => {
+    isCircuitOpen.mockResolvedValue(true);
+    await createAndEnqueueAgentRun(input({ triggerKind: 'alert', alertId: ALERT_ID, dedupeKey: `alert:${ALERT_ID}` }));
+    expect(publishEvent).toHaveBeenCalledWith(
+      'ai.agent.run.skipped',
+      ORG_ID,
+      expect.objectContaining({ reason: 'circuit_open', agentId: AGENT_ID }),
+      'ai-agent-runner',
+    );
   });
 
   it('trigger_filter_mismatch when the alert context fails the filters', async () => {
@@ -436,8 +490,10 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
     resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ cooldownSeconds: 0 }));
     seedAdmissionReads();
     // The cooldown probe is not issued, so the queued cooldown result must be
-    // consumed by the concurrency count instead — seed without it.
+    // consumed by the concurrency count instead — seed without it (but keep
+    // the leading reap-candidates slot, which is always read first).
     dbMockState.rowQueues.ai_agent_runs = [
+      [],
       [{ value: 0 }],
       [{ value: 0 }],
       [{ totalCostCents: 0 }],
@@ -675,20 +731,24 @@ describe('createAndEnqueueAgentRun admission success', () => {
     seedAdmissionReads();
     await createAndEnqueueAgentRun(input());
     const runSelects = dbMockState.selects.filter((s) => s.table === 'ai_agent_runs');
-    // [0] cooldown, [1] concurrency, [2] per-hour, [3] daily spend
-    expect(runSelects).toHaveLength(4);
+    // [0] reap candidates, [1] cooldown, [2] concurrency, [3] per-hour, [4] daily spend
+    expect(runSelects).toHaveLength(5);
     for (const select of runSelects) {
       const sql = compiled(select.where);
       expect(sql).toContain('"agent_id"');
       expect(sql).toContain('"org_id"');
     }
-    expect(compiled(runSelects[1]?.where)).toContain('"status"');
+    expect(compiled(runSelects[2]?.where)).toContain('"status"');
   });
 
   it('marks the run failed when the enqueue fails instead of leaving a zombie queued row', async () => {
     seedAdmissionReads();
     enqueueAgentRunJob.mockResolvedValue({ enqueued: false });
-    dbMockState.updateRows = [{ id: RUN_ID, status: 'failed', errorCode: 'enqueue_failed' }];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'enqueue_failed', outcome: {} }];
+    // failRunAfterEnqueueFailure now routes the CAS through transitionRunStatus
+    // (wave 6 PR 2, #3828), then does a follow-up SELECT for the full row its
+    // own caller needs — this queues that follow-up read.
+    dbMockState.rowQueues.ai_agent_runs!.push([{ id: RUN_ID, status: 'failed', errorCode: 'enqueue_failed' }]);
 
     const result = await createAndEnqueueAgentRun(input());
 
@@ -703,7 +763,8 @@ describe('createAndEnqueueAgentRun admission success', () => {
   it('marks the run failed when no enqueuer has been registered at all', async () => {
     registerAgentRunEnqueuer(null);
     seedAdmissionReads();
-    dbMockState.updateRows = [{ id: RUN_ID, status: 'failed', errorCode: 'enqueue_failed' }];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'enqueue_failed', outcome: {} }];
+    dbMockState.rowQueues.ai_agent_runs!.push([{ id: RUN_ID, status: 'failed', errorCode: 'enqueue_failed' }]);
     const result = await createAndEnqueueAgentRun(input());
     expect(dbMockState.updateSets.at(-1)).toMatchObject({ errorCode: 'enqueue_failed' });
     expect(result).toMatchObject({ created: true });
@@ -712,31 +773,111 @@ describe('createAndEnqueueAgentRun admission success', () => {
   it('marks the run failed when publishing the queued event throws', async () => {
     seedAdmissionReads();
     publishEvent.mockRejectedValue(new Error('redis down'));
-    dbMockState.updateRows = [{ id: RUN_ID, status: 'failed', errorCode: 'enqueue_failed' }];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'enqueue_failed', outcome: {} }];
+    dbMockState.rowQueues.ai_agent_runs!.push([{ id: RUN_ID, status: 'failed', errorCode: 'enqueue_failed' }]);
     await createAndEnqueueAgentRun(input());
     expect(dbMockState.updateSets.at(-1)).toMatchObject({ errorCode: 'enqueue_failed' });
     expect(enqueueAgentRunJob).not.toHaveBeenCalled();
+  });
+
+  it('routes the enqueue-failure terminalization through recordRunTerminal', async () => {
+    seedAdmissionReads();
+    enqueueAgentRunJob.mockResolvedValue({ enqueued: false });
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'enqueue_failed', outcome: {} }];
+    dbMockState.rowQueues.ai_agent_runs!.push([{ id: RUN_ID, status: 'failed', errorCode: 'enqueue_failed' }]);
+
+    await createAndEnqueueAgentRun(input());
+
+    expect(recordRunTerminal).toHaveBeenCalledWith(
+      { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID },
+      'failed',
+      'enqueue_failed',
+      null,
+    );
   });
 });
 
 describe('transitionRunStatus', () => {
   it('returns true and applies the patch when the CAS matches', async () => {
-    dbMockState.updateRows = [{ id: RUN_ID }];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: null, outcome: {} }];
     const moved = await transitionRunStatus(RUN_ID, 'queued', 'running', { turnCount: 3 });
     expect(moved).toBe(true);
     expect(dbMockState.updateSets[0]).toMatchObject({ status: 'running', turnCount: 3 });
+    // 'running' is non-terminal — no circuit bookkeeping at all.
+    expect(recordRunTerminal).not.toHaveBeenCalled();
   });
 
   it('returns false when the from-status does not match (lost the race)', async () => {
     dbMockState.updateRows = [];
     expect(await transitionRunStatus(RUN_ID, 'queued', 'running')).toBe(false);
+    expect(recordRunTerminal).not.toHaveBeenCalled();
   });
 
   it('accepts a list of acceptable from-statuses', async () => {
-    dbMockState.updateRows = [{ id: RUN_ID }];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'run_failed', outcome: {} }];
     expect(await transitionRunStatus(RUN_ID, ['queued', 'running'], 'failed')).toBe(true);
     const sql = dialect.sqlToQuery(dbMockState.updateWheres[0] as SQL).sql;
     expect(sql).toContain('"status"');
+  });
+
+  // Wave 6 PR 2 (#3828): this IS the terminalization chokepoint —
+  // recordRunTerminal-wiring coverage lives here; the classification/threshold
+  // logic itself is agentCircuit.test.ts's job.
+  describe('circuit bookkeeping wiring', () => {
+    it('calls recordRunTerminal with the row identity + to + errorCode when the transition is terminal', async () => {
+      dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'sdk_error', outcome: {} }];
+      await transitionRunStatus(RUN_ID, 'running', 'failed', { errorCode: 'sdk_error' });
+      expect(recordRunTerminal).toHaveBeenCalledWith(
+        { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID },
+        'failed',
+        'sdk_error',
+        null,
+      );
+    });
+
+    it('extracts needs_attention from outcome.runVerdict for a completed transition', async () => {
+      dbMockState.updateRows = [{
+        id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: null,
+        outcome: { runVerdict: 'needs_attention' },
+      }];
+      await transitionRunStatus(RUN_ID, 'running', 'completed', {});
+      expect(recordRunTerminal).toHaveBeenCalledWith(
+        { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID },
+        'completed',
+        null,
+        'needs_attention',
+      );
+    });
+
+    it('passes null runVerdict for any other outcome.runVerdict value', async () => {
+      dbMockState.updateRows = [{
+        id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: null,
+        outcome: { runVerdict: 'remediated' },
+      }];
+      await transitionRunStatus(RUN_ID, 'running', 'completed', {});
+      expect(recordRunTerminal).toHaveBeenCalledWith(
+        { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID },
+        'completed',
+        null,
+        null,
+      );
+    });
+
+    it('does not call recordRunTerminal when the CAS is lost', async () => {
+      dbMockState.updateRows = [];
+      await transitionRunStatus(RUN_ID, 'running', 'failed', { errorCode: 'sdk_error' });
+      expect(recordRunTerminal).not.toHaveBeenCalled();
+    });
+
+    it('a recordRunTerminal throw is swallowed — the transition itself still reports success', async () => {
+      dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'sdk_error', outcome: {} }];
+      recordRunTerminal.mockRejectedValueOnce(new Error('circuit accounting boom'));
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const moved = await transitionRunStatus(RUN_ID, 'running', 'failed', { errorCode: 'sdk_error' });
+
+      expect(moved).toBe(true);
+    });
   });
 });
 
@@ -767,7 +908,11 @@ describe('createAndEnqueueAgentRun review findings (wave 3c)', () => {
   });
 
   it('reaps runs stranded in queued/running before counting them against the caps', async () => {
-    seedAdmissionReads();
+    // Wave 6 PR 2 (#3828): reapStalledAgentRuns now SELECTs candidates, then
+    // CAS-es each one through `transitionRunStatus` — no more one bulk UPDATE.
+    seedAdmissionReads({ staleCandidates: [{ id: RUN_ID, sessionId: null }] });
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'stalled', outcome: {} }];
+
     await createAndEnqueueAgentRun(input());
 
     // A SIGKILLed replica leaves a `running` row that BullMQ's redelivery
@@ -777,7 +922,9 @@ describe('createAndEnqueueAgentRun review findings (wave 3c)', () => {
     expect(reap).toMatchObject({ status: 'failed', errorCode: 'stalled' });
     expect(reap.finishedAt).toBeInstanceOf(Date);
 
-    const where = dialect.sqlToQuery(dbMockState.updateWheres[0] as SQL).sql;
+    // The stale-cutoff clause is on the candidate SELECT...
+    const candidateSelect = dbMockState.selects.find((s) => s.table === 'ai_agent_runs' && s.where);
+    const where = compiled(candidateSelect?.where);
     expect(where).toContain('"agent_id"');
     expect(where).toContain('"org_id"');
     expect(where).toContain('"status"');
@@ -787,21 +934,90 @@ describe('createAndEnqueueAgentRun review findings (wave 3c)', () => {
     expect(where).toContain('"queued_at"');
     expect(where).toContain('is null');
 
-    // ...and it happens before the concurrency count reads those statuses.
+    // ...AND it is passed back in as the per-row CAS's guard, so the update
+    // is not id+status alone. Without this, a worker that legitimately
+    // claimed the candidate (queued->running) between the SELECT above and
+    // this CAS would still match id+status and get wrongly failed as
+    // 'stalled' — the guard re-checks the SAME cutoff atomically with the
+    // write, restoring the atomicity the old single bulk UPDATE had.
+    const updateWhere = compiled(dbMockState.updateWheres[0] as SQL);
+    expect(updateWhere).toContain('"started_at"');
+    expect(updateWhere).toContain('"queued_at"');
+
+    // ...and the candidate select happens before the cooldown/concurrency
+    // reads (it is itself the FIRST select:ai_agent_runs).
+    expect(dbMockState.calls.indexOf('select:ai_agent_runs'))
+      .toBeLessThan(dbMockState.calls.indexOf('update:failed'));
     expect(dbMockState.calls.indexOf('update:failed'))
-      .toBeLessThan(dbMockState.calls.indexOf('select:ai_agent_runs'));
+      .toBeLessThan(dbMockState.calls.lastIndexOf('select:ai_agent_runs'));
+
+    // Terminalization routes through the one chokepoint even for a reap.
+    expect(recordRunTerminal).toHaveBeenCalledWith(
+      { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID },
+      'failed',
+      'stalled',
+      null,
+    );
+  });
+
+  it('reapStalledAgentRuns returns no ids and does no UPDATE when there are no stale candidates', async () => {
+    dbMockState.rowQueues.ai_agent_runs = [[]];
+    await expect(reapStalledAgentRuns({ agentId: AGENT_ID, orgId: ORG_ID })).resolves.toEqual([]);
+    expect(dbMockState.updateSets).toHaveLength(0);
   });
 
   it('reapStalledAgentRuns returns the ids it failed', async () => {
-    dbMockState.updateRows = [{ id: RUN_ID }];
+    dbMockState.rowQueues.ai_agent_runs = [[{ id: RUN_ID, sessionId: null }]];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'stalled', outcome: {} }];
     await expect(reapStalledAgentRuns({ agentId: AGENT_ID, orgId: ORG_ID })).resolves.toEqual([RUN_ID]);
+  });
+
+  it('reapStalledAgentRuns skips a candidate that lost the CAS (already moved on)', async () => {
+    // The row genuinely finished (or was cancelled) between the candidate
+    // select and the per-row transition — the CAS's id+status guard alone
+    // already excludes this case; the mock's blanket empty `updateRows`
+    // stands in for "the row is no longer in ['queued','running']".
+    dbMockState.rowQueues.ai_agent_runs = [[{ id: RUN_ID, sessionId: 'session-1' }]];
+    dbMockState.updateRows = [];
+    await expect(reapStalledAgentRuns({ agentId: AGENT_ID, orgId: ORG_ID })).resolves.toEqual([]);
+    expect(reconcileHungExecutions).not.toHaveBeenCalled();
+    expect(closeAgentRunSession).not.toHaveBeenCalled();
+  });
+
+  it('reapStalledAgentRuns does NOT fail a candidate a worker legitimately started between the SELECT and the CAS', async () => {
+    // TOCTOU regression (review fix, #3828): the loop is sequential and
+    // workers never take the reaper's advisory lock, so a candidate can
+    // legitimately transition queued->running (startedAt=now, no longer
+    // stale) between the candidate SELECT and this row's CAS. An id+status
+    // guard alone would still match ('running' is a valid `from` status) and
+    // wrongly fail a run a worker is actively executing. The `stale` guard
+    // passed into `transitionRunStatus` re-checks the cutoff atomically with
+    // the write, so `dbMockState.updateRows = []` here stands in for "the row
+    // no longer satisfies the guard" — the mock's update builder does not
+    // itself evaluate the WHERE clause, so the compiled-SQL assertion above
+    // is what actually proves the guard is wired; this asserts the CALLER
+    // handles a guard-losing CAS the same as any other lost CAS.
+    dbMockState.rowQueues.ai_agent_runs = [[{ id: RUN_ID, sessionId: null }]];
+    dbMockState.updateRows = [];
+
+    const result = await reapStalledAgentRuns({ agentId: AGENT_ID, orgId: ORG_ID });
+
+    expect(result).toEqual([]);
+    const updateWhere = compiled(dbMockState.updateWheres[0] as SQL);
+    // The guard clause is present on the CAS regardless of whether it wins —
+    // this is what makes the outcome above atomic rather than TOCTOU.
+    expect(updateWhere).toContain('"started_at"');
+    expect(updateWhere).toContain('"queued_at"');
+    expect(reconcileHungExecutions).not.toHaveBeenCalled();
+    expect(closeAgentRunSession).not.toHaveBeenCalled();
   });
 
   it('reapStalledAgentRuns repairs the execution ledger for a reaped run that has a session', async () => {
     // A SIGKILLed worker predates the ledger entirely: nothing in the
     // in-process runLoop.ts cleanup ever ran for this run, so the reap itself
     // has to reconcile the hung ai_tool_executions rows and close ai_sessions.
-    dbMockState.updateRows = [{ id: RUN_ID, sessionId: 'session-1' }];
+    dbMockState.rowQueues.ai_agent_runs = [[{ id: RUN_ID, sessionId: 'session-1' }]];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'stalled', outcome: {} }];
     reconcileHungExecutions.mockResolvedValue(2);
     closeAgentRunSession.mockResolvedValue(undefined);
 
@@ -812,7 +1028,8 @@ describe('createAndEnqueueAgentRun review findings (wave 3c)', () => {
   });
 
   it('reapStalledAgentRuns skips ledger cleanup for a reaped run with no session', async () => {
-    dbMockState.updateRows = [{ id: RUN_ID, sessionId: null }];
+    dbMockState.rowQueues.ai_agent_runs = [[{ id: RUN_ID, sessionId: null }]];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'stalled', outcome: {} }];
 
     await expect(reapStalledAgentRuns({ agentId: AGENT_ID, orgId: ORG_ID })).resolves.toEqual([RUN_ID]);
 
@@ -821,7 +1038,8 @@ describe('createAndEnqueueAgentRun review findings (wave 3c)', () => {
   });
 
   it('reapStalledAgentRuns tolerates a ledger cleanup failure — the reap result is unaffected', async () => {
-    dbMockState.updateRows = [{ id: RUN_ID, sessionId: 'session-1' }];
+    dbMockState.rowQueues.ai_agent_runs = [[{ id: RUN_ID, sessionId: 'session-1' }]];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'stalled', outcome: {} }];
     reconcileHungExecutions.mockRejectedValueOnce(new Error('db unavailable'));
     closeAgentRunSession.mockResolvedValue(undefined);
     vi.spyOn(console, 'error').mockImplementation(() => {});

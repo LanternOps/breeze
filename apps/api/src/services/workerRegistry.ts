@@ -232,6 +232,20 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // The fix-held watch's two-phase delayed consumer (wave 6 PR 2, Task 3,
+    // #3828). Its only real dependency is `services/aiAgents/fixWatch.ts`
+    // (db + alerts/aiAgents schema + recipients + userNotifications) —
+    // deliberately NOT `runLoop.ts`'s SDK-tool graph, same reasoning as
+    // `agentNotifyRetry` above, so its closure stays `global` (verified by
+    // workerEntrypointClosure.contract.test.ts).
+    name: 'fixWatchWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/fixWatchWorker');
+      return { init: m.initializeFixWatchWorker, shutdown: m.shutdownFixWatchWorker };
+    },
+  },
+  {
     name: 'auditBaselineJobs',
     placement: 'socket-owner',
     load: async () => {

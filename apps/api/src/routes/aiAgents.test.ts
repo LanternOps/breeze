@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import { AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
+import { AI_AGENT_LIMIT_DEFAULTS, AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
 
 const {
   selectMock,
@@ -13,6 +13,8 @@ const {
   createAndEnqueueAgentRunMock,
   verifyDeviceAccessMock,
   writeRouteAuditMock,
+  getCircuitStateMock,
+  resetCircuitMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   // Explicit generic: vitest infers a zero-arg tuple from a bare `() => true`
@@ -25,6 +27,8 @@ const {
   createAndEnqueueAgentRunMock: vi.fn(),
   verifyDeviceAccessMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
+  getCircuitStateMock: vi.fn(),
+  resetCircuitMock: vi.fn(),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -71,6 +75,16 @@ vi.mock('../services/aiAgents/agentService', () => ({
 
 vi.mock('../services/aiAgents/runService', () => ({
   createAndEnqueueAgentRun: createAndEnqueueAgentRunMock,
+}));
+
+// Wave 6 PR 2 (#3828): agentCircuit.ts has its own full unit coverage in
+// agentCircuit.test.ts (classification, threshold, notify/audit). Mocked
+// here so these route tests exercise only routing/auth/orgId-resolution —
+// consistent with how `createAndEnqueueAgentRun` above is mocked rather than
+// re-driven through a real DB.
+vi.mock('../services/aiAgents/agentCircuit', () => ({
+  getCircuitState: getCircuitStateMock,
+  resetCircuit: resetCircuitMock,
 }));
 
 vi.mock('../services/aiTools', () => ({
@@ -424,7 +438,7 @@ describe('GET /ai-agents/exposure-budget (recorded exposure readout, #3828)', ()
 
   function mockResolvedAgent(overrides: Record<string, unknown> = {}) {
     resolveEffectiveAgentMock.mockResolvedValue({
-      schemaVersion: 3,
+      schemaVersion: 4,
       agentId: AGENT_ID,
       kind: 'patch',
       effective: {
@@ -974,6 +988,137 @@ describe('mapError — act-mode activation prerequisites (Task 6, #3826)', () =>
         missing: ['recipient', 'act_eligible_tool'],
       }),
       422,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wave 6 PR 2 (#3828) — per-org circuit breaker read + MFA reset routes
+// ---------------------------------------------------------------------------
+
+function circuitSnapshot(overrides: Record<string, unknown> = {}) {
+  return {
+    orgId: ORG_ID,
+    agentId: AGENT_ID,
+    state: 'closed',
+    consecutiveFailures: 0,
+    openedAt: null,
+    openedReason: null,
+    lastRunId: null,
+    lastTransitionAt: null,
+    resetBy: null,
+    resetAt: null,
+    ...overrides,
+  };
+}
+
+describe('GET /ai-agents/:id/circuit', () => {
+  beforeEach(() => {
+    getCircuitStateMock.mockResolvedValue(circuitSnapshot());
+    resolveEffectiveAgentMock.mockResolvedValue({
+      effective: { limits: { maxConsecutiveFailures: 4 } },
+    });
+  });
+
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request(`/ai-agents/${AGENT_ID}/circuit`);
+    expect(res.status).toBe(403);
+    expect(getCircuitStateMock).not.toHaveBeenCalled();
+  });
+
+  it('returns a uniform 404 for a foreign-tenant/unknown agent', async () => {
+    getAgentMock.mockResolvedValue(null);
+    const res = await buildApp().request(`/ai-agents/${AGENT_ID}/circuit`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Agent not found' });
+    expect(getCircuitStateMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the state merged with the currently-effective threshold', async () => {
+    const res = await buildApp().request(`/ai-agents/${AGENT_ID}/circuit`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { ...circuitSnapshot(), maxConsecutiveFailures: 4 } });
+    expect(getCircuitStateMock).toHaveBeenCalledWith(ORG_ID, AGENT_ID);
+  });
+
+  it('falls back to the shared default threshold when no effective policy resolves', async () => {
+    resolveEffectiveAgentMock.mockResolvedValue(null);
+    const res = await buildApp().request(`/ai-agents/${AGENT_ID}/circuit`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { maxConsecutiveFailures: number } };
+    expect(body.data.maxConsecutiveFailures).toBe(AI_AGENT_LIMIT_DEFAULTS.maxConsecutiveFailures);
+  });
+
+  it("rejects an org-scoped caller's mismatched orgId query param", async () => {
+    const res = await buildApp().request(`/ai-agents/${AGENT_ID}/circuit?orgId=${OTHER_ORG_ID}`);
+    expect(res.status).toBe(403);
+    expect(getCircuitStateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /ai-agents/:id/circuit/reset', () => {
+  function resetReq(app: Hono, body: unknown = { reason: 'confirmed false positive' }) {
+    return app.request(`/ai-agents/${AGENT_ID}/circuit/reset`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  beforeEach(() => {
+    resetCircuitMock.mockResolvedValue(circuitSnapshot({
+      resetBy: USER_ID, resetAt: '2026-08-28T00:00:00.000Z',
+    }));
+  });
+
+  it('requires the ai_agents:write permission', async () => {
+    hasPermMock.mockImplementation((resource: string, action: string) => (
+      resource !== 'ai_agents' || action !== 'write'
+    ));
+    const res = await resetReq(buildApp());
+    expect(res.status).toBe(403);
+    expect(resetCircuitMock).not.toHaveBeenCalled();
+  });
+
+  it('requires MFA', async () => {
+    mfaOkMock.mockReturnValue(false);
+    const res = await resetReq(buildApp());
+    expect(res.status).toBe(403);
+    expect(resetCircuitMock).not.toHaveBeenCalled();
+  });
+
+  it('returns a uniform 404 for a foreign-tenant/unknown agent', async () => {
+    getAgentMock.mockResolvedValue(null);
+    const res = await resetReq(buildApp());
+    expect(res.status).toBe(404);
+    expect(resetCircuitMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a reason under 3 characters before touching the service', async () => {
+    const res = await resetReq(buildApp(), { reason: 'no' });
+    expect(res.status).toBe(400);
+    expect(resetCircuitMock).not.toHaveBeenCalled();
+  });
+
+  it('resets the circuit and audits the human actor + reason', async () => {
+    const res = await resetReq(buildApp(), { reason: 'confirmed false positive, patch was unrelated' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      data: circuitSnapshot({ resetBy: USER_ID, resetAt: '2026-08-28T00:00:00.000Z' }),
+    });
+    expect(resetCircuitMock).toHaveBeenCalledWith(ORG_ID, AGENT_ID, USER_ID);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: ORG_ID,
+        action: 'ai_agent.circuit_reset',
+        resourceType: 'ai_agent',
+        resourceId: AGENT_ID,
+        result: 'success',
+        details: expect.objectContaining({ reason: 'confirmed false positive, patch was unrelated' }),
+      }),
     );
   });
 });

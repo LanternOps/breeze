@@ -40,6 +40,7 @@ const EXPECTED_SUCCESS: Record<AgentRunSkipReason, boolean> = {
   no_effective_agent: true,
   agent_disabled: true,
   mode_off: true,
+  circuit_open: true,
   trigger_filter_mismatch: true,
   maintenance_window: true,
   cooldown: true,

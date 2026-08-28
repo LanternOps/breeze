@@ -964,6 +964,10 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   no_effective_agent: false,
   agent_disabled: false,
   mode_off: false,
+  // Wave 6 PR 2 (#3828): the per-org circuit breaker refusing admission is a
+  // deliberate safety gate, same class as kill_switch_off/agent_disabled —
+  // not a data-integrity bug.
+  circuit_open: false,
   trigger_filter_mismatch: false,
   maintenance_window: false,
   cooldown: false,
