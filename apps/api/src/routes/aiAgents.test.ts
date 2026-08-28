@@ -424,7 +424,7 @@ describe('GET /ai-agents/exposure-budget (recorded exposure readout, #3828)', ()
 
   function mockResolvedAgent(overrides: Record<string, unknown> = {}) {
     resolveEffectiveAgentMock.mockResolvedValue({
-      schemaVersion: 3,
+      schemaVersion: 4,
       agentId: AGENT_ID,
       kind: 'patch',
       effective: {

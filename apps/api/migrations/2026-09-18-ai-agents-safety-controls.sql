@@ -116,6 +116,12 @@ CREATE TABLE IF NOT EXISTS ai_agent_circuit_state (
     FOREIGN KEY (org_id, partner_id) REFERENCES organizations(id, partner_id) ON DELETE CASCADE
 );
 
+-- Covers the agent_id -> ai_agents(id) ON DELETE CASCADE FK: without this,
+-- every agent delete seq-scans ai_agent_circuit_state. Mirrors the Drizzle
+-- schema's ai_agent_circuit_state_agent_idx (aiAgentCircuitState.ts).
+CREATE INDEX IF NOT EXISTS ai_agent_circuit_state_agent_idx
+  ON ai_agent_circuit_state(agent_id);
+
 -- RLS shape 1 (direct org_id column) — verbatim template, llm_egress_events.
 ALTER TABLE ai_agent_circuit_state ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ai_agent_circuit_state FORCE ROW LEVEL SECURITY;
