@@ -425,6 +425,11 @@ describe('checkAgentReleaseAuthority', () => {
         arguments: policyArgs,
         decidedVia: 'policy',
         policyAuthorizationKey: POLICY_KEY,
+        // Matches `dbState.killStateRows`'s default epoch (0, set in
+        // `beforeEach`) so every pre-existing test in this block that does
+        // NOT specifically exercise the epoch-sanity veto below keeps
+        // passing through it unaffected.
+        policyKillEpoch: 0,
         ...overrides,
       });
     }
@@ -509,6 +514,38 @@ describe('checkAgentReleaseAuthority', () => {
       const result = await checkAgentReleaseAuthority(policyIntent());
 
       expect(result).toMatchObject({ ok: false, errorCode: 'kill_switch_engaged' });
+    });
+
+    // Review fix: kill-epoch sanity. `killState.killed` alone misses a
+    // kill-then-clear cycle that happened entirely between authorization and
+    // release — the flag is back to false by the time this runs, but the
+    // epoch the operator's emergency stop advanced never comes back down to
+    // what the intent was authorized under.
+    it('vetoes policy_authorization_revoked when the CURRENT kill epoch has advanced past the authorized one, even though killed is false', async () => {
+      // Authorized at epoch 4; the current (post kill-then-clear) epoch is 6
+      // and NOT killed — proves this is a genuinely separate veto from the
+      // kill_switch_engaged path above, not a restatement of it.
+      dbState.killStateRows = [{ killed: false, epoch: 6 }];
+      seedHappyRows({ run: runRow(actPolicy()) });
+      policyState.resolveEffectiveAgent.mockResolvedValue(resolvedAgent(actPolicy()));
+
+      const result = await checkAgentReleaseAuthority(policyIntent({ policyKillEpoch: 4 }));
+
+      expect(result).toMatchObject({
+        ok: false,
+        errorCode: 'policy_authorization_revoked',
+        details: { reason: 'kill epoch advanced since authorization', authorizedEpoch: 4, currentEpoch: 6 },
+      });
+    });
+
+    it('passes when the current kill epoch matches the epoch the intent was authorized under', async () => {
+      dbState.killStateRows = [{ killed: false, epoch: 4 }];
+      seedHappyRows({ run: runRow(actPolicy()) });
+      policyState.resolveEffectiveAgent.mockResolvedValue(resolvedAgent(actPolicy()));
+
+      const result = await checkAgentReleaseAuthority(policyIntent({ policyKillEpoch: 4 }));
+
+      expect(result).toEqual({ ok: true });
     });
   });
 });

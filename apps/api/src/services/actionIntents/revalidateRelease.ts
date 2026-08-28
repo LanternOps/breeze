@@ -123,7 +123,19 @@ export async function revalidateApprovedIntentForRelease(
   // integrity failure. Detected off the intent's own columns, immutable
   // once Part B's decision path writes them (never re-derived, never a
   // synthetic stand-in for a human decision).
+  //
+  // Review fix: `requestingAgentRunId` MUST be part of this predicate.
+  // Policy-decide only ever authorizes agent-originated proposals
+  // (attemptPolicyDecision requires a run), so a row with these three
+  // columns set but no run is exactly the tamper shape defense-in-depth (a2)
+  // above exists to catch (superuser write, disabled immutability trigger,
+  // restore) — without this clause such a row would have BOTH the
+  // approval-row gate below (a) AND the entire evidence/authority branch at
+  // (e) skipped, since both of those only run inside
+  // `if (intent.requestingAgentRunId)`, and fall through to plain user RBAC
+  // with no approval row and no policy evidence at all.
   const isPolicyDecided = !winningApproval
+    && !!intent.requestingAgentRunId
     && intent.decidedVia === 'policy'
     && intent.policyDecisionState === 'authorized';
 

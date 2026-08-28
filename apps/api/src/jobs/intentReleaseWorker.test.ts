@@ -943,14 +943,32 @@ describe('releaseApprovedIntent', () => {
   // before dispatch — a SEPARATE `readAiKillState()` call from the one
   // `checkAgentReleaseAuthority` already makes during revalidation, covering
   // the gap between revalidation finishing and the tool actually dispatching
-  // (effect-digest recompute I/O, scheduling jitter, …). Applies to EVERY
-  // release, human-approved or agent-originated alike — this suite's default
-  // fixture (`baseIntent()`) is a human/chat-originated intent, proving the
-  // check is not agent-specific.
+  // (effect-digest recompute I/O, scheduling jitter, …). Review fix: scoped
+  // to AGENT-ORIGINATED releases only (`intent.requestingAgentRunId` set) —
+  // an earlier version ran this unconditionally, which reached human-
+  // approved chat/mcp_api releases that have never consulted the kill switch
+  // and broke flag-off/human-lane inertness. This suite's default fixture
+  // (`baseIntent()`) is human/chat-originated, so it now proves the OPPOSITE
+  // of what it originally proved: the check does NOT fire for that lane.
   describe('final pre-dispatch kill read (wave 5b, #3827)', () => {
-    it('pauses (executing -> approved), never dispatches executeTool, when the pre-dispatch read comes back killed', async () => {
-      const intent = baseIntent();
-      primeThroughRevalidation(intent);
+    /** Same shape as `primeAgentIntentThroughClaim` above, duplicated at this
+     *  narrower scope: gets an agent-originated intent through revalidation
+     *  (actor + org + checkAgentReleaseAuthority) up to the pre-dispatch read. */
+    function primeAgentIntentThroughClaim(intent: ActionIntent) {
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([
+        { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+      ]);
+      aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+      actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(fakeAuth);
+      tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+      toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+    }
+
+    it('pauses (executing -> approved), never dispatches executeTool, when the pre-dispatch read comes back killed for an agent-originated release', async () => {
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
       killStateMock.readAiKillState.mockResolvedValueOnce({ killed: true, epoch: 9 });
       intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> approved
 
@@ -969,8 +987,8 @@ describe('releaseApprovedIntent', () => {
     });
 
     it('a lost CAS on the pre-dispatch pause is a silent no-op, matching the other kill-derived pause path', async () => {
-      const intent = baseIntent();
-      primeThroughRevalidation(intent);
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
       killStateMock.readAiKillState.mockResolvedValueOnce({ killed: true, epoch: 9 });
       intentServiceMock.transitionIntent.mockResolvedValueOnce(false); // lost race
 
@@ -980,15 +998,42 @@ describe('releaseApprovedIntent', () => {
       expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
     });
 
-    it('dispatches normally when the pre-dispatch read is not killed (the default fixture)', async () => {
-      const intent = baseIntent();
-      primeThroughRevalidation(intent);
+    it('dispatches normally for an agent-originated release when the pre-dispatch read is not killed', async () => {
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
       aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
       intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
 
       await releaseApprovedIntent(intent.id);
 
       expect(killStateMock.readAiKillState).toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.anything(),
+      );
+    });
+
+    // Review fix: this is the load-bearing test for the fix itself. Before
+    // it, this exact scenario (a human/chat-originated release, killed:
+    // true) would have PAUSED a human's already-approved action on a lane
+    // that has never consulted the kill switch — breaking BOTH flag-off
+    // inertness (a new, unflagged path became reachable on the human lane)
+    // and durability (a transient DB blip on this shared, fail-closed read
+    // could silently strand an approved human action until the expiry
+    // reaper terminalises it).
+    it('does NOT consult the kill switch, and dispatches normally, for a human/chat-originated release even when the (unread) kill state would report killed', async () => {
+      const intent = baseIntent(); // default: human/chat-originated, no requestingAgentRunId
+      primeThroughRevalidation(intent);
+      // If the worker read this at all for a human intent, it would pause —
+      // proving the assertions below actually distinguish "not called" from
+      // "called and happened to come back not-killed".
+      killStateMock.readAiKillState.mockResolvedValueOnce({ killed: true, epoch: 9 });
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(killStateMock.readAiKillState).not.toHaveBeenCalled();
       expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),

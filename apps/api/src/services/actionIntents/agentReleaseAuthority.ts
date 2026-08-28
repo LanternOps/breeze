@@ -273,5 +273,36 @@ export async function checkAgentReleaseAuthority(
     }
   }
 
+  // Review fix: kill-epoch sanity. `intent.policyKillEpoch` is the epoch
+  // `runAuthorizeTransaction` stamped into the intent, atomically, at
+  // authorization time (policyDecide.ts) — the plan's architecture line
+  // calls this check out by name ("kill-epoch sanity") specifically because
+  // `killState.killed` alone is NOT enough: an operator can hit the
+  // emergency kill (epoch N -> N+1) and then CLEAR it (epoch N+1 -> N+2)
+  // before this unattended release is delivered, and `killState.killed`
+  // would read false throughout. Comparing the epoch instead of the flag
+  // means ANY kill-and-clear cycle since authorization revokes it, exactly
+  // as the durable epoch — rather than a boolean — is supposed to.
+  // Deliberately placed AFTER the candidates loop above, not alongside the
+  // `killState.killed` read: a genuinely LIVE kill must still surface as
+  // `kill_switch_engaged` (pausable) via that loop, never get preempted by
+  // this terminal epoch check — an epoch bump caused by the kill itself
+  // would otherwise race this comparison and misreport a live pause as a
+  // stale, non-recoverable revocation. This only fires once every candidate
+  // has already cleared cleanly. Terminal, not kill-derived-pausable: the
+  // agent re-proposes fresh on its next run rather than sitting `approved`
+  // waiting for an epoch that will never come back down.
+  if (isPolicyDecided && killState.epoch !== intent.policyKillEpoch) {
+    return {
+      ok: false,
+      errorCode: 'policy_authorization_revoked',
+      details: {
+        reason: 'kill epoch advanced since authorization',
+        authorizedEpoch: intent.policyKillEpoch,
+        currentEpoch: killState.epoch,
+      },
+    };
+  }
+
   return { ok: true };
 }

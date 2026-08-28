@@ -253,6 +253,24 @@ describe('revalidateApprovedIntentForRelease policy-evidence branch (wave 5b, #3
       expect(result).toMatchObject({ ok: false, errorCode: 'policy_authorization_revoked' });
       expect(checkAgentReleaseAuthority).not.toHaveBeenCalled();
     });
+
+    // Review fix: `requestingAgentRunId` must be REQUIRED by `isPolicyDecided`,
+    // not merely a side-effect of a real policy decision always setting it.
+    // Without the fix, a row with the three policy-shaped columns set but no
+    // run would skip BOTH the (a) human approval-row gate AND the entire
+    // evidence/authority branch (both live inside
+    // `if (intent.requestingAgentRunId)`), falling all the way through to
+    // plain user RBAC on no approval row and no policy evidence at all —
+    // exactly the tamper shape (a2)'s defense-in-depth exists to catch.
+    it('fails digest_mismatch — NOT the policy-decided branch — when requestingAgentRunId is null despite policy-shaped columns', async () => {
+      const result = await revalidateApprovedIntentForRelease(
+        policyIntent({ requestingAgentRunId: null, originPrincipalKind: 'user_session' }),
+        null,
+      );
+      expect(result).toEqual({ ok: false, errorCode: 'digest_mismatch' });
+      expect(checkAgentReleaseAuthority).not.toHaveBeenCalled();
+      expect(checkToolPermission).not.toHaveBeenCalled();
+    });
   });
 
   it('fails policy_authorization_revoked when the flag has since been turned off', async () => {

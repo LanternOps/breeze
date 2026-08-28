@@ -501,9 +501,16 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   }
 
   // Wave 5 Part B (#3827) final pre-effect kill read: one more fresh
-  // `readAiKillState()` immediately before dispatch, for EVERY released
-  // intent — human-approved or policy-decided alike. Everything above this
-  // line (revalidation, the effect-digest recompute, its own I/O) can take
+  // `readAiKillState()` immediately before dispatch, for AGENT-ORIGINATED
+  // releases only (review fix: an earlier version ran this unconditionally,
+  // which reached human-approved chat/mcp_api releases that have never
+  // consulted the kill switch and made the flag-off/human lane non-inert —
+  // see the plan's dark-ship constraint). The kill switch governs autonomous
+  // agent action (`checkAgentReleaseAuthority` is agent-only, and is the
+  // only OTHER caller of `readAiKillState` on this path); a human who
+  // clicked Approve is not "the agent" and this read must not be able to
+  // pause their release. Scoped this way, everything above this line
+  // (revalidation, the effect-digest recompute, its own I/O) can still take
   // real wall-clock time, during which an operator's emergency kill can land
   // — `checkAgentReleaseAuthority`'s own kill read (agentReleaseAuthority.ts)
   // only covers the window up through step 2's revalidation, not the gap
@@ -511,17 +518,16 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // that read: a real kill (or a transient read failure, which
   // `readAiKillState` maps fail-closed to `killed: true`) PAUSES the intent
   // back to `approved` rather than terminally failing it — see
-  // `pauseIntentForKillSwitch`'s header. Runs for every release, not only
-  // agent-originated ones: a human-owned intent's tool call is just as real
-  // an unattended-from-here-on effect once this worker is the one dispatching
-  // it, and the read itself is cheap (TTL-cached, ≤5s stale).
-  const preDispatchKillState = await readAiKillState();
-  if (preDispatchKillState.killed) {
-    await pauseIntentForKillSwitch(intent, {
-      epoch: preDispatchKillState.epoch,
-      stage: 'pre_dispatch',
-    });
-    return;
+  // `pauseIntentForKillSwitch`'s header.
+  if (intent.requestingAgentRunId) {
+    const preDispatchKillState = await readAiKillState();
+    if (preDispatchKillState.killed) {
+      await pauseIntentForKillSwitch(intent, {
+        epoch: preDispatchKillState.epoch,
+        stage: 'pre_dispatch',
+      });
+      return;
+    }
   }
 
   // Step 3: execute with the rebuilt context. Escape any inherited DB context,
