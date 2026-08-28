@@ -1,8 +1,12 @@
+---
+tracking_issue: LanternOps/breeze#4187
+---
+
 # AI Agents Phase 2 — Intelligence Layer: Program Design
 
 **Date:** 2026-08-28
 **Status:** Approved in dialogue (Todd, 2026-08-28). Codex `xhigh` quorum run 2026-08-28 — 2 agree, 1 disagree (accepted), 5 gaps (all verified against code, all incorporated; see §9 and the **Amendment** call-outs). Awaiting written-spec review.
-**Tracking:** to be registered as a new `feature` parent issue after writing-plans (see §10). Phase 1 is LanternOps/breeze#3821, which closes after wave 6.3 (ticket shadow) lands; "anomaly sources" from the wave-6 title is folded into P2-1 here (decision A, 2026-08-28).
+**Tracking:** LanternOps/breeze#4187 (waves #4188–#4193, registered 2026-08-28). Phase 1 is LanternOps/breeze#3821, which closes after wave 6.3 (ticket shadow) lands; "anomaly sources" from the wave-6 title is folded into P2-1 here (decision A, 2026-08-28).
 **Extends:** `2026-08-22-ai-agents-program-and-wave1-design.md` (phase 1 contracts: `ai_agents`, `ai_agent_runs`, `ai_agent` principal, effective policy), `2026-08-05-tier3-supervised-four-eyes-split-design.md`, `2026-07-18-action-intents-approval-layer-design.md`, the wave-6 plans (`2026-08-28-ai-agents-wave6-{1,2,3}-*.md`).
 
 ## 1. Where phase 1 leaves us
@@ -233,9 +237,9 @@ Disagreement resolved on the merits; nothing surfaced to the user as unresolved.
 
 ## 10. Lifecycle
 
-- New parent `feature` issue "AI agents phase 2 — intelligence layer" with six `wave` sub-issues P2-1..6, registered via `register_feature` when writing-plans finishes; `tracking_issue` added to this file's frontmatter then.
+- Parent `feature` issue **#4187** with six `wave` sub-issues **#4188–#4193** (P2-1..6). Branch pattern `feature/4187-ai-agents-p2/wave-<sub#>`.
 - #3821 closes when 6.3 merges; its wave-7 title's "anomaly sources" is satisfied by P2-1 (note on the issue).
-- Branches `feature/<parent#>-ai-agents-p2/wave-<sub#>`; PR bodies `Closes #<sub>`.
+- PR bodies `Closes #<sub>` on the wave's final PR; `Part of #<sub>` on earlier PRs of a multi-PR wave.
 
 ## 11. Deferred — recorded on the roadmap (GitHub `roadmap` issues #4173–#4183, created 2026-08-28)
 
