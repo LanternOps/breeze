@@ -47,7 +47,7 @@ wave: W07 (#3828) — PR 3 of 4 (Ticket helpdesk shadow)
 - `ticket_outbox`: id bigserial PK, org_id NOT NULL (composite FK org+partner not needed — single org FK CASCADE, mirror intentOutbox simplicity + org RLS policy), ticket_id uuid NOT NULL FK tickets CASCADE, event_type text NOT NULL, payload jsonb NOT NULL DEFAULT '{}' (id-only by construction; still `excludedOpen`), created_at, published_at, publish_attempts int NOT NULL DEFAULT 0; index (published_at, id) partial WHERE published_at IS NULL.
 - `ai_agent_runs.ticket_id uuid NULL` FK tickets ON DELETE SET NULL + index; `ticket_comments.origin_principal_kind text NOT NULL DEFAULT 'user'` — NOTE: deliberate deviation from actionIntents' `'unknown'` fail-closed default: every existing ticket comment row IS human/user-authored (no agent path exists pre-this-PR), and the loop guard treats anything ≠ 'user'-family as suspect; document the reasoning in the migration comment. `ticket_comments.agent_run_id uuid NULL` FK ai_agent_runs SET NULL.
 - All ceremony registrations incl. the three export-policy column entries; drift + naming checks.
-- [ ] TDD → commit: `feat(api): ticket outbox + origin columns + run ticket linkage schema (#3828)`
+- [x] TDD → commit: `feat(api): ticket outbox + origin columns + run ticket linkage schema (#3828)`
 
 ### Task 2: Outbox writes + payload trimming + publisher worker
 

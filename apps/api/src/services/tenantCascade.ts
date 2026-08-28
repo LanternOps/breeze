@@ -386,6 +386,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // partner_id sweep (information_schema-driven), not a static list; this
   // entry only covers the org-owned axis of the GDPR org cascade.
   'ticket_forms',
+  // ticket_outbox (wave 6 PR 3, #3828): transactional outbox for ticket
+  // lifecycle events. Shape 1 (direct org_id, RLS-scoped — unlike
+  // intent_outbox, which is intentionally unscoped). ticket_id FK is ON
+  // DELETE CASCADE (child of tickets, deleted well before this table's own
+  // position anyway). localeCompare sorts this BEFORE 'ticket_parts'
+  // ('o' < 'p').
+  'ticket_outbox',
   'ticket_parts',
   'tickets',
   'time_entries',

@@ -28,6 +28,7 @@ import { alerts } from './alerts';
 import { aiSessions } from './ai';
 import { devices } from './devices';
 import { organizations, partners } from './orgs';
+import { tickets } from './portal';
 import { users } from './users';
 
 // Dual-ownership (#2135, spec §4.1): an agent belongs to EITHER one org
@@ -80,6 +81,12 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
   alertId: uuid('alert_id').references(() => alerts.id, { onDelete: 'set null' }),
   sessionId: uuid('session_id').references(() => aiSessions.id, { onDelete: 'set null' }),
+  // Wave 6 PR 3 (#3828): the triggering ticket for a `triggerKind==='ticket'`
+  // run. ON DELETE SET NULL (run history survives ticket deletion — mirrors
+  // alertId/deviceId's set-null-on-delete treatment, not action_intents'
+  // ON DELETE RESTRICT composite FK, which exists for a different reason:
+  // preserving requesting_agent_run_id attribution on an approval record).
+  ticketId: uuid('ticket_id').references(() => tickets.id, { onDelete: 'set null' }),
   triggerKind: text('trigger_kind').$type<AiAgentTriggerKind>().notNull(),
   triggerEventId: varchar('trigger_event_id', { length: 64 }),
   triggerRef: jsonb('trigger_ref').$type<Record<string, unknown>>().notNull().default({}),
@@ -113,6 +120,7 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // (not dropped) — see the migration header for why.
   orgQueuedIdIdx: index('ai_agent_runs_org_queued_id_idx').on(table.orgId, table.queuedAt.desc(), table.id.desc()),
   deviceIdx: index('ai_agent_runs_device_id_idx').on(table.deviceId),
+  ticketIdx: index('ai_agent_runs_ticket_id_idx').on(table.ticketId),
 }));
 
 export type AiAgentRow = typeof aiAgents.$inferSelect;
