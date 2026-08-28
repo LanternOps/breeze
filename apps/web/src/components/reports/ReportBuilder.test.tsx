@@ -3,13 +3,25 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ReportBuilder from './ReportBuilder';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
+import { navigateTo } from '@/lib/navigation';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
   registerOrgIdProvider: vi.fn()
 }));
 
+vi.mock('../shared/Toast', () => ({
+  showToast: vi.fn()
+}));
+
+vi.mock('@/lib/navigation', () => ({
+  navigateTo: vi.fn()
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+const showToastMock = vi.mocked(showToast);
+const navigateToMock = vi.mocked(navigateTo);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -171,5 +183,66 @@ describe('ReportBuilder config preservation', () => {
       expect(config.backupRequired).toBe(true);
       expect(config.builderType).toBe('compliance');
     });
+  });
+});
+
+describe('ReportBuilder save feedback', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('toasts success and navigates to /reports on a 201 create with no onSubmit (the /reports/builder mount)', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ data: { id: 'report-9' } }, true, 201)
+    );
+
+    render(<ReportBuilder mode="builder" defaultValues={{ name: 'Fleet health' }} />);
+
+    fireEvent.change(screen.getByLabelText(/report name/i), {
+      target: { value: 'Fleet health' }
+    });
+    fireEvent.click(await screen.findByTestId('report-builder-submit'));
+
+    await waitFor(() => {
+      expect(showToastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success' })
+      );
+    });
+    expect(navigateToMock).toHaveBeenCalledWith('/reports');
+  });
+
+  it('does not navigate and shows no success toast when the save fails', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ error: 'boom' }, false, 500)
+    );
+
+    render(<ReportBuilder mode="builder" defaultValues={{ name: 'Fleet health' }} />);
+
+    fireEvent.change(screen.getByLabelText(/report name/i), {
+      target: { value: 'Fleet health' }
+    });
+    fireEvent.click(await screen.findByTestId('report-builder-submit'));
+
+    await waitFor(() => {
+      expect(showToastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error' })
+      );
+    });
+    expect(navigateToMock).not.toHaveBeenCalledWith('/reports');
+  });
+
+  it('calls onSubmit instead of navigating when a caller provides it (create/edit pages)', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: { id: 'report-9' } }, true, 201));
+    const onSubmit = vi.fn();
+
+    render(<ReportBuilder mode="create" defaultValues={{ name: 'Fleet health' }} onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByLabelText(/report name/i), {
+      target: { value: 'Fleet health' }
+    });
+    fireEvent.click(await screen.findByTestId('report-builder-submit'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(navigateToMock).not.toHaveBeenCalledWith('/reports');
   });
 });

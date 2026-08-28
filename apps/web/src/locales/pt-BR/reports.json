@@ -770,6 +770,10 @@
         }
       },
       "selectedFields": "Campos selecionados",
+      "success": {
+        "created": "Relatório \"{{name}}\" salvo.",
+        "updated": "Relatório \"{{name}}\" atualizado."
+      },
       "values": {
         "enabled": "Habilitado",
         "off": "Desligado",

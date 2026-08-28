@@ -770,6 +770,10 @@
         }
       },
       "selectedFields": "Selected fields",
+      "success": {
+        "created": "Report \"{{name}}\" saved.",
+        "updated": "Report \"{{name}}\" updated."
+      },
       "values": {
         "enabled": "Enabled",
         "off": "Off",

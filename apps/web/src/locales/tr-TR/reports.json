@@ -770,6 +770,10 @@
         }
       },
       "selectedFields": "Seçilen alanlar",
+      "success": {
+        "created": "\"{{name}}\" raporu kaydedildi.",
+        "updated": "\"{{name}}\" raporu güncellendi."
+      },
       "values": {
         "enabled": "Etkin",
         "off": "Kapalı",
