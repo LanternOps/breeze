@@ -49,7 +49,7 @@ wave: W06 (#3827) — Part A (inert foundations)
 - `ai_kill_state`: `id text PRIMARY KEY DEFAULT 'global'` + CHECK `(id = 'global')`, `killed boolean NOT NULL DEFAULT false`, `epoch bigint NOT NULL DEFAULT 0`, `reason text`, `updated_by uuid` (no FK — may be flipped via SQL by ops), `updated_at timestamptz NOT NULL DEFAULT now()`; forced RLS, system-only policy (abuse_sweep_state verbatim); seed row `INSERT … ON CONFLICT DO NOTHING`; INTENTIONAL_UNSCOPED allowlist entry with comment.
 - Drizzle schema files for both tables + the new columns; `pnpm db:check-drift` clean.
 
-- [ ] TDD where testable (schema-shape assertions per repo pattern; the ceremony contract tests are the real gate — run what's runnable locally, note the Integration-only suites for CI). Commit: `feat(api): wave-5 foundations schema — policy decision state, exposure ledger, kill state (#3827)`
+- [x] TDD where testable (schema-shape assertions per repo pattern; the ceremony contract tests are the real gate — run what's runnable locally, note the Integration-only suites for CI). Commit: `feat(api): wave-5 foundations schema — policy decision state, exposure ledger, kill state (#3827)`
 
 ---
 
@@ -59,7 +59,7 @@ wave: W06 (#3827) — Part A (inert foundations)
 
 **Guardrail wiring:** in `checkAgentGuardrails`, directly after the env-flag deny: the DB state is consulted via a SYNCHRONOUS seam — `checkAgentGuardrails` is sync (verify!), so the gate reads a module-level snapshot maintained by the cache (refreshed lazily by callers: `revalidateActExecution` and `isStoppedBeforeStart` call `await readAiKillState()` before invoking the guardrails; the guardrail itself checks the last-known snapshot and denies when `killed`). Document the staleness bound (≤5s cache + call-site refresh). Killed → same deny text pattern as the env flag with the epoch in the reason.
 
-- [ ] TDD: fail-closed read; TTL; guardrail denies when snapshot killed; act revalidation path refreshes before guardrail re-run (extend the wave-4 revalidation tests); default state passes everything (inertness). Commit: `feat(api): DB-backed AI kill state with epoch, wired as a live guardrail gate (#3827)`
+- [x] TDD: fail-closed read; TTL; guardrail denies when snapshot killed; act revalidation path refreshes before guardrail re-run (extend the wave-4 revalidation tests); default state passes everything (inertness). Commit: `feat(api): DB-backed AI kill state with epoch, wired as a live guardrail gate (#3827)`
 
 ---
 
@@ -69,7 +69,7 @@ wave: W06 (#3827) — Part A (inert foundations)
 
 **v1 entry set (conservative; each entry's `headlessCompatible` must be VERIFIED by reading the tool's execution path — a tool that needs an interactive session gets `headlessCompatible: false` and is thereby inert):** `manage_services:start`, `manage_services:stop`, `manage_services:restart`, `manage_startup_items:disable`, `manage_startup_items:enable`, `manage_scheduled_tasks:run`, `manage_scheduled_tasks:disable`, `manage_scheduled_tasks:enable`, `security_scan:quarantine`, `security_scan:remove`, `security_scan:restore`. Explicitly EXCLUDED with comments: `run_script`/`execute_playbook` (the act-mode `actAssets` lane owns script/playbook authorization — one lane per asset class), `execute_command` (program-locked exclusion), `manage_processes:kill` (tool unregistered — #4149), `file_operations`/`registry_operations` (unbounded target surface, need per-entry pins — future quorum), everything four_eyes. Frozen-key-set test + `⊆ TIER3_SUPERVISED` containment test + `∩ TIER3_FOUR_EYES = ∅` test.
 
-- [ ] TDD → commit: `feat(api): POLICY_DECIDABLE_TIER3 registry — data + authorization-key validation (#3827)`
+- [x] TDD → commit: `feat(api): POLICY_DECIDABLE_TIER3 registry — data + authorization-key validation (#3827)`
 
 ---
 
@@ -77,7 +77,7 @@ wave: W06 (#3827) — Part A (inert foundations)
 
 **Contract:** extract the fanout region (`intentService.ts:704-813`: `approvalRowFor`/`insertSingleApproverRow`/pool selection/no-eligible-approver cancellation) into `runHumanFanout(tx, args)` — same transaction, same behavior, verbatim logic. The flow becomes: insert intent → `const decisionState = resolvePolicyDecisionState(inserted, guardrail)` (PR-A stub: `return 'human_required';` with the Part-B pointer comment) → stamp `policy_decision_state` on the row (part of the INSERT values, not a second UPDATE — the stub is consulted before insert; on conflict-reuse paths the existing row keeps its state) → `if (decisionState === 'human_required') runHumanFanout(...)` → outbox insert (unconditional, unchanged). Since the stub always returns `human_required`, every test asserting fanout/cancellation/notification behavior passes unchanged — run the FULL intentService + approvals test files and report counts as the inertness proof.
 
-- [ ] TDD: new tests assert the state column lands `human_required` on creation + the extraction is behavior-identical (existing suites green untouched). Commit: `refactor(api): defer human approval fanout behind policy_decision_state (inert — always human_required) (#3827)`
+- [x] TDD: new tests assert the state column lands `human_required` on creation + the extraction is behavior-identical (existing suites green untouched). Commit: `refactor(api): defer human approval fanout behind policy_decision_state (inert — always human_required) (#3827)`
 
 ---
 
@@ -85,13 +85,13 @@ wave: W06 (#3827) — Part A (inert foundations)
 
 Shared types (`AiAgentLimits` + defaults: `maxPolicyDecisionsPerDay: 10`), validator (`int().min(1).max(200)`), min-wins merge (generic loop covers it — add the merge test), `AI_AGENT_POLICY_SNAPSHOT_VERSION` 2→3 with every read site tolerating {1,2,3} (grep them all; the v1→v2 comment discipline at `packages/shared/src/types/aiAgents.ts:118-127` is the template). Unenforced this PR (Part B's decision path consumes it) — add it to the runService limits-coverage inventory comment as DEFERRED-to-Part-B (the wave-4 review lesson).
 
-- [ ] TDD → shared + api suites → commit: `feat(shared,api): maxPolicyDecisionsPerDay limit + agent policy snapshot v3 (#3827)`
+- [x] TDD → shared + api suites → commit: `feat(shared,api): maxPolicyDecisionsPerDay limit + agent policy snapshot v3 (#3827)`
 
 ---
 
 ### Task 6: Verification + PR
 
-- [ ] Full api suite + shared suite + typecheck + `pnpm db:check-drift`; contract suites (closure/registry/dispatch-boundary/envComposeParity + migration-naming); grep sweeps: no writer of `ai_unattended_exposure` exists; no consumer of `POLICY_DECIDABLE_TIER3` outside its own tests; `runHumanFanout` has exactly one caller.
+- [x] Full api suite + shared suite + typecheck + `pnpm db:check-drift`; contract suites (closure/registry/dispatch-boundary/envComposeParity + migration-naming); grep sweeps: no writer of `ai_unattended_exposure` exists; no consumer of `POLICY_DECIDABLE_TIER3` outside its own tests; `runHumanFanout` has exactly one caller.
 - [ ] Tick checkboxes. **Open the PR**: `feature/3821-ai-agents/wave-3827` → main, title `feat(api): wave 5 part A — policy-decide foundations (decision-state lifecycle, exposure ledger, kill state)`, body: inertness statement + the quorum pointer + the 5-part ceremony note + Integration-only suites caveat + "Part A of #3827 — do NOT close". **Stop after opening the PR.**
 
 ## Self-Review Notes
