@@ -1351,17 +1351,68 @@ describe('refresh rotation-race recovery (#1107)', () => {
     }
   });
 
-  it('gives up after a single retry if the race persists (no infinite loop)', async () => {
+  // The raced retry waits a FIXED 200ms. When the winner's issuance
+  // transaction is still holding the lease past that (DB/pool contention), the
+  // second attempt races too — and evicting there is the same org-switch
+  // logout, just rarer. A repeated race is still not a verdict on the refresh
+  // cookie, so it belongs in the bounded transient ladder, not in auth-failed.
+  it('backs off instead of expiring the session when the race repeats (#4167)', async () => {
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const refreshed: Tokens = { accessToken: 'access-after-double-409', expiresInSeconds: 3600 };
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(makeResponse({ error: 'Authentication issuance unavailable' }, false, 409))
+        .mockResolvedValueOnce(makeResponse({ error: 'Authentication issuance unavailable' }, false, 409))
+        .mockResolvedValueOnce(makeResponse({ tokens: refreshed }, true, 200))
+        .mockResolvedValue(makeResponse({ devices: [] }, true, 200));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const response = await fetchWithAuth('/devices');
+
+      expect(response.ok).toBe(true);
+      expect(useAuthStore.getState().tokens?.accessToken).toBe('access-after-double-409');
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+      expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+      expect(replace).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  // The other direction: backing off must stay BOUNDED. A race that never
+  // clears has to end in a verdict, inside the existing transient cap — no new
+  // counter, no unbounded loop. (The 401 shape's cap is covered above; this is
+  // the 409 shape's.) Two calls per pass (attempt + raced retry) x three
+  // passes = the hard ceiling of six /auth/refresh requests.
+  it('still gives up within the transient cap when the 409 race never clears', async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(racedResponse())
-      .mockResolvedValueOnce(racedResponse());
+      .mockResolvedValue(makeResponse({ error: 'Authentication issuance unavailable' }, false, 409));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcome = await restoreAccessTokenFromCookieDetailed();
+
+    expect(outcome).toBe('transient');
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(useAuthStore.getState().tokens).toBeNull();
+  });
+
+  // Was "gives up after a single retry": a repeated race now backs off into
+  // the bounded transient ladder instead of evicting (#4167). It must still
+  // END — same ceiling as the 409 shape above, two calls per pass across the
+  // three passes MAX_TRANSIENT_REFRESH_RETRIES allows.
+  it('gives up within the transient cap if the race persists (no infinite loop)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(racedResponse());
     vi.stubGlobal('fetch', fetchMock);
 
     const restored = await restoreAccessTokenFromCookie();
 
     expect(restored).toBe(false);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 
   it('does not retry on a non-raced 401 (genuine auth failure)', async () => {
