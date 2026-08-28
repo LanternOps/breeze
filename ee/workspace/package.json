@@ -13,7 +13,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.112.3",
     "@breeze/extension-sdk": "workspace:*",
     "@breeze/extension-web-sdk": "workspace:*",
     "drizzle-orm": "0.45.2",

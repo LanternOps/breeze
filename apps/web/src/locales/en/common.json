@@ -70,7 +70,8 @@
     "sectionBackup": "Backup",
     "sectionReporting": "Reporting",
     "sectionSettings": "Settings",
-    "sectionExtensions": "Extensions"
+    "sectionExtensions": "Extensions",
+    "llmProviderCatalog": "LLM Provider Catalog"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

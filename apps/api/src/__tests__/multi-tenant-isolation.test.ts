@@ -59,6 +59,7 @@ vi.mock('../db/schema', () => ({
   alertNotifications:       { id: 'id' },
   escalationPolicies:       { id: 'id', orgId: 'orgId' },
   organizations:            { id: 'id' },
+  users:                    { id: 'id' },
   partnerUsers:             {},
   organizationUsers:        {},
   patchPolicies: {},

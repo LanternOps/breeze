@@ -65,10 +65,23 @@ function mockAlertLookup(row: unknown | null) {
   });
 }
 
-function mockUpdate() {
+/**
+ * `resolve` is a compare-and-swap since #4094: it chains `.returning({id})` and
+ * treats an empty result as "another caller transitioned this alert". The chain
+ * therefore has to offer BOTH endings — `acknowledge`/`suppress` still await the
+ * `where(...)` promise directly, while `resolve` awaits `returning()`.
+ *
+ * `returning` defaults to a one-row winner so every pre-existing caller keeps its
+ * behaviour; pass `[]` to model losing the race.
+ */
+function mockUpdate(returning: unknown[] = [{ id: ALERT.id }]) {
   mocks.dbUpdate.mockReturnValueOnce({
     set: vi.fn(() => ({
-      where: vi.fn().mockResolvedValue(undefined),
+      where: vi.fn(() =>
+        Object.assign(Promise.resolve(undefined), {
+          returning: vi.fn().mockResolvedValue(returning),
+        })
+      ),
     })),
   });
 }

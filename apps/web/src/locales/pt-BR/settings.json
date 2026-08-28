@@ -159,7 +159,22 @@
     "disconnectFailed": "Não foi possível desconectar a chave Anthropic.",
     "permissionDenied": "Gerenciar o provedor de IA exige permissões de faturamento e acesso a todas as organizações.",
     "loadFailed": "Não foi possível carregar a configuração do provedor de IA.",
-    "workspaceDisclosure": "O enriquecimento de conteúdo do Workspace atualmente usa a chave da plataforma."
+    "workspaceDisclosure": "O enriquecimento de conteúdo do Workspace usa o provedor de IA configurado e aparece no seu uso de IA.",
+    "endpointCardTitle": "Endpoint",
+    "endpointCardSubtitle": "Escolha para onde seu tráfego de IA é enviado. O Breeze avalia cada opção antes que ela apareça aqui.",
+    "directOptionLabel": "Anthropic (direto)",
+    "verifiedModelsLabel": "Modelos verificados: {{models}}",
+    "noVerifiedModels": "Ainda não há modelos verificados",
+    "viewDataNote": "Ver nota sobre tratamento de dados",
+    "hideDataNote": "Ocultar nota sobre tratamento de dados",
+    "confirmDialogTitle": "Mudar para {{name}}?",
+    "confirmDialogMessageWithNote": "Antes de seu tráfego de IA passar por {{name}}, revise como seus dados são tratados:",
+    "confirmDialogMessageNoNote": "Mudar seu tráfego de IA para {{name}}?",
+    "consentCheckboxLabel": "Entendo que meu tráfego de IA e conteúdo serão processados por {{name}}",
+    "endpointUpdated": "Endpoint de IA atualizado.",
+    "endpointUpdateFailed": "Não foi possível atualizar o endpoint de IA.",
+    "endpointDelistedBanner": "Este endpoint foi removido pelo Breeze — a IA está pausada até você escolher outro",
+    "endpointModelUnverifiedBanner": "O modelo {{model}} não está verificado neste endpoint. Escolha um modelo ou endpoint diferente para retomar a IA."
   },
   "partnerDefaults": {
     "notSet": "Não definido — as organizações configuram individualmente",
@@ -1305,7 +1320,8 @@
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "As ferramentas de nível 2 são executadas automaticamente com registro de auditoria. As ferramentas de nível 3 ainda exigem aprovação.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Como o Plano de Ação, além de capturas de tela ao vivo entre as etapas e um botão Parar persistente.",
     "untitled": "Sem título",
-    "billedToPartnerKey": "Cobrado na sua chave — o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze"
+    "billedToPartnerKey": "Cobrado na sua chave — o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze",
+    "billedToPartnerKeyViaEndpoint": "Cobrado na sua chave via {{name}} — o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze"
   },
   "aiAgentsPage": {
     "title": "Agentes de IA",
@@ -2982,7 +2998,10 @@
       "trial": "Avaliação",
       "suspended": "Suspenso",
       "churned": "Cancelado",
-      "offboarding": "Em desligamento"
+      "offboarding": "Em desligamento",
+      "merging": "Em fusão",
+      "archived": "Arquivado",
+      "purging": "Em exclusão"
     },
     "columns": {
       "devices": "Dispositivos"
@@ -3058,7 +3077,7 @@
       "addOrganization": "Adicionar organização",
       "tryAgain": "Tente novamente",
       "editOrganization": "Editar organização",
-      "deleteOrganization": "Excluir organização",
+      "archiveOrganization": "Arquivar organização",
       "deleting": "Excluindo..."
     },
     "errors": {
@@ -3066,7 +3085,6 @@
       "generic": "Ocorreu um erro",
       "saveOrder": "Falha ao salvar a ordem das organizações",
       "saveOrganization": "Falha ao salvar a organização",
-      "deleteOrganization": "Falha ao excluir a organização",
       "saveSite": "Falha ao salvar site ({{status}})",
       "deleteSite": "Falha ao excluir site"
     },
@@ -3075,7 +3093,10 @@
       "trial": "Avaliação",
       "suspended": "Suspenso",
       "churned": "Cancelado",
-      "offboarding": "Em desligamento"
+      "offboarding": "Em desligamento",
+      "merging": "Em fusão",
+      "archived": "Arquivado",
+      "purging": "Em exclusão"
     },
     "deviceCount": "Dispositivos {{count}}",
     "list": {
@@ -3097,11 +3118,6 @@
       "description": "Crie uma nova organização com os detalhes abaixo.",
       "submit": "Criar organização"
     },
-    "delete": {
-      "title": "Excluir organização",
-      "messagePrefix": "Tem certeza de que deseja excluir",
-      "messageSuffix": "Esta ação não pode ser desfeita."
-    },
     "siteModal": {
       "editTitle": "Editar site",
       "editDescription": "Atualize os detalhes do site abaixo.",
@@ -3118,6 +3134,104 @@
       "title": "Excluir site",
       "messagePrefix": "Tem certeza de que deseja excluir",
       "messageSuffix": "Esta ação não pode ser desfeita."
+    },
+    "merge": {
+      "openButton": "Mesclar com outra organização",
+      "title": "Mesclar organização",
+      "description": "Mova os dados de {{name}} para uma organização sobrevivente. {{name}} é então desativada permanentemente e não pode ser recuperada.",
+      "survivorLabel": "Mesclar com",
+      "survivorPlaceholder": "Selecione uma organização sobrevivente...",
+      "noEligibleSurvivors": "Nenhuma organização elegível para mesclagem.",
+      "previewLoading": "Calculando o que seria movido...",
+      "totalMovableRows": "{{count}} linhas serão movidas",
+      "tablesHeading": "Tabelas afetadas",
+      "tableRowSummary": "{{table}}: {{loserRows}} linha(s), {{wouldDrop}} seriam descartadas",
+      "warningsHeading": "Avisos",
+      "tooLarge": "Esta mesclagem moveria linhas demais para ser executada automaticamente. Entre em contato com o suporte para agendar uma mesclagem manual.",
+      "confirmLabel": "Digite \"{{name}}\" para confirmar",
+      "cancel": "Cancelar",
+      "confirmButton": "Mesclar organização",
+      "merging": "Mesclando...",
+      "progressTitle": "Mesclagem em andamento",
+      "progressDescription": "Isso pode levar alguns minutos.",
+      "doneTitle": "Mesclagem concluída",
+      "resultSummary": "{{moved}} linha(s) movida(s), {{dropped}} linha(s) descartada(s)",
+      "close": "Fechar",
+      "failedTitle": "Falha na mesclagem",
+      "retry": "Repetir mesclagem",
+      "retrying": "Repetindo...",
+      "errors": {
+        "preview": "Falha ao pré-visualizar a mesclagem",
+        "merge": "Falha ao iniciar a mesclagem",
+        "missingResult": "A mesclagem terminou, mas não retornou dados de resultado. Tente novamente.",
+        "mfaRequired": "Mesclar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente."
+      }
+    },
+    "archive": {
+      "title": "Arquivar organização",
+      "description": "Arquivar {{name}} a oculta da sua lista ativa sem excluir nada. Você pode restaurá-la depois.",
+      "consequencesHeading": "O que acontece ao arquivar:",
+      "consequences": {
+        "hidden": "Oculta da sua lista de organizações e da busca",
+        "readOnly": "Os dados existentes permanecem intactos e somente leitura",
+        "agentsUninstalled": "Os agentes são desinstalados dos dispositivos dela",
+        "billingStops": "A cobrança dessa organização é interrompida",
+        "purgeScheduled": "Excluída permanentemente após o período de retenção, a menos que você a restaure antes",
+        "purgeNever": "Mantida até que você a exclua — nunca excluída automaticamente"
+      },
+      "restoreNote": "Restaurar {{name}} desfaz essa ação e está disponível a qualquer momento antes da exclusão definitiva.",
+      "retentionLabel": "Manter dados arquivados por",
+      "retentionOptions": {
+        "days30": "30 dias",
+        "days90": "90 dias (recomendado)",
+        "days365": "365 dias",
+        "never": "Nunca — manter indefinidamente",
+        "custom": "Personalizado"
+      },
+      "customDaysLabel": "Número de dias (1–3650)",
+      "customError": "Informe um número de dias entre 1 e 3650.",
+      "cancel": "Cancelar",
+      "confirmButton": "Arquivar organização",
+      "archiving": "Arquivando...",
+      "doneOffboardingTitle": "Arquivamento iniciado",
+      "doneOffboardingDescription": "{{name}} está sendo arquivada — os agentes dela estão sendo desinstalados agora. Isso termina automaticamente em poucos minutos.",
+      "doneArchivedTitle": "Organização arquivada",
+      "doneArchivedDescription": "{{name}} foi arquivada.",
+      "donePurgeScheduled": "Programada para ser excluída permanentemente em {{date}}.",
+      "donePurgeNever": "Os dados dela serão mantidos até que você os exclua.",
+      "close": "Fechar",
+      "errors": {
+        "archive": "Falha ao arquivar a organização",
+        "mfaRequired": "Arquivar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente."
+      }
+    },
+    "archived": {
+      "sectionTitle": "Arquivadas",
+      "loading": "Carregando organizações arquivadas...",
+      "empty": "Nenhuma organização arquivada.",
+      "noMatches": "Nenhuma organização arquivada corresponde à sua pesquisa.",
+      "badge": "Arquivada",
+      "keptIndefinitely": "Mantida indefinidamente",
+      "purgeToday": "Excluída definitivamente hoje",
+      "purgeCountdown_one": "Excluída definitivamente em {{count}} dia",
+      "purgeCountdown_other": "Excluída definitivamente em {{count}} dias",
+      "truncatedNote": "Mostrando as primeiras {{count}} organizações arquivadas. Pesquise para restringir a lista.",
+      "readOnlyNotice": "Esta organização está arquivada e é somente leitura. Restaure-a para retomar o acesso normal.",
+      "errors": {
+        "fetch": "Falha ao carregar as organizações arquivadas"
+      }
+    },
+    "restore": {
+      "action": "Restaurar",
+      "restoring": "Restaurando...",
+      "success": "{{name}} restaurada — status: {{status}}.",
+      "recreateRequiredNote": "Antes que ela esteja totalmente utilizável de novo: {{items}}",
+      "suspendedNote": "Ela estava suspensa antes de ser arquivada, então foi restaurada como suspensa — resolva isso antes que ela retome o acesso normal.",
+      "errors": {
+        "restore": "Falha ao restaurar a organização",
+        "mfaRequired": "Restaurar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente.",
+        "purging": "Esta organização já está sendo excluída definitivamente e não pode mais ser restaurada."
+      }
     }
   },
   "siteDetailPage": {

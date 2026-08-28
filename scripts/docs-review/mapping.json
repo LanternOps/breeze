@@ -2321,6 +2321,38 @@
       "docs": [
         "features/mobile.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/routes/aiAgents.ts",
+      "docs": [
+        "features/ai-agents.mdx",
+        "reference/users-and-roles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiAgents/**",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/approvals.ts",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/aiAgents.ts",
+      "docs": [
+        "features/ai-agents.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/types/aiAgents.ts",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
     }
   ]
 }

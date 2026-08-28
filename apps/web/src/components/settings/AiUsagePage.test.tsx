@@ -15,18 +15,19 @@ function jsonRes(body: unknown, status = 200) {
   } as unknown as Response;
 }
 
-function usageBody(billedTo?: 'platform' | 'partner_key') {
+function usageBody(billedTo?: 'platform' | 'partner_key', catalogEndpointName?: string | null) {
   return {
     daily: { inputTokens: 10, outputTokens: 20, totalCostCents: 5, messageCount: 1 },
     monthly: { inputTokens: 100, outputTokens: 200, totalCostCents: 50, messageCount: 10 },
     budget: null,
     ...(billedTo ? { billedTo } : {}),
+    ...(catalogEndpointName !== undefined ? { catalogEndpointName } : {}),
   };
 }
 
-function mockUsage(billedTo?: 'platform' | 'partner_key') {
+function mockUsage(billedTo?: 'platform' | 'partner_key', catalogEndpointName?: string | null) {
   fetchWithAuth.mockImplementation((url: string) => {
-    if (url === '/ai/usage') return Promise.resolve(jsonRes(usageBody(billedTo)));
+    if (url === '/ai/usage') return Promise.resolve(jsonRes(usageBody(billedTo, catalogEndpointName)));
     if (url.startsWith('/ai/admin/sessions')) return Promise.resolve(jsonRes({ data: [] }));
     return Promise.resolve(jsonRes({ data: [] }));
   });
@@ -60,5 +61,22 @@ describe('AiUsagePage billedTo indicator', () => {
 
     await waitFor(() => expect(screen.getByText('Budget Configuration')).toBeInTheDocument());
     expect(screen.queryByTestId('ai-usage-billed-to-note')).toBeNull();
+  });
+
+  it('names the catalog endpoint when session provenance carries one (#3922 W4)', async () => {
+    mockUsage('partner_key', 'OpenRouter');
+    render(<AiUsagePage />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-usage-billed-to-note')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-usage-billed-to-note').textContent).toContain('OpenRouter');
+  });
+
+  it('falls back to the generic partner-key note when no catalog endpoint is named', async () => {
+    mockUsage('partner_key', null);
+    render(<AiUsagePage />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-usage-billed-to-note')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-usage-billed-to-note').textContent)
+      .toContain('Billed to your key — AI usage goes to your own Anthropic account, not Breeze AI credits');
   });
 });

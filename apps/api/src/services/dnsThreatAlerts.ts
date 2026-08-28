@@ -14,9 +14,21 @@
  * the wider alert engine has and ships a working signal today.
  */
 import { and, eq, gt, inArray } from 'drizzle-orm';
-import { db } from '../db';
+import * as dbModule from '../db';
 import { alerts, devices } from '../db/schema';
-import { getEventBus, EVENT_TYPES } from './eventBus';
+import type { BreezeEvent } from './eventBus';
+
+const { db } = dbModule;
+
+// #4085 final-review fix: publish() (eventBus.ts) invokes durable-registry
+// handlers via runOutsideDbContext, i.e. scope 'none' — under forced RLS
+// (queue-mode dispatch) that is a 42501 the moment this handler's `db.select`/
+// `db.insert(alerts)` run without an explicit access context. Mirrors
+// policyAlertBridge.ts's local helper exactly.
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  const withSystem = dbModule.withSystemDbAccessContext;
+  return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
 
 const DEFAULT_COOLDOWN_MINUTES = 60;
 const ALERT_SOURCE = 'dns_threat_evaluator';
@@ -123,45 +135,33 @@ export async function handleDnsThreatBlocked(
 }
 
 /**
- * Subscribe to the event bus on process startup. Idempotent — subsequent
- * calls return the same unsubscribe function. Caller (`api/index.ts`)
- * invokes this from the boot path.
+ * Handle a `dns.threat.blocked` event.
+ *
+ * Registered under subscriber id `dns-threat-alerts` (services/eventSubscribers.ts).
+ * MUST throw on failure — queue-mode dispatch (#4085) retries on a thrown
+ * rejection; local delivery's wrapper (eventBus.ts's invokeLocalHandlers)
+ * provides the swallow-and-log semantics the old subscriber's try/catch used
+ * to provide itself.
  */
-let activeUnsubscribe: (() => void) | null = null;
-
-export function registerDnsThreatAlertSubscriber(): () => void {
-  if (activeUnsubscribe) return activeUnsubscribe;
-
-  const bus = getEventBus();
-  activeUnsubscribe = bus.subscribe<DnsThreatBlockedPayload>(
-    EVENT_TYPES.DNS_THREAT_BLOCKED,
-    async (event) => {
-      try {
-        await handleDnsThreatBlocked(event.orgId, event.payload);
-      } catch (err) {
-        // EventBus already swallows + structured-logs handler failures
-        // (#820), but log a dedicated line so ops can trace the DNS-alert
-        // path specifically.
-        console.error(
-          '[DnsThreatAlerts] handler failed',
-          JSON.stringify({
-            errorId: 'DNS_THREAT_ALERT_HANDLER_FAILED',
-            orgId: event.orgId,
-            domain: event.payload.domain,
-            category: event.payload.category,
-            error: err instanceof Error ? err.message : String(err),
-          })
-        );
-      }
-    }
-  );
-  return activeUnsubscribe;
-}
-
-/** Test-only: clear the registered subscription so a fresh test run starts clean. */
-export function _resetDnsThreatAlertSubscriberForTests(): void {
-  if (activeUnsubscribe) {
-    activeUnsubscribe();
-    activeUnsubscribe = null;
+export async function handleDnsThreatBlockedEvent(event: BreezeEvent): Promise<void> {
+  const payload = event.payload as unknown as DnsThreatBlockedPayload;
+  try {
+    await runWithSystemDbAccess(() => handleDnsThreatBlocked(event.orgId, payload));
+  } catch (err) {
+    // Structured log kept for ops to trace the DNS-alert path specifically,
+    // then rethrown so the failure is visible to retry/observability layers
+    // above (queue-mode dispatch retries it; local delivery's captureException
+    // still fires one layer up).
+    console.error(
+      '[DnsThreatAlerts] handler failed',
+      JSON.stringify({
+        errorId: 'DNS_THREAT_ALERT_HANDLER_FAILED',
+        orgId: event.orgId,
+        domain: payload?.domain,
+        category: payload?.category,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    );
+    throw err;
   }
 }

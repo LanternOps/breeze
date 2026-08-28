@@ -159,7 +159,22 @@
     "disconnectFailed": "Der Anthropic-Schlüssel konnte nicht getrennt werden.",
     "permissionDenied": "Zum Verwalten des KI-Anbieters sind Abrechnungsberechtigungen und Zugriff auf alle Organisationen erforderlich.",
     "loadFailed": "Die Konfiguration des KI-Anbieters konnte nicht geladen werden.",
-    "workspaceDisclosure": "Die Workspace-Inhaltsanreicherung verwendet derzeit den Plattform-Schlüssel."
+    "workspaceDisclosure": "Die Workspace-Inhaltsanreicherung verwendet Ihren konfigurierten KI-Anbieter und erscheint in Ihrer KI-Nutzung.",
+    "endpointCardTitle": "Endpunkt",
+    "endpointCardSubtitle": "Wählen Sie, wohin Ihr KI-Datenverkehr gesendet wird. Breeze prüft jede Option, bevor sie hier erscheint.",
+    "directOptionLabel": "Anthropic (direkt)",
+    "verifiedModelsLabel": "Verifizierte Modelle: {{models}}",
+    "noVerifiedModels": "Noch keine verifizierten Modelle",
+    "viewDataNote": "Datenschutzhinweis anzeigen",
+    "hideDataNote": "Datenschutzhinweis ausblenden",
+    "confirmDialogTitle": "Zu {{name}} wechseln?",
+    "confirmDialogMessageWithNote": "Bevor Ihr KI-Datenverkehr über {{name}} läuft, prüfen Sie, wie Ihre Daten verarbeitet werden:",
+    "confirmDialogMessageNoNote": "Ihren KI-Datenverkehr zu {{name}} wechseln?",
+    "consentCheckboxLabel": "Ich verstehe, dass mein KI-Datenverkehr und meine Inhalte von {{name}} verarbeitet werden",
+    "endpointUpdated": "KI-Endpunkt aktualisiert.",
+    "endpointUpdateFailed": "Der KI-Endpunkt konnte nicht aktualisiert werden.",
+    "endpointDelistedBanner": "Dieser Endpunkt wurde von Breeze aus der Liste entfernt — die KI ist pausiert, bis Sie einen anderen auswählen",
+    "endpointModelUnverifiedBanner": "Das Modell {{model}} ist für diesen Endpunkt nicht verifiziert. Wählen Sie ein anderes Modell oder einen anderen Endpunkt, um die KI fortzusetzen."
   },
   "partnerDefaults": {
     "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
@@ -1305,7 +1320,8 @@
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tools der Stufe 2 werden automatisch mit Audit-Protokollierung ausgeführt. Werkzeuge der Stufe 3 sind weiterhin genehmigungspflichtig.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Wie ein Aktionsplan, plus Live-Screenshots zwischen den Schritten und eine dauerhafte Stopp-Schaltfläche.",
     "untitled": "Ohne Titel",
-    "billedToPartnerKey": "Abrechnung über Ihren Schlüssel — die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben"
+    "billedToPartnerKey": "Abrechnung über Ihren Schlüssel — die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben",
+    "billedToPartnerKeyViaEndpoint": "Abrechnung über Ihren Schlüssel via {{name}} — die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben"
   },
   "aiAgentsPage": {
     "title": "KI-Agenten",
@@ -2929,7 +2945,10 @@
       "trial": "Prozess",
       "suspended": "Suspendiert",
       "churned": "Aufgewühlt",
-      "offboarding": "Abmeldung läuft"
+      "offboarding": "Abmeldung läuft",
+      "merging": "Zusammenführung läuft",
+      "archived": "Archiviert",
+      "purging": "Löschung läuft"
     },
     "columns": {
       "devices": "Geräte"
@@ -3005,7 +3024,7 @@
       "addOrganization": "Organisation hinzufügen",
       "tryAgain": "Versuchen Sie es erneut",
       "editOrganization": "Organisation bearbeiten",
-      "deleteOrganization": "Organisation löschen",
+      "archiveOrganization": "Organisation archivieren",
       "deleting": "Löschen..."
     },
     "errors": {
@@ -3013,7 +3032,6 @@
       "generic": "Es ist ein Fehler aufgetreten",
       "saveOrder": "Organisationsreihenfolge konnte nicht gespeichert werden",
       "saveOrganization": "Die Organisation konnte nicht gespeichert werden",
-      "deleteOrganization": "Organisation konnte nicht gelöscht werden",
       "saveSite": "Standort konnte nicht gespeichert werden ({{status}})",
       "deleteSite": "Die Standort konnte nicht gelöscht werden"
     },
@@ -3022,7 +3040,10 @@
       "trial": "Prozess",
       "suspended": "Suspendiert",
       "churned": "Aufgewühlt",
-      "offboarding": "Abmeldung läuft"
+      "offboarding": "Abmeldung läuft",
+      "merging": "Zusammenführung läuft",
+      "archived": "Archiviert",
+      "purging": "Löschung läuft"
     },
     "deviceCount": "{{count}} Geräte",
     "list": {
@@ -3044,11 +3065,6 @@
       "description": "Erstellen Sie eine neue Organisation mit den unten aufgeführten Details.",
       "submit": "Organisation schaffen"
     },
-    "delete": {
-      "title": "Organisation löschen",
-      "messagePrefix": "Sind Sie sicher, dass Sie löschen möchten?",
-      "messageSuffix": "Diese Aktion kann nicht rückgängig gemacht werden."
-    },
     "siteModal": {
       "editTitle": "Standort bearbeiten",
       "editDescription": "Aktualisieren Sie die Standortdetails unten.",
@@ -3065,6 +3081,104 @@
       "title": "Standort löschen",
       "messagePrefix": "Sind Sie sicher, dass Sie löschen möchten?",
       "messageSuffix": "Diese Aktion kann nicht rückgängig gemacht werden."
+    },
+    "merge": {
+      "openButton": "In eine andere Organisation zusammenführen",
+      "title": "Organisation zusammenführen",
+      "description": "Verschieben Sie die Daten von {{name}} in eine bestehende Organisation. {{name}} wird danach dauerhaft stillgelegt und kann nicht wiederhergestellt werden.",
+      "survivorLabel": "Zusammenführen mit",
+      "survivorPlaceholder": "Ziel-Organisation auswählen...",
+      "noEligibleSurvivors": "Keine geeigneten Organisationen zum Zusammenführen.",
+      "previewLoading": "Berechnung, was verschoben würde...",
+      "totalMovableRows": "{{count}} Zeilen werden verschoben",
+      "tablesHeading": "Betroffene Tabellen",
+      "tableRowSummary": "{{table}}: {{loserRows}} Zeile(n), {{wouldDrop}} würden verworfen",
+      "warningsHeading": "Warnungen",
+      "tooLarge": "Dieser Zusammenschluss würde zu viele Zeilen verschieben, um automatisch ausgeführt zu werden. Wenden Sie sich an den Support, um einen manuellen Zusammenschluss zu planen.",
+      "confirmLabel": "Geben Sie \"{{name}}\" ein, um zu bestätigen",
+      "cancel": "Abbrechen",
+      "confirmButton": "Organisation zusammenführen",
+      "merging": "Wird zusammengeführt...",
+      "progressTitle": "Zusammenführung läuft",
+      "progressDescription": "Dies kann einige Minuten dauern.",
+      "doneTitle": "Zusammenführung abgeschlossen",
+      "resultSummary": "{{moved}} Zeile(n) verschoben, {{dropped}} Zeile(n) verworfen",
+      "close": "Schließen",
+      "failedTitle": "Zusammenführung fehlgeschlagen",
+      "retry": "Zusammenführung erneut versuchen",
+      "retrying": "Wird erneut versucht...",
+      "errors": {
+        "preview": "Vorschau der Zusammenführung fehlgeschlagen",
+        "merge": "Zusammenführung konnte nicht gestartet werden",
+        "missingResult": "Die Zusammenführung wurde abgeschlossen, lieferte aber keine Ergebnisdaten. Versuchen Sie es erneut.",
+        "mfaRequired": "Das Zusammenführen von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut."
+      }
+    },
+    "archive": {
+      "title": "Organisation archivieren",
+      "description": "Durch das Archivieren wird {{name}} aus Ihrer aktiven Liste ausgeblendet, ohne etwas zu löschen. Sie können die Organisation später wiederherstellen.",
+      "consequencesHeading": "Was beim Archivieren passiert:",
+      "consequences": {
+        "hidden": "Wird aus Ihrer Organisationsliste und der Suche ausgeblendet",
+        "readOnly": "Vorhandene Daten bleiben erhalten und werden schreibgeschützt",
+        "agentsUninstalled": "Agenten werden von den Geräten deinstalliert",
+        "billingStops": "Die Abrechnung für diese Organisation wird eingestellt",
+        "purgeScheduled": "Wird nach der Aufbewahrungsfrist dauerhaft gelöscht, sofern Sie sie nicht vorher wiederherstellen",
+        "purgeNever": "Wird aufbewahrt, bis Sie sie löschen — nie automatisch endgültig gelöscht"
+      },
+      "restoreNote": "Die Wiederherstellung von {{name}} macht diese Aktion rückgängig und ist jederzeit möglich, bevor sie endgültig gelöscht wird.",
+      "retentionLabel": "Archivierte Daten aufbewahren für",
+      "retentionOptions": {
+        "days30": "30 Tage",
+        "days90": "90 Tage (empfohlen)",
+        "days365": "365 Tage",
+        "never": "Nie — unbegrenzt aufbewahren",
+        "custom": "Benutzerdefiniert"
+      },
+      "customDaysLabel": "Anzahl der Tage (1–3650)",
+      "customError": "Geben Sie eine Anzahl von Tagen zwischen 1 und 3650 ein.",
+      "cancel": "Abbrechen",
+      "confirmButton": "Organisation archivieren",
+      "archiving": "Wird archiviert...",
+      "doneOffboardingTitle": "Archivierung gestartet",
+      "doneOffboardingDescription": "{{name}} wird archiviert — die Agenten werden jetzt deinstalliert. Dies wird automatisch innerhalb weniger Minuten abgeschlossen.",
+      "doneArchivedTitle": "Organisation archiviert",
+      "doneArchivedDescription": "{{name}} wurde archiviert.",
+      "donePurgeScheduled": "Wird am {{date}} endgültig gelöscht.",
+      "donePurgeNever": "Die Daten werden aufbewahrt, bis Sie sie löschen.",
+      "close": "Schließen",
+      "errors": {
+        "archive": "Organisation konnte nicht archiviert werden",
+        "mfaRequired": "Das Archivieren von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut."
+      }
+    },
+    "archived": {
+      "sectionTitle": "Archiviert",
+      "loading": "Archivierte Organisationen werden geladen...",
+      "empty": "Keine archivierten Organisationen.",
+      "noMatches": "Keine archivierten Organisationen entsprechen Ihrer Suche.",
+      "badge": "Archiviert",
+      "keptIndefinitely": "Wird unbegrenzt aufbewahrt",
+      "purgeToday": "Wird heute endgültig gelöscht",
+      "purgeCountdown_one": "Wird in {{count}} Tag endgültig gelöscht",
+      "purgeCountdown_other": "Wird in {{count}} Tagen endgültig gelöscht",
+      "truncatedNote": "Zeigt die ersten {{count}} archivierten Organisationen. Suchen Sie, um die Liste einzugrenzen.",
+      "readOnlyNotice": "Diese Organisation ist archiviert und schreibgeschützt. Stellen Sie sie wieder her, um den normalen Zugriff fortzusetzen.",
+      "errors": {
+        "fetch": "Archivierte Organisationen konnten nicht geladen werden"
+      }
+    },
+    "restore": {
+      "action": "Wiederherstellen",
+      "restoring": "Wird wiederhergestellt...",
+      "success": "{{name}} wiederhergestellt — Status: {{status}}.",
+      "recreateRequiredNote": "Bevor sie wieder vollständig nutzbar ist: {{items}}",
+      "suspendedNote": "Sie war vor der Archivierung gesperrt, daher wurde sie als gesperrt wiederhergestellt — beheben Sie dies, bevor sie den normalen Zugriff wieder aufnimmt.",
+      "errors": {
+        "restore": "Die Organisation konnte nicht wiederhergestellt werden",
+        "mfaRequired": "Das Wiederherstellen von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut.",
+        "purging": "Diese Organisation wird bereits endgültig gelöscht und kann nicht mehr wiederhergestellt werden."
+      }
     }
   },
   "siteDetailPage": {

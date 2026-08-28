@@ -8,6 +8,7 @@ import {
   RELEASE_SOURCE_REPOSITORY_SHAPE,
   isValidReleaseSourceRepository,
 } from '../services/releaseSource';
+import { EVENT_SUBSCRIBER_IDS, isSubscriberId } from '../services/eventSubscriberIds';
 import {
   decodePartnerApiCursorSigningKey,
   isRecognizedSelfHostSignal,
@@ -600,6 +601,22 @@ const envObjectSchema = z
     // is worse than a typo on most flags.
     ABUSE_SIGNALS_ENABLED: z.string().optional(),
 
+    // Durable event dispatch (wave 3.5c, #4085). off = today's in-process
+    // delivery only; shadow = mirror routing plans into receipts without
+    // executing via the queue; enforce = the EVENT_DISPATCH_QUEUE_SUBSCRIBERS
+    // cohort delivers via BullMQ only. Read at runtime by eventDispatchMode()
+    // / eventDispatchQueueSubscribers() in env.ts. Validated here for
+    // vocabulary/membership — see the superRefine rule below.
+    EVENT_DISPATCH_MODE: z.string().optional(),
+    EVENT_DISPATCH_QUEUE_SUBSCRIBERS: z.string().optional(),
+
+    // Process role for the 3.5d socket/worker split (wave 3.5b, #4084). all
+    // (default) = today's all-in-one process. Read at runtime by
+    // breezeRole() in env.ts. Validated here for format only — absence means
+    // 'all', and this is NOT required-in-production in this wave (that lands
+    // with 3.5d once the split is actually exercised in prod topology).
+    BREEZE_ROLE: z.string().optional(),
+
     // M365 Tier-3 write-action AI tools (m365_disable_user, m365_reset_password)
     // and the action-intents release worker's headless dispatch. Dark by
     // default. Read at runtime by writeActionRuntimeConfig.ts; declared here so
@@ -766,6 +783,16 @@ const envObjectSchema = z
     // `.optional()` string) so a typo boot-refuses instead of silently
     // staying on the safe default — see docs/operations/agent-network-and-manifest-rollout.md.
     AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: z.enum(['true', 'false']).default('false'),
+
+    // Phase 2 of per-partner LLM BYOK (#3922), Task 3.1 — gates catalog-mode
+    // routing (partner_llm_configs.catalog_entry_id). Off by default so a
+    // rolling deploy or rollback never exposes catalog selection ahead of
+    // the resolver/route wiring that consumes it (Tasks 3.2+). When false,
+    // selection-write routes 404 and existing catalog configs resolve as
+    // unavailable('catalog_disabled') — fail-loud, never a silent fallback
+    // to direct Anthropic. Strict two-value enum so a typo boot-refuses
+    // instead of silently staying on the safe default.
+    LLM_PROVIDER_CATALOG_ENABLED: z.enum(['true', 'false']).default('false'),
 
     // Security remediation Wave 6, Task 9 (approved plan deviation D1) — the
     // managed-software destination gate (services/managedSoftwareDispatchPolicy.ts).
@@ -1637,6 +1664,45 @@ const envSchema = envObjectSchema
       });
     }
 
+    // EVENT_DISPATCH_MODE / EVENT_DISPATCH_QUEUE_SUBSCRIBERS (durable event
+    // dispatch, wave 3.5c, #4085). Unlike ABUSE_SIGNALS_ENABLED above, an
+    // unrecognized mode is a HARD error here, not a warning-and-fallback: boot
+    // refusal beats a silent fallback in prod, because eventDispatchMode()'s
+    // fallback-to-off is the reader's last line of defense for a process that
+    // skipped this validator, not a substitute for catching the typo here.
+    const eventDispatchModeRaw = (data.EVENT_DISPATCH_MODE ?? '').trim().toLowerCase();
+    const eventDispatchModeValues = new Set(['', 'off', 'shadow', 'enforce']);
+    if (!eventDispatchModeValues.has(eventDispatchModeRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['EVENT_DISPATCH_MODE'],
+        message:
+          'EVENT_DISPATCH_MODE must be one of off, shadow, enforce (or unset, which defaults to off) — see eventDispatchMode() in env.ts.',
+      });
+    }
+    const eventDispatchSubscribersRaw = (data.EVENT_DISPATCH_QUEUE_SUBSCRIBERS ?? '').trim();
+    const eventDispatchSubscriberIds = eventDispatchSubscribersRaw
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean);
+    for (const id of eventDispatchSubscriberIds) {
+      if (!isSubscriberId(id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['EVENT_DISPATCH_QUEUE_SUBSCRIBERS'],
+          message: `EVENT_DISPATCH_QUEUE_SUBSCRIBERS contains unknown subscriber id "${id}" — known ids: ${EVENT_SUBSCRIBER_IDS.join(', ')}.`,
+        });
+      }
+    }
+    // enforce with an empty cohort is not an error — it degenerates to
+    // "everyone stays local", same as off — but is very likely a
+    // misconfiguration (the operator meant to enforce SOMETHING), so warn.
+    if (eventDispatchModeRaw === 'enforce' && eventDispatchSubscriberIds.length === 0) {
+      console.warn(
+        '[config] EVENT_DISPATCH_MODE=enforce but EVENT_DISPATCH_QUEUE_SUBSCRIBERS is empty — no subscriber will deliver via the queue.',
+      );
+    }
+
     // TRUST_CF_CONNECTING_IP. Same class as the two flags above: the runtime
     // reader (services/clientIp.ts) treats any unrecognized value as OFF, so a
     // typo on a Cloudflare-fronted deploy silently resolves every client IP from
@@ -1680,6 +1746,29 @@ const envSchema = envObjectSchema
         path: ['APP_ENCRYPTION_KEY_ID'],
         message:
           'APP_ENCRYPTION_KEY_ID is required when M365_GRAPH_ACTIONS_TOOLS_ENABLED=true (write-action reveal credentials are sealed with AAD-bound v3 ciphertext).',
+      });
+    }
+
+    // BREEZE_ROLE ↔ APP_ENCRYPTION_KEY_ID pairing (wave 3.5b, #4084). Once a
+    // process is split into 'api' or 'worker', cross-process agent command
+    // dispatch goes through agentCommandRelay.ts, which seals every relay job
+    // with AAD-bound v3 ciphertext and REFUSES to seal without a configured
+    // key id (sealRelayCommand throws rather than silently degrading to the
+    // AAD-ignoring v1 fallback). Without this check, a 'api'/'worker' split
+    // deployment boots clean and then fails every single relay dispatch at
+    // runtime with zero boot-time signal — turn that into a boot refusal, same
+    // shape as the M365 pairing rule above. 'all' (default) is unaffected: it
+    // never takes the relay branch for a locally-connected agent.
+    const breezeRoleRaw = (data.BREEZE_ROLE ?? '').trim().toLowerCase();
+    if (
+      (breezeRoleRaw === 'api' || breezeRoleRaw === 'worker')
+      && !data.APP_ENCRYPTION_KEY_ID?.trim()
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['APP_ENCRYPTION_KEY_ID'],
+        message:
+          'APP_ENCRYPTION_KEY_ID is required when BREEZE_ROLE is "api" or "worker" (the cross-process agent command relay envelope requires AAD-bound v3 ciphertext).',
       });
     }
 

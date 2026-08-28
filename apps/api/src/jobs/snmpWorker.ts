@@ -13,7 +13,8 @@ import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
-import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
+import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
+import type { AgentCommand } from '../routes/agentWs';
 import { decryptSnmpSecret } from '../services/snmpSecrets';
 
 const { db } = dbModule;
@@ -391,7 +392,7 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
 
   const { device, oids, agentId } = inputs;
 
-  if (!isAgentConnected(agentId)) {
+  if (!(await isAgentConnectedAnywhere(agentId))) {
     console.warn(`[SnmpWorker] No online agent for org ${device.orgId}`);
     return { dispatched: false, agentId: null };
   }
@@ -408,14 +409,13 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
 
   // Build and send the command payload
   const command = buildSnmpPollCommand(data.deviceId, device, oids);
-
-  const sent = sendCommandToAgent(agentId, command);
-  if (!sent) {
-    console.error(`[SnmpWorker] Failed to send poll command to agent ${agentId}`);
+  const outcome = await dispatchCommandToAgent(agentId, command, { priority: 'probe' });
+  if (outcome.status !== 'sent') {
+    console.error(`[SnmpWorker] Poll dispatch ${outcome.status} for agent ${agentId}`);
     return { dispatched: false, agentId };
   }
 
-  console.log(`[SnmpWorker] Poll dispatched to agent ${agentId} for device ${data.deviceId}`);
+  console.log(`[SnmpWorker] Poll dispatched to agent ${agentId} for device ${data.deviceId} (${outcome.via})`);
   return { dispatched: true, agentId };
 }
 

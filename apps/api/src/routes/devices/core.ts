@@ -370,8 +370,11 @@ coreRoutes.post(
     // Optional caller-supplied multi-use / TTL controls (#1108). A copied CLI
     // command is frequently pasted onto several machines during a migration;
     // without these the historical hard-coded single-use token failed on every
-    // machine after the first. Defaults preserve the old single-use, 60-min
-    // behaviour for callers that send no body.
+    // machine after the first. A caller that sends no body still gets a
+    // single-use token, but its TTL now follows the shared enrollment default
+    // (ENROLLMENT_KEY_DEFAULT_TTL_MINUTES, 30 days) rather than the old 60
+    // minutes — this route mints a real `enrollment_keys` row, and a token
+    // staged through deployment tooling has to outlive the download day.
     const data = c.req.valid('json');
     const rawCount = Number((data as { count?: unknown }).count);
     const maxUsage = Number.isFinite(rawCount)
@@ -402,7 +405,7 @@ coreRoutes.post(
     }
 
     const ttlMinutes = explicitTtlMinutes
-      ?? envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
+      ?? envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60 * 24 * 30);
 
     const key = `enroll_${randomBytes(24).toString('hex')}`;
     const keyHash = hashEnrollmentKey(key);

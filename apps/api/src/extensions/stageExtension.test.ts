@@ -51,6 +51,7 @@ describe('defaultStageExtension (v1 contract)', () => {
         observed.dbExecute = typeof context.db?.execute;
         observed.encrypt = typeof context.secrets?.encryptForColumn;
         observed.audit = typeof context.audit;
+        observed.aiInvoke = typeof context.ai?.invoke;
         observed.logIsLevelFirst = (() => {
           // A legacy host passed log(message); v1 log(level, message) must not
           // throw and must accept a fields object.
@@ -66,6 +67,7 @@ describe('defaultStageExtension (v1 contract)', () => {
       dbExecute: 'function',
       encrypt: 'function',
       audit: 'function',
+      aiInvoke: 'function',
       logIsLevelFirst: true,
     });
     expect(staged.routeApp).toBeTruthy();

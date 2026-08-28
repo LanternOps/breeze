@@ -9,6 +9,7 @@ import { getEmailService } from './email';
 import { buildContractRenewalEmail } from './contractRenewalTemplate';
 import { duePeriodStartFor, extendTermPastDue, isWithinNoticeWindow } from './contractMath';
 import { captureException } from './sentry';
+import { buildAutomationEligibleOrgPredicate } from './tenantStatus';
 
 const WEB_BASE = process.env.PUBLIC_APP_URL ?? '';
 
@@ -99,7 +100,15 @@ export async function runContractRenewalSweep(asOf: Date = new Date()): Promise<
     billingTiming: contracts.billingTiming, intervalMonths: contracts.intervalMonths,
     endDate: contracts.endDate, nextBillingAt: contracts.nextBillingAt,
     autoRenew: contracts.autoRenew, renewalTermMonths: contracts.renewalTermMonths, renewalNoticeDays: contracts.renewalNoticeDays
-  }).from(contracts).where(and(eq(contracts.status, 'active' as never), eq(contracts.autoRenew, true), isNotNull(contracts.endDate)));
+  }).from(contracts).where(and(
+    eq(contracts.status, 'active' as never),
+    eq(contracts.autoRenew, true),
+    isNotNull(contracts.endDate),
+    // Org-lifecycle Wave 4: an ARCHIVED/purging/merging tenant must not have
+    // its contract term silently extended (or its MSP emailed about a renewal)
+    // while the org is hidden and counting down to erasure.
+    buildAutomationEligibleOrgPredicate(contracts.orgId),
+  ));
 
   let noticed = 0;
   let renewed = 0;

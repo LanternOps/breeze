@@ -28,6 +28,13 @@ export interface AiAgentLimits {
   maxBudgetCentsPerDay: number;
   wallClockSeconds: number;
   maxFleetPercentPerDay: number;
+  /**
+   * Cap on the number of act-mode tool executions a single run may perform.
+   * Unenforced in this PR (Part B's run loop enforces it) — the field exists
+   * now so partners/orgs can pre-configure it and every policy snapshot from
+   * this point on carries it.
+   */
+  maxActionsPerRun: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -39,6 +46,7 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   maxBudgetCentsPerDay: 1000,
   wallClockSeconds: 600,
   maxFleetPercentPerDay: 5,
+  maxActionsPerRun: 3,
 });
 
 export interface AiAgentTriggers {
@@ -89,11 +97,18 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * is append-only ledger data that outlives this type, so a v1 row must stay
  * distinguishable from a v2 row — there is no backfill for a run that already
  * happened.
+ *
+ * v2 (this bump): `effective.limits` gained `maxActionsPerRun`. An in-flight
+ * run enqueued before deploy still carries a v1 snapshot (no `maxActionsPerRun`
+ * in `effective.limits`) and MUST still execute — every read site that
+ * touches `schemaVersion` or `effective.limits` has to tolerate a v1 row,
+ * never reject it. Write side always stamps the current version.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 1 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 2 as const;
 
 export interface AiAgentPolicySnapshot {
-  schemaVersion: number;
+  /** 1 (pre-maxActionsPerRun) or 2 (current). Read sites must tolerate both. */
+  schemaVersion: 1 | 2;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;

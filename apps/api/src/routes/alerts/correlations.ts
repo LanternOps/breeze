@@ -7,6 +7,7 @@ import { db } from '../../db';
 import { alertCorrelationGroups, alertCorrelationMembers, alertCorrelations, alerts, devices, mlFeedbackEvents } from '../../db/schema';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { RESOLVABLE_ALERT_STATUSES } from '../../services/alertService';
 import { buildAlertCorrelationRca } from '../../services/alertCorrelationRca';
 import { publishEvent } from '../../services/eventBus';
 import { captureException } from '../../services/sentry';
@@ -569,6 +570,73 @@ async function updatePersistedGroupStatus(
   }
 }
 
+/**
+ * Explain a shortfall between the pre-read `eligible` set and what the UPDATE
+ * actually wrote — and page only for the half that is a bug.
+ *
+ * Before #4094 the UPDATE matched on id alone, so a shortfall had exactly one
+ * plausible cause and this reported it as an RLS scope mismatch with confidence.
+ * Adding the status predicate introduced a SECOND, entirely benign cause: a
+ * technician or the auto-resolve sweep transitioned a member between the read and
+ * the write. That is expected under load on precisely the alerts MSPs act on in
+ * groups, so reporting both as one exception would have turned a high-signal
+ * tenancy alarm into routine noise — the failure mode where an on-call engineer
+ * dismisses the issue on sight and buries the one occurrence that is a real
+ * cross-tenant write.
+ *
+ * So re-read the unwritten rows in the SAME request context and split them:
+ *   - visible + terminal  → the CAS legitimately lost. Debug log, no exception.
+ *   - not visible at all  → the row exists (we just read it) but this context
+ *                           cannot see it on re-read: a tenancy bug. Page.
+ *   - visible + still open→ neither explanation fits. Page; something is wrong
+ *                           with the predicate itself.
+ */
+async function reportUnwrittenAlerts(action: 'acknowledge' | 'resolve', unwrittenIds: string[]) {
+  if (unwrittenIds.length === 0) return;
+
+  let visible: Array<{ id: string; status: string }> = [];
+  try {
+    visible = await db
+      .select({ id: alerts.id, status: alerts.status })
+      .from(alerts)
+      .where(inArray(alerts.id, unwrittenIds));
+  } catch (error) {
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    return;
+  }
+
+  const statusById = new Map(visible.map((row) => [row.id, row.status]));
+  const raced: string[] = [];
+  const unexplained: string[] = [];
+
+  for (const id of unwrittenIds) {
+    const status = statusById.get(id);
+    if (status === undefined) {
+      // Invisible on re-read despite having been selected moments ago.
+      unexplained.push(id);
+      continue;
+    }
+    const terminal = action === 'acknowledge' ? status !== 'active' : status === 'resolved' || status === 'dismissed';
+    (terminal ? raced : unexplained).push(id);
+  }
+
+  if (raced.length > 0) {
+    console.debug(
+      `[AlertCorrelationRoute] mutateAlerts ${action}: ${raced.length} member(s) lost the ` +
+      `compare-and-swap to a concurrent transition; feedback suppressed for them (expected).`
+    );
+  }
+
+  if (unexplained.length > 0) {
+    captureException(new Error(
+      `[AlertCorrelationRoute] mutateAlerts ${action} skipped ${unexplained.length} alert(s) ` +
+      `that a concurrent status change does NOT explain — they are either invisible to this ` +
+      `tenant context on re-read (RLS scope mismatch) or still in a mutable status. ` +
+      `Suppressing feedback for them.`
+    ));
+  }
+}
+
 async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'resolve', userId: string) {
   const now = new Date();
   const eligible = action === 'acknowledge'
@@ -580,12 +648,21 @@ async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'reso
   }
 
   const alertIds = eligible.map((alert) => alert.id);
+  // The `eligible` filter above reads a snapshot; the status predicate here is what
+  // actually decides who transitioned each row (#4094). Filtering by id alone let a
+  // group resolve re-stamp — and republish `alert.resolved` for — alerts a
+  // technician or the auto-resolve sweep had already finished in between.
   const returned = await db
     .update(alerts)
     .set(action === 'acknowledge'
       ? { status: 'acknowledged', acknowledgedAt: now, acknowledgedBy: userId }
       : { status: 'resolved', resolvedAt: now, resolvedBy: userId })
-    .where(inArray(alerts.id, alertIds))
+    .where(and(
+      inArray(alerts.id, alertIds),
+      action === 'acknowledge'
+        ? eq(alerts.status, 'active')
+        : inArray(alerts.status, [...RESOLVABLE_ALERT_STATUSES])
+    ))
     .returning({ id: alerts.id });
 
   // Under breeze_app RLS a write that matches 0 rows throws no error. Emitting ML feedback
@@ -593,11 +670,10 @@ async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'reso
   // acknowledgements. Only emit for alerts the UPDATE actually wrote.
   const writtenIds = new Set(returned.map((row) => row.id));
   if (writtenIds.size !== eligible.length) {
-    captureException(new Error(
-      `[AlertCorrelationRoute] mutateAlerts ${action} RLS scope mismatch: ` +
-      `${eligible.length} eligible alert(s) but only ${writtenIds.size} written; ` +
-      `suppressing feedback for ${eligible.length - writtenIds.size} unwritten alert(s).`
-    ));
+    await reportUnwrittenAlerts(
+      action,
+      eligible.filter((alert) => !writtenIds.has(alert.id)).map((alert) => alert.id)
+    );
   }
 
   for (const alert of eligible) {

@@ -2661,6 +2661,53 @@ describe('M365_GRAPH_ACTIONS_TOOLS_ENABLED boolean guard (#3374)', () => {
   );
 });
 
+describe('BREEZE_ROLE ↔ APP_ENCRYPTION_KEY_ID pairing (wave 3.5b, #4084)', () => {
+  it.each(['api', 'worker'])(
+    'refuses boot with BREEZE_ROLE=%s and no APP_ENCRYPTION_KEY_ID',
+    (role) => {
+      withEnv({ ...validEnv, BREEZE_ROLE: role }, () => {
+        withoutEnv(['APP_ENCRYPTION_KEY_ID'], () => {
+          expect(() => validateConfig()).toThrow(/APP_ENCRYPTION_KEY_ID/);
+        });
+      });
+    },
+  );
+
+  it.each(['api', 'worker'])(
+    'refuses boot with BREEZE_ROLE=%s and a whitespace-only APP_ENCRYPTION_KEY_ID',
+    (role) => {
+      withEnv({ ...validEnv, BREEZE_ROLE: role, APP_ENCRYPTION_KEY_ID: '   ' }, () => {
+        expect(() => validateConfig()).toThrow(/APP_ENCRYPTION_KEY_ID/);
+      });
+    },
+  );
+
+  it.each(['api', 'worker'])(
+    'passes with BREEZE_ROLE=%s when APP_ENCRYPTION_KEY_ID is set',
+    (role) => {
+      withEnv({ ...validEnv, BREEZE_ROLE: role, APP_ENCRYPTION_KEY_ID: 'current' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    },
+  );
+
+  it('does not require APP_ENCRYPTION_KEY_ID when BREEZE_ROLE is unset (default "all")', () => {
+    withEnv({ ...validEnv }, () => {
+      withoutEnv(['BREEZE_ROLE', 'APP_ENCRYPTION_KEY_ID'], () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
+  it('does not require APP_ENCRYPTION_KEY_ID when BREEZE_ROLE=all explicitly', () => {
+    withEnv({ ...validEnv, BREEZE_ROLE: 'all' }, () => {
+      withoutEnv(['APP_ENCRYPTION_KEY_ID'], () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+});
+
 // `isConfigInitialized()` gates ipAllowlistMode()'s pre-boot fallback. Its unit
 // tests mock the whole config module, so without this the predicate itself is
 // unexercised — and inverting it (`_config !== undefined`, always true for a
@@ -2794,4 +2841,84 @@ describe('ABUSE_SIGNALS_ENABLED boolean guard', () => {
       });
     },
   );
+});
+
+// Durable event dispatch (wave 3.5c, #4085). Unlike ABUSE_SIGNALS_ENABLED
+// above, an unrecognized EVENT_DISPATCH_MODE or an unknown subscriber id in
+// EVENT_DISPATCH_QUEUE_SUBSCRIBERS is a HARD boot refusal, not a
+// warn-and-fallback — see the superRefine rule in validate.ts.
+describe('EVENT_DISPATCH_MODE / EVENT_DISPATCH_QUEUE_SUBSCRIBERS guard', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('EVENT_DISPATCH_MODE');
+    expect(ENV_SCHEMA_KEYS).toContain('EVENT_DISPATCH_QUEUE_SUBSCRIBERS');
+    expect(buildEnvParseInput({ EVENT_DISPATCH_MODE: 'sentinel' }).EVENT_DISPATCH_MODE).toBe(
+      'sentinel',
+    );
+    expect(
+      buildEnvParseInput({ EVENT_DISPATCH_QUEUE_SUBSCRIBERS: 'sentinel' })
+        .EVENT_DISPATCH_QUEUE_SUBSCRIBERS,
+    ).toBe('sentinel');
+  });
+
+  it.each(['off', 'shadow', 'enforce', 'OFF', ' shadow '])(
+    'accepts the recognized mode %j',
+    (value) => {
+      withEnv({ ...validEnv, EVENT_DISPATCH_MODE: value }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    },
+  );
+
+  it('leaves EVENT_DISPATCH_MODE unset when unset', () => {
+    withEnv(validEnv, () => {
+      withoutEnv(['EVENT_DISPATCH_MODE'], () => {
+        expect(validateConfig().EVENT_DISPATCH_MODE).toBeUndefined();
+      });
+    });
+  });
+
+  // Both compose files map this as `${EVENT_DISPATCH_MODE:-off}`, so an empty
+  // string must never refuse boot even though it isn't a literal mode name.
+  it.each(['', '   '])('treats a compose-injected empty value (%j) as unset', (value) => {
+    withEnv({ ...validEnv, EVENT_DISPATCH_MODE: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('refuses boot on an unrecognized EVENT_DISPATCH_MODE typo', () => {
+    withEnv({ ...validEnv, EVENT_DISPATCH_MODE: 'enforced' }, () => {
+      expect(() => validateConfig()).toThrow(/EVENT_DISPATCH_MODE/);
+    });
+  });
+
+  it('accepts a csv of known subscriber ids', () => {
+    withEnv(
+      { ...validEnv, EVENT_DISPATCH_QUEUE_SUBSCRIBERS: 'webhook-delivery,notification-dispatcher' },
+      () => {
+        expect(() => validateConfig()).not.toThrow();
+      },
+    );
+  });
+
+  it('refuses boot on an unknown subscriber id in the csv', () => {
+    withEnv(
+      { ...validEnv, EVENT_DISPATCH_QUEUE_SUBSCRIBERS: 'webhook-delivery,not-a-subscriber' },
+      () => {
+        expect(() => validateConfig()).toThrow(/EVENT_DISPATCH_QUEUE_SUBSCRIBERS/);
+      },
+    );
+  });
+
+  // enforce with an empty cohort degenerates to "everyone stays local" (same
+  // as off) — very likely a misconfiguration, but not a boot refusal.
+  it('warns but does not throw on enforce with an empty subscriber cohort', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({ ...validEnv, EVENT_DISPATCH_MODE: 'enforce' }, () => {
+      withoutEnv(['EVENT_DISPATCH_QUEUE_SUBSCRIBERS'], () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('EVENT_DISPATCH_QUEUE_SUBSCRIBERS'));
+    warn.mockRestore();
+  });
 });
