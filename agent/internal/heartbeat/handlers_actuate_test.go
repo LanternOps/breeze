@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -109,6 +111,60 @@ func readyLegacyHeartbeat(manager *fakePamLifetimeManager) *Heartbeat {
 	h.pamVerificationAvailable.Store(true)
 	h.uacInterceptionEnabled.Store(true)
 	return h
+}
+
+func TestPamLifetimeV2CanonicalDispatchFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "packages", "shared", "src", "fixtures", "pam-lifetime-v2-command-contract.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Apply   map[string]any `json:"apply"`
+		Cleanup map[string]any `json:"cleanup"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+
+	expiresAt := time.Date(2026, 8, 27, 12, 1, 0, 0, time.UTC)
+	serverTime := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	wantApply := pamlifetime.ApplyCommand{
+		ProtocolVersion: 2,
+		ActuationID:     "30000000-0000-4000-8000-000000000001", Generation: 4,
+		RequestID:  "30000000-0000-4000-8000-000000000004",
+		DeviceID:   "30000000-0000-4000-8000-000000000003",
+		OrgID:      "30000000-0000-4000-8000-000000000002",
+		TargetPath: `C:\Program Files\Fixture\fixture.exe`, TargetHash: nil,
+		SubjectUsername: `CORP\operator`, ExpiresAt: expiresAt, ServerTime: serverTime,
+		MaxRemainingLifetimeMS: 60000,
+	}
+	var gotApply pamlifetime.ApplyCommand
+	if err := decodePamLifetimePayload(fixture.Apply, &gotApply); err != nil {
+		t.Fatalf("decode apply fixture: %v", err)
+	}
+	if !reflect.DeepEqual(gotApply, wantApply) {
+		t.Fatalf("apply fixture = %#v, want %#v", gotApply, wantApply)
+	}
+
+	wantCleanup := pamlifetime.CleanupCommand{
+		ProtocolVersion: 2,
+		ActuationID:     "30000000-0000-4000-8000-000000000001", Generation: 5,
+		RequestID: "30000000-0000-4000-8000-000000000004",
+		DeviceID:  "30000000-0000-4000-8000-000000000003",
+		OrgID:     "30000000-0000-4000-8000-000000000002",
+	}
+	var gotCleanup pamlifetime.CleanupCommand
+	if err := decodePamLifetimePayload(fixture.Cleanup, &gotCleanup); err != nil {
+		t.Fatalf("decode cleanup fixture: %v", err)
+	}
+	if !reflect.DeepEqual(gotCleanup, wantCleanup) {
+		t.Fatalf("cleanup fixture = %#v, want %#v", gotCleanup, wantCleanup)
+	}
+
+	fixture.Apply["unknownField"] = true
+	if err := decodePamLifetimePayload(fixture.Apply, &gotApply); err == nil {
+		t.Fatal("strict decoder accepted unknown apply field")
+	}
 }
 
 func TestPamLifetimeV2HandlersReturnSharedStructuredResult(t *testing.T) {
