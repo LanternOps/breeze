@@ -187,6 +187,88 @@ func TestPamReconciliationTransportResultAcknowledgementRoundTrip(t *testing.T) 
 	}
 }
 
+func TestPamReconciliationReceivedRouteAcknowledgementRoundTrip(t *testing.T) {
+	for _, classification := range []string{
+		pamResultClassificationApplied,
+		pamResultClassificationDuplicate,
+		pamResultClassificationStale,
+		pamResultClassificationRejected,
+	} {
+		t.Run(classification, func(t *testing.T) {
+			observation := testPamObservation(testPamObservationID)
+			observation.State = pamlifetime.ResultReceived
+			observation.FailureCode = ""
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if want := "/api/v1/agents/" + testPamAgentID + "/commands/" + testPamCommandID + "/pam-observations"; r.URL.Path != want {
+					t.Errorf("path = %q, want %q", r.URL.Path, want)
+				}
+				var got struct {
+					ProtocolVersion int                `json:"protocolVersion"`
+					Observation     pamlifetime.Result `json:"observation"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Errorf("decode observation: %v", err)
+					return
+				}
+				if got.ProtocolVersion != 1 || got.Observation != observation {
+					t.Errorf("payload = %+v", got)
+				}
+				_ = json.NewEncoder(w).Encode(pamResultAcknowledgement{ProtocolVersion: 1, Classification: classification})
+			}))
+			defer server.Close()
+
+			ack, err := newPamTransportHeartbeat(server.URL, server.Client()).submitPamReconciliationResult(context.Background(), testPamCommandID, observation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ack.ProtocolVersion != 1 || ack.Classification != classification {
+				t.Fatalf("acknowledgement = %+v", ack)
+			}
+		})
+	}
+}
+
+func TestPamReconciliationStartupResultsStayOnResultRoute(t *testing.T) {
+	startup := testPamObservation("")
+	manager := &fakePamLifetimeManager{available: true, reconcileResults: []pamlifetime.Result{startup}}
+	var submittedState pamlifetime.ResultState
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if want := "/api/v1/agents/" + testPamAgentID + "/commands/" + testPamCommandID + "/result"; r.URL.Path != want {
+			t.Errorf("path = %q, want %q", r.URL.Path, want)
+		}
+		var envelope tools.CommandResult
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(envelope.Result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result pamlifetime.Result
+		if err := json.Unmarshal(raw, &result); err != nil {
+			t.Fatal(err)
+		}
+		submittedState = result.State
+		_ = json.NewEncoder(w).Encode(pamResultAcknowledgement{ProtocolVersion: 1, Classification: pamResultClassificationApplied})
+	}))
+	defer server.Close()
+
+	h := newPamControllerTestHeartbeat(t, manager)
+	h.config.ServerURL = server.URL
+	h.config.AgentID = testPamAgentID
+	h.config.AuthToken = "pam-transport-token"
+	h.client = server.Client()
+	h.pamResolveBindingsFn = func(_ context.Context, candidates []pamBindingCandidate) ([]pamBindingDisposition, error) {
+		return []pamBindingDisposition{{Status: pamBindingStatusBound, ObservationID: candidates[0].ObservationID, CommandID: testPamCommandID}}, nil
+	}
+	h.pamSubmitResultFn = nil
+
+	results := h.ReconcilePAMLifetime(context.Background())
+	if len(results) != 1 || results[0].State == pamlifetime.ResultReceived || submittedState != pamlifetime.ResultFailed {
+		t.Fatalf("startup results=%+v submitted state=%q", results, submittedState)
+	}
+}
+
 func TestPamReconciliationTransportResultRejectsMissingOrMalformedAcknowledgement(t *testing.T) {
 	tests := []struct {
 		name   string

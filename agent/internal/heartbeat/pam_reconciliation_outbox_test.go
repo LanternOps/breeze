@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -66,6 +67,38 @@ func TestPamReconciliationOutboxEnqueueCoalescesAndPersists(t *testing.T) {
 		if info.Mode().Perm() != 0600 {
 			t.Fatalf("mode = %o, want 600", info.Mode().Perm())
 		}
+	}
+}
+
+func TestPamReconciliationOutboxPreChangeJSONSubmitsWithoutMigration(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "outbox")
+	o := newPamReconciliationOutbox(root)
+	if err := os.MkdirAll(o.pendingDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(`{"commandId":"10000000-0000-4000-8000-000000000001","observation":{"protocolVersion":2,"observationId":"20000000-0000-4000-8000-000000000001","actuationId":"30000000-0000-4000-8000-000000000001","generation":3,"state":"received","observedAt":"2026-08-26T12:00:00Z","evidence":{"bootId":"windows-boot-42"}},"enqueuedAt":"2026-08-26T12:00:01Z","state":"pending"}`)
+	if err := os.WriteFile(o.entryPath(pamReconciliationStatePending, testPamCommandID, testPamObservationID), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := o.Snapshot()
+	if err != nil || len(snapshot.Pending) != 1 || snapshot.Pending[0].Observation.State != pamlifetime.ResultReceived {
+		t.Fatalf("pre-change snapshot=%+v err=%v", snapshot, err)
+	}
+	var submittedCommand string
+	var submittedObservation pamlifetime.Result
+	h := &Heartbeat{pamReconciliationOutbox: o}
+	h.pamSubmitResultFn = func(_ context.Context, commandID string, observation pamlifetime.Result) (pamResultAcknowledgement, error) {
+		submittedCommand = commandID
+		submittedObservation = observation
+		return pamResultAcknowledgement{ProtocolVersion: 1, Classification: pamResultClassificationApplied}, nil
+	}
+	h.reconcilePamEvidence(context.Background())
+	if submittedCommand != testPamCommandID || submittedObservation != snapshot.Pending[0].Observation {
+		t.Fatalf("submitted command=%q observation=%+v", submittedCommand, submittedObservation)
+	}
+	finalSnapshot, err := o.Snapshot()
+	if err != nil || len(finalSnapshot.Pending) != 0 {
+		t.Fatalf("acknowledged pre-change entry remains: %+v err=%v", finalSnapshot, err)
 	}
 }
 

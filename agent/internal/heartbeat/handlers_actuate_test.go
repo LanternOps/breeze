@@ -20,6 +20,9 @@ import (
 
 type fakePamLifetimeManager struct {
 	applyResult      pamlifetime.Result
+	receivedResult   *pamlifetime.Result
+	receivedCalls    int
+	handoffCheck     func(error)
 	cleanupResult    pamlifetime.Result
 	applyCalls       int
 	cleanupCalls     int
@@ -50,6 +53,28 @@ func (m *fakePamLifetimeManager) initLeaseGate() chan struct{} {
 func (m *fakePamLifetimeManager) Apply(ctx context.Context, _ pamlifetime.ApplyCommand) pamlifetime.Result {
 	m.applyCalls++
 	_, m.applyDeadline = ctx.Deadline()
+	return m.applyResult
+}
+func (m *fakePamLifetimeManager) ApplyWithReceivedObservation(
+	ctx context.Context,
+	_ pamlifetime.ApplyCommand,
+	handoff func(pamlifetime.Result) error,
+) pamlifetime.Result {
+	m.receivedCalls++
+	_, m.applyDeadline = ctx.Deadline()
+	if m.receivedResult == nil {
+		return m.applyResult
+	}
+	err := handoff(*m.receivedResult)
+	if m.handoffCheck != nil {
+		m.handoffCheck(err)
+	}
+	if err != nil {
+		failed := *m.receivedResult
+		failed.State = pamlifetime.ResultFailed
+		failed.FailureCode = "received_observation_handoff_failed"
+		return failed
+	}
 	return m.applyResult
 }
 func (m *fakePamLifetimeManager) Cleanup(ctx context.Context, _ pamlifetime.CleanupCommand) pamlifetime.Result {
@@ -102,6 +127,147 @@ func (m *fakePamLifetimeManager) AcquireLegacyActuation(ctx context.Context) (fu
 	m.leaseCalls++
 	var once sync.Once
 	return func() { once.Do(func() { gate <- struct{}{} }) }, nil
+}
+
+type frozenPamLifetimeManager struct {
+	delegate *fakePamLifetimeManager
+}
+
+func (m *frozenPamLifetimeManager) Apply(ctx context.Context, cmd pamlifetime.ApplyCommand) pamlifetime.Result {
+	return m.delegate.Apply(ctx, cmd)
+}
+func (m *frozenPamLifetimeManager) Cleanup(ctx context.Context, cmd pamlifetime.CleanupCommand) pamlifetime.Result {
+	return m.delegate.Cleanup(ctx, cmd)
+}
+func (m *frozenPamLifetimeManager) Reconcile(ctx context.Context) []pamlifetime.Result {
+	return m.delegate.Reconcile(ctx)
+}
+func (m *frozenPamLifetimeManager) SetEnabled(ctx context.Context, enabled bool) error {
+	return m.delegate.SetEnabled(ctx, enabled)
+}
+
+func pamApplyV2TestCommand(commandID string) Command {
+	return Command{ID: commandID, Payload: map[string]any{
+		"protocolVersion":        2,
+		"actuationId":            "30000000-0000-4000-8000-000000000001",
+		"generation":             1,
+		"requestId":              "40000000-0000-4000-8000-000000000001",
+		"deviceId":               "10000000-0000-4000-8000-000000000003",
+		"orgId":                  "10000000-0000-4000-8000-000000000004",
+		"targetPath":             `C:\\Windows\\System32\\mmc.exe`,
+		"targetHash":             nil,
+		"subjectUsername":        `CORP\\alice`,
+		"expiresAt":              time.Now().Add(time.Minute).Format(time.RFC3339Nano),
+		"serverTime":             time.Now().Format(time.RFC3339Nano),
+		"maxRemainingLifetimeMs": 120000,
+	}}
+}
+
+func readyPamApplyTestHeartbeat(manager pamlifetime.Manager, outbox *pamReconciliationOutbox) *Heartbeat {
+	h := &Heartbeat{
+		config: &config.Config{
+			DeviceID: "10000000-0000-4000-8000-000000000003",
+			OrgID:    "10000000-0000-4000-8000-000000000004",
+		},
+		pamLifetimeManager:      manager,
+		pamReconciliationOutbox: outbox,
+	}
+	h.pamReconciled.Store(true)
+	h.pamVerificationAvailable.Store(true)
+	h.uacInterceptionEnabled.Store(true)
+	return h
+}
+
+func TestPamApplyV2RequiresReceivedObservationManager(t *testing.T) {
+	delegate := &fakePamLifetimeManager{}
+	h := readyPamApplyTestHeartbeat(&frozenPamLifetimeManager{delegate: delegate}, newPamReconciliationOutbox(t.TempDir()))
+
+	result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000001"))
+	if result.Status != "failed" || result.Error != "PAM received observation transport unavailable" {
+		t.Fatalf("result = %+v", result)
+	}
+	if delegate.applyCalls != 0 {
+		t.Fatalf("frozen Apply called %d times", delegate.applyCalls)
+	}
+}
+
+func TestPamApplyV2EnqueuesExactEnvelopeCommandBeforeVerification(t *testing.T) {
+	received := pamlifetime.Result{
+		ProtocolVersion: 2,
+		ObservationID:   "20000000-0000-4000-8000-000000000001",
+		ActuationID:     "30000000-0000-4000-8000-000000000001",
+		Generation:      1,
+		State:           pamlifetime.ResultReceived,
+		ObservedAt:      time.Now().UTC(),
+	}
+	verified := received
+	verified.ObservationID = "20000000-0000-4000-8000-000000000002"
+	verified.State = pamlifetime.ResultVerifiedActive
+	outbox := newPamReconciliationOutbox(t.TempDir())
+	manager := &fakePamLifetimeManager{receivedResult: &received, applyResult: verified, available: true}
+	manager.handoffCheck = func(err error) {
+		if err != nil {
+			t.Fatalf("handoff error: %v", err)
+		}
+		snapshot, snapshotErr := outbox.Snapshot()
+		if snapshotErr != nil {
+			t.Fatal(snapshotErr)
+		}
+		if len(snapshot.Pending) != 1 || snapshot.Pending[0].CommandID != "60000000-0000-4000-8000-000000000001" || snapshot.Pending[0].Observation != received {
+			t.Fatalf("outbox before manager return = %+v", snapshot)
+		}
+	}
+	h := readyPamApplyTestHeartbeat(manager, outbox)
+
+	result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000001"))
+	if result.Status != "completed" || result.Result != verified {
+		t.Fatalf("result = %+v", result)
+	}
+	if manager.applyCalls != 0 || manager.receivedCalls != 1 {
+		t.Fatalf("apply calls=%d received calls=%d", manager.applyCalls, manager.receivedCalls)
+	}
+}
+
+func TestPamApplyV2EnqueueFailureReturnsStableManagerFailure(t *testing.T) {
+	received := pamlifetime.Result{
+		ProtocolVersion: 2,
+		ObservationID:   "20000000-0000-4000-8000-000000000001",
+		ActuationID:     "30000000-0000-4000-8000-000000000001",
+		Generation:      1,
+		State:           pamlifetime.ResultReceived,
+		ObservedAt:      time.Now().UTC(),
+	}
+	outbox := newPamReconciliationOutbox(t.TempDir())
+	outbox.writeFn = func(*os.File, []byte) error { return errors.New("disk full") }
+	manager := &fakePamLifetimeManager{receivedResult: &received, applyResult: received, available: true}
+	h := readyPamApplyTestHeartbeat(manager, outbox)
+
+	result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000001"))
+	structured, ok := result.Result.(pamlifetime.Result)
+	if result.Status != "completed" || !ok || structured.State != pamlifetime.ResultFailed || structured.FailureCode != "received_observation_handoff_failed" {
+		t.Fatalf("result = %+v", result)
+	}
+	if manager.applyCalls != 0 || manager.receivedCalls != 1 {
+		t.Fatalf("apply calls=%d received calls=%d", manager.applyCalls, manager.receivedCalls)
+	}
+}
+
+func TestPamCleanupV2DoesNotRequireReceivedObservationManager(t *testing.T) {
+	cleaned := pamlifetime.Result{ProtocolVersion: 2, State: pamlifetime.ResultCleaned}
+	delegate := &fakePamLifetimeManager{cleanupResult: cleaned}
+	h := readyPamApplyTestHeartbeat(&frozenPamLifetimeManager{delegate: delegate}, nil)
+
+	result := handlePamCleanupV2(h, Command{Payload: map[string]any{
+		"protocolVersion": 2,
+		"actuationId":     "30000000-0000-4000-8000-000000000001",
+		"generation":      2,
+		"requestId":       "40000000-0000-4000-8000-000000000001",
+		"deviceId":        "10000000-0000-4000-8000-000000000003",
+		"orgId":           "10000000-0000-4000-8000-000000000004",
+	}})
+	if result.Status != "completed" || delegate.cleanupCalls != 1 {
+		t.Fatalf("result=%+v cleanup calls=%d", result, delegate.cleanupCalls)
+	}
 }
 
 func readyLegacyHeartbeat(manager *fakePamLifetimeManager) *Heartbeat {

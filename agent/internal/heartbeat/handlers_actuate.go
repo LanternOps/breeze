@@ -53,6 +53,14 @@ type legacyPamActuationAdmission interface {
 	AcquireLegacyActuation(context.Context) (func(), error)
 }
 
+type pamReceivedObservationManager interface {
+	ApplyWithReceivedObservation(
+		context.Context,
+		pamlifetime.ApplyCommand,
+		func(pamlifetime.Result) error,
+	) pamlifetime.Result
+}
+
 func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 	var payload pamlifetime.ApplyCommand
@@ -74,9 +82,23 @@ func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
 	if !h.IsUACInterceptionEnabled() {
 		return tools.NewErrorResult(errors.New("PAM lifetime apply is disabled by policy"), time.Since(start).Milliseconds())
 	}
+	manager, ok := h.pamLifetimeManager.(pamReceivedObservationManager)
+	if !ok {
+		return tools.NewErrorResult(errors.New("PAM received observation transport unavailable"), time.Since(start).Milliseconds())
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), pamLifecycleOperationTimeout)
 	defer cancel()
-	result := h.pamLifetimeManager.Apply(ctx, payload)
+	result := manager.ApplyWithReceivedObservation(ctx, payload, func(received pamlifetime.Result) error {
+		if h.pamReconciliationOutbox == nil {
+			return errors.New("PAM received observation outbox unavailable")
+		}
+		if err := h.pamReconciliationOutbox.Enqueue(cmd.ID, received); err != nil {
+			return fmt.Errorf("enqueue PAM received observation: %w", err)
+		}
+		h.signalPamReconciliationWork()
+		return nil
+	})
+	h.refreshPamLifetimeAvailability()
 	commandResult := tools.NewSuccessResult(result, time.Since(start).Milliseconds())
 	commandResult.Result = result
 	return commandResult

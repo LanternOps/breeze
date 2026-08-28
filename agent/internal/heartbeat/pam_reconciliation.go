@@ -263,20 +263,36 @@ func (h *Heartbeat) submitPamReconciliationResult(ctx context.Context, commandID
 	if _, err := canonicalPamUUID(result.ObservationID); err != nil {
 		return acknowledgement, fmt.Errorf("invalid observation ID: %w", err)
 	}
-	requestURL, err := h.pamTransportURL(fmt.Sprintf(
-		"/api/v1/agents/%s/commands/%s/result",
-		url.PathEscape(h.config.AgentID),
-		url.PathEscape(commandID),
-	))
+	var requestURL string
+	var payload any
+	var err error
+	if result.State == pamlifetime.ResultReceived {
+		requestURL, err = h.pamTransportURL(fmt.Sprintf(
+			"/api/v1/agents/%s/commands/%s/pam-observations",
+			url.PathEscape(h.config.AgentID),
+			url.PathEscape(commandID),
+		))
+		payload = struct {
+			ProtocolVersion int                `json:"protocolVersion"`
+			Observation     pamlifetime.Result `json:"observation"`
+		}{ProtocolVersion: pamReconciliationProtocolVersion, Observation: result}
+	} else {
+		requestURL, err = h.pamTransportURL(fmt.Sprintf(
+			"/api/v1/agents/%s/commands/%s/result",
+			url.PathEscape(h.config.AgentID),
+			url.PathEscape(commandID),
+		))
+		envelope := tools.NewSuccessResult(result, 0)
+		if envelope.Status != "completed" {
+			return acknowledgement, errors.New("encode PAM reconciliation result envelope")
+		}
+		envelope.Result = result
+		payload = envelope
+	}
 	if err != nil {
 		return acknowledgement, err
 	}
-	envelope := tools.NewSuccessResult(result, 0)
-	if envelope.Status != "completed" {
-		return acknowledgement, errors.New("encode PAM reconciliation result envelope")
-	}
-	envelope.Result = result
-	if err := h.postPamJSON(ctx, requestURL, envelope, &acknowledgement); err != nil {
+	if err := h.postPamJSON(ctx, requestURL, payload, &acknowledgement); err != nil {
 		return pamResultAcknowledgement{}, fmt.Errorf("submit PAM reconciliation result: %w", err)
 	}
 	if acknowledgement.ProtocolVersion != pamReconciliationProtocolVersion {
