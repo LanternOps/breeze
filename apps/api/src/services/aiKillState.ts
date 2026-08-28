@@ -15,9 +15,13 @@
  *   - `readAiKillState()` (async, I/O, 5s TTL cache) — the real read. Called
  *     from async call sites BEFORE they invoke (or trigger) a guardrail
  *     check, so the module-level cached snapshot below is warm: today that
- *     is `isStoppedBeforeStart` (runLoop.ts, run admission) and
+ *     is `isStoppedBeforeStart` (runLoop.ts, run admission),
  *     `revalidateActExecution` (actRevalidation.ts, immediately before an
- *     act-mode dispatch's live guardrail re-run).
+ *     act-mode dispatch's live guardrail re-run), and
+ *     `checkAgentReleaseAuthority` (agentReleaseAuthority.ts, immediately
+ *     before the release-time guardrail re-run). All three share the same
+ *     TTL-cached snapshot — none of them is isolated from a poisoned read
+ *     left behind by one of the others within the 5s window.
  *   - `getCachedAiKillStateSnapshot()` (sync, no I/O, no TTL check) — the
  *     seam `checkAgentGuardrails` itself reads. `checkAgentGuardrails` is a
  *     pure synchronous function (many callers rely on that, and it is

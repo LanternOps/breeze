@@ -173,14 +173,20 @@ export async function checkAgentReleaseAuthority(
 
   // Wave-5A review fix (#3827): refresh THIS lane's own kill-state read,
   // mirroring actRevalidation.ts's Step 2 refresh, immediately before the
-  // guardrail re-run below — rather than trusting whatever run admission or
-  // an act-mode dispatch last cached into the shared module-level snapshot
-  // `checkAgentGuardrails` reads (`aiKillState.ts`'s `getCachedAiKillStateSnapshot`).
-  // Without this, a transient DB read failure in one of THOSE unrelated lanes
-  // poisons the shared cache to fail-closed for up to its 5s TTL, and release
-  // — running in the SAME process (`aiAgentRunner`/`intentReleaseWorker` are
-  // both `placement: 'socket-owner'`) — would inherit that verdict instead of
-  // evaluating its own.
+  // guardrail re-run below — rather than relying solely on whatever run
+  // admission or an act-mode dispatch last cached into the shared
+  // module-level snapshot `checkAgentGuardrails` reads (`aiKillState.ts`'s
+  // `getCachedAiKillStateSnapshot`). `readAiKillState()` is a *shared*,
+  // TTL-cached read (`aiKillState.ts:112-114` returns `cachedSnapshot`
+  // unconditionally within the 5s TTL, regardless of which lane populated
+  // it) — this call does NOT isolate release from another lane's fail-closed
+  // poisoning within that window; a bad read 1s ago from run-admission or an
+  // act-mode dispatch still flows through here unchanged. What this call
+  // buys instead: it bounds this read's own staleness to the 5s TTL (rather
+  // than relying entirely on an upstream caller to have refreshed it), and
+  // it warms the snapshot when release is the only active lane in the
+  // process. Per-lane isolation would need a force-refresh parameter on
+  // `readAiKillState()` that bypasses the TTL — not implemented here.
   const killState = await readAiKillState();
 
   const candidates = [
