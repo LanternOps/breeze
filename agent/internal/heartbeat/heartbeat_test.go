@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -330,10 +331,11 @@ func TestSecurityCapabilitiesControlProtocolJSON(t *testing.T) {
 				RollbackProtocolVersion:         1,
 				PamLifetimeProtocolVersion:      2,
 				PamReconciliation: &PamReconciliationStatus{
-					UnresolvedCount:              1,
-					QuarantinedCount:             2,
-					AwaitingAcknowledgementCount: 3,
-					BlockingReason:               pamReconciliationReasonQuarantined,
+					UnresolvedCount:                 1,
+					QuarantinedCount:                2,
+					AwaitingAcknowledgementCount:    3,
+					ReceivedObservationPendingCount: 1,
+					BlockingReason:                  pamReconciliationReasonQuarantined,
 				},
 			},
 			wantPeripheralValue: float64(2),
@@ -387,13 +389,45 @@ func TestSecurityCapabilitiesControlProtocolJSON(t *testing.T) {
 					t.Fatalf("pamReconciliation missing/not an object: %s", body)
 				}
 				if got["unresolvedCount"] != float64(1) || got["quarantinedCount"] != float64(2) ||
-					got["awaitingAcknowledgementCount"] != float64(3) || got["blockingReason"] != pamReconciliationReasonQuarantined {
+					got["awaitingAcknowledgementCount"] != float64(3) || got["receivedObservationPendingCount"] != float64(1) ||
+					got["blockingReason"] != pamReconciliationReasonQuarantined {
 					t.Fatalf("pamReconciliation = %+v", got)
 				}
 			} else if _, present := decoded["pamReconciliation"]; present {
 				t.Fatalf("zero-value pamReconciliation unexpectedly present: %s", body)
 			}
 		})
+	}
+}
+
+func TestPamReconciliationStatusReceivedObservationTransport(t *testing.T) {
+	h := newPamControllerTestHeartbeat(t, &fakePamLifetimeManager{available: true})
+	received := deterministicTestPamObservation(t)
+	received.State = pamlifetime.ResultReceived
+	ordinary := received
+	ordinary.ObservationID = "40000000-0000-4000-8000-000000000004"
+	ordinary.State = pamlifetime.ResultFailed
+	quarantined := ordinary
+	quarantined.ObservationID = "40000000-0000-4000-8000-000000000005"
+	if err := h.pamReconciliationOutbox.Enqueue(testPamCommandID, received); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pamReconciliationOutbox.Enqueue(testPamNewCommandID, ordinary); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pamReconciliationOutbox.Enqueue("10000000-0000-4000-8000-000000000003", quarantined); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pamReconciliationOutbox.Quarantine("10000000-0000-4000-8000-000000000003", quarantined.ObservationID, "same_command_rejected"); err != nil {
+		t.Fatal(err)
+	}
+	h.pamReconciliationMu.Lock()
+	h.pamReconciliationAcknowledgementUnavailable = true
+	h.pamReconciliationMu.Unlock()
+
+	status := h.pamReconciliationStatus()
+	if status.UnresolvedCount != 0 || status.QuarantinedCount != 1 || status.AwaitingAcknowledgementCount != 2 || status.ReceivedObservationPendingCount != 1 || status.BlockingReason != pamReconciliationReasonReceivedObservationTransport {
+		t.Fatalf("status = %+v", status)
 	}
 }
 
@@ -531,7 +565,7 @@ func TestPamReconciliationStatusReportsUnreadableOutbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := h.pamReconciliationStatus()
-	if status.BlockingReason != pamReconciliationReasonOutboxUnreadable {
-		t.Fatalf("blocking reason = %q, want outbox_unreadable", status.BlockingReason)
+	if status.BlockingReason != pamReconciliationReasonReceivedObservationTransport {
+		t.Fatalf("blocking reason = %q, want received_observation_transport", status.BlockingReason)
 	}
 }

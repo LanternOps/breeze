@@ -90,7 +90,8 @@ describe('heartbeatSchema — PAM reconciliation telemetry', () => {
           unresolvedCount: 2,
           quarantinedCount: 1,
           awaitingAcknowledgementCount: 3,
-          blockingReason: 'binding_unresolved',
+          receivedObservationPendingCount: 1,
+          blockingReason: 'received_observation_transport',
         },
       },
     });
@@ -100,7 +101,8 @@ describe('heartbeatSchema — PAM reconciliation telemetry', () => {
         unresolvedCount: 2,
         quarantinedCount: 1,
         awaitingAcknowledgementCount: 3,
-        blockingReason: 'binding_unresolved',
+        receivedObservationPendingCount: 1,
+        blockingReason: 'received_observation_transport',
       });
     }
   });
@@ -108,6 +110,8 @@ describe('heartbeatSchema — PAM reconciliation telemetry', () => {
   it.each([
     { unresolvedCount: -1, quarantinedCount: 0, awaitingAcknowledgementCount: 0 },
     { unresolvedCount: 0.5, quarantinedCount: 0, awaitingAcknowledgementCount: 0 },
+    { unresolvedCount: 0, quarantinedCount: 0, awaitingAcknowledgementCount: 0, receivedObservationPendingCount: -1 },
+    { unresolvedCount: 0, quarantinedCount: 0, awaitingAcknowledgementCount: 0, receivedObservationPendingCount: 'one' },
     { unresolvedCount: 0, quarantinedCount: 0, awaitingAcknowledgementCount: 0, blockingReason: 'unknown_reason' },
     { unresolvedCount: 0, quarantinedCount: 0, awaitingAcknowledgementCount: 0, blockingReason: 'x'.repeat(65) },
   ])('drops an invalid reconciliation object without rejecting the heartbeat: %#', (pamReconciliation) => {

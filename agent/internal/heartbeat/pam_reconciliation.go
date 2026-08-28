@@ -34,12 +34,13 @@ const (
 	pamResultClassificationStale     = "stale"
 	pamResultClassificationRejected  = "rejected"
 
-	pamReconciliationReasonResolverUnavailable        = "resolver_unavailable"
-	pamReconciliationReasonBindingUnresolved          = "binding_unresolved"
-	pamReconciliationReasonEnqueueFailed              = "enqueue_failed"
-	pamReconciliationReasonAcknowledgementUnavailable = "acknowledgement_unavailable"
-	pamReconciliationReasonQuarantined                = "quarantined"
-	pamReconciliationReasonOutboxUnreadable           = "outbox_unreadable"
+	pamReconciliationReasonResolverUnavailable          = "resolver_unavailable"
+	pamReconciliationReasonBindingUnresolved            = "binding_unresolved"
+	pamReconciliationReasonEnqueueFailed                = "enqueue_failed"
+	pamReconciliationReasonAcknowledgementUnavailable   = "acknowledgement_unavailable"
+	pamReconciliationReasonQuarantined                  = "quarantined"
+	pamReconciliationReasonOutboxUnreadable             = "outbox_unreadable"
+	pamReconciliationReasonReceivedObservationTransport = "received_observation_transport"
 )
 
 type pamReconciliationLogSample struct {
@@ -562,16 +563,26 @@ func (h *Heartbeat) recomputePamReconciliationReadiness() {
 	blockedCount := len(h.pamReconciliationBlocked)
 	identityFailures := h.pamReconciliationIdentityFailures
 	h.pamReconciliationMu.Unlock()
-	if h.pamLocalReconcileRunning.Load() || !managerAvailable || stagedCount != 0 || blockedCount != 0 || identityFailures != 0 {
-		h.pamReconciled.Store(false)
-		return
-	}
+	localReady := !h.pamLocalReconcileRunning.Load() && managerAvailable && stagedCount == 0 && identityFailures == 0
+	h.pamReconciled.Store(localReady)
 	if h.pamReconciliationOutbox == nil {
-		h.pamReconciled.Store(true)
+		h.pamReceivedObservationReady.Store(localReady && blockedCount == 0)
 		return
 	}
 	snapshot, err := h.pamReconciliationOutbox.Snapshot()
-	h.pamReconciled.Store(err == nil && len(snapshot.Quarantined) == 0)
+	if err != nil {
+		h.pamReceivedObservationReady.Store(false)
+		return
+	}
+	receivedPending := 0
+	for _, entry := range snapshot.Pending {
+		if entry.Observation.State == pamlifetime.ResultReceived {
+			receivedPending++
+		}
+	}
+	h.pamReceivedObservationReady.Store(
+		localReady && blockedCount == 0 && receivedPending == 0 && len(snapshot.Quarantined) == 0,
+	)
 }
 
 func (h *Heartbeat) reconcilePamEvidence(ctx context.Context) {
@@ -589,7 +600,7 @@ func (h *Heartbeat) reconcilePamEvidence(ctx context.Context) {
 	}
 	snapshot, err := h.pamReconciliationOutbox.Snapshot()
 	if err != nil {
-		h.pamReconciled.Store(false)
+		h.recomputePamReconciliationReadiness()
 		return
 	}
 	h.resolveQuarantinedPamReconciliation(ctx, snapshot.Quarantined)
@@ -644,6 +655,18 @@ func (h *Heartbeat) pamReconciliationStatus() PamReconciliationStatus {
 		QuarantinedCount:             len(snapshot.Quarantined),
 		AwaitingAcknowledgementCount: len(snapshot.Pending),
 	}
+	receivedQuarantined := false
+	for _, entry := range snapshot.Pending {
+		if entry.Observation.State == pamlifetime.ResultReceived {
+			status.ReceivedObservationPendingCount++
+		}
+	}
+	for _, entry := range snapshot.Quarantined {
+		if entry.Observation.State == pamlifetime.ResultReceived {
+			receivedQuarantined = true
+			break
+		}
+	}
 	hasReason := func(reason string) bool {
 		for _, stagedReason := range reasons {
 			if stagedReason == reason {
@@ -659,12 +682,12 @@ func (h *Heartbeat) pamReconciliationStatus() PamReconciliationStatus {
 		status.BlockingReason = pamReconciliationReasonBindingUnresolved
 	case hasReason(pamReconciliationReasonEnqueueFailed):
 		status.BlockingReason = pamReconciliationReasonEnqueueFailed
+	case snapshotErr != nil || receivedQuarantined || (acknowledgementUnavailable && status.ReceivedObservationPendingCount > 0):
+		status.BlockingReason = pamReconciliationReasonReceivedObservationTransport
 	case acknowledgementUnavailable:
 		status.BlockingReason = pamReconciliationReasonAcknowledgementUnavailable
 	case len(snapshot.Quarantined) > 0:
 		status.BlockingReason = pamReconciliationReasonQuarantined
-	case snapshotErr != nil:
-		status.BlockingReason = pamReconciliationReasonOutboxUnreadable
 	}
 
 	sampleResults := append([]pamlifetime.Result(nil), staged...)
@@ -677,8 +700,8 @@ func (h *Heartbeat) pamReconciliationStatus() PamReconciliationStatus {
 		sampleResults = append(sampleResults, snapshot.Quarantined[0].Observation)
 	}
 	sample := firstPamReconciliationSample(sampleResults)
-	signature := fmt.Sprintf("%d/%d/%d/%s/%s", status.UnresolvedCount, status.QuarantinedCount,
-		status.AwaitingAcknowledgementCount, status.BlockingReason, sample.ObservationID)
+	signature := fmt.Sprintf("%d/%d/%d/%d/%s/%s", status.UnresolvedCount, status.QuarantinedCount,
+		status.AwaitingAcknowledgementCount, status.ReceivedObservationPendingCount, status.BlockingReason, sample.ObservationID)
 	h.pamReconciliationMu.Lock()
 	changed := !h.pamReconciliationLogInitialized || h.pamReconciliationLastLogSignature != signature
 	if changed {
@@ -695,6 +718,7 @@ func (h *Heartbeat) pamReconciliationStatus() PamReconciliationStatus {
 				"unresolvedCount", status.UnresolvedCount,
 				"quarantinedCount", status.QuarantinedCount,
 				"awaitingAcknowledgementCount", status.AwaitingAcknowledgementCount,
+				"receivedObservationPendingCount", status.ReceivedObservationPendingCount,
 				"blockingReason", status.BlockingReason,
 				"outboxPath", outboxPath,
 				"actuationId", sample.ActuationID,

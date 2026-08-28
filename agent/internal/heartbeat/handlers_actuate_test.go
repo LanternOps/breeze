@@ -173,6 +173,7 @@ func readyPamApplyTestHeartbeat(manager pamlifetime.Manager, outbox *pamReconcil
 		pamReconciliationOutbox: outbox,
 	}
 	h.pamReconciled.Store(true)
+	h.pamReceivedObservationReady.Store(true)
 	h.pamVerificationAvailable.Store(true)
 	h.uacInterceptionEnabled.Store(true)
 	return h
@@ -226,6 +227,9 @@ func TestPamApplyV2EnqueuesExactEnvelopeCommandBeforeVerification(t *testing.T) 
 	if manager.applyCalls != 0 || manager.receivedCalls != 1 {
 		t.Fatalf("apply calls=%d received calls=%d", manager.applyCalls, manager.receivedCalls)
 	}
+	if h.pamReceivedObservationReady.Load() || h.pamLifetimeProtocolVersion() != 0 {
+		t.Fatalf("received transport stayed advertised after enqueue: ready=%v protocol=%d", h.pamReceivedObservationReady.Load(), h.pamLifetimeProtocolVersion())
+	}
 }
 
 func TestPamApplyV2EnqueueFailureReturnsStableManagerFailure(t *testing.T) {
@@ -270,10 +274,30 @@ func TestPamCleanupV2DoesNotRequireReceivedObservationManager(t *testing.T) {
 	}
 }
 
+func TestPamCleanupV2AllowsReceivedObservationTransportBlocked(t *testing.T) {
+	cleaned := pamlifetime.Result{ProtocolVersion: 2, State: pamlifetime.ResultCleaned}
+	manager := &fakePamLifetimeManager{cleanupResult: cleaned}
+	h := readyPamApplyTestHeartbeat(manager, nil)
+	h.pamReceivedObservationReady.Store(false)
+
+	result := handlePamCleanupV2(h, Command{Payload: map[string]any{
+		"protocolVersion": 2,
+		"actuationId":     "30000000-0000-4000-8000-000000000001",
+		"generation":      2,
+		"requestId":       "40000000-0000-4000-8000-000000000001",
+		"deviceId":        "10000000-0000-4000-8000-000000000003",
+		"orgId":           "10000000-0000-4000-8000-000000000004",
+	}})
+	if result.Status != "completed" || manager.cleanupCalls != 1 {
+		t.Fatalf("result=%+v cleanup calls=%d", result, manager.cleanupCalls)
+	}
+}
+
 func readyLegacyHeartbeat(manager *fakePamLifetimeManager) *Heartbeat {
 	manager.available = true
 	h := &Heartbeat{pamLifetimeManager: manager}
 	h.pamReconciled.Store(true)
+	h.pamReceivedObservationReady.Store(true)
 	h.pamVerificationAvailable.Store(true)
 	h.uacInterceptionEnabled.Store(true)
 	return h
@@ -339,6 +363,7 @@ func TestPamLifetimeV2HandlersReturnSharedStructuredResult(t *testing.T) {
 	cleanup.Generation = 2
 	h := &Heartbeat{config: &config.Config{DeviceID: "10000000-0000-4000-8000-000000000003", OrgID: "10000000-0000-4000-8000-000000000004"}, pamLifetimeManager: &fakePamLifetimeManager{applyResult: apply, cleanupResult: cleanup}}
 	h.pamReconciled.Store(true)
+	h.pamReceivedObservationReady.Store(true)
 	h.pamVerificationAvailable.Store(true)
 	h.uacInterceptionEnabled.Store(true)
 
@@ -380,6 +405,7 @@ func TestPamApplyAdmissionRequiresVerifiedEnabledPolicy(t *testing.T) {
 	manager := &fakePamLifetimeManager{}
 	h := &Heartbeat{config: &config.Config{DeviceID: "10000000-0000-4000-8000-000000000003", OrgID: "10000000-0000-4000-8000-000000000004"}, pamLifetimeManager: manager}
 	h.pamReconciled.Store(true)
+	h.pamReceivedObservationReady.Store(true)
 	h.pamVerificationAvailable.Store(true)
 
 	result := handlePamApplyV2(h, Command{Payload: map[string]any{
@@ -432,9 +458,15 @@ func TestPamCommandAdmissionStaysClosedUntilReconcileFinishes(t *testing.T) {
 
 func TestSetStatePathInitializesFailClosedPamLifetimeManager(t *testing.T) {
 	h := &Heartbeat{}
+	h.pamReconciled.Store(true)
+	h.pamReceivedObservationReady.Store(true)
+	h.pamVerificationAvailable.Store(true)
 	h.SetStatePath(filepath.Join(t.TempDir(), "agent-state.json"))
 	if h.pamLifetimeManager == nil {
 		t.Fatal("PAM lifetime manager was not initialized")
+	}
+	if h.pamReconciled.Load() || h.pamReceivedObservationReady.Load() || h.pamVerificationAvailable.Load() {
+		t.Fatal("SetStatePath did not close PAM admission before startup reconciliation")
 	}
 }
 

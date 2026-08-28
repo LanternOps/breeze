@@ -368,6 +368,137 @@ func pendingPamEntries(t *testing.T, h *Heartbeat) pamReconciliationOutboxSnapsh
 	return snapshot
 }
 
+func TestPamReceivedObservationReadinessStateTable(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		configure         func(*testing.T, *Heartbeat, pamlifetime.Result)
+		wantLocalReady    bool
+		wantReceivedReady bool
+		wantProtocol      int
+	}{
+		{
+			name:              "clean local and outbox",
+			wantLocalReady:    true,
+			wantReceivedReady: true,
+			wantProtocol:      2,
+		},
+		{
+			name: "pending received closes apply protocol",
+			configure: func(t *testing.T, h *Heartbeat, observation pamlifetime.Result) {
+				observation.State = pamlifetime.ResultReceived
+				if err := h.pamReconciliationOutbox.Enqueue(testPamCommandID, observation); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantLocalReady: true,
+		},
+		{
+			name: "ordinary non-received pending stays non-blocking",
+			configure: func(t *testing.T, h *Heartbeat, observation pamlifetime.Result) {
+				if err := h.pamReconciliationOutbox.Enqueue(testPamCommandID, observation); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantLocalReady:    true,
+			wantReceivedReady: true,
+			wantProtocol:      2,
+		},
+		{
+			name: "non-received blocked closes apply only",
+			configure: func(_ *testing.T, h *Heartbeat, observation pamlifetime.Result) {
+				h.setPamReconciliationBlocked(observation.ObservationID, true)
+			},
+			wantLocalReady: true,
+		},
+		{
+			name: "non-received quarantine closes apply only",
+			configure: func(t *testing.T, h *Heartbeat, observation pamlifetime.Result) {
+				if err := h.pamReconciliationOutbox.Enqueue(testPamCommandID, observation); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.pamReconciliationOutbox.Quarantine(testPamCommandID, observation.ObservationID, "same_command_rejected"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantLocalReady: true,
+		},
+		{
+			name: "unreadable outbox closes apply only",
+			configure: func(t *testing.T, h *Heartbeat, _ pamlifetime.Result) {
+				if err := os.MkdirAll(h.pamReconciliationOutbox.pendingDir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(h.pamReconciliationOutbox.pendingDir, "corrupt.json"), []byte("not-json"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantLocalReady: true,
+		},
+		{
+			name: "local unresolved closes both",
+			configure: func(_ *testing.T, h *Heartbeat, observation pamlifetime.Result) {
+				h.pamReconciliationMu.Lock()
+				h.pamReconciliationStaged[observation.ObservationID] = observation
+				h.pamReconciliationStagedReasons[observation.ObservationID] = pamReconciliationReasonBindingUnresolved
+				h.pamReconciliationMu.Unlock()
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newPamControllerTestHeartbeat(t, &fakePamLifetimeManager{available: true})
+			h.pamVerificationAvailable.Store(true)
+			h.setPamReconciliationManagerAvailable(true)
+			observation := deterministicTestPamObservation(t)
+			if test.configure != nil {
+				test.configure(t, h, observation)
+			}
+			h.recomputePamReconciliationReadiness()
+			if got := h.pamReconciled.Load(); got != test.wantLocalReady {
+				t.Fatalf("pamReconciled=%v, want %v", got, test.wantLocalReady)
+			}
+			if got := h.pamReceivedObservationReady.Load(); got != test.wantReceivedReady {
+				t.Fatalf("pamReceivedObservationReady=%v, want %v", got, test.wantReceivedReady)
+			}
+			if got := h.pamLifetimeProtocolVersion(); got != test.wantProtocol {
+				t.Fatalf("protocol=%d, want %d", got, test.wantProtocol)
+			}
+		})
+	}
+}
+
+func TestPamReceivedObservationReadinessFinalAcknowledgementReopensApply(t *testing.T) {
+	h := newPamControllerTestHeartbeat(t, &fakePamLifetimeManager{available: true})
+	h.pamVerificationAvailable.Store(true)
+	h.setPamReconciliationManagerAvailable(true)
+	observation := deterministicTestPamObservation(t)
+	observation.State = pamlifetime.ResultReceived
+	if err := h.pamReconciliationOutbox.Enqueue(testPamCommandID, observation); err != nil {
+		t.Fatal(err)
+	}
+	h.recomputePamReconciliationReadiness()
+	if h.pamReceivedObservationReady.Load() {
+		t.Fatal("received readiness open before acknowledgement")
+	}
+	h.pamSubmitResultFn = func(context.Context, string, pamlifetime.Result) (pamResultAcknowledgement, error) {
+		return pamResultAcknowledgement{ProtocolVersion: 1, Classification: pamResultClassificationApplied}, nil
+	}
+	h.reconcilePamEvidence(context.Background())
+	if !h.pamReconciled.Load() || !h.pamReceivedObservationReady.Load() || h.pamLifetimeProtocolVersion() != 2 {
+		t.Fatalf("readiness after acknowledgement local=%v received=%v protocol=%d", h.pamReconciled.Load(), h.pamReceivedObservationReady.Load(), h.pamLifetimeProtocolVersion())
+	}
+}
+
+func TestPamReceivedObservationReadinessBlocksApply(t *testing.T) {
+	manager := &fakePamLifetimeManager{available: true}
+	h := readyPamApplyTestHeartbeat(manager, newPamReconciliationOutbox(t.TempDir()))
+	h.pamReceivedObservationReady.Store(false)
+
+	result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000001"))
+	if result.Status != "failed" || manager.receivedCalls != 0 || manager.applyCalls != 0 {
+		t.Fatalf("result=%+v received calls=%d apply calls=%d", result, manager.receivedCalls, manager.applyCalls)
+	}
+}
+
 func TestPamReconciliationControllerStagedStateTable(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -477,11 +608,11 @@ func TestPamReconciliationControllerRejectedReresolutionStateTable(t *testing.T)
 	}{
 		{name: "stale disposes", status: pamBindingStatusStale, wantReconciled: true},
 		{name: "duplicate disposes", status: pamBindingStatusDuplicate, wantReconciled: true},
-		{name: "unresolved retains and blocks", status: pamBindingStatusUnresolved, wantPending: 1},
-		{name: "same bound quarantines", status: pamBindingStatusBound, commandID: testPamCommandID, wantQuarantined: 1},
+		{name: "unresolved retains and blocks", status: pamBindingStatusUnresolved, wantPending: 1, wantReconciled: true},
+		{name: "same bound quarantines", status: pamBindingStatusBound, commandID: testPamCommandID, wantQuarantined: 1, wantReconciled: true},
 		{name: "different bound rebinds and retries", status: pamBindingStatusBound, commandID: testPamNewCommandID, wantReconciled: true, secondSubmitClass: pamResultClassificationApplied},
-		{name: "same bound quarantine failure blocks", status: pamBindingStatusBound, commandID: testPamCommandID, wantPending: 1, failTransition: true},
-		{name: "different bound rebind failure blocks", status: pamBindingStatusBound, commandID: testPamNewCommandID, wantPending: 1, failTransition: true},
+		{name: "same bound quarantine failure blocks", status: pamBindingStatusBound, commandID: testPamCommandID, wantPending: 1, wantReconciled: true, failTransition: true},
+		{name: "different bound rebind failure blocks", status: pamBindingStatusBound, commandID: testPamNewCommandID, wantPending: 1, wantReconciled: true, failTransition: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -513,6 +644,10 @@ func TestPamReconciliationControllerRejectedReresolutionStateTable(t *testing.T)
 			if got := h.pamReconciled.Load(); got != test.wantReconciled {
 				t.Fatalf("pamReconciled = %v, want %v", got, test.wantReconciled)
 			}
+			wantReceivedReady := test.wantReconciled && test.wantPending == 0 && test.wantQuarantined == 0
+			if got := h.pamReceivedObservationReady.Load(); got != wantReceivedReady {
+				t.Fatalf("pamReceivedObservationReady = %v, want %v", got, wantReceivedReady)
+			}
 		})
 	}
 }
@@ -525,7 +660,7 @@ func TestPamReconciliationControllerStartupQuarantineReresolution(t *testing.T) 
 	}{
 		{status: pamBindingStatusStale, wantReconciled: true},
 		{status: pamBindingStatusDuplicate, wantReconciled: true},
-		{status: pamBindingStatusBound, wantQuarantine: 1},
+		{status: pamBindingStatusBound, wantQuarantine: 1, wantReconciled: true},
 	} {
 		t.Run(test.status, func(t *testing.T) {
 			h := newPamControllerTestHeartbeat(t, &fakePamLifetimeManager{available: true})
@@ -551,6 +686,9 @@ func TestPamReconciliationControllerStartupQuarantineReresolution(t *testing.T) 
 			}
 			if got := h.pamReconciled.Load(); got != test.wantReconciled {
 				t.Fatalf("pamReconciled = %v, want %v", got, test.wantReconciled)
+			}
+			if got := h.pamReceivedObservationReady.Load(); got != (test.wantQuarantine == 0) {
+				t.Fatalf("pamReceivedObservationReady = %v, quarantine=%d", got, test.wantQuarantine)
 			}
 		})
 	}

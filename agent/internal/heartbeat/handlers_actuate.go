@@ -76,6 +76,9 @@ func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
 	if !h.pamReconciled.Load() {
 		return tools.NewErrorResult(errors.New("PAM lifetime reconciliation in progress"), time.Since(start).Milliseconds())
 	}
+	if !h.pamReceivedObservationReady.Load() {
+		return tools.NewErrorResult(errors.New("PAM received observation transport unavailable"), time.Since(start).Milliseconds())
+	}
 	if !h.pamVerificationAvailable.Load() {
 		return tools.NewErrorResult(errors.New("PAM lifetime verification unavailable"), time.Since(start).Milliseconds())
 	}
@@ -95,6 +98,7 @@ func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
 		if err := h.pamReconciliationOutbox.Enqueue(cmd.ID, received); err != nil {
 			return fmt.Errorf("enqueue PAM received observation: %w", err)
 		}
+		h.pamReceivedObservationReady.Store(false)
 		h.signalPamReconciliationWork()
 		return nil
 	})

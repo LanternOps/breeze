@@ -197,10 +197,11 @@ type SecurityCapabilities struct {
 }
 
 type PamReconciliationStatus struct {
-	UnresolvedCount              int    `json:"unresolvedCount"`
-	QuarantinedCount             int    `json:"quarantinedCount"`
-	AwaitingAcknowledgementCount int    `json:"awaitingAcknowledgementCount"`
-	BlockingReason               string `json:"blockingReason,omitempty"`
+	UnresolvedCount                 int    `json:"unresolvedCount"`
+	QuarantinedCount                int    `json:"quarantinedCount"`
+	AwaitingAcknowledgementCount    int    `json:"awaitingAcknowledgementCount"`
+	ReceivedObservationPendingCount int    `json:"receivedObservationPendingCount,omitempty"`
+	BlockingReason                  string `json:"blockingReason,omitempty"`
 }
 
 type DesktopAccessState struct {
@@ -564,10 +565,11 @@ type Heartbeat struct {
 	untrustedReleaseAt  time.Time
 
 	// Path to the agent state file, set by main after startup.
-	statePath                string
-	pamLifetimeManager       pamlifetime.Manager
-	pamReconciled            atomic.Bool
-	pamVerificationAvailable atomic.Bool
+	statePath                   string
+	pamLifetimeManager          pamlifetime.Manager
+	pamReconciled               atomic.Bool
+	pamReceivedObservationReady atomic.Bool
+	pamVerificationAvailable    atomic.Bool
 	// PAM startup reconciliation has a separate, non-expiring REST outbox.
 	// pamReconciliationMu protects only the small in-memory staged set and
 	// availability/error markers; it is never held across disk or network I/O.
@@ -1078,6 +1080,7 @@ func (h *Heartbeat) SetAuthMonitor(m *authstate.Monitor) {
 func (h *Heartbeat) SetStatePath(path string) {
 	h.statePath = path
 	h.pamReconciled.Store(false)
+	h.pamReceivedObservationReady.Store(false)
 	h.pamVerificationAvailable.Store(false)
 	if path != "" && h.pamLifetimeManager == nil {
 		h.pamLifetimeManager = pamlifetime.NewManager(pamlifetime.NewStore(filepath.Join(filepath.Dir(path), "pam-lifetime-ledger.json")))
@@ -1086,6 +1089,7 @@ func (h *Heartbeat) SetStatePath(path string) {
 
 func (h *Heartbeat) ReconcilePAMLifetime(ctx context.Context) []pamlifetime.Result {
 	h.pamReconciled.Store(false)
+	h.pamReceivedObservationReady.Store(false)
 	h.pamVerificationAvailable.Store(false)
 	h.pamLocalReconcileRunning.Store(true)
 	defer h.pamLocalReconcileRunning.Store(false)
@@ -1116,7 +1120,7 @@ func (h *Heartbeat) refreshPamLifetimeAvailability() bool {
 }
 
 func (h *Heartbeat) pamLifetimeProtocolVersion() int {
-	if !h.pamReconciled.Load() || !h.pamVerificationAvailable.Load() {
+	if !h.pamReconciled.Load() || !h.pamReceivedObservationReady.Load() || !h.pamVerificationAvailable.Load() {
 		return 0
 	}
 	if capability, ok := h.pamLifetimeManager.(interface{ ProtocolVersion() int }); ok {

@@ -274,6 +274,7 @@ export const heartbeatSchema = z.object({
       unresolvedCount: z.number().int().nonnegative(),
       quarantinedCount: z.number().int().nonnegative(),
       awaitingAcknowledgementCount: z.number().int().nonnegative(),
+      receivedObservationPendingCount: z.number().int().nonnegative().optional(),
       blockingReason: z.enum([
         'resolver_unavailable',
         'binding_unresolved',
@@ -281,6 +282,7 @@ export const heartbeatSchema = z.object({
         'acknowledgement_unavailable',
         'quarantined',
         'outbox_unreadable',
+        'received_observation_transport',
       ]).refine((value) => value.length <= 64).optional(),
     }).optional().catch(undefined),
   }).optional().catch(undefined),

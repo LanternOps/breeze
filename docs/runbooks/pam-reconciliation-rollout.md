@@ -6,11 +6,14 @@ branch makes no claim of production, hosted, or customer-device execution.
 
 The order is immutable:
 
-1. Deploy and verify the API resolver plus PAM acknowledgement response.
-2. Probe both surfaces using an authorized disposable fixture and record server SHA.
-3. Promote the agent candidate only after steps 1-2 pass.
-4. Stop promotion if unresolved/quarantined counts rise, acknowledgements disappear,
-   the resolver is missing, or any ownership/isolation test fails.
+1. Deploy and verify `POST /api/v1/agents/:id/commands/:commandId/pam-observations`.
+2. Prove `applied`, `duplicate`, `stale`, and `rejected` acknowledgements on an
+   authorized disposable fixture.
+3. Verify the route is primary-agent-only, drain-blocked, rate/body-limited,
+   and registered in the route and audit scans.
+4. Promote an agent with the received-observation callback only after steps 1-3 pass.
+5. Stop when `receivedObservationPendingCount` persists beyond one retry
+   interval or `blockingReason` is `received_observation_transport`.
 
 ## Server verification gate
 
@@ -41,6 +44,9 @@ alone as result acceptance.
 For a device with unresolved or quarantined ledger evidence, those failures
 intentionally pin PAM capability to zero. A durably queued observation awaiting
 acknowledgement remains visible in telemetry and is not silently discarded.
+Missing routes or acknowledgements remain transport failures. Never delete
+durable evidence to recover from an outage; only the reviewed ledger-reset
+procedure may clear a genuine invariant quarantine.
 
 ## Promotion monitoring and stop criteria
 
@@ -50,7 +56,9 @@ promotion. Stop immediately when any of these occur:
 - `unresolvedCount` or `quarantinedCount` rises above the approved disposable
   baseline;
 - `blockingReason` reports `resolver_unavailable`, `binding_unresolved`,
-  `enqueue_failed`, `quarantined`, or `outbox_unreadable` unexpectedly;
+  `enqueue_failed`, `quarantined`, `outbox_unreadable`, or
+  `received_observation_transport` unexpectedly;
+- `receivedObservationPendingCount` persists beyond one retry interval;
 - acknowledgement responses disappear, become malformed, or return an unknown
   classification;
 - the resolver returns 404 or any unexpected status;

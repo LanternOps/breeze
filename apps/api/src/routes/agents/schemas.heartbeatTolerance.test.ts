@@ -27,6 +27,7 @@ describe('heartbeatSchema — Layer A tolerance', () => {
           unresolvedCount: -1,
           quarantinedCount: 'one',
           awaitingAcknowledgementCount: 0,
+          receivedObservationPendingCount: -1,
           blockingReason: 'not_a_protocol_reason',
         },
       },

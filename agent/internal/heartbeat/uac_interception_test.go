@@ -25,6 +25,7 @@ func TestUACInterceptionFlag(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			h := &Heartbeat{pamLifetimeManager: &fakePamLifetimeManager{available: true}}
 			h.pamReconciled.Store(true)
+			h.pamReceivedObservationReady.Store(true)
 			h.pamVerificationAvailable.Store(true)
 			for _, v := range tt.sequence {
 				h.handleUACInterception(v)
@@ -40,6 +41,7 @@ func TestUACDisableStopsCaptureButDoesNotReportDisabledUntilCleanupProof(t *test
 	manager := &fakePamLifetimeManager{setEnabledErr: errors.New("helper loss"), available: true}
 	h := &Heartbeat{pamLifetimeManager: manager}
 	h.pamReconciled.Store(true)
+	h.pamReceivedObservationReady.Store(true)
 	h.uacInterceptionEnabled.Store(true)
 
 	h.handleUACInterception(boolPtr(false))
@@ -59,6 +61,7 @@ func TestUACEnableWaitsForManagerProof(t *testing.T) {
 	manager := &fakePamLifetimeManager{setEnabledErr: errors.New("ledger unresolved"), available: true}
 	h := &Heartbeat{pamLifetimeManager: manager}
 	h.pamReconciled.Store(true)
+	h.pamReceivedObservationReady.Store(true)
 
 	h.handleUACInterception(boolPtr(true))
 
@@ -71,6 +74,7 @@ func TestUACDisableRetryRestoresCapabilityOnlyAfterCleanupProof(t *testing.T) {
 	manager := &fakePamLifetimeManager{setEnabledErr: errors.New("helper loss"), available: true}
 	h := &Heartbeat{pamLifetimeManager: manager}
 	h.pamReconciled.Store(true)
+	h.pamReceivedObservationReady.Store(true)
 	h.pamVerificationAvailable.Store(true)
 	h.uacInterceptionEnabled.Store(true)
 
