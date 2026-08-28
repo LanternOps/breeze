@@ -1302,6 +1302,55 @@ describe('refresh rotation-race recovery (#1107)', () => {
     expect(useAuthStore.getState().tokens?.accessToken).toBe('access-after-race');
   });
 
+  // #4097 gave the server a per-binding issuance lease, and the LOSER of two
+  // concurrent /auth/refresh calls now gets a bare 409 instead of the
+  // 401 {reason:'refresh_raced'} it used to get. Same benign race, new status.
+  it('retries refresh once when the server reports the race as a 409, then succeeds', async () => {
+    const refreshed: Tokens = { accessToken: 'access-after-409', expiresInSeconds: 3600 };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'Authentication issuance unavailable' }, false, 409))
+      .mockResolvedValueOnce(makeResponse({ tokens: refreshed }, true, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const restored = await restoreAccessTokenFromCookie();
+
+    expect(restored).toBe(true);
+    // First attempt lost the lease; the second (retry) won — exactly one retry.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(useAuthStore.getState().tokens?.accessToken).toBe('access-after-409');
+  });
+
+  // THE ORG-SWITCH LOGOUT. applyOrgSwitch (lib/orgSwitch.ts) ends in a full
+  // reload; the reloaded page's bootstrap refresh races the pre-reload one that
+  // the unload aborted client-side but the server is still executing under its
+  // issuance lease. The loser's 409 must not evict a session that is alive.
+  it('does not evict on a 409 during the bootstrap refresh (org switch, #4097)', async () => {
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const refreshed: Tokens = { accessToken: 'access-after-409-bootstrap', expiresInSeconds: 3600 };
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(makeResponse({ error: 'Authentication issuance unavailable' }, false, 409))
+        .mockResolvedValueOnce(makeResponse({ tokens: refreshed }, true, 200))
+        .mockResolvedValue(makeResponse({ devices: [] }, true, 200));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const response = await fetchWithAuth('/devices');
+
+      expect(response.ok).toBe(true);
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+      expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+      expect(replace).not.toHaveBeenCalled();
+      expect(useAuthStore.getState().tokens?.accessToken).toBe('access-after-409-bootstrap');
+    } finally {
+      restore();
+    }
+  });
+
   it('gives up after a single retry if the race persists (no infinite loop)', async () => {
     const fetchMock = vi
       .fn()

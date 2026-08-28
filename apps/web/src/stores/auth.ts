@@ -476,6 +476,17 @@ async function refreshFetchOnce(): Promise<RefreshFetchResult> {
     }
   }
 
+  // Same benign race, second shape. #4097's per-binding issuance lease
+  // (apps/api/src/services/authBrowserTransition.ts) rejects the LOSER of two
+  // concurrent refreshes with a retryable AuthIssuanceConflictError, flattened
+  // to a bare 409 with no `reason` — no verdict was reached on the refresh
+  // cookie, so this is the raced path, not an expired session. An org switch
+  // hits it every time (reload → bootstrap refresh racing the pre-reload one
+  // the unload aborted client-side but the server is still executing).
+  if (refreshResponse.status === 409) {
+    return { tokens: null, raced: true, transient: false };
+  }
+
   // 429 means the rate limiter rejected the request before the refresh cookie
   // was ever evaluated, so no verdict was reached and the session is very
   // likely still valid. Classifying it as a hard failure evicted people whose
