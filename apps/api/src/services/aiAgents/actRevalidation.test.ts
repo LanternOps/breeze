@@ -19,6 +19,10 @@ const dbMockState = vi.hoisted(() => ({
   // describe block below.
   organizationRows: [] as unknown[],
   exposureDeviceRows: [] as unknown[],
+  // Review fixes (#3827 Task 4): fault-injection flags for the "reserve call
+  // is best-effort on flag-off, fail-closed on flag-on" contract.
+  exposureReadShouldThrow: false,
+  insertExposureShouldThrow: false,
   insertedExposureRows: [] as Record<string, unknown>[],
   advisoryLockCalls: 0,
   ambientContext: undefined as { scope: string } | undefined,
@@ -46,7 +50,10 @@ vi.mock('../../db', () => ({
           // (it reads every exposed device row in the trailing window) — the
           // `where(...)` result itself must be awaitable.
           then: (resolve: (value: unknown[]) => void) => {
-            if (tableName === 'ai_unattended_exposure') return resolve(dbMockState.exposureDeviceRows);
+            if (tableName === 'ai_unattended_exposure') {
+              if (dbMockState.exposureReadShouldThrow) throw new Error('ai_unattended_exposure read failed (test)');
+              return resolve(dbMockState.exposureDeviceRows);
+            }
             throw new Error(`Unexpected table (awaited without limit): ${tableName}`);
           },
         };
@@ -58,6 +65,7 @@ vi.mock('../../db', () => ({
       return {
         values: vi.fn(async (values: Record<string, unknown>) => {
           if (tableName === 'ai_unattended_exposure') {
+            if (dbMockState.insertExposureShouldThrow) throw new Error('ai_unattended_exposure insert failed (test)');
             dbMockState.insertedExposureRows.push(values);
             return [];
           }
@@ -188,6 +196,8 @@ beforeEach(() => {
   dbMockState.killStateShouldThrow = false;
   dbMockState.organizationRows = [{ partnerId: PARTNER_ID }];
   dbMockState.exposureDeviceRows = [];
+  dbMockState.exposureReadShouldThrow = false;
+  dbMockState.insertExposureShouldThrow = false;
   dbMockState.insertedExposureRows = [];
   dbMockState.advisoryLockCalls = 0;
   dbMockState.ambientContext = undefined;
@@ -733,5 +743,32 @@ describe('revalidateActExecution — step 5.5: unattended-exposure ledger accoun
     expect(result).toEqual({ ok: false, downgrade: 'propose' });
     expect(dbMockState.advisoryLockCalls).toBe(0);
     expect(dbMockState.insertedExposureRows).toEqual([]);
+  });
+
+  it('review fix: flag off + ledger insert throws → accounting failure is best-effort, the act call still executes and reserves its slot', async () => {
+    dbMockState.insertExposureShouldThrow = true;
+    const reserved = reservation(0);
+    const result = await revalidateActExecution({
+      run: runArgs(), op: restartOp, toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' },
+      reserved,
+    });
+    expect(result.ok).toBe(true);
+    expect(reserved.count).toBe(1);
+    expect(dbMockState.insertedExposureRows).toEqual([]);
+  });
+
+  it('review fix: flag on + fleet-cap read throws → fails CLOSED (downgrades to a proposal), writes no row, and never grants capacity', async () => {
+    vi.stubEnv('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', 'true');
+    dbMockState.exposureReadShouldThrow = true;
+    const reserved = reservation(0);
+    const result = await revalidateActExecution({
+      run: runArgs(), op: restartOp, toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' },
+      reserved,
+    });
+    expect(result).toEqual({ ok: false, downgrade: 'propose' });
+    expect(dbMockState.insertedExposureRows).toEqual([]);
+    expect(reserved.count).toBe(0);
   });
 });

@@ -495,10 +495,31 @@ export async function revalidateActExecution(
   // cap the policy-decide lane also reads. Exhaustion downgrades to a
   // proposal exactly like an exhausted maxActionsPerRun slot — mode is
   // confirmed 'act' and the call mutates, so a proposal is always available.
-  const exposureReservation = await reserveActUnattendedExposure({
-    run,
-    maxFleetPercentPerDay: current.effective.limits.maxFleetPercentPerDay,
-  });
+  //
+  // The reserve call itself is wrapped: a DB error here (the `organizations`
+  // lookup, the insert, pool exhaustion) must NOT propagate out of this
+  // function — an uncaught throw is turned into a hard tool DENY by the
+  // caller (aiAgentSdkTools.ts) that never lands in `outcome.deniedActions`,
+  // and on the flag-OFF path (production today) this row is pure accounting
+  // with zero enforcement value, so a transient failure must never convert a
+  // previously-succeeding act execution into a denial — same best-effort
+  // contract runLoop.ts's `recordAllowedExecution` uses for its own ledger
+  // write. Flag ON is different: the fleet cap is a LIVE safety gate, so a
+  // failed check must fail closed (degrade to a proposal, the same shape an
+  // exhausted cap already uses) rather than silently grant capacity.
+  let exposureReservation: ExposureReservationResult;
+  try {
+    exposureReservation = await reserveActUnattendedExposure({
+      run,
+      maxFleetPercentPerDay: current.effective.limits.maxFleetPercentPerDay,
+    });
+  } catch (error) {
+    console.error('[actRevalidation] unattended-exposure reservation failed', {
+      runId: run.id, toolName, error,
+    });
+    if (policyDecideEnabled()) return { ok: false, downgrade: 'propose' };
+    exposureReservation = { ok: true };
+  }
   if (!exposureReservation.ok) {
     return { ok: false, downgrade: 'propose' };
   }
