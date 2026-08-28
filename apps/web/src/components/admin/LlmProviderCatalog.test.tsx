@@ -189,6 +189,33 @@ describe('LlmProviderCatalog', () => {
     expect(body).toEqual({ modelId: 'claude-sonnet-4-6', apiKey: 'sk-transient-test-key' });
   });
 
+  it('renders each diagnostic step and its message, not just the verdict pill', async () => {
+    mockApi([draftEntry], {
+      'POST /admin/llm-provider-catalog/revisions/rev-1/verify': () => jsonRes({
+        passed: false,
+        steps: [
+          { name: 'DNS resolution', ok: true },
+          { name: 'HTTP request', ok: false, detail: 'HTTP 405 Method Not Allowed' },
+        ],
+        harnessVersion: 'v1',
+      }),
+    });
+    render(<LlmProviderCatalog />);
+    await screen.findByText('OpenRouter');
+    fireEvent.click(screen.getByTestId('llm-catalog-row-entry-1-toggle'));
+    await screen.findByTestId('llm-catalog-revision-rev-1');
+
+    fireEvent.click(screen.getByTestId('llm-catalog-revision-rev-1-claude-sonnet-4-6-verify'));
+    const keyInput = screen.getByTestId('llm-catalog-verify-apikey') as HTMLInputElement;
+    fireEvent.change(keyInput, { target: { value: 'sk-transient-test-key' } });
+    fireEvent.click(screen.getByTestId('llm-catalog-verify-submit'));
+
+    await screen.findByTestId('llm-catalog-verify-result');
+    expect(screen.getByText('HTTP 405 Method Not Allowed')).toBeTruthy();
+    expect(screen.getByText('DNS resolution')).toBeTruthy();
+    expect(screen.getByText('HTTP request')).toBeTruthy();
+  });
+
   describe('the List button mirrors the activation gate', () => {
     // The API re-runs assertAllModelsVerified on a `listed` transition, so an
     // enabled List button on a half-verified active revision is a button whose

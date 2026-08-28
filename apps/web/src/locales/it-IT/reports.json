@@ -164,6 +164,7 @@
       "scheduleOptions": { "daily": { "label": "Giornaliero" }, "monthly": { "label": "Mensile" }, "weekly": { "label": "Settimanale" } },
       "sections": { "chartType": { "description": "Scegli come visualizzare il report.", "title": "Tipo grafico" }, "columns": { "description": "Scegli i campi e trascina per riordinarli.", "title": "Colonne e campi" }, "dataSource": { "description": "Configura il dataset per questo tipo di report.", "title": "Origine dati" }, "delivery": { "description": "Imposta cadenza, formati e destinatari.", "title": "Pianificazione e consegna" }, "filters": { "description": "Filtra i dati del report per record o proprietà dei dispositivi.", "title": "Filtri" }, "grouping": { "description": "Riepiloga i dati con conteggi, somme o medie.", "title": "Raggruppamento e aggregazione" }, "reportDetails": { "description": "Assegna un nome al report e decidi se diventa un template.", "title": "Dettagli report" }, "reportType": { "description": "Scegli il tipo di report da creare.", "title": "Tipo report" } },
       "selectedFields": "Campi selezionati",
+      "success": { "created": "Report \"{{name}}\" salvato.", "updated": "Report \"{{name}}\" aggiornato." },
       "values": { "enabled": "Abilitato", "off": "Off", "on": "On" },
       "weekDays": { "friday": "Venerdì", "monday": "Lunedì", "saturday": "Sabato", "sunday": "Domenica", "thursday": "Giovedì", "tuesday": "Martedì", "wednesday": "Mercoledì" },
       "where": "Dove"

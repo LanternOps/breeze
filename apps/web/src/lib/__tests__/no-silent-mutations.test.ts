@@ -175,6 +175,16 @@ const TARGET_GLOBS = [
   'src/components/fleet/FindingDrawer.tsx',
   'src/components/fleet/FixPickerModal.tsx',
   'src/components/fleet/RunProgressPanel.tsx',
+  // SSO providers (2026-08-28 pre-release sweep): save already routed through
+  // runAction but with no successMessage, while delete and the status toggle
+  // bypassed runAction entirely — create/save/delete/toggle all succeeded at
+  // the API with no visible confirmation to the admin.
+  'src/components/settings/SsoProvidersPage.tsx',
+  // Report builder (2026-08-28 pre-release sweep): the create/update POST/PUT
+  // returned 201/200 with zero feedback — no toast, redirect, or form reset —
+  // so a slow response invited a duplicate-creating double click. The mount at
+  // /reports/builder passed no onSubmit, the only success path.
+  'src/components/reports/ReportBuilder.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -366,9 +376,10 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    // 99: 97 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
-    // (org-lifecycle Wave 3), plus ArchiveOrgModal.tsx (org-lifecycle Wave 5).
-    expect(absoluteFiles.length).toBe(99);
+    // 101: 99 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
+    // (org-lifecycle Wave 3), plus ArchiveOrgModal.tsx (org-lifecycle Wave 5),
+    // plus SsoProvidersPage.tsx and ReportBuilder.tsx (2026-08-28 pre-release sweep).
+    expect(absoluteFiles.length).toBe(101);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

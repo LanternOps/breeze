@@ -619,7 +619,7 @@
     "retrySites": "Tentar novamente",
     "createASite": "Criar um local",
     "maxUsage": "Uso máximo (opcional)",
-    "unlimited": "Ilimitado",
+    "defaultDeviceLimit": "50 (padrão)",
     "maxUsageHelp": "Número máximo de agentes que podem se registrar com esta chave.",
     "expiresAt": "Expira em (opcional)",
     "creating": "Criando...",
@@ -2378,7 +2378,12 @@
     "enforceLockoutSelfWarning": "Sua própria conta não está conectada — você bloquearia a si mesmo.",
     "enforceLockoutAcknowledge": "Entendo que esses usuários não poderão entrar até conectarem o SSO",
     "enforceLockoutConfirm": "Ativar imposição",
-    "enforceLockoutConfirmationNeeded": "Confirme o aviso de bloqueio para ativar a imposição de SSO."
+    "enforceLockoutConfirmationNeeded": "Confirme o aviso de bloqueio para ativar a imposição de SSO.",
+    "providerCreated": "Provedor criado",
+    "providerUpdated": "Provedor atualizado",
+    "providerDeleted": "Provedor excluído",
+    "providerEnabled": "Provedor ativado",
+    "providerDisabled": "Provedor desativado"
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível",
@@ -2829,6 +2834,12 @@
     "noOrganization": {
       "title": "Nenhuma organização selecionada",
       "description": "Selecione uma organização no alternador no cabeçalho para visualizar as configurações."
+    },
+    "archived": {
+      "banner": "Esta organização está arquivada e é somente leitura. Restaure-a para fazer alterações.",
+      "bannerWithDate": "Esta organização está arquivada — a exclusão está agendada para {{date}}. Restaure-a para fazer alterações.",
+      "restoreLink": "Restaurar esta organização",
+      "saveBlocked": "Esta organização está arquivada e não pode ser editada. Restaure-a primeiro."
     },
     "actions": {
       "save": "Salvar",

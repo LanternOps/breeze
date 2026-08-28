@@ -44,6 +44,15 @@ const RUN_DETAIL = {
       intentId: 'intent-1',
     },
     { kind: 'denied' as const, tool: 'files.delete', reason: 'protected path' },
+    {
+      kind: 'executed' as const,
+      tool: 'manage_services',
+      action: 'restart',
+      result: 'ok' as const,
+      durationMs: 250,
+      actOpKey: 'service.restart',
+      actTargetName: 'Spooler',
+    },
   ],
   ledger: [
     {
@@ -122,6 +131,16 @@ describe('RunDetailPage', () => {
     expect(screen.getByTestId('run-detail-trace-entry-0')).toBeInTheDocument();
     expect(screen.getByTestId('run-detail-trace-entry-1')).toBeInTheDocument();
     expect(screen.getByTestId('run-detail-trace-entry-2')).toBeInTheDocument();
+  });
+
+  it('names the act-mode op key and target on an executed entry', async () => {
+    mockEndpoints();
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-trace-entry-3')).toBeInTheDocument());
+    const entry = screen.getByTestId('run-detail-trace-entry-3');
+    expect(entry).toHaveTextContent('service.restart');
+    expect(entry).toHaveTextContent('Spooler');
   });
 
   it('links a proposed entry with an intent to Approvals', async () => {

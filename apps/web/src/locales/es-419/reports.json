@@ -770,6 +770,10 @@
         }
       },
       "selectedFields": "Campos seleccionados",
+      "success": {
+        "created": "Informe \"{{name}}\" guardado.",
+        "updated": "Informe \"{{name}}\" actualizado."
+      },
       "values": {
         "enabled": "Activado",
         "off": "Apagado",

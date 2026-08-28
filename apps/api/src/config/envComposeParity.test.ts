@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { ENV_SCHEMA_KEYS } from './validate';
 
 // apps/api/src/config -> repo root is 4 levels up (same as proxyTrustCompose.test.ts).
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -201,6 +202,43 @@ describe.each(PAIRS)('.env.example ↔ compose parity: $name', ({ envExample, co
       `These vars are BOTH referenced in ${compose} and allow-listed — drop them from the allow-list:\n  ` +
         redundant.join('\n  '),
     ).toEqual([]);
+  });
+});
+
+/**
+ * The parity check above is one-directional: it starts from
+ * `documentedEnvExampleVars()`, i.e. names already IN `.env.example`. A
+ * variable that `validate.ts` accepts (is in `ENV_SCHEMA_KEYS`) but that
+ * nobody ever added to `.env.example` is invisible to it — not caught by any
+ * allow-list, because the guard never looks at it in the first place. That is
+ * exactly how `LLM_PROVIDER_CATALOG_ENABLED` (#4113/#4116) shipped validated
+ * in `validate.ts` but unmapped in `docker-compose.yml` and undocumented in
+ * `.env.example`: the parity suite above stayed green throughout, because it
+ * only ever iterated the (incomplete) `.env.example` list.
+ *
+ * Closing that gap for every one of the ~90 `ENV_SCHEMA_KEYS` is a separate,
+ * larger audit (a first pass turned up ~24 pre-existing schema keys that are
+ * validated but not documented in the root `.env.example` — mostly
+ * hosted-only integrations such as STRIPE_*, QBO_*, DELEGANT_*, CF_ACCESS_*,
+ * MCP_LLM_*, each needing its own classification before it could safely join
+ * an allow-list) and is out of scope for this fix. This block instead pins
+ * the one flag this fix is about, on both axes, so it cannot silently
+ * regress again — found by the 2026-08-28 pre-release sweep
+ * (docs/testing/release-sweeps/).
+ */
+describe('LLM_PROVIDER_CATALOG_ENABLED regression (#4113/#4116)', () => {
+  const REPO_ROOT_COMPOSE = readFileSync(path.join(REPO_ROOT, 'docker-compose.yml'), 'utf8');
+
+  it('is declared in the validate.ts schema', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('LLM_PROVIDER_CATALOG_ENABLED');
+  });
+
+  it('is documented in the root .env.example', () => {
+    expect(documentedEnvExampleVars('.env.example')).toContain('LLM_PROVIDER_CATALOG_ENABLED');
+  });
+
+  it('is threaded through a docker-compose.yml service environment block', () => {
+    expect(isReferencedInCompose('LLM_PROVIDER_CATALOG_ENABLED', REPO_ROOT_COMPOSE)).toBe(true);
   });
 });
 

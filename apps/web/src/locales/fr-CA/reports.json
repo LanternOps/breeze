@@ -770,6 +770,10 @@
         }
       },
       "selectedFields": "Domaines sélectionnés",
+      "success": {
+        "created": "Rapport « {{name}} » enregistré.",
+        "updated": "Rapport « {{name}} » mis à jour."
+      },
       "values": {
         "enabled": "Activé",
         "off": "Désactivé",

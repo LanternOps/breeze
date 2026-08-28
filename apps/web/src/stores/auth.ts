@@ -476,6 +476,17 @@ async function refreshFetchOnce(): Promise<RefreshFetchResult> {
     }
   }
 
+  // Same benign race, second shape. #4097's per-binding issuance lease
+  // (apps/api/src/services/authBrowserTransition.ts) rejects the LOSER of two
+  // concurrent refreshes with a retryable AuthIssuanceConflictError, flattened
+  // to a bare 409 with no `reason` — no verdict was reached on the refresh
+  // cookie, so this is the raced path, not an expired session. An org switch
+  // hits it every time (reload → bootstrap refresh racing the pre-reload one
+  // the unload aborted client-side but the server is still executing).
+  if (refreshResponse.status === 409) {
+    return { tokens: null, raced: true, transient: false };
+  }
+
   // 429 means the rate limiter rejected the request before the refresh cookie
   // was ever evaluated, so no verdict was reached and the session is very
   // likely still valid. Classifying it as a hard failure evicted people whose
@@ -555,9 +566,16 @@ async function requestTokenRefresh(): Promise<RefreshOutcome> {
         if (retry.throttledForMs !== undefined) {
           return { kind: 'throttled', retryAfterMs: retry.throttledForMs };
         }
-        // If the race-retry itself hit a transient blip, fall through to the
-        // backoff path below; otherwise the session is genuinely gone.
-        if (!retry.transient) return { kind: 'auth-failed' };
+        // If the race-retry hit a transient blip — or raced AGAIN — fall
+        // through to the backoff path below; otherwise the session is
+        // genuinely gone. A second consecutive race is still not a verdict on
+        // the refresh cookie: the fixed 200ms above simply wasn't long enough
+        // for the winner's issuance transaction to commit and release the
+        // #4097 lease (reachable under DB/pool contention), and evicting there
+        // was the same org-switch logout, just rarer. Deliberately reuses the
+        // existing bounded ladder rather than adding a second counter — the
+        // whole loop stays capped at MAX_TRANSIENT_REFRESH_RETRIES passes.
+        if (!retry.transient && !retry.raced) return { kind: 'auth-failed' };
       } else if (!result.transient) {
         // Hard failure (expired/reused refresh cookie, real 401/403): the
         // session is unrecoverable — evict.

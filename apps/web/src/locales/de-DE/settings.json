@@ -619,7 +619,7 @@
     "retrySites": "Erneut versuchen",
     "createASite": "Standort erstellen",
     "maxUsage": "Maximale Nutzung (optional)",
-    "unlimited": "Unbegrenzt",
+    "defaultDeviceLimit": "50 (Standard)",
     "maxUsageHelp": "Maximale Anzahl von Agenten, die sich mit diesem Schlüssel registrieren können.",
     "expiresAt": "Läuft ab um (optional)",
     "creating": "Erstellen...",
@@ -2378,7 +2378,12 @@
     "enforceLockoutSelfWarning": "Ihr eigenes Konto ist nicht verbunden — Sie würden sich selbst aussperren.",
     "enforceLockoutAcknowledge": "Ich verstehe, dass sich diese Benutzer nicht anmelden können, bis sie SSO verbinden",
     "enforceLockoutConfirm": "Erzwingung aktivieren",
-    "enforceLockoutConfirmationNeeded": "Bestätigen Sie die Aussperr-Warnung, um die SSO-Erzwingung zu aktivieren."
+    "enforceLockoutConfirmationNeeded": "Bestätigen Sie die Aussperr-Warnung, um die SSO-Erzwingung zu aktivieren.",
+    "providerCreated": "Anbieter erstellt",
+    "providerUpdated": "Anbieter aktualisiert",
+    "providerDeleted": "Anbieter gelöscht",
+    "providerEnabled": "Anbieter aktiviert",
+    "providerDisabled": "Anbieter deaktiviert"
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Kosten in {{currency}} — Marge nicht verfügbar",
@@ -2776,6 +2781,12 @@
     "noOrganization": {
       "title": "Keine Organisation ausgewählt",
       "description": "Bitte wählen Sie im Umschalter in der Kopfzeile eine Organisation aus, um die Einstellungen anzuzeigen."
+    },
+    "archived": {
+      "banner": "Diese Organisation ist archiviert und schreibgeschützt. Stellen Sie sie wieder her, um Änderungen vorzunehmen.",
+      "bannerWithDate": "Diese Organisation ist archiviert – die Löschung ist für {{date}} geplant. Stellen Sie sie wieder her, um Änderungen vorzunehmen.",
+      "restoreLink": "Diese Organisation wiederherstellen",
+      "saveBlocked": "Diese Organisation ist archiviert und kann nicht bearbeitet werden. Stellen Sie sie zuerst wieder her."
     },
     "actions": {
       "save": "Speichern",

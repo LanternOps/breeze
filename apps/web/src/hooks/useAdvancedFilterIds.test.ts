@@ -45,6 +45,25 @@ describe('useAdvancedFilterIds', () => {
     expect(fetchWithAuth).not.toHaveBeenCalled();
   });
 
+  it('issues the preview request for a no-value operator (e.g. the "Untagged" quick filter) despite value being \'\'', async () => {
+    // Regression: hasValidConditions used to reject any condition with
+    // value === '', which silently dropped no-value operators like isEmpty
+    // (Untagged), isNotEmpty, isNull, isNotNull — the hook fell back to "no
+    // filter" and the whole fleet came back instead of the filtered set.
+    mockPreviewResponse(['dev-1']);
+    const untagged: FilterConditionGroup = {
+      operator: 'AND',
+      conditions: [{ field: 'tags', operator: 'isEmpty', value: '' }],
+    };
+
+    const { result } = renderHook(() => useAdvancedFilterIds(untagged));
+
+    await waitFor(() => expect(result.current.ids).not.toBeNull());
+
+    expect(fetchWithAuth).toHaveBeenCalledWith('/filters/preview', expect.objectContaining({ method: 'POST' }));
+    expect(result.current.ids?.size).toBe(1);
+  });
+
   it('requests idsOnly (no limit cap) and resolves the complete id set', async () => {
     // 250 matches — past the old 100-row preview cap that silently hid devices.
     const manyIds = Array.from({ length: 250 }, (_, i) => `dev-${i}`);

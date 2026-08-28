@@ -619,7 +619,7 @@
     "retrySites": "Tekrar dene",
     "createASite": "Bir site oluşturun",
     "maxUsage": "Maksimum Kullanım (isteğe bağlı)",
-    "unlimited": "Sınırsız",
+    "defaultDeviceLimit": "50 (varsayılan)",
     "maxUsageHelp": "Bu anahtarla kaydolabilecek maksimum temsilci sayısı.",
     "expiresAt": "Sona Erme Tarihi (isteğe bağlı)",
     "creating": "Oluşturuluyor...",
@@ -2378,7 +2378,12 @@
     "enforceLockoutSelfWarning": "Kendi hesabınız bağlı değil — kendinizi kilitlemiş olursunuz.",
     "enforceLockoutAcknowledge": "Bu kullanıcıların SSO bağlantısı yapana kadar oturum açamayacağını anlıyorum",
     "enforceLockoutConfirm": "Zorunluluğu etkinleştir",
-    "enforceLockoutConfirmationNeeded": "SSO zorunluluğunu etkinleştirmek için kilitleme uyarısını onaylayın."
+    "enforceLockoutConfirmationNeeded": "SSO zorunluluğunu etkinleştirmek için kilitleme uyarısını onaylayın.",
+    "providerCreated": "Sağlayıcı oluşturuldu",
+    "providerUpdated": "Sağlayıcı güncellendi",
+    "providerDeleted": "Sağlayıcı silindi",
+    "providerEnabled": "Sağlayıcı etkinleştirildi",
+    "providerDisabled": "Sağlayıcı devre dışı bırakıldı"
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
@@ -2829,6 +2834,12 @@
     "noOrganization": {
       "title": "Kuruluş Seçilmedi",
       "description": "Ayarları görüntülemek için lütfen başlıktaki değiştiriciden bir kuruluş seçin."
+    },
+    "archived": {
+      "banner": "Bu kuruluş arşivlendi ve salt okunur durumda. Değişiklik yapmak için geri yükleyin.",
+      "bannerWithDate": "Bu kuruluş arşivlendi — silme işlemi {{date}} tarihinde planlandı. Değişiklik yapmak için geri yükleyin.",
+      "restoreLink": "Bu kuruluşu geri yükle",
+      "saveBlocked": "Bu kuruluş arşivlendi ve düzenlenemez. Önce geri yükleyin."
     },
     "actions": {
       "save": "Kaydet",

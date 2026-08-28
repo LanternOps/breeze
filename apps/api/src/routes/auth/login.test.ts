@@ -328,6 +328,7 @@ import {
   bindIssuedUserSession,
   recordAuthTransitionLegacyIssuer,
   AuthBindingRotationRequiredError,
+  AuthIssuanceConflictError,
   AuthIssuanceCapabilityError,
   RefreshTokenCurrentnessError,
 } from '../../services';
@@ -1033,6 +1034,50 @@ describe('POST /refresh — epoch and absolute-expiry gates', () => {
 
   it('returns refresh_raced without clearing a winning sibling cookie when durable CAS loses', async () => {
     vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new RefreshTokenCurrentnessError());
+
+    const res = await loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+      },
+    });
+
+    expect(res.status).toBe(401);
+    await expect(res.json()).resolves.toMatchObject({ reason: 'refresh_raced' });
+    expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    expect(bindIssuedUserSession).not.toHaveBeenCalled();
+  });
+
+  // #4097's per-binding issuance lease rejects the LOSER of two concurrent
+  // refreshes with a RETRYABLE AuthIssuanceConflictError. Flattening that to a
+  // bare 409 throws the retryability away and reads as a terminal auth failure:
+  // an org switch (full reload, whose bootstrap refresh races the pre-reload
+  // one the unload aborted client-side but the server is still executing)
+  // logged the user out every time. On /refresh this is the same benign race
+  // the route already answers with 401 refresh_raced — say so on the wire.
+  it('answers a lost issuance lease with refresh_raced rather than a bare 409 (admission)', async () => {
+    vi.mocked(beginAuthIssuance).mockRejectedValueOnce(new AuthIssuanceConflictError());
+
+    const res = await loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+      },
+    });
+
+    expect(res.status).toBe(401);
+    await expect(res.json()).resolves.toMatchObject({ reason: 'refresh_raced' });
+    // The winner's rotated cookie must survive — the loser just retries.
+    expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
+  });
+
+  it('answers a lost issuance lease with refresh_raced rather than a bare 409 (finalization)', async () => {
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new AuthIssuanceConflictError());
 
     const res = await loginRoutes.request('/refresh', {
       method: 'POST',

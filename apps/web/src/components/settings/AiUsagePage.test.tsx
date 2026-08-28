@@ -1,9 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, act } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
-vi.mock('../../stores/orgStore', () => ({ useOrgStore: () => ({ currentOrgId: null }) }));
+const orgState: { currentOrgId: string | null } = { currentOrgId: null };
+vi.mock('../../stores/orgStore', () => ({ useOrgStore: () => ({ currentOrgId: orgState.currentOrgId }) }));
 
 import AiUsagePage from './AiUsagePage';
 
@@ -78,5 +79,47 @@ describe('AiUsagePage billedTo indicator', () => {
     await waitFor(() => expect(screen.getByTestId('ai-usage-billed-to-note')).toBeInTheDocument());
     expect(screen.getByTestId('ai-usage-billed-to-note').textContent)
       .toContain('Billed to your key — AI usage goes to your own Anthropic account, not Breeze AI credits');
+  });
+});
+
+describe('AiUsagePage effective-settings parallel fetch', () => {
+  beforeEach(() => {
+    orgState.currentOrgId = 'org-1';
+  });
+
+  afterEach(() => {
+    orgState.currentOrgId = null;
+  });
+
+  it('dispatches the effective-settings request up front, not after usage/sessions resolve', async () => {
+    let resolveUsage!: (v: Response) => void;
+    const usagePromise = new Promise<Response>((resolve) => { resolveUsage = resolve; });
+    let resolveSessions!: (v: Response) => void;
+    const sessionsPromise = new Promise<Response>((resolve) => { resolveSessions = resolve; });
+    let resolveEff!: (v: Response) => void;
+    const effPromise = new Promise<Response>((resolve) => { resolveEff = resolve; });
+
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url === '/ai/usage') return usagePromise;
+      if (url.startsWith('/ai/admin/sessions')) return sessionsPromise;
+      if (url === '/orgs/organizations/org-1/effective-settings') return effPromise;
+      return Promise.resolve(jsonRes({}));
+    });
+
+    render(<AiUsagePage />);
+
+    // Flush a microtask tick without resolving any of the three promises, so
+    // this only passes if effective-settings was requested in the same
+    // up-front batch as usage/sessions rather than chained after them.
+    await act(async () => { await Promise.resolve(); });
+
+    const calledUrls = fetchWithAuth.mock.calls.map((c) => c[0]);
+    expect(calledUrls).toContain('/orgs/organizations/org-1/effective-settings');
+
+    // Clean up so no promise is left dangling across tests.
+    resolveUsage(jsonRes(usageBody()));
+    resolveSessions(jsonRes({ data: [] }));
+    resolveEff(jsonRes({ locked: [] }));
+    await act(async () => { await Promise.resolve(); });
   });
 });

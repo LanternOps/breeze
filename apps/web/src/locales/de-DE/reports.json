@@ -770,6 +770,10 @@
         }
       },
       "selectedFields": "Ausgewählte Felder",
+      "success": {
+        "created": "Bericht „{{name}}“ gespeichert.",
+        "updated": "Bericht „{{name}}“ aktualisiert."
+      },
       "values": {
         "enabled": "Aktiviert",
         "off": "Aus",

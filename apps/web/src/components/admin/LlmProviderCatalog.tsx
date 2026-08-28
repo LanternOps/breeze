@@ -150,7 +150,10 @@ export default function LlmProviderCatalog() {
   const [verifyTarget, setVerifyTarget] = useState<{ revisionId: string; modelId: string } | null>(null);
   const [verifyApiKey, setVerifyApiKey] = useState('');
   const [verifyRunning, setVerifyRunning] = useState(false);
-  const [verifyResult, setVerifyResult] = useState<{ passed: boolean } | null>(null);
+  const [verifyResult, setVerifyResult] = useState<{
+    passed: boolean;
+    steps: Array<{ name: string; ok: boolean; detail?: string }>;
+  } | null>(null);
 
   const [activatingRevisionId, setActivatingRevisionId] = useState<string | null>(null);
   const [statusChangingEntryId, setStatusChangingEntryId] = useState<string | null>(null);
@@ -347,14 +350,17 @@ export default function LlmProviderCatalog() {
     setVerifyRunning(true);
     setVerifyResult(null);
     try {
-      const result = await runAction<{ passed: boolean }>({
+      const result = await runAction<{
+        passed: boolean;
+        steps: Array<{ name: string; ok: boolean; detail?: string }>;
+      }>({
         request: () => fetchWithAuth(`/admin/llm-provider-catalog/revisions/${verifyTarget.revisionId}/verify`, {
           method: 'POST',
           body: JSON.stringify({ modelId: verifyTarget.modelId, apiKey: verifyApiKey.trim() }),
         }),
         errorFallback: t('admin.llmProviderCatalog.errors.verify'),
       });
-      setVerifyResult({ passed: result.passed });
+      setVerifyResult({ passed: result.passed, steps: result.steps });
       // Transient test key never persists beyond the request that used it.
       setVerifyApiKey('');
       await fetchCatalog();
@@ -851,6 +857,30 @@ export default function LlmProviderCatalog() {
                     ? t('admin.llmProviderCatalog.verifyForm.passed')
                     : t('admin.llmProviderCatalog.verifyForm.failed')}
                 </div>
+              )}
+              {verifyResult && verifyResult.steps.length > 0 && (
+                <ul data-testid="llm-catalog-verify-steps" className="border rounded divide-y">
+                  {verifyResult.steps.map((step, index) => (
+                    <li
+                      key={`${index}-${step.name}`}
+                      data-testid={`llm-catalog-verify-step-${index}`}
+                      className="px-3 py-2 flex items-start gap-2 text-sm"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`shrink-0 font-mono ${step.ok ? 'text-green-600' : 'text-red-600'}`}
+                      >
+                        {step.ok ? '✓' : '✗'}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block font-medium">{step.name}</span>
+                        {step.detail && (
+                          <span className="block text-xs font-mono text-gray-600 break-words">{step.detail}</span>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
             <div className="flex items-center justify-end gap-2 border-t px-6 py-3">

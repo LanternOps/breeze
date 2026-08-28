@@ -619,7 +619,7 @@
     "retrySites": "Réessayer",
     "createASite": "Créer un site",
     "maxUsage": "Utilisation maximale (optionnelle)",
-    "unlimited": "Illimité",
+    "defaultDeviceLimit": "50 (par défaut)",
     "maxUsageHelp": "Nombre maximal d’agents pouvant s’inscrire avec cette clé.",
     "expiresAt": "Expire à (optionnel)",
     "creating": "Création…",
@@ -2373,7 +2373,12 @@
     "enforceLockoutSelfWarning": "Votre propre compte n'est pas connecté — vous vous bloqueriez vous-même.",
     "enforceLockoutAcknowledge": "Je comprends que ces utilisateurs ne pourront pas se connecter tant qu'ils n'auront pas connecté l'authentification unique",
     "enforceLockoutConfirm": "Activer l'application obligatoire",
-    "enforceLockoutConfirmationNeeded": "Confirmez l'avertissement de blocage pour activer l'application obligatoire de l'authentification unique."
+    "enforceLockoutConfirmationNeeded": "Confirmez l'avertissement de blocage pour activer l'application obligatoire de l'authentification unique.",
+    "providerCreated": "Fournisseur créé",
+    "providerUpdated": "Fournisseur mis à jour",
+    "providerDeleted": "Fournisseur supprimé",
+    "providerEnabled": "Fournisseur activé",
+    "providerDisabled": "Fournisseur désactivé"
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",
@@ -2824,6 +2829,12 @@
     "noOrganization": {
       "title": "Aucune organisation sélectionnée",
       "description": "Veuillez sélectionner une organisation dans le sélecteur de l’en-tête pour afficher les paramètres."
+    },
+    "archived": {
+      "banner": "Cette organisation est archivée et en lecture seule. Restaurez-la pour effectuer des modifications.",
+      "bannerWithDate": "Cette organisation est archivée ; la purge est prévue pour le {{date}}. Restaurez-la pour effectuer des modifications.",
+      "restoreLink": "Restaurer cette organisation",
+      "saveBlocked": "Cette organisation est archivée et ne peut pas être modifiée. Restaurez-la d’abord."
     },
     "actions": {
       "save": "Enregistrer",
