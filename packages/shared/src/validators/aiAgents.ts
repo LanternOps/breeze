@@ -39,6 +39,9 @@ const limitsFields = z.object({
   maxFleetPercentPerDay: z.number().int().min(1).max(100),
   maxActionsPerRun: z.number().int().min(1).max(10),
   maxPolicyDecisionsPerDay: z.number().int().min(1).max(200),
+  // Circuit-breaker threshold (wave 6 PR 2, #3828). Bounded 1-10 with NO
+  // 0-disables value — see AiAgentLimits.maxConsecutiveFailures's docstring.
+  maxConsecutiveFailures: z.number().int().min(1).max(10),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({

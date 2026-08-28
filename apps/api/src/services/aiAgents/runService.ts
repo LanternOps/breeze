@@ -59,6 +59,13 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *                            stub that always returns `human_required`, so
  *                            nothing consumes the cap yet — Part B's
  *                            `attemptPolicyDecision` is the enforcer.
+ *  - maxConsecutiveFailures — agentCircuit.ts via transitionRunStatus (wave 6
+ *                            PR 2, #3828): the field ships in this task so
+ *                            partners can pre-configure it and every
+ *                            snapshot from now on carries it; the circuit
+ *                            breaker itself (recordRunTerminal, the
+ *                            terminalization chokepoint) is a later task in
+ *                            this same PR.
  */
 
 export interface CreateAgentRunInput {

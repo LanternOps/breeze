@@ -137,6 +137,17 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * under different partners — the same reason recorded in the
  * orgMergeRegistry entry for this table. It is listed in
  * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
+ *
+ * ai_agent_fix_watches is deliberately ABSENT too (wave 6 PR 2, #3828): it
+ * has both org_id and device_id columns but is cascade-deleted, not moved —
+ * identical reasoning to ai_unattended_exposure above, transplanted to
+ * watch history: (a) a fix-held watch's org attribution stays with the run
+ * it watches, which itself never follows a device move (ai_agent_runs is
+ * ABSENT from this same list, above), so re-stamping the watch's org_id
+ * while its run stays under the old org would split one remediation's
+ * story across two orgs; (b) the same (org_id, partner_id) composite FK
+ * fragility applies the moment the two orgs sit under different partners.
+ * It is listed in INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
  */
 const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
@@ -284,6 +295,13 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // situation as fleet_finding_devices below: the app-level DELETE is the
   // only thing that reclaims these rows.
   'ai_unattended_exposure',
+  // Fix-held watch ledger (Wave 6 PR 2, #3828) — live device_id column
+  // (NOT NULL), no FK to devices, leaf table, no children. Same situation
+  // as ai_unattended_exposure directly above: the app-level DELETE is the
+  // only thing that reclaims these rows. NOT in ai_agent_circuit_state's
+  // company here — that table has no device_id column at all (org_id +
+  // agent_id only), so it needs no entry in this device-cascade list.
+  'ai_agent_fix_watches',
   // Analytics & reliability
   'device_reliability_history', 'device_reliability',
   'playbook_executions', 'time_series_metrics', 'capacity_predictions',

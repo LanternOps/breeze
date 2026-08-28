@@ -53,6 +53,8 @@ export * from './reliability';
 export * from './userRisk';
 export * from './ai';
 export * from './aiAgents';
+export * from './aiAgentFixWatches';
+export * from './aiAgentCircuitState';
 export * from './aiUnattendedExposure';
 export * from './aiKillState';
 export * from './monitors';
