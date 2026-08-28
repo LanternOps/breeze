@@ -149,6 +149,25 @@ function authIssuanceAdmissionError(c: Context, error: unknown): Response | null
   return null;
 }
 
+// POST /refresh ONLY. Losing #4097's per-binding issuance lease raises an
+// AuthIssuanceConflictError, which declares itself `retryable` — on this route
+// it is the same benign concurrent-refresh race the handler already answers
+// two other ways with 401 `refresh_raced`: the loser retries and picks up the
+// winner's rotated cookie. The shared helper flattens that retryability into a
+// bare 409 that clients can only read as a terminal auth failure, which logged
+// users out on every org switch (full reload, whose bootstrap refresh races the
+// pre-reload one the unload aborted client-side but the server is still
+// executing under the lease). Deliberately NOT applied to /login, /mfa or
+// /invite — they have no refresh cookie to retry with, so 409 stays right
+// there. AuthBindingUnavailableError and AuthIssuanceCapabilityError keep their
+// 409 here too: those are verdicts (a logout won), not races.
+function refreshIssuanceAdmissionError(c: Context, error: unknown): Response | null {
+  if (error instanceof AuthIssuanceConflictError) {
+    return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
+  }
+  return authIssuanceAdmissionError(c, error);
+}
+
 // Task 10 helper: bump the per-account failure counter, and if THIS
 // attempt is the one that crossed the lockout threshold, fire a security
 // notification email + audit event exactly once. Pulled into a helper so
@@ -1030,7 +1049,7 @@ loginRoutes.post('/refresh', async (c) => {
       await waitForAuthTransitionFinalizationTestBarrier(c);
     } catch (error) {
       if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
-      const response = authIssuanceAdmissionError(c, error);
+      const response = refreshIssuanceAdmissionError(c, error);
       if (!response) throw error;
       return response;
     }
@@ -1077,7 +1096,7 @@ loginRoutes.post('/refresh', async (c) => {
       if (error instanceof RefreshTokenCurrentnessError) {
         return c.json({ error: 'Refresh already in progress', reason: 'refresh_raced' }, 401);
       }
-      const response = authIssuanceAdmissionError(c, error);
+      const response = refreshIssuanceAdmissionError(c, error);
       if (!response) throw error;
       return response;
     }
