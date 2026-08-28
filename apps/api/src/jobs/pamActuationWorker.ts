@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
+import { buildPamActuationCommand } from './pamActuationCommandPayload';
 
 const PAM_QUEUE_NAME = 'pam-actuation';
 
@@ -18,7 +19,6 @@ type PamDispatchRow = Record<string, unknown> & {
   device_org_id: string;
   device_id: string;
   elevation_request_id: string;
-  request_revision: number;
   generation: number;
   desired_state: 'active' | 'cleanup';
   current_command_id: string | null;
@@ -26,7 +26,7 @@ type PamDispatchRow = Record<string, unknown> & {
   target_executable_path: string;
   target_executable_hash: string | null;
   subject_username: string;
-  expires_at: Date | null;
+  expires_at: Date | string | null;
 };
 
 function rows<T>(result: unknown): T[] {
@@ -41,7 +41,7 @@ export async function processPamActuationEvent(input: PamActuationJobData): Prom
     const tx = db;
     const actuation = rows<PamDispatchRow>(await tx.execute<PamDispatchRow>(sql`
       SELECT a.id, a.org_id, a.device_id, a.elevation_request_id,
-             a.request_revision, a.generation, a.desired_state,
+             a.generation, a.desired_state,
              a.current_command_id, a.target_executable_path,
              a.target_executable_hash, a.subject_username, a.expires_at,
              r.org_id AS request_org_id, d.org_id AS device_org_id,
@@ -76,33 +76,40 @@ export async function processPamActuationEvent(input: PamActuationJobData): Prom
       return 'unsupported';
     }
 
-    if (
-      actuation.desired_state === 'active'
-      && (!actuation.expires_at || actuation.expires_at.getTime() <= Date.now())
-    ) {
+    const expiresAt = actuation.expires_at instanceof Date
+      ? actuation.expires_at
+      : actuation.expires_at === null
+        ? null
+        : new Date(actuation.expires_at);
+    const built = buildPamActuationCommand({
+      actuationId: actuation.id,
+      generation: actuation.generation,
+      requestId: actuation.elevation_request_id,
+      deviceId: actuation.device_id,
+      orgId: actuation.org_id,
+      desiredState: actuation.desired_state,
+      targetPath: actuation.target_executable_path,
+      targetHash: actuation.target_executable_hash,
+      subjectUsername: actuation.subject_username,
+      expiresAt,
+    }, new Date());
+    if (built.kind === 'blocked') {
       await tx.execute(sql`
         UPDATE pam_actuations SET observed_state = 'failed',
-          failure_code = 'expired_before_dispatch', updated_at = now()
+          failure_code = ${built.failureCode}, updated_at = now()
         WHERE id = ${actuation.id} AND generation = ${actuation.generation}
       `);
       return 'blocked';
     }
 
     const commandId = randomUUID();
-    const commandType = actuation.desired_state === 'cleanup' ? 'pam_cleanup_v2' : 'pam_apply_v2';
-    const payload = {
-      actuationId: actuation.id,
-      elevationRequestId: actuation.elevation_request_id,
-      requestRevision: actuation.request_revision,
-      generation: actuation.generation,
-      targetExecutablePath: actuation.target_executable_path,
-      targetExecutableHash: actuation.target_executable_hash,
-      subjectUsername: actuation.subject_username,
-      expiresAt: actuation.expires_at?.toISOString() ?? null,
-    };
     await tx.execute(sql`
-      INSERT INTO device_commands (id, device_id, type, payload, status, created_by)
-      VALUES (${commandId}, ${actuation.device_id}, ${commandType}, ${JSON.stringify(payload)}::jsonb, 'pending', NULL)
+      INSERT INTO device_commands (
+        id, device_id, type, target_role, payload, status, created_by
+      ) VALUES (
+        ${commandId}, ${actuation.device_id}, ${built.commandType}, 'agent',
+        ${JSON.stringify(built.payload)}::jsonb, 'pending', NULL
+      )
     `);
     await tx.execute(sql`
       UPDATE pam_actuations

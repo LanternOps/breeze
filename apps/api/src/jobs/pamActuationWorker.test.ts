@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import canonical from '../../../../packages/shared/src/fixtures/pam-lifetime-v2-command-contract.json';
 
 const { executeMock } = vi.hoisted(() => ({
   executeMock: vi.fn(),
@@ -26,15 +28,35 @@ const current = {
   desired_state: 'active',
   current_command_id: null,
   pam_lifetime_protocol_version: 2,
-  target_executable_path: 'C:\\admin.exe',
+  target_executable_path: canonical.apply.targetPath,
   target_executable_hash: null,
-  subject_username: 'operator',
-  expires_at: new Date(Date.now() + 60_000),
+  subject_username: canonical.apply.subjectUsername,
+  expires_at: new Date(canonical.apply.expiresAt),
 };
+
+function collectStrings(value: unknown, seen = new Set<object>()): string[] {
+  if (typeof value === 'string') return [value];
+  if (value === null || typeof value !== 'object' || seen.has(value)) return [];
+  seen.add(value);
+  return Object.values(value).flatMap((entry) => collectStrings(entry, seen));
+}
+
+function commandPayloadAt(callIndex: number): Record<string, unknown> {
+  const values = collectStrings(executeMock.mock.calls[callIndex]?.[0]);
+  const raw = values.find((value) => value.startsWith('{"protocolVersion":2'));
+  if (!raw) throw new Error(`command payload missing from execute call ${callIndex}`);
+  return JSON.parse(raw) as Record<string, unknown>;
+}
 
 describe('processPamActuationEvent', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(canonical.apply.serverTime);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('inserts and binds one v2 command for duplicate outbox delivery', async () => {
@@ -44,6 +66,7 @@ describe('processPamActuationEvent', () => {
       .mockResolvedValueOnce({ rows: [] });
     await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 }))
       .resolves.toBe('dispatched');
+    expect(commandPayloadAt(1)).toEqual(canonical.apply);
 
     executeMock.mockReset().mockResolvedValueOnce({
       rows: [{ ...current, current_command_id: '40000000-0000-4000-8000-000000000001' }],
@@ -60,14 +83,40 @@ describe('processPamActuationEvent', () => {
     expect(executeMock).toHaveBeenCalledTimes(1);
 
     executeMock.mockReset()
-      .mockResolvedValueOnce({ rows: [{ ...current, desired_state: 'cleanup' }] })
+      .mockResolvedValueOnce({ rows: [{ ...current, generation: 5, desired_state: 'cleanup' }] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] });
-    await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 }))
+    await expect(processPamActuationEvent({ actuationId: current.id, generation: 5 }))
       .resolves.toBe('dispatched');
+    expect(commandPayloadAt(1)).toEqual(canonical.cleanup);
     const sqlText = executeMock.mock.calls.map(([query]) => JSON.stringify(query)).join('\n');
     expect(sqlText).toContain('pam_cleanup_v2');
     expect(sqlText).not.toContain('pam_apply_v2');
+  });
+
+  it('fails closed on ownership mismatch without inserting a command', async () => {
+    executeMock
+      .mockResolvedValueOnce({ rows: [{ ...current, device_org_id: '90000000-0000-4000-8000-000000000001' }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 }))
+      .resolves.toBe('blocked');
+    const sqlText = executeMock.mock.calls.map(([query]) => JSON.stringify(query)).join('\n');
+    expect(sqlText).toContain('identity_mismatch');
+    expect(sqlText).not.toContain('INSERT INTO device_commands');
+  });
+
+  it('uses the builder as the only expired-apply authority', async () => {
+    executeMock
+      .mockResolvedValueOnce({ rows: [{ ...current, expires_at: new Date(canonical.apply.serverTime) }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 }))
+      .resolves.toBe('blocked');
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    const sqlText = executeMock.mock.calls.map(([query]) => JSON.stringify(query)).join('\n');
+    expect(sqlText).toContain('expired_before_dispatch');
+    expect(sqlText).not.toContain('INSERT INTO device_commands');
   });
 
   it.each([undefined, 0])('fails closed when PAM capability is %s', async (version) => {
