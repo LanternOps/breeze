@@ -319,6 +319,13 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     globalMaxSize: 1 * MB,
     note: 'route limit (256KB) is TIGHTER than the global default, so it applies as written.',
   },
+  'agents/pamObservations.ts': {
+    paths: [
+      '/api/v1/agents/agent-1/commands/11111111-1111-4111-8111-111111111111/pam-observations',
+    ],
+    globalMaxSize: 1 * MB,
+    note: 'route limit (32KB) is TIGHTER than the global default, so it applies as written.',
+  },
   'agents/processSample.ts': {
     paths: ['/api/v1/agents/agent-1/process-sample'],
     globalMaxSize: 1 * MB,
