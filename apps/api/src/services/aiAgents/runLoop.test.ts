@@ -151,6 +151,24 @@ const resolveEffectiveAgentSystem = vi.hoisted(() =>
   vi.fn<(orgId: string, kind: string) => Promise<AiAgentPolicySnapshot | null>>());
 vi.mock('./effectivePolicy', () => ({ resolveEffectiveAgentSystem }));
 
+// Wave 5A Task 2 (#3827): `aiKillState.ts` is an I/O-heavy leaf module —
+// mocked here at the module boundary, same precedent as
+// `resolveEffectiveAgentSystem`/`revalidateActExecution` below, so this file
+// keeps exercising the run-loop's WIRING contract rather than the shared
+// table-queue db mock's coverage of a table it never otherwise touches.
+// Default: not killed, always — this file's own dedicated kill-switch
+// coverage lives in `aiGuardrails.agentPrincipal.contract.test.ts` and
+// `actRevalidation.test.ts`; here it only has to stay inert. Both exports
+// matter: `readAiKillState` is what `isStoppedBeforeStart` calls directly,
+// `getCachedAiKillStateSnapshot` is what the REAL (unmocked)
+// `checkAgentGuardrails` reads on every dispatch in this file.
+const readAiKillState = vi.hoisted(() =>
+  vi.fn<() => Promise<{ killed: boolean; epoch: number }>>(async () => ({ killed: false, epoch: 0 })));
+vi.mock('../aiKillState', () => ({
+  readAiKillState,
+  getCachedAiKillStateSnapshot: () => ({ killed: false, epoch: 0 }),
+}));
+
 // `revalidateActExecution` and `verifyActExecution`/`recordActVerifyFailureAlert`
 // are I/O-heavy leaf modules with their own dedicated unit suites
 // (actRevalidation.test.ts, actVerify.test.ts) — mocked here at the module

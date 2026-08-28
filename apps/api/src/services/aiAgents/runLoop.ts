@@ -87,6 +87,7 @@ import {
 import { actTargetSummary, recordActVerifyFailureAlert, verifyActExecution } from './actVerify';
 import { executeBuiltInPlaybookForRun } from './playbookActExecutor';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
+import { readAiKillState } from '../aiKillState';
 import {
   closeAgentRunSession,
   completeToolExecution,
@@ -1439,6 +1440,23 @@ async function isStoppedBeforeStart(
   agentId: string,
 ): Promise<boolean> {
   if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) return true;
+
+  // Wave 5A Task 2 (#3827): refresh the DB kill-state cache here, at
+  // admission, so the run's whole tool-dispatch loop — which reads the
+  // cached snapshot synchronously through `checkAgentGuardrails` — starts
+  // from state at most 5s stale (`aiKillState.ts`'s own staleness-bound
+  // note). Gate admission on it directly too, matching this function's own
+  // "kill switch" doc comment and the env-flag check immediately above:
+  // belt-and-suspenders with the guardrail's per-dispatch check, not a
+  // replacement for it.
+  const killState = await readAiKillState();
+  if (killState.killed) {
+    console.warn('[aiAgentRunLoop] AI kill switch is engaged — refusing to start', {
+      orgId, kind, agentId, epoch: killState.epoch,
+    });
+    return true;
+  }
+
   try {
     const current = await resolveEffectiveAgentSystem(orgId, kind);
     if (!current) return true;
