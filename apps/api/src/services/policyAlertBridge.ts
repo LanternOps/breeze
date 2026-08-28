@@ -1,8 +1,15 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { alerts, alertRules, alertTemplates, automationPolicies, organizations } from '../db/schema';
+import {
+  alerts,
+  alertRules,
+  alertTemplates,
+  automationPolicies,
+  automationPolicyCompliance,
+  organizations,
+} from '../db/schema';
 import { createAlert, resolveAlert, RESOLVABLE_ALERT_STATUSES } from './alertService';
-import { getEventBus } from './eventBus';
+import type { BreezeEvent } from './eventBus';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -12,8 +19,6 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 const POLICY_TEMPLATE_NAME = 'Policy Compliance Violation';
 const POLICY_RULE_PREFIX = 'Policy Violation Rule';
-
-let subscribed = false;
 
 type PolicyEventPayload = {
   policyId?: string;
@@ -142,8 +147,8 @@ async function resolvePolicyAlertsForDevice(ruleId: string, deviceId: string): P
 }
 
 // Exported for unit testing (dual-axis partner-wide policy check, #2149) — not
-// used outside this module otherwise; subscribeToPolicyEvents wires it to the
-// event bus.
+// used outside this module otherwise; handlePolicyViolationEvent wires it to
+// the durable subscriber registry.
 export async function handlePolicyViolation(orgId: string, payload: PolicyEventPayload): Promise<void> {
   if (!payload.policyId || !payload.deviceId) {
     return;
@@ -193,6 +198,31 @@ export async function handlePolicyViolation(orgId: string, payload: PolicyEventP
     }
   }
 
+  // The event is a wake-up, not the truth: automation_policy_compliance holds
+  // the current per-(policy, device) status, upserted BEFORE this event was
+  // published (policyEvaluationService.ts). A delayed/retried policy.violation
+  // that lands after a newer policy.compliant must not create a stale alert —
+  // FIFO can't fix this, since a failed violation delivery can retry after a
+  // later compliant.
+  const [compliance] = await db
+    .select({ status: automationPolicyCompliance.status })
+    .from(automationPolicyCompliance)
+    .where(and(
+      eq(automationPolicyCompliance.policyId, payload.policyId),
+      eq(automationPolicyCompliance.deviceId, payload.deviceId),
+    ))
+    // Duplicate (policy, device) compliance rows exist in the wild — without
+    // an explicit order, an arbitrary stale 'compliant' row can suppress a
+    // real violation. Most-recently-updated row wins.
+    .orderBy(desc(automationPolicyCompliance.updatedAt))
+    .limit(1);
+  if (compliance && compliance.status !== 'non_compliant') {
+    // Stale or reordered violation event: the persisted evaluation state has
+    // moved on. The compliant-side handler resolves alerts; creating one here
+    // would strand an active alert with no future event to clear it.
+    return;
+  }
+
   const ruleId = await ensureRule(orgId, payload.policyId, policyName, payload.enforcement);
 
   await createAlert({
@@ -234,37 +264,25 @@ async function handlePolicyCompliant(orgId: string, payload: PolicyEventPayload)
   await resolvePolicyAlertsForDevice(rule.id, payload.deviceId);
 }
 
-export function subscribeToPolicyEvents(): void {
-  if (subscribed) {
-    return;
-  }
-
-  const eventBus = getEventBus();
-
-  eventBus.subscribe('policy.violation', async (event) => {
-    try {
-      await runWithSystemDbAccess(async () => {
-        await handlePolicyViolation(event.orgId, (event.payload ?? {}) as PolicyEventPayload);
-      });
-    } catch (error) {
-      console.error('[PolicyAlertBridge] Failed to handle policy violation:', error);
-    }
+/**
+ * Handle a `policy.violation` event.
+ *
+ * Registered (with handlePolicyCompliantEvent) under subscriber id
+ * `policy-alert-bridge` (services/eventSubscribers.ts). MUST throw on failure
+ * — queue-mode dispatch (#4085) retries on a thrown rejection; local
+ * delivery's wrapper (eventBus.ts's invokeLocalHandlers) provides the
+ * swallow-and-log semantics the old subscriber's try/catch used to provide
+ * itself.
+ */
+export async function handlePolicyViolationEvent(event: BreezeEvent): Promise<void> {
+  await runWithSystemDbAccess(async () => {
+    await handlePolicyViolation(event.orgId, (event.payload ?? {}) as PolicyEventPayload);
   });
-
-  eventBus.subscribe('policy.compliant', async (event) => {
-    try {
-      await runWithSystemDbAccess(async () => {
-        await handlePolicyCompliant(event.orgId, (event.payload ?? {}) as PolicyEventPayload);
-      });
-    } catch (error) {
-      console.error('[PolicyAlertBridge] Failed to handle policy compliant event:', error);
-    }
-  });
-
-  subscribed = true;
-  console.log('[PolicyAlertBridge] Subscribed to policy events');
 }
 
-export async function initializePolicyAlertBridge(): Promise<void> {
-  subscribeToPolicyEvents();
+/** Handle a `policy.compliant` event. See handlePolicyViolationEvent. */
+export async function handlePolicyCompliantEvent(event: BreezeEvent): Promise<void> {
+  await runWithSystemDbAccess(async () => {
+    await handlePolicyCompliant(event.orgId, (event.payload ?? {}) as PolicyEventPayload);
+  });
 }

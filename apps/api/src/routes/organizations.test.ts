@@ -399,17 +399,20 @@ describe('organization routes', () => {
     });
 
     it('should fetch an organization by id', async () => {
+      // UUID-shaped: GET /organizations/:id rejects a malformed id with a 404
+      // before any lookup (it would otherwise reach a uuid column as 22P02).
+      const orgId = '11111111-1111-1111-1111-111111111111';
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([
-              { id: 'org-1', name: 'Org One', slug: 'org-one' }
+              { id: orgId, name: 'Org One', slug: 'org-one' }
             ])
           })
         })
       } as any);
 
-      const res = await app.request('/orgs/organizations/org-1', {
+      const res = await app.request(`/orgs/organizations/${orgId}`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token' }
       });

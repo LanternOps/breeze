@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { Context, Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, eq, ilike, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners, organizations, sites, devices, agentVersions, partnerUsers } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
@@ -24,10 +24,18 @@ import {
   beginPartnerOffboarding,
 } from '../services/tenantOffboarding';
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
+import {
+  listArchivedOrgs,
+  loadArchivedOrg,
+  type ArchivedOrgScope,
+} from '../services/archivedOrgReads';
+import { resolvePartnerOrgReach } from '../services/partnerOrgSelection';
+import { stripOrgLifecycleInternalSettings } from '../services/orgSettingsInternalKeys';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
 import { escapeLike } from '../utils/sql';
+import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
@@ -178,7 +186,7 @@ function preserveIpAllowlistOnOmit(
   return { ...incomingSettings, security: { ...security, ipAllowlist: currentList } };
 }
 
-const createOrganizationSchema = z.object({
+export const createOrganizationSchema = z.object({
   partnerId: z.string().guid().optional(),
   name: z.string().min(1),
   slug: z.string().min(1).max(100),
@@ -194,7 +202,7 @@ const createOrganizationSchema = z.object({
 // Update (not create) additionally accepts `offboarding` (#2774) — the
 // terminal-intent drain state. Creating an org directly in `offboarding`
 // makes no sense, so the create schema keeps the original set.
-const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partnerId: true }).extend({
+export const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partnerId: true }).extend({
   status: z.enum(['active', 'suspended', 'trial', 'churned', 'offboarding']).optional(),
 });
 
@@ -1183,8 +1191,61 @@ const listOrganizationsSchema = z.object({
   partnerId: z.string().guid().optional(),
   page: z.string().optional(),
   limit: z.string().optional(),
-  search: z.string().optional()
+  search: z.string().optional(),
+  // Archived orgs are invisible to the request's own RLS context by design, so
+  // they are never part of the paginated query below — they are read through
+  // the READ ONLY archived context and appended (see below).
+  includeArchived: z.enum(['true', 'false']).optional()
 });
+
+/**
+ * True when this page holds the tail of the paginated (live) result set, so
+ * appended archived orgs land exactly once across a full page walk.
+ * `apps/web/src/lib/fetchAllOrganizations.ts` walks every page and concatenates;
+ * appending unconditionally would repeat every archived org on every page.
+ *
+ * The `pageLength > 0` clause is what makes the exact-multiple case behave:
+ * with total=50 and limit=50, page 2 is empty but its offset (50) still
+ * satisfies both inequalities, so it would append a SECOND copy. An empty page
+ * is only the tail when it is also the first page (an empty result set).
+ */
+function isFinalOrganizationsPage(offset: number, pageLength: number, total: number): boolean {
+  if (pageLength === 0 && offset !== 0) return false;
+  return offset <= total && offset + pageLength >= total;
+}
+
+/**
+ * Which archived orgs this caller may reach, or null for "none" — a partner
+ * token carrying no partnerId gets null rather than `allPartners`, which is the
+ * whole reason `ArchivedOrgScope` is a union instead of a nullable id.
+ * Organization scope never reaches here (it returns earlier in the handler).
+ *
+ * No id-shape guard here, unlike the detail route below: neither input is a raw
+ * path segment. `queryPartnerId` is zod `.guid()`-validated before the handler
+ * runs, and `auth.partnerId` comes from the signed token — the same trust level
+ * every other partner-scoped query in this file already assumes (the org-order
+ * settings read, `resolveAuditOrgIdForPartner`, the list predicate itself).
+ */
+async function resolveArchivedOrgScope(
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'partnerOrgAccess' | 'user'>,
+  queryPartnerId: string | undefined,
+): Promise<ArchivedOrgScope | null> {
+  if (auth.scope === 'system') {
+    return queryPartnerId ? { kind: 'partner', partnerId: queryPartnerId } : { kind: 'allPartners' };
+  }
+  if (auth.scope !== 'partner' || !auth.partnerId) return null;
+  // Archived orgs are absent from accessibleOrgIds by design, so the caller's
+  // per-org selection has to come from the raw partner_users.org_ids list —
+  // otherwise archiving an org WIDENS who can read it (full row incl. the
+  // settings blob) to every member of the partner, including one who was 404'd
+  // on that same org the day before. 'none'/unresolved fails closed to null.
+  const reach = await resolvePartnerOrgReach(auth);
+  if (reach.kind === 'allOfPartner') return { kind: 'partner', partnerId: auth.partnerId };
+  if (reach.kind === 'selection') {
+    return { kind: 'partnerSelection', partnerId: auth.partnerId, orgIds: reach.orgIds };
+  }
+  return null;
+}
 
 // Org-scope callers may read their OWN org's name-level row without the
 // organizations:read permission (UI shell / tickets cold load, #1245 residual)
@@ -1201,7 +1262,7 @@ const requireOrgReadUnlessOwnOrg = async (c: Context, next: Next) => {
 
 orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'), requireOrgReadUnlessOwnOrg, zValidator('query', listOrganizationsSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
-  const { partnerId: queryPartnerId, search, ...pagination } = c.req.valid('query');
+  const { partnerId: queryPartnerId, search, includeArchived, ...pagination } = c.req.valid('query');
   const { page, limit, offset } = getPagination(pagination);
   const trimmedSearch = search?.trim();
   const searchCondition = trimmedSearch
@@ -1240,33 +1301,57 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     });
   }
 
+  // `includeArchived` is an explicit opt-in for partner (and system) callers.
+  // Archived orgs are NOT in `accessibleOrgIds` — `computeAccessibleOrgIds`
+  // allowlists `active|trial` — so they cannot be folded into the query below;
+  // they are read through the READ ONLY archived context and appended. A
+  // partner-scope caller is hard-pinned to its own verified partner id; a
+  // partner token with no partnerId gets nothing rather than every partner's.
+  const archivedScope = includeArchived === 'true'
+    ? await resolveArchivedOrgScope(auth, queryPartnerId)
+    : null;
+
   // The hidden 'quick_support' org is inside accessibleOrgIds by design (RLS),
   // so it has to be excluded from the paginated list — one shared `conditions`
   // covers both the count and the row query below.
   const notQuickSupport = ne(organizations.type, 'quick_support');
   let conditions;
+  // A partner whose only orgs are archived reaches zero accessible ids. That
+  // used to short-circuit the whole handler, which would have made
+  // `includeArchived` silently return nothing for exactly the tenant it exists
+  // to serve — so skip the live queries instead of the response.
+  let noLiveOrgs = false;
   if (auth.scope === 'partner') {
     const orgIds = auth.accessibleOrgIds ?? [];
-    if (orgIds.length === 0) {
-      return c.json({
-        data: [],
-        pagination: { page, limit, total: 0 }
-      });
-    }
-    conditions = and(inArray(organizations.id, orgIds), notQuickSupport, isNull(organizations.deletedAt), searchCondition);
+    noLiveOrgs = orgIds.length === 0;
+    // An explicit impossible predicate, not `undefined`: the live queries are
+    // skipped below, but a `where(undefined)` left behind by a future edit
+    // would select the whole table. Fail closed even in dead code.
+    conditions = noLiveOrgs
+      ? sql`false`
+      : and(inArray(organizations.id, orgIds), notQuickSupport, isNull(organizations.deletedAt), searchCondition);
   } else {
     conditions = queryPartnerId
       ? and(eq(organizations.partnerId, queryPartnerId), notQuickSupport, isNull(organizations.deletedAt), searchCondition)
       : and(notQuickSupport, isNull(organizations.deletedAt), searchCondition);
   }
 
-  const countResult = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(organizations)
-    .where(conditions);
+  if (noLiveOrgs && archivedScope === null) {
+    return c.json({
+      data: [],
+      pagination: { page, limit, total: 0 }
+    });
+  }
+
+  const countResult = noLiveOrgs
+    ? []
+    : await db
+        .select({ count: sql<number>`count(*)` })
+        .from(organizations)
+        .where(conditions);
   const count = countResult[0]?.count ?? 0;
 
-  const data = await db
+  const data = noLiveOrgs ? [] : await db
     .select()
     .from(organizations)
     .where(conditions)
@@ -1289,7 +1374,8 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
   let orderPartnerId: string | null = null;
   if (auth.scope === 'partner' && auth.partnerId) orderPartnerId = auth.partnerId;
   else if (auth.scope === 'system' && queryPartnerId) orderPartnerId = queryPartnerId;
-  if (orderPartnerId) {
+  // Nothing to order when the live query never ran (archived-only partner).
+  if (orderPartnerId && !noLiveOrgs) {
     try {
       const settingsRow = await withSystemDbAccessContext(async () => {
         const [row] = await db
@@ -1343,9 +1429,28 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     deviceCounts.map((row) => [row.orgId, Number(row.count)])
   );
 
+  const liveRows = ordered.map((org) => ({
+    ...org,
+    deviceCount: deviceCountByOrgId.get(org.id) ?? 0,
+  }));
+
+  // Archived orgs ride along on the LAST page only, so a full page walk
+  // (fetchAllOrganizations.ts) sees each of them exactly once. They are not
+  // counted in `pagination.total`: that number belongs to the paginated query,
+  // and inflating it would make the walk ask for a page that doesn't exist.
+  const archived = archivedScope
+    && isFinalOrganizationsPage(offset, liveRows.length, Number(count))
+    ? await listArchivedOrgs({ scope: archivedScope, search: trimmedSearch, limit })
+    : null;
+
   return c.json({
-    data: ordered.map((org) => ({ ...org, deviceCount: deviceCountByOrgId.get(org.id) ?? 0 })),
-    pagination: { page, limit, total: Number(count) }
+    data: [...liveRows, ...(archived?.orgs ?? [])],
+    pagination: { page, limit, total: Number(count) },
+    // Present only on the page that actually carries the archived block, so it
+    // is never a claim about a page that didn't look. Archived orgs are capped
+    // at `limit` rather than paginated (they are a separate read), and a silent
+    // short list is the one outcome the archive view cannot afford.
+    ...(archived ? { archivedTruncated: archived.truncated } : {})
   });
 });
 
@@ -1479,7 +1584,9 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
     slug: data.slug,
     type: data.type,
     status: data.status,
-    settings: data.settings,
+    // The lifecycle engine owns some keys in this blob (prior status, purge
+    // warning markers, the purge-retry counter). Never let a client seed them.
+    settings: stripOrgLifecycleInternalSettings(data.settings),
     contractStart: data.contractStart ? new Date(data.contractStart) : null,
     contractEnd: data.contractEnd ? new Date(data.contractEnd) : null,
     billingContact: data.billingContact
@@ -1623,7 +1730,28 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
 
+  // Shape-check BEFORE anything touches the database. `id` is a raw path
+  // segment and every lookup below feeds it to a `uuid` column, where a
+  // non-UUID raises Postgres 22P02 — an uncaught 500 (and a Sentry event) that
+  // any unauthenticated-shaped URL like `/organizations/undefined` can pump.
+  // A malformed id cannot name a real org, so it is a 404, same as a valid id
+  // for an org that doesn't exist.
+  if (!PG_UUID_REGEX.test(id)) {
+    return c.json({ error: 'Organization not found' }, 404);
+  }
+
+  // An archived org is absent from `accessibleOrgIds` by design, so it fails
+  // `canAccessOrg` and would 404 here. Serve it read-only instead — the archive
+  // detail view (Restore + purge countdown) is the whole point of keeping the
+  // tenant around. `loadArchivedOrg` re-checks the partner itself and collapses
+  // "other partner" into the same null as "not archived", so a cross-partner id
+  // still 404s and never becomes an existence oracle.
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
+    const archivedScope = await resolveArchivedOrgScope(auth, undefined);
+    const archived = archivedScope
+      ? await loadArchivedOrg({ orgId: id, scope: archivedScope })
+      : null;
+    if (archived) return c.json(archived);
     return c.json({ error: 'Organization not found' }, 404);
   }
 
@@ -1637,6 +1765,14 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
 
   if (!organization) {
     return c.json({ error: 'Organization not found' }, 404);
+  }
+
+  // System scope never fails `canAccessOrg`, so an archived org reaches it
+  // through the normal read (system scope short-circuits every RLS predicate).
+  // Flag it the same way the partner branch above does, so clients get one
+  // shape regardless of who asked.
+  if (organization.status === 'archived') {
+    return c.json({ ...organization, archived: true as const });
   }
 
   return c.json(organization);
@@ -1730,6 +1866,71 @@ async function canApplySuspendedOrgLifecycleTransition(
   );
 }
 
+/**
+ * Statuses whose ONLY exit is the dedicated lifecycle endpoint. Nothing guarded
+ * the SOURCE side of a status write before this: the update schema excludes
+ * archived/purging/merging as a TARGET, but for system scope `conditions` is
+ * just `id = ? AND deleted_at IS NULL`, and an archived org has
+ * `deleted_at IS NULL`.
+ *
+ * So `PATCH /organizations/:id {status:'active'}` succeeded on an archived org
+ * and took the reactivation branch — which calls `restoreOrganizationTenantAccess`,
+ * and that lifts only `agentTokenSuspendedReason = 'tenant_suspended'`. Wave 4
+ * tags the archived fleet `org_archived`, which only `liftArchiveSuspension`
+ * clears. Result: the org is active, RLS-visible and billable, with every
+ * device permanently 401ing for no operator-visible reason and stale
+ * `archived_at`/`purge_at`/`offboarding_target` still stamped on a live row.
+ * For `purging` it is worse — un-fencing a tenant whose erasure cascade is
+ * already deleting tables, and hiding it from the recovery backstop.
+ */
+/**
+ * The frozen set as a value list, for re-asserting the guard inside the
+ * UPDATE's own WHERE. `satisfies` proves at compile time that each entry is a
+ * real `org_status` member, so a typo cannot silently produce a predicate that
+ * excludes nothing.
+ *
+ * `notInArray` over `organizations.status` is safe from the NULL trap
+ * (`NOT (...)` drops NULL rows): the column is `NOT NULL DEFAULT 'active'`.
+ */
+type OrgStatusValue = (typeof organizations.$inferSelect)['status'];
+const LIFECYCLE_FROZEN_ORG_STATUS_VALUES = ['archived', 'purging', 'merging'] as const satisfies readonly OrgStatusValue[];
+
+const LIFECYCLE_FROZEN_ORG_STATUSES: Record<
+  (typeof LIFECYCLE_FROZEN_ORG_STATUS_VALUES)[number],
+  string
+> = {
+  archived:
+    'Organization is archived — restore it with POST /orgs/organizations/:id/restore; its status cannot be changed directly.',
+  purging:
+    'Organization is purging and can no longer be restored; its status cannot be changed.',
+  merging:
+    'Organization is being merged — use the organization merge endpoints; its status cannot be changed directly.',
+};
+
+/** The refusal message for a status, or undefined when it is not frozen. */
+function lifecycleFrozenMessage(status: string | null | undefined): string | undefined {
+  if (!status) return undefined;
+  return (LIFECYCLE_FROZEN_ORG_STATUSES as Record<string, string | undefined>)[status];
+}
+
+/**
+ * The org's CURRENT status, read under a system context because a frozen org is
+ * outside every request's accessible set. Only called when a status write was
+ * actually requested, so ordinary org edits pay nothing.
+ */
+async function readOrgLifecycleStatus(orgId: string): Promise<string | null> {
+  const [org] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ status: organizations.status })
+        .from(organizations)
+        .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
+        .limit(1)
+    )
+  );
+  return org?.status ?? null;
+}
+
 // #2879 — a membership-less platform admin resolves no role row in
 // getUserPermissions (permissions derive only from partner/org memberships),
 // so requirePermission 403s ("No permissions found") and system scope cannot
@@ -1759,6 +1960,20 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     suspendedLifecycleOverride = await canApplySuspendedOrgLifecycleTransition(auth, id, data);
     if (!suspendedLifecycleOverride) {
       return c.json({ error: 'Organization not found' }, 404);
+    }
+  }
+
+  // Wave 4 introduces the frozen statuses, so it owns the guard on the way OUT.
+  // Deliberately AFTER the partner-scope 404 above: a partner caller can only
+  // reach here for an org it may already see, so refusing with a 409 that names
+  // the status can never become a cross-tenant existence oracle. In practice
+  // this bites system/platform-admin scope, which is exactly the caller that
+  // would "unarchive" a customer by flipping status in an admin surface.
+  if (data.status !== undefined) {
+    const currentStatus = await readOrgLifecycleStatus(id);
+    const frozen = lifecycleFrozenMessage(currentStatus);
+    if (frozen) {
+      return c.json({ error: frozen, code: 'ORG_LIFECYCLE_FROZEN', currentStatus }, 409);
     }
   }
 
@@ -1870,9 +2085,18 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   if (data.type !== undefined) updates.type = data.type;
   if (data.status !== undefined) updates.status = data.status;
   if (data.settings !== undefined) {
+    // This write replaces `settings` WHOLESALE, so a client payload naming a
+    // lifecycle-internal key would become that key's stored value. Strip them
+    // first: a preseeded `purgingRecoveryAttempts` would neuter the purge-retry
+    // ceiling, and a preseeded `archivePriorStatus`/`mergePriorStatus` would
+    // choose what a later restore/unfence reactivates the tenant AS.
     // Encrypt secret-bearing fields (e.g. logForwarding.elasticsearchApiKey)
     // before writing organizations.settings. See encryptedColumnRegistry.
-    updates.settings = encryptColumnValueForWrite('organizations', 'settings', data.settings);
+    updates.settings = encryptColumnValueForWrite(
+      'organizations',
+      'settings',
+      stripOrgLifecycleInternalSettings(data.settings)
+    );
   }
   // The blob write stays in THIS update rather than going through
   // replaceBillingContact: the #2879 override path below re-asserts
@@ -1897,6 +2121,18 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   // qualifying. It must also run under a system context: the request's
   // partner RLS context can't see the suspended org, so the same UPDATE
   // would silently match 0 rows there.
+  // The pre-read guard above is a SEPARATE statement, so on its own it is only
+  // advisory: an org can transition into archived/purging/merging between that
+  // read and this UPDATE (an archive request, the purge sweeper's CAS, or a
+  // merge fence all race it), and the base WHERE checks nothing but id +
+  // deleted_at. Re-assert the frozen set IN the mutation so the race loses with
+  // 0 rows instead of writing a status onto a frozen tenant. Only applied to a
+  // status write — a frozen org is not otherwise this guard's business.
+  // (The override branch already pins status = 'suspended', which excludes the
+  // frozen set by construction.)
+  const notLifecycleFrozen = data.status === undefined
+    ? undefined
+    : notInArray(organizations.status, [...LIFECYCLE_FROZEN_ORG_STATUS_VALUES]);
   const conditions = suspendedLifecycleOverride
     ? and(
         eq(organizations.id, id),
@@ -1904,7 +2140,7 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
         eq(organizations.status, 'suspended'),
         isNull(organizations.deletedAt)
       )
-    : and(eq(organizations.id, id), isNull(organizations.deletedAt));
+    : and(eq(organizations.id, id), isNull(organizations.deletedAt), notLifecycleFrozen);
 
   const runUpdate = async () => {
     const rows = await db
@@ -1942,6 +2178,19 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   }
 
   if (!organization) {
+    // A status write that matched 0 rows may have LOST THE RACE against a
+    // concurrent transition into the frozen set rather than named a missing
+    // org (see `notLifecycleFrozen`). Re-read once and answer with the same
+    // 409 the pre-read guard would have given, so a caller can tell "it just
+    // got archived" from "no such org" instead of being told the tenant is
+    // gone. Only on the status path — every other 0-row case is still a 404.
+    if (data.status !== undefined) {
+      const raced = await readOrgLifecycleStatus(id);
+      const frozen = lifecycleFrozenMessage(raced);
+      if (frozen) {
+        return c.json({ error: frozen, code: 'ORG_LIFECYCLE_FROZEN', currentStatus: raced }, 409);
+      }
+    }
     return c.json({ error: 'Organization not found' }, 404);
   }
 

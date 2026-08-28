@@ -1,19 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const subscribeMock = vi.hoisted(() => vi.fn());
 const queueDeliveryMock = vi.hoisted(() => vi.fn());
 const startMock = vi.hoisted(() => vi.fn(async () => {}));
 const captureExceptionMock = vi.hoisted(() => vi.fn());
 
-vi.mock('../services/eventBus', () => ({
-  getEventBus: () => ({ subscribe: subscribeMock }),
-  EVENT_TYPES: {}
-}));
-
 vi.mock('../db', () => ({
   db: {},
   // webhookDelivery.ts:12 builds its own runWithSystemDbAccess around this
-  // export; keep it a pass-through so the subscriber body actually runs.
+  // export; keep it a pass-through so the handler body actually runs.
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   runOutsideDbContext: (fn: () => unknown) => fn()
 }));
@@ -27,7 +21,7 @@ vi.mock('../services/sentry', () => ({
   captureException: captureExceptionMock
 }));
 
-import { initializeWebhookDelivery, getWebhookWorker } from './webhookDelivery';
+import { configureWebhookFanout, handleWebhookFanoutEvent, getWebhookWorker } from './webhookDelivery';
 
 const EVENT = {
   id: 'event-1',
@@ -66,13 +60,11 @@ function structured(lines: string[], errorId: string): Record<string, unknown> {
 }
 
 describe('webhook delivery is one-per-(webhook, event)', () => {
-  let handler: (event: typeof EVENT) => Promise<void>;
   let logSpy: ReturnType<typeof vi.spyOn>;
   let warnSpy: ReturnType<typeof vi.spyOn>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
 
-  beforeEach(async () => {
-    subscribeMock.mockReset();
+  beforeEach(() => {
     queueDeliveryMock.mockReset();
     captureExceptionMock.mockReset();
     vi.spyOn(getWebhookWorker(), 'queueDelivery').mockImplementation(queueDeliveryMock);
@@ -96,11 +88,10 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
         createdAt: new Date('2026-09-11T00:00:00.000Z')
       }));
 
-    await initializeWebhookDelivery(async () => [WEBHOOK] as never, createDeliveryRecord as never);
-    handler = subscribeMock.mock.calls[0]![1];
+    configureWebhookFanout({ getWebhooksForEvent: async () => [WEBHOOK] as never, createDeliveryRecord: createDeliveryRecord as never });
 
-    await handler(EVENT);
-    await handler(EVENT);
+    await handleWebhookFanoutEvent(EVENT as never);
+    await handleWebhookFanoutEvent(EVENT as never);
 
     // Two attempts, one outbound POST: the customer's endpoint must not be
     // hit twice for one event.
@@ -109,10 +100,9 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
   });
 
   it('still queues blind when no delivery-record creator is configured', async () => {
-    await initializeWebhookDelivery(async () => [WEBHOOK] as never);
-    handler = subscribeMock.mock.calls[0]![1];
+    configureWebhookFanout({ getWebhooksForEvent: async () => [WEBHOOK] as never });
 
-    await handler(EVENT);
+    await handleWebhookFanoutEvent(EVENT as never);
 
     // No creator means no dedupe surface exists; skipping here would drop the
     // delivery entirely rather than de-duplicate it.
@@ -134,10 +124,9 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
       createdAt: new Date('2026-09-11T00:00:00.000Z')
     }));
 
-    await initializeWebhookDelivery(async () => [WEBHOOK] as never, createDeliveryRecord as never);
-    handler = subscribeMock.mock.calls[0]![1];
+    configureWebhookFanout({ getWebhooksForEvent: async () => [WEBHOOK] as never, createDeliveryRecord: createDeliveryRecord as never });
 
-    await handler(EVENT);
+    await handleWebhookFanoutEvent(EVENT as never);
 
     expect(queueDeliveryMock).not.toHaveBeenCalled();
 
@@ -170,10 +159,9 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
       createdAt: new Date('2026-09-11T00:00:00.000Z')
     }));
 
-    await initializeWebhookDelivery(async () => [WEBHOOK] as never, createDeliveryRecord as never);
-    handler = subscribeMock.mock.calls[0]![1];
+    configureWebhookFanout({ getWebhooksForEvent: async () => [WEBHOOK] as never, createDeliveryRecord: createDeliveryRecord as never });
 
-    await handler(EVENT);
+    await handleWebhookFanoutEvent(EVENT as never);
 
     const payload = structured(consoleLines(logSpy), 'WEBHOOK_DELIVERY_DUPLICATE_SKIPPED');
     expect(payload).toMatchObject({ existingStatus: 'failed' });
@@ -188,10 +176,9 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
       createdAt: new Date('2026-09-11T00:00:00.000Z')
     }));
 
-    await initializeWebhookDelivery(async () => [WEBHOOK] as never, createDeliveryRecord as never);
-    handler = subscribeMock.mock.calls[0]![1];
+    configureWebhookFanout({ getWebhooksForEvent: async () => [WEBHOOK] as never, createDeliveryRecord: createDeliveryRecord as never });
 
-    await handler(EVENT);
+    await handleWebhookFanoutEvent(EVENT as never);
 
     // A `delivered` original is a benign dedupe; a `pending` one means the
     // original may never have been enqueued at all, and the recovery sweep —
@@ -213,10 +200,9 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
       createdAt: new Date('2026-09-11T00:00:00.000Z')
     }));
 
-    await initializeWebhookDelivery(async () => [WEBHOOK] as never, createDeliveryRecord as never);
-    handler = subscribeMock.mock.calls[0]![1];
+    configureWebhookFanout({ getWebhooksForEvent: async () => [WEBHOOK] as never, createDeliveryRecord: createDeliveryRecord as never });
 
-    await handler(EVENT);
+    await handleWebhookFanoutEvent(EVENT as never);
 
     const payload = structured(consoleLines(warnSpy), 'WEBHOOK_DELIVERY_DUPLICATE_SKIPPED');
     expect(payload).toMatchObject({ existingStatus: 'retrying' });
@@ -228,10 +214,9 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
     // exactly the silent drop #4095 is about.
     const createDeliveryRecord = vi.fn().mockResolvedValue(deduped(null));
 
-    await initializeWebhookDelivery(async () => [WEBHOOK] as never, createDeliveryRecord as never);
-    handler = subscribeMock.mock.calls[0]![1];
+    configureWebhookFanout({ getWebhooksForEvent: async () => [WEBHOOK] as never, createDeliveryRecord: createDeliveryRecord as never });
 
-    await handler(EVENT);
+    await handleWebhookFanoutEvent(EVENT as never);
 
     expect(queueDeliveryMock).not.toHaveBeenCalled();
     const payload = structured(consoleLines(warnSpy), 'WEBHOOK_DELIVERY_DUPLICATE_SKIPPED');
@@ -239,22 +224,14 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // #4095: the try/catch used to sit OUTSIDE the `for (const webhook of webhooks)`
-  // loop, so one webhook's failure aborted delivery for webhooks N+1… of the
-  // same event. Combined with the dedupe, a retry then skips the webhooks that
-  // already got a row while the rest proceed — permanently dropping the
-  // failing one.
+  // #4085/#4095: the whole-event lookup failure now RETHROWS (queue-mode
+  // dispatch retries on it) instead of the old silent `return`.
   // ---------------------------------------------------------------------------
 
-  it('reports the ONE drop with no recovery path: the whole-event fan-out', async () => {
-    // If the webhook LOOKUP fails, no delivery rows are created — so the
-    // recovery sweep cannot see this event either. It is the only drop in this
-    // file that nothing downstream can repair, which makes it the one that most
-    // needs to reach Sentry and to carry the event's identity.
-    await initializeWebhookDelivery(async () => { throw new Error('db exploded'); });
-    handler = subscribeMock.mock.calls[0]![1];
+  it('rethrows when the webhook lookup fails, reporting the whole-event fan-out loss', async () => {
+    configureWebhookFanout({ getWebhooksForEvent: async () => { throw new Error('db exploded'); } });
 
-    await handler(EVENT);
+    await expect(handleWebhookFanoutEvent(EVENT as never)).rejects.toThrow('db exploded');
 
     expect(queueDeliveryMock).not.toHaveBeenCalled();
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
@@ -269,38 +246,40 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
     expect(String(payload.impact)).toContain('lost');
   });
 
-  it('does not claim a transient DB error will be retried — this event is gone', async () => {
-    // The old message said "will retry on next event". A LATER event may
-    // succeed; THIS one is lost. Saying otherwise is how a silent drop survives
-    // triage, which is the entire subject of #4095.
-    await initializeWebhookDelivery(async () => {
-      throw new Error('CONNECTION_DESTROYED while querying');
+  it('does not claim a transient DB error will be retried locally — it also rethrows', async () => {
+    configureWebhookFanout({
+      getWebhooksForEvent: async () => { throw new Error('CONNECTION_DESTROYED while querying'); }
     });
-    handler = subscribeMock.mock.calls[0]![1];
 
-    await handler(EVENT);
+    await expect(handleWebhookFanoutEvent(EVENT as never)).rejects.toThrow('CONNECTION_DESTROYED');
 
     const payload = structured(consoleLines(errorSpy), 'WEBHOOK_EVENT_ROUTING_FAILED');
     expect(payload).toMatchObject({ transient: true });
-    // Still reported as a loss, and still surfaced to Sentry, despite being
-    // classified transient.
-    expect(String(payload.impact)).toContain('lost');
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
-    expect(consoleLines(warnSpy).join(' ')).not.toContain('will retry on next event');
   });
 
-  it('keeps delivering to the remaining webhooks after one webhook fails to record', async () => {
+  // ---------------------------------------------------------------------------
+  // #4095: the try/catch used to sit OUTSIDE the `for (const webhook of webhooks)`
+  // loop, so one webhook's failure aborted delivery for webhooks N+1… of the
+  // same event. Combined with the dedupe, a retry then skips the webhooks that
+  // already had a row while the rest proceed — permanently dropping the
+  // failing one. #4085: failures now collect and throw an AGGREGATE after the
+  // loop instead of being swallowed.
+  // ---------------------------------------------------------------------------
+
+  it('keeps delivering to the remaining webhooks after one webhook fails to record, then throws an aggregate', async () => {
     const createDeliveryRecord = vi.fn()
       .mockRejectedValueOnce(new Error('insert blew up'))
       .mockResolvedValueOnce(recorded('delivery-2'));
 
-    await initializeWebhookDelivery(
-      async () => [WEBHOOK, WEBHOOK_B] as never,
-      createDeliveryRecord as never
-    );
-    handler = subscribeMock.mock.calls[0]![1];
+    configureWebhookFanout({
+      getWebhooksForEvent: async () => [WEBHOOK, WEBHOOK_B] as never,
+      createDeliveryRecord: createDeliveryRecord as never
+    });
 
-    await handler(EVENT);
+    await expect(handleWebhookFanoutEvent(EVENT as never)).rejects.toThrow(
+      /webhook fan-out failed for 1\/2 webhooks: webhook-1/
+    );
 
     expect(createDeliveryRecord).toHaveBeenCalledTimes(2);
     expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
@@ -311,7 +290,7 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps delivering to the remaining webhooks when one enqueue fails', async () => {
+  it('keeps delivering to the remaining webhooks when one enqueue fails, then throws an aggregate', async () => {
     const createDeliveryRecord = vi.fn()
       .mockResolvedValueOnce(recorded('delivery-1'))
       .mockResolvedValueOnce(recorded('delivery-2'));
@@ -319,18 +298,33 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
       .mockRejectedValueOnce(new Error('LPUSH failed'))
       .mockResolvedValueOnce('delivery-2');
 
-    await initializeWebhookDelivery(
-      async () => [WEBHOOK, WEBHOOK_B] as never,
-      createDeliveryRecord as never
-    );
-    handler = subscribeMock.mock.calls[0]![1];
+    configureWebhookFanout({
+      getWebhooksForEvent: async () => [WEBHOOK, WEBHOOK_B] as never,
+      createDeliveryRecord: createDeliveryRecord as never
+    });
 
-    await handler(EVENT);
+    await expect(handleWebhookFanoutEvent(EVENT as never)).rejects.toThrow(
+      /webhook fan-out failed for 1\/2 webhooks: webhook-1/
+    );
 
     // webhook-1 is now a recorded-but-never-enqueued orphan — that is the
     // recovery sweep's job. What must NOT happen is webhook-2 losing its
     // delivery because webhook-1's LPUSH died first.
     expect(queueDeliveryMock).toHaveBeenCalledTimes(2);
     expect((queueDeliveryMock.mock.calls[1]![0] as { id: string }).id).toBe('webhook-2');
+  });
+
+  it('does not throw when every webhook in the fan-out succeeds', async () => {
+    const createDeliveryRecord = vi.fn()
+      .mockResolvedValueOnce(recorded('delivery-1'))
+      .mockResolvedValueOnce(recorded('delivery-2'));
+
+    configureWebhookFanout({
+      getWebhooksForEvent: async () => [WEBHOOK, WEBHOOK_B] as never,
+      createDeliveryRecord: createDeliveryRecord as never
+    });
+
+    await expect(handleWebhookFanoutEvent(EVENT as never)).resolves.toBeUndefined();
+    expect(queueDeliveryMock).toHaveBeenCalledTimes(2);
   });
 });

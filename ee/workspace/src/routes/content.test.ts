@@ -227,6 +227,39 @@ describe('content routes — behavior (content enabled)', () => {
     }));
   });
 
+  it('enrich-run answers 503 (not 200) when the run degraded because AI is unavailable', async () => {
+    // The degraded run returns a NORMAL-looking body — processed 0, remaining
+    // 0, no errors — so without the aiUnavailable flag an admin who explicitly
+    // asked to enrich would be told "0 files, all done" about an org whose AI
+    // provider is missing or switched off.
+    const enrichment = {
+      run: vi.fn(async () => ({
+        processed: 0, remaining: 0, errors: [], aiUnavailable: true as const,
+      })),
+    };
+    const { app, deps } = makeApp({
+      enrichmentService: enrichment as unknown as ContentRouteDeps['enrichmentService'],
+    });
+
+    const res = await app.request(`/content/enrich-run?orgId=${ORG_ID}`, { method: 'POST' });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: 'enrichment unavailable (no model credentials configured)',
+    });
+    // Audited as a FAILURE, like ingest-run's failure path — an admin action
+    // that produced nothing must still leave a trail.
+    expect(deps.audit).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'workspace.content.enrich_run',
+      result: 'failure',
+    }));
+    // ...and never as a success.
+    expect(deps.audit).not.toHaveBeenCalledWith(expect.objectContaining({
+      action: 'workspace.content.enrich_run',
+      result: 'success',
+    }));
+  });
+
   it('enrich-run rethrows a non-transient error (surfaces as 500)', async () => {
     const enrichment = { run: vi.fn(async () => { throw new Error('kaboom'); }) };
     const { app } = makeApp({

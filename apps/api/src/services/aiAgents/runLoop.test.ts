@@ -31,15 +31,58 @@ interface Hooks {
 // ---------------------------------------------------------------------------
 const dbMockState = vi.hoisted(() => ({
   rowQueues: {} as Record<string, unknown[][]>,
+  // The most recently shifted row for a table, keyed by table name — lets
+  // `nextRows` synthesize a SECOND read below (wave 4a Task 6, #3826:
+  // `deliverRunFinishedNotifications` re-reads `ai_agent_runs`/`ai_agents`
+  // from `finishRun`, after `seedRows()`'s one queued row-set for each has
+  // already been consumed by the loop's own initial `loadRunContext`).
+  lastRow: {} as Record<string, unknown>,
   selects: [] as Array<{ table: string; where?: SQL }>,
   systemContextDepth: 0,
   ambientContext: undefined as { scope: string } | undefined,
 }));
 
+/**
+ * `ai_agent_runs`/`ai_agents` are read TWICE per completed run under real
+ * code: once by `loadRunContext` at the top of `executeAgentRun`, and again
+ * by `deliverRunFinishedNotifications` inside `finishRun` (Task 6). Only the
+ * first read is ever explicitly queued (`seedRows()`); rather than force
+ * every existing test to queue an identical second copy, a table that runs
+ * dry synthesizes its second read from what it already knows:
+ *  - `ai_agents`: the agent row never changes mid-run — reuse the last one.
+ *  - `ai_agent_runs`: overlay the LAST `transitionRunStatus` call's
+ *    `to`/`patch` (status, summary, outcome, intentIds) onto the seeded row,
+ *    since `transitionRunStatus` is mocked and never actually mutates it —
+ *    this is what makes the synthesized re-read reflect the run's real
+ *    terminal outcome instead of the stale pre-run seed.
+ * Every OTHER table still throws on a second, un-queued read (unchanged
+ * strictness) — only these two are ever legitimately read twice.
+ */
 function nextRows(table: string): unknown[] {
   const queue = dbMockState.rowQueues[table];
-  if (!queue || queue.length === 0) throw new Error(`No queued rows for table ${table}`);
-  return queue.shift() as unknown[];
+  if (queue && queue.length > 0) {
+    const rows = queue.shift() as unknown[];
+    if (rows.length > 0) dbMockState.lastRow[table] = rows[0];
+    return rows;
+  }
+  if (table === 'ai_agent_runs' && dbMockState.lastRow.ai_agent_runs) {
+    const base = dbMockState.lastRow.ai_agent_runs as Record<string, unknown>;
+    const calls = transitionRunStatus.mock.calls;
+    const last = calls[calls.length - 1];
+    if (!last) return [base];
+    const patch = (last[3] ?? {}) as Record<string, unknown>;
+    return [{
+      ...base,
+      status: last[2],
+      summary: (patch.summary as string | null | undefined) ?? null,
+      outcome: patch.outcome ?? {},
+      intentIds: patch.intentIds ?? [],
+    }];
+  }
+  if (table === 'ai_agents' && dbMockState.lastRow.ai_agents) {
+    return [dbMockState.lastRow.ai_agents];
+  }
+  throw new Error(`No queued rows for table ${table}`);
 }
 
 vi.mock('../../db', () => {
@@ -86,6 +129,24 @@ const transitionRunStatus = vi.hoisted(() =>
   ) => Promise<boolean>>());
 vi.mock('./runService', () => ({ transitionRunStatus }));
 
+const createAgentRunSession = vi.hoisted(() =>
+  vi.fn<(args: Record<string, unknown>) => Promise<string>>());
+const startToolExecution = vi.hoisted(() =>
+  vi.fn<(args: Record<string, unknown>) => Promise<string>>());
+const completeToolExecution = vi.hoisted(() =>
+  vi.fn<(args: Record<string, unknown>) => Promise<void>>());
+const reconcileHungExecutions = vi.hoisted(() =>
+  vi.fn<(sessionId: string) => Promise<number>>());
+const closeAgentRunSession = vi.hoisted(() =>
+  vi.fn<(sessionId: string, status: 'completed' | 'failed') => Promise<void>>());
+vi.mock('./executionLedger', () => ({
+  createAgentRunSession,
+  startToolExecution,
+  completeToolExecution,
+  reconcileHungExecutions,
+  closeAgentRunSession,
+}));
+
 const resolveEffectiveAgentSystem = vi.hoisted(() =>
   vi.fn<(orgId: string, kind: string) => Promise<AiAgentPolicySnapshot | null>>());
 vi.mock('./effectivePolicy', () => ({ resolveEffectiveAgentSystem }));
@@ -118,6 +179,16 @@ vi.mock('./recipients', () => ({ resolveRecipientUserIds }));
 const createNotification = vi.hoisted(() =>
   vi.fn<(input: Record<string, unknown>) => Promise<string | null>>(async () => 'notification-1'));
 vi.mock('../userNotifications', () => ({ createNotification }));
+
+// `deliverRunFinishedNotifications` (Task 6) lives in `./runFinishedNotify`,
+// NOT this file — it resolves `./recipients`/`../userNotifications` from the
+// SAME directory as runLoop.ts, so the two mocks above still intercept its
+// calls even though it's a different module making them (Vitest mocks by
+// resolved module path, not by importer). Only the retry-enqueue side needs
+// its own mock here.
+const enqueueAgentNotifyRetry = vi.hoisted(() =>
+  vi.fn<(runId: string) => Promise<void>>(async () => undefined));
+vi.mock('../../jobs/agentNotifyRetryWorker', () => ({ enqueueAgentNotifyRetry }));
 
 const resolveLlmConfigForOrg = vi.hoisted(() =>
   vi.fn<(orgId: string) => Promise<{ source: string; apiKey?: string; model: string }>>());
@@ -290,6 +361,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   dbMockState.rowQueues = {};
+  dbMockState.lastRow = {};
   dbMockState.selects.length = 0;
   dbMockState.systemContextDepth = 0;
   dbMockState.ambientContext = undefined;
@@ -297,8 +369,15 @@ beforeEach(() => {
   preVerdicts.length = 0;
   lastQueryOptions = undefined;
   transitionRunStatus.mockResolvedValue(true);
+  let execCounter = 0;
+  createAgentRunSession.mockResolvedValue('session-1');
+  startToolExecution.mockImplementation(async () => `exec-${++execCounter}`);
+  completeToolExecution.mockResolvedValue(undefined);
+  reconcileHungExecutions.mockResolvedValue(0);
+  closeAgentRunSession.mockResolvedValue(undefined);
   resolveLlmConfigForOrg.mockResolvedValue({ source: 'platform', apiKey: 'sk-test', model: 'claude-fallback' });
   resolveRecipientUserIds.mockResolvedValue([]);
+  enqueueAgentNotifyRetry.mockResolvedValue(undefined);
   createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
   createBreezeMcpServer.mockImplementation((getAuth: () => unknown, pre: Hooks['pre'], post: Hooks['post']) => {
     hooks.getAuth = getAuth;
@@ -585,6 +664,34 @@ describe('executeAgentRun', () => {
       .toEqual([USER_A, USER_B]);
   });
 
+  // -------------------------------------------------------------------------
+  // Durable notify retry lane (wave 4a, Task 6)
+  // -------------------------------------------------------------------------
+
+  it('a notify failure enqueues exactly one durable retry job and does not fail the run', async () => {
+    seedRows({ recipients: { userIds: [], roleIds: [] } });
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+    createNotification.mockRejectedValueOnce(new Error('notifications db down'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await executeAgentRun(RUN_ID);
+
+    expect(enqueueAgentNotifyRetry).toHaveBeenCalledTimes(1);
+    expect(enqueueAgentNotifyRetry).toHaveBeenCalledWith(RUN_ID);
+    // The notify failure must never redefine the run's own terminal status —
+    // it already committed 'completed' before notify ran at all.
+    expect(finalTransition()!.to).toBe('completed');
+  });
+
+  it('a normal successful notify never enqueues a retry job', async () => {
+    seedRows();
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await executeAgentRun(RUN_ID);
+
+    expect(enqueueAgentNotifyRetry).not.toHaveBeenCalled();
+  });
+
   it('builds the agent AuthContext from the RUN row, pinned to the device site', async () => {
     seedRows();
 
@@ -847,6 +954,160 @@ describe('executeAgentRun', () => {
     await executeAgentRun(RUN_ID);
 
     expect(finalTransition()!.to).toBe('completed');
+  });
+
+  // -------------------------------------------------------------------------
+  // Execution ledger wiring (wave 4a, Task 2)
+  // -------------------------------------------------------------------------
+
+  it('creates exactly one execution-ledger session per run, with the snapshot model + turn ceiling', async () => {
+    seedRows({
+      effective: policy({ model: 'claude-agent-model', limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxTurnsPerRun: 9 } as AiAgentLimits }),
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(createAgentRunSession).toHaveBeenCalledTimes(1);
+    expect(createAgentRunSession).toHaveBeenCalledWith(expect.objectContaining({
+      runId: RUN_ID,
+      agentId: AGENT_ID,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      model: 'claude-agent-model',
+      maxTurns: 9,
+    }));
+  });
+
+  it('falls back to the resolved LLM model when the snapshot has none', async () => {
+    seedRows({ effective: policy({ model: null }) });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(createAgentRunSession).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'claude-fallback' }),
+    );
+  });
+
+  it('an allowed tool call gets a real ledger execution id, threaded onto the outcome', async () => {
+    seedRows();
+    scriptQuery({
+      toolCalls: [{ tool: 'query_devices', input: { status: 'online' } }],
+      assistantText: 'done',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(startToolExecution).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-1',
+      toolName: 'query_devices',
+      toolInput: { status: 'online' },
+    }));
+    expect(completeToolExecution).toHaveBeenCalledWith(expect.objectContaining({
+      executionId: 'exec-1',
+      isError: false,
+      durationMs: 5,
+    }));
+
+    const final = finalTransition()!;
+    const outcome = final.patch.outcome as { executedActions: Array<{ executionId: string }> };
+    expect(outcome.executedActions[0]!.executionId).toBe('exec-1');
+  });
+
+  it('a ledger write failure never blocks the tool call — falls back to (inline)', async () => {
+    seedRows();
+    startToolExecution.mockRejectedValueOnce(new Error('db unavailable'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    scriptQuery({
+      toolCalls: [{ tool: 'query_devices', input: { status: 'online' } }],
+      assistantText: 'done',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    // The gate still allowed the call — the ledger write is observability
+    // only, never authorization.
+    expect(preVerdicts[0]).toEqual({ allowed: true });
+    expect(completeToolExecution).not.toHaveBeenCalled();
+
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    const outcome = final.patch.outcome as { executedActions: Array<{ executionId: string; result: string }> };
+    expect(outcome.executedActions[0]).toMatchObject({ executionId: '(inline)', result: 'ok' });
+  });
+
+  it('reconciles hung executions and closes the session on finish', async () => {
+    seedRows();
+
+    await executeAgentRun(RUN_ID);
+
+    expect(reconcileHungExecutions).toHaveBeenCalledWith('session-1');
+    expect(closeAgentRunSession).toHaveBeenCalledWith('session-1', 'completed');
+  });
+
+  it('closes the session as failed when the run itself fails', async () => {
+    seedRows();
+    scriptQuery({
+      results: [resultMessage({ subtype: 'error_during_execution', is_error: true, result: undefined, errors: ['boom'] })],
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(finalTransition()!.to).toBe('failed');
+    expect(closeAgentRunSession).toHaveBeenCalledWith('session-1', 'failed');
+  });
+
+  it('still reconciles and closes the session when finishRun loses the CAS (!moved)', async () => {
+    seedRows();
+    // First call is the queued->running CAS (must succeed so a session gets
+    // created); the second is finishRun's running->completed CAS, which loses
+    // to a competing executor (or reapStalledAgentRuns) here.
+    transitionRunStatus.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    await executeAgentRun(RUN_ID);
+
+    expect(transitionRunStatus).toHaveBeenCalledTimes(2);
+    expect(reconcileHungExecutions).toHaveBeenCalledWith('session-1');
+    expect(closeAgentRunSession).toHaveBeenCalledWith('session-1', 'completed');
+  });
+
+  it('still reconciles and closes the session when something throws after session creation', async () => {
+    seedRows();
+    createBreezeMcpServer.mockImplementationOnce(() => {
+      throw new Error('boom — mcp server construction failed');
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await executeAgentRun(RUN_ID);
+
+    // The run still ends up `failed` via executeAgentRun's outer catch, and
+    // the session created just before the throw is still cleaned up.
+    expect(finalTransition()!.to).toBe('failed');
+    expect(reconcileHungExecutions).toHaveBeenCalledWith('session-1');
+    expect(closeAgentRunSession).toHaveBeenCalledWith('session-1', 'failed');
+  });
+
+  it('a denied call never reaches the ledger — no execution row is started', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }) });
+    scriptQuery({
+      toolCalls: [{ tool: 'manage_services', input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'Spooler' } }],
+      assistantText: 'denied',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(startToolExecution).not.toHaveBeenCalled();
+  });
+
+  it('a proposed (shadow) call never reaches the ledger — no execution row is started', async () => {
+    seedRows({ effective: policy({ toolAllowlist: ['manage_services'] }) });
+    scriptQuery({
+      toolCalls: [{ tool: 'manage_services', input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'Spooler' } }],
+      assistantText: 'proposed',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(startToolExecution).not.toHaveBeenCalled();
   });
 });
 

@@ -160,6 +160,18 @@ export async function ensureAppRole(): Promise<boolean> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='partner_export_configuration_org_state') THEN
           REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE partner_export_configuration_org_state FROM breeze_app;
         END IF;
+        -- #3922: llm_egress_events records what an LLM egress attempt DID --
+        -- which host, which resolved IP, allowed or blocked. Nothing in the API
+        -- updates it (the recorder only INSERTs), and a tenant-reachable role
+        -- that can rewrite the blocked flag after the fact turns the audit trail
+        -- into a claim. The migration narrows the GRANT, but step 4's blanket
+        -- GRANT ... UPDATE ... ON ALL TABLES re-permits it on the very next
+        -- boot, so the narrowing only sticks if it is re-applied here.
+        -- DELETE stays: the table is in CORE_ORG_CASCADE_DELETE_ORDER and org
+        -- erasure has to be able to remove these rows.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='llm_egress_events') THEN
+          REVOKE UPDATE, TRUNCATE ON TABLE llm_egress_events FROM breeze_app;
+        END IF;
       END $$;
     `);
 

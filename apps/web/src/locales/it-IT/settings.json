@@ -159,7 +159,22 @@
     "disconnectFailed": "Impossibile disconnettere la chiave Anthropic.",
     "permissionDenied": "La gestione del provider IA richiede autorizzazioni di fatturazione e l'accesso a tutte le organizzazioni.",
     "loadFailed": "Impossibile caricare la configurazione del provider IA.",
-    "workspaceDisclosure": "L'arricchimento dei contenuti di Workspace attualmente usa la chiave della piattaforma."
+    "workspaceDisclosure": "L'arricchimento dei contenuti di Workspace utilizza il provider IA configurato e appare nel tuo utilizzo IA.",
+    "endpointCardTitle": "Endpoint",
+    "endpointCardSubtitle": "Scegli dove viene inviato il tuo traffico IA. Breeze verifica ogni opzione prima che appaia qui.",
+    "directOptionLabel": "Anthropic (diretto)",
+    "verifiedModelsLabel": "Modelli verificati: {{models}}",
+    "noVerifiedModels": "Nessun modello verificato ancora",
+    "viewDataNote": "Visualizza la nota sul trattamento dei dati",
+    "hideDataNote": "Nascondi la nota sul trattamento dei dati",
+    "confirmDialogTitle": "Passare a {{name}}?",
+    "confirmDialogMessageWithNote": "Prima che il tuo traffico IA passi attraverso {{name}}, verifica come vengono trattati i tuoi dati:",
+    "confirmDialogMessageNoNote": "Passare il tuo traffico IA a {{name}}?",
+    "consentCheckboxLabel": "Capisco che il mio traffico IA e i miei contenuti saranno elaborati da {{name}}",
+    "endpointUpdated": "Endpoint IA aggiornato.",
+    "endpointUpdateFailed": "Impossibile aggiornare l'endpoint IA.",
+    "endpointDelistedBanner": "Questo endpoint è stato rimosso da Breeze — l'IA è in pausa finché non ne scegli un altro",
+    "endpointModelUnverifiedBanner": "Il modello {{model}} non è verificato su questo endpoint. Scegli un modello o un endpoint diverso per riprendere l'IA."
   },
   "partnerDefaults": {
     "notSet": "Non impostato — le org si configurano singolarmente",
@@ -1305,7 +1320,8 @@
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Gli strumenti Tier 2 vengono eseguiti automaticamente con registrazione di audit. Gli strumenti Tier 3 richiedono ancora approvazione.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Come Piano d'azione, più screenshot live tra i passaggi e un pulsante Interrompi persistente.",
     "untitled": "Senza titolo",
-    "billedToPartnerKey": "Addebitato sulla tua chiave: l'utilizzo dell'IA va sul tuo account Anthropic, non sui crediti IA di Breeze"
+    "billedToPartnerKey": "Addebitato sulla tua chiave: l'utilizzo dell'IA va sul tuo account Anthropic, non sui crediti IA di Breeze",
+    "billedToPartnerKeyViaEndpoint": "Addebitato sulla tua chiave tramite {{name}}: l'utilizzo dell'IA va sul tuo account Anthropic, non sui crediti IA di Breeze"
   },
   "aiAgentsPage": {
     "title": "Agenti AI",
@@ -2977,7 +2993,10 @@
       "trial": "Prova",
       "suspended": "Sospesa",
       "churned": "Persa",
-      "offboarding": "In dismissione"
+      "offboarding": "In dismissione",
+      "merging": "Fusione in corso",
+      "archived": "Archiviata",
+      "purging": "Eliminazione in corso"
     },
     "columns": {
       "devices": "Dispositivi"
@@ -3053,7 +3072,7 @@
       "addOrganization": "Aggiungi organizzazione",
       "tryAgain": "Riprova",
       "editOrganization": "Modifica organizzazione",
-      "deleteOrganization": "Elimina organizzazione",
+      "archiveOrganization": "Archivia organizzazione",
       "deleting": "Eliminazione..."
     },
     "errors": {
@@ -3061,7 +3080,6 @@
       "generic": "Si è verificato un errore",
       "saveOrder": "Impossibile salvare l'ordine delle organizzazioni",
       "saveOrganization": "Impossibile salvare l'organizzazione",
-      "deleteOrganization": "Impossibile eliminare l'organizzazione",
       "saveSite": "Impossibile salvare il sito ({{status}})",
       "deleteSite": "Impossibile eliminare il sito"
     },
@@ -3070,7 +3088,10 @@
       "trial": "Prova",
       "suspended": "Sospesa",
       "churned": "Persa",
-      "offboarding": "In dismissione"
+      "offboarding": "In dismissione",
+      "merging": "Fusione in corso",
+      "archived": "Archiviata",
+      "purging": "Eliminazione in corso"
     },
     "deviceCount": "{{count}} dispositivi",
     "list": {
@@ -3092,11 +3113,6 @@
       "description": "Crea una nuova organizzazione con i dettagli qui sotto.",
       "submit": "Crea organizzazione"
     },
-    "delete": {
-      "title": "Elimina organizzazione",
-      "messagePrefix": "Vuoi davvero eliminare",
-      "messageSuffix": " Questa azione non può essere annullata."
-    },
     "siteModal": {
       "editTitle": "Modifica sito",
       "editDescription": "Aggiorna i dettagli del sito qui sotto.",
@@ -3113,6 +3129,104 @@
       "title": "Elimina sito",
       "messagePrefix": "Vuoi davvero eliminare",
       "messageSuffix": " Questa azione non può essere annullata."
+    },
+    "merge": {
+      "openButton": "Unisci a un'altra organizzazione",
+      "title": "Unisci organizzazione",
+      "description": "Sposta i dati di {{name}} in un'organizzazione superstite. {{name}} viene quindi ritirata permanentemente e non può essere recuperata.",
+      "survivorLabel": "Unisci a",
+      "survivorPlaceholder": "Seleziona un'organizzazione superstite...",
+      "noEligibleSurvivors": "Nessuna organizzazione idonea a cui unire.",
+      "previewLoading": "Calcolo di ciò che verrebbe spostato...",
+      "totalMovableRows": "Verranno spostate {{count}} righe",
+      "tablesHeading": "Tabelle interessate",
+      "tableRowSummary": "{{table}}: {{loserRows}} riga/e, {{wouldDrop}} verrebbero scartate",
+      "warningsHeading": "Avvisi",
+      "tooLarge": "Questa unione sposterebbe troppe righe per essere eseguita automaticamente. Contatta l'assistenza per pianificare un'unione manuale.",
+      "confirmLabel": "Digita \"{{name}}\" per confermare",
+      "cancel": "Annulla",
+      "confirmButton": "Unisci organizzazione",
+      "merging": "Unione in corso...",
+      "progressTitle": "Unione in corso",
+      "progressDescription": "L'operazione può richiedere alcuni minuti.",
+      "doneTitle": "Unione completata",
+      "resultSummary": "{{moved}} riga/e spostate, {{dropped}} riga/e scartate",
+      "close": "Chiudi",
+      "failedTitle": "Unione non riuscita",
+      "retry": "Riprova unione",
+      "retrying": "Nuovo tentativo...",
+      "errors": {
+        "preview": "Anteprima dell'unione non riuscita",
+        "merge": "Impossibile avviare l'unione",
+        "missingResult": "L'unione è terminata ma non ha restituito dati di risultato. Riprova.",
+        "mfaRequired": "L'unione delle organizzazioni richiede l'autenticazione a più fattori. Attiva l'MFA nelle impostazioni di sicurezza del tuo profilo e riprova."
+      }
+    },
+    "archive": {
+      "title": "Archivia organizzazione",
+      "description": "Archiviando {{name}} la nascondi dal tuo elenco attivo senza eliminare nulla. Potrai ripristinarla in seguito.",
+      "consequencesHeading": "Cosa succede quando archivi:",
+      "consequences": {
+        "hidden": "Nascosta dall'elenco delle organizzazioni e dalla ricerca",
+        "readOnly": "I dati esistenti restano intatti e in sola lettura",
+        "agentsUninstalled": "Gli agenti vengono disinstallati dai suoi dispositivi",
+        "billingStops": "La fatturazione per questa organizzazione si interrompe",
+        "purgeScheduled": "Eliminata definitivamente dopo il periodo di conservazione, a meno che tu non la ripristini prima",
+        "purgeNever": "Conservata finché non la elimini — mai eliminata automaticamente"
+      },
+      "restoreNote": "Ripristinare {{name}} annulla questa azione ed è possibile in qualsiasi momento prima dell'eliminazione definitiva.",
+      "retentionLabel": "Conserva i dati archiviati per",
+      "retentionOptions": {
+        "days30": "30 giorni",
+        "days90": "90 giorni (consigliato)",
+        "days365": "365 giorni",
+        "never": "Mai — conserva indefinitamente",
+        "custom": "Personalizzato"
+      },
+      "customDaysLabel": "Numero di giorni (1–3650)",
+      "customError": "Inserisci un numero di giorni compreso tra 1 e 3650.",
+      "cancel": "Annulla",
+      "confirmButton": "Archivia organizzazione",
+      "archiving": "Archiviazione...",
+      "doneOffboardingTitle": "Archiviazione avviata",
+      "doneOffboardingDescription": "{{name}} è in fase di archiviazione — i suoi agenti vengono disinstallati ora. Il processo si completa automaticamente in pochi minuti.",
+      "doneArchivedTitle": "Organizzazione archiviata",
+      "doneArchivedDescription": "{{name}} è stata archiviata.",
+      "donePurgeScheduled": "Sarà eliminata definitivamente il {{date}}.",
+      "donePurgeNever": "I suoi dati saranno conservati finché non li elimini.",
+      "close": "Chiudi",
+      "errors": {
+        "archive": "Impossibile archiviare l'organizzazione",
+        "mfaRequired": "L'archiviazione delle organizzazioni richiede l'autenticazione a più fattori. Abilita l'MFA nelle impostazioni di sicurezza del tuo profilo, quindi riprova."
+      }
+    },
+    "archived": {
+      "sectionTitle": "Archiviate",
+      "loading": "Caricamento delle organizzazioni archiviate...",
+      "empty": "Nessuna organizzazione archiviata.",
+      "noMatches": "Nessuna organizzazione archiviata corrisponde alla ricerca.",
+      "badge": "Archiviata",
+      "keptIndefinitely": "Conservata indefinitamente",
+      "purgeToday": "Eliminata definitivamente oggi",
+      "purgeCountdown_one": "Eliminata definitivamente tra {{count}} giorno",
+      "purgeCountdown_other": "Eliminata definitivamente tra {{count}} giorni",
+      "truncatedNote": "Vengono mostrate le prime {{count}} organizzazioni archiviate. Cerca per restringere l'elenco.",
+      "readOnlyNotice": "Questa organizzazione è archiviata ed è in sola lettura. Ripristinala per riprendere l'accesso normale.",
+      "errors": {
+        "fetch": "Impossibile caricare le organizzazioni archiviate"
+      }
+    },
+    "restore": {
+      "action": "Ripristina",
+      "restoring": "Ripristino in corso...",
+      "success": "{{name}} ripristinata — stato: {{status}}.",
+      "recreateRequiredNote": "Prima che sia di nuovo pienamente utilizzabile: {{items}}",
+      "suspendedNote": "Era sospesa prima dell'archiviazione, quindi è stata ripristinata come sospesa — risolvi questo aspetto prima che riprenda l'accesso normale.",
+      "errors": {
+        "restore": "Impossibile ripristinare l'organizzazione",
+        "mfaRequired": "Il ripristino delle organizzazioni richiede l'autenticazione a più fattori. Abilita l'MFA nelle impostazioni di sicurezza del tuo profilo, quindi riprova.",
+        "purging": "Questa organizzazione è già in fase di eliminazione definitiva e non può più essere ripristinata."
+      }
     }
   },
   "siteDetailPage": {

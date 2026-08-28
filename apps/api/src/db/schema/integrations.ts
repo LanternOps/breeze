@@ -8,7 +8,6 @@ import { devices } from './devices';
 export const pluginStatusEnum = pgEnum('plugin_status', ['active', 'disabled', 'error', 'installing']);
 export const webhookStatusEnum = pgEnum('webhook_status', ['active', 'disabled', 'error']);
 export const webhookDeliveryStatusEnum = pgEnum('webhook_delivery_status', ['pending', 'delivered', 'failed', 'retrying']);
-export const eventBusPriorityEnum = pgEnum('event_bus_priority', ['low', 'normal', 'high', 'critical']);
 // The DB enum is intentionally WIDER than the implemented provider list
 // (PSA_PROVIDERS in @breeze/shared): 'halo', 'syncro', 'kaseya' and 'other'
 // are DEAD values — no adapter exists and the route-level zod gate
@@ -117,18 +116,6 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
     .on(table.createdAt)
     .where(sql`${table.status} IN ('pending', 'retrying')`)
 }));
-
-export const eventBusEvents = pgTable('event_bus_events', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
-  eventType: varchar('event_type', { length: 100 }).notNull(),
-  source: varchar('source', { length: 100 }).notNull(),
-  priority: eventBusPriorityEnum('priority').notNull().default('normal'),
-  payload: jsonb('payload').notNull(),
-  metadata: jsonb('metadata'),
-  processedAt: timestamp('processed_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull()
-});
 
 // Dual ownership (epic #2135): a connection is owned by EITHER an org
 // (org_id set, partner_id NULL — a customer's own Jira/Zendesk in a co-managed

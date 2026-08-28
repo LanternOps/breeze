@@ -10,6 +10,7 @@ import {
   isRfc1918OrUla,
   isAlwaysBlockedIp,
   createGuardedLookup,
+  resolveSafeRecords,
   safeFetchFollowingRedirects,
   SsrfBlockedError,
   ResponseTooLargeError,
@@ -169,6 +170,31 @@ describe('createGuardedLookup', () => {
     });
 
     expect(records).toEqual([{ address: '8.8.8.8', family: 4 }]);
+  });
+});
+
+// Exported for socket-dialing callers (the LLM egress CONNECT proxy pins the
+// record it hands back). Same policy as the helpers above — asserted directly
+// so the export cannot silently drift from what safeFetch enforces.
+describe('resolveSafeRecords (exported)', () => {
+  afterEach(() => {
+    __setLookupForTests(null);
+  });
+
+  it('returns only the safe records and throws when none remain', async () => {
+    __setLookupForTests(async () => [
+      { address: '169.254.169.254', family: 4 },
+      { address: '8.8.8.8', family: 4 },
+    ]);
+    await expect(resolveSafeRecords('provider.example.test')).resolves.toEqual({
+      safe: [{ address: '8.8.8.8', family: 4 }],
+      allIps: ['169.254.169.254', '8.8.8.8'],
+    });
+
+    __setLookupForTests(async () => [{ address: '127.0.0.1', family: 4 }]);
+    await expect(resolveSafeRecords('provider.example.test')).rejects.toBeInstanceOf(
+      SsrfBlockedError
+    );
   });
 });
 
@@ -560,6 +586,64 @@ describe('safeFetch — maxBytes body cap (SR2-13)', () => {
     expect(res.status).toBe(200);
     const body = await res.arrayBuffer();
     expect(body.byteLength).toBe(1_000_000);
+  });
+});
+
+describe('safeFetch — onConnect hook', () => {
+  afterEach(() => {
+    __setLookupForTests(null);
+    vi.restoreAllMocks();
+  });
+
+  function primeLookupPublic(ip = '8.8.8.8'): void {
+    __setLookupForTests(async () => [{ address: ip, family: 4 }]);
+  }
+
+  function spyRequestOk(): void {
+    vi.spyOn(http, 'request').mockImplementation((_options: any, callback?: any) => {
+      const req = new EventEmitter() as any;
+      req.write = vi.fn();
+      req.destroy = vi.fn();
+      req.setTimeout = vi.fn();
+      req.end = vi.fn(() => {
+        const res = new EventEmitter() as any;
+        res.statusCode = 200;
+        res.statusMessage = 'OK';
+        res.headers = {};
+        callback?.(res);
+        res.emit('data', Buffer.from('ok'));
+        res.emit('end');
+      });
+      return req;
+    });
+  }
+
+  it('invokes onConnect with the pinned IP exactly once', async () => {
+    primeLookupPublic('8.8.8.8');
+    spyRequestOk();
+    const onConnect = vi.fn();
+
+    await safeFetch('http://guarded.example.test/x', { onConnect });
+
+    expect(onConnect).toHaveBeenCalledTimes(1);
+    expect(onConnect).toHaveBeenCalledWith('8.8.8.8');
+  });
+
+  it('does not fail the request when onConnect throws', async () => {
+    primeLookupPublic('8.8.8.8');
+    spyRequestOk();
+    const onConnect = vi.fn(() => {
+      throw new Error('boom');
+    });
+
+    const res = await safeFetch('http://guarded.example.test/x', { onConnect });
+    expect(res.status).toBe(200);
+  });
+
+  it('is a no-op when onConnect is not supplied (backward compatible)', async () => {
+    primeLookupPublic('8.8.8.8');
+    spyRequestOk();
+    await expect(safeFetch('http://guarded.example.test/x')).resolves.toBeDefined();
   });
 });
 

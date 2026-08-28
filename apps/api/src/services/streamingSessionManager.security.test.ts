@@ -93,6 +93,7 @@ describe('Claude SDK process hardening', () => {
         model: 'claude-sonnet-4-6',
         configId: '22222222-2222-4222-8222-222222222222',
         configVersion: 7,
+        endpoint: { kind: 'anthropic' as const },
       },
       {
         ANTHROPIC_API_KEY: 'platform-api-key',

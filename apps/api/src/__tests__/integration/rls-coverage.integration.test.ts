@@ -88,6 +88,9 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'os_vulnerabilities', // Global OS-to-vulnerability match facts. Forced RLS, no tenant policies → only system context.
   'software_product_resolutions', // Global DisplayName→product resolution cache/log (#2290). Forced RLS, system-only policy → only system context.
   'third_party_package_catalog', // System-wide curated catalog of third-party packages; writes gated by platform-admin role at the route layer.
+  'llm_provider_catalog', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
+  'llm_provider_catalog_revisions', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
+  'llm_provider_verifications', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
   'supported_currencies', // Global ISO-4217 allowlist (multi-currency spec §4). No tenant axis. Forced RLS: permissive USING (true) SELECT (org-scoped request contexts read it), system-only writes. Mirrors winget_package_index.
   'exchange_rates', // Global reporting-only FX reference data (multi-currency spec §8). No tenant axis. Forced RLS: permissive USING (true) SELECT (org-scoped request contexts read rates to render an approximate total), system-only writes. Mirrors supported_currencies. Proven by exchangeRates.integration.test.ts.
@@ -282,6 +285,12 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // hard DELETEs as breeze_app under a system RLS context (no role switch).
   // Functional cross-partner forge proof: officeAddinBindingsRls.integration.test.ts.
   ['office_addin_user_bindings', 'partner_id'],
+  // org_merge_events (spec 2026-08-26, org-lifecycle): durable merge record,
+  // survives loser-org erasure (loser_org_id has no FK). Partner-axis (Shape 3),
+  // no org_id column — so no cascade/export registration. GRANT includes DELETE
+  // for cascadeDeletePartner's dynamic partner_id sweep.
+  // Functional cross-partner forge proof: orgMergeEventsRls.integration.test.ts.
+  ['org_merge_events', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`

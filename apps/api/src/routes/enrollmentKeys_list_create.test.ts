@@ -184,11 +184,11 @@ function mockInsertCapture(rows: any[]): () => any {
 }
 
 // Server default when neither ttlMinutes nor expiresAt is supplied:
-// DEFAULT_ENROLLMENT_KEY_TTL_MINUTES = envInt("ENROLLMENT_KEY_DEFAULT_TTL_MINUTES", 60).
-// The env var is unset in tests, so the literal 60 is the resolved value
+// DEFAULT_ENROLLMENT_KEY_TTL_MINUTES = envInt("ENROLLMENT_KEY_DEFAULT_TTL_MINUTES", 43200).
+// The env var is unset in tests, so the literal 43200 (30 days) is the resolved value
 // (the constant is captured at module import — a later env mutation cannot
 // change it).
-const DEFAULT_TTL_MINUTES = 60;
+const DEFAULT_TTL_MINUTES = 43200;
 
 describe('enrollment key routes — list & create', () => {
   let app: Hono;

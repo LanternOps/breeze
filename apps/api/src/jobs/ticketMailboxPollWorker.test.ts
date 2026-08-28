@@ -9,6 +9,33 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: (fn: () => any) => fn(),
 }));
 
+const { workerCloseMock, workerConstructorMock, queueConstructorMock, queueAddMock, queueCloseMock } = vi.hoisted(() => ({
+  workerCloseMock: vi.fn(),
+  workerConstructorMock: vi.fn(),
+  queueConstructorMock: vi.fn(),
+  queueAddMock: vi.fn(),
+  queueCloseMock: vi.fn(),
+}));
+
+vi.mock('bullmq', () => ({
+  Worker: class {
+    close = workerCloseMock;
+    on = vi.fn();
+    constructor(...args: unknown[]) {
+      workerConstructorMock(...args);
+    }
+  },
+  Queue: class {
+    add = queueAddMock;
+    close = queueCloseMock;
+    constructor(...args: unknown[]) {
+      queueConstructorMock(...args);
+    }
+  },
+}));
+
+vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
+
 vi.mock('../services/ticketMailbox/connectionService', () => ({
   isConnectedMailboxSnapshotCurrent: vi.fn(async () => true),
   listConnectedMailboxes: vi.fn(),
@@ -40,7 +67,11 @@ import {
 import { getMailboxToken } from '../services/ticketMailbox/mailboxToken';
 import { listInboxDelta, markRead } from '../services/ticketMailbox/graphMailClient';
 import { enqueueInboundEmail } from '../services/inboundEmailQueue';
-import { runMailboxSweep } from './ticketMailboxPollWorker';
+import {
+  runMailboxSweep,
+  initializeTicketMailboxPollWorker,
+  shutdownTicketMailboxPollWorker,
+} from './ticketMailboxPollWorker';
 
 const conn = (over: Partial<any> = {}) => ({
   id: 'c1', partnerId: 'p1', tenantId: '11111111-1111-1111-1111-111111111111',
@@ -174,5 +205,34 @@ describe('runMailboxSweep', () => {
     expect(markRead).not.toHaveBeenCalled();
     expect(enqueueInboundEmail).toHaveBeenCalledTimes(1);
     expect(updateDeltaCursor).not.toHaveBeenCalled();
+  });
+});
+
+describe('shutdownTicketMailboxPollWorker', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('closes the worker and queue exactly once after initialize', async () => {
+    await initializeTicketMailboxPollWorker();
+
+    await shutdownTicketMailboxPollWorker();
+
+    expect(workerCloseMock).toHaveBeenCalledTimes(1);
+    expect(queueCloseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a second shutdown call is a no-op (handles already nulled)', async () => {
+    await initializeTicketMailboxPollWorker();
+
+    await shutdownTicketMailboxPollWorker();
+    await shutdownTicketMailboxPollWorker();
+
+    expect(workerCloseMock).toHaveBeenCalledTimes(1);
+    expect(queueCloseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves without throwing when called before initialize', async () => {
+    await expect(shutdownTicketMailboxPollWorker()).resolves.toBeUndefined();
+    expect(workerCloseMock).not.toHaveBeenCalled();
+    expect(queueCloseMock).not.toHaveBeenCalled();
   });
 });

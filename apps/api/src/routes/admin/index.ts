@@ -5,6 +5,7 @@ import { tenantErasureRoutes } from './tenantErasure';
 import { tenantExportRoutes } from './tenantExport';
 import { desktopFinalizationRoutes } from './desktopFinalization';
 import { exchangeRateAdminRoutes } from './exchangeRates';
+import { llmProviderCatalogAdminRoutes } from './llmProviderCatalog';
 
 export const adminRoutes = new Hono();
 
@@ -21,3 +22,4 @@ adminRoutes.route('/desktop-finalizations', desktopFinalizationRoutes);
 // dashboard — platform-admin only, with MFA on the mutating verbs (same posture
 // as tenant-erasure above and third_party_package_catalog).
 adminRoutes.route('/exchange-rates', exchangeRateAdminRoutes);
+adminRoutes.route('/llm-provider-catalog', llmProviderCatalogAdminRoutes);
