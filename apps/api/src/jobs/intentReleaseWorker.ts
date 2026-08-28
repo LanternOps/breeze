@@ -13,7 +13,6 @@ import { createNotification } from '../services/userNotifications';
 import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent } from '../services/actionIntents/intentService';
 import { attemptPolicyDecision } from '../services/actionIntents/policyDecide';
-import { policyDecideEnabled } from '../config/env';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
@@ -58,8 +57,9 @@ import {
  *
  * Job data: `{ intentId, eventType }`. `eventType === 'intent_approved'` is
  * the release trigger; `intent_created` is the wave 5 Part B (#3827)
- * policy-decide recovery hook (flag-gated, otherwise a no-op); anything else
- * is acknowledged as a no-op.
+ * policy-decide recovery hook (NOT flag-gated at this call site —
+ * `attemptPolicyDecision` itself is the single source of truth for flag-off
+ * inertness, see its own header); anything else is acknowledged as a no-op.
  *
  * CAS-idempotent by construction: the `approved -> executing` transition at
  * step 1 is a single-use release guard (mirrors the PAM `actuating` pattern).
@@ -925,25 +925,33 @@ export async function processIntentReleaseJob(data: IntentReleaseJobData): Promi
 
   // Wave 5 Part B (#3827) — the outbox at-least-once recovery branch for a
   // policy-decide attempt that never ran (the creation-time fire-and-forget
-  // trigger was dropped by a crash/restart) or that only got as far as a
+  // trigger was dropped by a crash/restart), that only got as far as a
   // TRANSIENT failure (left `unattempted` on purpose — see
-  // policyDecide.ts's header). Flag-gated here too, not just inside
-  // `attemptPolicyDecision` itself: flag off must not even attempt the call,
-  // for byte-identical dark-ship inertness with every other `intent_created`
-  // delivery. `attemptPolicyDecision` re-derives every precondition itself
-  // (state === 'unattempted', status === 'pending_approval', agent-originated),
+  // policyDecide.ts's header), or that never got attempted because the flag
+  // was off at creation and has since been flipped back on.
+  //
+  // Deliberately NOT flag-gated here (review fix, #3827): this is the ONLY
+  // durable caller of `attemptPolicyDecision` — the creation-time trigger is
+  // fire-and-forget and does not survive a restart — so gating the call site
+  // too would strand every intent left `unattempted` by an operator's
+  // emergency flag-off: with nothing left to move it out of `unattempted`,
+  // it would sit with zero `approval_requests` rows and zero notifications,
+  // invisible until the expiry reaper eventually cancels it.
+  // `attemptPolicyDecision` itself is the single source of truth for flag-off
+  // behavior: it checks the intent is genuinely `unattempted` BEFORE reading
+  // the flag, and degrades a flag-off `unattempted` intent to human review
+  // rather than leaving it stranded. It also re-derives every other
+  // precondition itself (status === 'pending_approval', agent-originated),
   // so a human-authored or already-decided intent's `intent_created` event
   // reaches it and no-ops — this call site does not need to duplicate those
   // checks. Acknowledged as a no-op either way (never thrown on), exactly
   // like the pre-existing `intent_created` handling below.
   if (data.eventType === 'intent_created') {
-    if (policyDecideEnabled()) {
-      try {
-        await attemptPolicyDecision(data.intentId);
-      } catch (err) {
-        console.error(`[IntentReleaseWorker] attemptPolicyDecision failed for intent ${data.intentId}:`, err);
-        captureException(err instanceof Error ? err : new Error(String(err)));
-      }
+    try {
+      await attemptPolicyDecision(data.intentId);
+    } catch (err) {
+      console.error(`[IntentReleaseWorker] attemptPolicyDecision failed for intent ${data.intentId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
     return { released: false };
   }

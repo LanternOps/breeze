@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import type { AiAgentPolicySnapshot } from '@breeze/shared';
+
+const dialect = new PgDialect();
+const renderSql = (value: unknown) => dialect.sqlToQuery(value as SQL).sql;
 
 // ---------------------------------------------------------------------------
 // DB mock — generic, table-name-keyed (mirrors runService.test.ts's pattern):
@@ -14,8 +19,17 @@ const dbMockState = vi.hoisted(() => ({
   insertValues: {} as Record<string, Record<string, unknown>[]>,
   updateSets: {} as Record<string, Record<string, unknown>[]>,
   updateWheres: {} as Record<string, unknown[]>,
-  systemContextDepth: 0,
   ambientContext: undefined as { scope: string } | undefined,
+  // Per-invocation "which withSystemDbAccessContext call did this write
+  // happen inside" tracking — lets a test assert that a set of writes shared
+  // ONE real transaction rather than merely counting them. `txCounter`
+  // increments once per NEW (non-nested) withSystemDbAccessContext call;
+  // `currentTxId` is that call's id for the duration of its callback.
+  txCounter: 0,
+  currentTxId: null as number | null,
+  executedTx: [] as (number | null)[],
+  insertTx: {} as Record<string, (number | null)[]>,
+  updateTx: {} as Record<string, (number | null)[]>,
 }));
 
 function tableNameOf(table: unknown): string {
@@ -40,8 +54,12 @@ function resetDbMock(): void {
   dbMockState.insertValues = {};
   dbMockState.updateSets = {};
   dbMockState.updateWheres = {};
-  dbMockState.systemContextDepth = 0;
   dbMockState.ambientContext = undefined;
+  dbMockState.txCounter = 0;
+  dbMockState.currentTxId = null;
+  dbMockState.executedTx = [];
+  dbMockState.insertTx = {};
+  dbMockState.updateTx = {};
 }
 
 vi.mock('../../db', () => {
@@ -64,6 +82,7 @@ vi.mock('../../db', () => {
       select: vi.fn(() => makeSelect()),
       execute: vi.fn(async (statement: unknown) => {
         dbMockState.executed.push(statement);
+        dbMockState.executedTx.push(dbMockState.currentTxId);
         return [];
       }),
       insert: vi.fn((table: unknown) => {
@@ -71,6 +90,7 @@ vi.mock('../../db', () => {
         return {
           values: vi.fn((values: Record<string, unknown>) => {
             (dbMockState.insertValues[tableName] ??= []).push(values);
+            (dbMockState.insertTx[tableName] ??= []).push(dbMockState.currentTxId);
             // intent_outbox is awaited directly (no .returning() chain) —
             // matches policyDecide.ts's own call shape.
             if (tableName === 'intent_outbox') return Promise.resolve(undefined);
@@ -83,6 +103,7 @@ vi.mock('../../db', () => {
         return {
           set: vi.fn((values: Record<string, unknown>) => {
             (dbMockState.updateSets[tableName] ??= []).push(values);
+            (dbMockState.updateTx[tableName] ??= []).push(dbMockState.currentTxId);
             return {
               where: vi.fn((cond: unknown) => {
                 (dbMockState.updateWheres[tableName] ??= []).push(cond);
@@ -95,15 +116,26 @@ vi.mock('../../db', () => {
     },
     getCurrentDbAccessContext: vi.fn(() => dbMockState.ambientContext),
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+    // Each call opens a NEW numbered "transaction" (mirrors the real
+    // withSystemDbAccessContext opening one real Postgres transaction per
+    // call — db/index.ts) unless already nested inside one (matches
+    // inSystemDbContext's own skip-if-already-system behavior in
+    // policyDecide.ts, so a nested call reuses its parent's txId rather than
+    // minting a spurious new one).
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
-      const previous = dbMockState.ambientContext;
+      const previousContext = dbMockState.ambientContext;
+      const previousTxId = dbMockState.currentTxId;
+      const isNested = previousContext?.scope === 'system';
       dbMockState.ambientContext = { scope: 'system' };
-      dbMockState.systemContextDepth += 1;
+      if (!isNested) {
+        dbMockState.txCounter += 1;
+        dbMockState.currentTxId = dbMockState.txCounter;
+      }
       try {
         return await fn();
       } finally {
-        dbMockState.systemContextDepth -= 1;
-        dbMockState.ambientContext = previous;
+        dbMockState.ambientContext = previousContext;
+        dbMockState.currentTxId = previousTxId;
       }
     }),
   };
@@ -341,11 +373,21 @@ describe('attemptPolicyDecision', () => {
     expect(intentServiceMock.runDeferredHumanFanout).not.toHaveBeenCalled();
   });
 
-  it('flag off (checked defensively, even though resolvePolicyDecisionState already gates on it at creation): degrades to human_required', async () => {
+  it('flag off + a genuinely unattempted intent: degrades to human_required (review fix, #3827 — the call site in intentReleaseWorker.ts is unconditional now, so this function owns flag-off inertness)', async () => {
     envMock.policyDecideEnabled.mockReturnValue(false);
+    pushRows('action_intents', [makeIntentRow()]);
     await attemptPolicyDecision(INTENT_ID);
     expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
-    // No intent row was even read — the flag gate is the very first check.
+    // The intent IS read (to confirm it's genuinely `unattempted`), but the
+    // flag check short-circuits before the run/agent load or any write.
+    expect(dbMockState.updateSets.action_intents ?? []).toHaveLength(0);
+  });
+
+  it('flag off + an intent NOT in `unattempted` state: true no-op, no writes, no fanout', async () => {
+    envMock.policyDecideEnabled.mockReturnValue(false);
+    pushRows('action_intents', [makeIntentRow({ status: 'approved', policyDecisionState: 'authorized' })]);
+    await attemptPolicyDecision(INTENT_ID);
+    expect(intentServiceMock.runDeferredHumanFanout).not.toHaveBeenCalled();
     expect(dbMockState.updateSets.action_intents ?? []).toHaveLength(0);
   });
 
@@ -386,6 +428,26 @@ describe('attemptPolicyDecision', () => {
     });
     await attemptPolicyDecision(INTENT_ID);
     expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
+  });
+
+  it('SAFETY GATE (review fix, #3827): agent CURRENTLY in shadow mode -> human path, never authorized — the live guardrail re-run alone does NOT catch this (checkAgentGuardrails returns `propose`, not `deny`, for a shadow-mode mutation)', async () => {
+    pushRows('action_intents', [makeIntentRow()]);
+    queueRunAndAgent();
+    effectivePolicyMock.resolveEffectiveAgentSystem.mockResolvedValueOnce({
+      schemaVersion: 3,
+      agentId: AGENT_ID,
+      kind: 'patch',
+      effective: { ...POLICY_SNAPSHOT.effective, mode: 'shadow' },
+      provenance: POLICY_SNAPSHOT.provenance,
+      resolvedAt: POLICY_SNAPSHOT.resolvedAt,
+    });
+    await attemptPolicyDecision(INTENT_ID);
+    expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
+    // Never reached the authorize transaction: no reservation, no CAS.
+    expect(dbMockState.insertValues.ai_unattended_exposure ?? []).toHaveLength(0);
+    expect(dbMockState.updateSets.action_intents ?? []).toHaveLength(0);
+    // Gated BEFORE the guardrail re-run, exactly like the key-authorization gate.
+    expect(guardrailMock.checkAgentGuardrails).not.toHaveBeenCalled();
   });
 
   it('deterministic: key not in the agent\'s CURRENT supervisedActionKeys -> human path', async () => {
@@ -479,8 +541,13 @@ describe('attemptPolicyDecision', () => {
     await attemptPolicyDecision(INTENT_ID);
 
     expect(intentServiceMock.runDeferredHumanFanout).not.toHaveBeenCalled();
-    // Advisory lock taken.
+    // Advisory lock taken — exactly one statement, and it's actually the
+    // advisory lock (compiled through the real Postgres dialect, not just
+    // counted), and it ran BEFORE the cap reads that follow it inside the
+    // same transaction.
     expect(dbMockState.executed).toHaveLength(1);
+    expect(renderSql(dbMockState.executed[0])).toMatch(/pg_advisory_xact_lock\(hashtextextended\(/);
+
     // Exposure reservation written.
     expect(dbMockState.insertValues.ai_unattended_exposure?.[0]).toMatchObject({
       orgId: ORG_ID,
@@ -491,6 +558,24 @@ describe('attemptPolicyDecision', () => {
       intentId: INTENT_ID,
       source: 'policy_intent',
     });
+
+    // ATOMICITY (the quorum's central requirement): the advisory lock, the
+    // exposure reservation, the intent CAS, and the outbox write all happened
+    // inside the SAME `withSystemDbAccessContext` invocation — i.e. one real
+    // Postgres transaction — not four separate ones. Splitting
+    // `runAuthorizeTransaction` into multiple `inSystemDbContext` calls would
+    // destroy this and still leave the earlier (weaker) assertions green, so
+    // this checks the transaction BOUNDARY, not just that the writes happened.
+    expect(dbMockState.txCounter).toBeGreaterThanOrEqual(1);
+    const authorizeTxIds = new Set([
+      dbMockState.executedTx[0],
+      dbMockState.insertTx.ai_unattended_exposure?.[0],
+      dbMockState.updateTx.action_intents?.[0],
+      dbMockState.insertTx.intent_outbox?.[0],
+    ]);
+    expect(authorizeTxIds.size).toBe(1);
+    expect([...authorizeTxIds][0]).not.toBeNull();
+
     // Intent CASed to approved with full provenance, NEVER a synthetic human decider.
     const set = dbMockState.updateSets.action_intents?.[0];
     expect(set).toMatchObject({

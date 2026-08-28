@@ -159,6 +159,7 @@ type DegradeReason =
   | 'policy_intent_expired'
   | 'agent_run_invalid'
   | 'agent_identity_changed'
+  | 'agent_mode_not_act'
   | 'not_policy_decidable'
   | 'not_agent_authorized'
   | 'kill_switch_engaged'
@@ -378,6 +379,20 @@ async function notifyRecipientsOfPolicyAuthorization(args: {
  */
 export async function attemptPolicyDecision(intentId: string): Promise<void> {
   try {
+    // Load + confirm this intent is genuinely stranded in `unattempted`
+    // BEFORE checking the flag, so intentReleaseWorker.ts's `intent_created`
+    // handler can call this function unconditionally (not flag-gated at the
+    // call site — see its header comment for why: gating there strands
+    // every `unattempted` intent forever if the flag is later flipped off,
+    // since this is the only durable caller). An already-decided or
+    // human-authored intent's `intent_created` delivery stays a true no-op
+    // regardless of the flag.
+    const loadedIntent = await loadIntentForAttempt(intentId);
+    if (!loadedIntent) return; // gone — nothing to attempt
+    const { intent } = loadedIntent;
+
+    if (intent.policyDecisionState !== 'unattempted') return; // already resolved by another caller
+
     if (!policyDecideEnabled()) {
       // The flag is one of the eight independent gates: an attempt that
       // somehow reaches this function after the flag flipped off mid-flight
@@ -386,11 +401,6 @@ export async function attemptPolicyDecision(intentId: string): Promise<void> {
       return;
     }
 
-    const loadedIntent = await loadIntentForAttempt(intentId);
-    if (!loadedIntent) return; // gone — nothing to attempt
-    const { intent } = loadedIntent;
-
-    if (intent.policyDecisionState !== 'unattempted') return; // already resolved by another caller
     if (intent.status !== 'pending_approval') return; // moved on some other way (e.g. manually cancelled)
     if (!intent.requestingAgentRunId) return; // structurally impossible; defensive no-op
 
@@ -428,6 +438,23 @@ export async function attemptPolicyDecision(intentId: string): Promise<void> {
     const current = await resolveEffectiveAgentSystem(intent.orgId, agent.kind);
     if (!current || current.agentId !== run.agentId) {
       await degradeToHumanRequired(intentId, 'agent_identity_changed');
+      return;
+    }
+
+    // LOCKED quorum decision: policy-decide requires mode === 'act'. This is
+    // the primary enforcement point — the live guardrail re-run below is NOT
+    // a substitute: checkAgentGuardrails only returns `disposition: 'deny'`
+    // for mode 'off' or `enabled: false`; a mutating call under mode
+    // 'shadow' returns `disposition: 'propose'`; and nothing gates
+    // `supervisedActionKeys` on mode either. Without this check an operator
+    // who configures act + keys, then flips the agent to shadow as a brake,
+    // would keep having policy-decide silently authorize on the stored keys.
+    // Checked against the CURRENT live policy (not the run's start-of-run
+    // snapshot) because the policy can change between intent creation and
+    // this attempt — kept even after Task 5's `resolvePolicyDecisionState`
+    // adds its own creation-time mode check, as defense in depth.
+    if (current.effective.mode !== 'act') {
+      await degradeToHumanRequired(intentId, 'agent_mode_not_act', { mode: current.effective.mode });
       return;
     }
 

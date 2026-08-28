@@ -1471,6 +1471,13 @@ describe('processIntentReleaseJob', () => {
   });
 
   // Wave 5 Part B (#3827) — the intent_created outbox recovery branch.
+  //
+  // Review fix (#3827): the call site is deliberately NOT flag-gated —
+  // `attemptPolicyDecision` is the ONLY durable caller (the creation-time
+  // trigger is fire-and-forget and does not survive a restart), so gating
+  // here too would strand every intent left `unattempted` forever once an
+  // operator flips the flag off. `attemptPolicyDecision` itself owns
+  // flag-off behavior now (see policyDecide.test.ts).
   describe('intent_created — policy-decide recovery (#3827)', () => {
     const FLAG = 'BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED';
     const original = process.env[FLAG];
@@ -1479,12 +1486,12 @@ describe('processIntentReleaseJob', () => {
       else process.env[FLAG] = original;
     });
 
-    it('flag off: never even calls attemptPolicyDecision — byte-identical to the pre-existing no-op', async () => {
+    it('flag off: STILL calls attemptPolicyDecision — the call site is unconditional; flag-off inertness lives inside attemptPolicyDecision itself', async () => {
       delete process.env[FLAG];
       const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' });
 
       expect(result).toEqual({ released: false });
-      expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
+      expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledWith('intent-1');
       expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
     });
 
@@ -1496,8 +1503,7 @@ describe('processIntentReleaseJob', () => {
       expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledWith('intent-1');
     });
 
-    it('flag on: a thrown attemptPolicyDecision failure is swallowed (logged to Sentry), never thrown to the caller', async () => {
-      process.env[FLAG] = 'true';
+    it('a thrown attemptPolicyDecision failure is swallowed (logged to Sentry), never thrown to the caller', async () => {
       policyDecideMock.attemptPolicyDecision.mockRejectedValueOnce(new Error('db blip'));
 
       await expect(
