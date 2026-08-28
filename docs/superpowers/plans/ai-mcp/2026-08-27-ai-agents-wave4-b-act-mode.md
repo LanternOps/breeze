@@ -142,7 +142,7 @@ Tests (matrix, all against the REAL manifest): act+restart → act; act+stop →
 
 **Contract:** `resolveActableSuggestion(args: { runContext; suggestionId })` — loads the suggestion; requires: same org, `deviceId === run.deviceId`, `targetType === 'script'`, `scriptId` present, status `suggested` (agent-actable BEFORE human accept — that is the point of act mode) — then re-validates via `validateRemediationExecutionApproval` (grep its contract) and resolves to the manifest `run_script` op with the suggestion's scriptId+parameters, which then flows the NORMAL act pipeline (incl. `actAssets.scriptIds` membership — a suggestion for a non-authorized script is NOT act-eligible → propose). On act execution, stamp the suggestion row (`status: 'executed'`, `scriptExecutionId`, `executedBy: null` + agent attribution in details — Part A precedent). Exposed to the model as act-eligibility of the EXISTING remediation-suggestion tool surface (grep which aiTool exposes suggestions to agents; if none exists, this resolver is wired only into the triage prompt path — check how wave 3 surfaces `remediationSuggestions` to the agent and integrate where it naturally fits; if there is genuinely no agent-facing surface, implement the resolver + tests and leave the tool wiring as a documented follow-up rather than inventing a new tool).
 
-- [ ] TDD: match matrix (wrong device/org/status/targetType), actAssets gate, stamp semantics. Commit: `feat(api): agent-safe remediation-suggestion act resolver (#3826)`
+- [x] TDD: match matrix (wrong device/org/status/targetType), actAssets gate, stamp semantics. Commit: `feat(api): agent-safe remediation-suggestion act resolver (#3826)`
 
 ---
 
