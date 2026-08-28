@@ -1334,7 +1334,10 @@
     "errors": {
       "load": "Impossibile caricare gli agenti.",
       "kindExists": "Esiste già un agente di questo tipo per questo proprietario. Modifica quello esistente o disattivalo prima.",
-      "modeNotSupported": "Questa modalità non è ancora disponibile. Per ora gli agenti possono indagare e proporre, ma non agire."
+      "modeNotSupported": "Questa modalità non è ancora disponibile. Per ora gli agenti possono indagare e proporre, ma non agire.",
+      "actPrerequisitesNotMet": "Questo agente non è ancora pronto per la modalità Agire.",
+      "actMissingRecipient": "Aggiungi almeno un destinatario di notifica prima di attivare la modalità Agire.",
+      "actMissingTool": "Consenti almeno uno strumento idoneo per la modalità Agire, oppure autorizza uno script, prima di attivarla."
     },
     "actions": {
       "add": "Nuovo agente",
@@ -1379,7 +1382,16 @@
     "modes": {
       "off": "Disattivato",
       "shadow": "Osservazione — solo indagare e proporre",
-      "act": "Agire — disponibile in una versione successiva"
+      "act": "Agire — esegue le operazioni corrispondenti senza supervisione, con verifica"
+    },
+    "actWarning": {
+      "title": "La modalità Agire viene eseguita senza che una persona clicchi su approva",
+      "unattended": "Le operazioni corrispondenti ed equivalenti a una regola vengono eseguite senza supervisione una volta rivalidate: nessuno le approva al momento.",
+      "verification": "La verifica può comunque fallire anche dopo un'esecuzione pulita. Controlla le notifiche dopo ogni esecuzione.",
+      "noRollback": "Non esiste un rollback automatico. Se qualcosa deve essere annullato, lo fa una persona.",
+      "singleDevice": "Ogni esecuzione agisce su un solo dispositivo.",
+      "actionCap": "Un'esecuzione smette di agire una volta raggiunto il limite di azioni configurato.",
+      "ack": "Capisco che la modalità Agire viene eseguita senza supervisione, che la verifica può fallire e che non esiste un rollback."
     },
     "severities": {
       "critical": "Critica",

@@ -131,10 +131,7 @@ describe('AiAgentsPage', () => {
     expect(await screen.findByTestId('ai-agent-mode-act')).toBeDisabled();
   });
 
-  it("ENABLES 'act' as soon as the API reports it in supportedModes", async () => {
-    // The create-form version of this assertion was vacuous: with agent=null it
-    // evaluated a hardcoded fallback, so it would have kept passing on the day
-    // wave 4 shipped while the form stayed unable to select 'act'.
+  it("enables the 'act' mode option once the API reports it in supportedModes (#3826 Task 8)", async () => {
     mockEndpoints([{ ...PARTNER_AGENT, supportedModes: ['off', 'shadow', 'act'] }]);
     render(<AiAgentsPage />);
 
@@ -142,6 +139,93 @@ describe('AiAgentsPage', () => {
     fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
 
     expect(await screen.findByTestId('ai-agent-mode-act')).not.toBeDisabled();
+  });
+
+  it("does NOT permanently disable the 'act' mode option on the CREATE form — falls back to SUPPORTED_AGENT_MODES, not [] (final-review fix, #3826)", async () => {
+    // Create has no `agent` DTO yet (agent === null until the first save), so
+    // there is no `supportedModes` to read from a real row — the form must
+    // fall back to the shared `SUPPORTED_AGENT_MODES` constant, not an empty
+    // array, or an operator can never create an act-mode agent through the UI
+    // even once the API accepts one.
+    mockEndpoints();
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-create-button'));
+    fireEvent.click(screen.getByTestId('ai-agent-create-button'));
+
+    expect(await screen.findByTestId('ai-agent-mode-act')).not.toBeDisabled();
+  });
+
+  it('shows the act warning banner and requires acknowledgement before saving a transition into act mode', async () => {
+    mockEndpoints([{ ...PARTNER_AGENT, supportedModes: ['off', 'shadow', 'act'] }]);
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+
+    // Not shown before the operator has selected act.
+    expect(screen.queryByTestId('ai-agent-act-warning')).toBeNull();
+
+    fireEvent.change(await screen.findByTestId('ai-agent-mode'), { target: { value: 'act' } });
+
+    expect(await screen.findByTestId('ai-agent-act-warning')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-act-ack')).not.toBeChecked();
+    expect(screen.getByTestId('ai-agent-save')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('ai-agent-act-ack'));
+    expect(screen.getByTestId('ai-agent-save')).not.toBeDisabled();
+  });
+
+  it('does not require the acknowledgement to save an agent that is already in act mode', async () => {
+    const actAgent = { ...PARTNER_AGENT, mode: 'act' as const, supportedModes: ['off', 'shadow', 'act'] as const };
+    mockEndpoints([actAgent]);
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+
+    expect(await screen.findByTestId('ai-agent-act-warning')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-save')).not.toBeDisabled();
+  });
+
+  it('surfaces the act_prerequisites_not_met 422 body as structured issues', async () => {
+    const actAgent = { ...PARTNER_AGENT, supportedModes: ['off', 'shadow', 'act'] as const };
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/ai/agents/a1' && init?.method === 'PATCH') {
+        return Promise.resolve(
+          json(
+            {
+              error: 'act_prerequisites_not_met: recipient, act_eligible_tool',
+              code: 'act_prerequisites_not_met',
+              missing: ['recipient', 'act_eligible_tool'],
+            },
+            false,
+            422,
+          ),
+        );
+      }
+      if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [actAgent] }));
+      if (url === '/roles') return Promise.resolve(json({ data: [{ id: 'r-1', name: 'Org Admin' }] }));
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+
+    fireEvent.change(await screen.findByTestId('ai-agent-mode'), { target: { value: 'act' } });
+    fireEvent.click(screen.getByTestId('ai-agent-act-ack'));
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-issues')).toBeInTheDocument());
+    expect(
+      screen.getByText('Add at least one notification recipient before enabling act mode.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Allow at least one act-eligible tool, or authorize a script, before enabling act mode.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('offers the owner-scope selector on create and never on edit', async () => {

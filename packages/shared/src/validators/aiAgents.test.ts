@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  aiAgentActAssetsSchema,
   aiAgentLimitsSchema,
   aiAgentPolicyFieldsSchema,
   createAiAgentSchema,
   updateAiAgentSchema,
 } from './aiAgents';
-import { AI_AGENT_LIMIT_DEFAULTS, minAgentMode } from '../types/aiAgents';
+import { AI_AGENT_LIMIT_DEFAULTS, SUPPORTED_AGENT_MODES, minAgentMode } from '../types/aiAgents';
 
 describe('aiAgents validators', () => {
   it('fills limit defaults and clamps maxima', () => {
@@ -75,5 +76,35 @@ describe('aiAgents validators', () => {
     expect(minAgentMode('act', 'shadow')).toBe('shadow');
     expect(minAgentMode('off', 'act')).toBe('off');
     expect(minAgentMode('act', 'act')).toBe('act');
+  });
+
+  it("SUPPORTED_AGENT_MODES admits 'act' (Task 6, #3826)", () => {
+    expect([...SUPPORTED_AGENT_MODES].sort()).toEqual(['act', 'off', 'shadow']);
+  });
+
+  describe('actAssets — per-script act authorization', () => {
+    it('defaults to an empty scriptIds list', () => {
+      expect(aiAgentActAssetsSchema.parse({})).toEqual({ scriptIds: [] });
+      expect(aiAgentPolicyFieldsSchema.parse({}).actAssets).toEqual({ scriptIds: [] });
+    });
+
+    it('accepts up to 50 uuid scriptIds and rejects non-uuid entries', () => {
+      const uuid = '11111111-1111-4111-8111-111111111111';
+      expect(aiAgentActAssetsSchema.safeParse({ scriptIds: [uuid] }).success).toBe(true);
+      expect(aiAgentActAssetsSchema.safeParse({ scriptIds: ['not-a-uuid'] }).success).toBe(false);
+      expect(aiAgentActAssetsSchema.safeParse({ scriptIds: Array(51).fill(uuid) }).success).toBe(false);
+    });
+
+    it('a PATCH of actAssets does not invent siblings and update forbids nothing else', () => {
+      const uuid = '22222222-2222-4222-8222-222222222222';
+      expect(updateAiAgentSchema.parse({ actAssets: { scriptIds: [uuid] } })).toEqual({
+        actAssets: { scriptIds: [uuid] },
+      });
+    });
+
+    it('create materializes actAssets with the empty default', () => {
+      const created = createAiAgentSchema.parse({ kind: 'triage', name: 'Triage' });
+      expect(created.actAssets).toEqual({ scriptIds: [] });
+    });
   });
 });

@@ -76,6 +76,22 @@ export interface AiAgentProtectedResources {
   deviceTags: string[];
 }
 
+/**
+ * Wave 4 Part B (Task 6, #3826) — per-script act-mode authorization.
+ *
+ * `toolAllowlist` admitting `run_script` is necessary but never sufficient for
+ * unattended execution: a saved script can read secrets, rewrite config, or do
+ * anything else its author wrote, so allowlisting the TOOL must not silently
+ * authorize every script an org happens to have. `scriptIds` is the closed set
+ * an operator has explicitly opted into for act mode; empty/absent means
+ * run_script is never act-eligible for this agent — the model may still call
+ * it, and it still records as a proposal exactly like any other unmatched
+ * Tier-3 mutation (Global Constraints, plan header).
+ */
+export interface AiAgentActAssets {
+  scriptIds: string[];
+}
+
 /** The policy fields that the resolver merges (everything on ai_agents that governs a run). */
 export interface AiAgentPolicy {
   enabled: boolean;
@@ -86,6 +102,7 @@ export interface AiAgentPolicy {
   limits: AiAgentLimits;
   triggers: AiAgentTriggers;
   recipients: AiAgentRecipients;
+  actAssets: AiAgentActAssets;
   instructions: string | null;
   cooldownSeconds: number;
 }
@@ -126,8 +143,14 @@ export interface AiAgentPolicySnapshot {
  * and there is no row to read `supportedModes` off before the agent exists.
  * Two copies of this list means the create form silently keeps refusing `act`
  * on the day the API starts accepting it.
+ *
+ * Wave 4 Part B (Task 6, #3826): `act` ships bounded, verified, revalidated
+ * unattended execution against a closed manifest — see actManifest.ts and the
+ * plan header's Design authority. A write is still refused with 422
+ * `act_prerequisites_not_met` unless the agent has a resolvable recipient and
+ * at least one act-eligible allowlisted surface (agentService.ts).
  */
-export const SUPPORTED_AGENT_MODES: readonly AiAgentMode[] = ['off', 'shadow'] as const;
+export const SUPPORTED_AGENT_MODES: readonly AiAgentMode[] = ['off', 'shadow', 'act'] as const;
 
 export type AiAgentOwnerScope = 'organization' | 'partner';
 
@@ -167,6 +190,7 @@ export interface AiAgentDto {
   limits: Partial<AiAgentLimits>;
   triggers: Partial<AiAgentTriggers>;
   recipients: Partial<AiAgentRecipients>;
+  actAssets: Partial<AiAgentActAssets>;
   instructions: string | null;
   cooldownSeconds: number;
   /** ISO-8601. Non-null means the agent is soft-deleted. */
@@ -174,3 +198,35 @@ export interface AiAgentDto {
   createdAt: string;
   updatedAt: string;
 }
+
+/**
+ * Wave 4 Part B — act mode verdicts.
+ *
+ * `execution` reports the tool dispatch outcome for a manifest-matched call
+ * that act mode actually ran (through the normal tool path): `failed` for a
+ * tool-reported error, `timeout` for a command that never resolved inside its
+ * bound, `unknown` when the dispatch outcome could not be classified either
+ * way (never conflate this with `failed` — an `unknown` execution still runs
+ * verification, since the underlying action may well have succeeded).
+ */
+export type ActExecutionVerdict = 'succeeded' | 'failed' | 'timeout' | 'unknown';
+
+/**
+ * `verification` reports the op's OWN read-back against `execution`, not a
+ * restatement of it: `skipped` is for an op with no declared postcondition
+ * (a bare script run today — see actVerify.ts), `inconclusive` is a read-back
+ * that itself failed/timed out (the action's real effect is unknown, not
+ * negative) — only `failed` triggers the rule-less attention alert.
+ */
+export type ActVerificationVerdict = 'passed' | 'failed' | 'inconclusive' | 'skipped';
+
+/**
+ * Run-level rollup computed once at finish from every acted-on op's
+ * (execution, verification) pair plus whatever else the run proposed:
+ * `remediated` — every act execution verified `passed`; `needs_attention` —
+ * at least one act execution verified `failed` or `inconclusive`;
+ * `partial` — a mix of successful act executions and unmatched-mutation
+ * proposals in the same run; `no_action` — the run performed no act
+ * executions at all (shadow/propose-only turns, or a read-only run).
+ */
+export type AgentRunVerdict = 'remediated' | 'needs_attention' | 'partial' | 'no_action';

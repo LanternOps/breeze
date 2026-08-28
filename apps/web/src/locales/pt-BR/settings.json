@@ -1334,7 +1334,10 @@
     "errors": {
       "load": "Não foi possível carregar os agentes.",
       "kindExists": "Já existe um agente deste tipo para este proprietário. Edite o existente ou desative-o primeiro.",
-      "modeNotSupported": "Esse modo ainda não está disponível. Por enquanto os agentes podem investigar e propor, mas não agir."
+      "modeNotSupported": "Esse modo ainda não está disponível. Por enquanto os agentes podem investigar e propor, mas não agir.",
+      "actPrerequisitesNotMet": "Este agente ainda não está pronto para o modo Agir.",
+      "actMissingRecipient": "Adicione pelo menos um destinatário de notificação antes de ativar o modo Agir.",
+      "actMissingTool": "Permita pelo menos uma ferramenta elegível para o modo Agir, ou autorize um script, antes de ativá-lo."
     },
     "actions": {
       "add": "Novo agente",
@@ -1379,7 +1382,16 @@
     "modes": {
       "off": "Desligado",
       "shadow": "Sombra — apenas investigar e propor",
-      "act": "Agir — disponível em uma versão futura"
+      "act": "Agir — executa operações correspondentes sem supervisão, com verificação"
+    },
+    "actWarning": {
+      "title": "O modo Agir é executado sem que uma pessoa clique em aprovar",
+      "unattended": "Operações correspondentes e equivalentes a uma regra são executadas sem supervisão após serem revalidadas — ninguém as aprova no momento.",
+      "verification": "A verificação ainda pode falhar mesmo após uma execução limpa. Verifique as notificações após cada execução.",
+      "noRollback": "Não há reversão automática. Se algo precisar ser desfeito, uma pessoa faz isso.",
+      "singleDevice": "Cada execução age em apenas um dispositivo.",
+      "actionCap": "Uma execução para de agir assim que atinge o limite de ações configurado.",
+      "ack": "Entendo que o modo Agir é executado sem supervisão, que a verificação pode falhar e que não há reversão."
     },
     "severities": {
       "critical": "Crítica",

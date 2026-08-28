@@ -195,6 +195,7 @@ function policy(over: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
     limits: { ...AI_AGENT_LIMIT_DEFAULTS },
     triggers: triggers(),
     recipients: { userIds: [], roleIds: [] },
+    actAssets: { scriptIds: [] },
     instructions: null,
     cooldownSeconds: 900,
     ...over,

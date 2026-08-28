@@ -151,6 +151,52 @@ const resolveEffectiveAgentSystem = vi.hoisted(() =>
   vi.fn<(orgId: string, kind: string) => Promise<AiAgentPolicySnapshot | null>>());
 vi.mock('./effectivePolicy', () => ({ resolveEffectiveAgentSystem }));
 
+// `revalidateActExecution` and `verifyActExecution`/`recordActVerifyFailureAlert`
+// are I/O-heavy leaf modules with their own dedicated unit suites
+// (actRevalidation.test.ts, actVerify.test.ts) — mocked here at the module
+// boundary, same precedent as `resolveEffectiveAgentSystem` above, so this
+// file only exercises the run-loop's WIRING contract (deny/downgrade/ok
+// mapping, ledger writes, pin passthrough, verdict rollup) rather than
+// re-driving disk-cleanup preview rows / command-queue reads through this
+// harness's already-strict table-queue mock.
+const revalidateActExecution = vi.hoisted(() =>
+  vi.fn<(args: Record<string, unknown>) => Promise<
+    | { ok: true; pin: Record<string, unknown> }
+    | { ok: false; downgrade: 'propose'; reason?: string }
+    | { ok: false; deny: string }
+  >>());
+vi.mock('./actRevalidation', () => ({ revalidateActExecution }));
+
+const verifyActExecution = vi.hoisted(() =>
+  vi.fn<(args: Record<string, unknown>) => Promise<
+    { execution: string; verification: string; verifyDetail?: string }
+  >>());
+const recordActVerifyFailureAlert = vi.hoisted(() =>
+  vi.fn<(args: Record<string, unknown>) => Promise<void>>(async () => undefined));
+vi.mock('./actVerify', async (importOriginal) => {
+  // `actTargetSummary` is pure — keep the real implementation so the
+  // notification/outcome fields it feeds are exercised for real.
+  const actual = await importOriginal<typeof import('./actVerify')>();
+  return { ...actual, verifyActExecution, recordActVerifyFailureAlert };
+});
+
+// `playbookActExecutor.ts` has its own dedicated, deep unit suite
+// (playbookActExecutor.test.ts) — mocked here at the module boundary, same
+// precedent as `revalidateActExecution`/`verifyActExecution` above, so this
+// file only exercises the run-loop's WIRING contract for `execute_playbook`
+// (args passed through, outcome entry shape, no SDK-stub dispatch, alert on
+// verify-failure) rather than re-driving the real step loop.
+const executeBuiltInPlaybookForRun = vi.hoisted(() =>
+  vi.fn<(args: Record<string, unknown>) => Promise<{
+    execution: string;
+    verification: string;
+    verifyDetail?: string;
+    playbookExecutionId: string | null;
+    playbookName: string;
+    summary: string;
+  }>>());
+vi.mock('./playbookActExecutor', () => ({ executeBuiltInPlaybookForRun }));
+
 const publishEvent = vi.hoisted(() =>
   vi.fn<(type: string, orgId: string, payload: unknown, source: string) => Promise<string>>(
     async () => 'event-1'));
@@ -165,6 +211,10 @@ const createBreezeMcpServer = vi.hoisted(() =>
 vi.mock('../aiAgentSdkTools', () => ({
   createBreezeMcpServer,
   BREEZE_MCP_TOOL_NAMES: ['mcp__breeze__query_devices'],
+  // The REAL value (aiAgentSdkTools.ts) — kept in sync here so the timeout-
+  // budget invariant test below asserts against the actual cap, not a
+  // hardcoded guess. See that test for why.
+  POST_TOOL_USE_TIMEOUT_MS: 10_000,
 }));
 
 const createActionIntent = vi.hoisted(() =>
@@ -207,7 +257,12 @@ vi.mock('../aiCostTracker', () => ({ recordSessionlessSdkUsage, calculateCostCen
 // the real module would require mocking it; instead the contract is asserted by
 // the red-team suite (Task 5). Here we assert the loop never imports it by
 // asserting on the guardrail path it DOES take.
-import { executeAgentRun } from './runLoop';
+import {
+  computeRunVerdict, createAgentRunPostToolUse, executeAgentRun, PROPOSAL_RECORDED_TEXT,
+} from './runLoop';
+import type { AgentRunOutcome } from './runLoop';
+import { VERIFY_READ_TIMEOUT_MS } from './actVerify';
+import { POST_TOOL_USE_TIMEOUT_MS } from '../aiAgentSdkTools';
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -222,6 +277,7 @@ function policy(overrides: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
     limits: { ...AI_AGENT_LIMIT_DEFAULTS },
     triggers: { alertSeverities: ['critical', 'high'], respectMaintenanceWindows: true },
     recipients: { userIds: [], roleIds: [] },
+    actAssets: { scriptIds: [] },
     instructions: null,
     cooldownSeconds: 900,
     ...overrides,
@@ -246,6 +302,14 @@ function seedRows(options: {
   /** What the partner-baseline agent ROW carries (never the merged set). */
   recipients?: { userIds: string[]; roleIds: string[] };
   agentOrgId?: string | null;
+  /**
+   * `checkAgentGuardrails` reasons about `run.modeAtStart`, NOT
+   * `effective.mode` (runLoop.ts pins the guardrail policy to the mode the
+   * run itself started under). Defaults to 'shadow' to match `policy()`'s
+   * default; pass this whenever a test's `effective.mode` diverges (e.g.
+   * 'act') so the guardrail check actually sees it.
+   */
+  modeAtStart?: AiAgentPolicy['mode'];
 } = {}) {
   const effective = options.effective ?? policy();
   const deviceId = options.deviceId === undefined ? DEVICE_ID : options.deviceId;
@@ -258,7 +322,7 @@ function seedRows(options: {
     deviceId,
     alertId,
     status: 'queued',
-    modeAtStart: 'shadow',
+    modeAtStart: options.modeAtStart ?? 'shadow',
     triggerKind: 'alert',
     policySnapshot: snapshot(effective),
   }]];
@@ -379,6 +443,14 @@ beforeEach(() => {
   resolveRecipientUserIds.mockResolvedValue([]);
   enqueueAgentNotifyRetry.mockResolvedValue(undefined);
   createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
+  // Never reached unless a test's script drives a manifest-matched call
+  // under a live `mode: 'act'` guardrail policy — a mismatched default here
+  // would only ever surface as "Cannot use 'in' operator on undefined" in a
+  // test that forgot to configure it, which is exactly what should happen.
+  revalidateActExecution.mockReset();
+  verifyActExecution.mockReset().mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
+  recordActVerifyFailureAlert.mockReset().mockResolvedValue(undefined);
+  executeBuiltInPlaybookForRun.mockReset();
   createBreezeMcpServer.mockImplementation((getAuth: () => unknown, pre: Hooks['pre'], post: Hooks['post']) => {
     hooks.getAuth = getAuth;
     hooks.pre = pre;
@@ -520,6 +592,335 @@ describe('executeAgentRun', () => {
     // A denial is neither an execution nor a proposal.
     expect(outcome.executedActions).toEqual([]);
     expect(outcome.proposedActions).toEqual([]);
+  });
+
+  describe('act disposition (Task 3 revalidation + Task 4 verification)', () => {
+    function seedActRun() {
+      return seedRows({
+        effective: policy({ mode: 'act', toolAllowlist: ['manage_services'] }),
+        modeAtStart: 'act',
+      });
+    }
+
+    const ACT_CALL = {
+      tool: 'manage_services',
+      input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'Spooler' },
+    };
+
+    it('ok revalidation dispatches through the NORMAL tool path — ledger write, no action-intent — and verifies to remediated', async () => {
+      seedActRun();
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true,
+        pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+      }));
+      verifyActExecution.mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Restarted the spooler service.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(revalidateActExecution).toHaveBeenCalledTimes(1);
+      const revalidateArgs = revalidateActExecution.mock.calls[0]![0] as Record<string, unknown>;
+      expect(revalidateArgs.toolName).toBe('manage_services');
+      expect((revalidateArgs.run as Record<string, unknown>).deviceId).toBe(DEVICE_ID);
+      // This is the ONLY execution path — through the same
+      // startToolExecution/allowedPending machinery a plain 'allow' uses.
+      expect(startToolExecution).toHaveBeenCalledTimes(1);
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(preVerdicts[0]).toEqual({ allowed: true });
+      expect(verifyActExecution).toHaveBeenCalledTimes(1);
+
+      const final = finalTransition()!;
+      expect(final.to).toBe('completed');
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.deniedActions).toEqual([]);
+      expect(outcome.proposedActions).toEqual([]);
+      expect(outcome.executedActions).toHaveLength(1);
+      expect(outcome.executedActions[0]).toMatchObject({
+        tool: 'manage_services',
+        execution: 'succeeded',
+        verification: 'passed',
+        actOpKey: 'manage_services.restart',
+        actTargetName: 'Spooler',
+      });
+      expect(outcome.runVerdict).toBe('remediated');
+      expect(recordActVerifyFailureAlert).not.toHaveBeenCalled();
+    });
+
+    it('deny revalidation NEVER dispatches — no ledger write, no proposal, recorded as a denial', async () => {
+      seedActRun();
+      revalidateActExecution.mockResolvedValue({ ok: false, deny: 'Agent is disabled' });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Could not restart; recorded the finding.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(startToolExecution).not.toHaveBeenCalled();
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(preVerdicts[0]).toEqual({ allowed: false, error: 'Agent is disabled' });
+
+      const final = finalTransition()!;
+      expect(final.to).toBe('completed');
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.deniedActions).toEqual([{ tool: 'manage_services', reason: 'Agent is disabled' }]);
+      expect(outcome.executedActions).toEqual([]);
+      expect(outcome.proposedActions).toEqual([]);
+      expect(outcome.runVerdict).toBe('no_action');
+    });
+
+    it('downgrade (drift act→shadow, or cap exhaustion) records a PROPOSAL — never executes', async () => {
+      seedActRun();
+      revalidateActExecution.mockResolvedValue({ ok: false, downgrade: 'propose' });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Proposed a restart for review.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(startToolExecution).not.toHaveBeenCalled();
+      // manage_services:restart is Tier 3 — same intent path an ordinary
+      // shadow-mode proposal takes.
+      expect(createActionIntent).toHaveBeenCalledTimes(1);
+      expect(preVerdicts[0]).toEqual({ allowed: false, error: PROPOSAL_RECORDED_TEXT });
+
+      const final = finalTransition()!;
+      // A pending action-intent leaves the run 'awaiting_approval' — same
+      // terminal status an ordinary shadow-mode Tier-3 proposal produces.
+      expect(final.to).toBe('awaiting_approval');
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.proposedActions).toHaveLength(1);
+      expect(outcome.proposedActions[0]!.tool).toBe('manage_services');
+      expect(outcome.proposedActions[0]!.intentId).toBe(INTENT_ID);
+      expect(outcome.executedActions).toEqual([]);
+      expect(outcome.deniedActions).toEqual([]);
+      expect(outcome.runVerdict).toBe('no_action');
+    });
+
+    it('#3826 cheap nonblocking fix: a downgrade carrying a normalizeTarget reason threads it onto the recorded proposal', async () => {
+      seedActRun();
+      revalidateActExecution.mockResolvedValue({
+        ok: false, downgrade: 'propose', reason: 'serviceName is required',
+      });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Proposed a restart for review.' });
+
+      await executeAgentRun(RUN_ID);
+
+      const final = finalTransition()!;
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.proposedActions).toHaveLength(1);
+      expect((outcome.proposedActions[0] as { downgradeReason?: string }).downgradeReason)
+        .toBe('serviceName is required');
+    });
+
+    it('verification failure raises the rule-less alert and rolls up to needs_attention', async () => {
+      seedActRun();
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true,
+        pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+      }));
+      verifyActExecution.mockResolvedValue({
+        execution: 'succeeded', verification: 'failed', verifyDetail: 'service status is "stopped"',
+      });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Restarted the spooler service.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(recordActVerifyFailureAlert).toHaveBeenCalledTimes(1);
+      const alertArgs = recordActVerifyFailureAlert.mock.calls[0]![0] as Record<string, unknown>;
+      expect((alertArgs.run as Record<string, unknown>).deviceId).toBe(DEVICE_ID);
+      expect((alertArgs.op as Record<string, unknown>).key).toBe('manage_services.restart');
+      expect(alertArgs.detail).toBe('service status is "stopped"');
+
+      const final = finalTransition()!;
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.executedActions[0]).toMatchObject({ execution: 'succeeded', verification: 'failed' });
+      expect(outcome.runVerdict).toBe('needs_attention');
+    });
+
+    // Review fix: `safePostToolUse` (aiAgentSdkTools.ts) caps the WHOLE
+    // post-hook at POST_TOOL_USE_TIMEOUT_MS (10s), but the pre-fix code only
+    // pushed the executed-action entry into `outcome.executedActions` AFTER
+    // `await verifyActExecution(...)` resolved. A verify read slow enough to
+    // trip that outer cap (its OWN budget is a separate, longer 30s) would
+    // then lose the entire execution record — the action really ran, but
+    // `outcome` never learns about it. This test drives
+    // `createAgentRunPostToolUse` directly (bypassing the full SDK-mocked
+    // harness, which currently calls the hook with no timeout wrapper at
+    // all — see the file-level comment) and proves the entry lands
+    // synchronously, before verification has any chance to resolve.
+    it('records the executed-action entry BEFORE awaiting verification, so a slow verify read can never lose it', async () => {
+      let resolveVerify!: (v: { execution: string; verification: string }) => void;
+      verifyActExecution.mockReset().mockImplementation(
+        () => new Promise((resolve) => { resolveVerify = resolve; }),
+      );
+
+      const outcome: AgentRunOutcome = {
+        findings: [], proposedActions: [], executedActions: [], deniedActions: [], toolExecutionCount: 0,
+      };
+      const allowedPending = new Map<string, number>([['manage_services', 1]]);
+      const executionIdPending = new Map<string, Array<string | null>>([['manage_services', ['exec-1']]]);
+      const actPin = {
+        op: { key: 'manage_services.restart' },
+        target: { kind: 'service' as const, serviceName: 'Spooler' },
+      };
+      const actPinPending = new Map([['manage_services', [actPin]]]);
+
+      const post = createAgentRunPostToolUse({
+        outcome, allowedPending, executionIdPending, actPinPending,
+        run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, deviceId: DEVICE_ID },
+        agentUserId: USER_A,
+      } as never);
+
+      const pending = post('manage_services', { action: 'restart' }, '{"ok":true}', false, 5);
+      // Flush pending microtasks WITHOUT resolving verifyActExecution's
+      // promise — this is the moment a real 10s post-hook timeout would fire.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(outcome.executedActions).toHaveLength(1);
+      expect(outcome.executedActions[0]).toMatchObject({
+        tool: 'manage_services', executionId: 'exec-1', result: 'ok',
+      });
+      expect(outcome.executedActions[0]!.verification).toBeUndefined();
+      expect(outcome.toolExecutionCount).toBe(1);
+
+      resolveVerify({ execution: 'succeeded', verification: 'passed' });
+      await pending;
+
+      // Same object, mutated in place — never a second entry.
+      expect(outcome.executedActions).toHaveLength(1);
+      expect(outcome.executedActions[0]).toMatchObject({ execution: 'succeeded', verification: 'passed' });
+    });
+
+    it('an unmatched mutation under act mode still proposes exactly like shadow (no revalidation call)', async () => {
+      // execute_command has NO manifest entry — resolveActOperation returns
+      // null, so checkAgentGuardrails itself returns 'propose', and the
+      // pre-hook must never call revalidateActExecution for it.
+      seedRows({
+        effective: policy({ mode: 'act', toolAllowlist: ['execute_command'] }),
+        modeAtStart: 'act',
+      });
+      scriptQuery({
+        toolCalls: [{ tool: 'execute_command', input: { deviceId: DEVICE_ID, commandType: 'restart_service', payload: {} } }],
+        assistantText: 'Proposed a restart for review.',
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(revalidateActExecution).not.toHaveBeenCalled();
+      expect(createActionIntent).toHaveBeenCalledTimes(1);
+      expect(preVerdicts[0]).toEqual({ allowed: false, error: PROPOSAL_RECORDED_TEXT });
+    });
+  });
+
+  describe('execute_playbook (built-in) routes to the deterministic executor (Task 5, #3826)', () => {
+    function seedActRun() {
+      return seedRows({
+        effective: policy({ mode: 'act', toolAllowlist: ['execute_playbook'] }),
+        modeAtStart: 'act',
+      });
+    }
+
+    const PLAYBOOK_ID = '00000000-0000-4000-8000-0000000000e1';
+    const PLAYBOOK_CALL = {
+      tool: 'execute_playbook',
+      input: { playbookId: PLAYBOOK_ID, deviceId: DEVICE_ID, variables: { serviceName: 'Spooler' } },
+    };
+
+    it('ok revalidation routes to the executor instead of the SDK stub — no ledger write, no allow', async () => {
+      seedActRun();
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true,
+        pin: {
+          op: args.op, target: { kind: 'playbook', playbookId: PLAYBOOK_ID }, playbookDigest: 'digest-abc',
+        },
+      }));
+      executeBuiltInPlaybookForRun.mockResolvedValue({
+        execution: 'succeeded', verification: 'passed', playbookExecutionId: 'pbexec-1',
+        playbookName: 'Service Restart with Health Check', summary: 'Built-in playbook ran and verified.',
+      });
+      scriptQuery({ toolCalls: [PLAYBOOK_CALL], assistantText: 'Ran the built-in service restart playbook.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(executeBuiltInPlaybookForRun).toHaveBeenCalledTimes(1);
+      const execArgs = executeBuiltInPlaybookForRun.mock.calls[0]![0] as Record<string, unknown>;
+      expect(execArgs.playbookId).toBe(PLAYBOOK_ID);
+      expect(execArgs.expectedDigest).toBe('digest-abc');
+      expect(execArgs.variables).toEqual({ serviceName: 'Spooler' });
+      expect(typeof execArgs.deadlineMs).toBe('number');
+      expect((execArgs.reserved as { count: number }).count).toBeDefined();
+      expect((execArgs.run as Record<string, unknown>).deviceId).toBe(DEVICE_ID);
+
+      // The SDK stub never dispatches for this op — no ledger write, and the
+      // pre-hook returns allowed:false (the model reads the executor's own
+      // success-shaped summary as the tool result).
+      expect(startToolExecution).not.toHaveBeenCalled();
+      expect(preVerdicts[0]).toEqual({ allowed: false, error: 'Built-in playbook ran and verified.' });
+
+      const final = finalTransition()!;
+      expect(final.to).toBe('completed');
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.deniedActions).toEqual([]);
+      expect(outcome.proposedActions).toEqual([]);
+      expect(outcome.executedActions).toHaveLength(1);
+      expect(outcome.executedActions[0]).toMatchObject({
+        tool: 'execute_playbook',
+        executionId: '(inline)',
+        result: 'ok',
+        execution: 'succeeded',
+        verification: 'passed',
+        actOpKey: 'execute_playbook',
+        actTargetName: PLAYBOOK_ID,
+      });
+      expect(outcome.toolExecutionCount).toBe(1);
+      expect(outcome.runVerdict).toBe('remediated');
+      expect(recordActVerifyFailureAlert).not.toHaveBeenCalled();
+    });
+
+    it('verification failure from the executor raises the rule-less alert and rolls up to needs_attention', async () => {
+      seedActRun();
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true,
+        pin: {
+          op: args.op, target: { kind: 'playbook', playbookId: PLAYBOOK_ID }, playbookDigest: 'digest-abc',
+        },
+      }));
+      executeBuiltInPlaybookForRun.mockResolvedValue({
+        execution: 'succeeded', verification: 'failed', verifyDetail: 'service status is "stopped"',
+        playbookExecutionId: 'pbexec-2', playbookName: 'Service Restart with Health Check',
+        summary: 'Built-in playbook ran but did not verify.',
+      });
+      scriptQuery({ toolCalls: [PLAYBOOK_CALL], assistantText: 'Ran the built-in service restart playbook.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(recordActVerifyFailureAlert).toHaveBeenCalledTimes(1);
+      const alertArgs = recordActVerifyFailureAlert.mock.calls[0]![0] as Record<string, unknown>;
+      expect((alertArgs.run as Record<string, unknown>).deviceId).toBe(DEVICE_ID);
+      expect((alertArgs.op as Record<string, unknown>).key).toBe('execute_playbook');
+      expect(alertArgs.detail).toBe('service status is "stopped"');
+
+      const final = finalTransition()!;
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.executedActions[0]).toMatchObject({ execution: 'succeeded', verification: 'failed' });
+      expect(outcome.runVerdict).toBe('needs_attention');
+    });
+
+    it('a custom (non-built-in) playbook downgrades to a proposal — the executor is never called', async () => {
+      seedActRun();
+      revalidateActExecution.mockResolvedValue({ ok: false, downgrade: 'propose' });
+      scriptQuery({ toolCalls: [PLAYBOOK_CALL], assistantText: 'Proposed the playbook for review.' });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(executeBuiltInPlaybookForRun).not.toHaveBeenCalled();
+      expect(startToolExecution).not.toHaveBeenCalled();
+      expect(preVerdicts[0]).toEqual({ allowed: false, error: PROPOSAL_RECORDED_TEXT });
+
+      const final = finalTransition()!;
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.proposedActions).toHaveLength(1);
+      expect(outcome.proposedActions[0]!.tool).toBe('execute_playbook');
+      expect(outcome.executedActions).toEqual([]);
+    });
   });
 
   it('policy revoked between admission and start => skipped, no SDK call', async () => {
@@ -1108,6 +1509,88 @@ describe('executeAgentRun', () => {
     await executeAgentRun(RUN_ID);
 
     expect(startToolExecution).not.toHaveBeenCalled();
+  });
+});
+
+describe('act verification timeout budget (review fix)', () => {
+  it('the verification read leaves headroom under the post-hook timeout for the failed-verification alert insert', () => {
+    // safePostToolUse (aiAgentSdkTools.ts) caps the WHOLE postToolUse hook
+    // at POST_TOOL_USE_TIMEOUT_MS. The verification read that runs inside
+    // it (actVerify.ts's VERIFY_READ_TIMEOUT_MS) — plus the alert insert
+    // that can follow it — must never be allowed to exceed that outer cap,
+    // or a read well within its OWN budget still gets abandoned mid-flight.
+    const ALERT_INSERT_BUDGET_MS = 1_000;
+    expect(VERIFY_READ_TIMEOUT_MS + ALERT_INSERT_BUDGET_MS).toBeLessThan(POST_TOOL_USE_TIMEOUT_MS);
+  });
+});
+
+describe('computeRunVerdict', () => {
+  function executed(overrides: Partial<AgentRunOutcome['executedActions'][number]> = {}) {
+    return { tool: 'manage_services', executionId: 'exec-1', result: 'ok' as const, durationMs: 5, ...overrides };
+  }
+
+  it('no_action when nothing acted (no executedActions carry a verification field)', () => {
+    expect(computeRunVerdict({ executedActions: [], proposedActions: [] })).toBe('no_action');
+    expect(computeRunVerdict({ executedActions: [executed()], proposedActions: [] })).toBe('no_action');
+  });
+
+  it('remediated when every acted op verified passed, with no proposals', () => {
+    const outcome = {
+      executedActions: [executed({ verification: 'passed', execution: 'succeeded' })],
+      proposedActions: [],
+    };
+    expect(computeRunVerdict(outcome)).toBe('remediated');
+  });
+
+  it('needs_attention when ANY acted op verified failed or inconclusive', () => {
+    expect(computeRunVerdict({
+      executedActions: [
+        executed({ verification: 'passed', execution: 'succeeded' }),
+        executed({ verification: 'failed', execution: 'succeeded' }),
+      ],
+      proposedActions: [],
+    })).toBe('needs_attention');
+    expect(computeRunVerdict({
+      executedActions: [executed({ verification: 'inconclusive', execution: 'unknown' })],
+      proposedActions: [],
+    })).toBe('needs_attention');
+  });
+
+  it('partial when every acted op passed but the run ALSO left proposals', () => {
+    const outcome = {
+      executedActions: [executed({ verification: 'passed', execution: 'succeeded' })],
+      proposedActions: [{ tool: 'run_script', args: {} }],
+    };
+    expect(computeRunVerdict(outcome)).toBe('partial');
+  });
+
+  it('needs_attention takes priority over partial when both conditions hold', () => {
+    const outcome = {
+      executedActions: [executed({ verification: 'failed', execution: 'succeeded' })],
+      proposedActions: [{ tool: 'run_script', args: {} }],
+    };
+    expect(computeRunVerdict(outcome)).toBe('needs_attention');
+  });
+
+  // Review fix: the (execution, verification) rollup is a PAIR — a clean
+  // verdict requires BOTH halves, not verification alone. Otherwise a
+  // dispatch failure whose read-back never ran ('skipped') rolls up as a
+  // success.
+  it('needs_attention when verification is skipped, even with no failure/inconclusive present', () => {
+    const outcome = {
+      executedActions: [executed({ verification: 'skipped', execution: 'failed' })],
+      proposedActions: [],
+    };
+    expect(computeRunVerdict(outcome)).toBe('needs_attention');
+  });
+
+  it('needs_attention when verification passed but execution itself did not succeed', () => {
+    for (const execution of ['failed', 'timeout', 'unknown'] as const) {
+      expect(computeRunVerdict({
+        executedActions: [executed({ verification: 'passed', execution })],
+        proposedActions: [],
+      })).toBe('needs_attention');
+    }
   });
 });
 

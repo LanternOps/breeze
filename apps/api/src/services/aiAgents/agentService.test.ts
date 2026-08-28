@@ -14,6 +14,7 @@ const state = vi.hoisted(() => ({
   audit: vi.fn(),
   publish: vi.fn(),
   validateRecipients: vi.fn(),
+  hasResolvableAgentRecipient: vi.fn(),
   ensureManagedTriageAutomation: vi.fn(),
   setManagedAutomationEnabled: vi.fn(),
   syncManagedAutomation: vi.fn(),
@@ -83,7 +84,11 @@ vi.mock('./recipients', () => {
       this.name = 'InvalidAgentRecipientsError';
     }
   }
-  return { InvalidAgentRecipientsError, validateAgentRecipients: state.validateRecipients };
+  return {
+    InvalidAgentRecipientsError,
+    validateAgentRecipients: state.validateRecipients,
+    hasResolvableAgentRecipient: state.hasResolvableAgentRecipient,
+  };
 });
 
 vi.mock('./managedAutomation', () => ({
@@ -108,12 +113,14 @@ vi.mock('./effectivePolicy', () => ({
     limits: row.limits,
     triggers: row.triggers,
     recipients: row.recipients,
+    actAssets: row.actAssets ?? { scriptIds: [] },
     instructions: row.instructions,
     cooldownSeconds: row.cooldownSeconds,
   }),
 }));
 
 import {
+  ActPrerequisitesNotMetError,
   AgentKindConflictError,
   UnsupportedAgentModeError,
   createAgent,
@@ -176,6 +183,7 @@ const storedRow = {
     respectMaintenanceWindows: true,
   },
   recipients: { userIds: ['u1'], roleIds: ['r1'] },
+  actAssets: { scriptIds: [] },
   instructions: 'Be careful',
   cooldownSeconds: 900,
   disabledAt: null,
@@ -197,6 +205,7 @@ const createInput = {
   limits: storedRow.limits,
   triggers: storedRow.triggers,
   recipients: { userIds: [], roleIds: [] },
+  actAssets: { scriptIds: [] },
   instructions: null,
   cooldownSeconds: 900,
 };
@@ -210,6 +219,8 @@ beforeEach(() => {
   state.syncManagedAutomation.mockReset();
   state.syncManagedAutomation.mockResolvedValue(undefined);
   state.validateRecipients.mockResolvedValue(undefined);
+  state.hasResolvableAgentRecipient.mockReset();
+  state.hasResolvableAgentRecipient.mockResolvedValue(true);
   state.currentRow = null;
   state.listRows = [];
   state.returnedRow = null;
@@ -459,12 +470,127 @@ describe('agent mutations', () => {
     expect(state.validateRecipients).not.toHaveBeenCalled();
   });
 
-  it('rejects the DB-legal act mode as unsupported', async () => {
+  it('rejects an unsupported mode value even though act now ships (Task 6, #3826)', async () => {
     state.currentRow = storedRow;
 
-    await expect(updateAgent(auth(), 'a1', { mode: 'act' } as never))
+    await expect(updateAgent(auth(), 'a1', { mode: 'bogus' } as never))
       .rejects.toBeInstanceOf(UnsupportedAgentModeError);
     expect(state.updatedValues).toBeNull();
+  });
+
+  describe('act-mode activation prerequisites (Task 6, #3826)', () => {
+    it('accepts an update to act mode when the merged row already has a resolvable recipient and an act-eligible surface', async () => {
+      const actReady = {
+        ...storedRow,
+        toolAllowlist: ['run_script'],
+        actAssets: { scriptIds: ['s-1'] },
+      };
+      state.currentRow = actReady;
+      state.returnedRow = { ...actReady, mode: 'act' };
+
+      await updateAgent(auth(), 'a1', { mode: 'act' } as never);
+
+      expect(state.updatedValues).toMatchObject({ mode: 'act' });
+      expect(state.hasResolvableAgentRecipient).toHaveBeenCalledWith(
+        { orgId: 'o1', partnerId: null },
+        actReady.recipients,
+      );
+    });
+
+    it('refuses an update to act mode with no act-eligible allowlisted surface', async () => {
+      state.currentRow = { ...storedRow, toolAllowlist: ['alerts:list'] };
+
+      const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['act_eligible_tool']);
+      expect(state.updatedValues).toBeNull();
+    });
+
+    it("run_script alone does not count unless actAssets has at least one authorized script", async () => {
+      state.currentRow = { ...storedRow, toolAllowlist: ['run_script'], actAssets: { scriptIds: [] } };
+
+      const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['act_eligible_tool']);
+    });
+
+    it('accepts a scoped `tool:action` allowlist entry (manage_services:restart) — the guardrail honours it too, so the tightest act config must not be refused', async () => {
+      const actReady = {
+        ...storedRow,
+        toolAllowlist: ['manage_services:restart'],
+      };
+      state.currentRow = actReady;
+      state.returnedRow = { ...actReady, mode: 'act' };
+
+      await updateAgent(auth(), 'a1', { mode: 'act' } as never);
+
+      expect(state.updatedValues).toMatchObject({ mode: 'act' });
+    });
+
+    it('refuses an update to act mode with no resolvable recipient', async () => {
+      state.hasResolvableAgentRecipient.mockResolvedValue(false);
+      state.currentRow = { ...storedRow, toolAllowlist: ['manage_services'] };
+
+      const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['recipient']);
+      expect(state.updatedValues).toBeNull();
+    });
+
+    it('reports BOTH missing prerequisites together, not just the first', async () => {
+      state.hasResolvableAgentRecipient.mockResolvedValue(false);
+      state.currentRow = { ...storedRow, toolAllowlist: ['alerts:list'] };
+
+      const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['recipient', 'act_eligible_tool']);
+    });
+
+    it('checks prerequisites against the MERGED row, not the raw patch — an allowlist-only patch on an already act-mode agent is refused when it narrows away the surface', async () => {
+      state.currentRow = { ...storedRow, mode: 'act', toolAllowlist: ['run_script'], actAssets: { scriptIds: ['s-1'] } };
+
+      const err = await updateAgent(auth(), 'a1', { toolAllowlist: ['alerts:list'] } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect(state.updatedValues).toBeNull();
+    });
+
+    it('does not check prerequisites for a write that does not resolve to act mode', async () => {
+      state.hasResolvableAgentRecipient.mockResolvedValue(false);
+      state.currentRow = { ...storedRow, mode: 'shadow', toolAllowlist: ['alerts:list'] };
+      state.returnedRow = { ...storedRow, mode: 'shadow', instructions: 'Updated' };
+
+      await updateAgent(auth(), 'a1', { instructions: 'Updated' } as never);
+
+      expect(state.hasResolvableAgentRecipient).not.toHaveBeenCalled();
+      expect(state.updatedValues).toMatchObject({ instructions: 'Updated' });
+    });
+
+    it('gates createAgent the same way, before the insert runs', async () => {
+      state.hasResolvableAgentRecipient.mockResolvedValue(true);
+      state.returnedRow = storedRow;
+
+      const err = await createAgent(
+        auth(),
+        { orgId: 'o1', partnerId: null },
+        { ...createInput, mode: 'act', toolAllowlist: [] } as never,
+      ).catch((e) => e);
+
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['act_eligible_tool']);
+      expect(state.insertedValues).toBeNull();
+    });
+
+    it('a create with a satisfied surface and recipient succeeds', async () => {
+      state.hasResolvableAgentRecipient.mockResolvedValue(true);
+      state.returnedRow = { ...storedRow, mode: 'act', toolAllowlist: ['manage_services'] };
+
+      await createAgent(
+        auth(),
+        { orgId: 'o1', partnerId: null },
+        { ...createInput, mode: 'act', toolAllowlist: ['manage_services'], recipients: { userIds: ['u1'], roleIds: [] } } as never,
+      );
+
+      expect(state.insertedValues).toMatchObject({ mode: 'act' });
+    });
   });
 
   it('soft-disables and records audit and event side effects', async () => {

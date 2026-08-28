@@ -39,10 +39,20 @@ vi.mock('../middleware/auth', () => ({
   ),
 }));
 
+const { ActPrerequisitesNotMetError } = vi.hoisted(() => ({
+  ActPrerequisitesNotMetError: class ActPrerequisitesNotMetError extends Error {
+    readonly code = 'act_prerequisites_not_met';
+    constructor(public missing: string[]) {
+      super(`act_prerequisites_not_met: ${missing.join(', ')}`);
+    }
+  },
+}));
+
 vi.mock('../services/aiAgents/agentService', () => ({
   AgentInvariantError: class AgentInvariantError extends Error {},
   AgentKindConflictError: class AgentKindConflictError extends Error {},
   UnsupportedAgentModeError: class UnsupportedAgentModeError extends Error {},
+  ActPrerequisitesNotMetError,
   createAgent: vi.fn(),
   updateAgent: vi.fn(),
   disableAgent: vi.fn(),
@@ -73,7 +83,7 @@ vi.mock('../services/aiAgents/effectivePolicy', () => ({
   resolveEffectiveAgent: resolveEffectiveAgentMock,
 }));
 
-import { aiAgentsRoutes } from './aiAgents';
+import { aiAgentsRoutes, mapError } from './aiAgents';
 
 const AGENT_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
@@ -306,5 +316,22 @@ describe('POST /ai-agents/:id/runs', () => {
 
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Organization not found' });
+  });
+});
+
+describe('mapError — act-mode activation prerequisites (Task 6, #3826)', () => {
+  it('maps ActPrerequisitesNotMetError to a 422 naming exactly what is missing', async () => {
+    const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
+    const ctx = { json: jsonMock } as unknown as Parameters<typeof mapError>[0];
+
+    mapError(ctx, new ActPrerequisitesNotMetError(['recipient', 'act_eligible_tool']));
+
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'act_prerequisites_not_met',
+        missing: ['recipient', 'act_eligible_tool'],
+      }),
+      422,
+    );
   });
 });

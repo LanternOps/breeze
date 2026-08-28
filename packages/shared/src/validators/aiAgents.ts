@@ -90,6 +90,22 @@ export const aiAgentProtectedResourcesSchema = aiAgentProtectedResourcesPatchSch
   ...v,
 }));
 
+// Wave 4 Part B (Task 6, #3826): the closed set of saved scripts an operator
+// has explicitly opted into unattended act-mode execution. `toolAllowlist`
+// admitting `run_script` is shape-only ("this agent may call run_script at
+// all") — this is the separate, per-script authorization the manifest's
+// run_script op requires before executing ANY particular script unattended
+// (actRevalidation.ts). Max 50 mirrors nothing structural; it is a sane
+// upper bound on a hand-curated allowlist an operator actually reviews.
+const actAssetsFields = z.object({
+  scriptIds: z.array(z.string().guid()).max(50),
+});
+export const aiAgentActAssetsPatchSchema = actAssetsFields.partial();
+export const aiAgentActAssetsSchema = aiAgentActAssetsPatchSchema.transform((v) => ({
+  scriptIds: [],
+  ...v,
+}));
+
 export const aiAgentPolicyFieldsSchema = z.object({
   enabled: z.boolean().default(false),
   mode: z.enum(AI_AGENT_MODES).default('off'),
@@ -99,6 +115,7 @@ export const aiAgentPolicyFieldsSchema = z.object({
   limits: aiAgentLimitsSchema.prefault({}),
   triggers: aiAgentTriggersSchema.prefault({}),
   recipients: aiAgentRecipientsSchema.prefault({}),
+  actAssets: aiAgentActAssetsSchema.prefault({}),
   instructions: z.string().max(2000).nullable().default(null),
   cooldownSeconds: z.number().int().min(0).max(86400).default(900),
 });
@@ -122,6 +139,7 @@ export const updateAiAgentSchema = z.object({
   limits: aiAgentLimitsPatchSchema.optional(),
   triggers: aiAgentTriggersPatchSchema.optional(),
   recipients: aiAgentRecipientsPatchSchema.optional(),
+  actAssets: aiAgentActAssetsPatchSchema.optional(),
   instructions: z.string().max(2000).nullable().optional(),
   cooldownSeconds: z.number().int().min(0).max(86400).optional(),
 });

@@ -17,7 +17,7 @@ import { PARTNER_WIDE_WRITE_DENIED_MESSAGE, PartnerWideWriteDeniedError } from '
 import { AgentAccessDeniedError } from '../services/aiAgents/access';
 import {
   createAgent, disableAgent, getAgent, listAgents, updateAgent,
-  AgentInvariantError, AgentKindConflictError, UnsupportedAgentModeError,
+  ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError, UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
 import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
@@ -87,6 +87,7 @@ function mapRow(row: AiAgentRow): AiAgentDto {
     limits: row.limits,
     triggers: row.triggers,
     recipients: row.recipients,
+    actAssets: row.actAssets,
     instructions: row.instructions,
     cooldownSeconds: row.cooldownSeconds,
     // Explicit, rather than relying on JSON.stringify to coerce a Date: the
@@ -103,11 +104,18 @@ function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505';
 }
 
-function mapError(c: Context, err: unknown) {
+export function mapError(c: Context, err: unknown) {
   if (err instanceof UnsupportedAgentModeError) {
     // err.code, not a repeated literal — the class types it as a literal, so
     // this cannot drift from the value the client branches on.
     return c.json({ error: err.message, code: err.code, supportedModes: SUPPORTED_AGENT_MODES }, 422);
+  }
+  // Task 6 (#3826): the write is mode-legal ('act' is now a supported mode)
+  // but would leave the row unable to actually act — no one to notify, or no
+  // surface the manifest can ever reach. `missing` names exactly which so the
+  // client (Task 8's form) can render an actionable message.
+  if (err instanceof ActPrerequisitesNotMetError) {
+    return c.json({ error: err.message, code: err.code, missing: err.missing }, 422);
   }
   if (err instanceof AgentKindConflictError) {
     return c.json({ error: err.message, code: err.code }, 409);

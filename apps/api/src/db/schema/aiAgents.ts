@@ -13,6 +13,7 @@ import {
   varchar,
 } from 'drizzle-orm/pg-core';
 import type {
+  AiAgentActAssets,
   AiAgentKind,
   AiAgentLimits,
   AiAgentMode,
@@ -48,6 +49,11 @@ export const aiAgents = pgTable('ai_agents', {
   limits: jsonb('limits').$type<Partial<AiAgentLimits>>().notNull().default({}),
   triggers: jsonb('triggers').$type<Partial<AiAgentTriggers>>().notNull().default({}),
   recipients: jsonb('recipients').$type<Partial<AiAgentRecipients>>().notNull().default({}),
+  // Wave 4 Part B (Task 6, #3826): per-script act-mode authorization — see
+  // AiAgentActAssets's docstring. New column (migrations/2026-09-15-ai-agents-act-assets.sql);
+  // registered CORE_TENANT_EXPORT_POLICY excludedOpen (open jsonb container,
+  // same bucket as every other policy column on this table).
+  actAssets: jsonb('act_assets').$type<Partial<AiAgentActAssets>>().notNull().default({}),
   instructions: text('instructions'),
   cooldownSeconds: integer('cooldown_seconds').notNull().default(900),
   disabledAt: timestamp('disabled_at', { withTimezone: true }),

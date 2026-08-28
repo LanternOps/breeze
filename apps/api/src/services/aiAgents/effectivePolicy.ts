@@ -3,6 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import {
   AI_AGENT_LIMIT_DEFAULTS,
   AI_AGENT_POLICY_SNAPSHOT_VERSION,
+  aiAgentActAssetsSchema,
   aiAgentLimitsSchema,
   aiAgentProtectedResourcesSchema,
   aiAgentRecipientsSchema,
@@ -40,6 +41,7 @@ type PolicyRowFields = Pick<
   | 'limits'
   | 'triggers'
   | 'recipients'
+  | 'actAssets'
   | 'instructions'
   | 'cooldownSeconds'
 >;
@@ -54,6 +56,7 @@ export function normalizeAgentPolicy(row: PolicyRowFields): AiAgentPolicy {
     limits: aiAgentLimitsSchema.parse(row.limits ?? {}),
     triggers: aiAgentTriggersSchema.parse(row.triggers ?? {}),
     recipients: aiAgentRecipientsSchema.parse(row.recipients ?? {}),
+    actAssets: aiAgentActAssetsSchema.parse(row.actAssets ?? {}),
     instructions: row.instructions ?? null,
     cooldownSeconds: row.cooldownSeconds,
   };
@@ -113,6 +116,7 @@ function partnerProvenance(): AiAgentPolicyProvenance {
     limits: 'partner',
     triggers: 'partner',
     recipients: 'partner',
+    actAssets: 'partner',
     instructions: 'partner',
     cooldownSeconds: 'partner',
   };
@@ -186,6 +190,13 @@ export function mergeAgentPolicies(
     recipients: pick('recipients', {
       userIds: union(partner.recipients.userIds, org.recipients.userIds),
       roleIds: union(partner.recipients.roleIds, org.recipients.roleIds),
+    }, 'merged'),
+    // Tighten-only, same as toolAllowlist: an org may only NARROW the
+    // partner's authorized script set, never add a script the partner never
+    // opted in — an org intersecting against an empty partner baseline stays
+    // empty, which is exactly "run_script never act-eligible" (Task 6).
+    actAssets: pick('actAssets', {
+      scriptIds: intersect(partner.actAssets.scriptIds, org.actAssets.scriptIds),
     }, 'merged'),
     instructions: pick(
       'instructions',

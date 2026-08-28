@@ -19,6 +19,7 @@ import { getRedis } from './redis';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import type { AuthContext } from '../middleware/auth';
 import { envFlag } from '../config/env';
+import { resolveActOperation } from './aiAgents/actManifest';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -1190,7 +1191,14 @@ export type GuardrailCheck =
       approvalScope: AiApprovalScope;
     });
 
-export type GuardrailDisposition = 'allow' | 'propose' | 'deny';
+/**
+ * `'act'` (wave 4 Part B): a manifest-matched, rule-equivalent mutation under
+ * a live `mode: 'act'` policy. Distinct from `'allow'` — `'act'` additionally
+ * signals the run-loop pre-hook to revalidate (live policy + guardrail
+ * re-run + device/asset pinning) and reserve a `maxActionsPerRun` slot before
+ * dispatch (actRevalidation.ts, Task 3); `'allow'` never does either.
+ */
+export type GuardrailDisposition = 'allow' | 'propose' | 'deny' | 'act';
 
 /**
  * checkAgentGuardrails' verdict. `allowed` stays false for 'propose' on
@@ -1603,6 +1611,39 @@ export function checkAgentGuardrails(
 
   const protectedHit = touchesProtected(input, policy.protectedResources);
   if (protectedHit) return deny(`Denied: ${protectedHit}`);
+
+  // Act mode (wave 4 Part B): a manifest-matched, rule-equivalent mutation
+  // executes (through the normal tool path — the pre/post hooks in
+  // runLoop.ts do the actual revalidate/reserve/verify work); everything
+  // else that mutates records a proposal, exactly like shadow. This branch
+  // sits AFTER the allowlist and protected checks (same placement rule as
+  // shadow below), so both outcomes are only reachable for a call the agent
+  // could legitimately make in the first place — every structural deny above
+  // (kill switch, tier 4, secret-bearing, site scope, disabled/off, device-
+  // less mutation, allowlist, protected resources) is untouched and sits
+  // strictly upstream of this branch, never the reverse.
+  if (policy.mode === 'act' && !readOnly) {
+    const op = resolveActOperation(toolName, input);
+    if (op) {
+      return {
+        ...base,
+        allowed: true,
+        requiresApproval: false,
+        disposition: 'act',
+        reason: `Rule-equivalent operation "${op.key}" — act mode executes with verification`,
+      };
+    }
+    // Unmatched mutation under act: identical semantics to shadow — propose,
+    // never auto-approve-and-execute. There is no "act mode but not manifest
+    // -matched" execution path; the manifest IS the entire act-eligible surface.
+    return {
+      ...base,
+      allowed: false,
+      requiresApproval: false,
+      disposition: 'propose',
+      reason: `Tool "${toolName}" is not act-eligible; recorded as a proposal`,
+    };
+  }
 
   // Shadow proposes; it never mutates — and this branch now sits AFTER the
   // allowlist and protected checks so 'propose' is only reachable for a call

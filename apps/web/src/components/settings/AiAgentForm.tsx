@@ -10,7 +10,7 @@ import {
   type AiAgentMode,
 } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
-import { handleActionError, runAction } from '@/lib/runAction';
+import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 import { useOrgScope } from '@/hooks/useOrgScope';
@@ -55,7 +55,23 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 const AGENT_ERROR_COPY: Record<string, ((t: (key: string) => string) => string) | undefined> = {
   agent_kind_exists: (t) => t('aiAgentsPage.errors.kindExists'),
   mode_not_supported: (t) => t('aiAgentsPage.errors.modeNotSupported'),
+  // The server's 422 (Task 6, #3826) is the authoritative gate — the
+  // structured `missing[]` it carries is rendered as issues below, this is
+  // just the toast fallback so the raw machine token never reaches the user.
+  act_prerequisites_not_met: (t) => t('aiAgentsPage.errors.actPrerequisitesNotMet'),
 };
+
+/**
+ * `missing[]` entries from the server's `act_prerequisites_not_met` 422
+ * (Task 6, #3826 — `ActPrerequisitesNotMetError`). Mapped to translated,
+ * actionable copy so the operator sees what to fix rather than a machine
+ * token.
+ */
+const ACT_PREREQUISITE_COPY: Record<string, (t: (key: string) => string) => string> = {
+  recipient: (t) => t('aiAgentsPage.errors.actMissingRecipient'),
+  act_eligible_tool: (t) => t('aiAgentsPage.errors.actMissingTool'),
+};
+
 const inputCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
 const INSTRUCTIONS_MAX = 2000;
 
@@ -169,6 +185,15 @@ export default function AiAgentForm({
       kind: firstFreeKind(agents, defaultOwnerScope, orgScope.orgId) ?? AI_AGENT_KINDS[0],
     }),
   );
+
+  // Captured once at mount (the parent keys this form by agent id, so a new
+  // edit target remounts rather than reusing state — see
+  // "does not carry a stale draft" below). The acknowledgement gate only
+  // applies to a genuine transition INTO act mode, not to every subsequent
+  // edit of an agent that is already acting.
+  const [initialMode] = useState<AiAgentMode>(agent?.mode ?? 'off');
+  const [actAck, setActAck] = useState(false);
+  const enteringActMode = draft.mode === 'act' && initialMode !== 'act';
 
   // Recomputed on every owner-scope flip. Flattening this across both axes is
   // what previously hid `triage` from the PARTNER-WIDE create form as soon as
@@ -289,6 +314,19 @@ export default function AiAgentForm({
       // Project rule: 401 is handled by the redirect, other ActionErrors were
       // already toasted by runAction, and anything else must still be loud.
       handleActionError(err, t('aiAgentsPage.toasts.saveFailed'));
+      // The client-side ack checkbox is only a UX nudge — the server's 422
+      // prerequisites (Task 6, #3826) are authoritative, e.g. the agent's
+      // recipients or act-eligible tools changed between load and save.
+      // Surface exactly what it named as unmet, not just the generic toast.
+      if (err instanceof ActionError && err.code === 'act_prerequisites_not_met') {
+        const body = err.body as { missing?: unknown } | undefined;
+        const missing = Array.isArray(body?.missing)
+          ? body.missing.filter((entry): entry is string => typeof entry === 'string')
+          : [];
+        setIssues(
+          missing.map((entry) => ACT_PREREQUISITE_COPY[entry]?.(t) ?? entry),
+        );
+      }
     } finally {
       setSaving(false);
     }
@@ -471,8 +509,18 @@ export default function AiAgentForm({
             <option value="off">{t('aiAgentsPage.modes.off')}</option>
             <option value="shadow">{t('aiAgentsPage.modes.shadow')}</option>
             {/* Not merely hidden: an operator needs to see that acting is a
-                real, deliberate next step rather than a missing feature. The
-                API refuses it with 422 mode_not_supported until wave 4. */}
+                real, deliberate next step rather than a missing feature.
+                Gated on the API's supportedModes (Task 6, #3826) — the
+                server's create/update prerequisites (recipient +
+                act-eligible surface) are the authoritative gate; the warning
+                banner and acknowledgement below are this form's contribution
+                on top of that. Review fix (#3826 final-review): the CREATE
+                path has no `agent` DTO yet (it is null until the first save),
+                so the fallback must be the shared `SUPPORTED_AGENT_MODES`
+                constant — not `[]` — or the option is permanently disabled on
+                every create form regardless of what the API actually
+                supports, which is exactly the drift the constant's own
+                docstring exists to prevent. */}
             <option
               value="act"
               disabled={!(agent?.supportedModes ?? SUPPORTED_AGENT_MODES).includes('act')}
@@ -492,6 +540,33 @@ export default function AiAgentForm({
           />
           <span>{t('aiAgentsPage.fields.enabled')}</span>
         </label>
+
+        {draft.mode === 'act' && (
+          <div
+            className="space-y-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm md:col-span-2"
+            data-testid="ai-agent-act-warning"
+          >
+            <p className="font-medium">{t('aiAgentsPage.actWarning.title')}</p>
+            <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+              <li>{t('aiAgentsPage.actWarning.unattended')}</li>
+              <li>{t('aiAgentsPage.actWarning.verification')}</li>
+              <li>{t('aiAgentsPage.actWarning.noRollback')}</li>
+              <li>{t('aiAgentsPage.actWarning.singleDevice')}</li>
+              <li>{t('aiAgentsPage.actWarning.actionCap')}</li>
+            </ul>
+            {enteringActMode && (
+              <label className="flex items-start gap-2 pt-1 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  checked={actAck}
+                  onChange={(e) => setActAck(e.target.checked)}
+                  data-testid="ai-agent-act-ack"
+                />
+                <span>{t('aiAgentsPage.actWarning.ack')}</span>
+              </label>
+            )}
+          </div>
+        )}
 
         <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">
           <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
@@ -600,7 +675,7 @@ export default function AiAgentForm({
         <button
           type="button"
           onClick={() => void save()}
-          disabled={saving || (isCreate && availableKinds.length === 0)}
+          disabled={saving || (isCreate && availableKinds.length === 0) || (enteringActMode && !actAck)}
           className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
           data-testid="ai-agent-save"
         >

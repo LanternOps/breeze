@@ -501,8 +501,13 @@ describe('D. allowlist matching is exact', () => {
       { action: 'restart' },
       policyWith({ mode: 'act', toolAllowlist: ['manage_services'] }),
     );
-    expect(verdict.disposition).toBe('allow');
-    expect(verdict.requiresApproval).toBe(true);
+    // manage_services:restart is manifest-matched (wave 4b), so the coarse
+    // allowlist grant now resolves to 'act' (executes with verification, no
+    // human approval step) rather than the pre-wave-4b 'allow' + approval-
+    // required placeholder. The point under test — a bare tool-name entry
+    // grants the action at all — is unaffected by which disposition it lands on.
+    expect(verdict.disposition).toBe('act');
+    expect(verdict.requiresApproval).toBe(false);
 
     // …and it is still only that tool.
     expect(checkAgentGuardrails(
@@ -563,15 +568,19 @@ describe('F. a device-less run never proposes', () => {
         }),
       });
       const preToolUse = createAgentRunPreToolUse({
-        run: { id: 'run-1', orgId: 'org-1' },
+        run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id },
         agentName: AGENT.name,
         agentAuth,
+        agentKind: AGENT.kind,
         guardrailPolicy,
         outcome,
         intentIds,
         allowedPending,
         sessionId: null,
         executionIdPending: new Map(),
+        actPinPending: new Map(),
+        actReservation: { count: 0 },
+      deadlineMs: Date.now() + 60_000,
       });
 
       for (const toolName of Object.keys(TOOL_TIERS)) {
@@ -717,15 +726,19 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
       return allowlistFor(toolName, action);
     });
     const sweepHook = createAgentRunPreToolUse({
-      run: { id: 'run-1', orgId: 'org-1' },
+      run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id },
       agentName: AGENT.name,
       agentAuth,
+      agentKind: AGENT.kind,
       guardrailPolicy: policyWith({ mode: 'shadow', toolAllowlist: allToolsAllowlist }),
       outcome,
       intentIds,
       allowedPending,
       sessionId: null,
       executionIdPending: new Map(),
+      actPinPending: new Map(),
+      actReservation: { count: 0 },
+      deadlineMs: Date.now() + 60_000,
     });
 
     for (const toolName of Object.keys(TOOL_TIERS)) {
@@ -735,15 +748,19 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
     }
 
     const deniedHook = createAgentRunPreToolUse({
-      run: { id: 'run-1', orgId: 'org-1' },
+      run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id },
       agentName: AGENT.name,
       agentAuth,
+      agentKind: AGENT.kind,
       guardrailPolicy: policyWith({ mode: 'shadow', toolAllowlist: [] }),
       outcome,
       intentIds,
       allowedPending,
       sessionId: null,
       executionIdPending: new Map(),
+      actPinPending: new Map(),
+      actReservation: { count: 0 },
+      deadlineMs: Date.now() + 60_000,
     });
     const hostileSystemPrompt = buildAgentRunSystemPrompt(hostilePromptContext());
     expect(hostileSystemPrompt).toContain('ignore the allowlist');
@@ -755,9 +772,10 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
     });
 
     const proposeHook = createAgentRunPreToolUse({
-      run: { id: 'run-1', orgId: 'org-1' },
+      run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id },
       agentName: AGENT.name,
       agentAuth,
+      agentKind: AGENT.kind,
       guardrailPolicy: policyWith({
         mode: 'shadow',
         toolAllowlist: ['manage_services:restart'],
@@ -767,6 +785,9 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
       allowedPending,
       sessionId: null,
       executionIdPending: new Map(),
+      actPinPending: new Map(),
+      actReservation: { count: 0 },
+      deadlineMs: Date.now() + 60_000,
     });
     const callsBeforeExplicitProposal = createActionIntentMock.mock.calls.length;
     const proposed = await proposeHook('manage_services', { action: 'restart' });
