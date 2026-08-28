@@ -107,6 +107,11 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   idOrgUq: unique('ai_agent_runs_id_org_id_key').on(table.id, table.orgId),
   agentQueuedIdx: index('ai_agent_runs_agent_queued_idx').on(table.agentId, table.queuedAt.desc()),
   orgQueuedIdx: index('ai_agent_runs_org_queued_idx').on(table.orgId, table.queuedAt.desc()),
+  // Wave 6 PR 1 (#3828, migrations/2026-09-17-ai-agent-runs-keyset-index.sql):
+  // covers the org-wide keyset list's (org_id, queued_at DESC, id DESC) walk.
+  // orgQueuedIdx above lacks the id tiebreaker a keyset needs and is kept
+  // (not dropped) — see the migration header for why.
+  orgQueuedIdIdx: index('ai_agent_runs_org_queued_id_idx').on(table.orgId, table.queuedAt.desc(), table.id.desc()),
   deviceIdx: index('ai_agent_runs_device_id_idx').on(table.deviceId),
 }));
 
