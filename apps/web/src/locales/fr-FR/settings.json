@@ -2378,7 +2378,12 @@
     "enforceLockoutSelfWarning": "Votre propre compte n'est pas connecté — vous vous bloqueriez vous-même.",
     "enforceLockoutAcknowledge": "Je comprends que ces utilisateurs ne pourront pas se connecter tant qu'ils n'auront pas connecté l'authentification unique",
     "enforceLockoutConfirm": "Activer l'application obligatoire",
-    "enforceLockoutConfirmationNeeded": "Confirmez l'avertissement de blocage pour activer l'application obligatoire de l'authentification unique."
+    "enforceLockoutConfirmationNeeded": "Confirmez l'avertissement de blocage pour activer l'application obligatoire de l'authentification unique.",
+    "providerCreated": "Fournisseur créé",
+    "providerUpdated": "Fournisseur mis à jour",
+    "providerDeleted": "Fournisseur supprimé",
+    "providerEnabled": "Fournisseur activé",
+    "providerDisabled": "Fournisseur désactivé"
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",

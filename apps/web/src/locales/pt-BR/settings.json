@@ -2378,7 +2378,12 @@
     "enforceLockoutSelfWarning": "Sua própria conta não está conectada — você bloquearia a si mesmo.",
     "enforceLockoutAcknowledge": "Entendo que esses usuários não poderão entrar até conectarem o SSO",
     "enforceLockoutConfirm": "Ativar imposição",
-    "enforceLockoutConfirmationNeeded": "Confirme o aviso de bloqueio para ativar a imposição de SSO."
+    "enforceLockoutConfirmationNeeded": "Confirme o aviso de bloqueio para ativar a imposição de SSO.",
+    "providerCreated": "Provedor criado",
+    "providerUpdated": "Provedor atualizado",
+    "providerDeleted": "Provedor excluído",
+    "providerEnabled": "Provedor ativado",
+    "providerDisabled": "Provedor desativado"
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Custo em {{currency}} — margem indisponível",

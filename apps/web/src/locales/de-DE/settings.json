@@ -2378,7 +2378,12 @@
     "enforceLockoutSelfWarning": "Ihr eigenes Konto ist nicht verbunden — Sie würden sich selbst aussperren.",
     "enforceLockoutAcknowledge": "Ich verstehe, dass sich diese Benutzer nicht anmelden können, bis sie SSO verbinden",
     "enforceLockoutConfirm": "Erzwingung aktivieren",
-    "enforceLockoutConfirmationNeeded": "Bestätigen Sie die Aussperr-Warnung, um die SSO-Erzwingung zu aktivieren."
+    "enforceLockoutConfirmationNeeded": "Bestätigen Sie die Aussperr-Warnung, um die SSO-Erzwingung zu aktivieren.",
+    "providerCreated": "Anbieter erstellt",
+    "providerUpdated": "Anbieter aktualisiert",
+    "providerDeleted": "Anbieter gelöscht",
+    "providerEnabled": "Anbieter aktiviert",
+    "providerDisabled": "Anbieter deaktiviert"
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Kosten in {{currency}} — Marge nicht verfügbar",

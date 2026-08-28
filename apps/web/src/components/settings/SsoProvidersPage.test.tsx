@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
+const { showToastMock } = vi.hoisted(() => ({ showToastMock: vi.fn() }));
 // Org scope, so the fleet-view gate stays open and the data paths under test run.
 vi.mock('@/hooks/useOrgScope', () => ({
   useOrgScope: () => ({ ready: true, status: 'resolved', scope: 'org', orgId: 'org-1', org: null, error: null }),
@@ -10,6 +11,7 @@ vi.mock('@/hooks/useOrgScope', () => ({
 vi.mock('../../stores/auth', () => ({
   registerOrgIdProvider: vi.fn(), fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+vi.mock('../shared/Toast', () => ({ showToast: showToastMock }));
 
 const getJwtClaims = vi.fn(() => ({ scope: 'partner', partnerId: 'p-1', orgId: null }));
 vi.mock('../../lib/authScope', () => ({ getJwtClaims: () => getJwtClaims() }));
@@ -67,6 +69,7 @@ function routes(opts: {
 describe('SsoProvidersPage partner-axis behavior', () => {
   beforeEach(() => {
     fetchWithAuth.mockReset();
+    showToastMock.mockClear();
     getJwtClaims.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
   });
 
@@ -632,6 +635,88 @@ describe('SsoProvidersPage partner-axis behavior', () => {
       expect(patchCall).toBeTruthy();
       const body = JSON.parse((patchCall![1] as { body: string }).body);
       expect(body.trustsIdpMfa).toBe(false);
+    });
+  });
+
+  // 2026-08-28 pre-release sweep: save/delete/toggle all succeeded at the API
+  // with no visible confirmation, and delete/toggle bypassed runAction
+  // entirely. Every mutation must surface its outcome via a toast.
+  describe('outcome toasts', () => {
+    it('shows a success toast after saving an edited provider', async () => {
+      fetchWithAuth.mockImplementation((url: string, opts?: { method?: string }) => {
+        if (url === '/sso/providers') return Promise.resolve(jsonRes({ data: [PARTNER_PROVIDER] }));
+        if (url === '/sso/providers?scope=partner') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/sso/presets') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/roles') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/sso/providers/pp-1' && (!opts || !opts.method)) {
+          return Promise.resolve(jsonRes({
+            data: {
+              name: 'Team Login', type: 'oidc', preset: '', issuer: 'https://idp.example.com',
+              clientId: 'client-1', scopes: 'openid profile email',
+              attributeMapping: { email: 'email', name: 'name' },
+              autoProvision: true, defaultRoleId: '', allowedDomains: '',
+              enforceSSO: false, hasClientSecret: true
+            }
+          }));
+        }
+        if (url === '/sso/providers/pp-1' && opts?.method === 'PATCH') {
+          return Promise.resolve(jsonRes({ data: PARTNER_PROVIDER }));
+        }
+        return Promise.resolve(jsonRes({ data: [] }));
+      });
+
+      render(<SsoProvidersPage />);
+      await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      await screen.findByRole('button', { name: /save changes/i });
+      fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+      await waitFor(() => {
+        expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+      });
+    });
+
+    it('shows a success toast after deleting a provider', async () => {
+      fetchWithAuth.mockImplementation((url: string, opts?: { method?: string }) => {
+        if (url === '/sso/providers') return Promise.resolve(jsonRes({ data: [PARTNER_PROVIDER] }));
+        if (url === '/sso/providers?scope=partner') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/sso/presets') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/roles') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/sso/providers/pp-1' && opts?.method === 'DELETE') {
+          return Promise.resolve(jsonRes({ data: { success: true } }));
+        }
+        return Promise.resolve(jsonRes({ data: [] }));
+      });
+
+      render(<SsoProvidersPage />);
+      await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Delete provider' }));
+
+      await waitFor(() => {
+        expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+      });
+    });
+
+    it('shows a success toast after toggling a provider status', async () => {
+      fetchWithAuth.mockImplementation((url: string, opts?: { method?: string }) => {
+        if (url === '/sso/providers') return Promise.resolve(jsonRes({ data: [PARTNER_PROVIDER] }));
+        if (url === '/sso/providers?scope=partner') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/sso/presets') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/roles') return Promise.resolve(jsonRes({ data: [] }));
+        if (url === '/sso/providers/pp-1/status' && opts?.method === 'POST') {
+          return Promise.resolve(jsonRes({ data: { ...PARTNER_PROVIDER, status: 'inactive' } }));
+        }
+        return Promise.resolve(jsonRes({ data: [] }));
+      });
+
+      render(<SsoProvidersPage />);
+      await waitFor(() => expect(screen.getByText('Team Login')).toBeTruthy());
+      fireEvent.click(screen.getByRole('button', { name: 'Deactivate' }));
+
+      await waitFor(() => {
+        expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+      });
     });
   });
 });

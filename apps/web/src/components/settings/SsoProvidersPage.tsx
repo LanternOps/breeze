@@ -194,6 +194,8 @@ export default function SsoProvidersPage() {
     setTestingConnection(true);
 
     try {
+      // runaction-exempt: read-only connection test — the outcome renders
+      // inline in the Test Result modal below, not as a toast.
       const response = await fetchWithAuth(`/sso/providers/${provider.id}/test`, {
         method: 'POST'
       });
@@ -220,6 +222,8 @@ export default function SsoProvidersPage() {
     body: Record<string, unknown>
   ): Promise<EnforcementPreflight | 'unavailable' | 'aborted'> => {
     try {
+      // runaction-exempt: read-only preflight probe — its result feeds the
+      // lockout confirm dialog (or is silently unavailable), never a toast.
       const response = await fetchWithAuth('/sso/providers/enforcement-preflight', {
         method: 'POST',
         body: JSON.stringify(body)
@@ -255,28 +259,36 @@ export default function SsoProvidersPage() {
 
   const performToggleStatus = async (provider: SsoProvider, newStatus: 'active' | 'inactive', acknowledgeLockout: boolean) => {
     try {
-      const response = await fetchWithAuth(`/sso/providers/${provider.id}/status`, {
-        method: 'POST',
-        body: JSON.stringify({ status: newStatus, ...(acknowledgeLockout ? { acknowledgeLockout: true } : {}) })
+      await runAction({
+        request: () => fetchWithAuth(`/sso/providers/${provider.id}/status`, {
+          method: 'POST',
+          body: JSON.stringify({ status: newStatus, ...(acknowledgeLockout ? { acknowledgeLockout: true } : {}) })
+        }),
+        errorFallback: t('ssoProvidersPage.failedToUpdateProviderStatus'),
+        successMessage: newStatus === 'active'
+          ? t('ssoProvidersPage.providerEnabled')
+          : t('ssoProvidersPage.providerDisabled'),
+        // Same softening as the save path: the raw 409 message is written for
+        // API callers, the web user gets the confirm dialog instead (below).
+        friendly: (code) => code === 'sso_enforcement_lockout_confirmation_required'
+          ? t('ssoProvidersPage.enforceLockoutConfirmationNeeded')
+          : undefined,
+        onUnauthorized: () => navigateTo('/login', { replace: true })
       });
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => null) as { error?: unknown; code?: unknown; preflight?: EnforcementPreflight } | null;
-        // The server backstop refused an unconfirmed lockout (the preflight
-        // read failed, or someone became unlinked between preflight and save):
-        // converge on the same confirm dialog, fed by the 409's own payload.
-        if (response.status === 409 && body?.code === 'sso_enforcement_lockout_confirmation_required' && body.preflight) {
-          openLockoutConfirm(body.preflight, { kind: 'activate', provider });
-          return;
-        }
-        // Surface the server's reason, not a generic label — a 403/400 must be
-        // distinguishable from "it would lock people out".
-        throw new Error(typeof body?.error === 'string' ? body.error : t('ssoProvidersPage.failedToUpdateProviderStatus'));
-      }
 
       await fetchProviders();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('ssoProvidersPage.anErrorOccurred'));
+      // The server backstop refused an unconfirmed lockout (the preflight
+      // read failed, or someone became unlinked between preflight and save):
+      // converge on the same confirm dialog, fed by the 409's own payload.
+      if (err instanceof ActionError && err.code === 'sso_enforcement_lockout_confirmation_required') {
+        const preflight = (err.body as { preflight?: EnforcementPreflight } | undefined)?.preflight;
+        if (preflight) {
+          openLockoutConfirm(preflight, { kind: 'activate', provider });
+          return;
+        }
+      }
+      handleActionError(err, t('ssoProvidersPage.anErrorOccurred'));
     }
   };
 
@@ -310,6 +322,8 @@ export default function SsoProvidersPage() {
 
     setTestingConnection(true);
     try {
+      // runaction-exempt: read-only connection test — the outcome renders
+      // inline in the Test Result modal below, not as a toast.
       const response = await fetchWithAuth(`/sso/providers/${selectedProvider.id}/test`, {
         method: 'POST'
       });
@@ -383,6 +397,9 @@ export default function SsoProvidersPage() {
       await runAction({
         request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload) }),
         errorFallback: t('ssoProvidersPage.failedToSaveProvider'),
+        successMessage: modalMode === 'edit'
+          ? t('ssoProvidersPage.providerUpdated')
+          : t('ssoProvidersPage.providerCreated'),
         // The raw 409 message is written for API callers ("resend with
         // acknowledgeLockout: true") — the web user gets the confirm dialog
         // instead (below), so soften the toast to match.
@@ -428,18 +445,17 @@ export default function SsoProvidersPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/sso/providers/${selectedProvider.id}`, {
-        method: 'DELETE'
+      await runAction({
+        request: () => fetchWithAuth(`/sso/providers/${selectedProvider.id}`, { method: 'DELETE' }),
+        errorFallback: t('ssoProvidersPage.failedToDeleteProvider'),
+        successMessage: t('ssoProvidersPage.providerDeleted'),
+        onUnauthorized: () => navigateTo('/login', { replace: true })
       });
-
-      if (!response.ok) {
-        throw new Error(t('ssoProvidersPage.failedToDeleteProvider'));
-      }
 
       await fetchProviders();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('ssoProvidersPage.anErrorOccurred'));
+      handleActionError(err, t('ssoProvidersPage.anErrorOccurred'));
     } finally {
       setSubmitting(false);
     }
