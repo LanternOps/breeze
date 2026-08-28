@@ -1076,6 +1076,59 @@ describe('createActionIntent — approver fan-out', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Wave 5 Part A (#3827) — policy_decision_state stamping. resolvePolicyDecisionState
+// is a PR-A stub that always returns 'human_required'; these tests pin that the
+// column lands correctly on the INSERT itself (not a follow-up UPDATE) and that
+// an idempotent replay never touches an existing row's state. Every fan-out
+// behavior test above/below this block passing UNCHANGED is the inertness proof
+// for the runHumanFanout extraction — this block only covers the new column.
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — policy decision state (Wave 5 Part A, inert)', () => {
+  it('stamps policyDecisionState human_required as part of the INSERT values on a new intent', async () => {
+    dbState.insertActionIntentsResults.push([makeIntentRow()]);
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-solo' }]);
+
+    await createActionIntent(makeAuth(), baseInput());
+
+    expect(dbState.insertedActionIntentValues).toHaveLength(1);
+    expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('human_required');
+  });
+
+  it('still fans out to approvers (unconditional today — the stub always defers to human_required)', async () => {
+    dbState.insertActionIntentsResults.push([makeIntentRow()]);
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID, APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-1' }]);
+
+    const snapshot = await createActionIntent(makeAuth(), baseInput());
+
+    expect(snapshot.status).toBe('pending_approval');
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(1);
+  });
+
+  it('does not touch policyDecisionState on an idempotent replay — no second insert, no update', async () => {
+    // onConflictDoNothing().returning() → [] signals a conflict; the existing
+    // row (with whatever state it was originally stamped with) is returned
+    // as-is. This is the only path resolvePolicyDecisionState's output never
+    // reaches — proving the computed value from THIS call is simply discarded.
+    dbState.insertActionIntentsResults.push([]);
+    const existing = makeIntentRow({ id: 'existing-intent', status: 'approved' });
+    dbState.selectActionIntentsResults.push([existing]);
+    dbState.selectApprovalRequestsResults.push([{ id: 'approval-existing', userId: REQUESTER_ID }]);
+
+    const snapshot = await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'fixed-key' }));
+
+    expect(snapshot.id).toBe('existing-intent');
+    // The INSERT attempt still carries the computed value in its `.values()`
+    // call (Postgres discards it on conflict) — but no UPDATE ever runs, and
+    // no second insert happens.
+    expect(dbState.insertedActionIntentValues).toHaveLength(1);
+    expect(dbState.updateActionIntentsSets).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tier3 supervised/four_eyes split — scope-aware creation, fan-out, deadlines
 // (spec docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md)
 // ---------------------------------------------------------------------------
