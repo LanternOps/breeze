@@ -320,7 +320,7 @@ describe('recordRunTerminal', () => {
     expect(createNotificationMock).toHaveBeenCalledWith(expect.objectContaining({
       userId: USER_ID,
       orgId: ORG_ID,
-      dedupeKey: `circuit-open-${ORG_ID}-${AGENT_ID}`,
+      dedupeKey: `circuit-open-${ORG_ID}-${AGENT_ID}-${RUN_ID}`,
       priority: 'high',
     }));
     expect(createAuditLogAsyncMock).toHaveBeenCalledTimes(1);
@@ -384,6 +384,38 @@ describe('recordRunTerminal', () => {
 
     expect(state.insertCount).toBe(0);
     expect(state.updateCount).toBe(0);
+  });
+
+  it('a second open episode (a different triggering run) gets a DIFFERENT dedupeKey than the first', async () => {
+    state.selectQueue.push([agentRow()]);
+    state.selectQueue.push([{ partnerId: PARTNER_ID }]);
+    state.insertReturningQueue.push([circuitRow({ consecutiveFailures: 3, state: 'closed' })]);
+    state.updateReturningQueue.push([circuitRow({ consecutiveFailures: 3, state: 'open', openedAt: new Date() })]);
+    resolveEffectiveAgentSystemMock.mockResolvedValue(resolvedPolicy(3));
+    resolveRecipientUserIdsMock.mockResolvedValue([USER_ID]);
+
+    await recordRunTerminal(run, 'failed', 'sdk_error', null);
+    const firstDedupeKey = createNotificationMock.mock.calls[0]?.[0]?.dedupeKey as string;
+
+    // A human resets the circuit with MFA, then it opens again later off a
+    // SECOND triggering run — this must notify again, not go silent.
+    resetDbState();
+    createNotificationMock.mockClear();
+    createAuditLogAsyncMock.mockClear();
+    const secondRun = { id: '00000000-0000-4000-8000-0000000000c6', orgId: ORG_ID, agentId: AGENT_ID };
+    state.selectQueue.push([agentRow()]);
+    state.selectQueue.push([{ partnerId: PARTNER_ID }]);
+    state.insertReturningQueue.push([circuitRow({ consecutiveFailures: 3, state: 'closed' })]);
+    state.updateReturningQueue.push([circuitRow({ consecutiveFailures: 3, state: 'open', openedAt: new Date() })]);
+    resolveEffectiveAgentSystemMock.mockResolvedValue(resolvedPolicy(3));
+    resolveRecipientUserIdsMock.mockResolvedValue([USER_ID]);
+
+    await recordRunTerminal(secondRun, 'failed', 'sdk_error', null);
+    const secondDedupeKey = createNotificationMock.mock.calls[0]?.[0]?.dedupeKey as string;
+
+    expect(firstDedupeKey).toBeTruthy();
+    expect(secondDedupeKey).toBeTruthy();
+    expect(secondDedupeKey).not.toBe(firstDedupeKey);
   });
 });
 

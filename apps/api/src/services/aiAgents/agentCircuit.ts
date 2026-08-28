@@ -448,7 +448,16 @@ export async function recordRunTerminal(
               consecutiveFailures: justOpened.consecutiveFailures,
               threshold: justOpened.threshold,
             },
-            dedupeKey: `circuit-open-${run.orgId}-${run.agentId}`,
+            // Discriminated by the TRIGGERING RUN, not just (org, agent):
+            // `user_notifications_user_dedupe_key_uq` has no TTL and no
+            // episode discriminator of its own (rows only clear on explicit
+            // user delete — marking read does not free the key), so a
+            // permanent-per-pair key would notify on the FIRST open ever and
+            // go silent on every reopen after a human resets it with MFA.
+            // `run.id` is unique per terminal run, so every open episode gets
+            // its own key — see agentCircuit.test.ts's "different dedupeKey"
+            // regression case.
+            dedupeKey: `circuit-open-${run.orgId}-${run.agentId}-${run.id}`,
           });
         }
       });

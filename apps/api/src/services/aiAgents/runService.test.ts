@@ -922,8 +922,7 @@ describe('createAndEnqueueAgentRun review findings (wave 3c)', () => {
     expect(reap).toMatchObject({ status: 'failed', errorCode: 'stalled' });
     expect(reap.finishedAt).toBeInstanceOf(Date);
 
-    // The stale-cutoff filtering now lives on the candidate SELECT, not the
-    // per-row CAS update (which only targets id + from-status).
+    // The stale-cutoff clause is on the candidate SELECT...
     const candidateSelect = dbMockState.selects.find((s) => s.table === 'ai_agent_runs' && s.where);
     const where = compiled(candidateSelect?.where);
     expect(where).toContain('"agent_id"');
@@ -934,6 +933,16 @@ describe('createAndEnqueueAgentRun review findings (wave 3c)', () => {
     expect(where).toContain('"started_at"');
     expect(where).toContain('"queued_at"');
     expect(where).toContain('is null');
+
+    // ...AND it is passed back in as the per-row CAS's guard, so the update
+    // is not id+status alone. Without this, a worker that legitimately
+    // claimed the candidate (queued->running) between the SELECT above and
+    // this CAS would still match id+status and get wrongly failed as
+    // 'stalled' — the guard re-checks the SAME cutoff atomically with the
+    // write, restoring the atomicity the old single bulk UPDATE had.
+    const updateWhere = compiled(dbMockState.updateWheres[0] as SQL);
+    expect(updateWhere).toContain('"started_at"');
+    expect(updateWhere).toContain('"queued_at"');
 
     // ...and the candidate select happens before the cooldown/concurrency
     // reads (it is itself the FIRST select:ai_agent_runs).
@@ -965,11 +974,40 @@ describe('createAndEnqueueAgentRun review findings (wave 3c)', () => {
 
   it('reapStalledAgentRuns skips a candidate that lost the CAS (already moved on)', async () => {
     // The row genuinely finished (or was cancelled) between the candidate
-    // select and the per-row transition — exactly what the old bulk UPDATE's
-    // WHERE clause would also have silently excluded.
+    // select and the per-row transition — the CAS's id+status guard alone
+    // already excludes this case; the mock's blanket empty `updateRows`
+    // stands in for "the row is no longer in ['queued','running']".
     dbMockState.rowQueues.ai_agent_runs = [[{ id: RUN_ID, sessionId: 'session-1' }]];
     dbMockState.updateRows = [];
     await expect(reapStalledAgentRuns({ agentId: AGENT_ID, orgId: ORG_ID })).resolves.toEqual([]);
+    expect(reconcileHungExecutions).not.toHaveBeenCalled();
+    expect(closeAgentRunSession).not.toHaveBeenCalled();
+  });
+
+  it('reapStalledAgentRuns does NOT fail a candidate a worker legitimately started between the SELECT and the CAS', async () => {
+    // TOCTOU regression (review fix, #3828): the loop is sequential and
+    // workers never take the reaper's advisory lock, so a candidate can
+    // legitimately transition queued->running (startedAt=now, no longer
+    // stale) between the candidate SELECT and this row's CAS. An id+status
+    // guard alone would still match ('running' is a valid `from` status) and
+    // wrongly fail a run a worker is actively executing. The `stale` guard
+    // passed into `transitionRunStatus` re-checks the cutoff atomically with
+    // the write, so `dbMockState.updateRows = []` here stands in for "the row
+    // no longer satisfies the guard" — the mock's update builder does not
+    // itself evaluate the WHERE clause, so the compiled-SQL assertion above
+    // is what actually proves the guard is wired; this asserts the CALLER
+    // handles a guard-losing CAS the same as any other lost CAS.
+    dbMockState.rowQueues.ai_agent_runs = [[{ id: RUN_ID, sessionId: null }]];
+    dbMockState.updateRows = [];
+
+    const result = await reapStalledAgentRuns({ agentId: AGENT_ID, orgId: ORG_ID });
+
+    expect(result).toEqual([]);
+    const updateWhere = compiled(dbMockState.updateWheres[0] as SQL);
+    // The guard clause is present on the CAS regardless of whether it wins —
+    // this is what makes the outcome above atomic rather than TOCTOU.
+    expect(updateWhere).toContain('"started_at"');
+    expect(updateWhere).toContain('"queued_at"');
     expect(reconcileHungExecutions).not.toHaveBeenCalled();
     expect(closeAgentRunSession).not.toHaveBeenCalled();
   });

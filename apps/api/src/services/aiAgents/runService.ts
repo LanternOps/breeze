@@ -208,6 +208,26 @@ const AGENT_RUN_ADMISSION_LOCK_NAMESPACE = 3824;
 const STALLED_RUN_AFTER_SECONDS = 1800 + 900;
 
 /**
+ * The freshness predicate shared by the candidate SELECT below and the CAS
+ * that actually fails a candidate. Hoisted so the two can never drift apart
+ * — the whole point is that both read the SAME cutoff condition.
+ *
+ * `started_at` is NULL for a run whose job never reached a worker at all
+ * (Redis lost it after the enqueue returned), and that row wedges the
+ * concurrency count identically — fall back to `queued_at`. Two typed column
+ * comparisons rather than one `coalesce(...) < $n` fragment: a bare Date
+ * interpolated into a raw `sql` template is handed to postgres.js unencoded
+ * and throws ERR_INVALID_ARG_TYPE, because only a column reference carries
+ * the timestamp mapper.
+ */
+function staleClause(cutoff: Date): SQL {
+  return or(
+    and(isNotNull(aiAgentRuns.startedAt), lt(aiAgentRuns.startedAt, cutoff)),
+    and(isNull(aiAgentRuns.startedAt), lt(aiAgentRuns.queuedAt, cutoff)),
+  ) as SQL;
+}
+
+/**
  * Fail runs the worker can no longer be executing, scoped to one (agent, org).
  *
  * Why this exists: BullMQ's stalled checker re-delivers a job whose worker was
@@ -239,11 +259,14 @@ export async function reapStalledAgentRuns(scope: {
   orgId: string;
 }): Promise<string[]> {
   const cutoff = new Date(Date.now() - STALLED_RUN_AFTER_SECONDS * 1000);
+  const stale = staleClause(cutoff);
   // Candidate selection only — the actual terminal write for each candidate
   // routes through `transitionRunStatus` below (wave 6 PR 2, #3828: the
   // terminalization chokepoint), not a raw bulk UPDATE. The patch is
   // byte-identical to the old inline write (`status: 'failed', errorCode:
-  // 'stalled', finishedAt`); only the write PATH changed.
+  // 'stalled', finishedAt`); the write PATH changed AND the atomicity is
+  // restored below by passing `stale` back in as the CAS's guard clause —
+  // see that call for why the id+status CAS alone is not enough here.
   const candidates = await inSystemDbContext(() => db
     .select({ id: aiAgentRuns.id, sessionId: aiAgentRuns.sessionId })
     .from(aiAgentRuns)
@@ -251,32 +274,30 @@ export async function reapStalledAgentRuns(scope: {
       eq(aiAgentRuns.agentId, scope.agentId),
       eq(aiAgentRuns.orgId, scope.orgId),
       inArray(aiAgentRuns.status, ['queued', 'running']),
-      // `started_at` is NULL for a run whose job never reached a worker at
-      // all (Redis lost it after the enqueue returned), and that row wedges
-      // the concurrency count identically — fall back to `queued_at`. Two
-      // typed column comparisons rather than one `coalesce(...) < $n`
-      // fragment: a bare Date interpolated into a raw `sql` template is
-      // handed to postgres.js unencoded and throws ERR_INVALID_ARG_TYPE,
-      // because only a column reference carries the timestamp mapper.
-      or(
-        and(isNotNull(aiAgentRuns.startedAt), lt(aiAgentRuns.startedAt, cutoff)),
-        and(isNull(aiAgentRuns.startedAt), lt(aiAgentRuns.queuedAt, cutoff)),
-      ),
+      stale,
     )));
   if (candidates.length === 0) return [];
 
   const reapedIds: string[] = [];
   for (const row of candidates) {
-    // CAS through `transitionRunStatus`, not a raw update: a candidate that
-    // genuinely finished (or was cancelled) between the select above and here
-    // loses the CAS and is silently skipped — exactly what the old bulk
-    // UPDATE's WHERE clause would also have excluded. Sequential (not
-    // parallel) deliberately: there are at most a handful of stalled rows for
-    // one (agent, org) pair.
+    // CAS through `transitionRunStatus`, guarded by the SAME `stale` clause
+    // the candidate SELECT used — not just id+status. id+status alone is
+    // TOCTOU: this loop is sequential (N round trips for N candidates, not
+    // one atomic statement) and workers never take this reaper's advisory
+    // lock, so a worker can legitimately claim a candidate (queued->running,
+    // startedAt=now) between the SELECT above and this call. 'running' is
+    // still a valid `from` status, so an id+status-only CAS would happily
+    // fail that now-live run as 'stalled' out from under the worker. Passing
+    // `stale` back in as the guard re-checks the cutoff atomically with the
+    // write, so a row that stopped being stale between the two statements
+    // loses the CAS and is silently skipped instead — exactly what the old
+    // single bulk UPDATE's WHERE clause would also have excluded. Sequential
+    // (not parallel) deliberately: there are at most a handful of stalled
+    // rows for one (agent, org) pair.
     const moved = await transitionRunStatus(row.id, ['queued', 'running'], 'failed', {
       errorCode: 'stalled',
       finishedAt: new Date(),
-    });
+    }, stale);
     if (moved) reapedIds.push(row.id);
   }
   if (reapedIds.length === 0) return [];
@@ -666,19 +687,27 @@ export type AgentRunStatusPatch = Partial<Pick<typeof aiAgentRuns.$inferInsert,
  * Compare-and-set status transition. Returns false when the row was not in one
  * of the `from` statuses — the caller lost a race (a stalled BullMQ job being
  * retried, a cancel landing mid-run) and must not keep writing to the run.
+ *
+ * `guard`, when passed, is ANDed into the same WHERE as an extra CAS
+ * condition beyond id+status — e.g. `reapStalledAgentRuns` passes back its
+ * own staleness cutoff so a row that stopped being stale between its
+ * candidate SELECT and this call loses the CAS instead of being wrongly
+ * failed. Optional because most callers (runLoop.ts, the cancel route) have
+ * no extra predicate — id+status is the whole story for them.
  */
 export async function transitionRunStatus(
   runId: string,
   from: AiAgentRunStatus | AiAgentRunStatus[],
   to: AiAgentRunStatus,
   patch: AgentRunStatusPatch = {},
+  guard?: SQL,
 ): Promise<boolean> {
   const fromStatuses = Array.isArray(from) ? from : [from];
   const moved = await inSystemDbContext(async () => {
     const rows = await db
       .update(aiAgentRuns)
       .set({ ...patch, status: to })
-      .where(and(eq(aiAgentRuns.id, runId), inArray(aiAgentRuns.status, fromStatuses)))
+      .where(and(eq(aiAgentRuns.id, runId), inArray(aiAgentRuns.status, fromStatuses), guard))
       .returning({
         id: aiAgentRuns.id,
         orgId: aiAgentRuns.orgId,
