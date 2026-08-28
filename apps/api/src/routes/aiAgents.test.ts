@@ -92,6 +92,9 @@ vi.mock('../services/aiAgents/effectivePolicy', () => ({
   resolveEffectiveAgent: resolveEffectiveAgentMock,
 }));
 
+const envMock = vi.hoisted(() => ({ policyDecideEnabled: vi.fn(() => true) }));
+vi.mock('../config/env', () => ({ policyDecideEnabled: envMock.policyDecideEnabled }));
+
 import { aiAgentsRoutes, mapError } from './aiAgents';
 
 const AGENT_ID = '11111111-1111-4111-8111-111111111111';
@@ -159,6 +162,7 @@ beforeEach(() => {
     created: true,
     run: { id: RUN_ID, status: 'queued' },
   });
+  envMock.policyDecideEnabled.mockReturnValue(true);
 });
 
 describe('POST /ai-agents/:id/runs', () => {
@@ -359,6 +363,99 @@ describe('GET /ai-agents/policy-decidable-keys (Task 5, #3827)', () => {
     hasPermMock.mockReturnValue(false);
     const res = await buildApp().request('/ai-agents/policy-decidable-keys');
     expect(res.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wave 6 PR 1 (#3828) — exposure budget readout
+// ---------------------------------------------------------------------------
+
+describe('GET /ai-agents/exposure-budget (recorded exposure readout, #3828)', () => {
+  const exposureBudgetQuery = `orgId=${ORG_ID}&kind=patch`;
+
+  function mockResolvedAgent(overrides: Record<string, unknown> = {}) {
+    resolveEffectiveAgentMock.mockResolvedValue({
+      schemaVersion: 3,
+      agentId: AGENT_ID,
+      kind: 'patch',
+      effective: {
+        limits: { maxFleetPercentPerDay: 5, maxPolicyDecisionsPerDay: 10 },
+      },
+      ...overrides,
+    });
+  }
+
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request(`/ai-agents/exposure-budget?${exposureBudgetQuery}`);
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing/invalid kind before touching the database', async () => {
+    const res = await buildApp().request(`/ai-agents/exposure-budget?orgId=${ORG_ID}&kind=bogus`);
+    expect(res.status).toBe(400);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when there is no active agent policy for the org/kind', async () => {
+    resolveEffectiveAgentMock.mockResolvedValue(null);
+    const res = await buildApp().request(`/ai-agents/exposure-budget?${exposureBudgetQuery}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('reuses computeExposureBudget and returns a schemaVersion-1, recordedOnly readout', async () => {
+    mockResolvedAgent();
+    selectMock
+      .mockReturnValueOnce(selectChain([{ deviceId: 'd1' }, { deviceId: 'd2' }])) // exposedDeviceRows
+      .mockReturnValueOnce(selectChain([{ n: 40 }])) // countContractDevices
+      .mockReturnValueOnce(selectChain([{ n: 3 }])); // dayCountRow
+
+    const res = await buildApp().request(`/ai-agents/exposure-budget?${exposureBudgetQuery}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Record<string, unknown> };
+
+    expect(body.data).toEqual({
+      schemaVersion: 1,
+      orgId: ORG_ID,
+      agentId: AGENT_ID,
+      distinctDevices: 2,
+      contractDeviceCount: 40,
+      maxFleetPercentPerDay: 5,
+      allowance: 2, // floor(40 * 5 / 100)
+      policyDecisionsToday: 3,
+      maxPolicyDecisionsPerDay: 10,
+      windowHours: 24,
+      recordedOnly: true,
+      accountingMode: 'full',
+    });
+  });
+
+  it('labels accountingMode "partial" while the policy-decide flag is dark', async () => {
+    envMock.policyDecideEnabled.mockReturnValue(false);
+    mockResolvedAgent();
+    selectMock
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([{ n: 10 }]))
+      .mockReturnValueOnce(selectChain([{ n: 0 }]));
+
+    const res = await buildApp().request(`/ai-agents/exposure-budget?${exposureBudgetQuery}`);
+    const body = (await res.json()) as { data: { accountingMode: string } };
+    expect(body.data.accountingMode).toBe('partial');
+  });
+
+  it('never leaks a raw tool-input-shaped key onto the wire', async () => {
+    mockResolvedAgent();
+    selectMock
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([{ n: 10 }]))
+      .mockReturnValueOnce(selectChain([{ n: 0 }]));
+
+    const res = await buildApp().request(`/ai-agents/exposure-budget?${exposureBudgetQuery}`);
+    const json = JSON.stringify(await res.json());
+    for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+      expect(json).not.toContain(`"${forbidden}"`);
+    }
   });
 });
 

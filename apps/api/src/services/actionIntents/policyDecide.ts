@@ -1,4 +1,4 @@
-import { and, eq, gt, count, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { AiAgentKind, AiAgentPolicySnapshot } from '@breeze/shared';
 import {
   db,
@@ -16,10 +16,10 @@ import { checkAgentGuardrails, resolveActionForTool, type AgentGuardrailPolicy }
 import { readAiKillState } from '../aiKillState';
 import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
 import { resolveRecipientUserIds } from '../aiAgents/recipients';
-import { countContractDevices } from '../contractQuantities';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
 import { validateAuthorizationKeys, POLICY_DECIDABLE_TIER3_VERSION } from './policyDecidable';
+import { computeExposureBudget } from './exposureBudget';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { recordActionIntentEvent } from './metrics';
 import { runDeferredHumanFanout, RELEASE_LEASE_MS } from './intentService';
@@ -251,40 +251,37 @@ async function runAuthorizeTransaction(args: AuthorizeArgs): Promise<AuthorizeRe
     // separate unlock call.
     await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ai-exposure:${intent.orgId}`}, 0))`);
 
-    const windowStart = sql`now() - interval '24 hours'`;
-
-    const exposedDeviceRows = await db
-      .select({ deviceId: aiUnattendedExposure.deviceId })
-      .from(aiUnattendedExposure)
-      .where(and(eq(aiUnattendedExposure.orgId, intent.orgId), gt(aiUnattendedExposure.reservedAt, windowStart)));
-    const exposedDevices = new Set(exposedDeviceRows.map((r) => r.deviceId));
-    const deviceAlreadyExposed = exposedDevices.has(deviceId);
-
-    const contractDeviceCount = await countContractDevices(intent.orgId, null);
+    // The two read-only cap checks below are extracted into
+    // `computeExposureBudget` (Wave 6 PR 1, #3828) — the shared, pure twin
+    // `GET /ai/agents/exposure-budget` also calls read-only. Called from
+    // inside this transaction (ambient `db` context, no explicit tx handle
+    // needed — see that function's header comment), behavior is byte
+    // identical to the inline queries it replaces: same tables, same
+    // conditions, same order. `deviceId` is passed so `distinctDevices`
+    // comes back as the PROJECTED count (current exposure plus this device,
+    // if new) exactly as the inline code computed `projectedDistinctDevices`.
+    const budget = await computeExposureBudget({
+      orgId: intent.orgId,
+      agentId,
+      maxFleetPercentPerDay,
+      maxPolicyDecisionsPerDay,
+      deviceId,
+      // Matches the ORIGINAL inline control flow exactly: never run the
+      // day-count query once the fleet cap has already failed.
+      shortCircuitOnFleetCapExceeded: true,
+    });
     // floor(), no max(1, ·) — a tiny fleet with a nonzero-but-sub-1-device
     // allowance gets ZERO unattended authorizations. That is the correct,
     // intended reading (locked quorum decision): the operator raises
     // maxFleetPercentPerDay if they want unattended authority on a small
     // fleet, this function never silently grants "at least one."
-    const allowance = Math.floor((contractDeviceCount * maxFleetPercentPerDay) / 100);
-    const projectedDistinctDevices = exposedDevices.size + (deviceAlreadyExposed ? 0 : 1);
-    if (projectedDistinctDevices > allowance) {
+    if (budget.distinctDevices > budget.allowance) {
       return { ok: false, reason: 'fleet_cap_exceeded' };
     }
 
-    const [dayCountRow] = await db
-      .select({ n: count() })
-      .from(aiUnattendedExposure)
-      .where(
-        and(
-          eq(aiUnattendedExposure.orgId, intent.orgId),
-          eq(aiUnattendedExposure.agentId, agentId),
-          eq(aiUnattendedExposure.source, 'policy_intent'),
-          gt(aiUnattendedExposure.reservedAt, windowStart),
-        ),
-      );
-    const policyDecisionsToday = Number(dayCountRow?.n ?? 0);
-    if (policyDecisionsToday >= maxPolicyDecisionsPerDay) {
+    // Non-null here: the fleet check above just passed, so the
+    // shortCircuitOnFleetCapExceeded branch always ran the day-count query.
+    if ((budget.policyDecisionsToday as number) >= budget.maxPolicyDecisionsPerDay) {
       return { ok: false, reason: 'day_cap_exceeded' };
     }
 

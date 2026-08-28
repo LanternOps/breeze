@@ -158,6 +158,46 @@ export interface AiAgentRunIntentSummaryDto {
  * ledger, and a summary of any linked action intents. Built by
  * `buildRunTrace` (services/aiAgents/runTrace.ts).
  */
+/**
+ * `GET /ai/agents/exposure-budget` — the org+kind unattended-exposure
+ * readout (Wave 6 PR 1, #3828), reusing `computeExposureBudget`
+ * (services/actionIntents/exposureBudget.ts) — the SAME two read queries
+ * `policyDecide.ts`'s authorize transaction uses to gate a policy decision,
+ * called here read-only for display rather than enforcement.
+ *
+ * `recordedOnly` is always `true`: every figure on this DTO reflects rows
+ * already written to `ai_unattended_exposure`, not a live/projected count —
+ * unlike the enforcement path (which projects the CURRENT device being
+ * decided into `distinctDevices`), this readout has no in-flight decision to
+ * project, so `distinctDevices` is exactly what is currently recorded in the
+ * trailing `windowHours` window.
+ *
+ * `accountingMode` is `'full'` when `policyDecideEnabled()` is on (every
+ * `act`-mode unattended authorization the policy-decide lane grants is
+ * recorded here) and `'partial'` while the flag is dark — the act lane can
+ * still record `source: 'act'` exposure rows independent of this flag, so
+ * the count is never zero-meaning, just an undercount of what policy-decide
+ * WOULD have added, relative to what an operator might expect once they
+ * flip the flag on.
+ */
+export interface ExposureBudgetDto {
+  schemaVersion: 1;
+  orgId: string;
+  agentId: string;
+  /** Distinct devices with a recorded exposure row in the trailing window. */
+  distinctDevices: number;
+  contractDeviceCount: number;
+  maxFleetPercentPerDay: number;
+  /** floor(contractDeviceCount * maxFleetPercentPerDay / 100) — the same
+   *  formula `runAuthorizeTransaction` enforces against. */
+  allowance: number;
+  policyDecisionsToday: number;
+  maxPolicyDecisionsPerDay: number;
+  windowHours: 24;
+  recordedOnly: true;
+  accountingMode: 'partial' | 'full';
+}
+
 export interface AiAgentRunDetailDto {
   schemaVersion: 1;
   id: string;

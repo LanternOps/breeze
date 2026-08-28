@@ -9,6 +9,7 @@ import {
   type AgentRunVerdict,
   type AiAgentDto,
   type AiAgentRunListItemDto,
+  type ExposureBudgetDto,
   createAiAgentSchema,
   triggerAgentRunSchema,
   updateAiAgentSchema,
@@ -17,6 +18,7 @@ import { zValidator } from '../lib/validation';
 import { db } from '../db';
 import { actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices, type AiAgentRow } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { policyDecideEnabled } from '../config/env';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE, PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
 import { AgentAccessDeniedError } from '../services/aiAgents/access';
 import {
@@ -26,6 +28,7 @@ import {
 } from '../services/aiAgents/agentService';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
 import { POLICY_DECIDABLE_TIER3 } from '../services/actionIntents/policyDecidable';
+import { computeExposureBudget } from '../services/actionIntents/exposureBudget';
 import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
 import { InvalidAgentRecipientsError } from '../services/aiAgents/recipients';
 import { SUPPORTED_AGENT_MODES } from '../services/aiAgents/constants';
@@ -219,6 +222,69 @@ aiAgentsRoutes.get('/policy-decidable-keys', scopes, requireAiRead, async (c) =>
       .map((entry) => ({ key: entry.key, toolName: entry.toolName, action: entry.action, note: entry.note })),
   });
 });
+
+/**
+ * Wave 6 PR 1 (#3828) — the org+kind unattended-exposure budget readout:
+ * "recorded exposure", reusing the EXACT same enforcement calculation
+ * `policyDecide.ts`'s authorize transaction gates a policy decision with
+ * (`computeExposureBudget`, services/actionIntents/exposureBudget.ts),
+ * called here read-only with no `deviceId` (no live decision to project —
+ * see that param's docstring). Query shape mirrors `GET /effective` above
+ * (`orgId` + `kind`, resolved through the same authorized loader) rather
+ * than taking a raw `agentId`, since the org+kind pair — not a specific
+ * agent id the caller may not have handy — is the natural key an operator
+ * reasons about ("what's my patch agent's unattended budget").
+ *
+ * `accountingMode` is derived from the live `policyDecideEnabled()` flag,
+ * not cached — see `ExposureBudgetDto`'s docstring for why a 'partial' vs
+ * 'full' distinction matters while the flag is dark.
+ */
+aiAgentsRoutes.get(
+  '/exposure-budget',
+  scopes,
+  requireAiRead,
+  zValidator('query', z.object({
+    orgId: z.string().guid(),
+    kind: z.enum(AI_AGENT_KINDS),
+  })),
+  async (c) => {
+    const auth = c.get('auth');
+    const { orgId, kind } = c.req.valid('query');
+
+    const resolved = await resolveEffectiveAgent(auth, orgId, kind);
+    if (!resolved) {
+      return c.json({ error: 'No active agent policy for this organization/kind' }, 404);
+    }
+
+    const { maxFleetPercentPerDay, maxPolicyDecisionsPerDay } = resolved.effective.limits;
+    const budget = await computeExposureBudget({
+      orgId,
+      agentId: resolved.agentId,
+      maxFleetPercentPerDay,
+      maxPolicyDecisionsPerDay,
+      // No deviceId: this is a readout, not a live decision — see
+      // computeExposureBudget's param docstring.
+    });
+
+    const dto: ExposureBudgetDto = {
+      schemaVersion: AI_AGENT_RUN_DTO_SCHEMA_VERSION,
+      orgId,
+      agentId: resolved.agentId,
+      distinctDevices: budget.distinctDevices,
+      contractDeviceCount: budget.contractDeviceCount,
+      maxFleetPercentPerDay: budget.maxFleetPercentPerDay,
+      allowance: budget.allowance,
+      // Non-null: this call site never sets shortCircuitOnFleetCapExceeded,
+      // so the day-count query always ran.
+      policyDecisionsToday: budget.policyDecisionsToday as number,
+      maxPolicyDecisionsPerDay: budget.maxPolicyDecisionsPerDay,
+      windowHours: 24,
+      recordedOnly: true,
+      accountingMode: policyDecideEnabled() ? 'full' : 'partial',
+    };
+    return c.json({ data: dto });
+  },
+);
 
 /**
  * The wire shape of one `GET /runs` row. Deliberately NOT `{ ...row }` for

@@ -59,7 +59,7 @@ wave: W07 (#3828) — PR 1 of 4 (Supervision)
 ### Task 3: Exposure budget helper + read route
 
 - Extract `computeExposureBudget(dbOrTx, orgId): { distinctDevices, allowance, contractDevices, fleetPercent-limits…, policyDecisionsToday, dayCap, windowHours: 24 }` from `policyDecide.ts:252-289`'s queries; policyDecide's transaction calls it with its tx handle (behavior byte-identical — its tests must stay green untouched); the new `GET /exposure-budget` route calls it read-only + labels (`recordedOnly: true` note in the DTO; act-lane accounting is best-effort while the policy flag is dark — surface that as `accountingMode: 'partial' | 'full'` derived from the flag).
-- [ ] TDD (helper parity vs the inline queries — the policyDecide suite is the proof; route DTO shape) → commit: `feat(api): exposure budget read route reusing the enforcement calculation (#3828)`
+- [x] TDD (helper parity vs the inline queries — the policyDecide suite is the proof; route DTO shape) → commit: `feat(api): exposure budget read route reusing the enforcement calculation (#3828)`
 
 ### Task 4: Web — runs list + run detail + budget readout
 
