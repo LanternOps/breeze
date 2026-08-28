@@ -51,6 +51,7 @@
     "organizations": "Organisationen",
     "aiUsageBudget": "KI-Nutzung und Budget",
     "aiAgents": "KI-Agenten",
+    "aiAgentRuns": "Agent-Läufe",
     "customFields": "Benutzerdefinierte Felder",
     "savedFilters": "Gespeicherte Filter",
     "users": "Benutzer",

@@ -1431,7 +1431,140 @@
       "supervisedActionKeysEmpty": "Aucune action décidable par politique n’est enregistrée.",
       "supervisedActionKeysFailed": "Impossible de charger la liste des actions décidables par politique ; l’autorisation sans surveillance ne peut pas être modifiée pour le moment."
     },
-    "loading": "Chargement des agents en cours…"
+    "loading": "Chargement des agents en cours…",
+    "runs": {
+      "title": "Exécutions des agents",
+      "description": "Toutes les exécutions dans vos organisations accessibles, les plus récentes en premier.",
+      "filters": {
+        "agent": "Agent",
+        "allAgents": "Tous les agents",
+        "status": "Statut",
+        "allStatuses": "Tous les statuts"
+      },
+      "columns": {
+        "agent": "Agent",
+        "status": "Statut",
+        "trigger": "Déclencheur",
+        "verdict": "Résultat",
+        "queued": "En file d'attente",
+        "finished": "Terminé",
+        "cost": "Coût"
+      },
+      "statuses": {
+        "queued": "En file d'attente",
+        "running": "En cours",
+        "awaiting_approval": "En attente d'approbation",
+        "completed": "Terminé",
+        "failed": "Échoué",
+        "cancelled": "Annulé",
+        "expired": "Expiré",
+        "skipped": "Ignoré"
+      },
+      "verdicts": {
+        "remediated": "Corrigé",
+        "needs_attention": "Nécessite une attention",
+        "partial": "Partiel",
+        "no_action": "Aucune action requise",
+        "pending": "En attente"
+      },
+      "triggers": {
+        "alert": "Alerte",
+        "manual": "Manuel",
+        "schedule": "Planifié",
+        "ticket": "Ticket"
+      },
+      "noAgent": "Agent inconnu",
+      "loading": "Chargement des exécutions…",
+      "empty": "Aucune exécution pour le moment.",
+      "emptyFiltered": "Aucune exécution ne correspond à ces filtres.",
+      "loadMore": "Charger plus",
+      "retry": "Réessayer",
+      "errors": {
+        "load": "Impossible de charger les exécutions.",
+        "loadMore": "Impossible de charger d'autres exécutions."
+      },
+      "detail": {
+        "title": "Détail de l'exécution",
+        "back": "Retour aux exécutions",
+        "notFound": "Exécution introuvable.",
+        "loading": "Chargement de l'exécution…",
+        "errors": {
+          "load": "Impossible de charger cette exécution.",
+          "notFound": "Exécution introuvable."
+        },
+        "labels": {
+          "agent": "Agent",
+          "device": "Appareil",
+          "noDevice": "Aucun appareil",
+          "status": "Statut",
+          "verdict": "Résultat",
+          "cost": "Coût",
+          "duration": "Durée",
+          "trigger": "Déclencheur",
+          "queuedAt": "En file d'attente",
+          "startedAt": "Démarré",
+          "finishedAt": "Terminé",
+          "turnCount": "Tours",
+          "summary": "Résumé"
+        },
+        "flags": {
+          "budgetExceeded": "Budget dépassé",
+          "wallClockExceeded": "A dépassé sa limite de temps",
+          "maxTurnsExceeded": "A atteint sa limite de tours"
+        },
+        "trace": {
+          "title": "Trace d'exécution",
+          "empty": "Aucune entrée de trace enregistrée.",
+          "kinds": {
+            "executed": "Exécuté",
+            "proposed": "Proposé",
+            "denied": "Refusé"
+          },
+          "result": {
+            "ok": "OK",
+            "failed": "Échoué"
+          },
+          "execution": {
+            "succeeded": "Réussi",
+            "failed": "Échoué",
+            "timeout": "Délai dépassé",
+            "unknown": "Inconnu"
+          },
+          "verification": {
+            "passed": "Vérifié",
+            "failed": "Échec de la vérification",
+            "inconclusive": "Vérification non concluante",
+            "skipped": "Vérification ignorée"
+          },
+          "viewApproval": "Consulter dans Approbations"
+        },
+        "ledger": {
+          "title": "Exécutions d'outils",
+          "empty": "Aucune exécution d'outil enregistrée.",
+          "columns": {
+            "tool": "Outil",
+            "status": "Statut",
+            "duration": "Durée",
+            "started": "Démarré",
+            "error": "Erreur"
+          }
+        },
+        "intents": {
+          "title": "Approbations liées",
+          "empty": "Aucune approbation liée.",
+          "viewAll": "Consulter dans Approbations"
+        },
+        "budget": {
+          "title": "Budget d'exposition",
+          "caption": "Exposition enregistrée — {{hours}} dernières heures",
+          "devices": "{{count}} sur {{allowance}} appareils",
+          "decisionsToday": "{{count}} sur {{max}} décisions de politique aujourd'hui",
+          "partialNote": "Comptabilisation partielle tant que l'autorisation de politique sans surveillance est désactivée — l'exposition réelle peut être sous-estimée.",
+          "unavailable": "Aucune politique d'agent active pour l'organisation de cette exécution.",
+          "loading": "Chargement du budget…"
+        }
+      }
+    }
   },
   "apiKeyForm": {
     "devicesRead": "Appareils : Lecture",

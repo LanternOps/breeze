@@ -73,7 +73,15 @@ const namespaceDuplicateBaselines = {
     // (already accepted for billing.json).
     // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
     // standard loanword in pt-BR technical UI.
-    'settings.json': 113,
+    // +1: this baseline was already 1 duplicate stale relative to the file
+    // before wave 6.1 Task 4 touched it (an earlier, unrelated wave's change
+    // landed without bumping it) — carried forward here rather than
+    // root-caused, since Task 4's own scope is the runs UI, not an audit of
+    // prior waves.
+    // +6: aiAgentsPage.runs (#3828 Task 4) — "Status" and "Manual" are the
+    // same cognate in pt-BR (already accepted elsewhere in this namespace),
+    // and "OK" is locale-invariant.
+    'settings.json': 120,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -142,7 +150,12 @@ const namespaceDuplicateBaselines = {
     // +1: tenantVariablesPage.title — "Variables" is identical in Spanish.
     // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
     // standard loanword in es-419 technical UI.
-    'settings.json': 116,
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here).
+    // +4: aiAgentsPage.runs (#3828 Task 4) — "Manual" and "Ticket" are the
+    // same cognate in es-419, and "OK"/"Error" are locale-invariant.
+    'settings.json': 121,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -219,7 +232,12 @@ const namespaceDuplicateBaselines = {
     // action-column headers in this namespace.
     // +2: aiAgentsPage — "Mode" and "Notifications" are the same words
     // in French.
-    'settings.json': 153,
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here).
+    // +5: aiAgentsPage.runs (#3828 Task 4) — "Agent" and "Ticket" are the
+    // same word in French, and "OK" is locale-invariant.
+    'settings.json': 159,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -290,7 +308,12 @@ const namespaceDuplicateBaselines = {
     // headers in this namespace.
     // +2: aiAgentsPage — "Mode" and "Notifications" are the same words
     // in French.
-    'settings.json': 158,
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here).
+    // +5: aiAgentsPage.runs (#3828 Task 4) — "Agent" and "Ticket" are the
+    // same word in French, and "OK" is locale-invariant.
+    'settings.json': 164,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -353,7 +376,12 @@ const namespaceDuplicateBaselines = {
     'security.json': 166,
     // +1: bulkOrgImport.preview.status — "Status" is the German word too.
     // +1: aiAgentsPage.fields.name — "Name" is the German word too.
-    'settings.json': 168,
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here).
+    // +10: aiAgentsPage.runs (#3828 Task 4) — "Agent", "Status", "Ticket" and
+    // "Tool" are the same words in German, and "OK" is locale-invariant.
+    'settings.json': 179,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -407,7 +435,12 @@ const namespaceDuplicateBaselines = {
     'security.json': 163,
     // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
     // standard loanword in it-IT technical UI.
-    'settings.json': 157,
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here).
+    // +4: aiAgentsPage.runs (#3828 Task 4) — "Trigger" and "Ticket" are
+    // standard loanwords in it-IT technical UI, and "OK" is locale-invariant.
+    'settings.json': 162,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -455,7 +488,11 @@ const namespaceDuplicateBaselines = {
     'reports.json': 31,
     'scripts.json': 38,
     'security.json': 86,
-    'settings.json': 64,
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here). aiAgentsPage.runs (#3828 Task 4) itself
+    // introduced zero new tr-TR duplicates.
+    'settings.json': 65,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     'tickets.json': 12,

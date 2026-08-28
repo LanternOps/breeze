@@ -1431,7 +1431,140 @@
       "supervisedActionKeysEmpty": "Es sind keine per Richtlinie entscheidbaren Aktionen registriert.",
       "supervisedActionKeysFailed": "Die Liste der per Richtlinie entscheidbaren Aktionen konnte nicht geladen werden, daher kann die unbeaufsichtigte Autorisierung derzeit nicht geändert werden."
     },
-    "loading": "Agenten werden geladen …"
+    "loading": "Agenten werden geladen …",
+    "runs": {
+      "title": "Agent-Läufe",
+      "description": "Alle Ausführungen in Ihren zugänglichen Organisationen, neueste zuerst.",
+      "filters": {
+        "agent": "Agent",
+        "allAgents": "Alle Agenten",
+        "status": "Status",
+        "allStatuses": "Alle Status"
+      },
+      "columns": {
+        "agent": "Agent",
+        "status": "Status",
+        "trigger": "Auslöser",
+        "verdict": "Ergebnis",
+        "queued": "Eingereiht",
+        "finished": "Beendet",
+        "cost": "Kosten"
+      },
+      "statuses": {
+        "queued": "In Warteschlange",
+        "running": "Läuft",
+        "awaiting_approval": "Wartet auf Genehmigung",
+        "completed": "Abgeschlossen",
+        "failed": "Fehlgeschlagen",
+        "cancelled": "Abgebrochen",
+        "expired": "Abgelaufen",
+        "skipped": "Übersprungen"
+      },
+      "verdicts": {
+        "remediated": "Behoben",
+        "needs_attention": "Erfordert Aufmerksamkeit",
+        "partial": "Teilweise",
+        "no_action": "Keine Maßnahme nötig",
+        "pending": "Ausstehend"
+      },
+      "triggers": {
+        "alert": "Warnung",
+        "manual": "Manuell",
+        "schedule": "Zeitplan",
+        "ticket": "Ticket"
+      },
+      "noAgent": "Unbekannter Agent",
+      "loading": "Läufe werden geladen…",
+      "empty": "Noch keine Läufe.",
+      "emptyFiltered": "Keine Läufe entsprechen diesen Filtern.",
+      "loadMore": "Mehr laden",
+      "retry": "Erneut versuchen",
+      "errors": {
+        "load": "Läufe konnten nicht geladen werden.",
+        "loadMore": "Weitere Läufe konnten nicht geladen werden."
+      },
+      "detail": {
+        "title": "Laufdetails",
+        "back": "Zurück zu den Läufen",
+        "notFound": "Lauf nicht gefunden.",
+        "loading": "Lauf wird geladen…",
+        "errors": {
+          "load": "Dieser Lauf konnte nicht geladen werden.",
+          "notFound": "Lauf nicht gefunden."
+        },
+        "labels": {
+          "agent": "Agent",
+          "device": "Gerät",
+          "noDevice": "Kein Gerät",
+          "status": "Status",
+          "verdict": "Ergebnis",
+          "cost": "Kosten",
+          "duration": "Dauer",
+          "trigger": "Auslöser",
+          "queuedAt": "Eingereiht",
+          "startedAt": "Gestartet",
+          "finishedAt": "Beendet",
+          "turnCount": "Runden",
+          "summary": "Zusammenfassung"
+        },
+        "flags": {
+          "budgetExceeded": "Budget überschritten",
+          "wallClockExceeded": "Zeitlimit überschritten",
+          "maxTurnsExceeded": "Rundenlimit erreicht"
+        },
+        "trace": {
+          "title": "Ausführungsverlauf",
+          "empty": "Keine Verlaufseinträge aufgezeichnet.",
+          "kinds": {
+            "executed": "Ausgeführt",
+            "proposed": "Vorgeschlagen",
+            "denied": "Abgelehnt"
+          },
+          "result": {
+            "ok": "OK",
+            "failed": "Fehlgeschlagen"
+          },
+          "execution": {
+            "succeeded": "Erfolgreich",
+            "failed": "Fehlgeschlagen",
+            "timeout": "Zeitüberschreitung",
+            "unknown": "Unbekannt"
+          },
+          "verification": {
+            "passed": "Verifiziert",
+            "failed": "Verifizierung fehlgeschlagen",
+            "inconclusive": "Verifizierung nicht eindeutig",
+            "skipped": "Verifizierung übersprungen"
+          },
+          "viewApproval": "In Genehmigungen prüfen"
+        },
+        "ledger": {
+          "title": "Tool-Ausführungen",
+          "empty": "Keine Tool-Ausführungen aufgezeichnet.",
+          "columns": {
+            "tool": "Tool",
+            "status": "Status",
+            "duration": "Dauer",
+            "started": "Gestartet",
+            "error": "Fehler"
+          }
+        },
+        "intents": {
+          "title": "Verknüpfte Genehmigungen",
+          "empty": "Keine verknüpften Genehmigungen.",
+          "viewAll": "In Genehmigungen prüfen"
+        },
+        "budget": {
+          "title": "Nutzungsbudget",
+          "caption": "Erfasste Nutzung — letzte {{hours}} Std.",
+          "devices": "{{count}} von {{allowance}} Geräten",
+          "decisionsToday": "{{count}} von {{max}} Richtlinienentscheidungen heute",
+          "partialNote": "Teilweise Erfassung, solange die unbeaufsichtigte Richtlinienautorisierung deaktiviert ist — die tatsächliche Nutzung kann höher sein.",
+          "unavailable": "Keine aktive Agentenrichtlinie für die Organisation dieses Laufs.",
+          "loading": "Budget wird geladen…"
+        }
+      }
+    }
   },
   "apiKeyForm": {
     "devicesRead": "Geräte: Lesen",

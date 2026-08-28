@@ -1431,7 +1431,140 @@
       "supervisedActionKeysEmpty": "Nenhuma ação decidível por política está registrada.",
       "supervisedActionKeysFailed": "Não foi possível carregar a lista de ações decidíveis por política, então a autorização não supervisionada não pode ser alterada agora."
     },
-    "loading": "Carregando agentes…"
+    "loading": "Carregando agentes…",
+    "runs": {
+      "title": "Execuções de agentes",
+      "description": "Todas as execuções em suas organizações acessíveis, mais recentes primeiro.",
+      "filters": {
+        "agent": "Agente",
+        "allAgents": "Todos os agentes",
+        "status": "Status",
+        "allStatuses": "Todos os status"
+      },
+      "columns": {
+        "agent": "Agente",
+        "status": "Status",
+        "trigger": "Gatilho",
+        "verdict": "Resultado",
+        "queued": "Na fila",
+        "finished": "Concluída",
+        "cost": "Custo"
+      },
+      "statuses": {
+        "queued": "Na fila",
+        "running": "Em execução",
+        "awaiting_approval": "Aguardando aprovação",
+        "completed": "Concluída",
+        "failed": "Falhou",
+        "cancelled": "Cancelada",
+        "expired": "Expirada",
+        "skipped": "Ignorada"
+      },
+      "verdicts": {
+        "remediated": "Corrigido",
+        "needs_attention": "Requer atenção",
+        "partial": "Parcial",
+        "no_action": "Nenhuma ação necessária",
+        "pending": "Pendente"
+      },
+      "triggers": {
+        "alert": "Alerta",
+        "manual": "Manual",
+        "schedule": "Agendado",
+        "ticket": "Chamado"
+      },
+      "noAgent": "Agente desconhecido",
+      "loading": "Carregando execuções…",
+      "empty": "Ainda não há execuções.",
+      "emptyFiltered": "Nenhuma execução corresponde a esses filtros.",
+      "loadMore": "Carregar mais",
+      "retry": "Tentar novamente",
+      "errors": {
+        "load": "Não foi possível carregar as execuções.",
+        "loadMore": "Não foi possível carregar mais execuções."
+      },
+      "detail": {
+        "title": "Detalhe da execução",
+        "back": "Voltar para execuções",
+        "notFound": "Execução não encontrada.",
+        "loading": "Carregando execução…",
+        "errors": {
+          "load": "Não foi possível carregar esta execução.",
+          "notFound": "Execução não encontrada."
+        },
+        "labels": {
+          "agent": "Agente",
+          "device": "Dispositivo",
+          "noDevice": "Nenhum dispositivo",
+          "status": "Status",
+          "verdict": "Resultado",
+          "cost": "Custo",
+          "duration": "Duração",
+          "trigger": "Gatilho",
+          "queuedAt": "Na fila",
+          "startedAt": "Iniciada",
+          "finishedAt": "Concluída",
+          "turnCount": "Turnos",
+          "summary": "Resumo"
+        },
+        "flags": {
+          "budgetExceeded": "Orçamento excedido",
+          "wallClockExceeded": "Excedeu o limite de tempo",
+          "maxTurnsExceeded": "Atingiu o limite de turnos"
+        },
+        "trace": {
+          "title": "Rastro de execução",
+          "empty": "Nenhuma entrada de rastro registrada.",
+          "kinds": {
+            "executed": "Executada",
+            "proposed": "Proposta",
+            "denied": "Negada"
+          },
+          "result": {
+            "ok": "OK",
+            "failed": "Falhou"
+          },
+          "execution": {
+            "succeeded": "Bem-sucedida",
+            "failed": "Falhou",
+            "timeout": "Tempo esgotado",
+            "unknown": "Desconhecido"
+          },
+          "verification": {
+            "passed": "Verificado",
+            "failed": "Verificação falhou",
+            "inconclusive": "Verificação inconclusiva",
+            "skipped": "Verificação ignorada"
+          },
+          "viewApproval": "Revisar em Aprovações"
+        },
+        "ledger": {
+          "title": "Execuções de ferramentas",
+          "empty": "Nenhuma execução de ferramenta registrada.",
+          "columns": {
+            "tool": "Ferramenta",
+            "status": "Status",
+            "duration": "Duração",
+            "started": "Iniciada",
+            "error": "Erro"
+          }
+        },
+        "intents": {
+          "title": "Aprovações vinculadas",
+          "empty": "Nenhuma aprovação vinculada.",
+          "viewAll": "Revisar em Aprovações"
+        },
+        "budget": {
+          "title": "Orçamento de exposição",
+          "caption": "Exposição registrada — últimas {{hours}}h",
+          "devices": "{{count}} de {{allowance}} dispositivos",
+          "decisionsToday": "{{count}} de {{max}} decisões de política hoje",
+          "partialNote": "Contabilização parcial enquanto a autorização de política não supervisionada está desativada — isso pode subestimar a exposição real.",
+          "unavailable": "Nenhuma política de agente ativa para a organização desta execução.",
+          "loading": "Carregando orçamento…"
+        }
+      }
+    }
   },
   "apiKeyForm": {
     "devicesRead": "Dispositivos: leitura",

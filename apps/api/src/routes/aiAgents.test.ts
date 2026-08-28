@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import { z } from 'zod';
+import { AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
 
 const {
   selectMock,
@@ -90,6 +92,9 @@ vi.mock('../services/aiAgents/effectivePolicy', () => ({
   resolveEffectiveAgent: resolveEffectiveAgentMock,
 }));
 
+const envMock = vi.hoisted(() => ({ policyDecideEnabled: vi.fn(() => true) }));
+vi.mock('../config/env', () => ({ policyDecideEnabled: envMock.policyDecideEnabled }));
+
 import { aiAgentsRoutes, mapError } from './aiAgents';
 
 const AGENT_ID = '11111111-1111-4111-8111-111111111111';
@@ -157,6 +162,7 @@ beforeEach(() => {
     created: true,
     run: { id: RUN_ID, status: 'queued' },
   });
+  envMock.policyDecideEnabled.mockReturnValue(true);
 });
 
 describe('POST /ai-agents/:id/runs', () => {
@@ -326,6 +332,55 @@ describe('POST /ai-agents/:id/runs', () => {
   });
 });
 
+// Review fix (#3828): the LEAK PROBE that found this — a bare `db.select()`
+// on `ai_agent_runs` put the whole `outcome` jsonb on the wire, including
+// `proposedActions[].args` (the verbatim raw tool input the model proposed),
+// under the identical ai_agents:read gate the hardened routes below enforce.
+// The route now projects through the same `mapRunListItem` mapper as the
+// org-wide `GET /runs` list.
+describe('GET /ai-agents/:id/runs (legacy per-agent list, review fix #3828)', () => {
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request(`/ai-agents/${AGENT_ID}/runs`);
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('returns a uniform 404 for a foreign-tenant/missing agent', async () => {
+    getAgentMock.mockResolvedValue(null);
+    const res = await buildApp().request(`/ai-agents/${AGENT_ID}/runs`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Agent not found' });
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('never carries the raw outcome payload — no args, proposedActions, session, or policy internals', async () => {
+    selectMock.mockReturnValueOnce(selectChain([runRow({ orgName: 'Acme Corp' })]));
+
+    const res = await buildApp().request(`/ai-agents/${AGENT_ID}/runs`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]).toMatchObject({
+      id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp',
+    });
+    expect(body.data[0]).not.toHaveProperty('outcome');
+    expect(body.data[0]).not.toHaveProperty('trace');
+    expect(body.data[0]).not.toHaveProperty('sessionId');
+    expect(body.data[0]).not.toHaveProperty('intentIds');
+    expect(body.data[0]).not.toHaveProperty('policySnapshot');
+    expect(body.data[0]).not.toHaveProperty('dedupeKey');
+
+    const json = JSON.stringify(body);
+    for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+      expect(json).not.toContain(`"${forbidden}"`);
+    }
+    expect(json).not.toContain('do-not-leak-me');
+    expect(json).not.toContain('scriptId');
+  });
+});
+
 describe('GET /ai-agents/policy-decidable-keys (Task 5, #3827)', () => {
   it('returns the POLICY_DECIDABLE_TIER3 registry, one entry per headless-compatible key', async () => {
     const res = await buildApp().request('/ai-agents/policy-decidable-keys');
@@ -357,6 +412,552 @@ describe('GET /ai-agents/policy-decidable-keys (Task 5, #3827)', () => {
     hasPermMock.mockReturnValue(false);
     const res = await buildApp().request('/ai-agents/policy-decidable-keys');
     expect(res.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wave 6 PR 1 (#3828) — exposure budget readout
+// ---------------------------------------------------------------------------
+
+describe('GET /ai-agents/exposure-budget (recorded exposure readout, #3828)', () => {
+  const exposureBudgetQuery = `orgId=${ORG_ID}&kind=patch`;
+
+  function mockResolvedAgent(overrides: Record<string, unknown> = {}) {
+    resolveEffectiveAgentMock.mockResolvedValue({
+      schemaVersion: 3,
+      agentId: AGENT_ID,
+      kind: 'patch',
+      effective: {
+        limits: { maxFleetPercentPerDay: 5, maxPolicyDecisionsPerDay: 10 },
+      },
+      ...overrides,
+    });
+  }
+
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request(`/ai-agents/exposure-budget?${exposureBudgetQuery}`);
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing/invalid kind before touching the database', async () => {
+    const res = await buildApp().request(`/ai-agents/exposure-budget?orgId=${ORG_ID}&kind=bogus`);
+    expect(res.status).toBe(400);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when there is no active agent policy for the org/kind', async () => {
+    resolveEffectiveAgentMock.mockResolvedValue(null);
+    const res = await buildApp().request(`/ai-agents/exposure-budget?${exposureBudgetQuery}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('reuses computeExposureBudget and returns a schemaVersion-1, recordedOnly readout', async () => {
+    mockResolvedAgent();
+    selectMock
+      .mockReturnValueOnce(selectChain([{ deviceId: 'd1' }, { deviceId: 'd2' }])) // exposedDeviceRows
+      .mockReturnValueOnce(selectChain([{ n: 40 }])) // countContractDevices
+      .mockReturnValueOnce(selectChain([{ n: 3 }])); // dayCountRow
+
+    const res = await buildApp().request(`/ai-agents/exposure-budget?${exposureBudgetQuery}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Record<string, unknown> };
+
+    expect(body.data).toEqual({
+      schemaVersion: 1,
+      orgId: ORG_ID,
+      agentId: AGENT_ID,
+      distinctDevices: 2,
+      contractDeviceCount: 40,
+      maxFleetPercentPerDay: 5,
+      allowance: 2, // floor(40 * 5 / 100)
+      policyDecisionsToday: 3,
+      maxPolicyDecisionsPerDay: 10,
+      windowHours: 24,
+      recordedOnly: true,
+      accountingMode: 'full',
+    });
+  });
+
+  it('labels accountingMode "partial" while the policy-decide flag is dark', async () => {
+    envMock.policyDecideEnabled.mockReturnValue(false);
+    mockResolvedAgent();
+    selectMock
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([{ n: 10 }]))
+      .mockReturnValueOnce(selectChain([{ n: 0 }]));
+
+    const res = await buildApp().request(`/ai-agents/exposure-budget?${exposureBudgetQuery}`);
+    const body = (await res.json()) as { data: { accountingMode: string } };
+    expect(body.data.accountingMode).toBe('partial');
+  });
+
+  it('never leaks a raw tool-input-shaped key onto the wire', async () => {
+    mockResolvedAgent();
+    selectMock
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain([{ n: 10 }]))
+      .mockReturnValueOnce(selectChain([{ n: 0 }]));
+
+    const res = await buildApp().request(`/ai-agents/exposure-budget?${exposureBudgetQuery}`);
+    const json = JSON.stringify(await res.json());
+    for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+      expect(json).not.toContain(`"${forbidden}"`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wave 6 PR 1 (#3828) — execution-trace runs list + detail
+// ---------------------------------------------------------------------------
+
+/**
+ * A minimal chainable stand-in for a Drizzle `db.select(...)` call. Every
+ * chain method returns the same object; `then` resolves it to `rows` so
+ * `await db.select({...}).from(...).where(...).orderBy(...).limit(...)`
+ * resolves exactly like the real query would. The route under test never
+ * inspects the arguments passed to `.where`/`.orderBy`/etc in these unit
+ * tests — those are exercised for real (no mocking) inside
+ * runsListCursor.ts/runTrace.ts's own suites and by the RLS/integration
+ * contract tests.
+ */
+function selectChain<T>(rows: T) {
+  const chain = {
+    from: () => chain,
+    innerJoin: () => chain,
+    leftJoin: () => chain,
+    where: () => chain,
+    orderBy: () => chain,
+    limit: () => chain,
+    offset: () => chain,
+    then: (resolve: (v: T) => unknown, reject?: (e: unknown) => unknown) =>
+      Promise.resolve(rows).then(resolve, reject),
+  };
+  return chain;
+}
+
+// Strict response-shape schemas (DTO rule, Global Constraints): a route that
+// starts spreading a raw row again — pulling in dedupeKey, policySnapshot,
+// the outcome column itself, sessionId, intentIds, or any tool-input field —
+// fails `.strict().parse()` here even though the specific leaked field was
+// never anticipated by name.
+const traceEntryResponseSchema = z.union([
+  z.object({
+    kind: z.literal('executed'),
+    tool: z.string(),
+    action: z.string().optional(),
+    result: z.enum(['ok', 'failed']),
+    durationMs: z.number(),
+    execution: z.enum(['succeeded', 'failed', 'timeout', 'unknown']).optional(),
+    verification: z.enum(['passed', 'failed', 'inconclusive', 'skipped']).optional(),
+    verifyDetail: z.string().optional(),
+    actOpKey: z.string().optional(),
+    actTargetName: z.string().optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('proposed'),
+    tool: z.string(),
+    action: z.string().optional(),
+    intentId: z.string().optional(),
+    intentError: z.string().optional(),
+    downgradeReason: z.string().optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('denied'),
+    tool: z.string(),
+    reason: z.string(),
+  }).strict(),
+]);
+
+const runDetailResponseSchema = z.object({
+  data: z.object({
+    schemaVersion: z.literal(1),
+    id: z.string(),
+    agentId: z.string(),
+    agentName: z.string().nullable(),
+    agentKind: z.string().nullable(),
+    orgId: z.string(),
+    deviceId: z.string().nullable(),
+    deviceHostname: z.string().nullable(),
+    alertId: z.string().nullable(),
+    triggerKind: z.string(),
+    modeAtStart: z.string(),
+    status: z.string(),
+    summary: z.string().nullable(),
+    runVerdict: z.string().nullable(),
+    turnCount: z.number(),
+    costCents: z.number(),
+    errorCode: z.string().nullable(),
+    queuedAt: z.string(),
+    startedAt: z.string().nullable(),
+    finishedAt: z.string().nullable(),
+    budgetExceeded: z.boolean(),
+    wallClockExceeded: z.boolean(),
+    maxTurnsExceeded: z.boolean(),
+    trace: z.array(traceEntryResponseSchema),
+    ledger: z.array(z.object({
+      toolName: z.string(),
+      status: z.string(),
+      durationMs: z.number().nullable(),
+      createdAt: z.string(),
+      completedAt: z.string().nullable(),
+      errorMessage: z.string().nullable(),
+    }).strict()),
+    intents: z.array(z.object({
+      id: z.string(),
+      status: z.string(),
+      actionName: z.string(),
+      approvalScope: z.string(),
+      decidedVia: z.string().nullable(),
+    }).strict()),
+  }).strict(),
+}).strict();
+
+const runListResponseSchema = z.object({
+  data: z.array(z.object({
+    schemaVersion: z.literal(1),
+    id: z.string(),
+    agentId: z.string(),
+    agentName: z.string().nullable(),
+    orgId: z.string(),
+    orgName: z.string().nullable(),
+    deviceId: z.string().nullable(),
+    status: z.string(),
+    triggerKind: z.string(),
+    runVerdict: z.string().nullable(),
+    queuedAt: z.string(),
+    finishedAt: z.string().nullable(),
+    costCents: z.number(),
+  }).strict()),
+  nextCursor: z.string().nullable(),
+}).strict();
+
+function runRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: RUN_ID,
+    agentId: AGENT_ID,
+    orgId: ORG_ID,
+    deviceId: DEVICE_ID,
+    alertId: null,
+    sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    triggerKind: 'manual',
+    modeAtStart: 'shadow',
+    status: 'completed',
+    summary: 'Restarted the print spooler.',
+    outcome: {
+      findings: [],
+      executedActions: [{
+        tool: 'manage_services', action: 'restart', executionId: 'exec-1',
+        result: 'ok', durationMs: 340, execution: 'succeeded', verification: 'passed',
+        verifyDetail: 'service running', actOpKey: 'manage_services.restart', actTargetName: 'Spooler',
+      }],
+      proposedActions: [{
+        tool: 'run_script', action: 'invoke',
+        args: { scriptId: 'abc', secretParam: 'do-not-leak-me' },
+        intentId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      }],
+      deniedActions: [{ tool: 'delete_registry_key', reason: 'protected resource' }],
+      toolExecutionCount: 2,
+      runVerdict: 'partial',
+    },
+    intentIds: ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'],
+    turnCount: 3,
+    costCents: 12,
+    errorCode: null,
+    queuedAt: new Date('2026-08-28T10:00:00.000Z'),
+    startedAt: new Date('2026-08-28T10:00:01.000Z'),
+    finishedAt: new Date('2026-08-28T10:00:30.000Z'),
+    agentName: 'Triage',
+    agentKind: 'triage',
+    deviceHostname: 'WKS-042',
+    ...overrides,
+  };
+}
+
+describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
+  it('returns 404 for a run outside the caller\'s org (or that does not exist)', async () => {
+    selectMock.mockReturnValueOnce(selectChain([]));
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Run not found' });
+  });
+
+  it('rejects a non-uuid run id without touching the database', async () => {
+    const res = await buildApp().request('/ai-agents/runs/not-a-uuid');
+    expect(res.status).toBe(404);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('stitches run + ledger + intents into the safe-projected trace DTO, matching the strict wire schema', async () => {
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow()])) // run + agent + device join
+      .mockReturnValueOnce(selectChain([{
+        toolName: 'run_script', status: 'completed', durationMs: 210,
+        createdAt: new Date('2026-08-28T10:00:05.000Z'),
+        completedAt: new Date('2026-08-28T10:00:06.000Z'),
+        errorMessage: null,
+      }])) // ledger
+      .mockReturnValueOnce(selectChain([{
+        id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        status: 'pending_approval',
+        actionName: 'run_script.invoke',
+        approvalScope: 'four_eyes',
+        decidedVia: null,
+      }])); // intents
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    const parsed = runDetailResponseSchema.parse(body);
+    expect(parsed.data.id).toBe(RUN_ID);
+    expect(parsed.data.agentName).toBe('Triage');
+    expect(parsed.data.deviceHostname).toBe('WKS-042');
+    expect(parsed.data.runVerdict).toBe('partial');
+    expect(parsed.data.trace).toHaveLength(3);
+    expect(parsed.data.ledger).toHaveLength(1);
+    expect(parsed.data.intents).toHaveLength(1);
+
+    // The leak tripwire: the raw tool input the model proposed
+    // (`{ scriptId: 'abc', secretParam: 'do-not-leak-me' }`) must never reach
+    // the wire, under any key name.
+    const json = JSON.stringify(body);
+    for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+      expect(json).not.toContain(`"${forbidden}"`);
+    }
+    expect(json).not.toContain('do-not-leak-me');
+    expect(json).not.toContain('scriptId');
+  });
+
+  it('skips the ledger/intents queries when the run has no session and no intent ids', async () => {
+    selectMock.mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.ledger).toEqual([]);
+    expect(body.data.intents).toEqual([]);
+    // Only the run-row select ran — no second/third db.select for ledger/intents.
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Review fix (#3828): ai_agents is dual-ownership (#2135) — a partner-wide
+  // agent's row is RLS-invisible to an org-scoped caller even though the run
+  // it produced (plain org-scoped) stays visible. Before this fix the route
+  // innerJoin'd ai_agents, so this case 404'd instead of returning the run.
+  it('returns the run (not 404) when its agent row is RLS-invisible, with agentName/agentKind null', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      runRow({ sessionId: null, intentIds: [], agentName: null, agentKind: null }),
+    ]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runDetailResponseSchema.parse(body);
+    expect(parsed.data.id).toBe(RUN_ID);
+    expect(parsed.data.agentName).toBeNull();
+    expect(parsed.data.agentKind).toBeNull();
+  });
+});
+
+describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request('/ai-agents/runs');
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('returns a page with no nextCursor when fewer rows than the limit come back', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      {
+        id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp',
+        deviceId: DEVICE_ID,
+        status: 'completed', triggerKind: 'manual', runVerdict: 'remediated',
+        queuedAt: new Date('2026-08-28T10:00:00.000Z'),
+        queuedAtRaw: '2026-08-28T10:00:00.000000Z',
+        finishedAt: new Date('2026-08-28T10:00:30.000Z'),
+        costCents: 12,
+      },
+    ]));
+
+    const res = await buildApp().request('/ai-agents/runs');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runListResponseSchema.parse(body);
+    expect(parsed.data).toHaveLength(1);
+    expect(parsed.nextCursor).toBeNull();
+    expect(parsed.data[0]).toMatchObject({
+      id: RUN_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp', runVerdict: 'remediated',
+    });
+  });
+
+  it('returns a nextCursor and trims the peeked row when a full extra page comes back', async () => {
+    const makeRow = (i: number) => ({
+      id: `cccccccc-cccc-4ccc-8ccc-${String(i).padStart(12, '0')}`,
+      agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp', deviceId: null,
+      status: 'completed', triggerKind: 'schedule', runVerdict: null,
+      queuedAt: new Date(Date.UTC(2026, 7, 28, 10, 0, i)),
+      queuedAtRaw: `2026-08-28T10:00:${String(i).padStart(2, '0')}.000000Z`,
+      finishedAt: null, costCents: 0,
+    });
+    // Default limit is 25 — return 26 rows to trigger the peek.
+    const rows = Array.from({ length: 26 }, (_, i) => makeRow(i));
+    selectMock.mockReturnValueOnce(selectChain(rows));
+
+    const res = await buildApp().request('/ai-agents/runs');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runListResponseSchema.parse(body);
+    expect(parsed.data).toHaveLength(25);
+    expect(parsed.nextCursor).not.toBeNull();
+  });
+
+  // Review fix (#3828): built from the row's `queuedAtRaw` microsecond text,
+  // never `queuedAt.toISOString()` — a JS Date truncates to milliseconds,
+  // which would silently drop same-millisecond siblings from the next page.
+  it('seeds nextCursor from the peeked row\'s queuedAtRaw, not the millisecond-truncated queuedAt Date', async () => {
+    const microPrecise = '2026-08-28T10:00:00.123456Z';
+    const makeRow = (i: number) => ({
+      id: `dddddddd-dddd-4ddd-8ddd-${String(i).padStart(12, '0')}`,
+      agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp', deviceId: null,
+      status: 'completed', triggerKind: 'schedule', runVerdict: null,
+      // Every row shares the same millisecond-truncated Date — the last
+      // (limit+1-th, trimmed) row's true value differs only in microseconds.
+      queuedAt: new Date('2026-08-28T10:00:00.123Z'),
+      // limit is 25, so pageRows is indices 0..24 and index 24 is `last` —
+      // the seed for nextCursor. Index 25 is the peeked/trimmed row.
+      queuedAtRaw: i === 24 ? microPrecise : '2026-08-28T10:00:00.123999Z',
+      finishedAt: null, costCents: 0,
+    });
+    const rows = Array.from({ length: 26 }, (_, i) => makeRow(i));
+    selectMock.mockReturnValueOnce(selectChain(rows));
+
+    const res = await buildApp().request('/ai-agents/runs');
+    const body = await res.json();
+    const parsed = runListResponseSchema.parse(body);
+    expect(parsed.nextCursor).not.toBeNull();
+
+    const decoded = JSON.parse(Buffer.from(parsed.nextCursor as string, 'base64url').toString('utf8'));
+    expect(decoded.q).toBe(microPrecise);
+  });
+
+  // Review fix (#3828): ai_agents is dual-ownership (#2135) — a partner-wide
+  // agent's row is RLS-invisible to an org-scoped caller even though the run
+  // it produced (plain org-scoped) stays visible. The route left-joins
+  // ai_agents so the run survives; agentName comes back null instead.
+  it('includes a run whose agent row is RLS-invisible (partner-wide agent), with agentName null', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      {
+        id: RUN_ID, agentId: AGENT_ID, agentName: null, orgId: ORG_ID, orgName: 'Acme Corp',
+        deviceId: DEVICE_ID,
+        status: 'completed', triggerKind: 'schedule', runVerdict: 'remediated',
+        queuedAt: new Date('2026-08-28T10:00:00.000Z'),
+        queuedAtRaw: '2026-08-28T10:00:00.000000Z',
+        finishedAt: new Date('2026-08-28T10:00:30.000Z'),
+        costCents: 12,
+      },
+    ]));
+
+    const res = await buildApp().request('/ai-agents/runs');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0].id).toBe(RUN_ID);
+    expect(body.data[0].agentName).toBeNull();
+  });
+
+  // Review fix (#3828): `?orgId=` is what `fetchWithAuth` auto-injects when
+  // the org switcher has one org selected (apps/web/src/stores/auth.ts) —
+  // before this fix the query schema silently stripped it and selecting an
+  // org never narrowed the fleet-wide list.
+  it('rejects an orgId the caller cannot access, before touching the database', async () => {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        scope: 'organization', orgId: ORG_ID, partnerId: null, accessibleOrgIds: [ORG_ID],
+        user: { id: USER_ID, email: 'tech@example.com', name: 'Tech' },
+        canAccessOrg: (id: string) => id === ORG_ID,
+        orgCondition: () => undefined,
+      } as never);
+      await next();
+    });
+    app.route('/ai-agents', aiAgentsRoutes);
+
+    const res = await app.request(`/ai-agents/runs?orgId=${OTHER_ORG_ID}`);
+    expect(res.status).toBe(403);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('applies an accessible orgId filter and returns its rows', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      {
+        id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp',
+        deviceId: DEVICE_ID,
+        status: 'completed', triggerKind: 'manual', runVerdict: 'remediated',
+        queuedAt: new Date('2026-08-28T10:00:00.000Z'),
+        queuedAtRaw: '2026-08-28T10:00:00.000000Z',
+        finishedAt: new Date('2026-08-28T10:00:30.000Z'),
+        costCents: 12,
+      },
+    ]));
+
+    const res = await buildApp().request(`/ai-agents/runs?orgId=${ORG_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runListResponseSchema.parse(body);
+    expect(parsed.data).toHaveLength(1);
+    expect(parsed.data[0]).toMatchObject({ id: RUN_ID, orgId: ORG_ID, orgName: 'Acme Corp' });
+  });
+
+  it('rejects a malformed orgId', async () => {
+    const res = await buildApp().request('/ai-agents/runs?orgId=not-a-uuid');
+    expect(res.status).toBe(400);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed cursor with 400 before touching the database', async () => {
+    const res = await buildApp().request('/ai-agents/runs?cursor=not-valid-base64url!!!');
+    expect(res.status).toBe(400);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a limit above the 50 ceiling', async () => {
+    const res = await buildApp().request('/ai-agents/runs?limit=51');
+    expect(res.status).toBe(400);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unrecognized status filter', async () => {
+    const res = await buildApp().request('/ai-agents/runs?status=bogus_status');
+    expect(res.status).toBe(400);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('never carries an outcome/trace payload on the list item, even though runVerdict is derived from the outcome column', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      {
+        id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp',
+        deviceId: DEVICE_ID,
+        status: 'completed', triggerKind: 'manual', runVerdict: 'remediated',
+        queuedAt: new Date('2026-08-28T10:00:00.000Z'),
+        finishedAt: new Date('2026-08-28T10:00:30.000Z'),
+        costCents: 12,
+      },
+    ]));
+    const res = await buildApp().request('/ai-agents/runs');
+    const body = await res.json();
+    expect(body.data[0]).not.toHaveProperty('trace');
+    expect(body.data[0]).not.toHaveProperty('outcome');
+    expect(body.data[0]).not.toHaveProperty('ledger');
   });
 });
 

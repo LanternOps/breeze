@@ -1431,7 +1431,140 @@
       "supervisedActionKeysEmpty": "Politikayla karar verilebilecek işlem kayıtlı değil.",
       "supervisedActionKeysFailed": "Politikayla karar verilebilecek işlem listesi yüklenemedi, bu nedenle gözetimsiz yetkilendirme şu anda değiştirilemiyor."
     },
-    "loading": "Aracılar yükleniyor…"
+    "loading": "Aracılar yükleniyor…",
+    "runs": {
+      "title": "Aracı çalıştırmaları",
+      "description": "Erişebildiğiniz tüm organizasyonlardaki her çalıştırma, en yeniden en eskiye.",
+      "filters": {
+        "agent": "Aracı",
+        "allAgents": "Tüm aracılar",
+        "status": "Durum",
+        "allStatuses": "Tüm durumlar"
+      },
+      "columns": {
+        "agent": "Aracı",
+        "status": "Durum",
+        "trigger": "Tetikleyici",
+        "verdict": "Sonuç",
+        "queued": "Sıraya alındı",
+        "finished": "Tamamlandı",
+        "cost": "Maliyet"
+      },
+      "statuses": {
+        "queued": "Sırada",
+        "running": "Çalışıyor",
+        "awaiting_approval": "Onay bekliyor",
+        "completed": "Tamamlandı",
+        "failed": "Başarısız",
+        "cancelled": "İptal edildi",
+        "expired": "Süresi doldu",
+        "skipped": "Atlandı"
+      },
+      "verdicts": {
+        "remediated": "Giderildi",
+        "needs_attention": "Dikkat gerektiriyor",
+        "partial": "Kısmi",
+        "no_action": "Eylem gerekmiyor",
+        "pending": "Bekliyor"
+      },
+      "triggers": {
+        "alert": "Uyarı",
+        "manual": "Manuel",
+        "schedule": "Zamanlanmış",
+        "ticket": "Talep"
+      },
+      "noAgent": "Bilinmeyen aracı",
+      "loading": "Çalıştırmalar yükleniyor…",
+      "empty": "Henüz çalıştırma yok.",
+      "emptyFiltered": "Bu filtrelerle eşleşen çalıştırma yok.",
+      "loadMore": "Daha fazla yükle",
+      "retry": "Yeniden dene",
+      "errors": {
+        "load": "Çalıştırmalar yüklenemedi.",
+        "loadMore": "Daha fazla çalıştırma yüklenemedi."
+      },
+      "detail": {
+        "title": "Çalıştırma ayrıntısı",
+        "back": "Çalıştırmalara dön",
+        "notFound": "Çalıştırma bulunamadı.",
+        "loading": "Çalıştırma yükleniyor…",
+        "errors": {
+          "load": "Bu çalıştırma yüklenemedi.",
+          "notFound": "Çalıştırma bulunamadı."
+        },
+        "labels": {
+          "agent": "Aracı",
+          "device": "Cihaz",
+          "noDevice": "Cihaz yok",
+          "status": "Durum",
+          "verdict": "Sonuç",
+          "cost": "Maliyet",
+          "duration": "Süre",
+          "trigger": "Tetikleyici",
+          "queuedAt": "Sıraya alındı",
+          "startedAt": "Başladı",
+          "finishedAt": "Tamamlandı",
+          "turnCount": "Tur sayısı",
+          "summary": "Özet"
+        },
+        "flags": {
+          "budgetExceeded": "Bütçe aşıldı",
+          "wallClockExceeded": "Süre sınırını aştı",
+          "maxTurnsExceeded": "Tur sınırına ulaştı"
+        },
+        "trace": {
+          "title": "Yürütme izi",
+          "empty": "Kaydedilmiş iz girdisi yok.",
+          "kinds": {
+            "executed": "Yürütüldü",
+            "proposed": "Önerildi",
+            "denied": "Reddedildi"
+          },
+          "result": {
+            "ok": "Tamam",
+            "failed": "Başarısız"
+          },
+          "execution": {
+            "succeeded": "Başarılı",
+            "failed": "Başarısız",
+            "timeout": "Zaman aşımı",
+            "unknown": "Bilinmiyor"
+          },
+          "verification": {
+            "passed": "Doğrulandı",
+            "failed": "Doğrulama başarısız",
+            "inconclusive": "Doğrulama belirsiz",
+            "skipped": "Doğrulama atlandı"
+          },
+          "viewApproval": "Onaylar'da incele"
+        },
+        "ledger": {
+          "title": "Araç yürütmeleri",
+          "empty": "Kaydedilmiş araç yürütmesi yok.",
+          "columns": {
+            "tool": "Araç",
+            "status": "Durum",
+            "duration": "Süre",
+            "started": "Başladı",
+            "error": "Hata"
+          }
+        },
+        "intents": {
+          "title": "Bağlantılı onaylar",
+          "empty": "Bağlantılı onay yok.",
+          "viewAll": "Onaylar'da incele"
+        },
+        "budget": {
+          "title": "Maruziyet bütçesi",
+          "caption": "Kaydedilen maruziyet — son {{hours}} saat",
+          "devices": "{{allowance}} cihazdan {{count}}",
+          "decisionsToday": "Bugün {{max}} politika kararından {{count}}",
+          "partialNote": "Gözetimsiz politika yetkilendirmesi devre dışıyken kısmi muhasebeleştirme yapılır — bu, gerçek maruziyeti olduğundan az gösterebilir.",
+          "unavailable": "Bu çalıştırmanın organizasyonu için etkin bir aracı politikası yok.",
+          "loading": "Bütçe yükleniyor…"
+        }
+      }
+    }
   },
   "apiKeyForm": {
     "devicesRead": "Cihazlar: Okuma",

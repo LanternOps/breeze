@@ -51,6 +51,7 @@
     "organizations": "Organizasyonlar",
     "aiUsageBudget": "Yapay Zeka Kullanımı ve Bütçe",
     "aiAgents": "Yapay Zeka Aracıları",
+    "aiAgentRuns": "Aracı Çalıştırmaları",
     "customFields": "Özel Alanlar",
     "variables": "Değişkenler",
     "savedFilters": "Kayıtlı Filtreler",
