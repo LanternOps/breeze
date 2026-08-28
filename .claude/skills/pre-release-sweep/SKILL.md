@@ -52,9 +52,13 @@ pnpm wt-stack up                              # read .breeze-stack.json for base
 Pick the `/24` from `docker network ls -q | xargs docker network inspect --format '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}}'` — an existing network with the same subnet fails compose with "Pool overlaps", running or not.
 
 Boot with every feature flag the inventory (Phase 2) names, or the surface is
-invisible and the check reads as a false FAIL. Then **log in yourself once**
-before dispatching any browser agent; a blocked sweep agent is 15 wasted
-minutes.
+invisible and the check reads as a false FAIL. If the API is unhealthy with a
+`does not provide an export named …` error, the dev image is stale — `pnpm
+wt-stack up --rebuild`. The seed has one org and a non-platform-admin; promote
+it for `/admin/*` rows (`update users set is_platform_admin=true where
+email='admin@breeze.local'`) and let a sweep agent create sibling orgs. Then
+**log in yourself once** before dispatching any browser agent; a blocked sweep
+agent is 15 wasted minutes.
 
 ## Phase 2 — Change inventory (sonnet, no browser)
 
@@ -89,7 +93,17 @@ sources):
 - Modals are `fixed inset-0` divs with no `role=dialog`; assert on title text
   or `data-testid`, and on the outcome, not the container.
 - A 2xx with no visible confirmation is a FAIL, not a PASS.
-- Known noise, note once: non-platform-admin 403s on `/admin/*`.
+- Known noise, note once: `428` on the first `POST /auth/login` (session-binding
+  handshake, the retry succeeds); non-platform-admin 403s on `/admin/*`.
+- The API limiter is 300 req / 60 s per client. A fast nav crawl trips it and
+  every page then "fails" with 429 — pace the crawl; a burst of 429s is the
+  agent's own doing, not a finding.
+- Fix agents run concurrently with the sweep on a code-mounted stack: a web
+  edit hot-reloads one page; an `apps/api/src` edit restarts the API for
+  ~40 s. Tell the sweep agent which files are being edited and to treat a
+  Vite overlay / 502 burst there as "wait 20 s and reload"; run API-side fixes
+  in an isolated worktree (`isolation: "worktree"`) and cherry-pick after the
+  sweep group finishes.
 
 ## Phase 4 — Fix small, file the rest
 
@@ -97,7 +111,14 @@ sources):
 surface, reproducible in a unit test. Fix on the `qa/sweep-*` branch, red
 test first, then `npx vitest run <file>` (no `--` before the flag; never a
 trailing-slash path). Dispatch a sonnet agent per fix with the exact
-repro + file; verify its commit exists and its test ran before recording it.
+repro + file. Tell it: lint/typecheck **in the foreground** with `timeout 240`
+(a backgrounded run stalls the agent with the fix uncommitted — `SendMessage`
+it to finish if that happens); `--pool=threads --maxWorkers=2` if vitest can't
+start workers under the running stack; never an `eslint-disable` for a rule
+not in the package's eslint config (the comment itself is the lint error).
+Verify its commit exists, skim the diff, and run eslint on the changed files
+yourself before recording it. Run the heavy web `tsc --noEmit` once from the
+main session, not per agent.
 Anything larger → GitHub issue via `github-issues`, dedupe first, cite the doc.
 
 Both go in the doc: `Fixes applied` (commit SHA) and `Issues filed` (#).
@@ -123,3 +144,7 @@ Open one PR: the fixes + the tracking doc. `pnpm wt-stack down` when done.
 - A row marked FAIL with no API status+body captured → not a finding yet.
 - "Merged, didn't check head-SHA CI" → the sweep merged red (#4159).
 - Tracking doc written at the end → context loss ate the middle of the sweep.
+- A "no toast → silent failure" finding whose click and poll were in separate
+  tool calls → re-measure in one `browser_evaluate` before filing.
+- A row marked PASS on a stack whose flags were off for that surface → the
+  surface never rendered; check the flag list in the doc header.
