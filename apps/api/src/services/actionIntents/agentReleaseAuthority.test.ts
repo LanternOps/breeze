@@ -14,6 +14,13 @@ const { dbState, policyState } = vi.hoisted(() => ({
     selectAgentsResults: [] as unknown[][],
     selectOrgsResults: [] as unknown[][],
     selectDevicesResults: [] as unknown[][],
+    // Wave-5A review fix (#3827): `ai_kill_state` table branch for the (real,
+    // unmocked) `readAiKillState()` this suite's release lane now calls
+    // directly — see the "kill-derived denial" describe block below.
+    // Defaults not-killed so every pre-existing test in this file, which
+    // never mentions kill state at all, is unaffected.
+    killStateRows: [{ killed: false, epoch: 0 }] as unknown[],
+    killStateShouldThrow: false,
   },
   policyState: {
     resolveEffectiveAgent: vi.fn(),
@@ -24,6 +31,7 @@ vi.mock('../../db', async () => {
   const { aiAgentRuns, aiAgents } = await import('../../db/schema/aiAgents');
   const { organizations } = await import('../../db/schema/orgs');
   const { devices } = await import('../../db/schema/devices');
+  const { aiKillState } = await import('../../db/schema/aiKillState');
   const resultBox = (getResult: () => unknown) => ({
     limit: vi.fn(() => Promise.resolve(getResult())),
   });
@@ -36,11 +44,18 @@ vi.mock('../../db', async () => {
             if (table === aiAgents) return resultBox(() => dbState.selectAgentsResults.shift() ?? []);
             if (table === organizations) return resultBox(() => dbState.selectOrgsResults.shift() ?? []);
             if (table === devices) return resultBox(() => dbState.selectDevicesResults.shift() ?? []);
+            if (table === aiKillState) {
+              return resultBox(() => {
+                if (dbState.killStateShouldThrow) throw new Error('ai_kill_state read failed (test)');
+                return dbState.killStateRows;
+              });
+            }
             throw new Error('unexpected select table in mock');
           }),
         })),
       })),
     },
+    getCurrentDbAccessContext: vi.fn(() => undefined),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   };
@@ -53,6 +68,10 @@ vi.mock('../aiAgents/effectivePolicy', () => ({
 import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentPolicy } from '@breeze/shared';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
+// Real (unmocked) module — checkAgentReleaseAuthority now imports it for
+// real (Wave-5A review fix, #3827), driven through the `../../db` mock's
+// `ai_kill_state` branch above rather than mocking `../aiKillState` itself.
+import { _resetAiKillStateCacheForTest } from '../aiKillState';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -135,6 +154,12 @@ beforeEach(() => {
   dbState.selectAgentsResults.length = 0;
   dbState.selectOrgsResults.length = 0;
   dbState.selectDevicesResults.length = 0;
+  dbState.killStateRows = [{ killed: false, epoch: 0 }];
+  dbState.killStateShouldThrow = false;
+  // A prior test's kill state must never leak into the next one via
+  // `readAiKillState`'s 5s in-process TTL cache — it's a real module-level
+  // singleton across every test in this file.
+  _resetAiKillStateCacheForTest();
   policyState.resolveEffectiveAgent.mockResolvedValue(resolvedAgent());
 });
 
@@ -307,6 +332,67 @@ describe('checkAgentReleaseAuthority', () => {
       ok: false,
       errorCode: 'agent_policy_denied',
       details: { policy: 'snapshot' },
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Wave-5A review fix (#3827): the DB kill-state gate, read FRESH by this
+  // lane rather than inherited from another lane's cache — and non-terminal
+  // (a distinct errorCode) when it fires.
+  // ---------------------------------------------------------------------
+
+  describe('DB kill-state gate (own fresh read)', () => {
+    it('vetoes with kill_switch_engaged, not agent_policy_denied, when ai_kill_state is killed', async () => {
+      dbState.killStateRows = [{ killed: true, epoch: 7 }];
+      seedHappyRows();
+
+      const result = await checkAgentReleaseAuthority(intentFixture());
+
+      expect(result).toMatchObject({
+        ok: false,
+        errorCode: 'kill_switch_engaged',
+        details: { policy: 'snapshot', epoch: 7 },
+      });
+    });
+
+    it('refreshes the kill-state cache with its own read: db.select is called for it', async () => {
+      // Same evidence shape as actRevalidation.test.ts's identically-named
+      // assertion: proves the refresh actually fires (a real `readAiKillState()`
+      // call, not a no-op reuse of whatever another lane last cached) rather
+      // than asserting on timing, which `readAiKillState`'s 5s TTL cache would
+      // make flaky within a single fast-running test.
+      const { db: mockedDb } = await import('../../db');
+      const selectSpy = mockedDb.select as unknown as { mock: { calls: unknown[] } };
+      const callsBefore = selectSpy.mock.calls.length;
+      seedHappyRows();
+
+      await checkAgentReleaseAuthority(intentFixture());
+
+      expect(selectSpy.mock.calls.length).toBeGreaterThan(callsBefore);
+    });
+
+    it('a transient read failure on THIS lane fails closed as kill_switch_engaged, not agent_policy_denied', async () => {
+      // The exact scenario the review finding was about: a DB read failure
+      // must PAUSE (not destroy) an already-approved intent. Critically, this
+      // is the release lane's OWN read failing — not a poisoned snapshot
+      // inherited from an unrelated lane, which is precisely what the fresh
+      // `readAiKillState()` call above prevents.
+      dbState.killStateShouldThrow = true;
+      seedHappyRows();
+
+      const result = await checkAgentReleaseAuthority(intentFixture());
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'kill_switch_engaged' });
+    });
+
+    it('does not mark the ENV-flag kill switch (unrelated to DB kill state) as kill_switch_engaged', async () => {
+      vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'false');
+      dbState.killStateRows = [{ killed: false, epoch: 0 }];
+      seedHappyRows();
+
+      const result = await checkAgentReleaseAuthority(intentFixture());
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'agent_policy_denied' });
     });
   });
 });

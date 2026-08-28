@@ -114,6 +114,29 @@ describe('revalidateApprovedIntentForRelease agent branch (wave 3b)', () => {
     });
   });
 
+  it('propagates a kill-derived veto (kill_switch_engaged) verbatim, distinct from agent_policy_denied', async () => {
+    // Wave-5A review fix (#3827): jobs/intentReleaseWorker.ts branches
+    // specifically on this errorCode to PAUSE rather than terminally fail an
+    // already-approved intent — this proves revalidateApprovedIntentForRelease
+    // forwards it unchanged rather than collapsing it into agent_policy_denied.
+    vi.mocked(checkAgentReleaseAuthority).mockResolvedValueOnce({
+      ok: false,
+      errorCode: 'kill_switch_engaged',
+      details: { policy: 'snapshot', epoch: 7, reason: 'Autonomous AI agents are kill-switched (epoch 7)' },
+    });
+
+    const result = await revalidateApprovedIntentForRelease(
+      agentIntent(),
+      { boundArgumentDigest: digest },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'kill_switch_engaged',
+      details: { policy: 'snapshot', epoch: 7, reason: 'Autonomous AI agents are kill-switched (epoch 7)' },
+    });
+  });
+
   it('human intents still go through checkToolPermission, never the agent authority', async () => {
     const humanArgs = { to: ['a@example.com'], subject: 's', bodyText: 'b' };
     const humanDigest = computeArgumentDigest(canonicalizeArguments(humanArgs));

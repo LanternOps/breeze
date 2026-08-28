@@ -5,6 +5,7 @@ import { organizations } from '../../db/schema/orgs';
 import { devices } from '../../db/schema/devices';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 import { checkAgentGuardrails, type AgentGuardrailPolicy } from '../aiGuardrails';
+import { readAiKillState } from '../aiKillState';
 import {
   AgentRunOwnershipError,
   buildAgentAuthContext,
@@ -170,6 +171,18 @@ export async function checkAgentReleaseAuthority(
     };
   }
 
+  // Wave-5A review fix (#3827): refresh THIS lane's own kill-state read,
+  // mirroring actRevalidation.ts's Step 2 refresh, immediately before the
+  // guardrail re-run below — rather than trusting whatever run admission or
+  // an act-mode dispatch last cached into the shared module-level snapshot
+  // `checkAgentGuardrails` reads (`aiKillState.ts`'s `getCachedAiKillStateSnapshot`).
+  // Without this, a transient DB read failure in one of THOSE unrelated lanes
+  // poisons the shared cache to fail-closed for up to its 5s TTL, and release
+  // — running in the SAME process (`aiAgentRunner`/`intentReleaseWorker` are
+  // both `placement: 'socket-owner'`) — would inherit that verdict instead of
+  // evaluating its own.
+  const killState = await readAiKillState();
+
   const candidates = [
     { policy: 'snapshot' as const, effective: run.policySnapshot?.effective },
     { policy: 'current' as const, effective: resolved.effective },
@@ -193,6 +206,24 @@ export async function checkAgentReleaseAuthority(
       } as AgentGuardrailPolicy,
     );
     if (verdict.disposition === 'deny') {
+      // `killState.killed` (this lane's own fresh read, just above) is the
+      // ONLY thing that can make `checkAgentGuardrails` deny at its kill-state
+      // step — that step runs before the enabled/mode/allowlist checks below
+      // it, so whenever it's true every candidate denies for that reason.
+      // Distinct, NON-terminal error code: jobs/intentReleaseWorker.ts
+      // branches this away from `failIntent`, CASing the intent back to
+      // `approved` instead of `failed` — a transient DB outage on this read
+      // or a real kill-switch flip must PAUSE an already-human-approved
+      // intent, never permanently destroy it. Every other structural denial
+      // here (narrowed allowlist, disabled agent, mode off, site drift, the
+      // env-flag kill switch, …) stays 'agent_policy_denied' and IS terminal.
+      if (killState.killed) {
+        return {
+          ok: false,
+          errorCode: 'kill_switch_engaged',
+          details: { policy, epoch: killState.epoch, reason: verdict.reason ?? 'denied' },
+        };
+      }
       return {
         ok: false,
         errorCode: 'agent_policy_denied',
