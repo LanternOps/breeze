@@ -4,7 +4,6 @@ import {
   AI_AGENT_KINDS,
   AI_AGENT_LIMIT_DEFAULTS,
   ALERT_SEVERITIES,
-  SUPPORTED_AGENT_MODES,
   type AiAgentDto,
   type AiAgentKind,
   type AiAgentMode,
@@ -56,6 +55,20 @@ const AGENT_ERROR_COPY: Record<string, ((t: (key: string) => string) => string) 
   agent_kind_exists: (t) => t('aiAgentsPage.errors.kindExists'),
   mode_not_supported: (t) => t('aiAgentsPage.errors.modeNotSupported'),
 };
+
+/**
+ * Task 8 (#3826, web UI + i18n for act mode) is NOT shipped yet: no
+ * unattended-execution warning banner, no required acknowledgement checkbox,
+ * no `act_prerequisites_not_met` 422 `missing[]` surfacing, and no actAssets
+ * script-picker, so run_script act mode has no way to be configured through
+ * this form even once selectable. The API's `supportedModes` (Task 6, #3826)
+ * now unconditionally reports 'act' as backend-supported for every agent —
+ * that flag answers "will the write path accept this mode", not "does the
+ * web UI have the controls to configure it safely" — so this option is
+ * deliberately gated on a separate, web-side readiness switch rather than
+ * derived from the API response. Flip this to true only alongside Task 8.
+ */
+const ACT_MODE_UI_READY = false;
 const inputCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
 const INSTRUCTIONS_MAX = 2000;
 
@@ -471,11 +484,13 @@ export default function AiAgentForm({
             <option value="off">{t('aiAgentsPage.modes.off')}</option>
             <option value="shadow">{t('aiAgentsPage.modes.shadow')}</option>
             {/* Not merely hidden: an operator needs to see that acting is a
-                real, deliberate next step rather than a missing feature. The
-                API refuses it with 422 mode_not_supported until wave 4. */}
+                real, deliberate next step rather than a missing feature.
+                Gated on ACT_MODE_UI_READY (Task 8, #3826), not on whether the
+                API reports the mode as backend-supported — see that
+                constant's docstring. */}
             <option
               value="act"
-              disabled={!(agent?.supportedModes ?? SUPPORTED_AGENT_MODES).includes('act')}
+              disabled={!ACT_MODE_UI_READY || !(agent?.supportedModes ?? []).includes('act')}
               data-testid="ai-agent-mode-act"
             >
               {t('aiAgentsPage.modes.act')}

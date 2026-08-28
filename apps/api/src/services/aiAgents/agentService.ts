@@ -77,15 +77,25 @@ export class ActPrerequisitesNotMetError extends Error {
  * actually authorized (`actAssets.scriptIds`) — an allowlist admitting
  * run_script with an empty actAssets is exactly "never act-eligible" (Global
  * Constraints, plan header), not a real surface.
+ *
+ * Allowlist entries are matched by BASE tool name, not exact string.
+ * checkAgentGuardrails (aiGuardrails.ts) admits an allowlist entry in either
+ * the bare `toolName` form or the scoped `toolName:action` form for
+ * action-multiplexed tools (manage_services, disk_cleanup, ...) — the guardrail
+ * is authoritative, so this prerequisite must recognize the same scoped form.
+ * Without this, the tightest and repo-documented act config
+ * (`['manage_services:restart']`, packages/shared/src/validators/aiAgents.test.ts)
+ * would be refused with a 422 even though it is a real act-eligible surface.
  */
 function hasActEligibleSurface(
   toolAllowlist: string[],
   actAssets: Partial<AiAgentActAssets>,
 ): boolean {
   const eligible = new Set(ACT_ELIGIBLE_TOOL_NAMES);
-  const intersecting = toolAllowlist.filter((tool) => eligible.has(tool));
-  if (intersecting.some((tool) => tool !== 'run_script')) return true;
-  if (!intersecting.includes('run_script')) return false;
+  const baseName = (entry: string): string => entry.split(':', 1)[0] ?? entry;
+  const intersecting = toolAllowlist.filter((entry) => eligible.has(baseName(entry)));
+  if (intersecting.some((entry) => baseName(entry) !== 'run_script')) return true;
+  if (!intersecting.some((entry) => baseName(entry) === 'run_script')) return false;
   return (actAssets.scriptIds?.length ?? 0) > 0;
 }
 

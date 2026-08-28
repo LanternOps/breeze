@@ -514,6 +514,19 @@ describe('agent mutations', () => {
       expect((err as ActPrerequisitesNotMetError).missing).toEqual(['act_eligible_tool']);
     });
 
+    it('accepts a scoped `tool:action` allowlist entry (manage_services:restart) — the guardrail honours it too, so the tightest act config must not be refused', async () => {
+      const actReady = {
+        ...storedRow,
+        toolAllowlist: ['manage_services:restart'],
+      };
+      state.currentRow = actReady;
+      state.returnedRow = { ...actReady, mode: 'act' };
+
+      await updateAgent(auth(), 'a1', { mode: 'act' } as never);
+
+      expect(state.updatedValues).toMatchObject({ mode: 'act' });
+    });
+
     it('refuses an update to act mode with no resolvable recipient', async () => {
       state.hasResolvableAgentRecipient.mockResolvedValue(false);
       state.currentRow = { ...storedRow, toolAllowlist: ['manage_services'] };

@@ -131,17 +131,21 @@ describe('AiAgentsPage', () => {
     expect(await screen.findByTestId('ai-agent-mode-act')).toBeDisabled();
   });
 
-  it("ENABLES 'act' as soon as the API reports it in supportedModes", async () => {
-    // The create-form version of this assertion was vacuous: with agent=null it
-    // evaluated a hardcoded fallback, so it would have kept passing on the day
-    // wave 4 shipped while the form stayed unable to select 'act'.
+  it("keeps 'act' disabled even once the API reports it in supportedModes, pending Task 8's UI controls (#3826 review fix)", async () => {
+    // Wave 4 Part B (Task 6, #3826) flipped the API to unconditionally report
+    // 'act' as backend-supported for every agent — that answers "will the
+    // write path accept this mode", not "does this form have the warning
+    // banner / acknowledgement checkbox / actAssets editor Task 8 requires
+    // before an operator can safely configure it". Until Task 8 ships and
+    // flips AiAgentForm's ACT_MODE_UI_READY switch, this option must stay
+    // disabled regardless of what the API reports.
     mockEndpoints([{ ...PARTNER_AGENT, supportedModes: ['off', 'shadow', 'act'] }]);
     render(<AiAgentsPage />);
 
     await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
     fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
 
-    expect(await screen.findByTestId('ai-agent-mode-act')).not.toBeDisabled();
+    expect(await screen.findByTestId('ai-agent-mode-act')).toBeDisabled();
   });
 
   it('offers the owner-scope selector on create and never on edit', async () => {
