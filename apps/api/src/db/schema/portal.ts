@@ -139,13 +139,12 @@ export const ticketComments = pgTable('ticket_comments', {
   // this column IS human/user-authored (no agent write path into this table
   // exists before this PR — Task 3's shadow gating denies manage_tickets
   // mutations for ticket runs, and the deferred autonomous-note lane is not
-  // built), so 'unknown' would just be a synonym for 'user' with none of
-  // action_intents' actual ambiguity (there, pre-discriminator rows really
-  // could have been any principal kind). The loop guard (ticketHelpdeskSubscriber,
-  // Task 3) treats anything NOT in the 'user' family as suspect and skips
-  // admission — a bare TEXT CHECK ('user','agent') keeps that binary explicit
-  // at the DB layer without inheriting a three-state ambiguity this table
-  // never had.
+  // built), so DEFAULT 'user' is correct here. The admitted vocabulary itself
+  // is shared with action_intents' CHECK, not private: 'ai_agent' (never bare
+  // 'agent' — that literal means the opposite principal on action_intents),
+  // plus 'system'/'unknown' for future fail-closed writers. The loop guard
+  // (ticketHelpdeskSubscriber, Task 3) treats anything NOT 'user' as suspect
+  // and skips admission — see the migration header for the full rationale.
   originPrincipalKind: text('origin_principal_kind').notNull().default('user'),
   // Loop-guard link to the agent run that authored this comment (Task 3
   // reads it; nothing writes it yet — the autonomous-note lane is deferred).

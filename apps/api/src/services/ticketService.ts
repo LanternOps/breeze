@@ -1326,7 +1326,15 @@ export async function restoreTicket(ticketId: string, actor: TicketActor): Promi
 // invoice_lines is intentionally excluded: issued billing history must remain
 // stamped with the org that was billed (matches device CUSTOM_ORG_REWRITE_TABLES
 // exclusion); its ticket_id FK is ON DELETE SET NULL so moves do not orphan it.
-const TICKET_ORG_DENORMALIZED_TABLES = ['time_entries', 'ticket_parts', 'ticket_alert_links'] as const;
+// ticket_outbox (#3828 wave-6-3 review fix): carries both ticket_id and a
+// denormalized org_id (db/migrations/2026-09-19-ai-agents-ticket-shadow.sql)
+// — an unpublished row left on the source org would be published under the
+// old org's routing, resolving the wrong org's helpdesk agents and letting
+// the Task 4 context assembler load the moved ticket's content into a run
+// scoped to an org that no longer owns it. Same UPDATE shape as the other
+// three tables; the mover already holds access to both orgs (same-partner
+// constraint), so RLS USING/WITH CHECK both pass.
+const TICKET_ORG_DENORMALIZED_TABLES = ['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox'] as const;
 
 /**
  * Reassigns a ticket to another organization of the SAME partner.

@@ -37,13 +37,22 @@
 -- every ticket_comments row that predates this column IS human/user-authored
 -- (no agent write path into this table exists before this PR — Task 3's
 -- shadow gating denies manage_tickets mutations for ticket runs, and the
--- autonomous-note lane is explicitly deferred past this PR), so 'unknown'
--- would just be a synonym for 'user' with none of action_intents' actual
--- ambiguity (there, pre-discriminator rows really could have been any
--- principal kind). The loop guard (ticketHelpdeskSubscriber, Task 3) treats
--- anything NOT in the 'user' family as suspect and skips admission — a plain
--- two-value CHECK ('user','agent') keeps that binary explicit at the DB
--- layer without inheriting a three-state ambiguity this table never had.
+-- autonomous-note lane is explicitly deferred past this PR), so DEFAULT
+-- 'user' is correct and does not inherit action_intents' actual ambiguity
+-- (there, pre-discriminator rows really could have been any principal kind).
+--
+-- The admitted vocabulary IS shared with action_intents' CHECK
+-- (2026-09-05-a-agent-originated-intents.sql), not a private one: the only
+-- other origin_principal_kind column in the schema admits 'ai_agent' (never
+-- bare 'agent') plus 'system'/'unknown' for exactly the fail-closed writers
+-- this table's own comment above says don't exist yet but will (Task 3's
+-- loop guard, any future automation writer reusing originPrincipalFor).
+-- Reusing the column name with an incompatible value domain — where the
+-- same literal 'agent' would mean the opposite principal on each table — is
+-- the bug this migration fixes before merge. 'user' is kept as this table's
+-- own coarse human bucket (action_intents' finer user_session/client_user
+-- split is not needed here); the loop guard's "'user' family" filter is
+-- exactly the single 'user' value.
 --
 -- agent_run_id has no inline REFERENCES in the Drizzle schema (portal.ts) —
 -- aiAgents.ts already imports `tickets` from portal.ts (for
@@ -121,6 +130,6 @@ ALTER TABLE ticket_comments ADD COLUMN IF NOT EXISTS agent_run_id UUID
 
 ALTER TABLE ticket_comments DROP CONSTRAINT IF EXISTS ticket_comments_origin_principal_kind_chk;
 ALTER TABLE ticket_comments ADD CONSTRAINT ticket_comments_origin_principal_kind_chk
-  CHECK (origin_principal_kind IN ('user', 'agent'));
+  CHECK (origin_principal_kind IN ('user', 'ai_agent', 'system', 'unknown'));
 
 CREATE INDEX IF NOT EXISTS ticket_comments_agent_run_id_idx ON ticket_comments (agent_run_id);

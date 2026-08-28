@@ -2538,7 +2538,16 @@ describe('moveTicketOrg', () => {
     guardMock.mockResolvedValue(null);
   });
 
-  it('moves ticket to a same-partner org, detaches device, re-stamps child org_id on 3 tables', async () => {
+  // Extracts the raw table identifier drizzle's sql.identifier() embeds as
+  // queryChunks[1].value (verified shape: UPDATE <identifier> SET ... WHERE ...).
+  function executedTableNames(): string[] {
+    return dbMocks.txExecuteMock.mock.calls.map((call) => {
+      const chunks = (call[0] as { queryChunks: Array<{ value?: unknown }> }).queryChunks;
+      return chunks[1]!.value as string;
+    });
+  }
+
+  it('moves ticket to a same-partner org, detaches device, re-stamps child org_id on 4 tables including ticket_outbox', async () => {
     // Ticket { id:'t1', orgId:'oA', partnerId:'p1', deviceId:'d1' }
     // Target org { id:'oB', partnerId:'p1', name:'Beta Corp' }
     dbMocks.selectResult
@@ -2551,7 +2560,7 @@ describe('moveTicketOrg', () => {
       ]);
     // txUpdateReturning returns the updated ticket row from the tx.update() call
     dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB', deviceId: null }]);
-    dbMocks.txExecuteMock.mockResolvedValue(undefined); // 3 child-table raw UPDATEs
+    dbMocks.txExecuteMock.mockResolvedValue(undefined); // 4 child-table raw UPDATEs
     dbMocks.insertReturning.mockResolvedValue([{ id: 'c-sys' }]); // tx.insert ticketComments
 
     const result = await moveTicketOrg('t1', 'oB', { userId: 'admin' });
@@ -2562,8 +2571,14 @@ describe('moveTicketOrg', () => {
     // The tx.update call should have set orgId + deviceId:null
     expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'oB', deviceId: null }));
 
-    // 3 raw SQL executes for the child tables (time_entries, ticket_parts, ticket_alert_links)
-    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(3);
+    // 4 raw SQL executes for the child tables (time_entries, ticket_parts,
+    // ticket_alert_links, ticket_outbox — #3828 wave-6-3 review fix: an
+    // unpublished outbox row must move with the ticket or it keeps routing
+    // to the source org's helpdesk agents after the move).
+    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(4);
+    expect(executedTableNames()).toEqual(
+      expect.arrayContaining(['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox'])
+    );
 
     // System feed comment inserted with "Moved to <org name>"
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -2685,7 +2700,7 @@ describe('moveTicketOrg', () => {
     const result = await moveTicketOrg('t1', 'oB', { userId: 'admin' }, { acceptCurrencyMismatch: true });
     expect(result.orgId).toBe('oB');
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ acceptCurrencyMismatch: true }));
-    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(3);
+    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(4);
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
       commentType: 'system',
       content: 'Moved to Beta Corp — 2 unbilled items stay in USD'
@@ -2724,7 +2739,7 @@ describe('moveTicketOrg', () => {
 
     await moveTicketOrg('t1', 'oB', { userId: 'admin' });
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ sourceCurrency: 'USD', targetCurrency: 'USD', acceptCurrencyMismatch: false }));
-    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(3);
+    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(4);
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Moved to Beta Corp' }));
     const sourceAudit = auditMock.mock.calls.find((c) => c[0].action === 'ticket.move_org.source')![0];
     expect(sourceAudit.details).not.toHaveProperty('currencyMismatchAccepted');
