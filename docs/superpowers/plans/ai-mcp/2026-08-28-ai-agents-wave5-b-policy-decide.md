@@ -46,7 +46,7 @@ wave: W06 (#3827) — Part B (the policy-decide lane)
 
 - Shared: `AiAgentActAssets` gains `supervisedActionKeys?: string[]` (validator: max 50, each key validated by `validateAuthorizationKeys` from `policyDecidable.ts` — write-time rejection of unknown/four_eyes/T4/secret keys with a structured 422). Effective-policy merge: org may only NARROW partner baseline (set intersection; absent partner field ⇒ org value stands alone iff the agent row IS the partner baseline — mirror how `scriptIds` merges today, grep it and match exactly). Snapshot: rides `actAssets` (v3 already tolerant).
 - Env flag full parity ceremony + `policyDecideEnabled()` helper (eventDispatchMode style).
-- [ ] TDD (validator matrix, intersection merge, flag helper) → commit: `feat(shared,api): supervisedActionKeys authorization set + policy-decide flag (#3827)`
+- [x] TDD (validator matrix, intersection merge, flag helper) → commit: `feat(shared,api): supervisedActionKeys authorization set + policy-decide flag (#3827)`
 
 ---
 
@@ -57,7 +57,7 @@ wave: W06 (#3827) — Part B (the policy-decide lane)
 - `attemptPolicyDecision(intentId)`: load intent (state must be `unattempted`, status `pending_approval`, not expired — else no-op); canonical key from `actionName` + `arguments.action` (multiplexed tools use `tool:action`; derive EXACTLY the way `checkGuardrails` resolves the action — reuse its resolution helper, never re-implement); pipeline per the header. Deterministic failures (key not in registry / not headlessCompatible / not in effective `supervisedActionKeys` / guardrail non-allow / kill engaged / caps exhausted / intent expired) → CAS state `unattempted → human_required` + `runHumanFanout` via a new exported `runDeferredHumanFanout(intentId)` (re-derives the approver pools the way creation did — extract what's needed; the fanout must produce the SAME approval rows + notifications creation would have) + if fanout yields zero approvers, the existing no-eligible-approver cancellation semantics. Transient failures (DB/Redis errors) → log + leave `unattempted`.
 - The authorize transaction (all-or-nothing): `pg_advisory_xact_lock` on the org exposure key → fleet-percent check (distinct exposure devices ∪ {this device} vs `floor(countContractDevices × maxFleetPercentPerDay/100)`) → day-cap check (count policy-authorized intents for this agent's org trailing 24h — count exposure rows `source='policy_intent'`) → insert exposure row (`source:'policy_intent'`, intent_id, run/agent/device/org) → CAS intent `pending_approval → approved` + `policy_decision_state:'authorized'` + `decidedAt` + `decidedVia:'policy'` + NULL decider/assurance + provenance (key, snapshot digest = the run's `policySnapshot` content hash — reuse/extract the digest helper the release evidence will recompute, classification version, reservation id = exposure row id, kill epoch) → outbox `intent_approved`. Audit: `initiatedBy: 'policy'`, actorType `'system'`, agent/run/key in details. Notification to recipients ("authorized automatically by policy — executing").
 - Outbox recovery: `processIntentReleaseJob`'s `intent_created` branch (currently no-op) → when the intent is agent-originated ∧ `policy_decision_state === 'unattempted'` ∧ flag on → `attemptPolicyDecision`; else no-op as today.
-- [ ] TDD: the full matrix (each deterministic failure → human_required + fanout ran; transient → unattempted; success → all six writes in one tx — assert via mock tx capture; double-attempt idempotence: second attempt sees state ≠ unattempted → no-op; expired intent → human path). Commit: `feat(api): attemptPolicyDecision — policy-satisfied supervised authorization with atomic exposure reservation (#3827)`
+- [x] TDD: the full matrix (each deterministic failure → human_required + fanout ran; transient → unattempted; success → all six writes in one tx — assert via mock tx capture; double-attempt idempotence: second attempt sees state ≠ unattempted → no-op; expired intent → human path). Commit: `feat(api): attemptPolicyDecision — policy-satisfied supervised authorization with atomic exposure reservation (#3827)`
 
 ---
 
@@ -65,7 +65,7 @@ wave: W06 (#3827) — Part B (the policy-decide lane)
 
 - `intentReleaseWorker` fetch: when no approved human row exists, load the intent's policy columns; `revalidateApprovedIntentForRelease` gains the branch: `decidedVia === 'policy' ∧ policy_decision_state === 'authorized'` → REQUIRE: digest recompute (existing chain), provenance present, key still in `POLICY_DECIDABLE_TIER3` ∧ headlessCompatible (registry drop ⇒ `policy_authorization_revoked` fail, terminal, notify), key still in BOTH the run snapshot's `actAssets.supervisedActionKeys` AND the agent's CURRENT effective policy, flag still on, kill state re-read not killed. Any human-row path untouched. `checkAgentReleaseAuthority` for policy-decided intents: the guardrail disposition must map to an EXACT current authorization (reuse the same key check — 'propose' is NOT sufficient here, unlike human-approved intents; codex finding).
 - Final pre-effect kill read: immediately before the `executeTool` dispatch in the release worker, one more `readAiKillState()` → killed ⇒ the Part-A `kill_switch_engaged` pause path.
-- [ ] TDD: human-approved intents byte-identical (full release suites); policy intents: each evidence failure → correct terminal/pause; the never-synthesize-human-row property (grep-assert no approval_requests insert in the new code). Commit: `feat(api): policy-evidence release branch — supervised intents execute on durable policy proof (#3827)`
+- [x] TDD: human-approved intents byte-identical (full release suites); policy intents: each evidence failure → correct terminal/pause; the never-synthesize-human-row property (grep-assert no approval_requests insert in the new code). Commit: `feat(api): policy-evidence release branch — supervised intents execute on durable policy proof (#3827)`
 
 ---
 
@@ -73,7 +73,7 @@ wave: W06 (#3827) — Part B (the policy-decide lane)
 
 - `revalidateActExecution` reservation step: also inserts an exposure row (`source:'act'`, intent_id NULL) inside a short system context (NOT held across dispatch — #1105) + gains the same fleet-percent check (advisory-lock + floor) BEFORE reserving; exhaustion → the existing `downgrade` path (proposal). Flag-independent? The exposure WRITE is unconditional post-merge (accounting is truth); the fleet CAP enforcement in the act lane activates with the same sub-flag to keep wave-4 behavior unchanged until wave 5 turns on (document).
 - `aiUnattendedExposureRetention` worker: daily sweep deleting rows `reserved_at < now() - 48h` (registry + both snapshot lists 106 → 107 + closure verdict).
-- [ ] TDD: act path writes rows; cap downgrade; retention query; registry losslessness updated. Commit: `feat(api): act-lane exposure accounting + ledger retention (#3827)`
+- [x] TDD: act path writes rows; cap downgrade; retention query; registry losslessness updated. Commit: `feat(api): act-lane exposure accounting + ledger retention (#3827)`
 
 ---
 
@@ -82,13 +82,13 @@ wave: W06 (#3827) — Part B (the policy-decide lane)
 - Null-decider audit completion: approvals list/detail routes + web approvals components render `decidedVia === 'policy'` as "Authorized automatically by policy" (never a person; never "approved by agent"); exports already classify the columns (Part A). Grep every `decidedByUserId` consumer and prove each tolerates NULL+policy (the codex B-item).
 - Agent form: `supervisedActionKeys` multi-select sourced from the registry (grouped by tool), gated behind the act acknowledgement pattern; 422 surfacing for rejected keys; i18n keys in every locale.
 - Activation prerequisite extension: an agent whose mode is `act` with `supervisedActionKeys` non-empty requires the same recipients prerequisite (already enforced) — verify no new gate needed; policy-decide with mode `shadow`: DECISION (locked, conservative): policy-decide requires `mode === 'act'` — a shadow agent never gets policy-authorized intents (its proposals stay human). Enforce in `resolvePolicyDecisionState` (mode from the run's snapshot) + test.
-- [ ] TDD + web tests + locale parity → commit: `feat(api,web): policy-decision read tolerance, approvals UI, supervisedActionKeys editor (#3827)`
+- [x] TDD + web tests + locale parity → commit: `feat(api,web): policy-decision read tolerance, approvals UI, supervisedActionKeys editor (#3827)`
 
 ---
 
 ### Task 6: Verification + PR
 
-- [ ] Full api + shared + web-touched + typecheck + contract suites + envComposeParity + closure/registry snapshots; grep sweeps: no approval_requests insert in policyDecide/release-evidence code; `runHumanFanout` callers = creation + `runDeferredHumanFanout` only; flag-off inertness proof = full intentService suite + one explicit flag-off e2e test.
+- [x] Full api + shared + web-touched + typecheck + contract suites + envComposeParity + closure/registry snapshots; grep sweeps: no approval_requests insert in policyDecide/release-evidence code; `runHumanFanout` callers = creation + `runDeferredHumanFanout` only; flag-off inertness proof = full intentService suite + one explicit flag-off e2e test.
 - [ ] Tick checkboxes. **Open the PR**: `feature/3821-ai-agents/wave-3827-b` → main, `Closes #3827`, body: locked decisions table, the dark-ship statement, the act-lane cap activation note, rollout guidance (flag on → operator authorizes keys per agent → caps observable in the ledger), follow-ups (admin kill-state surface, per-lane kill-cache isolation, registry growth quorum process). **Stop after opening the PR.**
 
 ## Self-Review Notes
