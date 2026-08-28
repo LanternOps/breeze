@@ -226,9 +226,10 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
         type: 'ai',
         title: verdictAwareTitle(agent.name, verdict),
         message: `${agent.name}: ${firstLine || run.status}`,
-        // There is no run-detail page until wave 6; link to the approvals
-        // queue only when there is actually something waiting there.
-        link: run.intentIds.length > 0 ? '/approvals' : null,
+        // The run-detail page (wave 6.1) surfaces pending approvals itself,
+        // so every run-finished notification links there unconditionally —
+        // no more branching to '/approvals'.
+        link: `/ai-agents/runs/${run.id}`,
         // Only 'needs_attention' escalates priority — every other verdict
         // (including null, the pre-Part-B/non-act-mode default) keeps the
         // existing 'normal' default createNotification already applies.
