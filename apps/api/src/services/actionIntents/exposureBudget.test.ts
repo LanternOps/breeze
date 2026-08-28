@@ -1,15 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 // ---------------------------------------------------------------------------
 // DB mock — generic, table-name-keyed FIFO (mirrors policyDecide.test.ts's
 // own pattern exactly, since `computeExposureBudget` is extracted straight
 // out of that file's transaction and must keep hitting the SAME `../../db`
-// module those tests already mock).
+// module those tests already mock). `where()` conditions are REAL drizzle-orm
+// SQL objects (only `db` itself is mocked, not `and`/`eq`/`gt`/`sql`), so they
+// are captured per-table and rendered via `PgDialect` below to assert the
+// actual compiled predicates rather than just the row-shape the query returns.
 // ---------------------------------------------------------------------------
 
 const dbMockState = vi.hoisted(() => ({
   rowQueues: {} as Record<string, unknown[][]>,
+  whereConds: {} as Record<string, unknown[]>,
 }));
+
+const dialect = new PgDialect();
+const render = (cond: unknown) => dialect.sqlToQuery(cond as SQL);
 
 function tableNameOf(table: unknown): string {
   return String((table as Record<symbol, unknown>)[Symbol.for('drizzle:Name')]);
@@ -29,6 +38,7 @@ function pushRows(table: string, rows: unknown[]): void {
 
 function resetDbMock(): void {
   dbMockState.rowQueues = {};
+  dbMockState.whereConds = {};
 }
 
 vi.mock('../../db', () => ({
@@ -37,7 +47,10 @@ vi.mock('../../db', () => ({
       from: vi.fn((table: unknown) => {
         const tableName = tableNameOf(table);
         const builder: Record<string, unknown> = {
-          where: vi.fn(() => builder),
+          where: vi.fn((cond: unknown) => {
+            (dbMockState.whereConds[tableName] ??= []).push(cond);
+            return builder;
+          }),
           then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
             Promise.resolve().then(() => nextRows(tableName)).then(resolve, reject),
         };
@@ -131,7 +144,7 @@ describe('computeExposureBudget', () => {
     expect(result.allowance).toBe(0);
   });
 
-  it('scopes policyDecisionsToday to the given agentId (never a different agent\'s decisions)', async () => {
+  it('scopes policyDecisionsToday to this agentId + source: \'policy_intent\' (never a different agent\'s decisions or act-lane exposures)', async () => {
     pushRows('ai_unattended_exposure', []);
     pushRows('ai_unattended_exposure', [{ n: 7 }]);
 
@@ -143,6 +156,29 @@ describe('computeExposureBudget', () => {
     });
 
     expect(result.policyDecisionsToday).toBe(7);
+
+    const conds = dbMockState.whereConds['ai_unattended_exposure'] ?? [];
+    expect(conds).toHaveLength(2);
+
+    // First query (fleet-cap exposed-device scan): org + window ONLY —
+    // deliberately fleet-wide across every agent and source.
+    const fleetCapQuery = render(conds[0]);
+    expect(fleetCapQuery.sql).toContain('"org_id" = ');
+    expect(fleetCapQuery.sql).toContain("now() - interval '24 hours'");
+    expect(fleetCapQuery.sql).not.toContain('"agent_id"');
+    expect(fleetCapQuery.sql).not.toContain('"source"');
+    expect(fleetCapQuery.params).toContain(ORG_ID);
+
+    // Second query (day-cap count): org + agent + source: 'policy_intent' +
+    // window — the four predicates that ARE the enforcement semantics.
+    const dayCountQuery = render(conds[1]);
+    expect(dayCountQuery.sql).toContain('"org_id" = ');
+    expect(dayCountQuery.sql).toContain('"agent_id" = ');
+    expect(dayCountQuery.sql).toContain('"source" = ');
+    expect(dayCountQuery.sql).toContain("now() - interval '24 hours'");
+    expect(dayCountQuery.params).toContain(ORG_ID);
+    expect(dayCountQuery.params).toContain(AGENT_ID);
+    expect(dayCountQuery.params).toContain('policy_intent');
   });
 
   describe('shortCircuitOnFleetCapExceeded', () => {
