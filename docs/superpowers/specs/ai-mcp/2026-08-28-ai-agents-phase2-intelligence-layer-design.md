@@ -207,18 +207,18 @@ Quorum outcome recorded here before writing-plans.
 - #3821 closes when 6.3 merges; its wave-7 title's "anomaly sources" is satisfied by P2-1 (note on the issue).
 - Branches `feature/<parent#>-ai-agents-p2/wave-<sub#>`; PR bodies `Closes #<sub>`.
 
-## 11. Deferred — recorded on the roadmap (do not lose)
+## 11. Deferred — recorded on the roadmap (GitHub `roadmap` issues #4173–#4183, created 2026-08-28)
 
 | Item | Why deferred | Revisit when |
 |---|---|---|
-| Fleet fan-out (canary → widen) for multi-device remediation | most consequential remaining blast-radius design; needs its own quorum | P2-5 stats exist for ≥ 1 real partner |
-| `patch` agent runner (approve safe updates, sequence reboots, chase failures) | closed op set but big surface; deserves a program | after fleet fan-out shape is decided |
-| Auto-promote shadow → act within partner-set bounds | D4: humans flip autonomy | if promote suggestions prove consistently accepted |
-| Customer-facing ticket replies / auto-close without a click | D3 | after draft-send acceptance rate is known |
-| Time-entry creation from AI-triaged tickets | billing-adjacent | with the patch/ticket follow-on |
-| Anomaly-source trigger (metric baselines → agent run) | subsumed by verdicts on correlator output | if the correlator can't express a needed signal |
-| Slack/Teams approval surface; mobile inbox parity for batch | separate integration work | after P2-2 batch approve lands |
-| Few-shot / prompt adaptation from verdict feedback | learning loop, needs eval harness | after P2-6 shows verdict precision |
-| `/admin/tool-executions` raw-input redaction contract | pre-existing, admin-gated | standalone security follow-up |
-| Measured (not estimated) time saved — MTTR deltas, time entries | needs P2-4 time-entry item | after P2-6 |
-| Prior-run / org runbook memory in the prompt ("never restart SQL in business hours") | needs a memory model + tenancy design | own spec |
+| Fleet fan-out (canary → widen) for multi-device remediation — **#4173** | most consequential remaining blast-radius design; needs its own quorum | P2-5 stats exist for ≥ 1 real partner |
+| `patch` agent runner (approve safe updates, sequence reboots, chase failures) — **#4174** | closed op set but big surface; deserves a program | after fleet fan-out shape is decided |
+| Auto-promote shadow → act within partner-set bounds — **#4175** | D4: humans flip autonomy | if promote suggestions prove consistently accepted |
+| Customer-facing ticket replies / auto-close without a click — **#4176** | D3 | after draft-send acceptance rate is known |
+| Time-entry creation from AI-triaged tickets — **#4177** | billing-adjacent | with the patch/ticket follow-on |
+| Anomaly-source trigger (metric baselines → agent run) — **#4178** | subsumed by verdicts on correlator output | if the correlator can't express a needed signal |
+| Slack/Teams approval surface; mobile inbox parity for batch — **#4179** | separate integration work | after P2-2 batch approve lands |
+| Few-shot / prompt adaptation from verdict feedback — **#4180** | learning loop, needs eval harness | after P2-6 shows verdict precision |
+| `/admin/tool-executions` raw-input redaction contract — **#4181** | pre-existing, admin-gated | standalone security follow-up |
+| Measured (not estimated) time saved — MTTR deltas, time entries — **#4182** | needs P2-4 time-entry item | after P2-6 |
+| Prior-run / org runbook memory in the prompt ("never restart SQL in business hours") — **#4183** | needs a memory model + tenancy design | own spec |
