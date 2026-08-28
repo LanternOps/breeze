@@ -152,7 +152,7 @@ Tests (matrix, all against the REAL manifest): act+restart → act; act+stop →
 
 **Contract:** act option enabled when `supportedModes` includes it; selecting act reveals: (a) a warning banner (unattended execution, verification can fail, no rollback, single-device, action cap) — copy keys `aiAgentsPage.actWarning.*`; (b) a required acknowledgement checkbox (`data-testid="ai-agent-act-ack"`) gating the save button when mode changed TO act (client-side only — the server's 422 prerequisites are authoritative); (c) surfacing of the 422 `act_prerequisites_not_met` structured body. Handlers via `runAction` per repo standard (they already are — verify).
 
-- [ ] TDD (component tests per repo pattern) + locale keys in every locale file. Commit: `feat(web): act mode UI — warning, acknowledgement, prerequisites surfacing (#3826)`
+- [x] TDD (component tests per repo pattern) + locale keys in every locale file. Commit: `feat(web): act mode UI — warning, acknowledgement, prerequisites surfacing (#3826)`
 
 ---
 
