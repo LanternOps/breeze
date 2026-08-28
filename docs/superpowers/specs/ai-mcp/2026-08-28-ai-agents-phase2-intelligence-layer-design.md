@@ -1,7 +1,7 @@
 # AI Agents Phase 2 — Intelligence Layer: Program Design
 
 **Date:** 2026-08-28
-**Status:** Approved in dialogue (Todd, 2026-08-28). Awaiting written-spec review, then Codex quorum on the three consequential decisions in §9.
+**Status:** Approved in dialogue (Todd, 2026-08-28). Codex `xhigh` quorum run 2026-08-28 — 2 agree, 1 disagree (accepted), 5 gaps (all verified against code, all incorporated; see §9 and the **Amendment** call-outs). Awaiting written-spec review.
 **Tracking:** to be registered as a new `feature` parent issue after writing-plans (see §10). Phase 1 is LanternOps/breeze#3821, which closes after wave 6.3 (ticket shadow) lands; "anomaly sources" from the wave-6 title is folded into P2-1 here (decision A, 2026-08-28).
 **Extends:** `2026-08-22-ai-agents-program-and-wave1-design.md` (phase 1 contracts: `ai_agents`, `ai_agent_runs`, `ai_agent` principal, effective policy), `2026-08-05-tier3-supervised-four-eyes-split-design.md`, `2026-07-18-action-intents-approval-layer-design.md`, the wave-6 plans (`2026-08-28-ai-agents-wave6-{1,2,3}-*.md`).
 
@@ -31,8 +31,8 @@ Phase 2 fills the payload without adding new safety machinery: every capability 
 | D3 | Ticket-lane autonomy ceiling | **Metadata + private notes autonomously** (category, priority, queue, device link, one private note attributed to the `ai_agent` principal). Customer-facing text is always a draft a technician sends under their own identity. |
 | D4 | Feedback loop authority | **Recommend-only promotion + automatic demotion.** Stats never raise autonomy on their own; a failure drops an (org, op) back to propose-only automatically. |
 | D5 | Autonomy expansion (patch agent, fleet fan-out) | **Separate program later**, designed against real graduation data. Recorded as roadmap items (§11). |
-| D6 | Program shape | **Four lanes, one runner.** New `profile: 'verdict' \| 'full'` on runs so high-volume alert judgement fits the budget model without a second AI path. |
-| D7 | Approvals | Every mutation rides `action_intents` (Tier-2 auto-execute in act mode, inbox otherwise; Tier-3 → inbox or policy-decide). "Promote to act" is itself a four-eyes intent. |
+| D6 | Program shape | **Four lanes, one runner.** New `profile: 'verdict' \| 'full'` on runs so high-volume alert judgement fits the budget model without a second AI path. **Amendment (quorum):** structured outcomes are produced by **outcome tools** (`submit_alert_verdict`, `submit_sweep_findings`, `submit_narrative`, `submit_ticket_proposal`) — Tier-1 tools whose Zod-validated input *is* the outcome and which execute nothing; the runner today only captures assistant text (`runLoop.ts:891`, `:1100`). Proposals inside those outcomes are converted to intents **by the system after the run**, with an explicit scope, never by agent tool calls — which also sidesteps the device-less-mutation deny (`aiGuardrails.ts:1625`) for sweep and ticket runs. |
+| D7 | Approvals | Every mutation rides `action_intents`. **Amendment (quorum):** intents are Tier-3-only today (`intentService.ts:660` throws `tool_not_tier3`; `runLoop.ts:461` records Tier-2 proposals with no approval object). P2-1 therefore adds a **Tier-2 intent lifecycle** (`approvalScope: 'single'`, one approver, no four-eyes, no policy-decide) so shadow-mode suggestions are one-click in `/approvals`; in act mode a Tier-2 op executes only if it is in the act manifest, otherwise it is a single-approver intent. "Promote to act" is a four-eyes intent. |
 
 ## 3. Program shape
 
@@ -61,8 +61,9 @@ P2-6 may be pulled forward if a sales surface is needed sooner; it only depends 
 **Profile `'verdict'`.** New `ai_agent_runs.profile` column, `'full'` default. A verdict run:
 - has a fixed read-only tool set (`get_alert`, `get_alert_history`, `get_device`, `get_device_metrics`, `get_correlation_group`, `query_alert_rule_stats`) — `toolAllowlist` is intersected, never widened;
 - is capped at `maxTurnsPerRun = 3`, `verdictBudgetCentsPerRun` (default 2), `maxVerdictRunsPerHour` (default 200) — new `AiAgentLimits` fields, snapshot v4 → v5, tolerant reads 1–5;
-- is **excluded from the unattended-exposure ledger** (an annotation is not a mutation) and from `maxRunsPerHour` (which stays the full-profile cap);
-- **counts toward the circuit breaker** on runner failure only (`completed`+`needs_attention` is neutral for verdicts — a "needs human" verdict is a valid answer, not a failure).
+- never touches the unattended-exposure ledger — not by exemption but structurally: the ledger is written only when a policy intent is authorized (`policyDecide.ts:288`) and a verdict run can neither call a mutating tool nor create an intent itself (**Amendment**: the earlier "ledger-exempt by profile" wording is withdrawn; no profile-keyed bypass exists anywhere);
+- **has its own admission counters** (**Amendment**): `maxVerdictRunsPerHour` and a new `maxConcurrentVerdictRuns` (default 4) — verdict runs are excluded from `maxRunsPerHour`, `maxConcurrentRuns` and the device-less cooldown bucket (`runService.ts:445-470` groups every device-less run together today), so verdict volume can never starve or suppress remediation runs;
+- **circuit breaker** (**Amendment**): `classifyTerminal` gains the run profile; a verdict run's clean `completed` is `neutral` (today it would `reset` the full runner's failure streak — `agentCircuit.ts:128`), `needs_attention` is `neutral`, runner failures on the increment allowlist still `increment`.
 
 **Outcome.** `AgentRunOutcome.alertVerdict`:
 ```ts
@@ -76,7 +77,9 @@ interface AlertVerdictOutcome {
     | { tool: 'manage_alerts'; action: 'resolve'; alertId: string };
 }
 ```
-Persisted to `ai_alert_verdicts` (§5) — one row per (alert | group) per run; a newer verdict marks the older `superseded_by`. `suggestedAction` is recorded via the existing `recordProposal` path as a `manage_alerts` Tier-2 intent: auto-executed only when the agent is in `act` mode with `auto_approve`; otherwise a one-click card in `/approvals`. Nothing in this lane mutates alerts without an intent.
+Produced via the `submit_alert_verdict` outcome tool and persisted to `ai_alert_verdicts` (§5) — one row per (alert | group) per run; a newer verdict marks the older `superseded_by`. `suggestedAction` becomes a **Tier-2 single-approver intent** created by `finishRun` with scope `{ alertId | ruleId+deviceId }`: in act mode with `manage_alerts` in the act manifest it executes (with a `verifySpec: alert_state`); otherwise it is a one-click card in `/approvals`. Nothing in this lane mutates alerts without an intent.
+
+**Trigger plumbing (Amendment):** `upsertGroup` returns only an id and `persistAlertCorrelationGroupsForAlerts` returns only counts, discarded by the job (`alertCorrelationGroups.ts:147`, `:237`; `alertCorrelation.ts:527`). P2-1 changes `upsertGroup` to `RETURNING id, (xmax = 0) AS created`, bubbles `createdGroupIds` up, and the job publishes `alert.correlation_group.created` per new id **after** the persistence transaction commits.
 
 **UI.** Verdict badge + rationale on the alert list row, alert detail, and correlation group; 👍/👎 on the badge writes `ai_alert_verdicts.feedback` (a supervision signal, not training). Filter "hide transient/recurring" on the alerts page reads the latest verdict.
 
@@ -84,11 +87,11 @@ Persisted to `ai_alert_verdicts` (§5) — one row per (alert | group) per run; 
 
 ### 4.2 P2-2 Scheduled sweeps
 
-**Config.** New dual-owner table `ai_agent_schedules` (§5): partner defines `(agent_id, cron, timezone, sweep_kind[], enabled)`; an org row may only **disable** or **remove kinds** from what the partner enabled (tighten-only, same resolver shape as `effectivePolicy`). Sweep kinds v1: `disk_pressure`, `stale_agents`, `pending_reboots`, `failed_backups`, `unpatched_critical`, `expiring_certs`, `service_down`. Each kind is a fixed read-only tool recipe in `services/aiAgents/sweepKinds.ts`, not free prompting.
+**Config.** New dual-owner table `ai_agent_schedules` (§5): partner defines `(agent_id, cron, timezone, sweep_kind[], enabled)`; an org row may only **disable** or **remove kinds** from what the partner enabled (tighten-only, same resolver shape as `effectivePolicy`). **Amendment:** an org row carries `baseline_schedule_id` (FK to the partner row, `NOT NULL` when `org_id` is set — CHECK) because one agent may have several partner schedules and `agent_id` alone cannot say which one the org is tightening. Sweep kinds v1: `disk_pressure`, `stale_agents`, `pending_reboots`, `failed_backups`, `unpatched_critical`, `expiring_certs`, `service_down`. Each kind is a fixed read-only tool recipe in `services/aiAgents/sweepKinds.ts`, not free prompting.
 
 **Trigger.** One BullMQ repeatable per partner schedule (`ai-agent-sweep-<scheduleId>`, worker-role placement per the wave-3.5d registry). On fire it fans out one **full-profile** `triage` run per org the partner schedule covers (org-scoped run, device-less: `deviceId NULL`, `triggerKind: 'schedule'`, `triggerRef: scheduleId`, dedupe `sweep:<scheduleId>:<orgId>:<fireIso>`). Fan-out respects `maxConcurrentRuns` per org and the circuit breaker; a skipped org is recorded on the schedule's `last_run_summary`.
 
-**Outcome.** `AgentRunOutcome.sweepFindings: SweepFinding[]` — `{ kind, severity, deviceId?, title, detail, evidence: {...display fields only}, proposedIntentId? }`. Proposed remediations go through `recordProposal` exactly as alert-triggered runs do: Tier-2 auto in act mode, Tier-3 → inbox or policy-decide. `maxActionsPerRun` applies per sweep run.
+**Outcome.** Via `submit_sweep_findings`: `AgentRunOutcome.sweepFindings: SweepFinding[]` — `{ kind, severity, deviceId?, title, detail, evidence: {...display fields only}, proposedAction?: { opKey, deviceId, args }, proposedIntentId? }`. A sweep run is **device-less and read-only** — it never calls a mutating tool (the guardrail would deny it, `aiGuardrails.ts:1625`). `finishRun` converts each `proposedAction` into a **device-bound intent** (Tier-2 single-approver, or Tier-3 → inbox / policy-decide), capped by `maxActionsPerRun`; act-mode execution of a manifest op then happens through the existing act pipeline (revalidate → reserve → execute → verify → fix-watch) as a **child run** bound to that device, so blast caps and the circuit apply per device exactly as for alert-triggered runs.
 
 **Digest.** `runFinishedNotify` gains a `sweep` template: one notification per org per sweep with the ranked findings and a link to the run trace. Recipients from `ai_agents.recipients`.
 
@@ -108,12 +111,14 @@ Persisted to `ai_alert_verdicts` (§5) — one row per (alert | group) per run; 
 
 Builds on wave 6.3 (`ticket_outbox`, durable subscriber, forced-shadow runs, `ticketProposal`, bounded hostile context, origin-based loop guard). This wave lifts the shadow force **only** when both gates are open: agent `mode = 'act'` **and** a new per-agent toggle `triggers.ticket.autonomousWrites` (default `false`). Otherwise 6.3 behaviour is unchanged.
 
-**Autonomous writes (Tier-2 `manage_tickets` intents, auto-executed in act mode):**
+**Autonomous writes** — produced as structured fields on `ticketProposal` (via `submit_ticket_proposal`), converted by `finishRun` into Tier-2 single-approver `manage_tickets` intents scoped `{ ticketId }`, auto-executed in act mode + `autonomousWrites`, otherwise inbox cards:
 - `update_fields`: `categoryId`, `priority`, `assignedTeam` (queue) — only when `ticketProposal.confidence ≥ 0.7` per field; never overwrites a value a human already set (checked against `ticket` audit trail at execution time — the revalidation step).
 - `link_device`: sets `tickets.deviceId` when the proposal identifies a device by hostname/serial **that belongs to the ticket's org** with a single match; ambiguous → no write, mention in the note.
 - `comment` with `isPublic: false`, `originPrincipalKind: 'ai_agent'`, `agentRunId` set — the triage summary. Exactly one per run; the loop guard (6.3) guarantees it never re-triggers a run.
 
-**Drafts (never sent by the agent).** `tickets.ai_draft_reply`, `tickets.ai_draft_resolution_note` (+ `ai_draft_run_id`). Written by a new Tier-2 action `manage_tickets:draft` (so it is still an intent, still on the trace). The ticket UI shows "AI draft" with **Send as me** / **Discard**; sending posts a normal public comment under the technician's identity and clears the draft. Resolution-note draft is produced on `ticket.status_changed → resolved` when no `resolutionNote` exists; the tech accepts or edits at close.
+**Drafts (never sent by the agent).** **Amendment (quorum, accepted):** drafts live in a dedicated `ticket_drafts` table (§5), not columns on `tickets` — a draft has identity, kind, provenance, lifecycle and history; columns cannot hold a reply and a resolution draft from different runs, supersession, or the send/discard evidence P2-6 counts. One active draft per `(ticket_id, kind)` (partial unique on `state = 'active'`); a newer run supersedes the older (`state = 'superseded'`). Written by `finishRun` from `ticketProposal.draftReply` / `draftResolutionNote` as a Tier-2 single-approver intent `manage_tickets:draft` with scope `{ ticketId }` (auto-executes in act mode + `autonomousWrites`; otherwise the inbox card's approve action creates the draft). The ticket UI shows "AI draft" with **Send as me** / **Discard**; sending posts a normal public comment under the technician's identity and marks the draft `consumed` with `consumed_by`/`consumed_at`; discard marks `discarded`. Resolution-note draft is produced on `ticket.status_changed → resolved` when no `resolutionNote` exists; the tech accepts or edits at close.
+
+**Scope (Amendment):** the guardrail policy object gains a non-device scope `{ ticketId }` so ticket-bound Tier-2 intents can be revalidated (ticket still open, same org, field not human-set) without a device; `buildAgentAuthContext` pins the ticket's org and site (via linked device if any) exactly as it pins `allowedSiteIds` for device runs.
 
 **Context additions over 6.3.** Linked device's last 24h alerts + verdicts, open sweep findings for that device, last 3 resolved tickets in the same category for the org (titles + resolution notes only, HTML-stripped, same 12 KiB ceiling). Still no requester PII, no attachments, no custom fields.
 
@@ -121,7 +126,7 @@ Builds on wave 6.3 (`ticket_outbox`, durable subscriber, forced-shadow runs, `ti
 
 ### 4.5 P2-5 Feedback + graduation
 
-**Stats.** `ai_agent_op_stats` (§5), upserted by `finishRun` and by `fixWatch` verdict writes:
+**Stats.** `ai_agent_op_stats_daily` (§5; **Amendment** — daily buckets, not rolling counters: a true 30-day window cannot be maintained from aggregate counters, and the eligibility query sums buckets at read time), upserted by `finishRun` and by `fixWatch` verdict writes. **Fix-watch attribution (Amendment):** a watch is unique per run and stores no op key (`fixWatch.ts:128`, `:164`) while a run may execute up to `maxActionsPerRun` ops — P2-5 adds `op_keys text[]` snapshotted onto the watch at creation; a `recurred` verdict counts as a failure for **every** op in the snapshot and `held_qualified` as a success for every op (conservative: shared credit, shared blame).
 - **success** for (org, agent, op_key, rule_id?) = execution `verification: 'passed'` **and** (fix-watch `held_qualified`, or the op had no eligible watch);
 - **failure** = verify-fail, or fix-watch `recurred`;
 - `inconclusive` watches count as neither.
@@ -133,13 +138,18 @@ Builds on wave 6.3 (`ticket_outbox`, durable subscriber, forced-shadow runs, `ti
 
 Both create a **four-eyes action intent** (`tool: 'manage_ai_agents', action: 'authorize_supervised_key'`, new Tier-3 four-eyes entry in `aiGuardrails`). Approval appends the op key to the **org-level** `ai_agents.actAssets.supervisedActionKeys` (wave-5's existing authorization list) — never the partner baseline. Gated by `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` because that is the path it feeds.
 
+**Amendments (quorum, all three accepted):**
+- Effective keys are the **intersection** of partner and org (`effectivePolicy.ts:199`), so an org-only append does nothing unless the partner baseline already holds the key. Eligibility therefore additionally requires the key in the **partner** row's `supervisedActionKeys`; the graduation panel shows "needs partner baseline" otherwise, and the partner-settings UI gets a matching hint.
+- An org override row may not exist, and creating one from schema defaults would disable the agent and empty its allowlists (`aiAgents.ts:45`). The handler **clones the effective policy** into a new org row (same mode/allowlists/limits as currently effective, then adds the key) inside one transaction with `SELECT … FOR UPDATE` on the partner row; every write to `actAssets` (promote, demote, settings) takes `FOR UPDATE` on the target row — no read-modify-write of the jsonb outside a row lock.
+- "Approve and always allow" **does not** authorize the current intent via policy: policy-decide requires the key in both the live policy and the run's immutable snapshot (`policyDecide.ts:512`). The card's approve still follows the normal approval; graduation affects **future runs only** (stated on the card).
+
 **Auto-demote.** On the first failure for a key present in the org row's `supervisedActionKeys`: remove the key (system write under `withSystemDbAccessContext`, audited with `reason`, `runId`, `watchId`), notify `recipients` at high priority, stamp `ai_agent_op_stats.demoted_at`. Never touches `ai_agents.enabled`, `mode`, or the partner row. Re-promotion requires the stats to re-qualify from `demoted_at`.
 
 **Verdict precision.** P2-1's 👍/👎 rolls into `ai_agent_op_stats` rows keyed `op_key = 'alert_verdict'` + `rule_id`, reported in P2-6. No prompt adaptation from feedback in this program (roadmap).
 
 ### 4.6 P2-6 Value accounting
 
-**Rollup.** `ai_agent_impact_daily` (§5), rebuilt idempotently per (org, day) by a nightly repeatable from `ai_agent_runs`, `ai_alert_verdicts`, `action_intents`, `ai_agent_fix_watches`, `ai_cost_usage`. Columns: `alerts_judged`, `noise_flagged` (transient/recurring/duplicate verdicts), `suppressions_applied` (executed suppress intents), `tickets_triaged`, `drafts_sent`, `fixes_proposed`, `fixes_executed`, `fixes_held`, `fixes_recurred`, `est_seconds_saved`, `llm_cents`.
+**Rollup.** `ai_agent_impact_daily` (§5), rebuilt idempotently per (org, day) by a nightly repeatable from `ai_agent_runs`, `ai_alert_verdicts`, `action_intents`, `ai_agent_fix_watches`, `ticket_drafts` (`drafts_sent` = `consumed` rows), `ai_cost_usage`. Columns: `alerts_judged`, `noise_flagged` (transient/recurring/duplicate verdicts), `suppressions_applied` (executed suppress intents), `tickets_triaged`, `drafts_sent`, `fixes_proposed`, `fixes_executed`, `fixes_held`, `fixes_recurred`, `est_seconds_saved`, `llm_cents`.
 
 **Estimate model.** `est_seconds_saved` = Σ per-outcome constants, partner-overridable on a new `ai_agents.impactWeights` jsonb (defaults: alert judged 90 s, noise flagged 240 s, ticket triaged 360 s, draft sent 300 s, fix executed 900 s, narrative 1800 s). Always rendered as **"estimated"** beside actual LLM spend; no claim of measured time. Measured time-saved (ticket time entries, MTTR deltas) is a roadmap item.
 
@@ -153,14 +163,17 @@ All tables: RLS ceremony per CLAUDE.md, org cascade + export policy + org-merge 
 |---|---|---|---|
 | `ai_agent_runs.profile` `text NOT NULL DEFAULT 'full'` CHECK `IN ('full','verdict')`; `correlation_group_id uuid NULL` FK `alert_correlation_groups` SET NULL; `report_id uuid NULL` FK `reports` SET NULL; `schedule_id uuid NULL` FK `ai_agent_schedules` SET NULL | column adds → export `included` | existing | P2-1/2/3 |
 | `ai_alert_verdicts` | `id, org_id, run_id FK ai_agent_runs CASCADE, alert_id NULL FK alerts CASCADE, correlation_group_id NULL FK CASCADE, classification, confidence numeric(3,2), rationale text, pattern jsonb NULL, suggested_intent_id NULL FK action_intents SET NULL, feedback text NULL CHECK IN ('up','down'), feedback_by NULL FK users SET NULL, feedback_at, superseded_by NULL FK self SET NULL, created_at`; CHECK exactly one of `alert_id`/`correlation_group_id`; index `(org_id, alert_id)`, `(org_id, correlation_group_id)`, partial on `superseded_by IS NULL` | shape 1; `pattern` jsonb → export `excludedOpen` | P2-1 |
-| `ai_agent_schedules` | `id, partner_id NULL, org_id NULL, one_owner_chk, agent_id FK ai_agents CASCADE, cron text, timezone text, sweep_kinds text[], enabled bool, last_enqueued_at, last_run_summary jsonb NULL, created_by, created_at, updated_at`; dual-axis RLS policy | dual-owner config (§Partner-Wide First); `DUAL_AXIS_TENANT_TABLES`; `last_run_summary` → `excludedOpen` | P2-2 |
+| `ai_agent_schedules` | `id, partner_id NULL, org_id NULL, one_owner_chk, agent_id FK ai_agents CASCADE, baseline_schedule_id NULL FK self CASCADE (CHECK: NOT NULL iff org_id set), cron text, timezone text, sweep_kinds text[], enabled bool, last_enqueued_at, last_run_summary jsonb NULL, created_by, created_at, updated_at`; dual-axis RLS policy | dual-owner config (§Partner-Wide First); `DUAL_AXIS_TENANT_TABLES`; `last_run_summary` → `excludedOpen` | P2-2 |
 | `reports.report_type` gains `'ai_org_narrative'` | enum add | existing | P2-3 |
-| `tickets.ai_draft_reply text NULL`, `ai_draft_resolution_note text NULL`, `ai_draft_run_id uuid NULL` FK SET NULL | column adds → `included` | existing | P2-4 |
+| `ticket_drafts` | `id, org_id, ticket_id FK tickets CASCADE, run_id FK ai_agent_runs SET NULL, intent_id NULL FK action_intents SET NULL, kind CHECK IN ('reply','resolution_note'), content text, state CHECK IN ('active','consumed','discarded','superseded'), created_at, consumed_by NULL FK users SET NULL, consumed_at, superseded_by NULL FK self`; partial unique `(ticket_id, kind) WHERE state = 'active'` | shape 1; org cascade + export (`content` → `included`; reviewed: draft text is customer data, not a secret) + org-merge | P2-4 |
 | `ai_agents.triggers.ticket.autonomousWrites` | jsonb key on existing column; validator + snapshot v5 | existing | P2-4 |
-| `ai_agent_op_stats` | `id, org_id, agent_id FK CASCADE, op_key, rule_id NULL FK alert_rules SET NULL, verified_count, failed_count, recurred_count, feedback_up, feedback_down, first_verified_at, last_verified_at, last_failed_at, window_start, demoted_at NULL, demote_reason NULL, updated_at`; unique `(org_id, agent_id, op_key, rule_id)` | shape 1 | P2-5 |
+| `ai_agent_op_stats_daily` | `id, org_id, agent_id FK CASCADE, op_key, rule_id NULL FK alert_rules SET NULL, day date, verified_count, failed_count, recurred_count, feedback_up, feedback_down, updated_at`; unique `(org_id, agent_id, op_key, rule_id, day) NULLS NOT DISTINCT` (PG15+; fall back to a partial pair otherwise) | shape 1 | P2-5 |
+| `ai_agent_graduation` | `id, org_id, agent_id FK CASCADE, op_key, state CHECK IN ('eligible','promoted','demoted'), first_verified_at, promoted_at, promoted_intent_id NULL FK action_intents SET NULL, demoted_at, demote_reason, demote_run_id NULL, demote_watch_id NULL, updated_at`; unique `(org_id, agent_id, op_key)` — transition **history and eligibility state only**; the authority stays `ai_agents.actAssets.supervisedActionKeys` | shape 1 | P2-5 |
+| `ai_agent_fix_watches.op_keys text[] NOT NULL DEFAULT '{}'` | column add → `included` | existing | P2-5 |
 | `ai_agent_impact_daily` | `id, org_id, day date, …counters int, est_seconds_saved int, llm_cents int, rebuilt_at`; unique `(org_id, day)` | shape 1 | P2-6 |
 | `ai_agents.impactWeights jsonb NULL` | column add → `excludedOpen` | existing | P2-6 |
-| `AiAgentLimits` v5: `maxVerdictRunsPerHour` (200, 1–2000), `verdictBudgetCentsPerRun` (2, 1–50), `promoteThreshold` (20, 5–200) | snapshot v4 → v5 | shared | P2-1/5 |
+| `AiAgentLimits` v5: `maxVerdictRunsPerHour` (200, 1–2000), `maxConcurrentVerdictRuns` (4, 1–20), `verdictBudgetCentsPerRun` (2, 1–50), `promoteThreshold` (20, 5–200) | snapshot v4 → v5 | shared | P2-1/5 |
+| `action_intents` Tier-2 lifecycle | `approvalScope` gains `'single'`; `tier` column admits 2; scope jsonb admits `{ ticketId }` / `{ alertId }` alongside `{ deviceId }`; `intentReleaseWorker` executes a decided Tier-2 intent through the normal tool path with the intent's scope pinned | existing table, column CHECK relaxations + validators | P2-1 |
 
 `AgentRunOutcome` gains `alertVerdict?`, `sweepFindings?`, `narrative?`; the reserved `findings: unknown[]` is removed in P2-1 (nothing reads it; safe projection in `runTrace.ts` enumerates the new fields by hand, display values only, per the wave-6.1 DTO rule).
 
@@ -168,28 +181,30 @@ All tables: RLS ceremony per CLAUDE.md, org cascade + export policy + org-merge 
 
 | Mutation | Tool:action | Tier | Path |
 |---|---|---|---|
-| Suppress / resolve alert (P2-1) | `manage_alerts:suppress` / `resolve` | 2 | act+auto_approve → execute; else inbox card |
+| Suppress / resolve alert (P2-1) | `manage_alerts:suppress` / `resolve` | 2 (`single`) | act + act-manifest entry → execute + verify; else inbox card |
 | Sweep remediation (P2-2) | per act manifest | 2 / 3 | existing `recordProposal` → auto / inbox / policy-decide |
-| Ticket field, device link, private note (P2-4) | `manage_tickets:update_fields` / `link_device` (new) / `comment` | 2 | act + `autonomousWrites` → execute; else inbox |
-| Ticket draft (P2-4) | `manage_tickets:draft` (new) | 2 | as above; the **send** is a human UI action |
+| Ticket field, device link, private note (P2-4) | `manage_tickets:update_fields` / `link_device` (new) / `comment` | 2 (`single`), scope `{ ticketId }` | act + `autonomousWrites` → execute; else inbox |
+| Ticket draft (P2-4) | `manage_tickets:draft` (new) | 2 (`single`), scope `{ ticketId }` | as above; the **send** is a human UI action |
 | Promote (P2-5) | `manage_ai_agents:authorize_supervised_key` (new) | 3 four-eyes | inbox, two approvers |
 | Auto-demote (P2-5) | system write | — | audited + notified, no approval |
 
-New inbox affordances: batch approve/decline for same-(org, tool, action) Tier-2 cards (P2-2); "Approve and always allow" → creates the P2-5 promote intent (P2-5).
+New inbox affordances: batch approve/decline for same-(org, tool, action) Tier-2 cards (P2-2); "Approve and always allow" → creates the P2-5 promote intent for **future** runs (P2-5).
+
+**Tier-2 intent lifecycle (P2-1 foundation, Amendment):** `createActionIntent` accepts tier 2 from the `ai_agent` principal only (chat-originated Tier-2 keeps `auto_approve` semantics unchanged); `approvalScope: 'single'` needs one approver with `ai:write` on the org; no policy-decide, no exposure ledger, no four-eyes; decided intents release through `intentReleaseWorker` with the intent's scope pinned and the same revalidation hook shape as act ops (`actRevalidation.ts`). Existing `runLoop.ts:461` proposal recording becomes "create Tier-2 intent" only for proposals that come out of outcome tools; free-form Tier-2 tool calls in shadow stay recorded-only, as today.
 
 ## 7. Rollout, flags, safety
 
 - **No new env flags.** P2-1..3, P2-6 activate under `BREEZE_AI_AGENTS_ENABLED` for any agent with `mode ≥ shadow`. P2-4 autonomous writes need `mode = act` + `autonomousWrites`. P2-5 promotion needs `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED`; auto-demote is always on.
 - Kill switch, circuit breaker, exposure ledger, `maxActionsPerRun`, cooldowns apply unchanged to every act-mode mutation. Verdict runs are ledger-exempt (§4.1).
-- Verdict volume guard: `maxVerdictRunsPerHour` per agent; overflow is `skip('verdict_rate')` on admission, visible in the runs list, never queued.
+- Verdict volume guard: `maxVerdictRunsPerHour` + `maxConcurrentVerdictRuns` per agent on their own counters; overflow is `skip('verdict_rate')` / `skip('max_concurrent_verdict_runs')` on admission, visible in the runs list, never queued.
 - Every prompt input in this program is **display fields only** (rule names, counters, hostnames, sanitized titles); no raw alert messages, ticket bodies beyond 6.3's bounded context, or tool outputs.
 - Sentry: no ticket/alert text in tags or breadcrumbs (scrubber allowlist).
 - Each wave: partner-wide-first tests (`<table>PartnerRls.integration.test.ts` for `ai_agent_schedules`), RLS coverage allowlists, org-cascade + export-policy + roundtrip suites, 8-locale i18n, `pnpm lint`.
 
 ## 8. Testing (per wave, minimum)
 
-- Contract: outcome safe-projection Zod test per new outcome type (raw tool I/O never serialized); terminalization contract (no new terminal writers); registry snapshot updates for every new repeatable/worker.
-- Integration (real Postgres): subscriber admits exactly one verdict run per group; sweep fan-out fires per org and respects circuit-open; promote intent writes the **org** row's `supervisedActionKeys`, never partner; auto-demote removes the key on first failure and re-qualification waits for `demoted_at`; batch approve excludes four-eyes cards.
+- Contract: outcome safe-projection Zod test per new outcome type (raw tool I/O never serialized); terminalization contract (no new terminal writers); registry snapshot updates for every new repeatable/worker; **outcome tools are Tier-1 and execute nothing** (source-scan + tier assertion); **no `profile === 'verdict'` branch exists in any guardrail, ledger or admission bypass** (source-scan); `classifyTerminal` verdict-profile table test.
+- Integration (real Postgres): `alert.correlation_group.created` fires once per NEW group (not on member upserts) and the subscriber admits exactly one verdict run per group; verdict admission never consumes full-profile concurrency/cooldown; sweep fan-out fires per org and respects circuit-open; sweep proposals become device-bound intents and never a device-less mutation; promote intent clones-from-effective when no org row exists, writes the **org** row's `supervisedActionKeys` under `FOR UPDATE`, never the partner, and is refused when the partner baseline lacks the key; auto-demote removes the key on first failure and re-qualification waits for `demoted_at`; Tier-2 `single` intents release with scope pinned and never touch the exposure ledger; batch approve excludes four-eyes cards; one active `ticket_drafts` row per (ticket, kind).
 - Unit: sweep-kind recipes are read-only (tool tier assertion); ticket field writes refuse to overwrite human-set values; draft send clears drafts and posts under the technician's identity; impact rollup is idempotent per (org, day).
 - Web: verdict badge/feedback, batch approve, draft send/discard, impact page — Vitest + `localeParity`.
 
@@ -199,7 +214,22 @@ New inbox affordances: batch approve/decline for same-(org, tool, action) Tier-2
 2. **Promotion as a four-eyes intent writing `supervisedActionKeys` on the org row** — vs a dedicated graduation table.
 3. **Ticket drafts as columns on `tickets` written via a Tier-2 `manage_tickets:draft` intent** — vs a `ticket_drafts` table / vs private comments flagged as drafts.
 
-Quorum outcome recorded here before writing-plans.
+**Quorum outcome (Codex `gpt-5.6-sol` xhigh, read-only, 2026-08-28; every cited defect verified in-session against the files):**
+
+| # | Verdict | Resolution |
+|---|---|---|
+| 1 Verdict profile | **AGREE**, with conditions | Accepted all three: no profile-keyed ledger bypass (ledger is already mutation-specific); separate verdict admission counters (`maxConcurrentVerdictRuns`, own rate, own cooldown bucket); `classifyTerminal` takes the profile so a verdict completion is `neutral`, never `reset`. |
+| 2 Promotion as four-eyes intent on `supervisedActionKeys` | **AGREE** | Accepted all three defects: partner-baseline prerequisite (intersection semantics), clone-from-effective when no org row exists + `FOR UPDATE` on every `actAssets` write, graduation is future-runs-only. Added `ai_agent_graduation` for transition **history** only — authority stays on the policy row (Codex's split-brain warning). |
+| 3 Drafts as `tickets` columns | **DISAGREE → accepted** | `ticket_drafts` table with kind/state/provenance and a partial unique per (ticket, kind). Draft-flagged comments rejected by both sides. |
+| Gap: no structured-output path | accepted | Outcome tools (`submit_*`, Tier-1, Zod-validated, execute nothing); system converts proposals to intents post-run. |
+| Gap: Tier-2 intents don't exist | accepted | Tier-2 `single` lifecycle is a P2-1 foundation deliverable (§6). |
+| Gap: device-less mutations denied | accepted | Sweep/ticket runs are read-only; intents are system-created with explicit `{ deviceId }` / `{ ticketId }` scope; act execution of sweep ops runs as a device-bound child run. |
+| Gap: group-created event not emittable | accepted | `upsertGroup` → `RETURNING (xmax = 0) AS created`; publish after commit. |
+| Gap: rolling window from counters; nullable `rule_id` in unique | accepted | Daily buckets; `NULLS NOT DISTINCT`. |
+| Gap: fix-watch has no op key | accepted | `op_keys[]` snapshot on the watch; shared credit/blame. |
+| Gap: schedule override has no baseline link | accepted | `baseline_schedule_id`. |
+
+Disagreement resolved on the merits; nothing surfaced to the user as unresolved.
 
 ## 10. Lifecycle
 
