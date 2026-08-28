@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import {
   AI_AGENT_KINDS,
+  AI_AGENT_LIMIT_DEFAULTS,
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
   AI_AGENT_RUN_STATUSES,
   type AgentRunVerdict,
@@ -23,6 +24,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope } from '../
 import { policyDecideEnabled } from '../config/env';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE, PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
 import { AgentAccessDeniedError } from '../services/aiAgents/access';
+import { getCircuitState, resetCircuit } from '../services/aiAgents/agentCircuit';
 import {
   createAgent, disableAgent, getAgent, listAgents, updateAgent,
   ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError,
@@ -734,3 +736,86 @@ aiAgentsRoutes.delete('/:id', scopes, requireAiWrite, requireMfa(), async (c) =>
     return mapError(c, err);
   }
 });
+
+/**
+ * Wave 6 PR 2 (#3828) — the per-org circuit breaker's read surface. Circuit
+ * state is keyed `(org_id, agent_id)`, not just `agent_id` (a partner-wide
+ * agent runs against many orgs and a failure streak in one must not read as
+ * open for every other), so — same shape as `GET /effective` /
+ * `GET /exposure-budget` above — the caller must resolve which org's view of
+ * this agent it wants. `resolveOrgId` auto-resolves it for an
+ * organization-scoped caller and a single-org partner; anyone else must pass
+ * it explicitly.
+ */
+aiAgentsRoutes.get(
+  '/:id/circuit',
+  scopes,
+  requireAiRead,
+  zValidator('query', z.object({ orgId: z.string().guid().optional() })),
+  async (c) => {
+    const auth = c.get('auth');
+    const id = uuidParam(c, 'id');
+    if (!id) return c.json({ error: 'Agent not found' }, 404);
+    const agent = await getAgent(auth, id);
+    if (!agent) return c.json({ error: 'Agent not found' }, 404);
+
+    const { orgId: requestedOrgId } = c.req.valid('query');
+    const orgResult = resolveOrgId(auth, requestedOrgId, true);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    if (!orgResult.orgId) return c.json({ error: 'orgId is required' }, 400);
+
+    // Authorized resolution (checks `auth.canAccessOrg`), NOT
+    // `resolveEffectiveAgentSystem` — that variant is reserved for run
+    // admission and release tooling (see its own docstring). Only used here
+    // to surface the CURRENT threshold alongside the counter; a missing
+    // effective policy (e.g. the agent was disabled since it last ran) falls
+    // back to the shared default rather than failing the read.
+    const resolved = await resolveEffectiveAgent(auth, orgResult.orgId, agent.kind);
+    const maxConsecutiveFailures =
+      resolved?.effective.limits.maxConsecutiveFailures ?? AI_AGENT_LIMIT_DEFAULTS.maxConsecutiveFailures;
+
+    const snapshot = await getCircuitState(orgResult.orgId, id);
+    return c.json({ data: { ...snapshot, maxConsecutiveFailures } });
+  },
+);
+
+/**
+ * The ONLY way an open circuit closes (wave-6 quorum: "manual MFA reset
+ * only" — never automatic, and a config edit on the agent must never touch
+ * this row, see `agentService.test.ts`'s coverage). Same write-permission +
+ * MFA gate as every other mutating route in this file.
+ */
+aiAgentsRoutes.post(
+  '/:id/circuit/reset',
+  scopes,
+  requireAiWrite,
+  requireMfa(),
+  zValidator('json', z.object({
+    orgId: z.string().guid().optional(),
+    reason: z.string().trim().min(3).max(1000),
+  })),
+  async (c) => {
+    const auth = c.get('auth');
+    const id = uuidParam(c, 'id');
+    if (!id) return c.json({ error: 'Agent not found' }, 404);
+    const agent = await getAgent(auth, id);
+    if (!agent) return c.json({ error: 'Agent not found' }, 404);
+
+    const body = c.req.valid('json');
+    const orgResult = resolveOrgId(auth, body.orgId, true);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    if (!orgResult.orgId) return c.json({ error: 'orgId is required' }, 400);
+
+    const snapshot = await resetCircuit(orgResult.orgId, id, auth.user.id);
+    writeRouteAudit(c, {
+      orgId: orgResult.orgId,
+      action: 'ai_agent.circuit_reset',
+      resourceType: 'ai_agent',
+      resourceId: id,
+      resourceName: agent.name,
+      details: { reason: body.reason, agentId: id, orgId: orgResult.orgId },
+      result: 'success',
+    });
+    return c.json({ data: snapshot });
+  },
+);

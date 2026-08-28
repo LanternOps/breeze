@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { and, count, eq, gte, inArray, isNotNull, isNull, lt, or, sql, sum } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import type {
+  AgentRunVerdict,
   AiAgentKind,
   AiAgentPolicySnapshot,
   AiAgentRunStatus,
@@ -25,6 +26,7 @@ import { checkBudget } from '../aiCostTracker';
 import { isDeviceInMaintenanceWindow } from '../deploymentEngine';
 import { publishEvent } from '../eventBus';
 import { getLlmBillingSourceForOrg } from '../llm/llmConfigResolver';
+import { isCircuitOpen, isTerminalRunStatus, recordRunTerminal } from './agentCircuit';
 import { AgentRunOwnershipError, assertRunOwnership } from './agentAuthContext';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
 import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger';
@@ -89,6 +91,7 @@ export interface CreateAgentRunInput {
 
 export type AgentRunSkipReason =
   | 'kill_switch_off' | 'no_effective_agent' | 'agent_disabled' | 'mode_off'
+  | 'circuit_open'
   | 'trigger_filter_mismatch' | 'maintenance_window' | 'cooldown'
   | 'max_concurrent_runs' | 'max_runs_per_hour' | 'org_budget_exceeded'
   | 'agent_daily_budget_exceeded' | 'duplicate' | 'ownership_mismatch'
@@ -176,6 +179,7 @@ export function evaluateAgentTriggerFilters(
  * the news, so it goes on the bus.
  */
 const PUBLISHED_SKIP_REASONS: ReadonlySet<AgentRunSkipReason> = new Set([
+  'circuit_open',
   'trigger_filter_mismatch', 'maintenance_window', 'cooldown',
   'max_concurrent_runs', 'max_runs_per_hour', 'org_budget_exceeded',
   'agent_daily_budget_exceeded', 'duplicate', 'ownership_mismatch',
@@ -235,54 +239,73 @@ export async function reapStalledAgentRuns(scope: {
   orgId: string;
 }): Promise<string[]> {
   const cutoff = new Date(Date.now() - STALLED_RUN_AFTER_SECONDS * 1000);
-  return inSystemDbContext(async () => {
-    const rows = await db
-      .update(aiAgentRuns)
-      .set({ status: 'failed', errorCode: 'stalled', finishedAt: new Date() })
-      .where(and(
-        eq(aiAgentRuns.agentId, scope.agentId),
-        eq(aiAgentRuns.orgId, scope.orgId),
-        inArray(aiAgentRuns.status, ['queued', 'running']),
-        // `started_at` is NULL for a run whose job never reached a worker at
-        // all (Redis lost it after the enqueue returned), and that row wedges
-        // the concurrency count identically — fall back to `queued_at`. Two
-        // typed column comparisons rather than one `coalesce(...) < $n`
-        // fragment: a bare Date interpolated into a raw `sql` template is
-        // handed to postgres.js unencoded and throws ERR_INVALID_ARG_TYPE,
-        // because only a column reference carries the timestamp mapper.
-        or(
-          and(isNotNull(aiAgentRuns.startedAt), lt(aiAgentRuns.startedAt, cutoff)),
-          and(isNull(aiAgentRuns.startedAt), lt(aiAgentRuns.queuedAt, cutoff)),
-        ),
-      ))
-      .returning({ id: aiAgentRuns.id, sessionId: aiAgentRuns.sessionId });
-    if (rows.length > 0) {
-      console.warn('[aiAgentRunService] reaped stalled agent runs', {
-        agentId: scope.agentId, orgId: scope.orgId, runIds: rows.map((r) => r.id),
-      });
-      for (const row of rows) {
-        if (!row.sessionId) continue;
-        const sessionId = row.sessionId;
-        try {
-          await reconcileHungExecutions(sessionId);
-        } catch (error) {
-          console.error(
-            '[aiAgentRunService] failed to reconcile hung executions for a reaped run (non-fatal)',
-            { agentId: scope.agentId, orgId: scope.orgId, runId: row.id, sessionId, error },
-          );
-        }
-        try {
-          await closeAgentRunSession(sessionId, 'failed');
-        } catch (error) {
-          console.error(
-            '[aiAgentRunService] failed to close the execution-ledger session for a reaped run (non-fatal)',
-            { agentId: scope.agentId, orgId: scope.orgId, runId: row.id, sessionId, error },
-          );
-        }
-      }
-    }
-    return rows.map((r) => r.id);
+  // Candidate selection only — the actual terminal write for each candidate
+  // routes through `transitionRunStatus` below (wave 6 PR 2, #3828: the
+  // terminalization chokepoint), not a raw bulk UPDATE. The patch is
+  // byte-identical to the old inline write (`status: 'failed', errorCode:
+  // 'stalled', finishedAt`); only the write PATH changed.
+  const candidates = await inSystemDbContext(() => db
+    .select({ id: aiAgentRuns.id, sessionId: aiAgentRuns.sessionId })
+    .from(aiAgentRuns)
+    .where(and(
+      eq(aiAgentRuns.agentId, scope.agentId),
+      eq(aiAgentRuns.orgId, scope.orgId),
+      inArray(aiAgentRuns.status, ['queued', 'running']),
+      // `started_at` is NULL for a run whose job never reached a worker at
+      // all (Redis lost it after the enqueue returned), and that row wedges
+      // the concurrency count identically — fall back to `queued_at`. Two
+      // typed column comparisons rather than one `coalesce(...) < $n`
+      // fragment: a bare Date interpolated into a raw `sql` template is
+      // handed to postgres.js unencoded and throws ERR_INVALID_ARG_TYPE,
+      // because only a column reference carries the timestamp mapper.
+      or(
+        and(isNotNull(aiAgentRuns.startedAt), lt(aiAgentRuns.startedAt, cutoff)),
+        and(isNull(aiAgentRuns.startedAt), lt(aiAgentRuns.queuedAt, cutoff)),
+      ),
+    )));
+  if (candidates.length === 0) return [];
+
+  const reapedIds: string[] = [];
+  for (const row of candidates) {
+    // CAS through `transitionRunStatus`, not a raw update: a candidate that
+    // genuinely finished (or was cancelled) between the select above and here
+    // loses the CAS and is silently skipped — exactly what the old bulk
+    // UPDATE's WHERE clause would also have excluded. Sequential (not
+    // parallel) deliberately: there are at most a handful of stalled rows for
+    // one (agent, org) pair.
+    const moved = await transitionRunStatus(row.id, ['queued', 'running'], 'failed', {
+      errorCode: 'stalled',
+      finishedAt: new Date(),
+    });
+    if (moved) reapedIds.push(row.id);
+  }
+  if (reapedIds.length === 0) return [];
+
+  console.warn('[aiAgentRunService] reaped stalled agent runs', {
+    agentId: scope.agentId, orgId: scope.orgId, runIds: reapedIds,
   });
+  const reapedIdSet = new Set(reapedIds);
+  for (const row of candidates) {
+    if (!reapedIdSet.has(row.id) || !row.sessionId) continue;
+    const sessionId = row.sessionId;
+    try {
+      await reconcileHungExecutions(sessionId);
+    } catch (error) {
+      console.error(
+        '[aiAgentRunService] failed to reconcile hung executions for a reaped run (non-fatal)',
+        { agentId: scope.agentId, orgId: scope.orgId, runId: row.id, sessionId, error },
+      );
+    }
+    try {
+      await closeAgentRunSession(sessionId, 'failed');
+    } catch (error) {
+      console.error(
+        '[aiAgentRunService] failed to close the execution-ledger session for a reaped run (non-fatal)',
+        { agentId: scope.agentId, orgId: scope.orgId, runId: row.id, sessionId, error },
+      );
+    }
+  }
+  return reapedIds;
 }
 
 /**
@@ -337,6 +360,13 @@ export async function createAndEnqueueAgentRun(
   if (!effective.enabled) return skip('agent_disabled');
   if (effective.mode === 'off') return skip('mode_off');
   const modeAtStart = effective.mode;
+
+  // 2b. Circuit breaker (wave 6 PR 2, #3828). Placed as early as possible
+  // after the kill switch — this is the first point `resolved.agentId` is
+  // known. Admission-only: an already-admitted, in-flight run is never
+  // touched (`agentCircuit.ts`'s header) — this only refuses NEW admissions
+  // for an (org, agent) pair a human has not yet reset with MFA.
+  if (await isCircuitOpen(orgId, resolved.agentId)) return skip('circuit_open');
 
   // 3. Trigger filters. Only an event-shaped trigger carries a context; a human
   //    pressing "run now" has already made the selection the filters encode.
@@ -605,12 +635,21 @@ export async function createAndEnqueueAgentRun(
 
 async function failRunAfterEnqueueFailure(runId: string): Promise<AiAgentRunRow | null> {
   try {
-    const [row] = await inSystemDbContext(() => db
-      .update(aiAgentRuns)
-      .set({ status: 'failed', errorCode: 'enqueue_failed', finishedAt: new Date() })
-      .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.status, 'queued')))
-      .returning());
-    return row ?? null;
+    // Routed through `transitionRunStatus` (wave 6 PR 2, #3828: the
+    // terminalization chokepoint) rather than a raw update. The patch is
+    // byte-identical to the old inline write; the caller here still needs the
+    // FULL row (its own caller reports `run.status`/`run.errorCode` back to
+    // the HTTP client), which `transitionRunStatus`'s boolean return does not
+    // carry — a follow-up read is cheap and this path is already an error case.
+    const moved = await transitionRunStatus(runId, 'queued', 'failed', {
+      errorCode: 'enqueue_failed',
+      finishedAt: new Date(),
+    });
+    if (!moved) return null;
+    return await inSystemDbContext(async () => {
+      const [row] = await db.select().from(aiAgentRuns).where(eq(aiAgentRuns.id, runId)).limit(1);
+      return row ?? null;
+    });
   } catch (error) {
     console.error('[aiAgentRunService] could not mark run failed after enqueue failure', {
       runId, error,
@@ -635,12 +674,60 @@ export async function transitionRunStatus(
   patch: AgentRunStatusPatch = {},
 ): Promise<boolean> {
   const fromStatuses = Array.isArray(from) ? from : [from];
-  return inSystemDbContext(async () => {
+  const moved = await inSystemDbContext(async () => {
     const rows = await db
       .update(aiAgentRuns)
       .set({ ...patch, status: to })
       .where(and(eq(aiAgentRuns.id, runId), inArray(aiAgentRuns.status, fromStatuses)))
-      .returning({ id: aiAgentRuns.id });
-    return rows.length > 0;
+      .returning({
+        id: aiAgentRuns.id,
+        orgId: aiAgentRuns.orgId,
+        agentId: aiAgentRuns.agentId,
+        errorCode: aiAgentRuns.errorCode,
+        outcome: aiAgentRuns.outcome,
+      });
+    return rows[0] ?? null;
   });
+  if (!moved) return false;
+
+  // Circuit-breaker bookkeeping (wave 6 PR 2, #3828). This is the ONE place a
+  // run's status becomes terminal (`reapStalledAgentRuns` and
+  // `failRunAfterEnqueueFailure` route through here too, see above), so this
+  // is the ONE call site for `recordRunTerminal` — see the terminalization
+  // contract test (`runService.terminalization.contract.test.ts`), which
+  // asserts nothing else in the codebase writes a terminal status onto
+  // `ai_agent_runs` directly.
+  //
+  // Deliberately OUTSIDE the `inSystemDbContext` block above, and wrapped in
+  // its own try/catch: a circuit-accounting statement failure must never be
+  // able to poison (and therefore roll back at COMMIT time) the run's own
+  // terminal-status write — see `agentCircuit.ts`'s `recordRunTerminal`
+  // docstring for the exact Postgres trap this avoids (the same one
+  // `createAndEnqueueAgentRun`'s dedupe-key reclaim comment documents for a
+  // caught 23505). In every call site that reaches an ambient context with no
+  // system scope already active (runLoop.ts's every call; this function's own
+  // `failRunAfterEnqueueFailure`), the update above has genuinely already
+  // committed on its own connection by the time this runs. The one exception
+  // — `reapStalledAgentRuns` called from inside admission's own already-open
+  // system context — nests into that SAME uncommitted transaction instead,
+  // but is safe by construction: its only errorCode ('stalled') always
+  // classifies `neutral` (agentCircuit.ts), so `recordRunTerminal` returns
+  // before issuing any SQL at all in that path.
+  if (isTerminalRunStatus(to)) {
+    try {
+      const runVerdict: AgentRunVerdict | null =
+        moved.outcome.runVerdict === 'needs_attention' ? 'needs_attention' : null;
+      await recordRunTerminal(
+        { id: moved.id, orgId: moved.orgId, agentId: moved.agentId },
+        to,
+        moved.errorCode,
+        runVerdict,
+      );
+    } catch (error) {
+      console.error('[aiAgentRunService] circuit bookkeeping failed (non-fatal)', {
+        runId, orgId: moved.orgId, agentId: moved.agentId, to, error,
+      });
+    }
+  }
+  return true;
 }

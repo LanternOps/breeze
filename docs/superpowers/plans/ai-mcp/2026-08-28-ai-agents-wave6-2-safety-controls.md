@@ -56,7 +56,7 @@ wave: W07 (#3828) — PR 2 of 4 (Safety controls)
 - `transitionRunStatus` calls it when `to` is terminal AND the CAS won; convert `reapStalledAgentRuns` + `failRunAfterEnqueueFailure` to `transitionRunStatus` calls (their patches carried over; behavior byte-identical otherwise — tests). The **terminalization contract test** (source scan: no `.set({ status: 'failed'|'cancelled'|...` on aiAgentRuns outside runService).
 - Admission: `if (await isCircuitOpen(orgId, agentId)) return skip('circuit_open')` after the kill-switch rule; `circuit_open` joins `AgentRunSkipReason` + `PUBLISHED_SKIP_REASONS`.
 - Reset route: `POST /:id/circuit/reset` — org-scoped (`scopes` + the ai-agents write permission the update route uses — grep it), `requireMfa()`, body `{ reason: string (min 3) }`, resets count + state closed + reset_by/reset_at + audit `ai_agent.circuit_reset`; `GET /:id/circuit` returns the state DTO. Config edits (agentService update) must NOT touch circuit rows — test.
-- [ ] TDD (classification matrix, lock-serialized concurrent terminals, threshold open exactly-once, reset, contract test red-proof by temporarily restoring a raw writer) → commit: `feat(api): per-org agent circuit breaker with centralized terminalization (#3828)`
+- [x] TDD (classification matrix, lock-serialized concurrent terminals, threshold open exactly-once, reset, contract test red-proof by temporarily restoring a raw writer) → commit: `feat(api): per-org agent circuit breaker with centralized terminalization (#3828)`
 
 ### Task 3: Fix-watch service + worker + scheduling
 
