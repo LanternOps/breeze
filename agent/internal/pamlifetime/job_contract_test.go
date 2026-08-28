@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/elevaccount"
+	"github.com/google/uuid"
 )
 
 type recordingLifetimeStore struct {
@@ -69,6 +70,7 @@ type fakeWindowsPrimitives struct {
 	assignErr           error
 	resumeErr           error
 	verifyActiveErr     error
+	verifyActiveCalls   int
 	reopenJob           jobOwnership
 	reopenMembers       int
 	reopenErr           error
@@ -179,6 +181,7 @@ func (f *fakeWindowsPrimitives) Resume(_ context.Context, _ suspendedProcessOwne
 }
 
 func (f *fakeWindowsPrimitives) VerifyActive(_ context.Context, _ suspendedProcessOwnership, _ jobOwnership) (int, error) {
+	f.verifyActiveCalls++
 	*f.order = append(*f.order, "verify active process and job")
 	return 1, f.verifyActiveErr
 }
@@ -237,6 +240,7 @@ func (f *fakeWindowsPrimitives) ClosePrimaryThread(process suspendedProcessOwner
 	}
 	f.threadClosed = true
 	f.closeThreadCount++
+	*f.order = append(*f.order, "close primary thread")
 }
 
 func (f *fakeWindowsPrimitives) CloseJob(job jobOwnership) {
@@ -249,9 +253,10 @@ func (f *fakeWindowsPrimitives) CloseJob(job jobOwnership) {
 }
 
 type fakeAccountLifecycle struct {
-	order       *[]string
-	deprovision elevaccount.AccountEvidence
-	verified    elevaccount.AccountEvidence
+	order            *[]string
+	deprovision      elevaccount.AccountEvidence
+	verified         elevaccount.AccountEvidence
+	deprovisionCount int
 }
 
 func (f *fakeAccountLifecycle) Promote(context.Context) (elevaccount.Credential, error) {
@@ -260,6 +265,7 @@ func (f *fakeAccountLifecycle) Promote(context.Context) (elevaccount.Credential,
 }
 
 func (f *fakeAccountLifecycle) Deprovision(context.Context) (elevaccount.AccountEvidence, error) {
+	f.deprovisionCount++
 	*f.order = append(*f.order, "rotate password, remove Administrators, disable account")
 	return f.deprovision, nil
 }
@@ -300,6 +306,7 @@ func TestApplyOwnsSuspendedProcessInNonEscapableJobBeforeResume(t *testing.T) {
 		"AssignProcessToJobObject",
 		"persist process identity",
 		"ResumeThread",
+		"close primary thread",
 		"emit received",
 		"verify active process and job",
 		"emit verified_active",
@@ -321,6 +328,92 @@ func TestApplyOwnsSuspendedProcessInNonEscapableJobBeforeResume(t *testing.T) {
 	}
 	if win.launchSpec.creationFlags&createSuspended == 0 || win.launchSpec.creationFlags&createBreakawayFromJob != 0 {
 		t.Fatalf("creation flags = %#x, want suspended without breakaway", win.launchSpec.creationFlags)
+	}
+}
+
+func TestApplyWithReceivedObservationOrdersResumeHandoffVerify(t *testing.T) {
+	var order []string
+	store := &recordingLifetimeStore{Store: NewStore(filepath.Join(t.TempDir(), "ledger.json")), order: &order}
+	win := &fakeWindowsPrimitives{order: &order}
+	manager := newLifecycleManager(store, win, &fakeAccountLifecycle{order: &order}, nil)
+
+	result := manager.ApplyWithReceivedObservation(context.Background(), validApply(1), func(received Result) error {
+		order = append(order, "handoff received")
+		if received.State != ResultReceived || received.ActuationID != testActuationID || received.Generation != 1 {
+			t.Fatalf("received handoff = %+v", received)
+		}
+		if err := uuid.Validate(received.ObservationID); err != nil {
+			t.Fatalf("observation id is not canonical UUID: %q: %v", received.ObservationID, err)
+		}
+		return nil
+	})
+
+	wantOrder := []string{
+		"validate identity/generation/hash/lifetime",
+		"persist desired active generation",
+		"promote dormant account",
+		"CreateProcessAsUser(CREATE_SUSPENDED)",
+		"CreateJobObjectW(" + JobName(testActuationID, 1) + ")",
+		"SetInformationJobObject(KILL_ON_JOB_CLOSE)",
+		"AssignProcessToJobObject",
+		"persist process identity",
+		"ResumeThread",
+		"close primary thread",
+		"handoff received",
+		"verify active process and job",
+	}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Fatalf("apply handoff order =\n%q\nwant\n%q", order, wantOrder)
+	}
+	if result.State != ResultVerifiedActive {
+		t.Fatalf("result = %+v, want verified_active", result)
+	}
+}
+
+func TestApplyWithReceivedObservationFailureClosesOwnershipAndMarksUnresolved(t *testing.T) {
+	var order []string
+	win := &fakeWindowsPrimitives{order: &order}
+	account := &fakeAccountLifecycle{order: &order}
+	manager := newLifecycleManager(NewStore(filepath.Join(t.TempDir(), "ledger.json")), win, account, nil)
+
+	result := manager.ApplyWithReceivedObservation(context.Background(), validApply(1), func(Result) error {
+		return errors.New("durable enqueue failed")
+	})
+
+	if result.State != ResultFailed || result.FailureCode != "received_observation_handoff_failed" {
+		t.Fatalf("result = %+v, want stable handoff failure", result)
+	}
+	if win.verifyActiveCalls != 0 {
+		t.Fatalf("VerifyActive calls = %d, want 0", win.verifyActiveCalls)
+	}
+	if win.closeProcessCount != 1 || win.closeThreadCount != 1 || win.closeJobCount != 1 || win.invalidCloseCount != 0 {
+		t.Fatalf("close counts process/thread/job/invalid = %d/%d/%d/%d, want 1/1/1/0",
+			win.closeProcessCount, win.closeThreadCount, win.closeJobCount, win.invalidCloseCount)
+	}
+	if account.deprovisionCount != 1 {
+		t.Fatalf("deprovision calls = %d, want 1", account.deprovisionCount)
+	}
+	if manager.Available() || manager.unresolved[testActuationID] != 1 {
+		t.Fatalf("failure did not close availability for generation: available=%v unresolved=%v",
+			manager.Available(), manager.unresolved)
+	}
+}
+
+func TestApplyWithReceivedObservationDuplicateDoesNotHandoff(t *testing.T) {
+	var order []string
+	manager := newLifecycleManager(NewStore(filepath.Join(t.TempDir(), "ledger.json")),
+		&fakeWindowsPrimitives{order: &order}, &fakeAccountLifecycle{order: &order}, nil)
+	cmd := validApply(1)
+	if result := manager.Apply(context.Background(), cmd); result.State != ResultVerifiedActive {
+		t.Fatalf("initial apply = %+v", result)
+	}
+	handoffCalls := 0
+	result := manager.ApplyWithReceivedObservation(context.Background(), cmd, func(Result) error {
+		handoffCalls++
+		return nil
+	})
+	if result.State != ResultReceived || handoffCalls != 0 {
+		t.Fatalf("duplicate result/handoff calls = %+v/%d, want received/0", result, handoffCalls)
 	}
 }
 

@@ -108,6 +108,18 @@ func (m *lifecycleManager) Available() bool {
 }
 
 func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
+	return m.apply(ctx, cmd, nil)
+}
+
+func (m *lifecycleManager) ApplyWithReceivedObservation(
+	ctx context.Context,
+	cmd ApplyCommand,
+	handoff func(Result) error,
+) Result {
+	return m.apply(ctx, cmd, handoff)
+}
+
+func (m *lifecycleManager) apply(ctx context.Context, cmd ApplyCommand, handoff func(Result) error) Result {
 	if err := m.acquireOperation(ctx); err != nil {
 		return m.failed(cmd.ActuationID, cmd.Generation, "windows-boot-unavailable", "operation_timeout")
 	}
@@ -202,7 +214,14 @@ func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
 	}
 	m.windows.ClosePrimaryThread(process)
 	received := m.result(cmd.ActuationID, cmd.Generation, ResultReceived, evidenceFromProcess(process.Identity, nil))
-	m.emit(received)
+	if handoff != nil {
+		if err := handoff(received); err != nil {
+			m.markUnresolved(cmd.ActuationID, cmd.Generation)
+			return m.failed(cmd.ActuationID, cmd.Generation, bootID, "received_observation_handoff_failed")
+		}
+	} else {
+		m.emit(received)
+	}
 	members, err := m.windows.VerifyActive(ctx, process, job)
 	if err != nil || members < 1 {
 		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "active_verification_failed")
