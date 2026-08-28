@@ -101,6 +101,35 @@ function normalizeToolResult(raw: string): Record<string, unknown> {
 }
 
 /**
+ * Wave-5A review fix (#3827): CAS `executing -> approved` (undoing the claim
+ * `releaseApprovedIntent` took at step 1) instead of `failIntent`'s
+ * `executing -> failed`. `agentReleaseAuthority.ts`'s 'kill_switch_engaged'
+ * errorCode is deliberately distinct from 'agent_policy_denied' for exactly
+ * this reason: a kill-derived denial (a real DB kill-switch flip, or the
+ * fail-closed synthetic state a transient DB read failure produces) must
+ * never terminally fail an already-human-approved intent. Leaving the row
+ * `approved` means it stays claimable by the next `intent_approved` job
+ * delivery/retry, and — if nothing ever releases it — is reaped into
+ * `expired` by `jobs/intentExpiryReaper.ts` once its `release_by` lease
+ * passes, same as any other still-`approved` intent. That is a normal,
+ * non-destructive terminal state, unlike `failed`.
+ *
+ * Lost CAS (`won === false`) mirrors `failIntent`'s own race handling: some
+ * other delivery already moved this row (e.g. the stale-executing reaper
+ * already reaped it to `failed:execution_lost`) — nothing further to do.
+ */
+async function pauseIntentForKillSwitch(
+  intent: ActionIntent,
+  details?: Record<string, unknown>,
+): Promise<void> {
+  const won = await transitionIntent(intent.id, 'executing', 'approved');
+  if (!won) return;
+  const message = `[IntentReleaseWorker] intent ${intent.id} release paused — kill switch engaged`;
+  console.warn(message, details);
+  captureException(new Error(message));
+}
+
+/**
  * A tool handler can return successfully (no thrown error) but hand back a JSON
  * body that IS an error — validation failures, device/org access-denied, etc.
  * (`executeTool` returns `JSON.stringify({ error })` for these; see aiTools.ts).
@@ -335,6 +364,16 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // calling executeTool. The rebuilt `auth` is what this worker executes under.
   const revalidation = await revalidateApprovedIntentForRelease(intent, winningApproval);
   if (!revalidation.ok) {
+    // Wave-5A review fix (#3827): a kill-derived denial PAUSES, never
+    // terminally fails, an already-human-approved intent — see
+    // `pauseIntentForKillSwitch`'s header. Every other revalidation stop
+    // (digest mismatch, tier escalated, actor/org invalid, rbac denied, a
+    // non-kill structural policy denial, …) is unchanged: CAS straight to
+    // `failed`.
+    if (revalidation.errorCode === 'kill_switch_engaged') {
+      await pauseIntentForKillSwitch(intent, revalidation.details);
+      return;
+    }
     await failIntent(intent, revalidation.errorCode, { details: revalidation.details });
     return;
   }

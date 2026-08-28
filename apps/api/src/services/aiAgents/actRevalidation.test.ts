@@ -7,6 +7,12 @@ import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentPolicy, type AiAgentPolicySnapshot
 const dbMockState = vi.hoisted(() => ({
   cleanupRunRows: [] as unknown[],
   playbookRows: [] as unknown[],
+  // Wave 5A Task 2 (#3827): `ai_kill_state` table branch for the (real,
+  // unmocked) `readAiKillState()` this suite exercises through
+  // `revalidateActExecution`'s Step 2 refresh — see the "DB kill-state gate"
+  // describe block below.
+  killStateRows: [{ killed: false, epoch: 0 }] as unknown[],
+  killStateShouldThrow: false,
   ambientContext: undefined as { scope: string } | undefined,
 }));
 
@@ -21,6 +27,10 @@ vi.mock('../../db', () => ({
           limit: vi.fn(async () => {
             if (tableName === 'device_filesystem_cleanup_runs') return dbMockState.cleanupRunRows;
             if (tableName === 'playbook_definitions') return dbMockState.playbookRows;
+            if (tableName === 'ai_kill_state') {
+              if (dbMockState.killStateShouldThrow) throw new Error('ai_kill_state read failed (test)');
+              return dbMockState.killStateRows;
+            }
             throw new Error(`Unexpected table: ${tableName}`);
           }),
         };
@@ -53,6 +63,12 @@ vi.mock('../actionIntents/effectDigest', () => ({ computeEffectDigestForRelease 
 
 import { ACT_MANIFEST } from './actManifest';
 import { ACT_DISK_CLEANUP_MAX_BYTES_V1, revalidateActExecution, type ActReservationState } from './actRevalidation';
+// Real (unmocked) module — `revalidateActExecution` imports it for real, and
+// the "DB kill-state gate" describe block below drives it through the
+// `../../db` mock above rather than mocking `../aiKillState` itself, so this
+// is genuine coverage of `readAiKillState`'s fail-closed/TTL behavior in
+// integration, not a stand-in.
+import { _resetAiKillStateCacheForTest } from '../aiKillState';
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000f1';
 const AGENT_ID = '00000000-0000-4000-8000-0000000000f2';
@@ -124,7 +140,13 @@ beforeEach(() => {
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   dbMockState.cleanupRunRows = [];
   dbMockState.playbookRows = [];
+  dbMockState.killStateRows = [{ killed: false, epoch: 0 }];
+  dbMockState.killStateShouldThrow = false;
   dbMockState.ambientContext = undefined;
+  // A prior test's kill state must never leak into the next one via the 5s
+  // in-process TTL cache — `readAiKillState` is a real module-level
+  // singleton across every test in this file.
+  _resetAiKillStateCacheForTest();
   resolveEffectiveAgentSystem.mockReset().mockResolvedValue(liveSnapshot(basePolicy()));
   computeEffectDigestForRelease.mockReset();
 });
@@ -235,6 +257,59 @@ describe('revalidateActExecution — step 2: live guardrail re-run', () => {
       reserved: reservation(),
     });
     expect(result).toEqual({ ok: false, downgrade: 'propose' });
+  });
+});
+
+describe('revalidateActExecution — DB kill-state gate (wave 5A Task 2, #3827)', () => {
+  it('default (not-killed) row → inert, execution reaches the ok tail exactly as before this PR', async () => {
+    const result = await revalidateActExecution({
+      run: runArgs(), op: restartOp, toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' },
+      reserved: reservation(),
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('refreshes the kill-state cache before the step-2 guardrail re-run: DB read happens exactly once per call', async () => {
+    const selectSpy = (await import('../../db')).db.select as unknown as { mock: { calls: unknown[] } };
+    const callsBefore = selectSpy.mock.calls.length;
+    await revalidateActExecution({
+      run: runArgs(), op: restartOp, toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' },
+      reserved: reservation(),
+    });
+    // One extra `db.select` beyond whatever step 1/3/4 already issue for this
+    // op (manage_services.restart needs no asset pin, so the ONLY select this
+    // path adds is the kill-state read) — confirms the refresh actually fires
+    // rather than silently no-op'ing.
+    expect(selectSpy.mock.calls.length).toBeGreaterThan(callsBefore);
+  });
+
+  it('kill switch engaged since admission → the live guardrail re-run denies, epoch in the reason', async () => {
+    dbMockState.killStateRows = [{ killed: true, epoch: 7 }];
+    const result = await revalidateActExecution({
+      run: runArgs(), op: restartOp, toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' },
+      reserved: reservation(),
+    });
+    expect(result).toEqual({
+      ok: false,
+      deny: expect.stringMatching(/kill-switched/i),
+    });
+    expect((result as { deny: string }).deny).toContain('7');
+  });
+
+  it('kill-state read failure fails closed → denies rather than executing unattended', async () => {
+    dbMockState.killStateShouldThrow = true;
+    const result = await revalidateActExecution({
+      run: runArgs(), op: restartOp, toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' },
+      reserved: reservation(),
+    });
+    expect(result).toEqual({
+      ok: false,
+      deny: expect.stringMatching(/kill-switched/i),
+    });
   });
 });
 
@@ -439,7 +514,7 @@ describe('revalidateActExecution — step 4: execute_playbook asset pin', () => 
 });
 
 describe('revalidateActExecution — step 4: manage_services.restart needs no extra pin', () => {
-  it('restart: no DB read either', async () => {
+  it('restart: no ASSET-PIN DB read (the only select is the wave-5A kill-state refresh, step 2)', async () => {
     const { db } = await import('../../db');
     const result = await revalidateActExecution({
       run: runArgs(), op: restartOp, toolName: 'manage_services',
@@ -450,7 +525,10 @@ describe('revalidateActExecution — step 4: manage_services.restart needs no ex
       ok: true,
       pin: { op: restartOp, target: { kind: 'service', serviceName: 'Spooler' } },
     });
-    expect(db.select).not.toHaveBeenCalled();
+    // Exactly one — the kill-state read (#3827 Task 2). A 'service' target
+    // needs no asset pin (see pinAsset's 'service' branch), so a second
+    // select here would mean step 4 regressed into doing I/O it doesn't need.
+    expect(db.select).toHaveBeenCalledTimes(1);
   });
 });
 

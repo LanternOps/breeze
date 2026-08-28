@@ -20,6 +20,7 @@ import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import type { AuthContext } from '../middleware/auth';
 import { envFlag } from '../config/env';
 import { resolveActOperation } from './aiAgents/actManifest';
+import { getCachedAiKillStateSnapshot } from './aiKillState';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -1557,6 +1558,17 @@ export function checkAgentGuardrails(
   // const also made the kill switch unstubbable, and therefore untestable).
   if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) {
     return deny('Autonomous AI agents are disabled');
+  }
+  // Wave 5A Task 2 (#3827): DB-backed kill switch, ADDITIONAL to the env
+  // flag above, not a replacement for it — the two need not agree, and
+  // either alone denies. `getCachedAiKillStateSnapshot` is a pure sync read
+  // of a module-level cache (see `aiKillState.ts`'s header for the ≤5s
+  // staleness bound and why its default is not-killed); this function stays
+  // synchronous, unable to await a fresh DB read on every dispatch, exactly
+  // like the env-flag check above it.
+  const killState = getCachedAiKillStateSnapshot();
+  if (killState.killed) {
+    return deny(`Autonomous AI agents are kill-switched (epoch ${killState.epoch})`);
   }
   if (!isAgentGuardrailPolicy(policy)) {
     return deny('AI agent run policy snapshot is missing or invalid');

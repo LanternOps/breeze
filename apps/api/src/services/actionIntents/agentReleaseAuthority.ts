@@ -5,6 +5,7 @@ import { organizations } from '../../db/schema/orgs';
 import { devices } from '../../db/schema/devices';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 import { checkAgentGuardrails, type AgentGuardrailPolicy } from '../aiGuardrails';
+import { readAiKillState } from '../aiKillState';
 import {
   AgentRunOwnershipError,
   buildAgentAuthContext,
@@ -170,6 +171,24 @@ export async function checkAgentReleaseAuthority(
     };
   }
 
+  // Wave-5A review fix (#3827): refresh THIS lane's own kill-state read,
+  // mirroring actRevalidation.ts's Step 2 refresh, immediately before the
+  // guardrail re-run below — rather than relying solely on whatever run
+  // admission or an act-mode dispatch last cached into the shared
+  // module-level snapshot `checkAgentGuardrails` reads (`aiKillState.ts`'s
+  // `getCachedAiKillStateSnapshot`). `readAiKillState()` is a *shared*,
+  // TTL-cached read (`aiKillState.ts:112-114` returns `cachedSnapshot`
+  // unconditionally within the 5s TTL, regardless of which lane populated
+  // it) — this call does NOT isolate release from another lane's fail-closed
+  // poisoning within that window; a bad read 1s ago from run-admission or an
+  // act-mode dispatch still flows through here unchanged. What this call
+  // buys instead: it bounds this read's own staleness to the 5s TTL (rather
+  // than relying entirely on an upstream caller to have refreshed it), and
+  // it warms the snapshot when release is the only active lane in the
+  // process. Per-lane isolation would need a force-refresh parameter on
+  // `readAiKillState()` that bypasses the TTL — not implemented here.
+  const killState = await readAiKillState();
+
   const candidates = [
     { policy: 'snapshot' as const, effective: run.policySnapshot?.effective },
     { policy: 'current' as const, effective: resolved.effective },
@@ -193,6 +212,24 @@ export async function checkAgentReleaseAuthority(
       } as AgentGuardrailPolicy,
     );
     if (verdict.disposition === 'deny') {
+      // `killState.killed` (this lane's own fresh read, just above) is the
+      // ONLY thing that can make `checkAgentGuardrails` deny at its kill-state
+      // step — that step runs before the enabled/mode/allowlist checks below
+      // it, so whenever it's true every candidate denies for that reason.
+      // Distinct, NON-terminal error code: jobs/intentReleaseWorker.ts
+      // branches this away from `failIntent`, CASing the intent back to
+      // `approved` instead of `failed` — a transient DB outage on this read
+      // or a real kill-switch flip must PAUSE an already-human-approved
+      // intent, never permanently destroy it. Every other structural denial
+      // here (narrowed allowlist, disabled agent, mode off, site drift, the
+      // env-flag kill switch, …) stays 'agent_policy_denied' and IS terminal.
+      if (killState.killed) {
+        return {
+          ok: false,
+          errorCode: 'kill_switch_engaged',
+          details: { policy, epoch: killState.epoch, reason: verdict.reason ?? 'denied' },
+        };
+      }
       return {
         ok: false,
         errorCode: 'agent_policy_denied',

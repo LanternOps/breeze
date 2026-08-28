@@ -35,6 +35,16 @@ export interface AiAgentLimits {
    * this point on carries it.
    */
   maxActionsPerRun: number;
+  /**
+   * Wave 5 Part A (#3827) — cap on the number of Tier-3 mutations resolved
+   * unattended via `POLICY_DECIDABLE_TIER3` (no human approval) per agent per
+   * org per day. Unenforced in this PR — `resolvePolicyDecisionState` is a
+   * stub that always returns `human_required`, so nothing consumes this field
+   * yet; it ships now so partners/orgs can pre-configure it and every policy
+   * snapshot from this point on carries it. Part B's `attemptPolicyDecision`
+   * is the enforcer (see runService.ts's limits-coverage inventory).
+   */
+  maxPolicyDecisionsPerDay: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -47,6 +57,7 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   wallClockSeconds: 600,
   maxFleetPercentPerDay: 5,
   maxActionsPerRun: 3,
+  maxPolicyDecisionsPerDay: 10,
 });
 
 export interface AiAgentTriggers {
@@ -115,17 +126,23 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * distinguishable from a v2 row — there is no backfill for a run that already
  * happened.
  *
- * v2 (this bump): `effective.limits` gained `maxActionsPerRun`. An in-flight
- * run enqueued before deploy still carries a v1 snapshot (no `maxActionsPerRun`
- * in `effective.limits`) and MUST still execute — every read site that
- * touches `schemaVersion` or `effective.limits` has to tolerate a v1 row,
- * never reject it. Write side always stamps the current version.
+ * v2: `effective.limits` gained `maxActionsPerRun`. An in-flight run enqueued
+ * before that deploy still carries a v1 snapshot (no `maxActionsPerRun` in
+ * `effective.limits`) and MUST still execute — every read site that touches
+ * `schemaVersion` or `effective.limits` has to tolerate a v1 row, never
+ * reject it.
+ *
+ * v3 (this bump, wave 5 Part A #3827): `effective.limits` gained
+ * `maxPolicyDecisionsPerDay`. Same rule: an in-flight run's v1 or v2 snapshot
+ * lacks the field and MUST still execute — nothing reads it yet (unenforced
+ * this PR), but every site that switches on `schemaVersion` must tolerate
+ * 1, 2, AND 3. Write side always stamps the current version.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 2 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 3 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun) or 2 (current). Read sites must tolerate both. */
-  schemaVersion: 1 | 2;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), or 3 (current). Read sites must tolerate all three. */
+  schemaVersion: 1 | 2 | 3;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;

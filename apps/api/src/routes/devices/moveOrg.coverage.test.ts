@@ -31,6 +31,12 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // history stays with the source org (owner decision 2026-08-23) — see the
   // CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
   'ai_agent_runs',
+  // Has org_id, but it is intentionally NOT re-stamped on move: exposure
+  // history stays with the org the unattended action ran in (same
+  // ai_agent_runs decision above), and a bare org_id repoint would violate
+  // the (org_id, partner_id) composite FK across partners — see the
+  // CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
+  'ai_unattended_exposure',
   'automation_policy_compliance',
   'deployment_devices',
   'deployment_results',

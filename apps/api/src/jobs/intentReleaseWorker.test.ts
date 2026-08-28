@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
+import type { AgentReleaseAuthority } from '../services/actionIntents/agentReleaseAuthority';
 
 // ---------------------------------------------------------------------------
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock } = vi.hoisted(() => {
+const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
@@ -37,6 +38,20 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
     tenantStatusMock: { getActiveOrgTenant: vi.fn() },
     aiToolsMock: { getToolTier: vi.fn(), executeTool: vi.fn(), requiresLiveSession: vi.fn() },
     aiGuardrailsMock: { checkToolPermission: vi.fn() },
+    // Wave-5A review fix (#3827): mocked at the module boundary so a
+    // kill_switch_engaged veto can be driven WITHOUT constructing the agent
+    // authority's own real DB chain (ai_agent_runs/ai_agents/organizations/
+    // devices/ai_kill_state, none of which this file otherwise mocks) — real
+    // `revalidateApprovedIntentForRelease` still runs; only its transitive
+    // `checkAgentReleaseAuthority` import is swapped. No existing test in
+    // this file sets `requestingAgentRunId` on an `intent_approved` release,
+    // so this mock is purely additive — it never fires for the pre-existing
+    // suite. Default `{ ok: true }` matches "an agent intent that clears
+    // authority" so a forgotten override fails LOUD downstream (e.g. at
+    // executeTool) rather than silently.
+    agentReleaseAuthorityMock: {
+      checkAgentReleaseAuthority: vi.fn(async (): Promise<AgentReleaseAuthority> => ({ ok: true })),
+    },
     authMock: { dbAccessContextFromAuth: vi.fn((auth: unknown) => ({ mock: 'dbContext', auth })) },
     auditMock: {
       writeAuditEvent: vi.fn(),
@@ -167,6 +182,13 @@ vi.mock('../services/aiTools', () => ({
 }));
 vi.mock('../services/aiGuardrails', () => ({
   checkToolPermission: aiGuardrailsMock.checkToolPermission,
+}));
+// See the hoisted `agentReleaseAuthorityMock` comment: real
+// `revalidateApprovedIntentForRelease` runs, only its `checkAgentReleaseAuthority`
+// collaborator is swapped so agent-originated releases don't need this file's
+// db mock to also cover ai_agent_runs/ai_agents/organizations/devices/ai_kill_state.
+vi.mock('../services/actionIntents/agentReleaseAuthority', () => ({
+  checkAgentReleaseAuthority: agentReleaseAuthorityMock.checkAgentReleaseAuthority,
 }));
 vi.mock('../middleware/auth', () => ({
   dbAccessContextFromAuth: authMock.dbAccessContextFromAuth,
@@ -811,6 +833,94 @@ describe('releaseApprovedIntent', () => {
       }),
     );
     expect(metricsMock.recordActionIntentMetric).toHaveBeenCalledWith(intent.source, intent.actionName, 'executed');
+  });
+
+  // Wave-5A review fix (#3827): a kill-derived release veto
+  // ('kill_switch_engaged', agentReleaseAuthority.ts) must PAUSE — CAS back
+  // to `approved` — never terminally fail an already-human-approved intent,
+  // unlike every OTHER revalidation stop above (digest_mismatch,
+  // tier_escalated, actor_invalid, org_inactive, rbac_denied, and a
+  // non-kill 'agent_policy_denied'), which all still CAS straight to
+  // `failed`.
+  describe('kill_switch_engaged: pause, do not fail, an agent-originated release', () => {
+    function primeAgentIntentThroughClaim(intent: ActionIntent) {
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([
+        { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+      ]);
+      aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+      // revalidateApprovedIntentForRelease's (c)/(d) steps — actor + org
+      // active — run BEFORE its (e) agent-authority branch even for an
+      // agent-originated intent, so both must resolve truthy to reach
+      // checkAgentReleaseAuthority at all.
+      actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(fakeAuth);
+      tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+    }
+
+    it('CASes executing -> approved (not failed) and never calls executeTool', async () => {
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
+      agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'kill_switch_engaged',
+        details: { policy: 'snapshot', epoch: 7, reason: 'Autonomous AI agents are kill-switched (epoch 7)' },
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> approved
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'approved',
+      );
+      // Never the destructive terminal transition this fix replaces.
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalledWith(
+        intent.id, 'executing', 'failed', expect.anything(),
+      );
+      // Not the same audit/metrics path failIntent takes — no failure record
+      // for a paused (not failed) release.
+      expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+      expect(sentryMock.captureException).toHaveBeenCalled();
+    });
+
+    it('a lost CAS (row already moved by another delivery) is a silent no-op, matching failIntent', async () => {
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
+      agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'kill_switch_engaged',
+        details: {},
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(false); // lost race
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+    });
+
+    it('a non-kill agent_policy_denied veto still fails the intent terminally, unchanged', async () => {
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
+      agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'agent_policy_denied',
+        details: { policy: 'current', reason: 'Agent is disabled' },
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        expect.objectContaining({ errorCode: 'agent_policy_denied' }),
+      );
+      expect(auditMock.writeAuditEvent).toHaveBeenCalled();
+    });
   });
 
   // Task 7 — effect-digest revalidation (tier3-supervised-four-eyes design

@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { AssuranceLevel } from '@breeze/shared';
-import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type Database, type DbAccessContext } from '../../db';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
 import {
@@ -10,6 +10,7 @@ import {
   type ActionIntent,
   type ActionIntentApprovalScope,
   type ActionIntentOriginPrincipalKind,
+  type ActionIntentPolicyDecisionState,
   type ActionIntentSource,
   type ActionIntentStatus,
 } from '../../db/schema/actionIntents';
@@ -41,6 +42,20 @@ import { computeEffectDigestOutcome, type EffectDigestOutcome } from './effectDi
  * source of truth for both the onConflictDoNothing target predicate and the
  * idempotent-replay re-select below, so the two can never drift apart. */
 const LIVE_INTENT_STATUSES: readonly ActionIntentStatus[] = ['pending_approval', 'approved', 'executing'];
+
+/**
+ * Shape of the loaded/verified agent run an agent-originated intent carries
+ * (populated by the agent-verification block in createActionIntent, null for
+ * every human-originated intent). Named so resolvePolicyDecisionState and
+ * runHumanFanout below can share it without re-declaring the inline object
+ * type at each use site.
+ */
+type AgentRunRef = {
+  id: string;
+  agentId: string;
+  orgId: string;
+  deviceId: string | null;
+} | null;
 
 // Action intents & durable approval layer — core intent service (spec
 // docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md
@@ -297,6 +312,197 @@ interface CreationResult {
   effectDigestOutcome: EffectDigestOutcome;
 }
 
+/**
+ * Wave 5 Part A (#3827) — PR-A STUB. Always returns 'human_required': the
+ * unattended policy-decide path does not exist yet in this PR, so every
+ * intent gets exactly the treatment it always got — fanned out for human
+ * approval. This makes the createActionIntent refactor around it (deferring
+ * `runHumanFanout` behind this call) behaviorally INERT: the full
+ * intentService + approvals suites pass unchanged because this function's
+ * output never varies.
+ *
+ * The signature is already shaped for what Part B's real
+ * `attemptPolicyDecision` will need to read: the guardrail verdict + scope,
+ * the loaded/verified agent run (only an agent-originated proposal is ever a
+ * policy-decision candidate — a human-authored chat/MCP intent means a human
+ * already decided), and the tool/action pair to check against
+ * POLICY_DECIDABLE_TIER3 (see policyDecidable.ts). Part B replaces this
+ * function's BODY only — no call-site change in createActionIntent below.
+ */
+function resolvePolicyDecisionState(args: {
+  guardrail: GuardrailCheck;
+  approvalScope: ActionIntentApprovalScope;
+  agentRun: AgentRunRef;
+  toolName: string;
+  input: Record<string, unknown>;
+}): ActionIntentPolicyDecisionState {
+  void args;
+  return 'human_required';
+}
+
+interface HumanFanoutArgs {
+  /** Same connection/transaction the intent insert ran on (system-scoped). */
+  db: Database;
+  /** The just-inserted (or freshly re-cancelled) intent row. */
+  inserted: ActionIntent;
+  toolName: string;
+  actionArguments: Record<string, unknown>;
+  argumentDigest: string;
+  requestingClientLabel: string;
+  targetSummary: string;
+  riskTier: 'medium' | 'high' | 'critical';
+  impactSummary: string;
+  expiresAt: Date;
+  agentRun: AgentRunRef;
+  approvalScope: ActionIntentApprovalScope;
+  eligibleApprovers: string[];
+  agentEligibleApprovers: string[];
+  requesterEligible: boolean;
+  requesterId: string;
+}
+
+interface HumanFanoutResult {
+  approvalRequestIds: string[];
+  requesterApprovalRequestId: string | null;
+  fanOutUserIds: string[];
+  /** `inserted`, or the cancelled row when no eligible approver was found. */
+  finalIntent: ActionIntent;
+}
+
+/**
+ * Verbatim extraction of createActionIntent's pre-refactor inline fan-out
+ * block (approval_requests inserts for every scope branch, plus the
+ * no-eligible-approver fail-closed cancellation). Runs on the SAME
+ * transaction the intent insert used (`args.db`), so the whole thing still
+ * commits or rolls back atomically with the insert — moving this out of the
+ * closure changes nothing about atomicity, only where the code lives.
+ */
+async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult> {
+  const {
+    db: tx,
+    inserted,
+    toolName,
+    actionArguments,
+    argumentDigest,
+    requestingClientLabel,
+    targetSummary,
+    riskTier,
+    impactSummary,
+    expiresAt,
+    agentRun,
+    approvalScope,
+    eligibleApprovers,
+    agentEligibleApprovers,
+    requesterEligible,
+    requesterId,
+  } = args;
+
+  let approvalRequestIds: string[] = [];
+  let requesterApprovalRequestId: string | null = null;
+  let fanOutUserIds: string[] = [];
+
+  const approvalRowFor = (userId: string) => ({
+    userId,
+    requestingClientLabel,
+    actionLabel: targetSummary,
+    actionToolName: toolName,
+    actionArguments,
+    riskTier,
+    riskSummary: impactSummary,
+    status: 'pending' as const,
+    expiresAt,
+    intentId: inserted.id,
+    boundArgumentDigest: argumentDigest,
+    isRecursive: false,
+  });
+
+  // Shared by the supervised short-circuit and the four_eyes sole-operator
+  // branch below: both create exactly one approval_requests row owned by
+  // a single user and derive the same trio of locals from it.
+  const insertSingleApproverRow = async (
+    userId: string,
+  ): Promise<{
+    approvalRequestIds: string[];
+    requesterApprovalRequestId: string | null;
+    fanOutUserIds: string[];
+  }> => {
+    const rows = await tx
+      .insert(approvalRequests)
+      .values([approvalRowFor(userId)])
+      .returning({ id: approvalRequests.id });
+    if (rows[0]) {
+      return {
+        approvalRequestIds: [rows[0].id],
+        requesterApprovalRequestId: rows[0].id,
+        fanOutUserIds: [userId],
+      };
+    }
+    return { approvalRequestIds: [], requesterApprovalRequestId: null, fanOutUserIds: [] };
+  };
+
+  if (agentRun) {
+    // Agent intents have NO requester, so neither the supervised
+    // requester short-circuit nor the sole-operator fallback below can
+    // apply. Supervised fans out to the action-and-target-eligible humans
+    // resolved above (spec §3.4: any human with the action's RBAC AND
+    // access to the concrete target); four_eyes keeps the org-wide
+    // approvals:decide pool unchanged. An empty pool falls through to the
+    // no_eligible_approvers cancellation below.
+    const pool = approvalScope === 'four_eyes' ? eligibleApprovers : agentEligibleApprovers;
+    if (pool.length > 0) {
+      const rows = await tx
+        .insert(approvalRequests)
+        .values(pool.map(approvalRowFor))
+        .returning({ id: approvalRequests.id });
+      approvalRequestIds = rows.map((r) => r.id);
+      fanOutUserIds = pool;
+    }
+  } else if (approvalScope === 'supervised') {
+    // Supervised short-circuit (tier3-supervised-four-eyes split design
+    // §4.2): exactly one approval row, always owned by the requester,
+    // BEFORE the eligible-approver branch below — supervised does not
+    // require approvals:decide at all, so this must work even when
+    // eligibleApprovers is empty and requesterEligible is false (the
+    // requester holds no approval permission whatsoever). The
+    // assurance-level gate is enforced later in the decide handler
+    // (Task 5), same as the sole-operator four_eyes branch.
+    ({ approvalRequestIds, requesterApprovalRequestId, fanOutUserIds } =
+      await insertSingleApproverRow(requesterId));
+  } else if (eligibleApprovers.length > 0) {
+    const rows = await tx
+      .insert(approvalRequests)
+      .values(eligibleApprovers.map(approvalRowFor))
+      .returning({ id: approvalRequests.id });
+    approvalRequestIds = rows.map((r) => r.id);
+    fanOutUserIds = eligibleApprovers;
+  } else if (requesterEligible) {
+    // Sole-operator branch: the only eligible approver is the requester.
+    // Create one row carrying the digest; the assurance-level >= 3 gate is
+    // enforced later, in the decide handler (Task 5), not here.
+    ({ approvalRequestIds, requesterApprovalRequestId, fanOutUserIds } =
+      await insertSingleApproverRow(requesterId));
+  }
+
+  let finalIntent: ActionIntent = inserted;
+  if (approvalRequestIds.length === 0) {
+    // No eligible approvers and the requester isn't one either — fail
+    // closed: create then immediately cancel, visible in audit (spec §4
+    // step 4 / §8).
+    const [cancelled] = await tx
+      .update(actionIntents)
+      .set({ status: 'cancelled', errorCode: 'no_eligible_approvers', decidedAt: new Date() })
+      .where(eq(actionIntents.id, inserted.id))
+      .returning();
+    finalIntent = cancelled ?? {
+      ...inserted,
+      status: 'cancelled',
+      errorCode: 'no_eligible_approvers',
+    };
+  }
+
+  return { approvalRequestIds, requesterApprovalRequestId, fanOutUserIds, finalIntent };
+}
+
 export async function createActionIntent(
   auth: AuthContext,
   input: CreateActionIntentInput,
@@ -369,12 +575,7 @@ export async function createActionIntent(
   // never trusted (spec §5.3) — a compromised or buggy runner must not be able
   // to smuggle a proposal past the run's own policy snapshot.
   // -------------------------------------------------------------------------
-  let agentRun: {
-    id: string;
-    agentId: string;
-    orgId: string;
-    deviceId: string | null;
-  } | null = null;
+  let agentRun: AgentRunRef = null;
   let agentRow: { id: string; name: string } | null = null;
   if (auth.principal.kind === 'ai_agent') {
     const principal = auth.principal;
@@ -577,6 +778,22 @@ export async function createActionIntent(
       const effectDigestOutcome = await computeEffectDigestOutcome(input.toolName, input.input, db);
       const effectDigest = effectDigestOutcome.kind === 'pinned' ? effectDigestOutcome.digest : null;
 
+      // Wave 5 Part A (#3827): resolved BEFORE the insert so it can be
+      // stamped as part of the INSERT values, not a second UPDATE — see
+      // resolvePolicyDecisionState's doc comment above for what it is (a
+      // PR-A stub that always returns 'human_required') and what Part B
+      // replaces. On the idempotent-replay path below (`!inserted`), this
+      // computed value is simply discarded — the existing row keeps
+      // whatever state it was ORIGINALLY stamped with, exactly like every
+      // other content column on that path.
+      const decisionState = resolvePolicyDecisionState({
+        guardrail,
+        approvalScope,
+        agentRun,
+        toolName: input.toolName,
+        input: input.input,
+      });
+
       const [inserted] = await db
         .insert(actionIntents)
         .values({
@@ -614,6 +831,7 @@ export async function createActionIntent(
           approvalScope,
           classificationVersion: CLASSIFICATION_VERSION,
           effectDigest,
+          policyDecisionState: decisionState,
           // `expiresAt` is the legacy column the pre-split reaper still reads;
           // `approvalExpiresAt` is the new Task-2 column the post-split reaper
           // reads. Dual-write the SAME value to both for rolling-upgrade
@@ -701,111 +919,48 @@ export async function createActionIntent(
         };
       }
 
-      // New intent: fan out the cross-user approval_requests and write the
+      // New intent: fan out the cross-user approval_requests (deferred behind
+      // the policy-decision state — Wave 5 Part A, #3827) and write the
       // intent_created outbox row, all in this same transaction.
+      //
+      // decisionState is the PR-A stub's fixed output ('human_required'), so
+      // this branch is ALWAYS taken today and runHumanFanout is a verbatim
+      // extraction of what used to run inline here unconditionally — the
+      // full intentService + approvals suites passing unchanged is the
+      // inertness proof. Once Part B's real resolvePolicyDecisionState can
+      // return 'authorized', this becomes the seam that skips fan-out
+      // entirely for a policy-decided intent.
       let approvalRequestIds: string[] = [];
       let requesterApprovalRequestId: string | null = null;
       let fanOutUserIds: string[] = [];
-
-      const approvalRowFor = (userId: string) => ({
-        userId,
-        requestingClientLabel,
-        actionLabel: targetSummary,
-        actionToolName: input.toolName,
-        actionArguments: input.input,
-        riskTier,
-        riskSummary: impactSummary,
-        status: 'pending' as const,
-        expiresAt,
-        intentId: inserted.id,
-        boundArgumentDigest: argumentDigest,
-        isRecursive: false,
-      });
-
-      // Shared by the supervised short-circuit and the four_eyes sole-operator
-      // branch below: both create exactly one approval_requests row owned by
-      // a single user and derive the same trio of locals from it.
-      const insertSingleApproverRow = async (
-        userId: string,
-      ): Promise<{
-        approvalRequestIds: string[];
-        requesterApprovalRequestId: string | null;
-        fanOutUserIds: string[];
-      }> => {
-        const rows = await db
-          .insert(approvalRequests)
-          .values([approvalRowFor(userId)])
-          .returning({ id: approvalRequests.id });
-        if (rows[0]) {
-          return {
-            approvalRequestIds: [rows[0].id],
-            requesterApprovalRequestId: rows[0].id,
-            fanOutUserIds: [userId],
-          };
-        }
-        return { approvalRequestIds: [], requesterApprovalRequestId: null, fanOutUserIds: [] };
-      };
-
-      if (agentRun) {
-        // Agent intents have NO requester, so neither the supervised
-        // requester short-circuit nor the sole-operator fallback below can
-        // apply. Supervised fans out to the action-and-target-eligible humans
-        // resolved above (spec §3.4: any human with the action's RBAC AND
-        // access to the concrete target); four_eyes keeps the org-wide
-        // approvals:decide pool unchanged. An empty pool falls through to the
-        // no_eligible_approvers cancellation below.
-        const pool = approvalScope === 'four_eyes' ? eligibleApprovers : agentEligibleApprovers;
-        if (pool.length > 0) {
-          const rows = await db
-            .insert(approvalRequests)
-            .values(pool.map(approvalRowFor))
-            .returning({ id: approvalRequests.id });
-          approvalRequestIds = rows.map((r) => r.id);
-          fanOutUserIds = pool;
-        }
-      } else if (approvalScope === 'supervised') {
-        // Supervised short-circuit (tier3-supervised-four-eyes split design
-        // §4.2): exactly one approval row, always owned by the requester,
-        // BEFORE the eligible-approver branch below — supervised does not
-        // require approvals:decide at all, so this must work even when
-        // eligibleApprovers is empty and requesterEligible is false (the
-        // requester holds no approval permission whatsoever). The
-        // assurance-level gate is enforced later in the decide handler
-        // (Task 5), same as the sole-operator four_eyes branch.
-        ({ approvalRequestIds, requesterApprovalRequestId, fanOutUserIds } =
-          await insertSingleApproverRow(requesterId));
-      } else if (eligibleApprovers.length > 0) {
-        const rows = await db
-          .insert(approvalRequests)
-          .values(eligibleApprovers.map(approvalRowFor))
-          .returning({ id: approvalRequests.id });
-        approvalRequestIds = rows.map((r) => r.id);
-        fanOutUserIds = eligibleApprovers;
-      } else if (requesterEligible) {
-        // Sole-operator branch: the only eligible approver is the requester.
-        // Create one row carrying the digest; the assurance-level >= 3 gate is
-        // enforced later, in the decide handler (Task 5), not here.
-        ({ approvalRequestIds, requesterApprovalRequestId, fanOutUserIds } =
-          await insertSingleApproverRow(requesterId));
-      }
-
       let finalIntent: ActionIntent = inserted;
-      if (approvalRequestIds.length === 0) {
-        // No eligible approvers and the requester isn't one either — fail
-        // closed: create then immediately cancel, visible in audit (spec §4
-        // step 4 / §8).
-        const [cancelled] = await db
-          .update(actionIntents)
-          .set({ status: 'cancelled', errorCode: 'no_eligible_approvers', decidedAt: new Date() })
-          .where(eq(actionIntents.id, inserted.id))
-          .returning();
-        finalIntent = cancelled ?? {
-          ...inserted,
-          status: 'cancelled',
-          errorCode: 'no_eligible_approvers',
-        };
+
+      if (decisionState === 'human_required') {
+        ({ approvalRequestIds, requesterApprovalRequestId, fanOutUserIds, finalIntent } =
+          await runHumanFanout({
+            db,
+            inserted,
+            toolName: input.toolName,
+            actionArguments: input.input,
+            argumentDigest,
+            requestingClientLabel,
+            targetSummary,
+            riskTier,
+            impactSummary,
+            expiresAt,
+            agentRun,
+            approvalScope,
+            eligibleApprovers,
+            agentEligibleApprovers,
+            requesterEligible,
+            requesterId,
+          }));
       }
 
+      // Outbox insert is unconditional — unchanged regardless of
+      // decisionState (PR-B pointer: intentReleaseWorker.ts's intent_created
+      // no-op branch is where a policy-authorized intent's outbox row is
+      // eventually consumed differently; not touched in this PR).
       await db.insert(intentOutbox).values({
         intentId: inserted.id,
         eventType: 'intent_created',

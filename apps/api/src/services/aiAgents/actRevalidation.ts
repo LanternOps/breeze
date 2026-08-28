@@ -48,6 +48,7 @@ import { playbookDefinitions } from '../../db/schema/playbooks';
 import { readPlanPreviewCandidates } from '../filesystemAnalysis';
 import { computeEffectDigestForRelease } from '../actionIntents/effectDigest';
 import { checkAgentGuardrails, type AgentGuardrailPolicy } from '../aiGuardrails';
+import { readAiKillState } from '../aiKillState';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
 import type { ActOperation, ActTarget } from './actManifest';
 import type { ToolExecutionContext } from '../toolExecutionContext';
@@ -308,7 +309,12 @@ export async function revalidateActExecution(
   }
 
   // Step 2: full guardrail re-run against the LIVE policy slice (not the
-  // run's start-of-run snapshot).
+  // run's start-of-run snapshot). `checkAgentGuardrails` reads the DB
+  // kill-state gate synchronously off a module-level cache (Wave 5A Task 2,
+  // #3827) — refresh it here, immediately before the re-run, so a kill
+  // engaged since run admission is visible to THIS dispatch rather than only
+  // to the next run's `isStoppedBeforeStart` check.
+  await readAiKillState();
   const livePolicy: AgentGuardrailPolicy = {
     enabled: current.effective.enabled,
     mode: current.effective.mode,

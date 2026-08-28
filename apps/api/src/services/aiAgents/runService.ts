@@ -52,6 +52,13 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *                            wave 4a so partners can pre-configure it and
  *                            snapshots carry it; Part B's run loop is what
  *                            enforces it.
+ *  - maxPolicyDecisionsPerDay — DEFERRED to wave 5 Part B (#3827): the field
+ *                            ships in this PR (wave 5 Part A) so partners can
+ *                            pre-configure it and every snapshot from now on
+ *                            carries it; `resolvePolicyDecisionState` is a
+ *                            stub that always returns `human_required`, so
+ *                            nothing consumes the cap yet — Part B's
+ *                            `attemptPolicyDecision` is the enforcer.
  */
 
 export interface CreateAgentRunInput {

@@ -1,4 +1,5 @@
 import {
+  bigint,
   bigserial,
   char,
   foreignKey,
@@ -106,6 +107,30 @@ export type IntentOutboxEvent = (typeof intentOutboxEventEnum)[number];
  */
 export const actionIntentApprovalScopeEnum = AI_APPROVAL_SCOPES;
 export type ActionIntentApprovalScope = AiApprovalScope;
+
+/**
+ * Wave 5 Part A (#3827): the policy-decide lifecycle state. Every intent is
+ * created `human_required` in THIS PR — `resolvePolicyDecisionState` is a
+ * stub that always returns it (intentService.ts), so `unattempted` and
+ * `authorized` are declared but never written yet. Part B's real decision
+ * path stamps `unattempted` at creation instead and transitions it to
+ * `authorized` (policy satisfied, fanout skipped) or leaves it
+ * `human_required` (policy declined or inapplicable, fanout runs).
+ *
+ * DEFAULT on the column is 'human_required' — deliberately the BACKFILL
+ * value for pre-existing rows (they all went through human fanout), not the
+ * value Part B's INSERT stamps for a new row. See the migration header.
+ *
+ * Pinned to the SQL CHECK in 2026-09-16-ai-agents-policy-decide-foundations.sql
+ * by a test in actionIntents.test.ts.
+ */
+export const actionIntentPolicyDecisionStateEnum = [
+  'unattempted',
+  'authorized',
+  'human_required',
+] as const;
+export type ActionIntentPolicyDecisionState =
+  (typeof actionIntentPolicyDecisionStateEnum)[number];
 
 export const actionIntents = pgTable(
   'action_intents',
@@ -254,6 +279,27 @@ export const actionIntents = pgTable(
     executedAt: timestamp('executed_at', { withTimezone: true }),
     result: jsonb('result').$type<Record<string, unknown> | null>(),
     errorCode: text('error_code'),
+
+    // Wave 5 Part A (#3827): policy-decide lifecycle + safe provenance.
+    // Migration: 2026-09-16-ai-agents-policy-decide-foundations.sql.
+    // Lifecycle (mutable, unlike the immutable content block above) — Part
+    // B's decision path is the only writer of the five nullable columns;
+    // this PR's createActionIntent stamps only policyDecisionState, always
+    // 'human_required' (resolvePolicyDecisionState stub).
+    policyDecisionState: text('policy_decision_state')
+      .notNull()
+      .default('human_required')
+      .$type<ActionIntentPolicyDecisionState>(),
+    /** Which POLICY_DECIDABLE_TIER3 entry authorized this intent. Part-B-written. */
+    policyAuthorizationKey: text('policy_authorization_key'),
+    /** Digest of the agent's policy snapshot the decision was made against. Part-B-written. */
+    policySnapshotDigest: text('policy_snapshot_digest'),
+    /** Version of POLICY_DECIDABLE_TIER3 that produced the decision. Part-B-written. */
+    policyClassificationVersion: integer('policy_classification_version'),
+    /** ai_unattended_exposure row reserved for this decision, if any. Part-B-written. */
+    policyReservationId: uuid('policy_reservation_id'),
+    /** ai_kill_state.epoch observed at decision time. Part-B-written. */
+    policyKillEpoch: bigint('policy_kill_epoch', { mode: 'number' }),
   },
   (table) => ({
     orgStatusIdx: index('action_intents_org_status_idx').on(
