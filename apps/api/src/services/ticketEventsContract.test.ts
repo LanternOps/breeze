@@ -251,7 +251,7 @@ describe('ticket-events producer→consumer contract', () => {
     // event payload.
     hoisted.selectQueue.push([{
       id: 't-c3', orgId: 'o-1', internalNumber: 'T-2026-C001', subject: 'Contract test',
-      submitterEmail: 'user@acme.example', resolutionNote: 'Fixed the printer.'
+      submitterEmail: 'user@acme.example', resolutionNote: 'Fixed the printer.', status: 'resolved'
     }]);
 
     await handleTicketEvent(event);

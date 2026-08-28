@@ -381,6 +381,24 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
           emailPayloads = await collectRequesterEmail(
             event,
             (ticket) => {
+              // Freshness guard (read-your-own-write race): the ticket row fetched
+              // here can be STALE relative to the status_changed event that queued
+              // this job — emitTicketEvent fires while the request transaction is
+              // still open (ticketService.ts), and this queue's jobs carry no
+              // delay. A stale row is not just a missing row (the retry-on-missing
+              // contract above doesn't cover it): the ticket already existed before
+              // this transition, so `resolutionNote` here can be null (first
+              // resolve, column not yet committed) or — worse — a PREVIOUS
+              // resolution's note (reopen does not clear resolution_note; see
+              // changeTicketStatus's reopen branch), which would email stale
+              // resolution text to the requester on a re-resolve. Throw to retry
+              // (same BullMQ attempts/backoff as the missing-row case) until the
+              // committing transaction is visible.
+              if (ticket.status !== 'resolved') {
+                throw new Error(
+                  `Ticket not yet visible as resolved (likely uncommitted): ${ticket.id}`
+                );
+              }
               const note = ticket.resolutionNote ?? '';
               return `<p>Your ticket has been resolved.</p>${note ? `<p>${escapeHtml(note)}</p>` : ''}`;
             },

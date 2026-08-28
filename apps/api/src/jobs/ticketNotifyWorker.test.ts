@@ -210,7 +210,7 @@ describe('handleTicketEvent', () => {
 
   it('does NOT thread the Resolved status-changed email (no headers / no Reply-To / no anchor collision)', async () => {
     // Only ONE select (ticket) — no partner lookup happens because commentId is absent.
-    selectMock.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001', subject: 'printer down', submitterEmail: 'jane@x.com', emailThreadKey: null }]);
+    selectMock.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-2026-0001', subject: 'printer down', submitterEmail: 'jane@x.com', emailThreadKey: null, status: 'resolved' }]);
 
     await handleTicketEvent({
       type: 'ticket.status_changed',
@@ -419,7 +419,7 @@ describe('handleTicketEvent', () => {
     // — the worker reads it off THIS ticket row instead.
     selectMock.mockResolvedValueOnce([{
       id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0099', subject: 'Slow VPN',
-      submitterEmail: 'user@acme.example', resolutionNote: xssNote
+      submitterEmail: 'user@acme.example', resolutionNote: xssNote, status: 'resolved'
     }]);
 
     await handleTicketEvent({
@@ -463,13 +463,32 @@ describe('handleTicketEvent', () => {
   it('ticket.status_changed to resolved with null submitterEmail resolves without sending email', async () => {
     selectMock.mockResolvedValueOnce([{
       id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0099', subject: 'Slow VPN',
-      submitterEmail: null, resolutionNote: 'All done'
+      submitterEmail: null, resolutionNote: 'All done', status: 'resolved'
     }]);
 
     await expect(handleTicketEvent({
       type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
       actorUserId: 'u-1', payload: { from: 'open', to: 'resolved' }
     })).resolves.toBeUndefined();
+
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('ticket.status_changed to resolved retries when the fetched ticket row is STALE (status not yet resolved) — read-your-own-write race guard', async () => {
+    // Pre-commit emission contract extends to status changes: the row can exist
+    // (unlike the "missing row" case) but still be stale relative to the event
+    // that queued this job — e.g. the requester's transaction hasn't committed
+    // yet, or (worse) a reopen->re-resolve race where resolution_note still
+    // holds the PREVIOUS resolution text. The worker must retry, not email.
+    selectMock.mockResolvedValueOnce([{
+      id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0099', subject: 'Slow VPN',
+      submitterEmail: 'user@acme.example', resolutionNote: null, status: 'open'
+    }]);
+
+    await expect(handleTicketEvent({
+      type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', payload: { from: 'open', to: 'resolved' }
+    })).rejects.toThrow(/not yet visible as resolved/i);
 
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
