@@ -144,6 +144,9 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/agents/bootPerformance.ts:POST /:id/boot-performance',
   'routes/agents/changes.ts:PUT /:id/changes',
   'routes/agents/commands.ts:POST /:id/commands/:commandId/result',
+  // Primary agent-token path: command lookup is pinned to the authenticated
+  // device ID plus exact command ID/type/target role; no user site scope exists.
+  'routes/agents/pamObservations.ts:POST /:id/commands/:commandId/pam-observations',
   'routes/agents/connections.ts:PUT /:id/connections',
   'routes/agents/elevationRequests.ts:POST /:id/elevation-requests',
   'routes/agents/enrollment.ts:POST /enroll',
