@@ -51,6 +51,7 @@
     "organizations": "Organizaciones",
     "aiUsageBudget": "AI Uso y presupuesto",
     "aiAgents": "Agentes de IA",
+    "aiAgentRuns": "Ejecuciones de agentes",
     "customFields": "Campos personalizados",
     "savedFilters": "Filtros guardados",
     "users": "Usuarios",
