@@ -140,6 +140,47 @@ export function getCachedAiKillStateSnapshot(): AiKillStateSnapshot {
   return cachedSnapshot;
 }
 
+export interface AiKillStateRow extends AiKillStateSnapshot {
+  reason: string | null;
+  updatedBy: string | null;
+  updatedAt: Date;
+}
+
+/**
+ * Full-row, UNCACHED read for the admin surface (wave 6 PR 2, #3828). The
+ * TTL-cached `readAiKillState` above is the hot-path read; an operator
+ * checking the switch before/after a flip needs the database truth plus the
+ * provenance columns, so this bypasses the cache entirely — and deliberately
+ * does NOT refresh it (the guardrail seam's staleness contract stays owned
+ * by `readAiKillState` alone). No fail-closed synthesis either: a missing
+ * seed row here is a deployment bug the admin should see as an error, not a
+ * synthetic `killed: true` that reads like a real state.
+ */
+export async function readAiKillStateRow(): Promise<AiKillStateRow> {
+  const query = () =>
+    db
+      .select({
+        killed: aiKillStateTable.killed,
+        epoch: aiKillStateTable.epoch,
+        reason: aiKillStateTable.reason,
+        updatedBy: aiKillStateTable.updatedBy,
+        updatedAt: aiKillStateTable.updatedAt,
+      })
+      .from(aiKillStateTable)
+      .where(eq(aiKillStateTable.id, 'global'))
+      .limit(1);
+
+  const ambientScope = getCurrentDbAccessContext()?.scope;
+  const rows = ambientScope === 'system'
+    ? await query()
+    : await runOutsideDbContext(() => withSystemDbAccessContext(query));
+  const [row] = rows;
+  if (!row) {
+    throw new Error("aiKillState: seed row (id='global') is missing");
+  }
+  return row;
+}
+
 /**
  * Flip the kill switch. CAS-free: a plain single-row `UPDATE` that
  * increments `epoch` by whatever it currently holds in the database — no
@@ -150,8 +191,9 @@ export function getCachedAiKillStateSnapshot(): AiKillStateSnapshot {
  * two paths need to behave identically under a race — last write wins,
  * epoch still monotonically increases either way.
  *
- * Nobody calls this in this PR (grep-verified, Task 6) — Part B or an ops
- * runbook is the eventual caller. Refreshes the local cache eagerly on
+ * Called by the platform-admin route (`routes/admin/aiKillState.ts`, wave 6
+ * PR 2 #3828 — MFA + audit) and documented for ops in
+ * `docs/deploy/ai-kill-switch.md`. Refreshes the local cache eagerly on
  * success so this process's own next guardrail check reflects the flip
  * immediately, without waiting out the TTL.
  */

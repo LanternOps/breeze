@@ -24,6 +24,7 @@ import {
   bumpAiKillState,
   getCachedAiKillStateSnapshot,
   readAiKillState,
+  readAiKillStateRow,
 } from './aiKillState';
 
 async function getLimitMock() {
@@ -131,6 +132,32 @@ describe('bumpAiKillState', () => {
     returning.mockResolvedValueOnce([]);
 
     await expect(bumpAiKillState(true)).rejects.toThrow(/seed row/);
+  });
+});
+
+describe('readAiKillStateRow', () => {
+  it('returns the full row without touching the TTL cache', async () => {
+    const limit = await getLimitMock();
+    const row = {
+      killed: true,
+      epoch: 7,
+      reason: 'incident 42',
+      updatedBy: 'admin-1',
+      updatedAt: new Date('2026-08-28T12:00:00Z'),
+    };
+    limit.mockResolvedValueOnce([row]);
+
+    await expect(readAiKillStateRow()).resolves.toEqual(row);
+    // The admin read is a side-channel: the guardrail cache must stay at its
+    // default until readAiKillState() itself runs.
+    expect(getCachedAiKillStateSnapshot()).toEqual({ killed: false, epoch: 0 });
+  });
+
+  it('throws (no fail-closed synthesis) when the seed row is missing', async () => {
+    const limit = await getLimitMock();
+    limit.mockResolvedValueOnce([]);
+
+    await expect(readAiKillStateRow()).rejects.toThrow(/seed row/);
   });
 });
 
