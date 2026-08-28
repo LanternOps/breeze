@@ -66,7 +66,7 @@ wave: W07 (#3828) — PR 1 of 4 (Supervision)
 - `RunsListPage`: filters (agent, status), cursor "Load more", verdict badges; row click → detail. `RunDetailPage`: header (agent/device/status/verdict/cost/duration), the trace timeline (executed w/ verdict chips + verifyDetail, proposed w/ downgrade reasons + intent links → `/approvals` when pending, denied w/ reasons), caps/flags (budgetExceeded etc.), budget readout card (org exposure: N of M devices, decisions today, "recorded exposure — last 48h" caption). `data-testid` on interactive elements (e2e convention). URL state via `window.location.hash` if tabs emerge (repo rule — no query params for transient UI state; the CURSOR is transient too — keep it in component state, not URL).
 - Both `.astro` pages per the devices/[id] precedent. Nav entry: add a "Runs" link where AiAgentsPage lives (settings surface) — follow how sibling settings pages register; do NOT invent a new left-nav section.
 - i18n keys × 8 locales + localeParity green. Component tests per repo pattern.
-- [ ] TDD → commit: `feat(web): agent runs list + execution-trace detail + exposure readout (#3828)`
+- [x] TDD → commit: `feat(web): agent runs list + execution-trace detail + exposure readout (#3828)`
 
 ### Task 5: Notification link + verification + PR
 
