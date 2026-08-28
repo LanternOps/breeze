@@ -79,31 +79,44 @@ function getFixWatchQueue(): Queue<FixWatchQueueJobData> {
   return fixWatchQueue;
 }
 
-/** Best-effort enqueue: never throws — a scheduling failure must not turn a
- *  finished run into a failed one, nor a phase-1 recheck into a crashed job. */
+/**
+ * Enqueues a phase check. THROWS on failure — deliberately, unlike the rest
+ * of this module's best-effort style. Callers decide whether to swallow it:
+ *  - `scheduleFixWatch` (the initial phase-1 schedule) catches and logs —
+ *    there is no durable retry lane for a missed watch (see its own doc).
+ *  - `processFixWatchJob`'s phase-1 -> phase-2 handoff does NOT catch, so a
+ *    failure here fails the BullMQ job and lets `attempts`/`backoff` below
+ *    retry it (review fix, #3828) — previously this was swallowed here,
+ *    which stranded the watch in `watching` forever with no sweeper over it,
+ *    since a redelivered phase-1 job used to read `state !== 'pending'` and
+ *    bail as `not_found`. `checkFixWatchPhase1` now treats an already-
+ *    `watching` row with `recoveryObservedAt` set as idempotently
+ *    `'recovered'` again, so the retry re-runs (and this time hopefully
+ *    succeeds at) exactly this enqueue call, under the same stable
+ *    `fix-watch-p2-<id>` jobId — never a duplicate phase-2 job.
+ */
 async function enqueueFixWatchCheck(
   phase: 'phase1' | 'phase2',
   watchId: string,
   delayMs: number,
 ): Promise<void> {
   const jobId = phase === 'phase1' ? getFixWatchPhase1JobId(watchId) : getFixWatchPhase2JobId(watchId);
-  try {
-    await getFixWatchQueue().add(
-      FIX_WATCH_JOB_NAME,
-      { phase, watchId } satisfies FixWatchQueueJobData,
-      {
-        jobId,
-        delay: delayMs,
-        removeOnComplete: { count: 500 },
-        removeOnFail: { count: 500 },
-      },
-    );
-  } catch (error) {
-    console.error('[fixWatchWorker] failed to enqueue a fix-watch check (non-fatal)', {
-      phase, watchId, error,
-    });
-    captureException(error instanceof Error ? error : new Error(String(error)));
-  }
+  await getFixWatchQueue().add(
+    FIX_WATCH_JOB_NAME,
+    { phase, watchId } satisfies FixWatchQueueJobData,
+    {
+      jobId,
+      delay: delayMs,
+      // Same shape as the sibling `agentNotifyRetryWorker.ts`. Safe for
+      // phase 1's own 5-minute self-re-delay too: `worker.js` special-cases
+      // `DelayedError` before `moveToFailed`, and `job.moveToDelayed` passes
+      // `skipAttempt: true`, so that path never consumes an attempt here.
+      attempts: 5,
+      backoff: { type: 'exponential', delay: 30_000 },
+      removeOnComplete: { count: 500 },
+      removeOnFail: { count: 500 },
+    },
+  );
 }
 
 /**
@@ -129,6 +142,7 @@ export async function scheduleFixWatch(
     console.error('[fixWatchWorker] failed to schedule a fix-held watch (non-fatal)', {
       runId: run.id, error,
     });
+    captureException(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
@@ -147,7 +161,10 @@ export async function processFixWatchJob(job: Job<FixWatchQueueJobData>, token?:
     const result = await checkFixWatchPhase1(data.watchId);
     if (result.action === 'recovered') {
       // A DIFFERENT jobId (`fix-watch-p2-<id>`) — no self-collision, a plain
-      // `add()` is correct here.
+      // `add()` is correct here. Deliberately UNCAUGHT: a failure here must
+      // fail this phase-1 job so BullMQ's `attempts`/backoff retries it (see
+      // `enqueueFixWatchCheck`'s doc) instead of stranding the watch, already
+      // committed to `watching`, with no phase-2 job ever scheduled.
       await enqueueFixWatchCheck('phase2', data.watchId, PHASE2_DELAY_MS);
       return;
     }

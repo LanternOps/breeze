@@ -22,6 +22,12 @@ const state = vi.hoisted(() => ({
   insertValues: [] as Record<string, unknown>[],
   updateSets: [] as Record<string, unknown>[],
   updateWheres: [] as unknown[],
+  // Consumed by `.returning()` on the update builder — a queued `[]` (or
+  // explicitly pushed empty array) simulates a LOST CAS race (the `WHERE
+  // ... AND state = '<expected>'` matched zero rows because some other
+  // delivery already moved it). Defaults to "the CAS won" so every existing
+  // test that never pushes onto this queue keeps its prior behavior.
+  updateReturningQueue: [] as (unknown[] | undefined)[],
   selectCount: 0,
   insertCount: 0,
   updateCount: 0,
@@ -34,6 +40,7 @@ function resetDbState(): void {
   state.insertValues = [];
   state.updateSets = [];
   state.updateWheres = [];
+  state.updateReturningQueue = [];
   state.selectCount = 0;
   state.insertCount = 0;
   state.updateCount = 0;
@@ -92,6 +99,16 @@ vi.mock('../../db', () => {
         state.updateWheres.push(w);
         return builder;
       }),
+      returning: vi.fn(() => ({
+        then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
+          Promise.resolve(
+            state.updateReturningQueue.length > 0 ? state.updateReturningQueue.shift() : [{ id: 'cas-won' }],
+          ).then(resolve, reject),
+      })),
+      // Plain `await db.update(...).set(...).where(...)` with no
+      // `.returning()` — none of this module's call sites do that anymore,
+      // kept only so an accidental bare update in a future edit doesn't hang
+      // a test instead of failing loudly.
       then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
         Promise.resolve(undefined).then(resolve, reject),
     };
@@ -150,7 +167,7 @@ function finishedRun(overrides: Partial<FinishedRunForWatch> = {}): FinishedRunF
 
 function outcome(overrides: Partial<FixWatchOutcomeInput> = {}): FixWatchOutcomeInput {
   return {
-    executedActions: [{ verification: 'passed' }],
+    executedActions: [{ verification: 'passed', execution: 'succeeded' }],
     ...overrides,
   };
 }
@@ -213,10 +230,36 @@ describe('isFixWatchEligible', () => {
     }))).toBe(false);
   });
 
-  it('is eligible when only ONE of several executed actions passed', () => {
+  it('is eligible when only ONE of several executed actions passed+succeeded and the run verdict is clean', () => {
     expect(isFixWatchEligible(finishedRun(), outcome({
-      executedActions: [{ verification: 'failed' }, { verification: 'passed' }],
+      executedActions: [{ verification: 'skipped' }, { verification: 'passed', execution: 'succeeded' }],
+      runVerdict: 'partial',
     }))).toBe(true);
+  });
+
+  // Mirrors `computeRunVerdict` (runLoop.ts): a dispatch that itself
+  // failed/timed out/is unknown is not "clean" even when its read-back
+  // reports 'passed' — review fix, #3828 (previously this admitted a watch
+  // for an action `actVerify.ts` itself would page on immediately).
+  it.each(['failed', 'timeout', 'unknown'] as const)(
+    'is NOT eligible when the only passed-verification action has execution: %s',
+    (execution) => {
+      expect(isFixWatchEligible(finishedRun(), outcome({
+        executedActions: [{ verification: 'passed', execution }],
+      }))).toBe(false);
+    },
+  );
+
+  // LOCKED: "act-lane clean runs only" — a mixed run's own rollup verdict
+  // governs, not any single action in isolation (review fix, #3828: this
+  // used to admit exactly the `needs_attention` shape `agentCircuit.ts`
+  // treats as a circuit FAILURE, seeding a fix-held watch and opening the
+  // breaker off the very same run at once).
+  it('is NOT eligible when the run verdict is needs_attention, even with a passed+succeeded action present', () => {
+    expect(isFixWatchEligible(finishedRun(), outcome({
+      executedActions: [{ verification: 'failed', execution: 'succeeded' }, { verification: 'passed', execution: 'succeeded' }],
+      runVerdict: 'needs_attention',
+    }))).toBe(false);
   });
 
   it('is NOT eligible for a policy-decided run — modeAtStart never carries a disposition beyond off/shadow/act, so a policy-decide lane always fails this the same way a shadow run does', () => {
@@ -363,6 +406,38 @@ describe('checkFixWatchPhase1', () => {
     // No second select — alertId is null, so there is no alert row to read.
     expect(state.selectCount).toBe(1);
   });
+
+  // Review fix, #3828: a REDELIVERED phase-1 job (BullMQ `attempts`, fired
+  // because the phase-2 enqueue that follows a 'recovered' result threw)
+  // must re-report 'recovered' instead of 'not_found', or the watch strands
+  // in `watching` forever with no sweeper — the worker only re-enqueues
+  // phase 2 off a 'recovered' result.
+  it('a watch already watching WITH recovery observed re-reports recovered (idempotent retry), without re-reading the alert', async () => {
+    state.selectQueue.push([watchRow({ state: 'watching', recoveryObservedAt: new Date() })]);
+
+    const result = await checkFixWatchPhase1(WATCH_ID);
+
+    expect(result).toEqual({ action: 'recovered' });
+    expect(state.selectCount).toBe(1);
+    expect(state.updateCount).toBe(0);
+  });
+
+  it('a watch already watching WITHOUT recovery observed (should not happen, defensive) is not_found', async () => {
+    state.selectQueue.push([watchRow({ state: 'watching', recoveryObservedAt: null })]);
+
+    const result = await checkFixWatchPhase1(WATCH_ID);
+
+    expect(result).toEqual({ action: 'not_found' });
+  });
+
+  it('losing the CAS on the resolved->watching write (a concurrent delivery already moved it) reports not_found, not a second recovered', async () => {
+    state.selectQueue.push([watchRow()], [{ status: 'resolved' }]);
+    state.updateReturningQueue.push([]); // CAS lost
+
+    const result = await checkFixWatchPhase1(WATCH_ID);
+
+    expect(result).toEqual({ action: 'not_found' });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -479,6 +554,41 @@ describe('checkFixWatchPhase2', () => {
 
     expect(result).toEqual({ action: 'recurred' });
     expect(state.updateSets[0]).toMatchObject({ state: 'recurred' });
+  });
+
+  // Review fix, #3828: a stalled/duplicated phase-2 delivery (lock-expired
+  // job redelivered while the original invocation is still mid-flight; both
+  // reads see `state: 'watching'`) must insert the operator-facing attention
+  // alert AT MOST ONCE — that alert has no dedupe key, unlike the user
+  // notification's `dedupeKey`.
+  it('a second checkFixWatchPhase2 that loses the recurred-write CAS race inserts no alert and sends no notification', async () => {
+    const recoveredAt = new Date('2026-08-28T00:00:00Z');
+    state.selectQueue.push(
+      [watchRow({ state: 'watching', recoveryObservedAt: recoveredAt })], // watch (still 'watching' — the winner hasn't committed yet)
+      [{ id: RECURRENCE_ALERT_ID }], // recurrence query — both deliveries see the same recurrence row
+    );
+    state.updateReturningQueue.push([]); // this delivery loses the CAS — the other one already won
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'not_found' });
+    expect(createNotificationMock).not.toHaveBeenCalled();
+    expect(state.insertCount).toBe(0);
+  });
+
+  it('a second checkFixWatchPhase2 that loses the held_qualified-write CAS race is a no-op', async () => {
+    const recoveredAt = new Date('2026-08-28T00:00:00Z');
+    state.selectQueue.push(
+      [watchRow({ state: 'watching', recoveryObservedAt: recoveredAt })],
+      [], // no recurrence row
+    );
+    state.updateReturningQueue.push([]); // CAS lost
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'not_found' });
+    expect(createNotificationMock).not.toHaveBeenCalled();
+    expect(state.insertCount).toBe(0);
   });
 
   it('a notify with no resolvable agent/run skips notification without failing the result', async () => {

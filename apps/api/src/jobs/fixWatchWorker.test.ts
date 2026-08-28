@@ -110,7 +110,12 @@ describe('scheduleFixWatch', () => {
     const [jobName, data, opts] = shared.addMock.mock.calls[0]!;
     expect(jobName).toBe(FIX_WATCH_JOB_NAME);
     expect(data).toEqual({ phase: 'phase1', watchId: WATCH_ID });
-    expect(opts).toMatchObject({ jobId: `fix-watch-p1-${WATCH_ID}`, delay: 5 * 60_000 });
+    expect(opts).toMatchObject({
+      jobId: `fix-watch-p1-${WATCH_ID}`,
+      delay: 5 * 60_000,
+      attempts: 5,
+      backoff: { type: 'exponential', delay: 30_000 },
+    });
   });
 
   it('does nothing when the run was ineligible / the row already existed (createFixWatchRow returns null)', async () => {
@@ -156,7 +161,19 @@ describe('processFixWatchJob — phase 1 dispatch', () => {
     const [jobName, data, opts] = shared.addMock.mock.calls[0]!;
     expect(jobName).toBe(FIX_WATCH_JOB_NAME);
     expect(data).toEqual({ phase: 'phase2', watchId: WATCH_ID });
-    expect(opts).toMatchObject({ jobId: `fix-watch-p2-${WATCH_ID}`, delay: 60 * 60_000 });
+    expect(opts).toMatchObject({
+      jobId: `fix-watch-p2-${WATCH_ID}`,
+      delay: 60 * 60_000,
+      attempts: 5,
+      backoff: { type: 'exponential', delay: 30_000 },
+    });
+  });
+
+  it('recovered -> a phase-2 enqueue failure PROPAGATES (unlike scheduleFixWatch) so BullMQ retries this job', async () => {
+    shared.checkFixWatchPhase1Mock.mockResolvedValueOnce({ action: 'recovered' });
+    shared.addMock.mockRejectedValueOnce(new Error('redis down'));
+
+    await expect(processFixWatchJob(job('phase1') as never)).rejects.toThrow('redis down');
   });
 
   it('still_pending -> re-delays THIS job under its own lock token, never a second add() under the same jobId', async () => {

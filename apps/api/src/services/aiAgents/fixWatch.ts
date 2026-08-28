@@ -23,7 +23,7 @@
  * the underlying condition clearing) — it cancels the watch instead.
  */
 import { and, desc, eq, gt, isNull } from 'drizzle-orm';
-import type { AiAgentMode } from '@breeze/shared';
+import type { AgentRunVerdict, AiAgentMode } from '@breeze/shared';
 import {
   db,
   getCurrentDbAccessContext,
@@ -74,25 +74,48 @@ export interface FinishedRunForWatch {
  * The minimal shape of `AgentRunOutcome` this module needs — structurally
  * compatible with `runLoop.ts`'s real `OutcomeExecutedAction[]` without
  * importing that type (same "no cycle" reasoning as `FinishedRunForWatch`).
+ * `AgentRunVerdict` itself is a leaf type from `@breeze/shared` (same as
+ * `AiAgentMode` above), so importing it creates no cycle either.
  */
 export interface FixWatchOutcomeInput {
-  executedActions: ReadonlyArray<{ verification?: 'passed' | 'failed' | 'inconclusive' | 'skipped' }>;
+  executedActions: ReadonlyArray<{
+    verification?: 'passed' | 'failed' | 'inconclusive' | 'skipped';
+    execution?: 'succeeded' | 'failed' | 'timeout' | 'unknown';
+  }>;
+  /**
+   * The run's own rollup verdict (`computeRunVerdict`, runLoop.ts). LOCKED:
+   * "act-lane clean runs only" — a mixed run whose overall verdict is
+   * `needs_attention` is not clean even when one individual action happened
+   * to read back `verification: 'passed'` (that's exactly the "one clean,
+   * one dirty" case `computeRunVerdict` itself rejects). Optional only for
+   * structural-compatibility symmetry with the other fields here; the real
+   * caller (`runLoop.ts`'s `finishRun`) always has it set by the time it
+   * calls `scheduleFixWatch` (`outcome.runVerdict = computeRunVerdict(outcome)`
+   * runs before every terminal branch).
+   */
+  runVerdict?: AgentRunVerdict;
 }
 
 /**
  * Eligibility (plan, Task 3): the triggering alert is known, the run went
  * through the act lane (`modeAtStart === 'act'` — a policy-decided run never
  * sets this, so it is excluded until it gains its own post-execution
- * verification, per the plan's deferral note), and at least one act
- * execution actually VERIFIED clean. A `verification: 'failed'` or
- * `'inconclusive'` execution is not what a fix-held watch is for — that is
- * `actVerify.ts`'s own rule-less attention alert's job, immediately, not 60
- * minutes from now.
+ * verification, per the plan's deferral note), the run's own rollup verdict
+ * is not `needs_attention`, and at least one act execution both DISPATCHED
+ * cleanly (`execution: 'succeeded'`) and VERIFIED clean
+ * (`verification: 'passed'`) — mirroring `computeRunVerdict`'s own rule that
+ * a dispatch which itself failed/timed out/is unknown is not "clean" even
+ * when its read-back reports 'passed'. Anything short of that is not what a
+ * fix-held watch is for — that is `actVerify.ts`'s own rule-less attention
+ * alert's job, immediately, not 60 minutes from now.
  */
 export function isFixWatchEligible(run: FinishedRunForWatch, outcome: FixWatchOutcomeInput): boolean {
   if (!run.alertId) return false;
   if (run.modeAtStart !== 'act') return false;
-  return outcome.executedActions.some((action) => action.verification === 'passed');
+  if (outcome.runVerdict === 'needs_attention') return false;
+  return outcome.executedActions.some(
+    (action) => action.verification === 'passed' && action.execution === 'succeeded',
+  );
 }
 
 /**
@@ -179,11 +202,21 @@ export type FixWatchPhase1Outcome =
  * no longer `pending` (already progressed past phase 1, or cancelled by a
  * duplicate job delivery) — either way, this call has nothing to do and the
  * caller (the worker) must not re-enqueue.
+ *
+ * Exception: a watch already `watching` with `recoveryObservedAt` set
+ * reports `recovered` again rather than `not_found`. That state is only
+ * reachable by THIS function already having committed the 'resolved' branch
+ * below — a retried delivery of the SAME phase-1 job (BullMQ `attempts`,
+ * fired because the phase-2 enqueue that follows a `recovered` result threw)
+ * must re-run that follow-on enqueue, not report `not_found` and strand the
+ * watch in `watching` forever with no sweeper over it.
  */
 export async function checkFixWatchPhase1(watchId: string): Promise<FixWatchPhase1Outcome> {
   return inSystemDbContext(async () => {
     const [watch] = await db.select().from(aiAgentFixWatches).where(eq(aiAgentFixWatches.id, watchId)).limit(1);
-    if (!watch || watch.state !== 'pending') return { action: 'not_found' };
+    if (!watch) return { action: 'not_found' };
+    if (watch.state === 'watching' && watch.recoveryObservedAt) return { action: 'recovered' };
+    if (watch.state !== 'pending') return { action: 'not_found' };
 
     let alertStatus: string | null = null;
     if (watch.alertId) {
@@ -198,18 +231,25 @@ export async function checkFixWatchPhase1(watchId: string): Promise<FixWatchPhas
     if (alertStatus === 'resolved') {
       const recoveryObservedAt = new Date();
       const dueAt = new Date(recoveryObservedAt.getTime() + FIX_HOLD_MINUTES * 60_000);
-      await db
+      const [moved] = await db
         .update(aiAgentFixWatches)
         .set({ state: 'watching', recoveryObservedAt, dueAt })
-        .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'pending')));
+        .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'pending')))
+        .returning({ id: aiAgentFixWatches.id });
+      // Lost the CAS race (a concurrent delivery already moved this row out
+      // of 'pending') — that other call owns the outcome now; this one has
+      // nothing more to do.
+      if (!moved) return { action: 'not_found' };
       return { action: 'recovered' };
     }
 
     if (alertStatus === 'dismissed') {
-      await db
+      const [moved] = await db
         .update(aiAgentFixWatches)
         .set({ state: 'cancelled', evaluatedAt: new Date() })
-        .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'pending')));
+        .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'pending')))
+        .returning({ id: aiAgentFixWatches.id });
+      if (!moved) return { action: 'not_found' };
       return { action: 'cancelled' };
     }
 
@@ -217,10 +257,12 @@ export async function checkFixWatchPhase1(watchId: string): Promise<FixWatchPhas
     // still open, unless the 24h ceiling has passed.
     const ageMs = Date.now() - watch.createdAt.getTime();
     if (ageMs >= RECOVERY_TIMEOUT_HOURS * 60 * 60 * 1000) {
-      await db
+      const [moved] = await db
         .update(aiAgentFixWatches)
         .set({ state: 'inconclusive', evaluatedAt: new Date() })
-        .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'pending')));
+        .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'pending')))
+        .returning({ id: aiAgentFixWatches.id });
+      if (!moved) return { action: 'not_found' };
       return { action: 'timed_out' };
     }
 
@@ -365,19 +407,29 @@ export async function checkFixWatchPhase2(watchId: string): Promise<FixWatchPhas
       .limit(1);
 
     if (recurrence) {
-      await db
+      const [moved] = await db
         .update(aiAgentFixWatches)
         .set({
           state: 'recurred', recurrenceAlertId: recurrence.id, evaluatedAt: new Date(), notifiedAt: new Date(),
         })
-        .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'watching')));
+        .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'watching')))
+        .returning({ id: aiAgentFixWatches.id });
+      // Lost the CAS race — a stalled/duplicate delivery of the SAME phase-2
+      // job saw `state: 'watching'` on its own read too, but the other
+      // invocation's write already won. Notifying/alerting here as well
+      // would double-fire the operator-facing attention alert (it has no
+      // dedupe key), so stand down entirely rather than returning 'recurred'
+      // a second time.
+      if (!moved) return null;
       return { watch, recurrenceAlertId: recurrence.id };
     }
 
-    await db
+    const [moved] = await db
       .update(aiAgentFixWatches)
       .set({ state: 'held_qualified', evaluatedAt: new Date() })
-      .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'watching')));
+      .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'watching')))
+      .returning({ id: aiAgentFixWatches.id });
+    if (!moved) return null;
     return 'held_qualified';
   });
 
