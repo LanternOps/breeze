@@ -34,6 +34,7 @@ const executeCommand = vi.hoisted(() =>
 vi.mock('../commandQueue', () => ({ executeCommand }));
 
 import { ACT_MANIFEST } from './actManifest';
+import type { ActOperation } from './actManifest';
 import { actTargetSummary, recordActVerifyFailureAlert, verifyActExecution } from './actVerify';
 import type { ActAssetPin } from './actRevalidation';
 
@@ -41,7 +42,19 @@ const RUN = { id: 'run-1', orgId: 'org-1', agentId: 'agent-1', deviceId: 'device
 const AGENT_USER_ID = 'agent-1';
 
 const restartOp = ACT_MANIFEST.find((op) => op.key === 'manage_services.restart')!;
-const killOp = ACT_MANIFEST.find((op) => op.key === 'manage_processes.kill')!;
+// manage_processes.kill was removed from ACT_MANIFEST (#3826 scoped
+// re-review, deferred out of v1: unreachable + unimplemented identity pin —
+// see actManifest.test.ts). `verifyProcessAbsent`/`process_absent` are still
+// present in actVerify.ts (kept for whenever the op is re-admitted), so this
+// local fixture — not sourced from ACT_MANIFEST — keeps that dead-but-present
+// code path unit-tested without claiming the op is reachable in production.
+const processAbsentOp: ActOperation = {
+  key: 'manage_processes.kill',
+  toolName: 'manage_processes',
+  matches: () => false,
+  normalizeTarget: () => ({ ok: false, reason: 'unreachable — not in ACT_MANIFEST' }),
+  verifySpec: { kind: 'process_absent' },
+};
 const diskCleanupOp = ACT_MANIFEST.find((op) => op.key === 'disk_cleanup.execute')!;
 const runScriptOp = ACT_MANIFEST.find((op) => op.key === 'run_script')!;
 const playbookOp = ACT_MANIFEST.find((op) => op.key === 'execute_playbook')!;
@@ -142,7 +155,7 @@ describe('verifyActExecution — manage_services.restart (service_running)', () 
   });
 });
 
-describe('verifyActExecution — manage_processes.kill (process_absent)', () => {
+describe('verifyActExecution — process_absent (manage_processes.kill is deferred out of v1, #3826 — this exercises the still-present-but-currently-unreachable verifyProcessAbsent code path)', () => {
   const target = { kind: 'process' as const, pid: '4242', processName: 'notepad.exe' };
 
   it('pid still present in the read-back → failed', async () => {
@@ -151,7 +164,7 @@ describe('verifyActExecution — manage_processes.kill (process_absent)', () => 
       stdout: JSON.stringify({ processes: [{ pid: 4242, name: 'notepad.exe' }] }),
     });
     const result = await verifyActExecution({
-      pin: pin(killOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
+      pin: pin(processAbsentOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
       isError: false, run: RUN, agentUserId: AGENT_USER_ID,
     });
     expect(result).toEqual({ execution: 'succeeded', verification: 'failed', verifyDetail: 'process with the pinned pid is still present' });
@@ -163,7 +176,7 @@ describe('verifyActExecution — manage_processes.kill (process_absent)', () => 
   it('pid absent from the read-back → passed', async () => {
     executeCommand.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ processes: [] }) });
     const result = await verifyActExecution({
-      pin: pin(killOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
+      pin: pin(processAbsentOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
       isError: false, run: RUN, agentUserId: AGENT_USER_ID,
     });
     expect(result).toEqual({ execution: 'succeeded', verification: 'passed' });
@@ -175,7 +188,7 @@ describe('verifyActExecution — manage_processes.kill (process_absent)', () => 
   it('read-back stdout is not JSON at all → inconclusive, not passed', async () => {
     executeCommand.mockResolvedValue({ status: 'completed', stdout: 'not json' });
     const result = await verifyActExecution({
-      pin: pin(killOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
+      pin: pin(processAbsentOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
       isError: false, run: RUN, agentUserId: AGENT_USER_ID,
     });
     expect(result).toEqual({
@@ -188,7 +201,7 @@ describe('verifyActExecution — manage_processes.kill (process_absent)', () => 
   it('read-back stdout parses but carries no `processes` array → inconclusive, not passed', async () => {
     executeCommand.mockResolvedValue({ status: 'completed', stdout: '{}' });
     const result = await verifyActExecution({
-      pin: pin(killOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
+      pin: pin(processAbsentOp, target), toolOutput: JSON.stringify({ status: 'completed', exitCode: 0 }),
       isError: false, run: RUN, agentUserId: AGENT_USER_ID,
     });
     expect(result).toEqual({

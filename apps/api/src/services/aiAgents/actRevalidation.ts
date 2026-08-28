@@ -97,7 +97,7 @@ export interface ActAssetPin {
 
 export type ActRevalidationResult =
   | { ok: true; pin: ActAssetPin }
-  | { ok: false; downgrade: 'propose' }
+  | { ok: false; downgrade: 'propose'; reason?: string }
   | { ok: false; deny: string };
 
 export interface RevalidateActExecutionArgs {
@@ -231,10 +231,24 @@ async function pinAsset(
 ): Promise<PinStepResult> {
   switch (target.kind) {
     case 'service':
+      // No extra I/O pin: `normalizeTarget` already extracted the service
+      // name from the model's own input — there is nothing further to read
+      // before dispatch.
+      return { ok: true, extra: {} };
     case 'process':
-      // No extra I/O pin: `normalizeTarget` already extracted and validated
-      // the full identity (service name; pid+processName for an unattended
-      // kill) — there is nothing further to read before dispatch.
+      // Unreachable through the real pipeline as of #3826 (scoped re-review):
+      // `manage_processes.kill` was removed from `ACT_MANIFEST`, so no
+      // `resolveActOperation` match ever produces a 'process' target anymore.
+      // Kept only so this switch stays exhaustive over `ActTarget`. Note for
+      // whenever the op is re-admitted: unlike `pinDiskCleanup` below, this
+      // branch does NOT re-read live state — `normalizeTarget` only checks
+      // that `pid`/`processName` are present in the model's own input, it
+      // never re-queries the live process list to confirm the pid still
+      // names that process. A real pid→name identity pin (an
+      // `executeCommand list_processes` read + name match immediately before
+      // dispatch, mirroring `pinDiskCleanup`'s preview-plan re-read) is a
+      // prerequisite for re-admitting the op, not something this branch
+      // already provides.
       return { ok: true, extra: {} };
     case 'disk_cleanup':
       return pinDiskCleanup(target, run);
@@ -330,7 +344,10 @@ export async function revalidateActExecution(
     if (normalized.deviceMismatch) {
       return { ok: false, deny: `Act revalidation: ${normalized.reason}` };
     }
-    return { ok: false, downgrade: 'propose' };
+    // #3826 cheap nonblocking fix: thread the concrete reason through so the
+    // recorded proposal carries WHY it wasn't auto-executed, instead of a
+    // bare downgrade a reviewer has to reverse-engineer.
+    return { ok: false, downgrade: 'propose', reason: normalized.reason };
   }
 
   // Step 3.5 (Task 6, #3826): per-script act authorization. run_script's

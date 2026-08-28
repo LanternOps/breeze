@@ -31,10 +31,13 @@ export type ActTarget =
    */
   | { kind: 'disk_cleanup'; paths: string[] }
   /**
-   * A bare pid is never sufficient identity for an unattended kill — see
-   * `normalizeTarget` below. `processName` is required precisely so a
-   * process that has since been replaced (same pid, different program) is
-   * rejected rather than killed on stale identity.
+   * NOT currently reachable via `ACT_MANIFEST` (deferred out of v1, #3826
+   * scoped re-review — see the removed `manageProcessesKill` entry's former
+   * location below for why). `processName` alongside `pid` is required
+   * shape, but that is only a presence check done here, purely, from the
+   * model's own input — there is no dispatch-time re-read of the live
+   * process list to confirm the pid still names that process. Do not read
+   * this as "a stale-pid kill is rejected"; no such revalidation exists yet.
    */
   | { kind: 'process'; pid: string; processName: string }
   /** Content digest is resolved (I/O) and pinned by actRevalidation.ts, not carried here. */
@@ -149,28 +152,32 @@ const diskCleanupExecute: ActOperation = {
   verifySpec: { kind: 'disk_usage_improved' },
 };
 
-const manageProcessesKill: ActOperation = {
-  key: 'manage_processes.kill',
-  toolName: 'manage_processes',
-  matches: (input) => input.action === 'kill',
-  normalizeTarget: (input, runDeviceId) => {
-    if (!deviceMatches(input, 'deviceId', runDeviceId)) {
-      return deviceMismatch('deviceId does not match the run device');
-    }
-    const pid = readString(input, 'processId');
-    if (!pid) return { ok: false, reason: 'processId is required' };
-    // A bare pid is reused by the OS the instant a process exits — killing on
-    // pid alone under unattended act mode risks terminating a different,
-    // unrelated process that happens to have inherited the number. Require a
-    // name to revalidate identity against before dispatch (actRevalidation.ts).
-    const processName = readString(input, 'processName');
-    if (!processName) {
-      return { ok: false, reason: 'processName is required alongside processId for an unattended kill' };
-    }
-    return { ok: true, target: { kind: 'process', pid, processName } };
-  },
-  verifySpec: { kind: 'process_absent' },
-};
+/**
+ * `manage_processes.kill` is DEFERRED out of act-manifest v1 (#3826 scoped
+ * re-review of eb7d0e637) — it was unreachable to begin with:
+ * `manage_processes` was never registered in `TOOL_TIERS`
+ * (aiAgentSdkTools.ts), i.e. never a real agent-SDK tool, so no dispatch
+ * could ever reach a `resolveActOperation('manage_processes', ...)` match in
+ * production. The pid→name identity pin the quorum required for an
+ * unattended kill (the same real, dispatch-time revalidation
+ * `pinDiskCleanup` does for disk-cleanup paths) was also never implemented —
+ * only asserted in comments. Under act mode a `manage_processes` kill call
+ * now falls through to the ordinary unmatched-mutation path, exactly like
+ * shadow mode: no capability regression, since nothing could execute it
+ * before either.
+ *
+ * Re-admitting this op requires BOTH, together, before it returns:
+ *   (a) `manage_processes` tiered and registered in the agent SDK tool set —
+ *       today it sits in `KNOWN_MISSING_TOOL_TIERS`
+ *       (aiAgentSdkTools.registryParity.contract.test.ts), a frozen list that
+ *       may only ever SHRINK, never grow to paper over this gap, and
+ *   (b) a real dispatch-time pid→name identity pin added to
+ *       `actRevalidation.ts`'s `pinAsset` (an `executeCommand list_processes`
+ *       read + name match immediately before the kill dispatches, mirroring
+ *       `pinDiskCleanup`'s preview-plan re-read) — not a presence check on
+ *       the model's own input.
+ * Follow-up issue reference to be added at PR time.
+ */
 
 const runScript: ActOperation = {
   key: 'run_script',
@@ -248,11 +255,12 @@ const remediationSuggestion: ActOperation = {
  * EXACT frozen key set. Do not add, remove, or reorder without a quorum
  * decision — `actManifest.test.ts` pins this array itself, so an edit here
  * that isn't mirrored in the test's expectation fails CI on purpose.
+ * `manage_processes.kill` is deliberately absent — see the deferral comment
+ * above `runScript` for why.
  */
 export const ACT_MANIFEST: readonly ActOperation[] = [
   manageServicesRestart,
   diskCleanupExecute,
-  manageProcessesKill,
   runScript,
   executePlaybook,
   remediationSuggestion,

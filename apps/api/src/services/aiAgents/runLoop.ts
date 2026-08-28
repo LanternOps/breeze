@@ -138,6 +138,14 @@ export interface OutcomeProposedAction {
    * born terminal (`no_eligible_approvers`).
    */
   intentError?: string;
+  /**
+   * Set only for an act-mode downgrade-to-propose that carried a concrete
+   * `normalizeTarget` reason (#3826 cheap nonblocking fix) — e.g. a missing
+   * identity field the manifest requires. Absent for an ordinary shadow-mode
+   * proposal and for a drift/cap-exhaustion downgrade, neither of which has
+   * a single call-specific reason to attach.
+   */
+  downgradeReason?: string;
 }
 
 export interface OutcomeExecutedAction {
@@ -435,12 +443,14 @@ export function createAgentRunPreToolUse(args: {
     check: { tier: number },
     toolName: string,
     input: Record<string, unknown>,
+    downgradeReason?: string,
   ): Promise<{ allowed: false; error: string }> {
     const action = readToolAction(toolName, input);
     const entry: OutcomeProposedAction = {
       tool: toolName,
       ...(action ? { action } : {}),
       args: input,
+      ...(downgradeReason ? { downgradeReason } : {}),
     };
 
     // Tier gate, not a shortcut: createActionIntent throws
@@ -602,8 +612,11 @@ export function createAgentRunPreToolUse(args: {
         // covers a CUSTOM (non-built-in) `execute_playbook` call: `pinPlaybook`
         // (actRevalidation.ts) downgrades those to a proposal before this
         // function is ever reached, so the executor below only ever sees a
-        // playbookId already proven built-in.
-        return recordProposal(check, toolName, input);
+        // playbookId already proven built-in. `revalidated.reason` (#3826
+        // cheap nonblocking fix) is set only for a missing/malformed-identity
+        // normalizeTarget downgrade — threaded through so the proposal a
+        // human reviews carries WHY it wasn't auto-executed.
+        return recordProposal(check, toolName, input, revalidated.reason);
       }
 
       if (op.key === 'execute_playbook') {

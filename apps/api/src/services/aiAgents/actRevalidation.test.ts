@@ -64,7 +64,10 @@ const PLAYBOOK_ID = '00000000-0000-4000-8000-0000000000f7';
 
 const restartOp = ACT_MANIFEST.find((op) => op.key === 'manage_services.restart')!;
 const diskCleanupOp = ACT_MANIFEST.find((op) => op.key === 'disk_cleanup.execute')!;
-const killOp = ACT_MANIFEST.find((op) => op.key === 'manage_processes.kill')!;
+// manage_processes.kill was removed from ACT_MANIFEST (#3826 scoped
+// re-review, deferred out of v1: unreachable + unimplemented identity pin)
+// — no `killOp` fixture exists anymore; see actManifest.test.ts for its
+// unreachability coverage.
 const runScriptOp = ACT_MANIFEST.find((op) => op.key === 'run_script')!;
 const playbookOp = ACT_MANIFEST.find((op) => op.key === 'execute_playbook')!;
 
@@ -246,19 +249,6 @@ describe('revalidateActExecution — step 3: device pinning', () => {
     expect((result as { deny: string }).deny).toMatch(/Act revalidation/);
   });
 
-  // Final-review fix (#3826): a missing identity field the manifest requires
-  // (manage_processes.kill's processName — not yet surfaced on every model
-  // call site) must downgrade to a proposal, never hard-deny — a device
-  // mismatch is the only normalizeTarget failure that stays a deny.
-  it('manage_processes.kill with no processName (identity field missing, not a device mismatch) → downgrades to a proposal', async () => {
-    const result = await revalidateActExecution({
-      run: runArgs(), op: killOp, toolName: 'manage_processes',
-      input: { deviceId: DEVICE_ID, action: 'kill', processId: '4242' },
-      reserved: reservation(),
-    });
-    expect(result).toEqual({ ok: false, downgrade: 'propose' });
-  });
-
   it('run_script targeting a sibling device (deviceIds mismatch) still hard-denies — never softened', async () => {
     const result = await revalidateActExecution({
       run: runArgs(), op: runScriptOp, toolName: 'run_script',
@@ -267,6 +257,19 @@ describe('revalidateActExecution — step 3: device pinning', () => {
     });
     expect(result.ok).toBe(false);
     expect((result as { deny: string }).deny).toMatch(/Act revalidation/);
+  });
+
+  // #3826 cheap nonblocking fix: a missing/malformed identity field (NOT a
+  // device mismatch) downgrades to a proposal, and the proposal must carry
+  // WHY it wasn't auto-executed — the raw `normalized.reason` from
+  // `normalizeTarget`, not a blank downgrade a reviewer can't act on.
+  it('a missing identity field (not a device mismatch) downgrades to a proposal carrying the normalizeTarget reason', async () => {
+    const result = await revalidateActExecution({
+      run: runArgs(), op: restartOp, toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart' }, // no serviceName
+      reserved: reservation(),
+    });
+    expect(result).toEqual({ ok: false, downgrade: 'propose', reason: 'serviceName is required' });
   });
 });
 
@@ -435,21 +438,7 @@ describe('revalidateActExecution — step 4: execute_playbook asset pin', () => 
   });
 });
 
-describe('revalidateActExecution — step 4: manage_processes.kill / manage_services.restart need no extra pin', () => {
-  it('kill: identity already validated by normalizeTarget — no DB read', async () => {
-    const { db } = await import('../../db');
-    const result = await revalidateActExecution({
-      run: runArgs(), op: killOp, toolName: 'manage_processes',
-      input: { deviceId: DEVICE_ID, action: 'kill', processId: '4242', processName: 'notepad.exe' },
-      reserved: reservation(),
-    });
-    expect(result).toEqual({
-      ok: true,
-      pin: { op: killOp, target: { kind: 'process', pid: '4242', processName: 'notepad.exe' } },
-    });
-    expect(db.select).not.toHaveBeenCalled();
-  });
-
+describe('revalidateActExecution — step 4: manage_services.restart needs no extra pin', () => {
   it('restart: no DB read either', async () => {
     const { db } = await import('../../db');
     const result = await revalidateActExecution({

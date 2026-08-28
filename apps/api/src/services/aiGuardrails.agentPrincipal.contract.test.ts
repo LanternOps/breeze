@@ -615,18 +615,18 @@ describe('Task 2 — act disposition matrix', () => {
   });
 
   it('the manifest key set reachable via checkAgentGuardrails matches ACT_MANIFEST exactly (no drift between the two modules)', () => {
-    // manage_services / disk_cleanup / manage_processes / run_script /
-    // execute_playbook each get one representative matching call; the
-    // virtual remediation_suggestion key is intentionally excluded — it is
-    // never reachable via a raw checkAgentGuardrails dispatch (Task 7).
+    // manage_services / disk_cleanup / run_script / execute_playbook each get
+    // one representative matching call; the virtual remediation_suggestion
+    // key is intentionally excluded — it is never reachable via a raw
+    // checkAgentGuardrails dispatch (Task 7). manage_processes.kill is also
+    // excluded — deferred out of act-manifest v1 (#3826 scoped re-review):
+    // see the dedicated test below.
     const reachableKeys = new Set(
       [
         checkAgentGuardrails('manage_services', { deviceId: 'dev-1', action: 'restart', serviceName: 'x' },
           actPolicy({ toolAllowlist: ['manage_services'] })),
         checkAgentGuardrails('disk_cleanup', { deviceId: 'dev-1', action: 'execute', paths: ['/tmp/a'] },
           actPolicy({ toolAllowlist: ['disk_cleanup'] })),
-        checkAgentGuardrails('manage_processes', { deviceId: 'dev-1', action: 'kill', processId: '1', processName: 'x' },
-          actPolicy({ toolAllowlist: ['manage_processes'] })),
         checkAgentGuardrails('run_script', { scriptId: 's-1', deviceIds: ['dev-1'] },
           actPolicy({ toolAllowlist: ['run_script'] })),
         checkAgentGuardrails('execute_playbook', { deviceId: 'dev-1', playbookId: 'pb-1' },
@@ -634,8 +634,32 @@ describe('Task 2 — act disposition matrix', () => {
       ].map((c) => c.disposition),
     );
     expect(reachableKeys).toEqual(new Set(['act']));
-    // 6 manifest entries total; 5 are reachable through a raw tool call, 1
+    // 5 manifest entries total; 4 are reachable through a raw tool call, 1
     // (remediation_suggestion) is virtual — see actManifest.test.ts.
-    expect(ACT_MANIFEST.length).toBe(6);
+    expect(ACT_MANIFEST.length).toBe(5);
+  });
+
+  it('act + manage_processes kill => propose, exactly like shadow — deferred out of v1 (#3826), no capability regression', () => {
+    // manage_processes.kill was removed from ACT_MANIFEST (unreachable via
+    // the agent SDK to begin with — manage_processes is not in TOOL_TIERS —
+    // and its identity pin was never implemented). Under act mode this call
+    // now falls through to the ordinary unmatched-mutation branch, which
+    // records a proposal exactly like shadow mode would for the same call:
+    // no capability regression, since nothing could execute it before either.
+    const actCheck = checkAgentGuardrails(
+      'manage_processes',
+      { deviceId: 'dev-1', action: 'kill', processId: '1', processName: 'x' },
+      actPolicy({ toolAllowlist: ['manage_processes'] }),
+    );
+    expect(actCheck.disposition).toBe('propose');
+    expect(actCheck.allowed).toBe(false);
+
+    const shadowCheck = checkAgentGuardrails(
+      'manage_processes',
+      { deviceId: 'dev-1', action: 'kill', processId: '1', processName: 'x' },
+      policyWith({ mode: 'shadow', toolAllowlist: ['manage_processes'] }),
+    );
+    expect(shadowCheck.disposition).toBe('propose');
+    expect(shadowCheck.allowed).toBe(false);
   });
 });

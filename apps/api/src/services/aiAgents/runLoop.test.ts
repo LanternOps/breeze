@@ -162,7 +162,7 @@ vi.mock('./effectivePolicy', () => ({ resolveEffectiveAgentSystem }));
 const revalidateActExecution = vi.hoisted(() =>
   vi.fn<(args: Record<string, unknown>) => Promise<
     | { ok: true; pin: Record<string, unknown> }
-    | { ok: false; downgrade: 'propose' }
+    | { ok: false; downgrade: 'propose'; reason?: string }
     | { ok: false; deny: string }
   >>());
 vi.mock('./actRevalidation', () => ({ revalidateActExecution }));
@@ -690,6 +690,22 @@ describe('executeAgentRun', () => {
       expect(outcome.executedActions).toEqual([]);
       expect(outcome.deniedActions).toEqual([]);
       expect(outcome.runVerdict).toBe('no_action');
+    });
+
+    it('#3826 cheap nonblocking fix: a downgrade carrying a normalizeTarget reason threads it onto the recorded proposal', async () => {
+      seedActRun();
+      revalidateActExecution.mockResolvedValue({
+        ok: false, downgrade: 'propose', reason: 'serviceName is required',
+      });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Proposed a restart for review.' });
+
+      await executeAgentRun(RUN_ID);
+
+      const final = finalTransition()!;
+      const outcome = final.patch.outcome as AgentRunOutcome;
+      expect(outcome.proposedActions).toHaveLength(1);
+      expect((outcome.proposedActions[0] as { downgradeReason?: string }).downgradeReason)
+        .toBe('serviceName is required');
     });
 
     it('verification failure raises the rule-less alert and rolls up to needs_attention', async () => {

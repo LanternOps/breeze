@@ -303,6 +303,26 @@ describe('runPlaybookSteps — act (mutating, manifest-admitted)', () => {
       run: RUN, agentAuth: AGENT_AUTH, deps, reserved: { count: 0 }, deadlineMs: FAR_FUTURE_DEADLINE,
     });
     expect(outcome.execution).toBe('failed');
+    // No `reason` on this downgrade (drift/cap-exhaustion shape) — falls back
+    // to the canned text, exactly as before.
+    expect(outcome.detail).toContain('drift or the action cap is exhausted');
+  });
+
+  it('#3826 cheap nonblocking fix: a downgrade WITH a reason surfaces that reason, not the canned drift/cap text', async () => {
+    const deps = makeDeps({
+      revalidate: vi.fn(async (): Promise<ActRevalidationResult> => ({
+        ok: false, downgrade: 'propose', reason: 'serviceName is required',
+      })),
+    });
+    const steps: PlaybookStep[] = [
+      { type: 'act', name: 'restart svc', description: '', tool: 'manage_services', toolInput: { action: 'restart' } },
+    ];
+    const outcome = await runPlaybookSteps(steps, {
+      run: RUN, agentAuth: AGENT_AUTH, deps, reserved: { count: 0 }, deadlineMs: FAR_FUTURE_DEADLINE,
+    });
+    expect(outcome.execution).toBe('failed');
+    expect(outcome.detail).toContain('serviceName is required');
+    expect(outcome.detail).not.toContain('drift or the action cap is exhausted');
   });
 });
 

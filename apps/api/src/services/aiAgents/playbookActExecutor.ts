@@ -621,9 +621,15 @@ export async function runPlaybookSteps(steps: PlaybookStep[], ctx: StepCtx): Pro
             run: ctx.run, op, toolName: step.tool!, input: stepInput, reserved: ctx.reserved,
           });
           if (!revalidated.ok) {
+            // #3826 cheap nonblocking fix: prefer the actual downgrade
+            // reason (threaded from `normalizeTarget`, e.g. a missing
+            // identity field) over the canned drift/cap text, which is only
+            // accurate for the drift/cap-exhaustion branches and was
+            // previously shown even when a concrete reason existed.
             const reason = 'deny' in revalidated
               ? revalidated.deny
-              : 'the live policy no longer admits this mutating step unattended (drift or the action cap is exhausted)';
+              : (revalidated.reason
+                ?? 'the live policy no longer admits this mutating step unattended (drift or the action cap is exhausted)');
             results.push(stepResult(i, step, 'failed', undefined, startedAt, reason));
             execution = 'failed';
             detail = `step "${step.name}" could not be revalidated: ${reason}`;

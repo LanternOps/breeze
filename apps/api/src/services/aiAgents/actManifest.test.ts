@@ -1,19 +1,23 @@
 import { describe, expect, it } from 'vitest';
+import { TOOL_TIERS } from '../aiAgentSdkTools';
 import { ACT_ELIGIBLE_TOOL_NAMES, ACT_MANIFEST, resolveActOperation } from './actManifest';
 
 const RUN_DEVICE_ID = 'device-aaaa-1111';
 const OTHER_DEVICE_ID = 'device-bbbb-2222';
 
 describe('ACT_MANIFEST frozen key set', () => {
-  it('contains EXACTLY the six locked keys, in the locked order — a literal frozen-list assertion', () => {
+  it('contains EXACTLY the five locked keys, in the locked order — a literal frozen-list assertion', () => {
     // Deliberately NOT `.sort()`'d and NOT a `Set` comparison: growing,
     // shrinking, renaming, or reordering this manifest is a quorum decision
     // (plan header), so this assertion must break on any of those, not just
-    // membership changes.
+    // membership changes. `manage_processes.kill` is deliberately absent —
+    // deferred out of v1 (#3826 scoped re-review): unreachable (`manage_processes`
+    // was never registered in TOOL_TIERS) and its identity pin was never
+    // implemented, only asserted in comments. See the deferral comment above
+    // `runScript` in actManifest.ts.
     expect(ACT_MANIFEST.map((op) => op.key)).toEqual([
       'manage_services.restart',
       'disk_cleanup.execute',
-      'manage_processes.kill',
       'run_script',
       'execute_playbook',
       'remediation_suggestion',
@@ -25,11 +29,16 @@ describe('ACT_MANIFEST frozen key set', () => {
     expect(ACT_MANIFEST.some((op) => op.key === 'execute_command')).toBe(false);
   });
 
+  it('never contains a manage_processes entry — deferred out of v1 (#3826), unreachable + unimplemented identity pin', () => {
+    expect(ACT_MANIFEST.some((op) => op.toolName === 'manage_processes')).toBe(false);
+    expect(ACT_MANIFEST.some((op) => op.key === 'manage_processes.kill')).toBe(false);
+    expect(ACT_ELIGIBLE_TOOL_NAMES).not.toContain('manage_processes');
+  });
+
   it('ACT_ELIGIBLE_TOOL_NAMES tracks the manifest but excludes the virtual remediation_suggestion sentinel (Task 6)', () => {
     expect([...ACT_ELIGIBLE_TOOL_NAMES].sort()).toEqual([
       'disk_cleanup',
       'execute_playbook',
-      'manage_processes',
       'manage_services',
       'run_script',
     ]);
@@ -37,10 +46,26 @@ describe('ACT_MANIFEST frozen key set', () => {
     expect(ACT_ELIGIBLE_TOOL_NAMES).not.toContain('execute_command');
   });
 
+  it('ACT_ELIGIBLE_TOOL_NAMES is a subset of the real registered agent-SDK tool set — containment contract (#3826 review)', () => {
+    // Catches any future manifest entry for a toolName that was never
+    // registered in TOOL_TIERS (aiAgentSdkTools.ts) — exactly the gap that
+    // let `manage_processes.kill` sit in the manifest despite being
+    // unreachable via the agent SDK's own tool dispatch.
+    const registeredToolNames = new Set(Object.keys(TOOL_TIERS));
+    for (const toolName of ACT_ELIGIBLE_TOOL_NAMES) {
+      expect(registeredToolNames.has(toolName)).toBe(true);
+    }
+  });
+
   it('resolveActOperation never resolves execute_command regardless of input shape', () => {
     expect(resolveActOperation('execute_command', { action: 'restart' })).toBeNull();
     expect(resolveActOperation('execute_command', { commandType: 'restart_service' })).toBeNull();
     expect(resolveActOperation('execute_command', {})).toBeNull();
+  });
+
+  it('resolveActOperation never resolves manage_processes.kill regardless of input shape', () => {
+    expect(resolveActOperation('manage_processes', { action: 'kill', processId: '4242', processName: 'notepad.exe' })).toBeNull();
+    expect(resolveActOperation('manage_processes', { action: 'kill' })).toBeNull();
   });
 });
 
@@ -70,10 +95,9 @@ describe('resolveActOperation — disk_cleanup', () => {
   });
 });
 
-describe('resolveActOperation — manage_processes', () => {
-  it('matches kill', () => {
-    const op = resolveActOperation('manage_processes', { deviceId: RUN_DEVICE_ID, action: 'kill', processId: '4242', processName: 'notepad.exe' });
-    expect(op?.key).toBe('manage_processes.kill');
+describe('resolveActOperation — manage_processes (deferred out of v1, #3826)', () => {
+  it('does not match kill — no manifest entry admits it, so an act-mode kill call flows to the unmatched-mutation proposal path', () => {
+    expect(resolveActOperation('manage_processes', { deviceId: RUN_DEVICE_ID, action: 'kill', processId: '4242', processName: 'notepad.exe' })).toBeNull();
   });
 
   it('does not match list', () => {
@@ -137,37 +161,6 @@ describe('normalizeTarget — device-arg pinning (single-device act mode is fail
     const result = op.normalizeTarget({ deviceId: RUN_DEVICE_ID, action: 'execute', paths: [] }, RUN_DEVICE_ID);
     expect(result.ok).toBe(false);
     expect((result as { deviceMismatch?: boolean }).deviceMismatch).toBeFalsy();
-  });
-
-  it('manage_processes.kill rejects a mismatched device', () => {
-    const op = ACT_MANIFEST.find((o) => o.key === 'manage_processes.kill')!;
-    const result = op.normalizeTarget(
-      { deviceId: OTHER_DEVICE_ID, action: 'kill', processId: '4242', processName: 'notepad.exe' },
-      RUN_DEVICE_ID,
-    );
-    expect(result.ok).toBe(false);
-    expect((result as { deviceMismatch?: boolean }).deviceMismatch).toBe(true);
-  });
-
-  it('manage_processes.kill rejects a bare pid with no processName — identity revalidation, not bare PID', () => {
-    const op = ACT_MANIFEST.find((o) => o.key === 'manage_processes.kill')!;
-    const result = op.normalizeTarget({ deviceId: RUN_DEVICE_ID, action: 'kill', processId: '4242' }, RUN_DEVICE_ID);
-    expect(result.ok).toBe(false);
-    // Review fix (#3826 final-review): missing processName is a
-    // missing-identity-field failure, NOT a device mismatch — it must not
-    // carry `deviceMismatch: true`, or actRevalidation.ts would hard-deny it
-    // instead of downgrading to a proposal (a narrower approval surface than
-    // shadow mode gives the exact same call).
-    expect((result as { deviceMismatch?: boolean }).deviceMismatch).toBeFalsy();
-  });
-
-  it('manage_processes.kill accepts pid + processName on the matching device', () => {
-    const op = ACT_MANIFEST.find((o) => o.key === 'manage_processes.kill')!;
-    const result = op.normalizeTarget(
-      { deviceId: RUN_DEVICE_ID, action: 'kill', processId: '4242', processName: 'notepad.exe' },
-      RUN_DEVICE_ID,
-    );
-    expect(result).toEqual({ ok: true, target: { kind: 'process', pid: '4242', processName: 'notepad.exe' } });
   });
 
   it('run_script rejects deviceIds that do not equal exactly [runDeviceId] — the plan\'s literal requirement', () => {
