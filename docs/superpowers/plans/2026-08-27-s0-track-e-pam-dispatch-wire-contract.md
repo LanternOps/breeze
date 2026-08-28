@@ -232,6 +232,7 @@ git commit -m "fix(pam): define exact v2 dispatch payload"
 - Modify: `apps/api/src/jobs/pamActuationWorker.test.ts`
 - Create: `apps/api/src/__tests__/integration/pamActuationDispatchWire.integration.test.ts`
 - Test: `apps/api/src/__tests__/integration/pamActuationLifecycle.integration.test.ts`
+- Test: `apps/api/src/__tests__/integration/pamActuationResults.integration.test.ts`
 - Test: `apps/api/src/__tests__/integration/pamReconciliationBinding.integration.test.ts`
 
 **Interfaces:**
@@ -306,9 +307,10 @@ identity/lifetime fields, and cleanup includes apply-only data.
 
 - [ ] **Step 3: Wire the builder into `processPamActuationEvent`**
 
-In `PamDispatchRow`, remove `request_revision`; it is not a wire field. Keep the
-request join and exact org equality check. After capability validation, capture
-one `const serverTime = new Date()` and call:
+In `PamDispatchRow`, remove `request_revision`; it is not a wire field. Also
+remove `a.request_revision` from the locked SELECT. Keep the request join and
+exact org equality check. After capability validation, capture one
+`const serverTime = new Date()` and call:
 
 ```ts
 const built = buildPamActuationCommand({
@@ -330,6 +332,11 @@ update with its failure code and return `blocked`. Otherwise insert
 `built.commandType` and `built.payload`. Include `target_role = 'agent'`
 explicitly in the insert while preserving `created_by = NULL`, pending status,
 same transaction, and exact-generation `current_command_id IS NULL` update.
+
+Remove the worker's inline `Date.now()` expiry check. The builder is the single
+expiry authority, and its blocked result reuses that check's existing
+exact-generation `expired_before_dispatch` failed-update SQL. Do not retain two
+expiry checks or two clocks.
 
 Delete the old shared payload literal and do not modify queue publication,
 heartbeat delivery, WebSocket delivery, or result services.
@@ -425,8 +432,25 @@ added.
 
 - [ ] **Step 3: Push and run exact-head core CI**
 
-Push the exact implementation candidate. Dispatch the existing core workflow
-against that exact SHA and record every job conclusion independently from the
+Push the exact implementation candidate and dispatch `.github/workflows/ci.yml`
+on the branch:
+
+```bash
+candidate_sha=$(git rev-parse HEAD)
+git push origin fix/s0-pam-actuation-lifecycle
+test "$(git rev-parse origin/fix/s0-pam-actuation-lifecycle)" = "$candidate_sha"
+gh workflow run ci.yml --repo LanternOps/breeze --ref fix/s0-pam-actuation-lifecycle
+run_id=$(gh run list --repo LanternOps/breeze --workflow ci.yml \
+  --branch fix/s0-pam-actuation-lifecycle --event workflow_dispatch --limit 20 \
+  --json databaseId,headSha --jq ".[] | select(.headSha == \"$candidate_sha\") | .databaseId" | head -1)
+test -n "$run_id"
+gh run view "$run_id" --repo LanternOps/breeze \
+  --json headSha,status,conclusion,url,jobs \
+  --jq '{headSha,status,conclusion,url,jobs:[.jobs[]|{name,conclusion}]}'
+```
+
+Verify `headSha` is exactly `candidate_sha`. After completion, rerun the final
+`gh run view` command and record every job conclusion independently from the
 three checks attached to stacked PR #4105.
 
 Expected: the integration shards, Go gates, and aggregate succeed; only the
