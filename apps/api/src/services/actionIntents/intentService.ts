@@ -612,9 +612,16 @@ async function notifyFannedOutApprovers(args: NotifyFannedOutApproversArgs): Pro
  * path), so a static import here in the other direction would be a genuine
  * circular module dependency between the two. Resolved lazily, inside a
  * function body, after both modules have finished evaluating, this never
- * cycles. Errors are swallowed here (never rejected back to the caller) —
- * the outbox's `intent_created` recovery branch (intentReleaseWorker.ts) is
- * the at-least-once safety net for a dropped/failed attempt, not this call.
+ * cycles. Errors — INCLUDING `PolicyDecisionTransientError`, the
+ * discriminated signal `attemptPolicyDecision` throws for a transient
+ * DB/Redis fault (review fix, #3827) — are deliberately swallowed here
+ * (never rejected back to this call's own caller, and never retried from
+ * this end): this trigger is fire-and-forget and does not survive a
+ * crash/restart, so it cannot be the retry lane. The outbox's
+ * `intent_created` recovery branch (intentReleaseWorker.ts) is that lane —
+ * it's the one durable caller that rethrows `PolicyDecisionTransientError`
+ * so BullMQ redelivers the job; this call site logging-and-dropping the same
+ * error is correct, not a gap.
  */
 function triggerPolicyDecisionAttempt(intentId: string): void {
   import('./policyDecide')

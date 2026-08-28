@@ -267,7 +267,13 @@ function isActionMultiplexedTool(toolName: string): boolean {
  * action-multiplexed. This is what keeps a future registry-vs-guardrails
  * drift from silently reopening a four_eyes action to policy decision.
  */
-function rejectionReasonFor(entry: PolicyDecidableEntry): string | null {
+// Exported (not module-private) solely so tests can exercise it directly
+// against a synthetic entry — every REAL entry in the frozen
+// POLICY_DECIDABLE_TIER3 registry already satisfies every one of these
+// checks (pinned by the module-header assertions in policyDecidable.test.ts),
+// so `validateAuthorizationKeys` alone can never hit some of these branches
+// (the `headlessCompatible` one, in particular) through the public API today.
+export function rejectionReasonFor(entry: PolicyDecidableEntry): string | null {
   const { toolName, action } = entry;
 
   if (BLOCKED_TOOLS.has(toolName) || getToolTier(toolName) === 4) {
@@ -275,6 +281,17 @@ function rejectionReasonFor(entry: PolicyDecidableEntry): string | null {
   }
   if (isSecretBearingTool(toolName)) {
     return 'tool is secret-bearing';
+  }
+  // Review fix (#3827): structural enforcement of the module-header claim
+  // ("every entry claims headlessCompatible: true") — previously only
+  // asserted by policyDecidable.test.ts, never enforced by
+  // `validateAuthorizationKeys` itself. `attemptPolicyDecision` runs fully
+  // unattended with no live interactive session, so an entry that ever
+  // regressed to `headlessCompatible: false` (e.g. a copy-paste of an
+  // M365/Google/computer-control entry) must be rejected here directly, not
+  // rely solely on `requiresLiveSession` below staying in sync with it.
+  if (!entry.headlessCompatible) {
+    return 'not headless-compatible';
   }
   if (action === null && isActionMultiplexedTool(toolName)) {
     return 'bare-tool key for an action-multiplexed tool';

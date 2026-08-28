@@ -196,7 +196,11 @@ vi.mock('./intentService', () => ({
 // Import under test (after mocks)
 // ---------------------------------------------------------------------------
 
-import { attemptPolicyDecision, computePolicySnapshotDigest } from './policyDecide';
+import {
+  attemptPolicyDecision,
+  computePolicySnapshotDigest,
+  PolicyDecisionTransientError,
+} from './policyDecide';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -352,6 +356,14 @@ describe('computePolicySnapshotDigest', () => {
 // ---------------------------------------------------------------------------
 
 describe('attemptPolicyDecision', () => {
+  it('review fix (#3827): invariant guard — throws immediately, before any read, if called with an already-held DB access context', async () => {
+    dbMockState.ambientContext = { scope: 'system' };
+    await expect(attemptPolicyDecision(INTENT_ID)).rejects.toThrow(/ALREADY-HELD DB access context/);
+    expect(sentryMock.captureException).toHaveBeenCalled();
+    // Never even read the intent — the guard fires before loadIntentForAttempt.
+    expect(intentServiceMock.runDeferredHumanFanout).not.toHaveBeenCalled();
+  });
+
   it('idempotence preconditions: no-ops (no writes, no fanout) when already resolved, not pending, or not agent-originated', async () => {
     pushRows('action_intents', [makeIntentRow({ policyDecisionState: 'authorized' })]);
     await attemptPolicyDecision(INTENT_ID);
@@ -464,6 +476,43 @@ describe('attemptPolicyDecision', () => {
     await attemptPolicyDecision(INTENT_ID);
     expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
     expect(guardrailMock.checkAgentGuardrails).not.toHaveBeenCalled();
+  });
+
+  it('review fix (#3827): key authorized on the CURRENT policy but NOT in the run\'s own policySnapshot -> human path (mirrors agentReleaseAuthority.ts checking both)', async () => {
+    pushRows('action_intents', [makeIntentRow()]);
+    // Current effective policy (the default mock) authorizes the key; the
+    // RUN's own snapshot never opted it in — simulates an operator adding
+    // the key to supervisedActionKeys mid-run, after this run's snapshot was
+    // already taken.
+    queueRunAndAgent({
+      run: {
+        policySnapshot: {
+          ...POLICY_SNAPSHOT,
+          effective: { ...POLICY_SNAPSHOT.effective, actAssets: { scriptIds: [], supervisedActionKeys: [] } },
+        },
+      },
+    });
+    await attemptPolicyDecision(INTENT_ID);
+    expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
+    // Never reached the guardrail re-run or the authorize transaction.
+    expect(guardrailMock.checkAgentGuardrails).not.toHaveBeenCalled();
+    expect(dbMockState.insertValues.ai_unattended_exposure ?? []).toHaveLength(0);
+  });
+
+  it('review fix (#3827): key authorized in the run\'s snapshot but since REMOVED from the CURRENT policy -> human path (the pre-existing current-policy check, unaffected by adding the snapshot check)', async () => {
+    pushRows('action_intents', [makeIntentRow()]);
+    queueRunAndAgent(); // run's snapshot still has the key (default fixture)
+    effectivePolicyMock.resolveEffectiveAgentSystem.mockResolvedValueOnce({
+      schemaVersion: 3,
+      agentId: AGENT_ID,
+      kind: 'patch',
+      effective: { ...POLICY_SNAPSHOT.effective, actAssets: { scriptIds: [], supervisedActionKeys: [] } },
+      provenance: POLICY_SNAPSHOT.provenance,
+      resolvedAt: POLICY_SNAPSHOT.resolvedAt,
+    });
+    await attemptPolicyDecision(INTENT_ID);
+    expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
+    expect(dbMockState.insertValues.ai_unattended_exposure ?? []).toHaveLength(0);
   });
 
   it('deterministic: live guardrail re-run denies (not kill-switch) -> human path', async () => {
@@ -603,9 +652,11 @@ describe('attemptPolicyDecision', () => {
         details: expect.objectContaining({ decidedVia: 'policy', policyAuthorizationKey: 'manage_services:restart' }),
       }),
     );
-    // Notification to recipients.
+    // Notification to recipients. Review fix (#3827): `link: null`, not
+    // '/approvals' — a policy-decided intent has no approval_requests row for
+    // that link to point at; no run-detail page exists yet (wave 6).
     expect(notifyMock.createNotification).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'recipient-1', orgId: ORG_ID }),
+      expect.objectContaining({ userId: 'recipient-1', orgId: ORG_ID, link: null }),
     );
   });
 
@@ -637,11 +688,11 @@ describe('attemptPolicyDecision', () => {
     expect(dbMockState.insertValues.approval_requests).toBeUndefined();
   });
 
-  it('transient: a DB read failure leaves the intent unattempted (no degrade, no throw)', async () => {
+  it('transient: a DB read failure leaves the intent unattempted and throws the discriminated PolicyDecisionTransientError (review fix, #3827 — real at-least-once relies on this propagating to the outbox recovery branch)', async () => {
     pushRows('action_intents', [makeIntentRow()]);
     // ai_agent_runs queue left empty on purpose -> nextRows throws, simulating
     // a transient DB fault mid-pipeline.
-    await expect(attemptPolicyDecision(INTENT_ID)).resolves.toBeUndefined();
+    await expect(attemptPolicyDecision(INTENT_ID)).rejects.toBeInstanceOf(PolicyDecisionTransientError);
     expect(intentServiceMock.runDeferredHumanFanout).not.toHaveBeenCalled();
     expect(sentryMock.captureException).toHaveBeenCalled();
   });

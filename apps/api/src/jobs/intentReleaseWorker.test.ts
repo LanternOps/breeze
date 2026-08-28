@@ -175,9 +175,27 @@ vi.mock('../services/actionIntents/metrics', () => ({
 vi.mock('../services/actionIntents/intentService', () => ({
   transitionIntent: intentServiceMock.transitionIntent,
 }));
-vi.mock('../services/actionIntents/policyDecide', () => ({
-  attemptPolicyDecision: policyDecideMock.attemptPolicyDecision,
-}));
+vi.mock('../services/actionIntents/policyDecide', () => {
+  // A local (not imported-from-real) `PolicyDecisionTransientError` — the
+  // real module pulls in the full db/schema graph transitively, which this
+  // test file mocks only partially elsewhere, so `importOriginal` here blows
+  // up on an unrelated missing export deep in that chain. Defining the class
+  // locally is sufficient: every import of '../services/actionIntents/
+  // policyDecide' in this test run (both intentReleaseWorker.ts's source
+  // import and this file's own top-level import) resolves to THIS mocked
+  // module, so they share the same class reference and `instanceof` works.
+  class PolicyDecisionTransientError extends Error {
+    constructor(intentId: string, cause: unknown) {
+      super(`attemptPolicyDecision transient failure for intent ${intentId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+      this.name = 'PolicyDecisionTransientError';
+      this.cause = cause;
+    }
+  }
+  return {
+    attemptPolicyDecision: policyDecideMock.attemptPolicyDecision,
+    PolicyDecisionTransientError,
+  };
+});
 vi.mock('../services/actionIntents/actorContext', () => ({
   buildAuthContextForIntent: actorContextMock.buildAuthContextForIntent,
 }));
@@ -290,6 +308,7 @@ import { db as mockedDb, runOutsideDbContext as mockedRunOutside } from '../db';
 import type { ActionIntent } from '../db/schema/actionIntents';
 import { GoogleConnectionUnavailableError } from '../services/googleToolsHeadless';
 import { M365ConnectionUnavailableError } from '../services/m365ToolsHeadless';
+import { PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 // Deliberately REAL (not mocked) — assertNoPlaintextSecret is the exact guard
 // the worker calls on both persistence paths; testing it directly here pins
 // the invariant the worker relies on without inventing a parallel harness.
@@ -1617,13 +1636,30 @@ describe('processIntentReleaseJob', () => {
       expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledWith('intent-1');
     });
 
-    it('a thrown attemptPolicyDecision failure is swallowed (logged to Sentry), never thrown to the caller', async () => {
+    it('a non-discriminated thrown failure (not PolicyDecisionTransientError) is swallowed (logged to Sentry), never thrown to the caller — defensive fallback for a shape attemptPolicyDecision should never actually produce', async () => {
       policyDecideMock.attemptPolicyDecision.mockRejectedValueOnce(new Error('db blip'));
 
       await expect(
         processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' }),
       ).resolves.toEqual({ released: false });
       expect(sentryMock.captureException).toHaveBeenCalled();
+    });
+
+    it('review fix (#3827): a PolicyDecisionTransientError IS rethrown — real at-least-once relies on this so BullMQ redelivers the job', async () => {
+      const transientErr = new PolicyDecisionTransientError('intent-1', new Error('connection terminated'));
+      policyDecideMock.attemptPolicyDecision.mockRejectedValueOnce(transientErr);
+
+      await expect(
+        processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' }),
+      ).rejects.toBe(transientErr);
+    });
+
+    it('a DETERMINISTIC outcome (attemptPolicyDecision resolves normally) still acks — released: false, no throw', async () => {
+      policyDecideMock.attemptPolicyDecision.mockResolvedValueOnce(undefined);
+
+      await expect(
+        processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' }),
+      ).resolves.toEqual({ released: false });
     });
   });
 

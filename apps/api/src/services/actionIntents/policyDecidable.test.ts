@@ -3,6 +3,7 @@ import {
   POLICY_DECIDABLE_TIER3,
   isPolicyDecidableKey,
   validateAuthorizationKeys,
+  rejectionReasonFor,
 } from './policyDecidable';
 import {
   TIER3_FOUR_EYES_ACTIONS,
@@ -149,5 +150,39 @@ describe('validateAuthorizationKeys', () => {
 
   it('empty input yields empty output', () => {
     expect(validateAuthorizationKeys([])).toEqual({ ok: [], rejected: [] });
+  });
+});
+
+describe('rejectionReasonFor — structural headlessCompatible enforcement (review fix, #3827)', () => {
+  // Every REAL entry in POLICY_DECIDABLE_TIER3 already declares
+  // `headlessCompatible: true` (pinned by the "every entry claims
+  // headlessCompatible: true" test above), so `validateAuthorizationKeys`
+  // can never exercise this branch through the public API today — this is
+  // exactly why it's a defense-in-depth structural check, not a live gate,
+  // and why it has to be tested against a synthetic entry directly.
+  it('rejects a synthetic entry that claims headlessCompatible: false', () => {
+    const fakeEntry = {
+      key: 'not_a_real_tool:not_a_real_action',
+      toolName: 'not_a_real_tool',
+      action: 'not_a_real_action',
+      headlessCompatible: false,
+      maxTargetCardinality: 1 as const,
+      requiresEffectPin: true,
+      note: 'synthetic test fixture only — never in the real registry',
+    };
+    expect(rejectionReasonFor(fakeEntry)).toBe('not headless-compatible');
+  });
+
+  it('passes a synthetic entry through to the LATER checks when headlessCompatible: true (does not falsely reject)', () => {
+    const fakeEntry = {
+      key: 'not_a_real_tool:not_a_real_action',
+      toolName: 'not_a_real_tool',
+      action: 'not_a_real_action',
+      headlessCompatible: true,
+      maxTargetCardinality: 1 as const,
+      requiresEffectPin: true,
+      note: 'synthetic test fixture only — never in the real registry',
+    };
+    expect(rejectionReasonFor(fakeEntry)).toBeNull();
   });
 });

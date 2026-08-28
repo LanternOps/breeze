@@ -81,6 +81,24 @@ function canonicalPolicyKey(actionName: string, args: Record<string, unknown>): 
  *  treated as a silent no-op, never a failure. */
 class PolicyDecisionRaceLostError extends Error {}
 
+/** Review fix (#3827): the discriminated signal `attemptPolicyDecision`
+ *  throws for a TRANSIENT failure (a DB/Redis error from any of its awaited
+ *  reads/writes) — distinct from `PolicyDecisionRaceLostError` (a silent
+ *  no-op) and from every DETERMINISTIC gate above, which degrades to
+ *  `human_required` and returns normally rather than throwing. Callers use
+ *  `instanceof` to decide whether to retry: `intentReleaseWorker.ts`'s
+ *  outbox `intent_created` branch rethrows it so BullMQ redelivers the job
+ *  (real at-least-once recovery); `intentService.ts`'s post-commit
+ *  fire-and-forget trigger still swallows it — the outbox is the retry lane,
+ *  not that call site. */
+export class PolicyDecisionTransientError extends Error {
+  constructor(intentId: string, cause: unknown) {
+    super(`attemptPolicyDecision transient failure for intent ${intentId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'PolicyDecisionTransientError';
+    this.cause = cause;
+  }
+}
+
 type CapCheckFailure = 'fleet_cap_exceeded' | 'day_cap_exceeded';
 
 interface LoadedIntentForAttempt {
@@ -162,6 +180,7 @@ type DegradeReason =
   | 'agent_mode_not_act'
   | 'not_policy_decidable'
   | 'not_agent_authorized'
+  | 'not_run_snapshot_authorized'
   | 'kill_switch_engaged'
   | 'agent_policy_denied'
   | CapCheckFailure;
@@ -351,7 +370,11 @@ async function notifyRecipientsOfPolicyAuthorization(args: {
           type: 'ai',
           title: `${args.agentName}: authorized automatically by policy`,
           message: `${args.targetSummary} — executing`,
-          link: '/approvals',
+          // Review fix (#3827): a policy-decided intent has NO approval_requests
+          // row (that's the whole point — no human ever reviewed it), so
+          // `/approvals` is a dead end for this notification. No run-detail
+          // page exists yet to link to instead — that lands in wave 6.
+          link: null,
           metadata: { intentId: args.intentId, decidedVia: 'policy' },
           dedupeKey: `intent-policy-authorized:${args.intentId}`,
         });
@@ -371,13 +394,44 @@ async function notifyRecipientsOfPolicyAuthorization(args: {
  * the post-commit fire-and-forget trigger AND the outbox `intent_created`
  * recovery branch, without ever double-authorizing or double-fanning-out.
  *
- * Never throws: every failure this function can encounter is either a
- * DETERMINISTIC refusal (degrades the intent to `human_required` and returns)
- * or a TRANSIENT one (logs and leaves the intent `unattempted` for the
- * outbox's at-least-once redelivery to retry). See the plan header's Design
- * authority for why that distinction is load-bearing.
+ * Every failure this function can encounter is either a DETERMINISTIC
+ * refusal (degrades the intent to `human_required` and returns normally) or
+ * a TRANSIENT one — which now THROWS `PolicyDecisionTransientError` (review
+ * fix, #3827) rather than swallowing it, so the outbox `intent_created`
+ * branch (intentReleaseWorker.ts) can rethrow and let BullMQ redeliver the
+ * job for real at-least-once recovery. See the plan header's Design
+ * authority for why the deterministic/transient distinction is load-bearing.
  */
 export async function attemptPolicyDecision(intentId: string): Promise<void> {
+  // Review fix (#3827) — invariant guard: `inSystemDbContext` (above) SKIPS
+  // opening a fresh `withSystemDbAccessContext` transaction whenever the
+  // ambient context already reads `scope: 'system'`, joining the caller's
+  // transaction instead. That's correct for calls made from a clean
+  // (contextless) stack — this function's own transaction boundaries
+  // (loadIntentForAttempt, loadRunAndAgent, runAuthorizeTransaction) are then
+  // genuinely independent, which is what makes `PolicyDecisionRaceLostError`
+  // safe to roll back on its own: only ITS transaction unwinds, never a
+  // caller's. If this function were ever invoked from INSIDE an
+  // already-held DB access context (of any scope), every one of those
+  // "own transaction" boundaries would silently join the caller's instead —
+  // a caller-side rollback would then also undo this function's exposure
+  // reservation/CAS, and a caller-side commit could otherwise let a lost-CAS
+  // rollback leave an orphaned exposure reservation live past this
+  // function's return. Both current callers (intentService.ts's post-commit
+  // fire-and-forget trigger, intentReleaseWorker.ts's outbox `intent_created`
+  // branch) invoke this from a clean stack — verified unreachable today —
+  // so this is a loud, fail-fast tripwire against that invariant ever
+  // silently regressing, not a currently-reachable bug.
+  const ambientContext = getCurrentDbAccessContext();
+  if (ambientContext) {
+    const invariantErr = new Error(
+      `attemptPolicyDecision invariant violation: called with an ALREADY-HELD DB access context (scope: '${ambientContext.scope}') for intent ${intentId} — this function must always run from a clean (contextless) call stack so its own transaction boundaries stay independent of any caller's.`,
+    );
+    console.error(`[policyDecide] ${invariantErr.message}`);
+    captureException(invariantErr);
+    throw invariantErr;
+  }
+
   try {
     // Load + confirm this intent is genuinely stranded in `unattempted`
     // BEFORE checking the flag, so intentReleaseWorker.ts's `intent_created`
@@ -464,6 +518,25 @@ export async function attemptPolicyDecision(intentId: string): Promise<void> {
       return;
     }
 
+    // Review fix (#3827): decide-time snapshot check, mirroring what release
+    // already enforces (agentReleaseAuthority.ts's `candidates` loop checks
+    // BOTH `run.policySnapshot.effective` and the current effective policy —
+    // see its header comment). Checking ONLY the current policy here left a
+    // gap: an operator who adds a key to `supervisedActionKeys` MID-RUN would
+    // let policy-decide authorize an intent the run never actually started
+    // under — the run's own snapshot never opted this key in. Requiring the
+    // key in BOTH keeps decide-time and release-time symmetric: a key added
+    // after the run started degrades to human review here, exactly like a
+    // key REMOVED after decide-time gets caught by release's own snapshot
+    // check. Defensive optional-chaining on `run.policySnapshot` mirrors
+    // agentReleaseAuthority.ts's own cast — a malformed/legacy snapshot fails
+    // closed (empty array, key never found) rather than throwing.
+    const snapshotAuthorizedKeys = run.policySnapshot?.effective?.actAssets?.supervisedActionKeys ?? [];
+    if (!snapshotAuthorizedKeys.includes(key)) {
+      await degradeToHumanRequired(intentId, 'not_run_snapshot_authorized', { key });
+      return;
+    }
+
     // Kill state, warmed BEFORE the guardrail re-run so its synchronous cache
     // (checkAgentGuardrails reads getCachedAiKillStateSnapshot()) reflects
     // this read, mirroring actRevalidation.ts's / agentReleaseAuthority.ts's
@@ -539,12 +612,18 @@ export async function attemptPolicyDecision(intentId: string): Promise<void> {
       return;
     }
     // Everything else reaching here is TRANSIENT (a DB/Redis error from any
-    // of the awaited reads/writes above): log and leave the intent
-    // `unattempted` for the outbox's at-least-once redelivery to retry.
-    // Never degrade to human_required on a transient fault — that would
-    // permanently forfeit the policy-decide path for an intent that might
-    // have authorized cleanly on the next attempt.
+    // of the awaited reads/writes above): the intent is left `unattempted`
+    // (nothing here writes it any other state) — never degrade to
+    // human_required on a transient fault, that would permanently forfeit
+    // the policy-decide path for an intent that might have authorized
+    // cleanly on the next attempt. Review fix (#3827): THROW the
+    // discriminated signal instead of swallowing it — the outbox
+    // `intent_created` branch (intentReleaseWorker.ts) is what turns this
+    // into REAL at-least-once recovery by rethrowing it for BullMQ to
+    // redeliver; a caller that doesn't care (intentService.ts's post-commit
+    // fire-and-forget trigger) still swallows it on its own end.
     captureException(err instanceof Error ? err : new Error(String(err)));
     console.error(`[policyDecide] attemptPolicyDecision transient failure for intent ${intentId} (left unattempted):`, err);
+    throw new PolicyDecisionTransientError(intentId, err);
   }
 }

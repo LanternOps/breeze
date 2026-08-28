@@ -12,7 +12,7 @@ import { recordActionIntentEvent, recordActionIntentMetric } from '../services/a
 import { createNotification } from '../services/userNotifications';
 import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent } from '../services/actionIntents/intentService';
-import { attemptPolicyDecision } from '../services/actionIntents/policyDecide';
+import { attemptPolicyDecision, PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
 import { readAiKillState } from '../services/aiKillState';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
@@ -951,10 +951,15 @@ async function notifyRequesterOfOutcome(
  *
  * `intent_approved` is the release trigger AND an outcome to report.
  * `intent_rejected` / `intent_expired` are outcome-only. `intent_created` is
- * the policy-decide recovery hook (wave 5 Part B, #3827) — flag-gated,
- * always acknowledged as a no-op rather than thrown on either way, so it
- * doesn't retry forever (intentOutboxPublisher.ts shares this queue but not
- * this consumer role).
+ * the policy-decide recovery hook (wave 5 Part B, #3827) — deliberately NOT
+ * flag-gated at this call site (see the comment on that branch below for
+ * why) and NOT unconditionally acknowledged: a DETERMINISTIC outcome from
+ * `attemptPolicyDecision` (it returns normally either way) always acks, but
+ * a TRANSIENT failure (it throws `PolicyDecisionTransientError`, review fix
+ * #3827) is rethrown so BullMQ redelivers the job — this queue's outbox
+ * publisher (intentOutboxPublisher.ts) is a separate producer role, not this
+ * consumer's retry policy, but this IS the branch that relies on BullMQ's
+ * own per-job retry policy to make that redelivery real.
  */
 export async function processIntentReleaseJob(data: IntentReleaseJobData): Promise<{ released: boolean }> {
   if (data.eventType === 'intent_rejected' || data.eventType === 'intent_expired') {
@@ -983,12 +988,31 @@ export async function processIntentReleaseJob(data: IntentReleaseJobData): Promi
   // precondition itself (status === 'pending_approval', agent-originated),
   // so a human-authored or already-decided intent's `intent_created` event
   // reaches it and no-ops — this call site does not need to duplicate those
-  // checks. Acknowledged as a no-op either way (never thrown on), exactly
-  // like the pre-existing `intent_created` handling below.
+  // checks.
+  //
+  // Review fix (#3827): a DETERMINISTIC outcome (every no-op above, a
+  // degrade-to-human, or a clean authorize — `attemptPolicyDecision` returns
+  // normally in all of them) still acks unconditionally, same as before. A
+  // TRANSIENT failure now throws `PolicyDecisionTransientError` instead of
+  // being swallowed — rethrown here rather than acked, this is what turns
+  // "left `unattempted`" into REAL at-least-once recovery: BullMQ redelivers
+  // the job per this job's retry policy instead of the event being marked
+  // processed and gone forever. Any OTHER error shape reaching this catch
+  // would mean `attemptPolicyDecision` grew an exit path that neither
+  // returns nor throws the discriminated signal — a bug in that function,
+  // not something retrying here can fix — so it stays logged-and-acked
+  // rather than retried forever.
   if (data.eventType === 'intent_created') {
     try {
       await attemptPolicyDecision(data.intentId);
     } catch (err) {
+      if (err instanceof PolicyDecisionTransientError) {
+        console.error(
+          `[IntentReleaseWorker] attemptPolicyDecision transient failure for intent ${data.intentId} — rethrowing for BullMQ retry:`,
+          err,
+        );
+        throw err;
+      }
       console.error(`[IntentReleaseWorker] attemptPolicyDecision failed for intent ${data.intentId}:`, err);
       captureException(err instanceof Error ? err : new Error(String(err)));
     }
