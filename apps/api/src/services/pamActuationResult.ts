@@ -90,7 +90,6 @@ export async function recordPamActuationResult(input: {
       current.desired_state !== 'cleanup' || !hasIndependentCleanEvidence(result.evidence)
     )) return 'rejected';
     if (result.state === 'failed' && !result.failureCode) return 'rejected';
-    if (isReordered(current, result.state)) return 'stale';
 
     const duplicate = rows<{ id: string }>(await tx.execute<{ id: string }>(sql`
       SELECT id FROM pam_actuation_results
@@ -100,6 +99,7 @@ export async function recordPamActuationResult(input: {
       LIMIT 1
     `))[0];
     if (duplicate) return 'duplicate';
+    if (isReordered(current, result.state)) return 'stale';
 
     const evidenceJson = JSON.stringify(result.evidence);
     const inserted = rows<{ id: string }>(await tx.execute<{ id: string }>(sql`
