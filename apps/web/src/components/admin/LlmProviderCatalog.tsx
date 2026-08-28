@@ -862,8 +862,7 @@ export default function LlmProviderCatalog() {
                 <ul data-testid="llm-catalog-verify-steps" className="border rounded divide-y">
                   {verifyResult.steps.map((step, index) => (
                     <li
-                      // eslint-disable-next-line react/no-array-index-key -- steps have no stable id; order is fixed per response
-                      key={index}
+                      key={`${index}-${step.name}`}
                       data-testid={`llm-catalog-verify-step-${index}`}
                       className="px-3 py-2 flex items-start gap-2 text-sm"
                     >
