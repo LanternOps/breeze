@@ -158,7 +158,7 @@ async function submitReceivedFor(fixture: Fixture, commandId: string, observatio
 }
 
 async function submitVerified(fixture: Fixture, observation: PamAgentResultV2) {
-  return withDbAccessContext(orgContext(fixture.orgId), () =>
+  return withDbAccessContext(orgContext(fixture.orgId), async () =>
     appFor(fixture).request(`/agents/${fixture.agentId}/commands/${fixture.commandId}/result`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
