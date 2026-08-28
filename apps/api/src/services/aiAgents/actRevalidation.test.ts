@@ -13,6 +13,14 @@ const dbMockState = vi.hoisted(() => ({
   // describe block below.
   killStateRows: [{ killed: false, epoch: 0 }] as unknown[],
   killStateShouldThrow: false,
+  // Wave 5B Task 4 (#3827): `organizations` (partnerId lookup) and
+  // `ai_unattended_exposure` (fleet-percent cap read) table branches for
+  // `reserveActUnattendedExposure` — see the "exposure ledger accounting"
+  // describe block below.
+  organizationRows: [] as unknown[],
+  exposureDeviceRows: [] as unknown[],
+  insertedExposureRows: [] as Record<string, unknown>[],
+  advisoryLockCalls: 0,
   ambientContext: undefined as { scope: string } | undefined,
 }));
 
@@ -31,12 +39,36 @@ vi.mock('../../db', () => ({
               if (dbMockState.killStateShouldThrow) throw new Error('ai_kill_state read failed (test)');
               return dbMockState.killStateRows;
             }
-            throw new Error(`Unexpected table: ${tableName}`);
+            if (tableName === 'organizations') return dbMockState.organizationRows;
+            throw new Error(`Unexpected table (with limit): ${tableName}`);
           }),
+          // `ai_unattended_exposure`'s fleet-check select has no `.limit()`
+          // (it reads every exposed device row in the trailing window) — the
+          // `where(...)` result itself must be awaitable.
+          then: (resolve: (value: unknown[]) => void) => {
+            if (tableName === 'ai_unattended_exposure') return resolve(dbMockState.exposureDeviceRows);
+            throw new Error(`Unexpected table (awaited without limit): ${tableName}`);
+          },
         };
         return builder;
       }),
     })),
+    insert: vi.fn((table: unknown) => {
+      const tableName = String((table as Record<symbol, unknown>)[Symbol.for('drizzle:Name')]);
+      return {
+        values: vi.fn(async (values: Record<string, unknown>) => {
+          if (tableName === 'ai_unattended_exposure') {
+            dbMockState.insertedExposureRows.push(values);
+            return [];
+          }
+          throw new Error(`Unexpected insert table: ${tableName}`);
+        }),
+      };
+    }),
+    execute: vi.fn(async () => {
+      dbMockState.advisoryLockCalls += 1;
+      return { rows: [] };
+    }),
   },
   getCurrentDbAccessContext: vi.fn(() => dbMockState.ambientContext),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
@@ -61,6 +93,12 @@ const computeEffectDigestForRelease = vi.hoisted(() =>
   >>());
 vi.mock('../actionIntents/effectDigest', () => ({ computeEffectDigestForRelease }));
 
+// `countContractDevices` mocked at the module boundary (like effectivePolicy/
+// effectDigest above) rather than growing the hand-rolled `../../db` mock to
+// cover the `devices` table's own aggregate-count query shape.
+const countContractDevices = vi.hoisted(() => vi.fn<(orgId: string, siteId: string | null) => Promise<number>>());
+vi.mock('../contractQuantities', () => ({ countContractDevices }));
+
 import { ACT_MANIFEST } from './actManifest';
 import { ACT_DISK_CLEANUP_MAX_BYTES_V1, revalidateActExecution, type ActReservationState } from './actRevalidation';
 // Real (unmocked) module — `revalidateActExecution` imports it for real, and
@@ -77,6 +115,7 @@ const SITE_ID = '00000000-0000-4000-8000-0000000000f4';
 const RUN_ID = '00000000-0000-4000-8000-0000000000f5';
 const SCRIPT_ID = '00000000-0000-4000-8000-0000000000f6';
 const PLAYBOOK_ID = '00000000-0000-4000-8000-0000000000f7';
+const PARTNER_ID = '00000000-0000-4000-8000-0000000000f8';
 
 const restartOp = ACT_MANIFEST.find((op) => op.key === 'manage_services.restart')!;
 const diskCleanupOp = ACT_MANIFEST.find((op) => op.key === 'disk_cleanup.execute')!;
@@ -138,10 +177,19 @@ function reservation(count = 0): ActReservationState {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+  // Default OFF — matches production default (dark-ship) and keeps every
+  // pre-existing test in this file exercising wave-4 behavior (no fleet-cap
+  // enforcement) unless a test in the "exposure ledger accounting" block
+  // below explicitly stubs it on.
+  vi.stubEnv('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', 'false');
   dbMockState.cleanupRunRows = [];
   dbMockState.playbookRows = [];
   dbMockState.killStateRows = [{ killed: false, epoch: 0 }];
   dbMockState.killStateShouldThrow = false;
+  dbMockState.organizationRows = [{ partnerId: PARTNER_ID }];
+  dbMockState.exposureDeviceRows = [];
+  dbMockState.insertedExposureRows = [];
+  dbMockState.advisoryLockCalls = 0;
   dbMockState.ambientContext = undefined;
   // A prior test's kill state must never leak into the next one via the 5s
   // in-process TTL cache — `readAiKillState` is a real module-level
@@ -149,6 +197,11 @@ beforeEach(() => {
   _resetAiKillStateCacheForTest();
   resolveEffectiveAgentSystem.mockReset().mockResolvedValue(liveSnapshot(basePolicy()));
   computeEffectDigestForRelease.mockReset();
+  // Large enough that the default AI_AGENT_LIMIT_DEFAULTS.maxFleetPercentPerDay
+  // (5%) never exhausts in a pre-existing test even when a test opts the
+  // flag on without overriding this — see the ledger describe block for
+  // deliberately small values.
+  countContractDevices.mockReset().mockResolvedValue(1000);
 });
 
 afterEach(() => {
@@ -514,7 +567,7 @@ describe('revalidateActExecution — step 4: execute_playbook asset pin', () => 
 });
 
 describe('revalidateActExecution — step 4: manage_services.restart needs no extra pin', () => {
-  it('restart: no ASSET-PIN DB read (the only select is the wave-5A kill-state refresh, step 2)', async () => {
+  it('restart: no ASSET-PIN DB read (the only selects are the wave-5A kill-state refresh, step 2, and the wave-5B exposure-ledger org lookup, step 5.5)', async () => {
     const { db } = await import('../../db');
     const result = await revalidateActExecution({
       run: runArgs(), op: restartOp, toolName: 'manage_services',
@@ -525,10 +578,12 @@ describe('revalidateActExecution — step 4: manage_services.restart needs no ex
       ok: true,
       pin: { op: restartOp, target: { kind: 'service', serviceName: 'Spooler' } },
     });
-    // Exactly one — the kill-state read (#3827 Task 2). A 'service' target
-    // needs no asset pin (see pinAsset's 'service' branch), so a second
-    // select here would mean step 4 regressed into doing I/O it doesn't need.
-    expect(db.select).toHaveBeenCalledTimes(1);
+    // Exactly two — the kill-state read (#3827 Task 2) and the exposure-
+    // ledger org/partner lookup (#3827 Task 4, unconditional regardless of
+    // the flag). A 'service' target needs no asset pin (see pinAsset's
+    // 'service' branch), so a third select here would mean step 4
+    // regressed into doing I/O it doesn't need.
+    expect(db.select).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -580,5 +635,103 @@ describe('revalidateActExecution — step 5: maxActionsPerRun reservation', () =
     });
     expect(result.ok).toBe(true);
     expect(reserved.count).toBe(5);
+  });
+});
+
+describe('revalidateActExecution — step 5.5: unattended-exposure ledger accounting (#3827 Task 4)', () => {
+  it('flag off: still writes the exposure row (accounting is truth, flag-independent)', async () => {
+    const reserved = reservation(0);
+    const result = await revalidateActExecution({
+      run: runArgs(), op: restartOp, toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' },
+      reserved,
+    });
+    expect(result.ok).toBe(true);
+    expect(dbMockState.insertedExposureRows).toEqual([
+      {
+        orgId: ORG_ID,
+        partnerId: PARTNER_ID,
+        agentId: AGENT_ID,
+        runId: RUN_ID,
+        deviceId: DEVICE_ID,
+        intentId: null,
+        source: 'act',
+      },
+    ]);
+  });
+
+  it('flag off: no fleet-percent cap enforced — a scenario that WOULD exceed it still succeeds, and no advisory lock is taken', async () => {
+    countContractDevices.mockResolvedValue(1); // allowance = floor(1 * 5 / 100) = 0
+    dbMockState.exposureDeviceRows = [{ deviceId: 'already-exposed-device' }];
+    const reserved = reservation(0);
+    const result = await revalidateActExecution({
+      run: runArgs(), op: restartOp, toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' },
+      reserved,
+    });
+    expect(result.ok).toBe(true);
+    expect(dbMockState.advisoryLockCalls).toBe(0);
+    expect(dbMockState.insertedExposureRows.length).toBe(1);
+  });
+
+  it('flag on: an exhausted fleet-percent cap downgrades to a proposal, writes no row, and does not consume a maxActionsPerRun slot', async () => {
+    vi.stubEnv('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', 'true');
+    countContractDevices.mockResolvedValue(10); // allowance = floor(10 * 5 / 100) = 0
+    const reserved = reservation(0);
+    const result = await revalidateActExecution({
+      run: runArgs(), op: restartOp, toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' },
+      reserved,
+    });
+    expect(result).toEqual({ ok: false, downgrade: 'propose' });
+    expect(dbMockState.advisoryLockCalls).toBe(1);
+    expect(dbMockState.insertedExposureRows).toEqual([]);
+    expect(reserved.count).toBe(0);
+  });
+
+  it('flag on: within the fleet-percent cap → the exposure row is written and the call executes', async () => {
+    vi.stubEnv('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', 'true');
+    countContractDevices.mockResolvedValue(100); // allowance = floor(100 * 5 / 100) = 5
+    const reserved = reservation(0);
+    const result = await revalidateActExecution({
+      run: runArgs(), op: restartOp, toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' },
+      reserved,
+    });
+    expect(result.ok).toBe(true);
+    expect(dbMockState.advisoryLockCalls).toBe(1);
+    expect(dbMockState.insertedExposureRows.length).toBe(1);
+    expect(reserved.count).toBe(1);
+  });
+
+  it('flag on: a device already exposed in the trailing 24h does not double-count against the fleet cap', async () => {
+    vi.stubEnv('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', 'true');
+    countContractDevices.mockResolvedValue(20); // allowance = floor(20 * 5 / 100) = 1
+    // This run's OWN device is already in the exposed set — re-exposing it
+    // must not push the projected count to 2 and exhaust a 1-device
+    // allowance.
+    dbMockState.exposureDeviceRows = [{ deviceId: DEVICE_ID }];
+    const result = await revalidateActExecution({
+      run: runArgs(), op: restartOp, toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' },
+      reserved: reservation(0),
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('an exhausted maxActionsPerRun cap is checked first — the cheap in-memory check never reaches the DB-backed fleet check', async () => {
+    vi.stubEnv('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', 'true');
+    resolveEffectiveAgentSystem.mockResolvedValue(liveSnapshot(basePolicy({
+      limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxActionsPerRun: 1 },
+    })));
+    const reserved = reservation(1); // already at the cap
+    const result = await revalidateActExecution({
+      run: runArgs(), op: restartOp, toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' },
+      reserved,
+    });
+    expect(result).toEqual({ ok: false, downgrade: 'propose' });
+    expect(dbMockState.advisoryLockCalls).toBe(0);
+    expect(dbMockState.insertedExposureRows).toEqual([]);
   });
 });
