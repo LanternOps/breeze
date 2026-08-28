@@ -206,6 +206,11 @@ function TraceEntryRow({
             </>
           )}
           {entry.verifyDetail && <span className="w-full">{entry.verifyDetail}</span>}
+          {(entry.actOpKey || entry.actTargetName) && (
+            <span className="w-full" data-testid={`run-detail-trace-entry-${index}-target`}>
+              {[entry.actOpKey, entry.actTargetName].filter(Boolean).join(' · ')}
+            </span>
+          )}
         </div>
       )}
 
