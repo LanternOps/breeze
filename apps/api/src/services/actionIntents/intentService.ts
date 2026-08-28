@@ -338,6 +338,19 @@ function resolvePolicyDecisionState(args: {
   agentRun: AgentRunRef;
   toolName: string;
   input: Record<string, unknown>;
+  /**
+   * The run's OWN policy-snapshot mode (loaded.run.policySnapshot?.effective
+   * ?.mode above), NOT re-resolved from the agent's current live policy —
+   * this is the creation-time half of the LOCKED quorum decision "policy-
+   * decide requires mode === 'act'" (plan header, Task 5, #3827).
+   * policyDecide.ts's attemptPolicyDecision re-checks the CURRENT live mode
+   * again at attempt time (an operator can flip act -> shadow as a brake
+   * between creation and attempt) and keeps its own check even after this
+   * one ships, as defense in depth — see its comment. Undefined for a
+   * malformed/legacy snapshot; anything but the literal string 'act' fails
+   * closed to human_required, same as every other branch here.
+   */
+  agentMode: string | undefined;
 }): ActionIntentPolicyDecisionState {
   void args.guardrail;
   void args.toolName;
@@ -345,6 +358,7 @@ function resolvePolicyDecisionState(args: {
   if (!policyDecideEnabled()) return 'human_required';
   if (!args.agentRun) return 'human_required';
   if (args.approvalScope !== 'supervised') return 'human_required';
+  if (args.agentMode !== 'act') return 'human_required';
   return 'unattempted';
 }
 
@@ -685,6 +699,13 @@ export async function createActionIntent(
   // -------------------------------------------------------------------------
   let agentRun: AgentRunRef = null;
   let agentRow: { id: string; name: string } | null = null;
+  // Task 5 (#3827): the run's own policy-snapshot mode, captured alongside
+  // `effective` below — resolvePolicyDecisionState's creation-time act-mode
+  // gate reads this, never a fresh live-policy lookup (that re-check is
+  // policyDecide.ts's job, at attempt time). Stays undefined for every
+  // human-originated intent (agentRun stays null, which already forces
+  // human_required on its own).
+  let agentRunMode: string | undefined;
   if (auth.principal.kind === 'ai_agent') {
     const principal = auth.principal;
     // runOutsideDbContext is load-bearing: a bare system wrapper inside an
@@ -739,6 +760,7 @@ export async function createActionIntent(
     // checkAgentGuardrails and denies, which is the fail-closed shape we
     // want, hence the cast instead of a hand-rolled validator here).
     const effective = loaded.run.policySnapshot?.effective;
+    agentRunMode = effective?.mode;
     const verdict = checkAgentGuardrails(input.toolName, input.input, {
       enabled: effective?.enabled,
       mode: effective?.mode,
@@ -900,6 +922,7 @@ export async function createActionIntent(
         agentRun,
         toolName: input.toolName,
         input: input.input,
+        agentMode: agentRunMode,
       });
 
       const [inserted] = await db

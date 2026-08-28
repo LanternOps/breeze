@@ -542,6 +542,42 @@ describe('agent mutations', () => {
       expect(state.updatedValues).toMatchObject({ mode: 'act' });
     });
 
+    it("a non-null supervisedActionKeys set alone satisfies act_eligible_tool — a policy-decide-only agent (no run_script/manage_services/disk_cleanup/execute_playbook manifest surface) must still be able to enter act mode (Task 5, #3827)", async () => {
+      // security_scan is POLICY_DECIDABLE_TIER3-eligible but is NOT in
+      // ACT_MANIFEST/ACT_ELIGIBLE_TOOL_NAMES (that set is the wave-4
+      // rule-equivalent-operation manifest, a different lane) — before this
+      // fix, an agent configured ONLY for policy-decide on security_scan/
+      // manage_startup_items/manage_scheduled_tasks (no wave-4 act-lane
+      // surface at all) could never activate act mode: hasActEligibleSurface
+      // would see an empty intersection with ACT_ELIGIBLE_TOOL_NAMES and
+      // reject with act_eligible_tool even though supervisedActionKeys was
+      // correctly configured.
+      const actReady = {
+        ...storedRow,
+        toolAllowlist: ['security_scan'],
+        actAssets: { scriptIds: [], supervisedActionKeys: ['security_scan:quarantine'] },
+      };
+      state.currentRow = actReady;
+      state.returnedRow = { ...actReady, mode: 'act' };
+
+      await updateAgent(auth(), 'a1', { mode: 'act' } as never);
+
+      expect(state.updatedValues).toMatchObject({ mode: 'act' });
+    });
+
+    it('an empty supervisedActionKeys does NOT satisfy act_eligible_tool on its own — still requires a real wave-4 manifest surface', async () => {
+      state.currentRow = {
+        ...storedRow,
+        toolAllowlist: ['security_scan'],
+        actAssets: { scriptIds: [], supervisedActionKeys: [] },
+      };
+
+      const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['act_eligible_tool']);
+      expect(state.updatedValues).toBeNull();
+    });
+
     it('refuses an update to act mode with no resolvable recipient', async () => {
       state.hasResolvableAgentRecipient.mockResolvedValue(false);
       state.currentRow = { ...storedRow, toolAllowlist: ['manage_services'] };

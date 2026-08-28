@@ -29,6 +29,29 @@ interface RoleOption {
   name: string;
 }
 
+/** GET /ai/agents/policy-decidable-keys — the read-only POLICY_DECIDABLE_TIER3
+ *  registry (wave 5 Part B, #3827). `note` is fetched but not currently
+ *  rendered; kept on the type for parity with the wire shape. */
+interface PolicyDecidableKeyOption {
+  key: string;
+  toolName: string;
+  action: string | null;
+  note: string;
+}
+
+/** Groups registry entries by `toolName`, preserving the server's ordering
+ *  within each group (policyDecidable.ts orders entries deliberately — see
+ *  its module doc). */
+function groupByTool(entries: PolicyDecidableKeyOption[]): Map<string, PolicyDecidableKeyOption[]> {
+  const groups = new Map<string, PolicyDecidableKeyOption[]>();
+  for (const entry of entries) {
+    const list = groups.get(entry.toolName);
+    if (list) list.push(entry);
+    else groups.set(entry.toolName, [entry]);
+  }
+  return groups;
+}
+
 interface Props {
   /** null = create a new agent. */
   agent: AiAgentDto | null;
@@ -59,6 +82,12 @@ const AGENT_ERROR_COPY: Record<string, ((t: (key: string) => string) => string) 
   // structured `missing[]` it carries is rendered as issues below, this is
   // just the toast fallback so the raw machine token never reaches the user.
   act_prerequisites_not_met: (t) => t('aiAgentsPage.errors.actPrerequisitesNotMet'),
+  // Wave 5 Part B (#3827): the server's 422 (agentService.ts's
+  // InvalidSupervisedActionKeysError) carries a structured `rejected[]` —
+  // this is just the toast fallback; the per-key detail is rendered as
+  // issues below via ACT_PREREQUISITE_COPY's sibling handling in save()'s
+  // catch block.
+  invalid_supervised_action_keys: (t) => t('aiAgentsPage.errors.invalidSupervisedActionKeys'),
 };
 
 /**
@@ -131,6 +160,9 @@ interface Draft {
   cooldownSeconds: number;
   roleIds: string[];
   instructions: string;
+  /** Wave 5 Part B (#3827). Operator's per-agent opt-in to unattended
+   *  policy-decided authorization — see actAssets in save() below. */
+  supervisedActionKeys: string[];
 }
 
 function draftFrom(
@@ -156,6 +188,7 @@ function draftFrom(
     cooldownSeconds: agent?.cooldownSeconds ?? 900,
     roleIds: agent?.recipients?.roleIds ?? [],
     instructions: agent?.instructions ?? '',
+    supervisedActionKeys: agent?.actAssets?.supervisedActionKeys ?? [],
   };
 }
 
@@ -205,6 +238,8 @@ export default function AiAgentForm({
   );
   const [roles, setRoles] = useState<RoleOption[]>([]);
   const [rolesFailed, setRolesFailed] = useState(false);
+  const [policyKeys, setPolicyKeys] = useState<PolicyDecidableKeyOption[]>([]);
+  const [policyKeysFailed, setPolicyKeysFailed] = useState(false);
   const [issues, setIssues] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [confirmDisable, setConfirmDisable] = useState(false);
@@ -230,6 +265,32 @@ export default function AiAgentForm({
       } catch (err) {
         console.error('[AiAgentForm] could not load roles', err);
         if (!cancelled) setRolesFailed(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // The POLICY_DECIDABLE_TIER3 registry (wave 5 Part B, #3827) — a static,
+  // read-only list, so no dependency on mode/agent; fetched once per mount
+  // exactly like roles above, and rendered only inside the act-mode section
+  // below. A failure must say so rather than rendering an empty registry,
+  // same "authorization/outage vs. genuinely empty" distinction the roles
+  // fetch above draws (this route needs only ai_agents:read, which this page
+  // is already gated on, so a 403 here is unexpected — but the failure state
+  // still must not lie and claim the registry is empty).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetchWithAuth('/ai/agents/policy-decidable-keys');
+        if (!response.ok) throw new Error(`GET /ai/agents/policy-decidable-keys ${response.status}`);
+        const body = (await response.json()) as { data?: PolicyDecidableKeyOption[] };
+        if (!cancelled) setPolicyKeys(Array.isArray(body.data) ? body.data : []);
+      } catch (err) {
+        console.error('[AiAgentForm] could not load policy-decidable keys', err);
+        if (!cancelled) setPolicyKeysFailed(true);
       }
     })();
     return () => {
@@ -280,6 +341,14 @@ export default function AiAgentForm({
       cooldownSeconds: draft.cooldownSeconds,
       recipients: { roleIds: draft.roleIds },
       instructions: draft.instructions.trim() ? draft.instructions.trim() : null,
+      // Wave 5 Part B (#3827): scriptIds is not this form's field to send —
+      // omitting it here relies on the SAME one-level PATCH merge the
+      // top-of-function comment already documents (updatePolicyColumns
+      // merges { ...stored.actAssets, ...input.actAssets }), so an existing
+      // scriptIds value survives a save that only ever touches
+      // supervisedActionKeys. On create, the server's createAiAgentSchema
+      // defaults the omitted scriptIds to [].
+      actAssets: { supervisedActionKeys: draft.supervisedActionKeys },
     };
 
     let saved = false;
@@ -325,6 +394,26 @@ export default function AiAgentForm({
           : [];
         setIssues(
           missing.map((entry) => ACT_PREREQUISITE_COPY[entry]?.(t) ?? entry),
+        );
+      }
+      // Wave 5 Part B (#3827): the server's 422 (InvalidSupervisedActionKeysError)
+      // carries a structured `rejected[]` naming exactly which keys failed and
+      // why — same "actionable, not a bare toast" pattern as the prerequisites
+      // branch above.
+      if (err instanceof ActionError && err.code === 'invalid_supervised_action_keys') {
+        const body = err.body as { rejected?: unknown } | undefined;
+        const rejected = Array.isArray(body?.rejected)
+          ? body.rejected.filter(
+              (entry): entry is { key: string; reason: string } =>
+                typeof entry === 'object'
+                && entry !== null
+                && typeof (entry as { key?: unknown }).key === 'string'
+                && typeof (entry as { reason?: unknown }).reason === 'string',
+            )
+          : [];
+        setIssues(
+          rejected.map((entry) =>
+            t('aiAgentsPage.errors.supervisedKeyRejected', { key: entry.key, reason: entry.reason })),
         );
       }
     } finally {
@@ -566,6 +655,51 @@ export default function AiAgentForm({
               </label>
             )}
           </div>
+        )}
+
+        {/* Wave 5 Part B (#3827). Gated the same way as the act-warning block
+            above (draft.mode === 'act' only) — the "act acknowledgement
+            pattern": this is additional unattended authority an operator is
+            opting into only once they are already looking at the act-mode
+            warning, never offered for shadow/off. */}
+        {draft.mode === 'act' && (
+          <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2" data-testid="ai-agent-policy-decide">
+            <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+              {t('aiAgentsPage.sections.policyDecide')}
+            </legend>
+            <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.supervisedActionKeysHint')}</p>
+            {policyKeysFailed ? (
+              <p className="text-sm text-destructive" data-testid="ai-agent-policy-keys-failed">
+                {t('aiAgentsPage.fields.supervisedActionKeysFailed')}
+              </p>
+            ) : policyKeys.length === 0 ? (
+              <p className="text-sm text-muted-foreground" data-testid="ai-agent-policy-keys-empty">
+                {t('aiAgentsPage.fields.supervisedActionKeysEmpty')}
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {[...groupByTool(policyKeys).entries()].map(([toolName, entries]) => (
+                  <div key={toolName}>
+                    <p className="text-xs font-semibold">{toolName}</p>
+                    <div className="flex flex-wrap gap-3">
+                      {entries.map((entry) => (
+                        <label key={entry.key} className="flex items-center gap-1 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={draft.supervisedActionKeys.includes(entry.key)}
+                            onChange={() =>
+                              patch({ supervisedActionKeys: toggle(draft.supervisedActionKeys, entry.key) })}
+                            data-testid={`ai-agent-supervised-key-${entry.key}`}
+                          />
+                          {entry.action ?? entry.toolName}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </fieldset>
         )}
 
         <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">

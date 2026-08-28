@@ -110,6 +110,19 @@ function hasActEligibleSurface(
   toolAllowlist: string[],
   actAssets: Partial<AiAgentActAssets>,
 ): boolean {
+  // Wave 5 Part B (#3827): a non-empty supervisedActionKeys set is ITSELF a
+  // real act-eligible surface — exactly what makes the agent act unattended
+  // for those keys — independent of the wave-4 ACT_MANIFEST/toolAllowlist
+  // check below. Without this branch, an agent configured ONLY for
+  // policy-decide on a tool ACT_MANIFEST doesn't cover (security_scan,
+  // manage_startup_items, manage_scheduled_tasks all qualify;
+  // manage_services happens to overlap both lanes) could never satisfy this
+  // prerequisite and so could never enter act mode at all — the write-time
+  // key validation (assertSupervisedActionKeysValid) already guarantees any
+  // non-empty value here is genuine POLICY_DECIDABLE_TIER3 membership, so
+  // trusting length alone is safe.
+  if ((actAssets.supervisedActionKeys?.length ?? 0) > 0) return true;
+
   const eligible = new Set(ACT_ELIGIBLE_TOOL_NAMES);
   const baseName = (entry: string): string => entry.split(':', 1)[0] ?? entry;
   const intersecting = toolAllowlist.filter((entry) => eligible.has(baseName(entry)));

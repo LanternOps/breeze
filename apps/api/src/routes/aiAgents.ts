@@ -21,6 +21,7 @@ import {
   InvalidSupervisedActionKeysError, UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
+import { POLICY_DECIDABLE_TIER3 } from '../services/actionIntents/policyDecidable';
 import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
 import { InvalidAgentRecipientsError } from '../services/aiAgents/recipients';
 import { SUPPORTED_AGENT_MODES } from '../services/aiAgents/constants';
@@ -190,6 +191,26 @@ aiAgentsRoutes.get(
     return c.json({ data: resolved });
   },
 );
+
+/**
+ * Wave 5 Part B (#3827) — the read-only, static POLICY_DECIDABLE_TIER3
+ * registry, for the web `supervisedActionKeys` editor (Task 5) to render a
+ * multi-select grouped by tool. Registered ahead of GET /:id, same reason as
+ * /effective and /runs/:runId above — a literal path segment must not fall
+ * into the `:id` param route. Only the wire-relevant fields are projected:
+ * `maxTargetCardinality`/`requiresEffectPin` are policyDecidable.ts's own
+ * review notes, not client data, and `headlessCompatible` is filtered on
+ * (never surfaced) — v1 happens to be all-true, but a future non-headless
+ * entry must never be offered as a selectable key here (it structurally can
+ * never be policy-decided; see registryCheck in policyDecide.ts).
+ */
+aiAgentsRoutes.get('/policy-decidable-keys', scopes, requireAiRead, async (c) => {
+  return c.json({
+    data: POLICY_DECIDABLE_TIER3
+      .filter((entry) => entry.headlessCompatible)
+      .map((entry) => ({ key: entry.key, toolName: entry.toolName, action: entry.action, note: entry.note })),
+  });
+});
 
 aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   const runId = uuidParam(c, 'runId');

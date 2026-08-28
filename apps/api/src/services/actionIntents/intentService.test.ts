@@ -478,6 +478,26 @@ function queueAgentContext(opts?: { run?: Record<string, unknown>; agent?: Recor
   }
 }
 
+/**
+ * A full run row (same shape `makeRunRow` returns) with the policy snapshot's
+ * `effective.mode` overridden. `makeRunRow`'s own `overrides` param is a
+ * shallow spread, so passing `{ policySnapshot: {...} }` there would REPLACE
+ * the whole snapshot rather than patch one field — this deep-clones instead.
+ * Used by the Wave 5 Part B (#3827) mode-gate tests below, which need
+ * `effective.mode` to actually be `'act'` — `makeRunRow`'s own default is
+ * `'shadow'` (the wave-3b baseline every OTHER test in this file relies on).
+ */
+function agentRunRowWithMode(mode: string, overrides?: Record<string, unknown>) {
+  const base = makeRunRow(overrides);
+  return {
+    ...base,
+    policySnapshot: {
+      ...base.policySnapshot,
+      effective: { ...base.policySnapshot.effective, mode },
+    },
+  };
+}
+
 beforeEach(() => {
   resetDbState();
   vi.clearAllMocks();
@@ -1165,7 +1185,10 @@ describe('createActionIntent — resolvePolicyDecisionState (Wave 5 Part B, real
       description: 'Manage services on a device',
       approvalScope: 'supervised',
     });
-    queueAgentContext();
+    // Task 5 (#3827): policy-decide requires the run's OWN policy snapshot to
+    // read mode 'act' — makeRunRow's default ('shadow') is deliberately used
+    // by every other test in this file, so this is the one case that opts in.
+    queueAgentContext({ run: agentRunRowWithMode('act') });
     dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-unattempted' }));
 
     const snap = await createActionIntent(makeAgentAuth(), agentInput());
@@ -1199,6 +1222,33 @@ describe('createActionIntent — resolvePolicyDecisionState (Wave 5 Part B, real
     intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
     dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-fe-agent' }));
     dbState.insertApprovalRequestsResults.push([{ id: 'approval-fe-agent' }]);
+
+    const snap = await createActionIntent(makeAgentAuth(), agentInput());
+
+    expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('human_required');
+    expect(snap.status).toBe('pending_approval');
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(1);
+    expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
+  });
+
+  it("flag on + agent-originated + supervised + run's mode is 'shadow' (not 'act') -> human_required, ordinary fan-out runs, no attempt triggered (locked quorum decision, Task 5 #3827)", async () => {
+    // The primary enforcement point is policyDecide.ts's own live re-check
+    // (defense in depth, since the operator can flip act->shadow AFTER
+    // creation); this is the creation-time half — an intent whose run was
+    // never even in act mode must never reach 'unattempted' in the first
+    // place. makeRunRow's default mode is 'shadow', so this needs no override.
+    envMock.policyDecideEnabled.mockReturnValue(true);
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Manage services on a device',
+      approvalScope: 'supervised',
+    });
+    queueAgentContext();
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-shadow-mode' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-shadow-mode' }]);
 
     const snap = await createActionIntent(makeAgentAuth(), agentInput());
 
