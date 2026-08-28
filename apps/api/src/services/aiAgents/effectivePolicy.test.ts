@@ -298,6 +298,14 @@ describe('mergeAgentPolicies — tighten only', () => {
       .toBe(2);
   });
 
+  it('mergeLimits min-wins on maxPolicyDecisionsPerDay: partner 50 + org 10 -> 10 (#3827)', () => {
+    const partner = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxPolicyDecisionsPerDay: 50 } });
+    const org = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxPolicyDecisionsPerDay: 10 } });
+
+    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.limits.maxPolicyDecisionsPerDay)
+      .toBe(10);
+  });
+
   it('fills JSONB defaults when normalizing a sparse row', () => {
     const normalized = normalizeAgentPolicy({
       enabled: false,

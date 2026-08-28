@@ -38,6 +38,7 @@ const limitsFields = z.object({
   wallClockSeconds: z.number().int().min(30).max(1800),
   maxFleetPercentPerDay: z.number().int().min(1).max(100),
   maxActionsPerRun: z.number().int().min(1).max(10),
+  maxPolicyDecisionsPerDay: z.number().int().min(1).max(200),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({

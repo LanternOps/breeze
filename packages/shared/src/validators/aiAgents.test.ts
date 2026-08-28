@@ -6,7 +6,12 @@ import {
   createAiAgentSchema,
   updateAiAgentSchema,
 } from './aiAgents';
-import { AI_AGENT_LIMIT_DEFAULTS, SUPPORTED_AGENT_MODES, minAgentMode } from '../types/aiAgents';
+import {
+  AI_AGENT_LIMIT_DEFAULTS,
+  AI_AGENT_POLICY_SNAPSHOT_VERSION,
+  SUPPORTED_AGENT_MODES,
+  minAgentMode,
+} from '../types/aiAgents';
 
 describe('aiAgents validators', () => {
   it('fills limit defaults and clamps maxima', () => {
@@ -24,6 +29,20 @@ describe('aiAgents validators', () => {
     expect(aiAgentLimitsSchema.safeParse({ maxActionsPerRun: 0 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ maxActionsPerRun: 11 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ maxActionsPerRun: 2.5 }).success).toBe(false);
+  });
+
+  it('maxPolicyDecisionsPerDay defaults to 10 and clamps to [1,200] (wave 5 Part A, #3827)', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxPolicyDecisionsPerDay).toBe(10);
+    expect(aiAgentLimitsSchema.parse({}).maxPolicyDecisionsPerDay).toBe(10);
+    expect(aiAgentLimitsSchema.safeParse({ maxPolicyDecisionsPerDay: 1 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxPolicyDecisionsPerDay: 200 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxPolicyDecisionsPerDay: 0 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxPolicyDecisionsPerDay: 201 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxPolicyDecisionsPerDay: 2.5 }).success).toBe(false);
+  });
+
+  it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 3 (wave 5 Part A bump, #3827)', () => {
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(3);
   });
 
   it('rejects instructions over 2000 chars and unknown allowlist shapes', () => {
