@@ -1334,7 +1334,10 @@
     "errors": {
       "load": "Could not load agents.",
       "kindExists": "An agent of this kind already exists for this owner. Edit the existing one, or disable it first.",
-      "modeNotSupported": "That mode is not available yet. Agents can currently investigate and propose, but not act."
+      "modeNotSupported": "That mode is not available yet. Agents can currently investigate and propose, but not act.",
+      "actPrerequisitesNotMet": "This agent isn't ready for act mode yet.",
+      "actMissingRecipient": "Add at least one notification recipient before enabling act mode.",
+      "actMissingTool": "Allow at least one act-eligible tool, or authorize a script, before enabling act mode."
     },
     "actions": {
       "add": "New agent",
@@ -1379,7 +1382,16 @@
     "modes": {
       "off": "Off",
       "shadow": "Shadow — investigate and propose only",
-      "act": "Act — available in a later release"
+      "act": "Act — execute matched operations unattended, with verification"
+    },
+    "actWarning": {
+      "title": "Act mode executes without a human clicking approve",
+      "unattended": "Matched, rule-equivalent operations run unattended once revalidated — nobody approves them in the moment.",
+      "verification": "Verification can still fail after a clean execution. Check notifications after every run.",
+      "noRollback": "There is no automatic rollback. If something needs undoing, a person does it.",
+      "singleDevice": "Each run acts on one device only.",
+      "actionCap": "A run stops acting once it hits its configured action cap.",
+      "ack": "I understand act mode executes unattended, verification can fail, and there is no rollback."
     },
     "severities": {
       "critical": "Critical",

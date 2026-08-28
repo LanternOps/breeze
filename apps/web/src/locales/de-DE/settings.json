@@ -1334,7 +1334,10 @@
     "errors": {
       "load": "Agenten konnten nicht geladen werden.",
       "kindExists": "Für diesen Eigentümer existiert bereits ein Agent dieser Art. Bearbeiten Sie den vorhandenen oder deaktivieren Sie ihn zuerst.",
-      "modeNotSupported": "Dieser Modus ist noch nicht verfügbar. Agenten können derzeit untersuchen und vorschlagen, aber nicht handeln."
+      "modeNotSupported": "Dieser Modus ist noch nicht verfügbar. Agenten können derzeit untersuchen und vorschlagen, aber nicht handeln.",
+      "actPrerequisitesNotMet": "Dieser Agent ist noch nicht bereit für den Handlungsmodus.",
+      "actMissingRecipient": "Fügen Sie mindestens einen Benachrichtigungsempfänger hinzu, bevor Sie den Handlungsmodus aktivieren.",
+      "actMissingTool": "Lassen Sie mindestens ein für den Handlungsmodus geeignetes Tool zu, oder autorisieren Sie ein Skript, bevor Sie ihn aktivieren."
     },
     "actions": {
       "add": "Neuer Agent",
@@ -1379,7 +1382,16 @@
     "modes": {
       "off": "Aus",
       "shadow": "Schattenbetrieb — nur untersuchen und vorschlagen",
-      "act": "Handeln — in einer späteren Version verfügbar"
+      "act": "Handeln — führt passende Vorgänge unbeaufsichtigt aus, mit Verifizierung"
+    },
+    "actWarning": {
+      "title": "Der Handlungsmodus wird ausgeführt, ohne dass jemand auf Genehmigen klickt",
+      "unattended": "Passende, regeläquivalente Vorgänge laufen nach erneuter Validierung unbeaufsichtigt ab — niemand genehmigt sie im Moment.",
+      "verification": "Die Verifizierung kann auch nach einer sauberen Ausführung fehlschlagen. Prüfen Sie nach jedem Lauf die Benachrichtigungen.",
+      "noRollback": "Es gibt kein automatisches Rollback. Falls etwas rückgängig gemacht werden muss, erledigt das ein Mensch.",
+      "singleDevice": "Jeder Lauf wirkt sich nur auf ein Gerät aus.",
+      "actionCap": "Ein Lauf stoppt, sobald das konfigurierte Aktionslimit erreicht ist.",
+      "ack": "Mir ist bewusst, dass der Handlungsmodus unbeaufsichtigt ausgeführt wird, die Verifizierung fehlschlagen kann und es kein Rollback gibt."
     },
     "severities": {
       "critical": "Kritisch",

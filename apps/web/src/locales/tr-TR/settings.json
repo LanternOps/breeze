@@ -1334,7 +1334,10 @@
     "errors": {
       "load": "Aracılar yüklenemedi.",
       "kindExists": "Bu sahip için bu türde bir aracı zaten var. Var olanı düzenleyin veya önce devre dışı bırakın.",
-      "modeNotSupported": "Bu mod henüz kullanılamıyor. Aracılar şimdilik inceleyip önerebilir, ancak uygulayamaz."
+      "modeNotSupported": "Bu mod henüz kullanılamıyor. Aracılar şimdilik inceleyip önerebilir, ancak uygulayamaz.",
+      "actPrerequisitesNotMet": "Bu aracı uygula modu için henüz hazır değil.",
+      "actMissingRecipient": "Uygula modunu etkinleştirmeden önce en az bir bildirim alıcısı ekleyin.",
+      "actMissingTool": "Uygula modunu etkinleştirmeden önce en az bir uygulanabilir aracı izin verin veya bir betiği yetkilendirin."
     },
     "actions": {
       "add": "Yeni aracı",
@@ -1379,7 +1382,16 @@
     "modes": {
       "off": "Kapalı",
       "shadow": "Gölge — yalnızca inceler ve önerir",
-      "act": "Uygula — sonraki bir sürümde kullanılabilir"
+      "act": "Uygula — eşleşen işlemleri doğrulamayla, insan gözetimi olmadan yürütür"
+    },
+    "actWarning": {
+      "title": "Uygula modu, bir kişi onaylamadan yürütülür",
+      "unattended": "Yeniden doğrulandıktan sonra eşleşen, kurala eşdeğer işlemler insan gözetimi olmadan çalışır — hiç kimse anında onay vermez.",
+      "verification": "Temiz bir yürütmeden sonra bile doğrulama başarısız olabilir. Her çalıştırmadan sonra bildirimleri kontrol edin.",
+      "noRollback": "Otomatik geri alma yoktur. Bir şeyin geri alınması gerekiyorsa bunu bir kişi yapar.",
+      "singleDevice": "Her çalıştırma yalnızca bir cihaz üzerinde işlem yapar.",
+      "actionCap": "Bir çalıştırma, yapılandırılmış işlem sınırına ulaştığında işlem yapmayı durdurur.",
+      "ack": "Uygula modunun insan gözetimi olmadan yürütüldüğünü, doğrulamanın başarısız olabileceğini ve geri alma olmadığını anlıyorum."
     },
     "severities": {
       "critical": "Kritik",

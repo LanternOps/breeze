@@ -1334,7 +1334,10 @@
     "errors": {
       "load": "No se pudieron cargar los agentes.",
       "kindExists": "Ya existe un agente de este tipo para este propietario. Edite el existente o deshabilítelo primero.",
-      "modeNotSupported": "Ese modo aún no está disponible. Por ahora los agentes pueden investigar y proponer, pero no actuar."
+      "modeNotSupported": "Ese modo aún no está disponible. Por ahora los agentes pueden investigar y proponer, pero no actuar.",
+      "actPrerequisitesNotMet": "Este agente aún no está listo para el modo Actuar.",
+      "actMissingRecipient": "Agregue al menos un destinatario de notificación antes de habilitar el modo Actuar.",
+      "actMissingTool": "Permita al menos una herramienta apta para el modo Actuar, o autorice un script, antes de habilitarlo."
     },
     "actions": {
       "add": "Nuevo agente",
@@ -1379,7 +1382,16 @@
     "modes": {
       "off": "Desactivado",
       "shadow": "Sombra: solo investigar y proponer",
-      "act": "Actuar: disponible en una versión posterior"
+      "act": "Actuar — ejecuta operaciones coincidentes sin supervisión, con verificación"
+    },
+    "actWarning": {
+      "title": "El modo Actuar se ejecuta sin que una persona haga clic en aprobar",
+      "unattended": "Las operaciones coincidentes y equivalentes a una regla se ejecutan sin supervisión una vez revalidadas; nadie las aprueba en el momento.",
+      "verification": "La verificación aún puede fallar incluso después de una ejecución limpia. Revise las notificaciones después de cada ejecución.",
+      "noRollback": "No hay reversión automática. Si algo necesita deshacerse, lo hace una persona.",
+      "singleDevice": "Cada ejecución actúa sobre un solo dispositivo.",
+      "actionCap": "Una ejecución deja de actuar en cuanto alcanza su límite de acciones configurado.",
+      "ack": "Entiendo que el modo Actuar se ejecuta sin supervisión, que la verificación puede fallar y que no hay reversión."
     },
     "severities": {
       "critical": "Crítica",

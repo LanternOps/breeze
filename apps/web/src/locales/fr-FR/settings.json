@@ -1334,7 +1334,10 @@
     "errors": {
       "load": "Impossible de charger les agents.",
       "kindExists": "Un agent de ce type existe déjà pour ce propriétaire. Modifiez l’agent existant ou désactivez-le d’abord.",
-      "modeNotSupported": "Ce mode n’est pas encore disponible. Les agents peuvent pour l’instant enquêter et proposer, mais pas agir."
+      "modeNotSupported": "Ce mode n’est pas encore disponible. Les agents peuvent pour l’instant enquêter et proposer, mais pas agir.",
+      "actPrerequisitesNotMet": "Cet agent n’est pas encore prêt pour le mode Agir.",
+      "actMissingRecipient": "Ajoutez au moins un destinataire de notification avant d’activer le mode Agir.",
+      "actMissingTool": "Autorisez au moins un outil éligible au mode Agir, ou autorisez un script, avant de l’activer."
     },
     "actions": {
       "add": "Nouvel agent",
@@ -1379,7 +1382,16 @@
     "modes": {
       "off": "Désactivé",
       "shadow": "Observation — enquêter et proposer uniquement",
-      "act": "Agir — disponible dans une version ultérieure"
+      "act": "Agir — exécute les opérations correspondantes sans supervision humaine, avec vérification"
+    },
+    "actWarning": {
+      "title": "Le mode Agir s’exécute sans qu’une personne ne clique sur approuver",
+      "unattended": "Les opérations correspondantes et équivalentes à une règle s’exécutent sans supervision une fois revalidées — personne ne les approuve sur le moment.",
+      "verification": "La vérification peut encore échouer même après une exécution propre. Consultez les notifications après chaque exécution.",
+      "noRollback": "Il n’y a pas d’annulation automatique. Si quelque chose doit être annulé, une personne s’en charge.",
+      "singleDevice": "Chaque exécution n’agit que sur un seul appareil.",
+      "actionCap": "Une exécution cesse d’agir dès qu’elle atteint son plafond d’actions configuré.",
+      "ack": "Je comprends que le mode Agir s’exécute sans supervision, que la vérification peut échouer et qu’il n’y a pas d’annulation."
     },
     "severities": {
       "critical": "Critique",
