@@ -14,6 +14,7 @@ import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent } from '../services/actionIntents/intentService';
 import { attemptPolicyDecision } from '../services/actionIntents/policyDecide';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
+import { readAiKillState } from '../services/aiKillState';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { executeTool, requiresLiveSession } from '../services/aiTools';
@@ -330,6 +331,14 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // (DB-only work gets its own short context; the network/tool-execution
   // step below runs in its own, entirely separate, context boundary so a
   // slow external call never pins a pooled connection idle-in-transaction).
+  //
+  // `intentRow` is a bare `select()` — every column rides along, including
+  // Wave 5 Part B's (#3827) `policy_*` provenance columns and `decided_via`.
+  // For a policy-decided intent `approvalRow` comes back null (there is no
+  // `approval_requests` row by construction — see revalidateRelease.ts's
+  // header), which is exactly what `revalidateApprovedIntentForRelease`
+  // reads off `intent` itself to take its policy-evidence branch; no second
+  // query is needed to "load the policy columns" separately.
   const { intent, winningApproval } = await withSystemDbAccessContext(async () => {
     const [intentRow] = await db
       .select()
@@ -488,6 +497,30 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // 2026-07-19-action-intents-phase2-google-headless-design.md.
   if (isSessionRequiredForRelease(intent.actionName)) {
     await failIntent(intent, 'session_required', { details: { actionName: intent.actionName } });
+    return;
+  }
+
+  // Wave 5 Part B (#3827) final pre-effect kill read: one more fresh
+  // `readAiKillState()` immediately before dispatch, for EVERY released
+  // intent — human-approved or policy-decided alike. Everything above this
+  // line (revalidation, the effect-digest recompute, its own I/O) can take
+  // real wall-clock time, during which an operator's emergency kill can land
+  // — `checkAgentReleaseAuthority`'s own kill read (agentReleaseAuthority.ts)
+  // only covers the window up through step 2's revalidation, not the gap
+  // between there and the tool actually dispatching. Same pause semantics as
+  // that read: a real kill (or a transient read failure, which
+  // `readAiKillState` maps fail-closed to `killed: true`) PAUSES the intent
+  // back to `approved` rather than terminally failing it — see
+  // `pauseIntentForKillSwitch`'s header. Runs for every release, not only
+  // agent-originated ones: a human-owned intent's tool call is just as real
+  // an unattended-from-here-on effect once this worker is the one dispatching
+  // it, and the read itself is cheap (TTL-cached, ≤5s stale).
+  const preDispatchKillState = await readAiKillState();
+  if (preDispatchKillState.killed) {
+    await pauseIntentForKillSwitch(intent, {
+      epoch: preDispatchKillState.epoch,
+      stage: 'pre_dispatch',
+    });
     return;
   }
 

@@ -3,6 +3,8 @@ import type { AuthContext } from '../../middleware/auth';
 import { getToolTier } from '../aiTools';
 import { checkToolPermission } from '../aiGuardrails';
 import { getActiveOrgTenant } from '../tenantStatus';
+import { policyDecideEnabled } from '../../config/env';
+import { validateAuthorizationKeys } from './policyDecidable';
 import { buildAuthContextForIntent } from './actorContext';
 import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
@@ -38,15 +40,101 @@ export type IntentReleaseRevalidation =
   | { ok: true; auth: AuthContext }
   | { ok: false; errorCode: string; details?: Record<string, unknown> };
 
+/**
+ * Wave 5 Part B (#3827) — the policy-evidence checks specific to a
+ * `decidedVia: 'policy'` intent, run BEFORE the (DB-backed)
+ * `checkAgentReleaseAuthority` call so a cheap, purely-local failure never
+ * pays for the extra round trips. NEVER touches `approval_requests` — a
+ * policy-decided intent has no approval row BY DESIGN (the whole point of
+ * policy-decide is skipping human fanout), and nothing in this module or
+ * `policyDecide.ts` ever inserts one; see the plan header's "NEVER synthesize
+ * a human approval row" constraint.
+ *
+ * All three failure kinds share `policy_authorization_revoked` —
+ * `checkAgentReleaseAuthority`'s own stricter predicate (agentReleaseAuthority.ts)
+ * uses the SAME errorCode for its supervisedActionKeys/mode re-check, so
+ * every "the authorization behind this decision no longer holds" failure
+ * reads as one thing to an operator scanning `error_code`, not four
+ * near-synonyms.
+ */
+function checkPolicyDecisionEvidence(
+  intent: ActionIntent,
+): { ok: true } | { ok: false; errorCode: string; details?: Record<string, unknown> } {
+  // Provenance present: the five columns `runAuthorizeTransaction` stamps
+  // together, atomically, at decision time (policyDecide.ts). Missing any
+  // one is a data-integrity anomaly this branch should never legitimately
+  // reach — fail closed rather than trust a partial record.
+  if (
+    !intent.policyAuthorizationKey
+    || !intent.policySnapshotDigest
+    || intent.policyClassificationVersion === null
+    || !intent.policyReservationId
+    || intent.policyKillEpoch === null
+    || intent.policyKillEpoch === undefined
+  ) {
+    return {
+      ok: false,
+      errorCode: 'policy_authorization_revoked',
+      details: { reason: 'policy decision provenance is incomplete' },
+    };
+  }
+
+  // The mechanism itself must still be live — an operator emergency-flipping
+  // BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED off must stop an already-
+  // authorized-but-not-yet-released intent from executing unattended, same
+  // as it stops a new one from ever being attempted (policyDecide.ts).
+  if (!policyDecideEnabled()) {
+    return {
+      ok: false,
+      errorCode: 'policy_authorization_revoked',
+      details: { reason: 'policy-decide is disabled' },
+    };
+  }
+
+  // The registry entry that authorized this key must still exist AND still
+  // be headlessCompatible/non-four_eyes/non-secret — `validateAuthorizationKeys`
+  // is the SAME defense-in-depth re-classification `attemptPolicyDecision`
+  // ran at decision time (policyDecidable.ts), re-run here against whatever
+  // POLICY_DECIDABLE_TIER3 looks like NOW. A registry drop between decision
+  // and release is exactly what this catches.
+  const registryCheck = validateAuthorizationKeys([intent.policyAuthorizationKey]);
+  if (registryCheck.ok.length === 0) {
+    return {
+      ok: false,
+      errorCode: 'policy_authorization_revoked',
+      details: {
+        key: intent.policyAuthorizationKey,
+        reason: registryCheck.rejected[0]?.reason ?? 'no longer registered in POLICY_DECIDABLE_TIER3',
+      },
+    };
+  }
+
+  return { ok: true };
+}
+
 export async function revalidateApprovedIntentForRelease(
   intent: ActionIntent,
   winningApproval: { boundArgumentDigest: string | null } | null,
 ): Promise<IntentReleaseRevalidation> {
-  // (a) The winning approval row must still exist and must have approved the
-  // SAME content the intent currently carries (action_intents content is
-  // DB-immutable; this is defense-in-depth).
-  if (!winningApproval || winningApproval.boundArgumentDigest !== intent.argumentDigest) {
-    return { ok: false, errorCode: 'digest_mismatch' };
+  // Wave 5 Part B (#3827): a policy-decided intent has NO approval_requests
+  // row by construction — `runAuthorizeTransaction` (policyDecide.ts) CASes
+  // straight to `approved` and NEVER inserts one, so `winningApproval` being
+  // null here is the EXPECTED shape for one of these, not a release-time
+  // integrity failure. Detected off the intent's own columns, immutable
+  // once Part B's decision path writes them (never re-derived, never a
+  // synthetic stand-in for a human decision).
+  const isPolicyDecided = !winningApproval
+    && intent.decidedVia === 'policy'
+    && intent.policyDecisionState === 'authorized';
+
+  if (!isPolicyDecided) {
+    // (a) UNCHANGED — the human-approval-row path, byte-identical to every
+    // release before this wave. The winning approval row must still exist
+    // and must have approved the SAME content the intent currently carries
+    // (action_intents content is DB-immutable; this is defense-in-depth).
+    if (!winningApproval || winningApproval.boundArgumentDigest !== intent.argumentDigest) {
+      return { ok: false, errorCode: 'digest_mismatch' };
+    }
   }
   // (a2) Recompute the digest FROM the stored arguments. The comparison above
   // is two stored strings; it cannot detect a write that changed `arguments`
@@ -94,6 +182,18 @@ export async function revalidateApprovedIntentForRelease(
   // combination of the run's immutable policy_snapshot and the agent's
   // CURRENT effective policy (agentReleaseAuthority.ts).
   if (intent.requestingAgentRunId) {
+    // Wave 5 Part B (#3827): policy-decision evidence FIRST — purely local
+    // (env read + a frozen-array lookup, no I/O), so a stale/revoked
+    // registry entry or a flag flip fails fast without paying for
+    // `checkAgentReleaseAuthority`'s several round trips. A HUMAN-approved
+    // agent intent (decidedVia !== 'policy') skips this entirely and reaches
+    // `checkAgentReleaseAuthority` exactly as it always has.
+    if (isPolicyDecided) {
+      const evidence = checkPolicyDecisionEvidence(intent);
+      if (!evidence.ok) {
+        return evidence;
+      }
+    }
     const authority = await checkAgentReleaseAuthority(intent);
     if (!authority.ok) {
       return authority;

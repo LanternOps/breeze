@@ -6,7 +6,7 @@ import type { AgentReleaseAuthority } from '../services/actionIntents/agentRelea
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock } = vi.hoisted(() => {
+const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
@@ -63,6 +63,15 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
     },
     sentryMock: { captureException: vi.fn() },
     policyDecideMock: { attemptPolicyDecision: vi.fn(async () => {}) },
+    // Wave 5 Part B (#3827) final pre-effect kill read: mocked wholesale
+    // (same treatment as agentReleaseAuthorityMock above) so the worker's
+    // OWN `readAiKillState()` call before dispatch doesn't need this file's
+    // narrow per-table db mock to also cover `ai_kill_state` — and so a real
+    // module-level TTL-cache read failure in one test can never poison every
+    // later test's dispatch to fail-closed `killed: true` (aiKillState.ts's
+    // own fail-closed contract). Default not-killed; the dedicated
+    // "final pre-dispatch kill read" describe block below overrides per test.
+    killStateMock: { readAiKillState: vi.fn(async () => ({ killed: false, epoch: 0 })) },
     // getToolTimeout is mocked (per-test override); withToolTimeout is kept
     // REAL (see vi.mock below) so the timeout test's timer actually fires.
     toolTimeoutsMock: { getToolTimeout: vi.fn() },
@@ -193,6 +202,9 @@ vi.mock('../services/aiGuardrails', () => ({
 // db mock to also cover ai_agent_runs/ai_agents/organizations/devices/ai_kill_state.
 vi.mock('../services/actionIntents/agentReleaseAuthority', () => ({
   checkAgentReleaseAuthority: agentReleaseAuthorityMock.checkAgentReleaseAuthority,
+}));
+vi.mock('../services/aiKillState', () => ({
+  readAiKillState: killStateMock.readAiKillState,
 }));
 vi.mock('../middleware/auth', () => ({
   dbAccessContextFromAuth: authMock.dbAccessContextFromAuth,
@@ -924,6 +936,63 @@ describe('releaseApprovedIntent', () => {
         expect.objectContaining({ errorCode: 'agent_policy_denied' }),
       );
       expect(auditMock.writeAuditEvent).toHaveBeenCalled();
+    });
+  });
+
+  // Wave 5 Part B (#3827): the FINAL pre-effect kill read, immediately
+  // before dispatch — a SEPARATE `readAiKillState()` call from the one
+  // `checkAgentReleaseAuthority` already makes during revalidation, covering
+  // the gap between revalidation finishing and the tool actually dispatching
+  // (effect-digest recompute I/O, scheduling jitter, …). Applies to EVERY
+  // release, human-approved or agent-originated alike — this suite's default
+  // fixture (`baseIntent()`) is a human/chat-originated intent, proving the
+  // check is not agent-specific.
+  describe('final pre-dispatch kill read (wave 5b, #3827)', () => {
+    it('pauses (executing -> approved), never dispatches executeTool, when the pre-dispatch read comes back killed', async () => {
+      const intent = baseIntent();
+      primeThroughRevalidation(intent);
+      killStateMock.readAiKillState.mockResolvedValueOnce({ killed: true, epoch: 9 });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> approved
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'approved',
+      );
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalledWith(
+        intent.id, 'executing', 'failed', expect.anything(),
+      );
+      expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+    });
+
+    it('a lost CAS on the pre-dispatch pause is a silent no-op, matching the other kill-derived pause path', async () => {
+      const intent = baseIntent();
+      primeThroughRevalidation(intent);
+      killStateMock.readAiKillState.mockResolvedValueOnce({ killed: true, epoch: 9 });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(false); // lost race
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+    });
+
+    it('dispatches normally when the pre-dispatch read is not killed (the default fixture)', async () => {
+      const intent = baseIntent();
+      primeThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(killStateMock.readAiKillState).toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.anything(),
+      );
     });
   });
 

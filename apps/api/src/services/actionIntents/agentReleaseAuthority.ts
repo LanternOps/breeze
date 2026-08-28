@@ -189,6 +189,21 @@ export async function checkAgentReleaseAuthority(
   // `readAiKillState()` that bypasses the TTL — not implemented here.
   const killState = await readAiKillState();
 
+  // Wave 5 Part B (#3827): for a policy-decided intent, "not denied" is not
+  // the bar release must clear — no human ever reviewed this call, so the
+  // ONLY thing standing in for a decision is the operator's own
+  // `supervisedActionKeys` opt-in, re-checked here exactly like Task 2's
+  // `attemptPolicyDecision` re-checked it at decision time (mode === 'act'
+  // AND the stored key still listed). `checkAgentGuardrails` returns
+  // 'propose' — not 'deny' — for a POLICY_DECIDABLE_TIER3 key that isn't
+  // also matched by the (disjoint) act-mode manifest, and 'propose' for a
+  // mutating call under `mode: 'shadow'` too; both mean "record a proposal
+  // for a human", which is meaningless with no human in the loop. Treating
+  // either as an ok verdict here would let a downgrade to shadow, or an
+  // operator opting a key back out, execute unattended anyway as long as
+  // guardrails merely declined to hard-deny it.
+  const isPolicyDecided = intent.decidedVia === 'policy';
+
   const candidates = [
     { policy: 'snapshot' as const, effective: run.policySnapshot?.effective },
     { policy: 'current' as const, effective: resolved.effective },
@@ -235,6 +250,26 @@ export async function checkAgentReleaseAuthority(
         errorCode: 'agent_policy_denied',
         details: { policy, reason: verdict.reason ?? 'denied' },
       };
+    }
+
+    if (isPolicyDecided) {
+      const authorizedKeys = effective?.actAssets?.supervisedActionKeys ?? [];
+      const keyStillAuthorized = effective?.mode === 'act'
+        && !!intent.policyAuthorizationKey
+        && authorizedKeys.includes(intent.policyAuthorizationKey);
+      if (!keyStillAuthorized) {
+        // Terminal, like `agent_policy_denied` (never the kill-derived,
+        // pausable code) — a revoked opt-in is a real, durable decision
+        // change, not a transient blip. `revalidateApprovedIntentForRelease`
+        // uses this SAME errorCode for its own registry/provenance/flag
+        // checks (see revalidateRelease.ts) so every "the authorization
+        // behind this decision no longer holds" failure reads as one thing.
+        return {
+          ok: false,
+          errorCode: 'policy_authorization_revoked',
+          details: { policy, key: intent.policyAuthorizationKey, mode: effective?.mode },
+        };
+      }
     }
   }
 
