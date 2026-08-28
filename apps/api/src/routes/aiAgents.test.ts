@@ -611,6 +611,22 @@ const runDetailResponseSchema = z.object({
       approvalScope: z.string(),
       decidedVia: z.string().nullable(),
     }).strict()),
+    // Wave 6.2a (#3828). `.strict()` is the point: a `target` (or any other
+    // unenumerated field) appearing here fails the parse rather than shipping.
+    fixWatches: z.array(z.object({
+      schemaVersion: z.literal(1),
+      id: z.string(),
+      runId: z.string(),
+      watchKind: z.string(),
+      status: z.string(),
+      opKey: z.string(),
+      targetName: z.string(),
+      baselineAt: z.string(),
+      dueAt: z.string(),
+      checkedAt: z.string().nullable(),
+      attempts: z.number(),
+      detail: z.string().nullable(),
+    }).strict()),
   }).strict(),
 }).strict();
 
@@ -711,7 +727,20 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
         actionName: 'run_script.invoke',
         approvalScope: 'four_eyes',
         decidedVia: null,
-      }])); // intents
+      }])) // intents
+      .mockReturnValueOnce(selectChain([{
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        runId: RUN_ID,
+        watchKind: 'postcondition',
+        status: 'regressed',
+        opKey: 'manage_services.restart',
+        targetFingerprint: 'service:spooler',
+        baselineAt: new Date('2026-08-28T10:00:30.000Z'),
+        dueAt: new Date('2026-08-28T10:30:30.000Z'),
+        checkedAt: new Date('2026-08-28T11:02:00.000Z'),
+        attempts: 1,
+        detail: 'Spooler: service status is "stopped"',
+      }])); // fix watches (#3828)
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);
@@ -725,6 +754,8 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(parsed.data.trace).toHaveLength(3);
     expect(parsed.data.ledger).toHaveLength(1);
     expect(parsed.data.intents).toHaveLength(1);
+    expect(parsed.data.fixWatches).toHaveLength(1);
+    expect(parsed.data.fixWatches[0]!.status).toBe('regressed');
 
     // The leak tripwire: the raw tool input the model proposed
     // (`{ scriptId: 'abc', secretParam: 'do-not-leak-me' }`) must never reach
@@ -738,15 +769,21 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
   });
 
   it('skips the ledger/intents queries when the run has no session and no intent ids', async () => {
-    selectMock.mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]));
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]))
+      .mockReturnValueOnce(selectChain([])); // fix watches (#3828)
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.ledger).toEqual([]);
     expect(body.data.intents).toEqual([]);
-    // Only the run-row select ran — no second/third db.select for ledger/intents.
-    expect(selectMock).toHaveBeenCalledTimes(1);
+    expect(body.data.fixWatches).toEqual([]);
+    // The run row and the fix-watch lookup, and nothing else — no db.select for
+    // the ledger or the intents. The fix-watch query is deliberately NOT
+    // conditional: a run can earn a watch (its act verified) while having no
+    // session row and no pending intents at all.
+    expect(selectMock).toHaveBeenCalledTimes(2);
   });
 
   // Review fix (#3828): ai_agents is dual-ownership (#2135) — a partner-wide
@@ -754,9 +791,11 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
   // it produced (plain org-scoped) stays visible. Before this fix the route
   // innerJoin'd ai_agents, so this case 404'd instead of returning the run.
   it('returns the run (not 404) when its agent row is RLS-invisible, with agentName/agentKind null', async () => {
-    selectMock.mockReturnValueOnce(selectChain([
-      runRow({ sessionId: null, intentIds: [], agentName: null, agentKind: null }),
-    ]));
+    selectMock
+      .mockReturnValueOnce(selectChain([
+        runRow({ sessionId: null, intentIds: [], agentName: null, agentKind: null }),
+      ]))
+      .mockReturnValueOnce(selectChain([])); // fix watches (#3828)
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);

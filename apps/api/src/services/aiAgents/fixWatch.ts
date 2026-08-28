@@ -49,8 +49,12 @@ function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
  * A service that was restarted and then died again usually does so quickly, so
  * the postcondition re-check is deliberately near-term — a long window would
  * mostly measure "did anything else touch this service since".
+ *
+ * Sized against the sweeper's hourly cadence (`ai-fix-watch-sweep`), not
+ * against an imagined continuous checker: a window shorter than the sweep
+ * interval would claim a precision the schedule cannot deliver.
  */
-export const POSTCONDITION_WINDOW_MS = 15 * 60 * 1000;
+export const POSTCONDITION_WINDOW_MS = 30 * 60 * 1000;
 
 /**
  * Recurrence needs long enough for the originating alert rule to evaluate
