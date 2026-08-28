@@ -648,16 +648,29 @@ mutation is claimed.
 
 **Executable plan:** [`2026-08-27-s0-track-e-pam-dispatch-wire-contract.md`](2026-08-27-s0-track-e-pam-dispatch-wire-contract.md)
 
-The API worker currently emits aliases and server-only fields that do not
+The API worker previously emitted aliases and server-only fields that did not
 decode into the exact `PamApplyV2` and `PamCleanupV2` structures frozen above.
 This pre-Task-8 repair makes the server conform to the unchanged strict agent
 decoder. It does not add a new protocol, relax decoding, change the durable
 ledger or result transaction, or claim endpoint execution.
 
-- [ ] **Step 1: Pin the exact apply/cleanup contract in TypeScript, Go, and one shared fixture**
-- [ ] **Step 2: Store and atomically bind the exact primary-agent command payloads**
-- [ ] **Step 3: Pass focused, real-PostgreSQL, Go race/cross-compile, governance, and exact-head core CI gates**
-- [ ] **Step 4: Synchronize issue #4060 and PR #4105 without starting Task 8**
+- [x] **Step 1: Pin the exact apply/cleanup contract in TypeScript, Go, and one shared fixture**
+- [x] **Step 2: Store and atomically bind the exact primary-agent command payloads**
+- [x] **Step 3: Pass focused, real-PostgreSQL, Go race/cross-compile, governance, and exact-head core CI gates**
+- [x] **Step 4: Synchronize issue #4060 and PR #4105 without starting Task 8**
+
+Implementation closure (2026-08-27): commits `ad57b5cbf` and `40a436690`
+make the server emit the exact frozen v2 apply/cleanup payloads, preserve the
+unchanged strict Go decoder, normalize the real PostgreSQL expiry representation,
+use one server-time expiry authority, explicitly target the primary agent role,
+and bind the command atomically to the exact owned generation. Exact candidate
+`40a4366902f8fe2c88c1752577a1918152d192fd` passed manual core run
+[`33136440945`](https://github.com/LanternOps/breeze/actions/runs/33136440945)
+with 41 successful jobs, only the expected skipped Main Red Alert, and no
+failures; all three attached checks also passed. No Go production file, ledger,
+result transaction, migration, alternate transport, Task 6 `received` path,
+Task 8 work, native Windows evidence, deployment, hosted mutation, or customer
+mutation is claimed.
 
 ### Task 8: Prove the failure matrix and produce exact-candidate Windows evidence
 

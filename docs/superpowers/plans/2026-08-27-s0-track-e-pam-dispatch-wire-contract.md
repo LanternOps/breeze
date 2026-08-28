@@ -44,7 +44,7 @@ design_spec: ../specs/2026-08-27-s0-track-e-pam-dispatch-wire-contract-design.md
 - Produces `buildPamActuationCommand(snapshot, serverTime): PamCommandBuildResult`.
 - Produces one JSON fixture consumed by both TypeScript and Go tests.
 
-- [ ] **Step 1: Add the canonical fixture**
+- [x] **Step 1: Add the canonical fixture**
 
 Create `packages/shared/src/fixtures/pam-lifetime-v2-command-contract.json`:
 
@@ -75,7 +75,7 @@ Create `packages/shared/src/fixtures/pam-lifetime-v2-command-contract.json`:
 }
 ```
 
-- [ ] **Step 2: Write the TypeScript builder RED tests**
+- [x] **Step 2: Write the TypeScript builder RED tests**
 
 Create `pamActuationCommandPayload.test.ts`. Import the fixture and the not-yet-created builder. Pin exact equality, lifetime arithmetic, cleanup omission, and invalid lifetime behavior:
 
@@ -126,7 +126,7 @@ Also assert the apply payload contains neither `elevationRequestId`,
 `requestRevision`, `targetExecutablePath`, nor `targetExecutableHash`, and that
 `Date.parse(serverTime) + maxRemainingLifetimeMs === Date.parse(expiresAt)`.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/jobs/pamActuationCommandPayload.test.ts
@@ -135,7 +135,7 @@ pnpm --filter @breeze/api exec vitest run src/jobs/pamActuationCommandPayload.te
 Expected: FAIL because `pamActuationCommandPayload.ts` and its exports do not
 exist.
 
-- [ ] **Step 4: Implement the pure exact-shape builder**
+- [x] **Step 4: Implement the pure exact-shape builder**
 
 Create `pamActuationCommandPayload.ts` with exact interfaces and no index
 signature:
@@ -189,7 +189,7 @@ For cleanup, return the six-key object immediately. For apply, require valid
 `Number.isSafeInteger(remainingMs) && remainingMs > 0`, and return the exact
 apply literal with ISO timestamps. Do not spread the snapshot into the payload.
 
-- [ ] **Step 5: Run the builder GREEN gate**
+- [x] **Step 5: Run the builder GREEN gate**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/jobs/pamActuationCommandPayload.test.ts
@@ -197,7 +197,7 @@ pnpm --filter @breeze/api exec vitest run src/jobs/pamActuationCommandPayload.te
 
 Expected: PASS with exact fixture equality and invalid lifetime cases.
 
-- [ ] **Step 6: Pin the unchanged strict Go decoder to the same fixture**
+- [x] **Step 6: Pin the unchanged strict Go decoder to the same fixture**
 
 In `handlers_actuate_test.go`, add a table test that reads:
 
@@ -218,7 +218,7 @@ cd agent && go test -count=1 ./internal/heartbeat -run 'TestPamLifetimeV2Canonic
 Expected: PASS; the existing strict decoder already represents the frozen
 contract.
 
-- [ ] **Step 7: Commit the contract unit**
+- [x] **Step 7: Commit the contract unit**
 
 ```bash
 git add packages/shared/src/fixtures/pam-lifetime-v2-command-contract.json apps/api/src/jobs/pamActuationCommandPayload.ts apps/api/src/jobs/pamActuationCommandPayload.test.ts agent/internal/heartbeat/handlers_actuate_test.go
@@ -240,7 +240,7 @@ git commit -m "fix(pam): define exact v2 dispatch payload"
 - Preserves `processPamActuationEvent(input): Promise<PamActuationDispatchResult>`.
 - Stores one exact `pam_apply_v2` or `pam_cleanup_v2` primary-agent command and binds its ID in the existing transaction.
 
-- [ ] **Step 1: Write the real-PostgreSQL worker RED proof**
+- [x] **Step 1: Write the real-PostgreSQL worker RED proof**
 
 Create `pamActuationDispatchWire.integration.test.ts` using the existing
 integration `setup`, `createPartner`, and `createOrganization` helpers. Seed:
@@ -296,7 +296,7 @@ payload equals exactly:
 Add cases proving duplicate delivery inserts no second command and an elapsed
 active expiry inserts no command and records `expired_before_dispatch`.
 
-- [ ] **Step 2: Run the integration test and verify RED**
+- [x] **Step 2: Run the integration test and verify RED**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/pamActuationDispatchWire.integration.test.ts
@@ -305,7 +305,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 Expected: FAIL because the stored apply payload uses old aliases, lacks required
 identity/lifetime fields, and cleanup includes apply-only data.
 
-- [ ] **Step 3: Wire the builder into `processPamActuationEvent`**
+- [x] **Step 3: Wire the builder into `processPamActuationEvent`**
 
 In `PamDispatchRow`, remove `request_revision`; it is not a wire field. Also
 remove `a.request_revision` from the locked SELECT. Keep the request join and
@@ -341,7 +341,7 @@ expiry checks or two clocks.
 Delete the old shared payload literal and do not modify queue publication,
 heartbeat delivery, WebSocket delivery, or result services.
 
-- [ ] **Step 4: Strengthen focused worker regressions**
+- [x] **Step 4: Strengthen focused worker regressions**
 
 In `pamActuationWorker.test.ts`, use `vi.useFakeTimers()` and
 `vi.setSystemTime('2026-08-27T12:00:00.000Z')`. Assert the active insert's
@@ -360,7 +360,7 @@ already-bound generation             -> duplicate, one SELECT only
 expired active lifetime              -> expired_before_dispatch, no INSERT command
 ```
 
-- [ ] **Step 5: Run focused GREEN gates**
+- [x] **Step 5: Run focused GREEN gates**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/jobs/pamActuationCommandPayload.test.ts src/jobs/pamActuationWorker.test.ts
@@ -370,7 +370,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 Expected: all exact-shape, failure-path, duplicate, and atomic-binding tests
 pass.
 
-- [ ] **Step 6: Run adjacent real-PostgreSQL ownership regressions**
+- [x] **Step 6: Run adjacent real-PostgreSQL ownership regressions**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/pamActuationDispatchWire.integration.test.ts src/__tests__/integration/pamActuationLifecycle.integration.test.ts src/__tests__/integration/pamActuationResults.integration.test.ts src/__tests__/integration/pamReconciliationBinding.integration.test.ts
@@ -380,7 +380,7 @@ Expected: every named file executes and passes; exact command ownership,
 append-only evidence, reconciliation binding, and result classification remain
 unchanged.
 
-- [ ] **Step 7: Commit the worker repair**
+- [x] **Step 7: Commit the worker repair**
 
 ```bash
 git add apps/api/src/jobs/pamActuationWorker.ts apps/api/src/jobs/pamActuationWorker.test.ts apps/api/src/__tests__/integration/pamActuationDispatchWire.integration.test.ts
@@ -399,7 +399,7 @@ git commit -m "fix(api): emit strict PAM v2 commands"
 - Produces exact-head local, cross-language, and core-CI evidence.
 - Closes only the dispatch wire-contract repair; Task 6 transport, entitlement disposition, and Task 8 remain open.
 
-- [ ] **Step 1: Run the complete API and cross-language gate**
+- [x] **Step 1: Run the complete API and cross-language gate**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/jobs/pamActuationCommandPayload.test.ts src/jobs/pamActuationWorker.test.ts
@@ -413,7 +413,7 @@ GOOS=windows GOARCH=amd64 go test -c ./internal/agentapp -o /tmp/breeze-agentapp
 Expected: all tests and the Windows cross-compile pass. This is still not native
 Windows execution evidence.
 
-- [ ] **Step 2: Run repository governance gates**
+- [x] **Step 2: Run repository governance gates**
 
 From the repository root:
 
@@ -430,7 +430,7 @@ load `.env.test` without printing values and rerun the same command. Confirm no
 migration, Go production file, ledger field, alternate route, or Task 8 file was
 added.
 
-- [ ] **Step 3: Push and run exact-head core CI**
+- [x] **Step 3: Push and run exact-head core CI**
 
 Push the exact implementation candidate and dispatch `.github/workflows/ci.yml`
 on the branch:
@@ -457,7 +457,16 @@ Expected: the integration shards, Go gates, and aggregate succeed; only the
 expected Main Red Alert may skip. Any other failure remains a blocker and must
 be diagnosed before checking closure boxes.
 
-- [ ] **Step 4: Record closure without expanding scope**
+Closure evidence (2026-08-27): exact implementation candidate
+`40a4366902f8fe2c88c1752577a1918152d192fd` passed manual core run
+[`33136440945`](https://github.com/LanternOps/breeze/actions/runs/33136440945)
+with 41 successful jobs, only the expected skipped Main Red Alert, and no
+failures. All three checks attached to stacked PR #4105 passed at the same SHA.
+Fresh local evidence was 12 focused API tests, 21 real-PostgreSQL tests, 75 RLS
+checks, API typecheck, Go race for agentapp/heartbeat/pamlifetime, Windows amd64
+agentapp cross-compile, migration drift/naming, and diff checks.
+
+- [x] **Step 4: Record closure without expanding scope**
 
 Only after every local gate and exact-head core CI pass:
 
@@ -471,7 +480,7 @@ Only after every local gate and exact-head core CI pass:
   Windows, deployment, hosted reachability, customer mutation, canary, and
   rollout unchecked and unclaimed.
 
-- [ ] **Step 5: Commit documentation evidence**
+- [x] **Step 5: Commit documentation evidence**
 
 ```bash
 git add docs/superpowers/plans/2026-08-24-s0-track-e-pam-actuation.md docs/superpowers/plans/2026-08-27-s0-track-e-pam-dispatch-wire-contract.md
