@@ -78,6 +78,11 @@ function basePolicy(overrides: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
     limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxActionsPerRun: 3 },
     triggers: { alertSeverities: ['critical', 'high'], respectMaintenanceWindows: true },
     recipients: { userIds: [], roleIds: [] },
+    // Task 6 (#3826): SCRIPT_ID pre-authorized by default so the existing
+    // run_script pin tests below (written before actAssets existed) keep
+    // exercising the asset-pin step, not this gate. Tests of the gate itself
+    // override this back to [] / a different id.
+    actAssets: { scriptIds: [SCRIPT_ID] },
     instructions: null,
     cooldownSeconds: 900,
     ...overrides,
@@ -267,6 +272,53 @@ describe('revalidateActExecution — step 4: run_script asset pin', () => {
     expect(computeEffectDigestForRelease).toHaveBeenCalledWith(
       'run_script', { scriptId: SCRIPT_ID, deviceIds: [DEVICE_ID] }, expect.anything(),
     );
+  });
+});
+
+describe('revalidateActExecution — step 3.5: per-script act authorization (Task 6, #3826)', () => {
+  const scriptInput = { scriptId: SCRIPT_ID, deviceIds: [DEVICE_ID] };
+
+  it('a script not in actAssets.scriptIds downgrades to a proposal, never a deny', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(liveSnapshot(basePolicy({ actAssets: { scriptIds: [] } })));
+    const result = await revalidateActExecution({
+      run: runArgs(), op: runScriptOp, toolName: 'run_script', input: scriptInput, reserved: reservation(),
+    });
+    expect(result).toEqual({ ok: false, downgrade: 'propose' });
+    // Never reaches the I/O asset pin for an unauthorized script.
+    expect(computeEffectDigestForRelease).not.toHaveBeenCalled();
+  });
+
+  it('a DIFFERENT authorized script does not authorize this one', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(
+      liveSnapshot(basePolicy({ actAssets: { scriptIds: ['00000000-0000-4000-8000-0000000000aa'] } })),
+    );
+    const result = await revalidateActExecution({
+      run: runArgs(), op: runScriptOp, toolName: 'run_script', input: scriptInput, reserved: reservation(),
+    });
+    expect(result).toEqual({ ok: false, downgrade: 'propose' });
+  });
+
+  it('scriptId present in actAssets.scriptIds proceeds to the asset pin', async () => {
+    computeEffectDigestForRelease.mockResolvedValue({
+      digest: 'abc123', context: { verifiedRunScript: { scriptRow: { id: SCRIPT_ID } } },
+    });
+    resolveEffectiveAgentSystem.mockResolvedValue(liveSnapshot(basePolicy({ actAssets: { scriptIds: [SCRIPT_ID] } })));
+    const result = await revalidateActExecution({
+      run: runArgs(), op: runScriptOp, toolName: 'run_script', input: scriptInput, reserved: reservation(),
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('does not gate any non-script op', async () => {
+    // basePolicy()'s default actAssets ({ scriptIds: [SCRIPT_ID] }) must not
+    // accidentally become a dependency for manage_services — the gate only
+    // ever inspects a `script` target.
+    const result = await revalidateActExecution({
+      run: runArgs(), op: restartOp, toolName: 'manage_services',
+      input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'Spooler' },
+      reserved: reservation(),
+    });
+    expect(result.ok).toBe(true);
   });
 });
 

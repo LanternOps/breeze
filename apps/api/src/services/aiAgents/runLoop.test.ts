@@ -277,6 +277,7 @@ function policy(overrides: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
     limits: { ...AI_AGENT_LIMIT_DEFAULTS },
     triggers: { alertSeverities: ['critical', 'high'], respectMaintenanceWindows: true },
     recipients: { userIds: [], roleIds: [] },
+    actAssets: { scriptIds: [] },
     instructions: null,
     cooldownSeconds: 900,
     ...overrides,

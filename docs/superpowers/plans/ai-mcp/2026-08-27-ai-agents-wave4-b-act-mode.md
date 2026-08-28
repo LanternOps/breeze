@@ -132,7 +132,7 @@ Tests (matrix, all against the REAL manifest): act+restart → act; act+stop →
 - Activation prerequisites (create/update where `mode: 'act'`): ≥1 resolvable recipient (reuse `resolveRecipientUserIds` against the owning org — partner-wide rows: validate against the partner's orgs? Follow how recipients are validated today and match), AND ≥1 act-eligible surface (allowlist ∩ manifest tools ≠ ∅, counting run_script only when actAssets non-empty) — else 422 `act_prerequisites_not_met` with a structured body naming what's missing.
 - `SUPPORTED_AGENT_MODES` gains `'act'` (shared :130). The 422 `mode_not_supported` path dies naturally; keep its error branch for future modes.
 
-- [ ] TDD: validator, merge intersection, prerequisite 422 matrix, per-script gate in revalidation. Commit: `feat(api,shared): act activation prerequisites + per-script act authorization (#3826)`
+- [x] TDD: validator, merge intersection, prerequisite 422 matrix, per-script gate in revalidation. Commit: `feat(api,shared): act activation prerequisites + per-script act authorization (#3826)`
 
 ---
 

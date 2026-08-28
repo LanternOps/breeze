@@ -319,6 +319,24 @@ export async function revalidateActExecution(
     return { ok: false, deny: `Act revalidation: ${normalized.reason}` };
   }
 
+  // Step 3.5 (Task 6, #3826): per-script act authorization. run_script's
+  // manifest `matches` is shape-only (any scriptId matches — actManifest.ts
+  // is pure and has no policy to consult), so THIS is where a saved script
+  // actually gets authorized for unattended execution — `toolAllowlist`
+  // admitting `run_script` only says the agent may call the tool at all.
+  // Unauthorized is NOT a data problem (unlike an unreadable/deleted script,
+  // which denies below in pinRunScript) — it is the same "legitimate call,
+  // not currently act-eligible" shape as an unmatched Tier-3 mutation or a
+  // custom (non-built-in) playbook, so it downgrades to a proposal, never a
+  // deny: "run_script never act-eligible (proposals still work)" (Global
+  // Constraints, plan header).
+  if (normalized.target.kind === 'script') {
+    const authorizedScriptIds = current.effective.actAssets.scriptIds;
+    if (!authorizedScriptIds.includes(normalized.target.scriptId)) {
+      return { ok: false, downgrade: 'propose' };
+    }
+  }
+
   // Step 4: op-specific asset pin, with I/O.
   const pinned = await pinAsset(op, normalized.target, run);
   if (!pinned.ok) return pinned;

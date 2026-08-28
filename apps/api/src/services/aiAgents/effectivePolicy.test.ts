@@ -83,6 +83,9 @@ const ORG_ID = '00000000-0000-4000-8000-000000000009';
 const PARTNER_ID = '00000000-0000-4000-8000-000000000010';
 const PARTNER_AGENT_ID = '00000000-0000-4000-8000-000000000011';
 const ORG_AGENT_ID = '00000000-0000-4000-8000-000000000012';
+const SCRIPT_A = '00000000-0000-4000-8000-000000000013';
+const SCRIPT_B = '00000000-0000-4000-8000-000000000014';
+const SCRIPT_C = '00000000-0000-4000-8000-000000000015';
 
 function policy(over: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
   return {
@@ -102,6 +105,7 @@ function policy(over: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
       respectMaintenanceWindows: false,
     },
     recipients: { userIds: [PARTNER_USER_ID], roleIds: [PARTNER_ROLE_ID] },
+    actAssets: { scriptIds: [] },
     instructions: 'partner says hi',
     cooldownSeconds: 300,
     ...over,
@@ -195,6 +199,7 @@ describe('mergeAgentPolicies — tighten only', () => {
         respectMaintenanceWindows: false,
       },
       recipients: { userIds: [PARTNER_USER_ID], roleIds: [PARTNER_ROLE_ID] },
+      actAssets: { scriptIds: [SCRIPT_A, SCRIPT_B] },
       cooldownSeconds: 300,
     });
     const org = policy({
@@ -217,6 +222,7 @@ describe('mergeAgentPolicies — tighten only', () => {
         respectMaintenanceWindows: true,
       },
       recipients: { userIds: [ORG_USER_ID], roleIds: [ORG_ROLE_ID] },
+      actAssets: { scriptIds: [SCRIPT_B, SCRIPT_C] },
       instructions: 'org says hi',
       cooldownSeconds: 60,
     });
@@ -248,6 +254,7 @@ describe('mergeAgentPolicies — tighten only', () => {
         userIds: [PARTNER_USER_ID, ORG_USER_ID],
         roleIds: [PARTNER_ROLE_ID, ORG_ROLE_ID],
       },
+      actAssets: { scriptIds: [SCRIPT_B] },
       instructions:
         '[partner guidance]\npartner says hi\n[/partner guidance]\n\n' +
         '[organization guidance]\norg says hi\n[/organization guidance]',
@@ -262,6 +269,7 @@ describe('mergeAgentPolicies — tighten only', () => {
       limits: 'merged',
       triggers: 'merged',
       recipients: 'merged',
+      actAssets: 'merged',
       instructions: 'merged',
       cooldownSeconds: 'partner',
     } as const satisfies Record<keyof AiAgentPolicy, 'partner' | 'org' | 'merged'>;
@@ -300,6 +308,7 @@ describe('mergeAgentPolicies — tighten only', () => {
       limits: {},
       triggers: {},
       recipients: {},
+      actAssets: {},
       instructions: null,
       cooldownSeconds: 900,
     });
@@ -307,6 +316,7 @@ describe('mergeAgentPolicies — tighten only', () => {
     expect(normalized.limits).toEqual(AI_AGENT_LIMIT_DEFAULTS);
     expect(normalized.triggers.alertSeverities).toEqual(['critical', 'high']);
     expect(normalized.recipients).toEqual({ userIds: [], roleIds: [] });
+    expect(normalized.actAssets).toEqual({ scriptIds: [] });
   });
 });
 

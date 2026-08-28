@@ -1,11 +1,12 @@
 import { and, desc, eq, isNull, or } from 'drizzle-orm';
-import type { CreateAiAgentInput, UpdateAiAgentInput } from '@breeze/shared';
+import type { AiAgentActAssets, AiAgentRecipients, CreateAiAgentInput, UpdateAiAgentInput } from '@breeze/shared';
 import { db } from '../../db';
 import { aiAgents, type AiAgentRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { createAuditLog } from '../auditService';
 import { captureException } from '../sentry';
 import { getEventBus } from '../eventBus';
+import { ACT_ELIGIBLE_TOOL_NAMES } from './actManifest';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 import { isSupportedAgentMode } from './constants';
 import { normalizeAgentPolicy } from './effectivePolicy';
@@ -14,7 +15,7 @@ import {
   setManagedAutomationEnabled,
   syncManagedAutomation,
 } from './managedAutomation';
-import { validateAgentRecipients } from './recipients';
+import { hasResolvableAgentRecipient, validateAgentRecipients } from './recipients';
 
 export class UnsupportedAgentModeError extends Error {
   readonly code = 'mode_not_supported';
@@ -48,6 +49,71 @@ export class AgentKindConflictError extends Error {
     super(`agent_kind_exists: ${kind}`);
     this.name = 'AgentKindConflictError';
   }
+}
+
+/**
+ * Wave 4 Part B (Task 6, #3826). A write that would leave the row with
+ * `mode: 'act'` must clear two prerequisites BEFORE anything is persisted:
+ * at least one recipient that currently resolves to a real user (an
+ * unattended agent nobody can be notified about is worse than no agent), and
+ * at least one act-eligible allowlisted surface (an act-mode agent that can
+ * never actually reach the manifest is a mode flag with no effect — the
+ * operator almost certainly meant something else). `missing` names exactly
+ * which ones failed so the client can render an actionable message rather
+ * than a bare "not met".
+ */
+export class ActPrerequisitesNotMetError extends Error {
+  readonly code = 'act_prerequisites_not_met';
+
+  constructor(public missing: Array<'recipient' | 'act_eligible_tool'>) {
+    super(`act_prerequisites_not_met: ${missing.join(', ')}`);
+    this.name = 'ActPrerequisitesNotMetError';
+  }
+}
+
+/**
+ * Task 6's second prerequisite: the allowlist must intersect the manifest's
+ * real tool names, and `run_script` only counts when at least one script is
+ * actually authorized (`actAssets.scriptIds`) — an allowlist admitting
+ * run_script with an empty actAssets is exactly "never act-eligible" (Global
+ * Constraints, plan header), not a real surface.
+ */
+function hasActEligibleSurface(
+  toolAllowlist: string[],
+  actAssets: Partial<AiAgentActAssets>,
+): boolean {
+  const eligible = new Set(ACT_ELIGIBLE_TOOL_NAMES);
+  const intersecting = toolAllowlist.filter((tool) => eligible.has(tool));
+  if (intersecting.some((tool) => tool !== 'run_script')) return true;
+  if (!intersecting.includes('run_script')) return false;
+  return (actAssets.scriptIds?.length ?? 0) > 0;
+}
+
+/**
+ * Throws ActPrerequisitesNotMetError unless the write's RESULTING mode is
+ * something other than 'act', or both prerequisites are met by what will
+ * actually be persisted — never by the caller's raw patch alone, which is
+ * how an update that patches only `mode: 'act'` onto an agent with existing
+ * recipients/allowlist correctly passes.
+ */
+async function assertActPrerequisites(
+  owner: AgentOwner,
+  resolved: {
+    mode: string;
+    toolAllowlist: string[];
+    actAssets: Partial<AiAgentActAssets>;
+    recipients: Partial<AiAgentRecipients>;
+  },
+): Promise<void> {
+  if (resolved.mode !== 'act') return;
+
+  const missing: Array<'recipient' | 'act_eligible_tool'> = [];
+  const hasRecipient = await hasResolvableAgentRecipient(owner, resolved.recipients);
+  if (!hasRecipient) missing.push('recipient');
+  if (!hasActEligibleSurface(resolved.toolAllowlist, resolved.actAssets)) {
+    missing.push('act_eligible_tool');
+  }
+  if (missing.length > 0) throw new ActPrerequisitesNotMetError(missing);
 }
 
 export interface AgentOwner {
@@ -88,6 +154,7 @@ function createPolicyColumns(input: CreateAiAgentInput): Partial<typeof aiAgents
     limits: input.limits,
     triggers: input.triggers,
     recipients: input.recipients,
+    actAssets: input.actAssets,
   };
 }
 
@@ -110,6 +177,9 @@ function updatePolicyColumns(
     ...(input.recipients === undefined
       ? {}
       : { recipients: { ...stored.recipients, ...input.recipients } }),
+    ...(input.actAssets === undefined
+      ? {}
+      : { actAssets: { ...stored.actAssets, ...input.actAssets } }),
   };
 }
 
@@ -281,6 +351,17 @@ export async function createAgent(
   // silently never hears anything.
   await validateAgentRecipients(owner, input.recipients ?? {});
 
+  // Task 6 (#3826): a create that would land with mode: 'act' must already
+  // have a resolvable recipient and an act-eligible surface — checked against
+  // exactly what THIS create will persist (input's own fields are already
+  // complete: createAiAgentSchema materializes every nested default).
+  await assertActPrerequisites(owner, {
+    mode: input.mode,
+    toolAllowlist: input.toolAllowlist,
+    actAssets: input.actAssets,
+    recipients: input.recipients,
+  });
+
   // Pre-check the partial unique indexes on (partner_id, kind) and (org_id,
   // kind) WHERE disabled_at IS NULL. Letting the insert trip 23505 is not an
   // option here: the whole request runs inside one withDbAccessContext
@@ -335,15 +416,29 @@ export async function updateAgent(
   }
   assertAgentWriteAllowed(auth, existing);
 
+  const stored = normalizeAgentPolicy(existing);
+  const owner: AgentOwner = { orgId: existing.orgId, partnerId: existing.partnerId };
+
   // Validate the MERGED recipients — the exact object updatePolicyColumns
   // persists ({ ...stored, ...patch }), so what is checked is what is stored.
+  const mergedRecipients = input.recipients === undefined
+    ? stored.recipients
+    : { ...stored.recipients, ...input.recipients };
   if (input.recipients !== undefined) {
-    const stored = normalizeAgentPolicy(existing);
-    await validateAgentRecipients(
-      { orgId: existing.orgId, partnerId: existing.partnerId },
-      { ...stored.recipients, ...input.recipients },
-    );
+    await validateAgentRecipients(owner, mergedRecipients);
   }
+
+  // Task 6 (#3826): prerequisites are checked against what the update will
+  // actually PERSIST (merged, same as recipients above) — never just the raw
+  // patch. A PATCH touching only `mode: 'act'` on an already-equipped agent
+  // passes; a PATCH that narrows the allowlist/actAssets/recipients out from
+  // under an existing act-mode agent is refused before the UPDATE runs.
+  await assertActPrerequisites(owner, {
+    mode: input.mode ?? stored.mode,
+    toolAllowlist: input.toolAllowlist ?? stored.toolAllowlist,
+    actAssets: input.actAssets === undefined ? stored.actAssets : { ...stored.actAssets, ...input.actAssets },
+    recipients: mergedRecipients,
+  });
 
   const [row] = await db
     .update(aiAgents)

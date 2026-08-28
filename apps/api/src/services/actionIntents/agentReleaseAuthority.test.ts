@@ -67,6 +67,7 @@ const effectivePolicy = (overrides: Partial<AiAgentPolicy> = {}): AiAgentPolicy 
   limits: AI_AGENT_LIMIT_DEFAULTS,
   triggers: { alertSeverities: ['critical'], respectMaintenanceWindows: true },
   recipients: { userIds: [], roleIds: [] },
+  actAssets: { scriptIds: [] },
   instructions: null,
   cooldownSeconds: 0,
   ...overrides,

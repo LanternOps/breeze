@@ -236,6 +236,20 @@ export const ACT_MANIFEST: readonly ActOperation[] = [
 ] as const;
 
 /**
+ * Real MCP tool names the manifest can ever admit for unattended execution —
+ * derived, not a second hand-maintained list. Excludes `remediation_suggestion`'s
+ * sentinel `toolName` (never a real registered tool; see that entry's own
+ * docstring above): counting it here would make an operator's toolAllowlist
+ * entry read as "act-eligible" for a name that can never actually be
+ * dispatched. Consumed by Task 6's "act-eligible allowlisted tool" activation
+ * prerequisite (agentService.ts) — kept in this module, rather than
+ * hardcoded a second time there, so it always tracks ACT_MANIFEST.
+ */
+export const ACT_ELIGIBLE_TOOL_NAMES: readonly string[] = ACT_MANIFEST
+  .map((op) => op.toolName)
+  .filter((toolName) => toolName !== remediationSuggestion.toolName);
+
+/**
  * Pure, no I/O (see the module docstring). Returns the first manifest entry
  * whose `toolName` matches AND whose `matches(input)` is true, or null.
  * `execute_command` has — and will only ever have via a quorum decision —

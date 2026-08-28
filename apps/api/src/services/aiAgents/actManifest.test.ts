@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ACT_MANIFEST, resolveActOperation } from './actManifest';
+import { ACT_ELIGIBLE_TOOL_NAMES, ACT_MANIFEST, resolveActOperation } from './actManifest';
 
 const RUN_DEVICE_ID = 'device-aaaa-1111';
 const OTHER_DEVICE_ID = 'device-bbbb-2222';
@@ -23,6 +23,18 @@ describe('ACT_MANIFEST frozen key set', () => {
   it('never contains an execute_command entry — no manifest key, ever, without a quorum decision', () => {
     expect(ACT_MANIFEST.some((op) => op.toolName === 'execute_command')).toBe(false);
     expect(ACT_MANIFEST.some((op) => op.key === 'execute_command')).toBe(false);
+  });
+
+  it('ACT_ELIGIBLE_TOOL_NAMES tracks the manifest but excludes the virtual remediation_suggestion sentinel (Task 6)', () => {
+    expect([...ACT_ELIGIBLE_TOOL_NAMES].sort()).toEqual([
+      'disk_cleanup',
+      'execute_playbook',
+      'manage_processes',
+      'manage_services',
+      'run_script',
+    ]);
+    expect(ACT_ELIGIBLE_TOOL_NAMES).not.toContain('remediation_suggestion');
+    expect(ACT_ELIGIBLE_TOOL_NAMES).not.toContain('execute_command');
   });
 
   it('resolveActOperation never resolves execute_command regardless of input shape', () => {
