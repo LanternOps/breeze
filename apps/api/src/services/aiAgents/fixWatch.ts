@@ -266,6 +266,47 @@ export async function scheduleFixWatches(
 }
 
 /**
+ * Records the circuit failures an already-finished run earned from its
+ * IMMEDIATE verifications — the "it never worked" half, as opposed to the
+ * "it worked and then came undone" half the sweeper records later.
+ *
+ * Deliberately here rather than in the post-tool-use hook that raises the
+ * attention alert: that hook runs under `POST_TOOL_USE_TIMEOUT_MS` (10s) and
+ * already spends most of it on the verification read itself. A counter
+ * increment is not worth competing with a read-back for that budget, and
+ * nothing consumes the counter until the next run anyway.
+ *
+ * Only `failed` counts. `inconclusive` means the read-back did not resolve —
+ * an offline device must never open a breaker.
+ */
+export async function recordImmediateVerifyFailures(
+  run: FixWatchRunInput,
+  acts: readonly FixWatchActRecord[],
+): Promise<number> {
+  if (!run.deviceId) return 0;
+  const failures = acts.filter((a) => a.verification === 'failed');
+  if (failures.length === 0) return 0;
+
+  const { recordCircuitFailure } = await import('./circuitLedger');
+  let applied = 0;
+  for (const act of failures) {
+    // No `expectedEpoch`: this caller never left the database between reading
+    // and writing, so there is no window for a reset to race it.
+    const result = await recordCircuitFailure({
+      orgId: run.orgId,
+      agentId: run.agentId,
+      deviceId: run.deviceId,
+      opKey: act.opKey,
+      targetFingerprint: actTargetFingerprint(act.target),
+      source: 'verify_failed',
+      reason: 'the action did not verify against its expected result',
+    });
+    if (result.applied) applied += 1;
+  }
+  return applied;
+}
+
+/**
  * Cancels every still-open watch for a run. Used when a run is superseded or
  * its device is decommissioned — a watch nobody will act on should not sit
  * `pending` forever, and must never be scored as a regression.

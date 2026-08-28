@@ -336,3 +336,51 @@ describe('circuit ledger — threshold and the epoch guard', () => {
     expect(fresh.failureCount).toBe(2);
   });
 });
+
+describe('immediate verify failures feed the circuit', () => {
+  it('counts a failed verification but never an inconclusive one', async () => {
+    const t = await tenantWithRun();
+    const { recordImmediateVerifyFailures } = await import('../../services/aiAgents/fixWatch');
+
+    const applied = await recordImmediateVerifyFailures(
+      {
+        id: t.run.id,
+        orgId: t.org.id,
+        agentId: t.agent.id,
+        deviceId: t.device.id,
+        alertId: null,
+        alertRuleId: null,
+        alertConfigItemName: null,
+        finishedAt: new Date(),
+      },
+      [
+        {
+          opKey: 'manage_services.restart',
+          verifySpecKind: 'service_running',
+          verification: 'failed',
+          target: { kind: 'service', serviceName: 'Spooler' },
+        },
+        {
+          // An offline device lands here. It must not move any counter.
+          opKey: 'manage_services.restart',
+          verifySpecKind: 'service_running',
+          verification: 'inconclusive',
+          target: { kind: 'service', serviceName: 'Netlogon' },
+        },
+      ],
+    );
+
+    const rows = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select({
+        id: aiAgentCircuits.id,
+        targetFingerprint: aiAgentCircuits.targetFingerprint,
+        failureCount: aiAgentCircuits.failureCount,
+      }).from(aiAgentCircuits).where(eq(aiAgentCircuits.orgId, t.org.id)));
+    for (const r of rows) createdCircuits.push(r.id);
+
+    expect(applied).toBe(1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.targetFingerprint).toBe('service:spooler');
+    expect(rows[0]!.failureCount).toBe(1);
+  });
+});

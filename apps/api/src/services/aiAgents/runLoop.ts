@@ -85,7 +85,12 @@ import {
   type ActReservationState,
 } from './actRevalidation';
 import { actTargetSummary, recordActVerifyFailureAlert, verifyActExecution } from './actVerify';
-import { loadAlertIdentity, scheduleFixWatches, type FixWatchActRecord } from './fixWatch';
+import {
+  loadAlertIdentity,
+  recordImmediateVerifyFailures,
+  scheduleFixWatches,
+  type FixWatchActRecord,
+} from './fixWatch';
 import { executeBuiltInPlaybookForRun } from './playbookActExecutor';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
 import { readAiKillState } from '../aiKillState';
@@ -1439,6 +1444,23 @@ async function finishRun(
       },
       result.fixWatchActs,
     );
+
+    // The "it never worked" half of the circuit's evidence. The sweeper records
+    // the "it worked and then came undone" half later.
+    await recordImmediateVerifyFailures(
+      {
+        id: ctx.run.id,
+        orgId: ctx.run.orgId,
+        agentId: ctx.run.agentId,
+        deviceId: ctx.run.deviceId,
+        alertId: ctx.run.alertId,
+        alertRuleId: alertIdentity?.alertRuleId ?? null,
+        alertConfigItemName: alertIdentity?.alertConfigItemName ?? null,
+        finishedAt,
+      },
+      result.fixWatchActs,
+    );
+
     if (planned > 0 && inserted < planned) {
       // Not necessarily a bug: `onConflictDoNothing` also lands here when a
       // retried finishRun re-plans watches an earlier attempt already wrote.
