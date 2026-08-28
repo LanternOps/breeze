@@ -64,6 +64,15 @@ function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
 }
 
+/** Lazy, cached import — same pattern as actVerify.ts's `getCommandQueue`.
+ *  Kept lazy for consistency with that sibling module rather than any known
+ *  circular-import requirement here. */
+let _commandQueue: typeof import('../commandQueue') | null = null;
+async function getCommandQueue() {
+  if (!_commandQueue) _commandQueue = await import('../commandQueue');
+  return _commandQueue;
+}
+
 /** The `revalidateActExecution`/`executeTool` shape this module depends on —
  *  overridable in tests so a unit test of the LOOP does not have to re-mock
  *  every dependency `revalidateActExecution` itself already has its own
@@ -71,12 +80,26 @@ function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
 export interface PlaybookExecutorDeps {
   revalidate: typeof revalidateActExecution;
   executeToolFn: typeof executeTool;
+  /** Direct `commandQueue.executeCommand` access for the `service_status`
+   *  verify metric read — review fix (#3826 Task 5 follow-up): the
+   *  `manage_services` TOOL only forwards `{ name: serviceName }` to the
+   *  agent (aiToolsScripts.ts), but the agent's `ListServices` command reads
+   *  `search`/`status`/`page`/`limit`, not `name` (agent/internal/remote/
+   *  tools/services.go) — so going through the tool returns an UNFILTERED,
+   *  50-row-paginated list on every real device, and the target service is
+   *  usually not on page one. actVerify.ts's `verifyServiceRunning` already
+   *  does this read correctly (`{ search: target.serviceName }` straight
+   *  through `commandQueue.executeCommand`); this dep lets the playbook
+   *  executor's read-back use the exact same call shape so the two act
+   *  paths cannot drift on the same postcondition again. */
+  executeCommandFn: typeof import('../commandQueue').executeCommand;
   sleepFn: (ms: number) => Promise<void>;
 }
 
 const REAL_DEPS: PlaybookExecutorDeps = {
   revalidate: revalidateActExecution,
   executeToolFn: executeTool,
+  executeCommandFn: async (...args) => (await getCommandQueue()).executeCommand(...args),
   sleepFn: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
@@ -278,18 +301,37 @@ function resolveVariable(value: unknown, variables: Record<string, unknown>): un
   return value;
 }
 
+/**
+ * Review fix (#3826 Task 5 follow-up): `variables` is the model's raw
+ * `execute_playbook` tool input (runLoop.ts passes `input.variables` through
+ * verbatim) and every shipped built-in uses `{{deviceId}}` in every step, so
+ * this is the ONLY thing standing between "single device, device-arg ===
+ * run.deviceId" (a LOCKED quorum decision) and a model sending
+ * `variables: { deviceId: <other-device> }` to redirect `diagnose`/allowlisted
+ * steps — which dispatch straight through `executeToolFn` with no
+ * revalidation — at a device the run was never pinned to. Two layers, not
+ * one: (1) `deviceId` is spread LAST into `allVariables` so the model's
+ * `variables.deviceId` can never win the token substitution, and (2) as a
+ * belt-and-suspenders backstop against any future built-in that names
+ * `deviceId` some other way (a literal, a differently-named token), every
+ * resolved `toolInput` that ends up with a `deviceId` key has it forced back
+ * to `run.deviceId` post-substitution, unconditionally.
+ */
 function resolvePlaybookSteps(
   steps: PlaybookStep[],
   variables: Record<string, unknown>,
   deviceId: string,
 ): PlaybookStep[] {
-  const allVariables: Record<string, unknown> = { deviceId, ...variables };
-  return steps.map((step) => ({
-    ...step,
-    toolInput: step.toolInput
+  const allVariables: Record<string, unknown> = { ...variables, deviceId };
+  return steps.map((step) => {
+    const resolvedInput = step.toolInput
       ? (resolveVariable(step.toolInput, allVariables) as Record<string, unknown>)
-      : step.toolInput,
-  }));
+      : step.toolInput;
+    if (resolvedInput && 'deviceId' in resolvedInput) {
+      resolvedInput.deviceId = deviceId;
+    }
+    return { ...step, toolInput: resolvedInput };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -358,6 +400,8 @@ interface MetricReadErr {
 }
 type MetricRead = MetricReadOk | MetricReadErr;
 
+const SERVICE_STATUS_READ_TIMEOUT_MS = 30_000;
+
 async function readServiceStatus(
   deps: PlaybookExecutorDeps,
   run: PlaybookExecutorRun,
@@ -365,15 +409,18 @@ async function readServiceStatus(
   serviceName: string | undefined,
 ): Promise<MetricRead> {
   if (!serviceName) return { ok: false, detail: 'verify step has no serviceName to check against' };
-  const output = await deps.executeToolFn(
-    'manage_services', { deviceId: run.deviceId, action: 'list', serviceName }, agentAuth,
-  );
-  const outer = parseJsonObject(output);
-  if (!outer || outer.status !== 'completed') {
-    return { ok: false, detail: `service status read did not complete (${String(outer?.status ?? 'unknown')})` };
+  // Bypasses the `manage_services` TOOL deliberately — see the
+  // `executeCommandFn` doc comment on `PlaybookExecutorDeps` for why going
+  // through the tool cannot find the service on a real device.
+  const result = await inSystemDbContext(() =>
+    deps.executeCommandFn(run.deviceId, 'list_services', { search: serviceName }, {
+      userId: agentAuth.user.id, timeoutMs: SERVICE_STATUS_READ_TIMEOUT_MS,
+    }));
+  if (result.status !== 'completed') {
+    return { ok: false, detail: `service status read did not complete (${result.status})` };
   }
-  const inner = parseJsonObject(typeof outer.stdout === 'string' ? outer.stdout : '{}');
-  const services = Array.isArray(inner?.services) ? (inner!.services as unknown[]) : [];
+  const parsed = parseJsonObject(result.stdout ?? '{}');
+  const services = Array.isArray(parsed?.services) ? (parsed!.services as unknown[]) : [];
   const match = services.find((s): s is { name: string; status: string } =>
     typeof s === 'object' && s !== null
     && typeof (s as { name?: unknown }).name === 'string'

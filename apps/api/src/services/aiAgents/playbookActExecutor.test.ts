@@ -96,6 +96,7 @@ function makeDeps(overrides: Partial<PlaybookExecutorDeps> = {}): PlaybookExecut
   return {
     revalidate: vi.fn(async () => okRevalidation(restartOp)),
     executeToolFn: vi.fn(async () => JSON.stringify({ status: 'completed' })),
+    executeCommandFn: vi.fn(async () => ({ status: 'completed' as const, stdout: JSON.stringify({ services: [] }) })),
     sleepFn: vi.fn(async () => undefined),
     ...overrides,
   };
@@ -279,23 +280,30 @@ describe('runPlaybookSteps — verify (service_status)', () => {
     };
   }
 
-  it('running (case-insensitive) → passed', async () => {
-    const deps = makeDeps({
-      executeToolFn: vi.fn(async () => JSON.stringify({
-        status: 'completed', stdout: JSON.stringify({ services: [{ name: 'Spooler', status: 'Running' }] }),
-      })),
-    });
+  it('running (case-insensitive) → passed, reads via executeCommandFn with a search filter (not the broken manage_services tool)', async () => {
+    const executeCommandFn = vi.fn(async () => ({
+      status: 'completed' as const, stdout: JSON.stringify({ services: [{ name: 'Spooler', status: 'Running' }] }),
+    }));
+    const deps = makeDeps({ executeCommandFn });
     const outcome = await runPlaybookSteps([serviceStep()], {
       run: RUN, agentAuth: AGENT_AUTH, deps, reserved: { count: 0 }, deadlineMs: FAR_FUTURE_DEADLINE,
     });
     expect(outcome.verification).toBe('passed');
     expect(outcome.execution).toBe('succeeded');
+    // Review fix regression guard: the manage_services TOOL only forwards
+    // `name`, which the agent's ListServices command ignores — the read-back
+    // must go through `search` directly, or it silently returns page 1 of an
+    // unfiltered list on a real device.
+    expect(executeCommandFn).toHaveBeenCalledWith(
+      'device-1', 'list_services', { search: 'Spooler' }, expect.objectContaining({ userId: 'agent-1' }),
+    );
+    expect(deps.executeToolFn).not.toHaveBeenCalled();
   });
 
   it('stopped → failed, onFailure stop halts remaining steps', async () => {
     const deps = makeDeps({
-      executeToolFn: vi.fn(async () => JSON.stringify({
-        status: 'completed', stdout: JSON.stringify({ services: [{ name: 'Spooler', status: 'Stopped' }] }),
+      executeCommandFn: vi.fn(async () => ({
+        status: 'completed' as const, stdout: JSON.stringify({ services: [{ name: 'Spooler', status: 'Stopped' }] }),
       })),
     });
     const steps = [serviceStep('stop'), { type: 'wait' as const, name: 'never', description: '', waitSeconds: 1 }];
@@ -311,8 +319,8 @@ describe('runPlaybookSteps — verify (service_status)', () => {
 
   it('stopped with onFailure continue → failed verification, but the loop continues', async () => {
     const deps = makeDeps({
-      executeToolFn: vi.fn(async () => JSON.stringify({
-        status: 'completed', stdout: JSON.stringify({ services: [{ name: 'Spooler', status: 'Stopped' }] }),
+      executeCommandFn: vi.fn(async () => ({
+        status: 'completed' as const, stdout: JSON.stringify({ services: [{ name: 'Spooler', status: 'Stopped' }] }),
       })),
     });
     const steps = [serviceStep('continue'), { type: 'wait' as const, name: 'runs anyway', description: '', waitSeconds: 1 }];
@@ -321,6 +329,16 @@ describe('runPlaybookSteps — verify (service_status)', () => {
     });
     expect(outcome.verification).toBe('failed');
     expect(outcome.results).toHaveLength(2);
+  });
+
+  it('service not found in the (correctly filtered) read-back → inconclusive, not a false pass', async () => {
+    const deps = makeDeps({
+      executeCommandFn: vi.fn(async () => ({ status: 'completed' as const, stdout: JSON.stringify({ services: [] }) })),
+    });
+    const outcome = await runPlaybookSteps([serviceStep('continue')], {
+      run: RUN, agentAuth: AGENT_AUTH, deps, reserved: { count: 0 }, deadlineMs: FAR_FUTURE_DEADLINE,
+    });
+    expect(outcome.verification).toBe('inconclusive');
   });
 });
 
@@ -493,6 +511,32 @@ describe('executeBuiltInPlaybookForRun — digest pin', () => {
     expect(result.execution).toBe('succeeded');
     expect(result.playbookExecutionId).toBeNull();
     expect(deps.executeToolFn).toHaveBeenCalled();
+  });
+});
+
+describe('executeBuiltInPlaybookForRun — the run device cannot be overridden by model-supplied variables', () => {
+  it('a model-sent variables.deviceId is ignored — every step still dispatches against run.deviceId', async () => {
+    const steps: PlaybookStep[] = [
+      { type: 'diagnose', name: 'baseline', description: '', tool: 'analyze_disk_usage', toolInput: { deviceId: '{{deviceId}}' } },
+    ];
+    const { createHash } = await import('node:crypto');
+    const digest = createHash('sha256').update(JSON.stringify(steps)).digest('hex');
+    dbMockState.playbookRows = [{
+      id: 'pb-3', name: 'Disk Cleanup', steps, isBuiltIn: true, isActive: true, orgId: null,
+    }];
+    const executeToolFn = vi.fn(async () => JSON.stringify({ ok: true }));
+    const deps = makeDeps({ executeToolFn });
+    const result = await executeBuiltInPlaybookForRun({
+      run: RUN, agentAuth: AGENT_AUTH, playbookId: 'pb-3', expectedDigest: digest,
+      // A cross-device redirect attempt smuggled in through the model's own
+      // execute_playbook tool input — RUN.deviceId is 'device-1'.
+      variables: { deviceId: 'attacker-controlled-device' },
+      reserved: { count: 0 }, deadlineMs: FAR_FUTURE_DEADLINE, deps,
+    });
+    expect(result.execution).toBe('succeeded');
+    expect(executeToolFn).toHaveBeenCalledWith(
+      'analyze_disk_usage', { deviceId: 'device-1' }, AGENT_AUTH,
+    );
   });
 });
 
