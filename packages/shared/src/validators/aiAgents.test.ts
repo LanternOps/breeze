@@ -102,9 +102,12 @@ describe('aiAgents validators', () => {
   });
 
   describe('actAssets — per-script act authorization', () => {
-    it('defaults to an empty scriptIds list', () => {
-      expect(aiAgentActAssetsSchema.parse({})).toEqual({ scriptIds: [] });
-      expect(aiAgentPolicyFieldsSchema.parse({}).actAssets).toEqual({ scriptIds: [] });
+    it('defaults to an empty scriptIds and supervisedActionKeys list', () => {
+      expect(aiAgentActAssetsSchema.parse({})).toEqual({ scriptIds: [], supervisedActionKeys: [] });
+      expect(aiAgentPolicyFieldsSchema.parse({}).actAssets).toEqual({
+        scriptIds: [],
+        supervisedActionKeys: [],
+      });
     });
 
     it('accepts up to 50 uuid scriptIds and rejects non-uuid entries', () => {
@@ -123,7 +126,37 @@ describe('aiAgents validators', () => {
 
     it('create materializes actAssets with the empty default', () => {
       const created = createAiAgentSchema.parse({ kind: 'triage', name: 'Triage' });
-      expect(created.actAssets).toEqual({ scriptIds: [] });
+      expect(created.actAssets).toEqual({ scriptIds: [], supervisedActionKeys: [] });
+    });
+  });
+
+  describe('actAssets.supervisedActionKeys — wave 5 Part B (#3827) shape only', () => {
+    it('accepts a bare-tool or tool:action key (TOOL_REF format) and rejects a malformed one', () => {
+      expect(aiAgentActAssetsSchema.safeParse({ supervisedActionKeys: ['manage_services:restart'] }).success)
+        .toBe(true);
+      expect(aiAgentActAssetsSchema.safeParse({ supervisedActionKeys: ['security_scan'] }).success).toBe(true);
+      expect(aiAgentActAssetsSchema.safeParse({ supervisedActionKeys: ['Not Valid!'] }).success).toBe(false);
+      expect(aiAgentActAssetsSchema.safeParse({ supervisedActionKeys: ['a:b:c'] }).success).toBe(false);
+    });
+
+    it('caps at 50 entries', () => {
+      const keys = Array(50).fill('manage_services:restart');
+      expect(aiAgentActAssetsSchema.safeParse({ supervisedActionKeys: keys }).success).toBe(true);
+      expect(aiAgentActAssetsSchema.safeParse({ supervisedActionKeys: [...keys, 'security_scan:remove'] }).success)
+        .toBe(false);
+    });
+
+    it('a PATCH of only supervisedActionKeys does not invent scriptIds', () => {
+      expect(updateAiAgentSchema.parse({ actAssets: { supervisedActionKeys: ['security_scan:quarantine'] } }))
+        .toEqual({ actAssets: { supervisedActionKeys: ['security_scan:quarantine'] } });
+    });
+
+    it('does NOT perform registry/four_eyes/secret semantic rejection — that is API-only (agentService.ts)', () => {
+      // Shared has no access to POLICY_DECIDABLE_TIER3 / aiGuardrails.ts, so an
+      // unregistered-but-TOOL_REF-shaped key passes shape validation here; the
+      // write-time 422 comes from validateAuthorizationKeys in the API layer.
+      expect(aiAgentActAssetsSchema.safeParse({ supervisedActionKeys: ['not_a_real_tool:whatever'] }).success)
+        .toBe(true);
     });
   });
 });

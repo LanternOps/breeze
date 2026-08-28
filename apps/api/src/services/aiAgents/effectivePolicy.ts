@@ -195,8 +195,24 @@ export function mergeAgentPolicies(
     // partner's authorized script set, never add a script the partner never
     // opted in — an org intersecting against an empty partner baseline stays
     // empty, which is exactly "run_script never act-eligible" (Task 6).
+    //
+    // supervisedActionKeys (wave 5 Part B, #3827) mirrors scriptIds exactly,
+    // for the same reason: an org may only narrow the partner's authorized
+    // POLICY_DECIDABLE_TIER3 key set, never widen it. `?? []` on both sides is
+    // load-bearing, not defensive — the field is optional on AiAgentActAssets
+    // because AI_AGENT_POLICY_SNAPSHOT_VERSION was NOT bumped for it (v3 is
+    // already tolerant), so a partner or org row written before this deploy
+    // has no `supervisedActionKeys` key in its stored `actAssets` jsonb at
+    // all. `normalizeAgentPolicy` fills the shared-schema default of `[]`
+    // for any row read through it, but `mergeAgentPolicies` is also exported
+    // pure and callable directly with a hand-built AiAgentPolicy (as several
+    // tests here do), so the merge itself must not assume the key is present.
     actAssets: pick('actAssets', {
       scriptIds: intersect(partner.actAssets.scriptIds, org.actAssets.scriptIds),
+      supervisedActionKeys: intersect(
+        partner.actAssets.supervisedActionKeys ?? [],
+        org.actAssets.supervisedActionKeys ?? [],
+      ),
     }, 'merged'),
     instructions: pick(
       'instructions',

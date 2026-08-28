@@ -39,11 +39,17 @@ vi.mock('../middleware/auth', () => ({
   ),
 }));
 
-const { ActPrerequisitesNotMetError } = vi.hoisted(() => ({
+const { ActPrerequisitesNotMetError, InvalidSupervisedActionKeysError } = vi.hoisted(() => ({
   ActPrerequisitesNotMetError: class ActPrerequisitesNotMetError extends Error {
     readonly code = 'act_prerequisites_not_met';
     constructor(public missing: string[]) {
       super(`act_prerequisites_not_met: ${missing.join(', ')}`);
+    }
+  },
+  InvalidSupervisedActionKeysError: class InvalidSupervisedActionKeysError extends Error {
+    readonly code = 'invalid_supervised_action_keys';
+    constructor(public rejected: Array<{ key: string; reason: string }>) {
+      super(`invalid_supervised_action_keys: ${rejected.map((r) => r.key).join(', ')}`);
     }
   },
 }));
@@ -53,6 +59,7 @@ vi.mock('../services/aiAgents/agentService', () => ({
   AgentKindConflictError: class AgentKindConflictError extends Error {},
   UnsupportedAgentModeError: class UnsupportedAgentModeError extends Error {},
   ActPrerequisitesNotMetError,
+  InvalidSupervisedActionKeysError,
   createAgent: vi.fn(),
   updateAgent: vi.fn(),
   disableAgent: vi.fn(),
@@ -330,6 +337,24 @@ describe('mapError — act-mode activation prerequisites (Task 6, #3826)', () =>
       expect.objectContaining({
         code: 'act_prerequisites_not_met',
         missing: ['recipient', 'act_eligible_tool'],
+      }),
+      422,
+    );
+  });
+});
+
+describe('mapError — supervisedActionKeys write-time rejection (wave 5 Part B, #3827)', () => {
+  it('maps InvalidSupervisedActionKeysError to a 422 naming exactly which keys were rejected and why', async () => {
+    const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
+    const ctx = { json: jsonMock } as unknown as Parameters<typeof mapError>[0];
+    const rejected = [{ key: 'bogus_key', reason: 'not registered in POLICY_DECIDABLE_TIER3' }];
+
+    mapError(ctx, new InvalidSupervisedActionKeysError(rejected));
+
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'invalid_supervised_action_keys',
+        rejected,
       }),
       422,
     );

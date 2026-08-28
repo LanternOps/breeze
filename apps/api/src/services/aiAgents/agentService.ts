@@ -6,6 +6,7 @@ import type { AuthContext } from '../../middleware/auth';
 import { createAuditLog } from '../auditService';
 import { captureException } from '../sentry';
 import { getEventBus } from '../eventBus';
+import { type RejectedAuthorizationKey, validateAuthorizationKeys } from '../actionIntents/policyDecidable';
 import { ACT_ELIGIBLE_TOOL_NAMES } from './actManifest';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 import { isSupportedAgentMode } from './constants';
@@ -48,6 +49,24 @@ export class AgentKindConflictError extends Error {
   constructor(kind: string) {
     super(`agent_kind_exists: ${kind}`);
     this.name = 'AgentKindConflictError';
+  }
+}
+
+/**
+ * Wave 5 Part B (#3827). `actAssets.supervisedActionKeys` is the operator's
+ * explicit per-agent authorization for `attemptPolicyDecision` to resolve a
+ * matching Tier-3 intent WITHOUT human fanout — so an unknown, four_eyes,
+ * Tier-4/blocked, or secret-bearing key must never be persisted here. `rejected`
+ * names exactly which keys failed and why (validateAuthorizationKeys,
+ * policyDecidable.ts) so the client (Task 5's editor) can render an actionable
+ * message rather than a bare 422.
+ */
+export class InvalidSupervisedActionKeysError extends Error {
+  readonly code = 'invalid_supervised_action_keys';
+
+  constructor(public rejected: RejectedAuthorizationKey[]) {
+    super(`invalid_supervised_action_keys: ${rejected.map((r) => r.key).join(', ')}`);
+    this.name = 'InvalidSupervisedActionKeysError';
   }
 }
 
@@ -97,6 +116,21 @@ function hasActEligibleSurface(
   if (intersecting.some((entry) => baseName(entry) !== 'run_script')) return true;
   if (!intersecting.some((entry) => baseName(entry) === 'run_script')) return false;
   return (actAssets.scriptIds?.length ?? 0) > 0;
+}
+
+/**
+ * Wave 5 Part B (#3827) write-time gate. Validates exactly the keys THIS
+ * write is setting — never the merged/stored value — so a key the registry
+ * has since dropped stays stored-but-inert (Design authority, plan header:
+ * "stored authorization keys tolerated-but-inert when the registry drops
+ * them") rather than retroactively blocking an unrelated future edit that
+ * never touches actAssets.supervisedActionKeys at all. No-op on an absent or
+ * empty array.
+ */
+function assertSupervisedActionKeysValid(keys: string[] | undefined): void {
+  if (!keys || keys.length === 0) return;
+  const { rejected } = validateAuthorizationKeys(keys);
+  if (rejected.length > 0) throw new InvalidSupervisedActionKeysError(rejected);
 }
 
 /**
@@ -361,6 +395,11 @@ export async function createAgent(
   // silently never hears anything.
   await validateAgentRecipients(owner, input.recipients ?? {});
 
+  // Wave 5 Part B (#3827): a create-supplied supervisedActionKeys set is
+  // validated against POLICY_DECIDABLE_TIER3 before anything is written, same
+  // reason as recipients above — a rejected key must never be persisted.
+  assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
+
   // Task 6 (#3826): a create that would land with mode: 'act' must already
   // have a resolvable recipient and an act-eligible surface — checked against
   // exactly what THIS create will persist (input's own fields are already
@@ -436,6 +475,12 @@ export async function updateAgent(
     : { ...stored.recipients, ...input.recipients };
   if (input.recipients !== undefined) {
     await validateAgentRecipients(owner, mergedRecipients);
+  }
+
+  // Wave 5 Part B (#3827): validate only the keys THIS patch is setting, not
+  // the merged/stored value — see assertSupervisedActionKeysValid's doc.
+  if (input.actAssets?.supervisedActionKeys !== undefined) {
+    assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
   }
 
   // Task 6 (#3826): prerequisites are checked against what the update will

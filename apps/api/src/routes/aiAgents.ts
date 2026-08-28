@@ -17,7 +17,8 @@ import { PARTNER_WIDE_WRITE_DENIED_MESSAGE, PartnerWideWriteDeniedError } from '
 import { AgentAccessDeniedError } from '../services/aiAgents/access';
 import {
   createAgent, disableAgent, getAgent, listAgents, updateAgent,
-  ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError, UnsupportedAgentModeError,
+  ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError,
+  InvalidSupervisedActionKeysError, UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
 import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
@@ -116,6 +117,13 @@ export function mapError(c: Context, err: unknown) {
   // client (Task 8's form) can render an actionable message.
   if (err instanceof ActPrerequisitesNotMetError) {
     return c.json({ error: err.message, code: err.code, missing: err.missing }, 422);
+  }
+  // Wave 5 Part B (#3827): actAssets.supervisedActionKeys failed write-time
+  // registry validation (validateAuthorizationKeys, policyDecidable.ts).
+  // `rejected` names exactly which keys and why, same shape as `missing`
+  // above, so the client (Task 5's editor) can render an actionable message.
+  if (err instanceof InvalidSupervisedActionKeysError) {
+    return c.json({ error: err.message, code: err.code, rejected: err.rejected }, 422);
   }
   if (err instanceof AgentKindConflictError) {
     return c.json({ error: err.message, code: err.code }, 409);

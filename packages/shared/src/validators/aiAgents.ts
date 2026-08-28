@@ -98,12 +98,23 @@ export const aiAgentProtectedResourcesSchema = aiAgentProtectedResourcesPatchSch
 // run_script op requires before executing ANY particular script unattended
 // (actRevalidation.ts). Max 50 mirrors nothing structural; it is a sane
 // upper bound on a hand-curated allowlist an operator actually reviews.
+// Wave 5 Part B (#3827): the closed set of POLICY_DECIDABLE_TIER3 keys an
+// operator has explicitly opted into unattended policy-decided authorization
+// for this agent. Shape-only here (format + max 50, mirroring toolAllowlist's
+// TOOL_REF pattern since a key is exactly a `tool` or `tool:action` string) —
+// the semantic check (registry membership, not four_eyes/T4/secret-bearing)
+// requires POLICY_DECIDABLE_TIER3 and aiGuardrails.ts, which are API-only
+// modules this package cannot import. That check lives in agentService.ts
+// (validateAuthorizationKeys, apps/api/src/services/actionIntents/
+// policyDecidable.ts) and runs at write time, rejecting with a structured 422.
 const actAssetsFields = z.object({
   scriptIds: z.array(z.string().guid()).max(50),
+  supervisedActionKeys: z.array(z.string().regex(TOOL_REF)).max(50),
 });
 export const aiAgentActAssetsPatchSchema = actAssetsFields.partial();
 export const aiAgentActAssetsSchema = aiAgentActAssetsPatchSchema.transform((v) => ({
   scriptIds: [],
+  supervisedActionKeys: [],
   ...v,
 }));
 

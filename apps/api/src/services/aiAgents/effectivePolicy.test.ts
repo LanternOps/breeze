@@ -86,6 +86,9 @@ const ORG_AGENT_ID = '00000000-0000-4000-8000-000000000012';
 const SCRIPT_A = '00000000-0000-4000-8000-000000000013';
 const SCRIPT_B = '00000000-0000-4000-8000-000000000014';
 const SCRIPT_C = '00000000-0000-4000-8000-000000000015';
+const KEY_A = 'manage_services:restart';
+const KEY_B = 'manage_services:stop';
+const KEY_C = 'security_scan:quarantine';
 
 function policy(over: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
   return {
@@ -199,7 +202,7 @@ describe('mergeAgentPolicies — tighten only', () => {
         respectMaintenanceWindows: false,
       },
       recipients: { userIds: [PARTNER_USER_ID], roleIds: [PARTNER_ROLE_ID] },
-      actAssets: { scriptIds: [SCRIPT_A, SCRIPT_B] },
+      actAssets: { scriptIds: [SCRIPT_A, SCRIPT_B], supervisedActionKeys: [KEY_A, KEY_B] },
       cooldownSeconds: 300,
     });
     const org = policy({
@@ -222,7 +225,7 @@ describe('mergeAgentPolicies — tighten only', () => {
         respectMaintenanceWindows: true,
       },
       recipients: { userIds: [ORG_USER_ID], roleIds: [ORG_ROLE_ID] },
-      actAssets: { scriptIds: [SCRIPT_B, SCRIPT_C] },
+      actAssets: { scriptIds: [SCRIPT_B, SCRIPT_C], supervisedActionKeys: [KEY_B, KEY_C] },
       instructions: 'org says hi',
       cooldownSeconds: 60,
     });
@@ -254,7 +257,7 @@ describe('mergeAgentPolicies — tighten only', () => {
         userIds: [PARTNER_USER_ID, ORG_USER_ID],
         roleIds: [PARTNER_ROLE_ID, ORG_ROLE_ID],
       },
-      actAssets: { scriptIds: [SCRIPT_B] },
+      actAssets: { scriptIds: [SCRIPT_B], supervisedActionKeys: [KEY_B] },
       instructions:
         '[partner guidance]\npartner says hi\n[/partner guidance]\n\n' +
         '[organization guidance]\norg says hi\n[/organization guidance]',
@@ -324,7 +327,38 @@ describe('mergeAgentPolicies — tighten only', () => {
     expect(normalized.limits).toEqual(AI_AGENT_LIMIT_DEFAULTS);
     expect(normalized.triggers.alertSeverities).toEqual(['critical', 'high']);
     expect(normalized.recipients).toEqual({ userIds: [], roleIds: [] });
-    expect(normalized.actAssets).toEqual({ scriptIds: [] });
+    expect(normalized.actAssets).toEqual({ scriptIds: [], supervisedActionKeys: [] });
+  });
+
+  it('supervisedActionKeys narrows exactly like scriptIds: absent partner field, empty-partner-baseline stands alone', () => {
+    // No org override at all: effective === partner verbatim (the existing
+    // `if (!org) return { effective: partner, ... }` early return) — a
+    // partner-wide baseline row's own supervisedActionKeys is never
+    // intersected against anything.
+    const partnerOnly = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
+    expect(mergeAgentPolicies(partnerOnly, null, { allowedModels: null }).effective.actAssets)
+      .toEqual({ scriptIds: [], supervisedActionKeys: [KEY_A] });
+
+    // Org narrows: intersection, never union — org's KEY_C (not on the
+    // partner baseline) is dropped.
+    const partner = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A, KEY_B] } });
+    const org = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_B, KEY_C] } });
+    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.actAssets)
+      .toEqual({ scriptIds: [], supervisedActionKeys: [KEY_B] });
+
+    // An empty partner baseline narrows the org to empty too — "never
+    // policy-decidable" is the correct default, same as scriptIds/run_script.
+    const emptyPartner = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [] } });
+    const wideOrg = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
+    expect(mergeAgentPolicies(emptyPartner, wideOrg, { allowedModels: null }).effective.actAssets)
+      .toEqual({ scriptIds: [], supervisedActionKeys: [] });
+
+    // A row missing the key entirely (pre-this-deploy jsonb, no version bump)
+    // merges as if it were an empty array, on either side.
+    const legacyPartner = policy({ actAssets: { scriptIds: [] } });
+    const orgWithKeys = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
+    expect(mergeAgentPolicies(legacyPartner, orgWithKeys, { allowedModels: null }).effective.actAssets)
+      .toEqual({ scriptIds: [], supervisedActionKeys: [] });
   });
 });
 
