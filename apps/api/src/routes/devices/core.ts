@@ -125,6 +125,18 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * detaches device_id instead. It is listed in INTENTIONALLY_NO_ORG_ID in
  * moveOrg.coverage.test.ts. Its org_id is trigger-immutable
  * (2026-09-06-a-agent-runs-org-immutable.sql).
+ *
+ * ai_unattended_exposure is deliberately ABSENT too (wave 5a, #3827): it has
+ * an org_id column but is cascade-deleted, not moved. (a) Exposure history
+ * stays with the org the unattended action ran in — the same
+ * ai_agent_runs owner decision above — and re-stamping it would attribute
+ * the old org's unattended-action count to the new org, corrupting the cap
+ * the ledger exists to enforce. (b) The generic move-org loop UPDATEs
+ * org_id alone, which would violate the (org_id, partner_id) →
+ * organizations(id, partner_id) composite FK the moment the two orgs sit
+ * under different partners — the same reason recorded in the
+ * orgMergeRegistry entry for this table. It is listed in
+ * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
  */
 const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
@@ -267,6 +279,11 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'huntress_agents', 'huntress_incidents',
   // AI & context
   'ai_sessions', 'ai_screenshots', 'brain_device_context',
+  // Unattended-exposure ledger (Wave 5 Part A, #3827) — live device_id
+  // column (NOT NULL), no FK to devices, leaf table, no children. Same
+  // situation as fleet_finding_devices below: the app-level DELETE is the
+  // only thing that reclaims these rows.
+  'ai_unattended_exposure',
   // Analytics & reliability
   'device_reliability_history', 'device_reliability',
   'playbook_executions', 'time_series_metrics', 'capacity_predictions',

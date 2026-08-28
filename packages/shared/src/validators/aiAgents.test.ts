@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  aiAgentActAssetsSchema,
   aiAgentLimitsSchema,
   aiAgentPolicyFieldsSchema,
   createAiAgentSchema,
   updateAiAgentSchema,
 } from './aiAgents';
-import { AI_AGENT_LIMIT_DEFAULTS, minAgentMode } from '../types/aiAgents';
+import {
+  AI_AGENT_LIMIT_DEFAULTS,
+  AI_AGENT_POLICY_SNAPSHOT_VERSION,
+  SUPPORTED_AGENT_MODES,
+  minAgentMode,
+} from '../types/aiAgents';
 
 describe('aiAgents validators', () => {
   it('fills limit defaults and clamps maxima', () => {
@@ -23,6 +29,20 @@ describe('aiAgents validators', () => {
     expect(aiAgentLimitsSchema.safeParse({ maxActionsPerRun: 0 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ maxActionsPerRun: 11 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ maxActionsPerRun: 2.5 }).success).toBe(false);
+  });
+
+  it('maxPolicyDecisionsPerDay defaults to 10 and clamps to [1,200] (wave 5 Part A, #3827)', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxPolicyDecisionsPerDay).toBe(10);
+    expect(aiAgentLimitsSchema.parse({}).maxPolicyDecisionsPerDay).toBe(10);
+    expect(aiAgentLimitsSchema.safeParse({ maxPolicyDecisionsPerDay: 1 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxPolicyDecisionsPerDay: 200 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxPolicyDecisionsPerDay: 0 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxPolicyDecisionsPerDay: 201 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxPolicyDecisionsPerDay: 2.5 }).success).toBe(false);
+  });
+
+  it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 3 (wave 5 Part A bump, #3827)', () => {
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(3);
   });
 
   it('rejects instructions over 2000 chars and unknown allowlist shapes', () => {
@@ -75,5 +95,68 @@ describe('aiAgents validators', () => {
     expect(minAgentMode('act', 'shadow')).toBe('shadow');
     expect(minAgentMode('off', 'act')).toBe('off');
     expect(minAgentMode('act', 'act')).toBe('act');
+  });
+
+  it("SUPPORTED_AGENT_MODES admits 'act' (Task 6, #3826)", () => {
+    expect([...SUPPORTED_AGENT_MODES].sort()).toEqual(['act', 'off', 'shadow']);
+  });
+
+  describe('actAssets — per-script act authorization', () => {
+    it('defaults to an empty scriptIds and supervisedActionKeys list', () => {
+      expect(aiAgentActAssetsSchema.parse({})).toEqual({ scriptIds: [], supervisedActionKeys: [] });
+      expect(aiAgentPolicyFieldsSchema.parse({}).actAssets).toEqual({
+        scriptIds: [],
+        supervisedActionKeys: [],
+      });
+    });
+
+    it('accepts up to 50 uuid scriptIds and rejects non-uuid entries', () => {
+      const uuid = '11111111-1111-4111-8111-111111111111';
+      expect(aiAgentActAssetsSchema.safeParse({ scriptIds: [uuid] }).success).toBe(true);
+      expect(aiAgentActAssetsSchema.safeParse({ scriptIds: ['not-a-uuid'] }).success).toBe(false);
+      expect(aiAgentActAssetsSchema.safeParse({ scriptIds: Array(51).fill(uuid) }).success).toBe(false);
+    });
+
+    it('a PATCH of actAssets does not invent siblings and update forbids nothing else', () => {
+      const uuid = '22222222-2222-4222-8222-222222222222';
+      expect(updateAiAgentSchema.parse({ actAssets: { scriptIds: [uuid] } })).toEqual({
+        actAssets: { scriptIds: [uuid] },
+      });
+    });
+
+    it('create materializes actAssets with the empty default', () => {
+      const created = createAiAgentSchema.parse({ kind: 'triage', name: 'Triage' });
+      expect(created.actAssets).toEqual({ scriptIds: [], supervisedActionKeys: [] });
+    });
+  });
+
+  describe('actAssets.supervisedActionKeys — wave 5 Part B (#3827) shape only', () => {
+    it('accepts a bare-tool or tool:action key (TOOL_REF format) and rejects a malformed one', () => {
+      expect(aiAgentActAssetsSchema.safeParse({ supervisedActionKeys: ['manage_services:restart'] }).success)
+        .toBe(true);
+      expect(aiAgentActAssetsSchema.safeParse({ supervisedActionKeys: ['security_scan'] }).success).toBe(true);
+      expect(aiAgentActAssetsSchema.safeParse({ supervisedActionKeys: ['Not Valid!'] }).success).toBe(false);
+      expect(aiAgentActAssetsSchema.safeParse({ supervisedActionKeys: ['a:b:c'] }).success).toBe(false);
+    });
+
+    it('caps at 50 entries', () => {
+      const keys = Array(50).fill('manage_services:restart');
+      expect(aiAgentActAssetsSchema.safeParse({ supervisedActionKeys: keys }).success).toBe(true);
+      expect(aiAgentActAssetsSchema.safeParse({ supervisedActionKeys: [...keys, 'security_scan:remove'] }).success)
+        .toBe(false);
+    });
+
+    it('a PATCH of only supervisedActionKeys does not invent scriptIds', () => {
+      expect(updateAiAgentSchema.parse({ actAssets: { supervisedActionKeys: ['security_scan:quarantine'] } }))
+        .toEqual({ actAssets: { supervisedActionKeys: ['security_scan:quarantine'] } });
+    });
+
+    it('does NOT perform registry/four_eyes/secret semantic rejection — that is API-only (agentService.ts)', () => {
+      // Shared has no access to POLICY_DECIDABLE_TIER3 / aiGuardrails.ts, so an
+      // unregistered-but-TOOL_REF-shaped key passes shape validation here; the
+      // write-time 422 comes from validateAuthorizationKeys in the API layer.
+      expect(aiAgentActAssetsSchema.safeParse({ supervisedActionKeys: ['not_a_real_tool:whatever'] }).success)
+        .toBe(true);
+    });
   });
 });

@@ -35,6 +35,16 @@ export interface AiAgentLimits {
    * this point on carries it.
    */
   maxActionsPerRun: number;
+  /**
+   * Wave 5 Part A (#3827) — cap on the number of Tier-3 mutations resolved
+   * unattended via `POLICY_DECIDABLE_TIER3` (no human approval) per agent per
+   * org per day. Unenforced in this PR — `resolvePolicyDecisionState` is a
+   * stub that always returns `human_required`, so nothing consumes this field
+   * yet; it ships now so partners/orgs can pre-configure it and every policy
+   * snapshot from this point on carries it. Part B's `attemptPolicyDecision`
+   * is the enforcer (see runService.ts's limits-coverage inventory).
+   */
+  maxPolicyDecisionsPerDay: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -47,6 +57,7 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   wallClockSeconds: 600,
   maxFleetPercentPerDay: 5,
   maxActionsPerRun: 3,
+  maxPolicyDecisionsPerDay: 10,
 });
 
 export interface AiAgentTriggers {
@@ -76,6 +87,40 @@ export interface AiAgentProtectedResources {
   deviceTags: string[];
 }
 
+/**
+ * Wave 4 Part B (Task 6, #3826) — per-script act-mode authorization.
+ *
+ * `toolAllowlist` admitting `run_script` is necessary but never sufficient for
+ * unattended execution: a saved script can read secrets, rewrite config, or do
+ * anything else its author wrote, so allowlisting the TOOL must not silently
+ * authorize every script an org happens to have. `scriptIds` is the closed set
+ * an operator has explicitly opted into for act mode; empty/absent means
+ * run_script is never act-eligible for this agent — the model may still call
+ * it, and it still records as a proposal exactly like any other unmatched
+ * Tier-3 mutation (Global Constraints, plan header).
+ */
+export interface AiAgentActAssets {
+  scriptIds: string[];
+  /**
+   * Wave 5 Part B (#3827) — the closed set of `POLICY_DECIDABLE_TIER3`
+   * (apps/api/src/services/actionIntents/policyDecidable.ts) keys an operator
+   * has explicitly authorized for THIS agent to have policy-decided (no human
+   * fanout) when `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` is on. Same
+   * tighten-only shape as `scriptIds`: membership here is necessary but never
+   * sufficient — `attemptPolicyDecision` still gates on live guardrails, kill
+   * state, and the exposure caps.
+   *
+   * Optional, unlike `scriptIds`: this field did not exist before this wave,
+   * and `AI_AGENT_POLICY_SNAPSHOT_VERSION` was NOT bumped for it (v3 is
+   * already tolerant of a new key inside `actAssets` — see the version
+   * history below). A run enqueued before this deploy, and a partner/org row
+   * written before this deploy, both carry an `actAssets` object with no
+   * `supervisedActionKeys` key at all — every read site must treat that as
+   * "authorizes nothing" (`?? []`), never throw on its absence.
+   */
+  supervisedActionKeys?: string[];
+}
+
 /** The policy fields that the resolver merges (everything on ai_agents that governs a run). */
 export interface AiAgentPolicy {
   enabled: boolean;
@@ -86,6 +131,7 @@ export interface AiAgentPolicy {
   limits: AiAgentLimits;
   triggers: AiAgentTriggers;
   recipients: AiAgentRecipients;
+  actAssets: AiAgentActAssets;
   instructions: string | null;
   cooldownSeconds: number;
 }
@@ -98,17 +144,23 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * distinguishable from a v2 row — there is no backfill for a run that already
  * happened.
  *
- * v2 (this bump): `effective.limits` gained `maxActionsPerRun`. An in-flight
- * run enqueued before deploy still carries a v1 snapshot (no `maxActionsPerRun`
- * in `effective.limits`) and MUST still execute — every read site that
- * touches `schemaVersion` or `effective.limits` has to tolerate a v1 row,
- * never reject it. Write side always stamps the current version.
+ * v2: `effective.limits` gained `maxActionsPerRun`. An in-flight run enqueued
+ * before that deploy still carries a v1 snapshot (no `maxActionsPerRun` in
+ * `effective.limits`) and MUST still execute — every read site that touches
+ * `schemaVersion` or `effective.limits` has to tolerate a v1 row, never
+ * reject it.
+ *
+ * v3 (this bump, wave 5 Part A #3827): `effective.limits` gained
+ * `maxPolicyDecisionsPerDay`. Same rule: an in-flight run's v1 or v2 snapshot
+ * lacks the field and MUST still execute — nothing reads it yet (unenforced
+ * this PR), but every site that switches on `schemaVersion` must tolerate
+ * 1, 2, AND 3. Write side always stamps the current version.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 2 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 3 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun) or 2 (current). Read sites must tolerate both. */
-  schemaVersion: 1 | 2;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), or 3 (current). Read sites must tolerate all three. */
+  schemaVersion: 1 | 2 | 3;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;
@@ -117,17 +169,23 @@ export interface AiAgentPolicySnapshot {
 }
 
 /**
- * Modes the API accepts on WRITE today. `act` is admitted by the DB CHECK and
- * is a member of AI_AGENT_MODES, but the API refuses it with 422
- * `mode_not_supported` until wave 4 ships bounded execution.
+ * Modes the API accepts on WRITE today — all three. `mode_not_supported` is
+ * now reached only by a mode that is not a member of this list at all; it is
+ * no longer the answer for `act`, which wave 4 Part B admitted (see below).
  *
  * This lives in shared rather than in the API because it is a wire contract:
  * the settings form has to know which modes a create will be allowed to pick,
  * and there is no row to read `supportedModes` off before the agent exists.
  * Two copies of this list means the create form silently keeps refusing `act`
  * on the day the API starts accepting it.
+ *
+ * Wave 4 Part B (Task 6, #3826): `act` ships bounded, verified, revalidated
+ * unattended execution against a closed manifest — see actManifest.ts and the
+ * plan header's Design authority. A write is still refused with 422
+ * `act_prerequisites_not_met` unless the agent has a resolvable recipient and
+ * at least one act-eligible allowlisted surface (agentService.ts).
  */
-export const SUPPORTED_AGENT_MODES: readonly AiAgentMode[] = ['off', 'shadow'] as const;
+export const SUPPORTED_AGENT_MODES: readonly AiAgentMode[] = ['off', 'shadow', 'act'] as const;
 
 export type AiAgentOwnerScope = 'organization' | 'partner';
 
@@ -167,6 +225,7 @@ export interface AiAgentDto {
   limits: Partial<AiAgentLimits>;
   triggers: Partial<AiAgentTriggers>;
   recipients: Partial<AiAgentRecipients>;
+  actAssets: Partial<AiAgentActAssets>;
   instructions: string | null;
   cooldownSeconds: number;
   /** ISO-8601. Non-null means the agent is soft-deleted. */
@@ -174,3 +233,35 @@ export interface AiAgentDto {
   createdAt: string;
   updatedAt: string;
 }
+
+/**
+ * Wave 4 Part B — act mode verdicts.
+ *
+ * `execution` reports the tool dispatch outcome for a manifest-matched call
+ * that act mode actually ran (through the normal tool path): `failed` for a
+ * tool-reported error, `timeout` for a command that never resolved inside its
+ * bound, `unknown` when the dispatch outcome could not be classified either
+ * way (never conflate this with `failed` — an `unknown` execution still runs
+ * verification, since the underlying action may well have succeeded).
+ */
+export type ActExecutionVerdict = 'succeeded' | 'failed' | 'timeout' | 'unknown';
+
+/**
+ * `verification` reports the op's OWN read-back against `execution`, not a
+ * restatement of it: `skipped` is for an op with no declared postcondition
+ * (a bare script run today — see actVerify.ts), `inconclusive` is a read-back
+ * that itself failed/timed out (the action's real effect is unknown, not
+ * negative) — only `failed` triggers the rule-less attention alert.
+ */
+export type ActVerificationVerdict = 'passed' | 'failed' | 'inconclusive' | 'skipped';
+
+/**
+ * Run-level rollup computed once at finish from every acted-on op's
+ * (execution, verification) pair plus whatever else the run proposed:
+ * `remediated` — every act execution verified `passed`; `needs_attention` —
+ * at least one act execution verified `failed` or `inconclusive`;
+ * `partial` — a mix of successful act executions and unmatched-mutation
+ * proposals in the same run; `no_action` — the run performed no act
+ * executions at all (shadow/propose-only turns, or a read-only run).
+ */
+export type AgentRunVerdict = 'remediated' | 'needs_attention' | 'partial' | 'no_action';

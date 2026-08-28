@@ -1334,7 +1334,12 @@
     "errors": {
       "load": "Could not load agents.",
       "kindExists": "An agent of this kind already exists for this owner. Edit the existing one, or disable it first.",
-      "modeNotSupported": "That mode is not available yet. Agents can currently investigate and propose, but not act."
+      "modeNotSupported": "That mode is not available yet. Agents can currently investigate and propose, but not act.",
+      "actPrerequisitesNotMet": "This agent isn't ready for act mode yet.",
+      "actMissingRecipient": "Add at least one notification recipient before enabling act mode.",
+      "actMissingTool": "Allow at least one act-eligible tool, or authorize a script, before enabling act mode.",
+      "invalidSupervisedActionKeys": "One or more selected actions can't be authorized by policy.",
+      "supervisedKeyRejected": "{{key}}: {{reason}}"
     },
     "actions": {
       "add": "New agent",
@@ -1367,6 +1372,7 @@
     "sections": {
       "scope": "When it runs",
       "permissions": "Permissions",
+      "policyDecide": "Unattended policy authorization",
       "limits": "Limits",
       "notifications": "Notifications",
       "instructions": "Instructions"
@@ -1379,7 +1385,16 @@
     "modes": {
       "off": "Off",
       "shadow": "Shadow — investigate and propose only",
-      "act": "Act — available in a later release"
+      "act": "Act — execute matched operations unattended, with verification"
+    },
+    "actWarning": {
+      "title": "Act mode executes without a human clicking approve",
+      "unattended": "Matched, rule-equivalent operations run unattended once revalidated — nobody approves them in the moment.",
+      "verification": "Verification can still fail after a clean execution. Check notifications after every run.",
+      "noRollback": "There is no automatic rollback. If something needs undoing, a person does it.",
+      "singleDevice": "Each run acts on one device only.",
+      "actionCap": "A run stops acting once it hits its configured action cap.",
+      "ack": "I understand act mode executes unattended, verification can fail, and there is no rollback."
     },
     "severities": {
       "critical": "Critical",
@@ -1411,9 +1426,145 @@
       "recipientRolesEmpty": "No roles available.",
       "instructionsHint": "Guidance only — tone, what to check first, house conventions. It never grants permissions.",
       "charactersLeft": "{{count}} characters left",
-      "recipientRolesFailed": "Couldn't load roles, so notification recipients can't be changed right now."
+      "recipientRolesFailed": "Couldn't load roles, so notification recipients can't be changed right now.",
+      "supervisedActionKeysHint": "Operations this agent may execute WITHOUT a human clicking approve, when a matching policy exists and the org's exposure cap has room. Each one still passes live guardrails, the kill switch, and per-org caps at execution time.",
+      "supervisedActionKeysEmpty": "No policy-decidable actions are registered.",
+      "supervisedActionKeysFailed": "Couldn't load the policy-decidable action list, so unattended authorization can't be changed right now."
     },
-    "loading": "Loading agents…"
+    "loading": "Loading agents…",
+    "runs": {
+      "title": "Agent runs",
+      "description": "Every run across your accessible organizations, newest first.",
+      "filters": {
+        "agent": "Agent",
+        "allAgents": "All agents",
+        "status": "Status",
+        "allStatuses": "All statuses"
+      },
+      "columns": {
+        "agent": "Agent",
+        "status": "Status",
+        "trigger": "Trigger",
+        "verdict": "Verdict",
+        "queued": "Queued",
+        "finished": "Finished",
+        "cost": "Cost"
+      },
+      "statuses": {
+        "queued": "Queued",
+        "running": "Running",
+        "awaiting_approval": "Awaiting approval",
+        "completed": "Completed",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "expired": "Expired",
+        "skipped": "Skipped"
+      },
+      "verdicts": {
+        "remediated": "Remediated",
+        "needs_attention": "Needs attention",
+        "partial": "Partial",
+        "no_action": "No action needed",
+        "pending": "Pending"
+      },
+      "triggers": {
+        "alert": "Alert",
+        "manual": "Manual",
+        "schedule": "Schedule",
+        "ticket": "Ticket"
+      },
+      "noAgent": "Unknown agent",
+      "loading": "Loading runs…",
+      "empty": "No runs yet.",
+      "emptyFiltered": "No runs match these filters.",
+      "loadMore": "Load more",
+      "retry": "Retry",
+      "errors": {
+        "load": "Could not load runs.",
+        "loadMore": "Could not load more runs."
+      },
+      "detail": {
+        "title": "Run detail",
+        "back": "Back to runs",
+        "notFound": "Run not found.",
+        "loading": "Loading run…",
+        "errors": {
+          "load": "Could not load this run.",
+          "notFound": "Run not found."
+        },
+        "labels": {
+          "agent": "Agent",
+          "device": "Device",
+          "noDevice": "No device",
+          "status": "Status",
+          "verdict": "Verdict",
+          "cost": "Cost",
+          "duration": "Duration",
+          "trigger": "Trigger",
+          "queuedAt": "Queued",
+          "startedAt": "Started",
+          "finishedAt": "Finished",
+          "turnCount": "Turns",
+          "summary": "Summary"
+        },
+        "flags": {
+          "budgetExceeded": "Budget exceeded",
+          "wallClockExceeded": "Ran past its time limit",
+          "maxTurnsExceeded": "Hit its turn limit"
+        },
+        "trace": {
+          "title": "Execution trace",
+          "empty": "No trace entries recorded.",
+          "kinds": {
+            "executed": "Executed",
+            "proposed": "Proposed",
+            "denied": "Denied"
+          },
+          "result": {
+            "ok": "OK",
+            "failed": "Failed"
+          },
+          "execution": {
+            "succeeded": "Succeeded",
+            "failed": "Failed",
+            "timeout": "Timed out",
+            "unknown": "Unknown"
+          },
+          "verification": {
+            "passed": "Verified",
+            "failed": "Verification failed",
+            "inconclusive": "Verification inconclusive",
+            "skipped": "Verification skipped"
+          },
+          "viewApproval": "Review in Approvals"
+        },
+        "ledger": {
+          "title": "Tool executions",
+          "empty": "No tool executions recorded.",
+          "columns": {
+            "tool": "Tool",
+            "status": "Status",
+            "duration": "Duration",
+            "started": "Started",
+            "error": "Error"
+          }
+        },
+        "intents": {
+          "title": "Linked approvals",
+          "empty": "No linked approvals.",
+          "viewAll": "Review in Approvals"
+        },
+        "budget": {
+          "title": "Exposure budget",
+          "caption": "Recorded exposure — trailing {{hours}}h",
+          "devices": "{{count}} of {{allowance}} devices",
+          "decisionsToday": "{{count}} of {{max}} policy decisions today",
+          "partialNote": "Partial accounting while unattended policy authorization is disabled — this may understate actual exposure.",
+          "unavailable": "No active agent policy for this run's organization.",
+          "loading": "Loading budget…"
+        }
+      }
+    }
   },
   "apiKeyForm": {
     "devicesRead": "Devices: Read",

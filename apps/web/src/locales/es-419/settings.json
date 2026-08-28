@@ -1334,7 +1334,12 @@
     "errors": {
       "load": "No se pudieron cargar los agentes.",
       "kindExists": "Ya existe un agente de este tipo para este propietario. Edite el existente o deshabilítelo primero.",
-      "modeNotSupported": "Ese modo aún no está disponible. Por ahora los agentes pueden investigar y proponer, pero no actuar."
+      "modeNotSupported": "Ese modo aún no está disponible. Por ahora los agentes pueden investigar y proponer, pero no actuar.",
+      "actPrerequisitesNotMet": "Este agente aún no está listo para el modo Actuar.",
+      "actMissingRecipient": "Agregue al menos un destinatario de notificación antes de habilitar el modo Actuar.",
+      "actMissingTool": "Permita al menos una herramienta apta para el modo Actuar, o autorice un script, antes de habilitarlo.",
+      "invalidSupervisedActionKeys": "Una o más acciones seleccionadas no se pueden autorizar mediante la política.",
+      "supervisedKeyRejected": "{{key}}: {{reason}}"
     },
     "actions": {
       "add": "Nuevo agente",
@@ -1367,6 +1372,7 @@
     "sections": {
       "scope": "Cuándo se ejecuta",
       "permissions": "Permisos",
+      "policyDecide": "Autorización de política no supervisada",
       "limits": "Límites",
       "notifications": "Notificaciones",
       "instructions": "Instrucciones"
@@ -1379,7 +1385,16 @@
     "modes": {
       "off": "Desactivado",
       "shadow": "Sombra: solo investigar y proponer",
-      "act": "Actuar: disponible en una versión posterior"
+      "act": "Actuar — ejecuta operaciones coincidentes sin supervisión, con verificación"
+    },
+    "actWarning": {
+      "title": "El modo Actuar se ejecuta sin que una persona haga clic en aprobar",
+      "unattended": "Las operaciones coincidentes y equivalentes a una regla se ejecutan sin supervisión una vez revalidadas; nadie las aprueba en el momento.",
+      "verification": "La verificación aún puede fallar incluso después de una ejecución limpia. Revise las notificaciones después de cada ejecución.",
+      "noRollback": "No hay reversión automática. Si algo necesita deshacerse, lo hace una persona.",
+      "singleDevice": "Cada ejecución actúa sobre un solo dispositivo.",
+      "actionCap": "Una ejecución deja de actuar en cuanto alcanza su límite de acciones configurado.",
+      "ack": "Entiendo que el modo Actuar se ejecuta sin supervisión, que la verificación puede fallar y que no hay reversión."
     },
     "severities": {
       "critical": "Crítica",
@@ -1411,9 +1426,145 @@
       "recipientRolesEmpty": "No hay roles disponibles.",
       "instructionsHint": "Solo orientación: tono, qué revisar primero, convenciones internas. Nunca otorga permisos.",
       "charactersLeft": "Quedan {{count}} caracteres",
-      "recipientRolesFailed": "No se pudieron cargar los roles, así que por ahora no se pueden cambiar los destinatarios de las notificaciones."
+      "recipientRolesFailed": "No se pudieron cargar los roles, así que por ahora no se pueden cambiar los destinatarios de las notificaciones.",
+      "supervisedActionKeysHint": "Operaciones que este agente puede ejecutar SIN que una persona haga clic en aprobar, cuando existe una política coincidente y el límite de exposición de la organización tiene margen. Cada una igual pasa por las protecciones en vivo, el interruptor de apagado y los límites por organización en el momento de la ejecución.",
+      "supervisedActionKeysEmpty": "No hay acciones decidibles por política registradas.",
+      "supervisedActionKeysFailed": "No se pudo cargar la lista de acciones decidibles por política, así que la autorización no supervisada no se puede cambiar en este momento."
     },
-    "loading": "Cargando agentes…"
+    "loading": "Cargando agentes…",
+    "runs": {
+      "title": "Ejecuciones de agentes",
+      "description": "Todas las ejecuciones en las organizaciones a las que tiene acceso, más recientes primero.",
+      "filters": {
+        "agent": "Agente",
+        "allAgents": "Todos los agentes",
+        "status": "Estado",
+        "allStatuses": "Todos los estados"
+      },
+      "columns": {
+        "agent": "Agente",
+        "status": "Estado",
+        "trigger": "Disparador",
+        "verdict": "Resultado",
+        "queued": "En cola",
+        "finished": "Finalizado",
+        "cost": "Costo"
+      },
+      "statuses": {
+        "queued": "En cola",
+        "running": "En ejecución",
+        "awaiting_approval": "Esperando aprobación",
+        "completed": "Completado",
+        "failed": "Fallido",
+        "cancelled": "Cancelado",
+        "expired": "Expirado",
+        "skipped": "Omitido"
+      },
+      "verdicts": {
+        "remediated": "Remediado",
+        "needs_attention": "Requiere atención",
+        "partial": "Parcial",
+        "no_action": "Sin acción necesaria",
+        "pending": "Pendiente"
+      },
+      "triggers": {
+        "alert": "Alerta",
+        "manual": "Manual",
+        "schedule": "Programado",
+        "ticket": "Ticket"
+      },
+      "noAgent": "Agente desconocido",
+      "loading": "Cargando ejecuciones…",
+      "empty": "Aún no hay ejecuciones.",
+      "emptyFiltered": "Ninguna ejecución coincide con estos filtros.",
+      "loadMore": "Cargar más",
+      "retry": "Reintentar",
+      "errors": {
+        "load": "No se pudieron cargar las ejecuciones.",
+        "loadMore": "No se pudieron cargar más ejecuciones."
+      },
+      "detail": {
+        "title": "Detalle de la ejecución",
+        "back": "Volver a las ejecuciones",
+        "notFound": "Ejecución no encontrada.",
+        "loading": "Cargando ejecución…",
+        "errors": {
+          "load": "No se pudo cargar esta ejecución.",
+          "notFound": "Ejecución no encontrada."
+        },
+        "labels": {
+          "agent": "Agente",
+          "device": "Dispositivo",
+          "noDevice": "Sin dispositivo",
+          "status": "Estado",
+          "verdict": "Resultado",
+          "cost": "Costo",
+          "duration": "Duración",
+          "trigger": "Disparador",
+          "queuedAt": "En cola",
+          "startedAt": "Iniciado",
+          "finishedAt": "Finalizado",
+          "turnCount": "Turnos",
+          "summary": "Resumen"
+        },
+        "flags": {
+          "budgetExceeded": "Presupuesto excedido",
+          "wallClockExceeded": "Excedió su límite de tiempo",
+          "maxTurnsExceeded": "Alcanzó su límite de turnos"
+        },
+        "trace": {
+          "title": "Traza de ejecución",
+          "empty": "No se registraron entradas de traza.",
+          "kinds": {
+            "executed": "Ejecutado",
+            "proposed": "Propuesto",
+            "denied": "Denegado"
+          },
+          "result": {
+            "ok": "OK",
+            "failed": "Fallido"
+          },
+          "execution": {
+            "succeeded": "Exitoso",
+            "failed": "Fallido",
+            "timeout": "Tiempo agotado",
+            "unknown": "Desconocido"
+          },
+          "verification": {
+            "passed": "Verificado",
+            "failed": "Verificación fallida",
+            "inconclusive": "Verificación no concluyente",
+            "skipped": "Verificación omitida"
+          },
+          "viewApproval": "Revisar en Aprobaciones"
+        },
+        "ledger": {
+          "title": "Ejecuciones de herramientas",
+          "empty": "No se registraron ejecuciones de herramientas.",
+          "columns": {
+            "tool": "Herramienta",
+            "status": "Estado",
+            "duration": "Duración",
+            "started": "Iniciado",
+            "error": "Error"
+          }
+        },
+        "intents": {
+          "title": "Aprobaciones vinculadas",
+          "empty": "No hay aprobaciones vinculadas.",
+          "viewAll": "Revisar en Aprobaciones"
+        },
+        "budget": {
+          "title": "Presupuesto de exposición",
+          "caption": "Exposición registrada — últimas {{hours}} h",
+          "devices": "{{count}} de {{allowance}} dispositivos",
+          "decisionsToday": "{{count}} de {{max}} decisiones de política hoy",
+          "partialNote": "Contabilización parcial mientras la autorización de política desatendida está deshabilitada — esto puede subestimar la exposición real.",
+          "unavailable": "No hay una política de agente activa para la organización de esta ejecución.",
+          "loading": "Cargando presupuesto…"
+        }
+      }
+    }
   },
   "apiKeyForm": {
     "devicesRead": "Dispositivos: Leer",

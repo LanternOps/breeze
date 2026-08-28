@@ -1,11 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
+import type { AgentReleaseAuthority } from '../services/actionIntents/agentReleaseAuthority';
 
 // ---------------------------------------------------------------------------
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock } = vi.hoisted(() => {
+const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
@@ -37,6 +38,20 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
     tenantStatusMock: { getActiveOrgTenant: vi.fn() },
     aiToolsMock: { getToolTier: vi.fn(), executeTool: vi.fn(), requiresLiveSession: vi.fn() },
     aiGuardrailsMock: { checkToolPermission: vi.fn() },
+    // Wave-5A review fix (#3827): mocked at the module boundary so a
+    // kill_switch_engaged veto can be driven WITHOUT constructing the agent
+    // authority's own real DB chain (ai_agent_runs/ai_agents/organizations/
+    // devices/ai_kill_state, none of which this file otherwise mocks) — real
+    // `revalidateApprovedIntentForRelease` still runs; only its transitive
+    // `checkAgentReleaseAuthority` import is swapped. No existing test in
+    // this file sets `requestingAgentRunId` on an `intent_approved` release,
+    // so this mock is purely additive — it never fires for the pre-existing
+    // suite. Default `{ ok: true }` matches "an agent intent that clears
+    // authority" so a forgotten override fails LOUD downstream (e.g. at
+    // executeTool) rather than silently.
+    agentReleaseAuthorityMock: {
+      checkAgentReleaseAuthority: vi.fn(async (): Promise<AgentReleaseAuthority> => ({ ok: true })),
+    },
     authMock: { dbAccessContextFromAuth: vi.fn((auth: unknown) => ({ mock: 'dbContext', auth })) },
     auditMock: {
       writeAuditEvent: vi.fn(),
@@ -47,6 +62,16 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
       recordActionIntentMetric: vi.fn(),
     },
     sentryMock: { captureException: vi.fn() },
+    policyDecideMock: { attemptPolicyDecision: vi.fn(async () => {}) },
+    // Wave 5 Part B (#3827) final pre-effect kill read: mocked wholesale
+    // (same treatment as agentReleaseAuthorityMock above) so the worker's
+    // OWN `readAiKillState()` call before dispatch doesn't need this file's
+    // narrow per-table db mock to also cover `ai_kill_state` — and so a real
+    // module-level TTL-cache read failure in one test can never poison every
+    // later test's dispatch to fail-closed `killed: true` (aiKillState.ts's
+    // own fail-closed contract). Default not-killed; the dedicated
+    // "final pre-dispatch kill read" describe block below overrides per test.
+    killStateMock: { readAiKillState: vi.fn(async () => ({ killed: false, epoch: 0 })) },
     // getToolTimeout is mocked (per-test override); withToolTimeout is kept
     // REAL (see vi.mock below) so the timeout test's timer actually fires.
     toolTimeoutsMock: { getToolTimeout: vi.fn() },
@@ -150,6 +175,27 @@ vi.mock('../services/actionIntents/metrics', () => ({
 vi.mock('../services/actionIntents/intentService', () => ({
   transitionIntent: intentServiceMock.transitionIntent,
 }));
+vi.mock('../services/actionIntents/policyDecide', () => {
+  // A local (not imported-from-real) `PolicyDecisionTransientError` — the
+  // real module pulls in the full db/schema graph transitively, which this
+  // test file mocks only partially elsewhere, so `importOriginal` here blows
+  // up on an unrelated missing export deep in that chain. Defining the class
+  // locally is sufficient: every import of '../services/actionIntents/
+  // policyDecide' in this test run (both intentReleaseWorker.ts's source
+  // import and this file's own top-level import) resolves to THIS mocked
+  // module, so they share the same class reference and `instanceof` works.
+  class PolicyDecisionTransientError extends Error {
+    constructor(intentId: string, cause: unknown) {
+      super(`attemptPolicyDecision transient failure for intent ${intentId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+      this.name = 'PolicyDecisionTransientError';
+      this.cause = cause;
+    }
+  }
+  return {
+    attemptPolicyDecision: policyDecideMock.attemptPolicyDecision,
+    PolicyDecisionTransientError,
+  };
+});
 vi.mock('../services/actionIntents/actorContext', () => ({
   buildAuthContextForIntent: actorContextMock.buildAuthContextForIntent,
 }));
@@ -167,6 +213,16 @@ vi.mock('../services/aiTools', () => ({
 }));
 vi.mock('../services/aiGuardrails', () => ({
   checkToolPermission: aiGuardrailsMock.checkToolPermission,
+}));
+// See the hoisted `agentReleaseAuthorityMock` comment: real
+// `revalidateApprovedIntentForRelease` runs, only its `checkAgentReleaseAuthority`
+// collaborator is swapped so agent-originated releases don't need this file's
+// db mock to also cover ai_agent_runs/ai_agents/organizations/devices/ai_kill_state.
+vi.mock('../services/actionIntents/agentReleaseAuthority', () => ({
+  checkAgentReleaseAuthority: agentReleaseAuthorityMock.checkAgentReleaseAuthority,
+}));
+vi.mock('../services/aiKillState', () => ({
+  readAiKillState: killStateMock.readAiKillState,
 }));
 vi.mock('../middleware/auth', () => ({
   dbAccessContextFromAuth: authMock.dbAccessContextFromAuth,
@@ -252,6 +308,7 @@ import { db as mockedDb, runOutsideDbContext as mockedRunOutside } from '../db';
 import type { ActionIntent } from '../db/schema/actionIntents';
 import { GoogleConnectionUnavailableError } from '../services/googleToolsHeadless';
 import { M365ConnectionUnavailableError } from '../services/m365ToolsHeadless';
+import { PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 // Deliberately REAL (not mocked) — assertNoPlaintextSecret is the exact guard
 // the worker calls on both persistence paths; testing it directly here pins
 // the invariant the worker relies on without inventing a parallel harness.
@@ -813,6 +870,196 @@ describe('releaseApprovedIntent', () => {
     expect(metricsMock.recordActionIntentMetric).toHaveBeenCalledWith(intent.source, intent.actionName, 'executed');
   });
 
+  // Wave-5A review fix (#3827): a kill-derived release veto
+  // ('kill_switch_engaged', agentReleaseAuthority.ts) must PAUSE — CAS back
+  // to `approved` — never terminally fail an already-human-approved intent,
+  // unlike every OTHER revalidation stop above (digest_mismatch,
+  // tier_escalated, actor_invalid, org_inactive, rbac_denied, and a
+  // non-kill 'agent_policy_denied'), which all still CAS straight to
+  // `failed`.
+  describe('kill_switch_engaged: pause, do not fail, an agent-originated release', () => {
+    function primeAgentIntentThroughClaim(intent: ActionIntent) {
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([
+        { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+      ]);
+      aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+      // revalidateApprovedIntentForRelease's (c)/(d) steps — actor + org
+      // active — run BEFORE its (e) agent-authority branch even for an
+      // agent-originated intent, so both must resolve truthy to reach
+      // checkAgentReleaseAuthority at all.
+      actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(fakeAuth);
+      tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+    }
+
+    it('CASes executing -> approved (not failed) and never calls executeTool', async () => {
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
+      agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'kill_switch_engaged',
+        details: { policy: 'snapshot', epoch: 7, reason: 'Autonomous AI agents are kill-switched (epoch 7)' },
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> approved
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'approved',
+      );
+      // Never the destructive terminal transition this fix replaces.
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalledWith(
+        intent.id, 'executing', 'failed', expect.anything(),
+      );
+      // Not the same audit/metrics path failIntent takes — no failure record
+      // for a paused (not failed) release.
+      expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+      expect(sentryMock.captureException).toHaveBeenCalled();
+    });
+
+    it('a lost CAS (row already moved by another delivery) is a silent no-op, matching failIntent', async () => {
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
+      agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'kill_switch_engaged',
+        details: {},
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(false); // lost race
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+    });
+
+    it('a non-kill agent_policy_denied veto still fails the intent terminally, unchanged', async () => {
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
+      agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'agent_policy_denied',
+        details: { policy: 'current', reason: 'Agent is disabled' },
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        expect.objectContaining({ errorCode: 'agent_policy_denied' }),
+      );
+      expect(auditMock.writeAuditEvent).toHaveBeenCalled();
+    });
+  });
+
+  // Wave 5 Part B (#3827): the FINAL pre-effect kill read, immediately
+  // before dispatch — a SEPARATE `readAiKillState()` call from the one
+  // `checkAgentReleaseAuthority` already makes during revalidation, covering
+  // the gap between revalidation finishing and the tool actually dispatching
+  // (effect-digest recompute I/O, scheduling jitter, …). Review fix: scoped
+  // to AGENT-ORIGINATED releases only (`intent.requestingAgentRunId` set) —
+  // an earlier version ran this unconditionally, which reached human-
+  // approved chat/mcp_api releases that have never consulted the kill switch
+  // and broke flag-off/human-lane inertness. This suite's default fixture
+  // (`baseIntent()`) is human/chat-originated, so it now proves the OPPOSITE
+  // of what it originally proved: the check does NOT fire for that lane.
+  describe('final pre-dispatch kill read (wave 5b, #3827)', () => {
+    /** Same shape as `primeAgentIntentThroughClaim` above, duplicated at this
+     *  narrower scope: gets an agent-originated intent through revalidation
+     *  (actor + org + checkAgentReleaseAuthority) up to the pre-dispatch read. */
+    function primeAgentIntentThroughClaim(intent: ActionIntent) {
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([
+        { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+      ]);
+      aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+      actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(fakeAuth);
+      tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+      toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+    }
+
+    it('pauses (executing -> approved), never dispatches executeTool, when the pre-dispatch read comes back killed for an agent-originated release', async () => {
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
+      killStateMock.readAiKillState.mockResolvedValueOnce({ killed: true, epoch: 9 });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> approved
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'approved',
+      );
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalledWith(
+        intent.id, 'executing', 'failed', expect.anything(),
+      );
+      expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+    });
+
+    it('a lost CAS on the pre-dispatch pause is a silent no-op, matching the other kill-derived pause path', async () => {
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
+      killStateMock.readAiKillState.mockResolvedValueOnce({ killed: true, epoch: 9 });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(false); // lost race
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+    });
+
+    it('dispatches normally for an agent-originated release when the pre-dispatch read is not killed', async () => {
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(killStateMock.readAiKillState).toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.anything(),
+      );
+    });
+
+    // Review fix: this is the load-bearing test for the fix itself. Before
+    // it, this exact scenario (a human/chat-originated release, killed:
+    // true) would have PAUSED a human's already-approved action on a lane
+    // that has never consulted the kill switch — breaking BOTH flag-off
+    // inertness (a new, unflagged path became reachable on the human lane)
+    // and durability (a transient DB blip on this shared, fail-closed read
+    // could silently strand an approved human action until the expiry
+    // reaper terminalises it).
+    it('does NOT consult the kill switch, and dispatches normally, for a human/chat-originated release even when the (unread) kill state would report killed', async () => {
+      const intent = baseIntent(); // default: human/chat-originated, no requestingAgentRunId
+      primeThroughRevalidation(intent);
+      // If the worker read this at all for a human intent, it would pause —
+      // proving the assertions below actually distinguish "not called" from
+      // "called and happened to come back not-killed".
+      killStateMock.readAiKillState.mockResolvedValueOnce({ killed: true, epoch: 9 });
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(killStateMock.readAiKillState).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.anything(),
+      );
+    });
+  });
+
   // Task 7 — effect-digest revalidation (tier3-supervised-four-eyes design
   // §4.1): a four_eyes intent whose stored effect_digest no longer matches
   // the freshly recomputed one (e.g. the approved script's body was edited
@@ -1354,6 +1601,66 @@ describe('processIntentReleaseJob', () => {
 
     expect(result).toEqual({ released: false });
     expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+  });
+
+  // Wave 5 Part B (#3827) — the intent_created outbox recovery branch.
+  //
+  // Review fix (#3827): the call site is deliberately NOT flag-gated —
+  // `attemptPolicyDecision` is the ONLY durable caller (the creation-time
+  // trigger is fire-and-forget and does not survive a restart), so gating
+  // here too would strand every intent left `unattempted` forever once an
+  // operator flips the flag off. `attemptPolicyDecision` itself owns
+  // flag-off behavior now (see policyDecide.test.ts).
+  describe('intent_created — policy-decide recovery (#3827)', () => {
+    const FLAG = 'BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED';
+    const original = process.env[FLAG];
+    afterEach(() => {
+      if (original === undefined) delete process.env[FLAG];
+      else process.env[FLAG] = original;
+    });
+
+    it('flag off: STILL calls attemptPolicyDecision — the call site is unconditional; flag-off inertness lives inside attemptPolicyDecision itself', async () => {
+      delete process.env[FLAG];
+      const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' });
+
+      expect(result).toEqual({ released: false });
+      expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledWith('intent-1');
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    });
+
+    it('flag on: calls attemptPolicyDecision with the intent id and still reports a no-op release', async () => {
+      process.env[FLAG] = 'true';
+      const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' });
+
+      expect(result).toEqual({ released: false });
+      expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledWith('intent-1');
+    });
+
+    it('a non-discriminated thrown failure (not PolicyDecisionTransientError) is swallowed (logged to Sentry), never thrown to the caller — defensive fallback for a shape attemptPolicyDecision should never actually produce', async () => {
+      policyDecideMock.attemptPolicyDecision.mockRejectedValueOnce(new Error('db blip'));
+
+      await expect(
+        processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' }),
+      ).resolves.toEqual({ released: false });
+      expect(sentryMock.captureException).toHaveBeenCalled();
+    });
+
+    it('review fix (#3827): a PolicyDecisionTransientError IS rethrown — real at-least-once relies on this so BullMQ redelivers the job', async () => {
+      const transientErr = new PolicyDecisionTransientError('intent-1', new Error('connection terminated'));
+      policyDecideMock.attemptPolicyDecision.mockRejectedValueOnce(transientErr);
+
+      await expect(
+        processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' }),
+      ).rejects.toBe(transientErr);
+    });
+
+    it('a DETERMINISTIC outcome (attemptPolicyDecision resolves normally) still acks — released: false, no throw', async () => {
+      policyDecideMock.attemptPolicyDecision.mockResolvedValueOnce(undefined);
+
+      await expect(
+        processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' }),
+      ).resolves.toEqual({ released: false });
+    });
   });
 
   it('THE LIE GUARD: an intent that did NOT run is never reported as running', async () => {

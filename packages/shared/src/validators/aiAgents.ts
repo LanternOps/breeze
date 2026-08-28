@@ -38,6 +38,7 @@ const limitsFields = z.object({
   wallClockSeconds: z.number().int().min(30).max(1800),
   maxFleetPercentPerDay: z.number().int().min(1).max(100),
   maxActionsPerRun: z.number().int().min(1).max(10),
+  maxPolicyDecisionsPerDay: z.number().int().min(1).max(200),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({
@@ -90,6 +91,33 @@ export const aiAgentProtectedResourcesSchema = aiAgentProtectedResourcesPatchSch
   ...v,
 }));
 
+// Wave 4 Part B (Task 6, #3826): the closed set of saved scripts an operator
+// has explicitly opted into unattended act-mode execution. `toolAllowlist`
+// admitting `run_script` is shape-only ("this agent may call run_script at
+// all") — this is the separate, per-script authorization the manifest's
+// run_script op requires before executing ANY particular script unattended
+// (actRevalidation.ts). Max 50 mirrors nothing structural; it is a sane
+// upper bound on a hand-curated allowlist an operator actually reviews.
+// Wave 5 Part B (#3827): the closed set of POLICY_DECIDABLE_TIER3 keys an
+// operator has explicitly opted into unattended policy-decided authorization
+// for this agent. Shape-only here (format + max 50, mirroring toolAllowlist's
+// TOOL_REF pattern since a key is exactly a `tool` or `tool:action` string) —
+// the semantic check (registry membership, not four_eyes/T4/secret-bearing)
+// requires POLICY_DECIDABLE_TIER3 and aiGuardrails.ts, which are API-only
+// modules this package cannot import. That check lives in agentService.ts
+// (validateAuthorizationKeys, apps/api/src/services/actionIntents/
+// policyDecidable.ts) and runs at write time, rejecting with a structured 422.
+const actAssetsFields = z.object({
+  scriptIds: z.array(z.string().guid()).max(50),
+  supervisedActionKeys: z.array(z.string().regex(TOOL_REF)).max(50),
+});
+export const aiAgentActAssetsPatchSchema = actAssetsFields.partial();
+export const aiAgentActAssetsSchema = aiAgentActAssetsPatchSchema.transform((v) => ({
+  scriptIds: [],
+  supervisedActionKeys: [],
+  ...v,
+}));
+
 export const aiAgentPolicyFieldsSchema = z.object({
   enabled: z.boolean().default(false),
   mode: z.enum(AI_AGENT_MODES).default('off'),
@@ -99,6 +127,7 @@ export const aiAgentPolicyFieldsSchema = z.object({
   limits: aiAgentLimitsSchema.prefault({}),
   triggers: aiAgentTriggersSchema.prefault({}),
   recipients: aiAgentRecipientsSchema.prefault({}),
+  actAssets: aiAgentActAssetsSchema.prefault({}),
   instructions: z.string().max(2000).nullable().default(null),
   cooldownSeconds: z.number().int().min(0).max(86400).default(900),
 });
@@ -122,6 +151,7 @@ export const updateAiAgentSchema = z.object({
   limits: aiAgentLimitsPatchSchema.optional(),
   triggers: aiAgentTriggersPatchSchema.optional(),
   recipients: aiAgentRecipientsPatchSchema.optional(),
+  actAssets: aiAgentActAssetsPatchSchema.optional(),
   instructions: z.string().max(2000).nullable().optional(),
   cooldownSeconds: z.number().int().min(0).max(86400).optional(),
 });

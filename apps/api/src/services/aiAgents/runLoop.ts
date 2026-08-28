@@ -41,6 +41,7 @@
 import { and, eq } from 'drizzle-orm';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
+  AgentRunVerdict,
   AiAgentKind,
   AiAgentMode,
   AiAgentPolicy,
@@ -74,9 +75,19 @@ import { publishEvent } from '../eventBus';
 import { resolveLlmConfigForOrg } from '../llm/llmConfigResolver';
 import type { UsableLlmConfig } from '../llm/llmConfigResolver';
 import { buildClaudeSdkChildEnv } from '../streamingSessionManager';
+import type { ToolExecutionContext } from '../toolExecutionContext';
 import type { AuthContext } from '../../middleware/auth';
 import { AgentRunOwnershipError, buildAgentAuthContext } from './agentAuthContext';
+import { resolveActOperation, type ActTarget } from './actManifest';
+import {
+  revalidateActExecution,
+  type ActAssetPin,
+  type ActReservationState,
+} from './actRevalidation';
+import { actTargetSummary, recordActVerifyFailureAlert, verifyActExecution } from './actVerify';
+import { executeBuiltInPlaybookForRun } from './playbookActExecutor';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
+import { readAiKillState } from '../aiKillState';
 import {
   closeAgentRunSession,
   completeToolExecution,
@@ -128,6 +139,14 @@ export interface OutcomeProposedAction {
    * born terminal (`no_eligible_approvers`).
    */
   intentError?: string;
+  /**
+   * Set only for an act-mode downgrade-to-propose that carried a concrete
+   * `normalizeTarget` reason (#3826 cheap nonblocking fix) — e.g. a missing
+   * identity field the manifest requires. Absent for an ordinary shadow-mode
+   * proposal and for a drift/cap-exhaustion downgrade, neither of which has
+   * a single call-specific reason to attach.
+   */
+  downgradeReason?: string;
 }
 
 export interface OutcomeExecutedAction {
@@ -145,6 +164,23 @@ export interface OutcomeExecutedAction {
   executionId: string;
   result: 'ok' | 'failed';
   durationMs: number;
+  /**
+   * Act-mode fields (Part B, Task 4) — set ONLY for a call that actually
+   * dispatched through the act branch (an `ActAssetPin` was pinned for it in
+   * the pre-hook; see `actRevalidation.ts`). Absent for every ordinary
+   * Tier-1/2 auto-executed call, exactly like the pre-Part-B behavior.
+   */
+  execution?: 'succeeded' | 'failed' | 'timeout' | 'unknown';
+  verification?: 'passed' | 'failed' | 'inconclusive' | 'skipped';
+  /** Short, human-readable — never a raw tool input/output blob. */
+  verifyDetail?: string;
+  /** The manifest op key (e.g. `manage_services.restart`) — sanitized for the
+   *  finished-run notification; never the raw tool input. */
+  actOpKey?: string;
+  /** Sanitized target identity (service/process name, script/playbook id, or
+   *  a path COUNT) — see `actTargetSummary` (actVerify.ts). Never a full
+   *  path list or tool input/output. */
+  actTargetName?: string;
 }
 
 export interface AgentRunOutcome {
@@ -164,6 +200,14 @@ export interface AgentRunOutcome {
   wallClockExceeded?: boolean;
   /** The SDK stopped because `maxTurns` was reached (`error_max_turns`). */
   maxTurnsExceeded?: boolean;
+  /**
+   * Run-level rollup over every act execution's (execution, verification)
+   * pair, computed once at finish by `computeRunVerdict` — see there for the
+   * exact rule. Absent (rather than defaulted) for anything that never
+   * reaches the rollup — kept optional so old rows read back without it
+   * don't need a migration.
+   */
+  runVerdict?: AgentRunVerdict;
 }
 
 /** Error carrying the short code that lands in `ai_agent_runs.error_code` (varchar(64)). */
@@ -349,9 +393,10 @@ function readToolAction(toolName: string, input: Record<string, unknown>): strin
  * no RBAC helper is ever reached from an agent run.
  */
 export function createAgentRunPreToolUse(args: {
-  run: Pick<RunRow, 'id' | 'orgId'>;
+  run: Pick<RunRow, 'id' | 'orgId' | 'agentId'>;
   agentName: string;
   agentAuth: AuthContext;
+  agentKind: AiAgentKind;
   guardrailPolicy: AgentGuardrailPolicy;
   outcome: AgentRunOutcome;
   intentIds: string[];
@@ -365,83 +410,112 @@ export function createAgentRunPreToolUse(args: {
    * assumption as `allowedPending`.
    */
   executionIdPending: Map<string, Array<string | null>>;
+  /**
+   * Per-tool FIFO of act-mode asset pins, pushed in LOCKSTEP with
+   * `executionIdPending` (a `null` entry for every ordinary allowed call, a
+   * real `ActAssetPin` only for one that dispatched through the act branch)
+   * — the SAME tool name can be BOTH in one run (e.g. `disk_cleanup` preview
+   * is a plain read-only allow, `disk_cleanup` execute is act-eligible), so
+   * this cannot be a separate independently-sized queue.
+   */
+  actPinPending: Map<string, Array<ActAssetPin | null>>;
+  /** In-run `maxActionsPerRun` reservation counter, shared across every
+   *  act-mode call in this run (Task 3). */
+  actReservation: ActReservationState;
+  /**
+   * Absolute epoch ms the run's wall-clock ceiling expires at (Global
+   * Constraints: playbook executor wall-clock is bounded by the run's
+   * REMAINING budget, not a fresh timer per playbook) — same value the SDK
+   * loop's own `wallClockTimer` aborts on (see `driveSdkLoop`), threaded
+   * through so `playbookActExecutor.ts` can enforce it independently of the
+   * SDK's `abortController` (which this synchronous hook does not observe).
+   */
+  deadlineMs: number;
 }): PreToolUseCallback {
   const {
-    run, agentName, agentAuth, guardrailPolicy, outcome, intentIds, allowedPending, sessionId,
-    executionIdPending,
+    run, agentName, agentAuth, agentKind, guardrailPolicy, outcome, intentIds, allowedPending,
+    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs,
   } = args;
 
-  return async (toolName, input) => {
-    const check = checkAgentGuardrails(toolName, input, guardrailPolicy);
+  /** Shared by the ordinary 'propose' disposition AND an act-mode downgrade
+   *  (drift/cap-exhaustion) — both record the SAME shape and, for a tier-3
+   *  call, submit the SAME action-intent approval. */
+  async function recordProposal(
+    check: { tier: number },
+    toolName: string,
+    input: Record<string, unknown>,
+    downgradeReason?: string,
+  ): Promise<{ allowed: false; error: string }> {
+    const action = readToolAction(toolName, input);
+    const entry: OutcomeProposedAction = {
+      tool: toolName,
+      ...(action ? { action } : {}),
+      args: input,
+      ...(downgradeReason ? { downgradeReason } : {}),
+    };
 
-    if (check.disposition === 'deny') {
-      const reason = check.reason ?? 'Denied by agent guardrails';
-      outcome.deniedActions.push({ tool: toolName, reason });
-      return { allowed: false, error: reason };
-    }
-
-    if (check.disposition === 'propose') {
-      const action = readToolAction(toolName, input);
-      const entry: OutcomeProposedAction = {
-        tool: toolName,
-        ...(action ? { action } : {}),
-        args: input,
-      };
-
-      // Tier gate, not a shortcut: createActionIntent throws
-      // ActionIntentTierError('tool_not_tier3') for anything tier <= 2, so a
-      // runner that funnelled every mutation through it would turn ordinary
-      // Tier-2 proposals into errors. Tier 2 proposals are recorded and stop
-      // there — there is no approval object for them.
-      let intentError: string | undefined;
-      if (check.tier === 3) {
-        try {
-          const intent = await createActionIntent(agentAuth, {
-            toolName,
-            input,
-            source: 'ai_agent',
-            orgId: run.orgId,
-            reason: `Proposed by ${agentName} for run ${run.id}`,
-          });
-          entry.intentId = intent.id;
-          // createActionIntent does NOT throw when nobody can approve: it
-          // commits the intent and immediately cancels it with
-          // `no_eligible_approvers`, returning that snapshot. Counting such an
-          // id towards `awaiting_approval` would end the run in a state that
-          // can never resolve, and point the recipients' notification at an
-          // /approvals queue the intent will never appear in. Only a genuinely
-          // pending intent is something a human still owns.
-          if (intent.status === 'pending_approval') {
-            intentIds.push(intent.id);
-          } else {
-            intentError = intent.errorCode ?? `intent ${intent.status}`;
-            entry.intentError = intentError;
-            console.warn('[aiAgentRunLoop] proposal intent was not left pending approval', {
-              runId: run.id, toolName, intentId: intent.id, status: intent.status,
-              errorCode: intent.errorCode,
-            });
-          }
-        } catch (error) {
-          // no_eligible_approvers, agent_policy_denied, … The PROPOSAL is still
-          // recorded — a reviewer needs to see what the agent wanted to do even
-          // when no approval will ever arrive — and the model is told why.
-          intentError = error instanceof Error ? error.message : String(error);
+    // Tier gate, not a shortcut: createActionIntent throws
+    // ActionIntentTierError('tool_not_tier3') for anything tier <= 2, so a
+    // runner that funnelled every mutation through it would turn ordinary
+    // Tier-2 proposals into errors. Tier 2 proposals are recorded and stop
+    // there — there is no approval object for them.
+    let intentError: string | undefined;
+    if (check.tier === 3) {
+      try {
+        const intent = await createActionIntent(agentAuth, {
+          toolName,
+          input,
+          source: 'ai_agent',
+          orgId: run.orgId,
+          reason: `Proposed by ${agentName} for run ${run.id}`,
+        });
+        entry.intentId = intent.id;
+        // createActionIntent does NOT throw when nobody can approve: it
+        // commits the intent and immediately cancels it with
+        // `no_eligible_approvers`, returning that snapshot. Counting such an
+        // id towards `awaiting_approval` would end the run in a state that
+        // can never resolve, and point the recipients' notification at an
+        // /approvals queue the intent will never appear in. Only a genuinely
+        // pending intent is something a human still owns.
+        if (intent.status === 'pending_approval') {
+          intentIds.push(intent.id);
+        } else {
+          intentError = intent.errorCode ?? `intent ${intent.status}`;
           entry.intentError = intentError;
-          console.warn('[aiAgentRunLoop] proposal could not be submitted for approval', {
-            runId: run.id, toolName, error,
+          console.warn('[aiAgentRunLoop] proposal intent was not left pending approval', {
+            runId: run.id, toolName, intentId: intent.id, status: intent.status,
+            errorCode: intent.errorCode,
           });
         }
+      } catch (error) {
+        // no_eligible_approvers, agent_policy_denied, … The PROPOSAL is still
+        // recorded — a reviewer needs to see what the agent wanted to do even
+        // when no approval will ever arrive — and the model is told why.
+        intentError = error instanceof Error ? error.message : String(error);
+        entry.intentError = intentError;
+        console.warn('[aiAgentRunLoop] proposal could not be submitted for approval', {
+          runId: run.id, toolName, error,
+        });
       }
-
-      outcome.proposedActions.push(entry);
-      return {
-        allowed: false,
-        error: intentError
-          ? `Proposal recorded but not submitted for approval: ${intentError}. Do not retry.`
-          : PROPOSAL_RECORDED_TEXT,
-      };
     }
 
+    outcome.proposedActions.push(entry);
+    return {
+      allowed: false,
+      error: intentError
+        ? `Proposal recorded but not submitted for approval: ${intentError}. Do not retry.`
+        : PROPOSAL_RECORDED_TEXT,
+    };
+  }
+
+  /** Shared by the ordinary 'allow' tail AND an act-mode 'ok' revalidation —
+   *  both write the SAME ledger row and per-tool FIFOs; only `actPin` (and
+   *  therefore the returned `context`) differs. */
+  async function recordAllowedExecution(
+    toolName: string,
+    input: Record<string, unknown>,
+    actPin: ActAssetPin | null,
+  ): Promise<{ allowed: true; context?: ToolExecutionContext }> {
     allowedPending.set(toolName, (allowedPending.get(toolName) ?? 0) + 1);
 
     // Ledger write is best-effort: the tool call is already decided ALLOWED
@@ -464,7 +538,161 @@ export function createAgentRunPreToolUse(args: {
     pending.push(executionId);
     executionIdPending.set(toolName, pending);
 
-    return { allowed: true };
+    const pinQueue = actPinPending.get(toolName) ?? [];
+    pinQueue.push(actPin);
+    actPinPending.set(toolName, pinQueue);
+
+    return actPin?.toolExecutionContext
+      ? { allowed: true, context: actPin.toolExecutionContext }
+      : { allowed: true };
+  }
+
+  return async (toolName, input) => {
+    const check = checkAgentGuardrails(toolName, input, guardrailPolicy);
+
+    if (check.disposition === 'deny') {
+      const reason = check.reason ?? 'Denied by agent guardrails';
+      outcome.deniedActions.push({ tool: toolName, reason });
+      return { allowed: false, error: reason };
+    }
+
+    if (check.disposition === 'propose') {
+      return recordProposal(check, toolName, input);
+    }
+
+    if (check.disposition === 'act') {
+      // Same pure resolver `checkAgentGuardrails` already called to reach
+      // 'act' — deterministic on the same (toolName, input), so this can
+      // only be non-null. The null branch below is defense in depth, never
+      // exercised by real dispatch: never let an 'act' disposition reach the
+      // execution tail without a manifest match backing it.
+      const op = resolveActOperation(toolName, input);
+      if (!op) {
+        const reason = `Act-mode dispatch could not re-resolve a manifest match for "${toolName}"`;
+        console.error('[aiAgentRunLoop] act disposition without a manifest match — denying', {
+          runId: run.id, toolName,
+        });
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: reason };
+      }
+
+      // Device-less mutations are denied far upstream inside
+      // `checkAgentGuardrails` itself (before the act branch is even
+      // reached), so `guardrailPolicy.deviceId` is guaranteed non-null here
+      // — this check is defense in depth, not the primary gate.
+      if (!guardrailPolicy.deviceId) {
+        const reason = 'Act-mode execution requires a device-bound run';
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: reason };
+      }
+
+      const revalidated = await revalidateActExecution({
+        run: {
+          id: run.id,
+          orgId: run.orgId,
+          agentId: run.agentId,
+          agentKind,
+          deviceId: guardrailPolicy.deviceId,
+          deviceSiteId: guardrailPolicy.deviceSiteId ?? null,
+        },
+        op,
+        toolName,
+        input,
+        reserved: actReservation,
+      });
+
+      if ('deny' in revalidated) {
+        outcome.deniedActions.push({ tool: toolName, reason: revalidated.deny });
+        return { allowed: false, error: revalidated.deny };
+      }
+
+      if ('downgrade' in revalidated) {
+        // Drift (act → shadow) or a cap-exhausted reservation — falls into
+        // the EXACT same recording path as an ordinary unmatched-mutation
+        // proposal under act mode (aiGuardrails.ts's own act branch). Also
+        // covers a CUSTOM (non-built-in) `execute_playbook` call: `pinPlaybook`
+        // (actRevalidation.ts) downgrades those to a proposal before this
+        // function is ever reached, so the executor below only ever sees a
+        // playbookId already proven built-in. `revalidated.reason` (#3826
+        // cheap nonblocking fix) is set only for a missing/malformed-identity
+        // normalizeTarget downgrade — threaded through so the proposal a
+        // human reviews carries WHY it wasn't auto-executed.
+        return recordProposal(check, toolName, input, revalidated.reason);
+      }
+
+      if (op.key === 'execute_playbook') {
+        // Task 5 (#3826): the ONLY op where the manifest owns execution. The
+        // ordinary `execute_playbook` tool is a STUB that hands the model the
+        // step list to run turn-by-turn — never a rule-equivalent shape for
+        // unattended act mode. The deterministic executor replaces it
+        // entirely: it does NOT dispatch through `recordAllowedExecution`
+        // (the SDK tool never runs), so `actPinPending`/`executionIdPending`
+        // never see an entry for this call and the post-hook's FIFO guard
+        // (`remaining <= 0`) makes its no-op safe. The outcome is recorded
+        // here, directly, in the SAME shape the post-hook would have used.
+        const target = revalidated.pin.target as Extract<ActTarget, { kind: 'playbook' }>;
+        const playbookDigest = revalidated.pin.playbookDigest;
+        if (!playbookDigest) {
+          // Defense in depth: `pinPlaybook` always sets this on an `ok`
+          // pin — never reachable via real dispatch.
+          const reason = 'Act-mode playbook execution has no pinned digest to execute against';
+          console.error('[aiAgentRunLoop] execute_playbook pin missing playbookDigest', { runId: run.id });
+          outcome.deniedActions.push({ tool: toolName, reason });
+          return { allowed: false, error: reason };
+        }
+
+        const dispatchStartedAt = Date.now();
+        const result = await executeBuiltInPlaybookForRun({
+          run: {
+            id: run.id,
+            orgId: run.orgId,
+            agentId: run.agentId,
+            agentKind,
+            deviceId: guardrailPolicy.deviceId,
+            deviceSiteId: guardrailPolicy.deviceSiteId ?? null,
+          },
+          agentAuth,
+          playbookId: target.playbookId,
+          expectedDigest: playbookDigest,
+          variables: (input.variables as Record<string, unknown> | undefined) ?? {},
+          reserved: actReservation,
+          deadlineMs,
+        });
+        const durationMs = Date.now() - dispatchStartedAt;
+
+        outcome.executedActions.push({
+          tool: toolName,
+          executionId: '(inline)',
+          result: result.execution === 'succeeded' ? 'ok' : 'failed',
+          durationMs,
+          execution: result.execution,
+          verification: result.verification,
+          ...(result.verifyDetail ? { verifyDetail: result.verifyDetail } : {}),
+          actOpKey: op.key,
+          actTargetName: actTargetSummary(target),
+        });
+        outcome.toolExecutionCount += 1;
+
+        if (result.verification === 'failed') {
+          await recordActVerifyFailureAlert({
+            run: { id: run.id, orgId: run.orgId, deviceId: guardrailPolicy.deviceId, agentId: run.agentId },
+            op: { key: op.key },
+            target,
+            detail: result.verifyDetail,
+          });
+        }
+
+        // Worded as success, matching PROPOSAL_RECORDED_TEXT's convention —
+        // the playbook already ran; a model reading "denied" here would retry.
+        return { allowed: false, error: result.summary };
+      }
+
+      // ok: the ONLY remaining path that actually dispatches — through the
+      // normal tool implementation, exactly like a plain 'allow'.
+      return recordAllowedExecution(toolName, input, revalidated.pin);
+    }
+
+    return recordAllowedExecution(toolName, input, null);
   };
 }
 
@@ -478,10 +706,14 @@ export function createAgentRunPostToolUse(args: {
   outcome: AgentRunOutcome;
   allowedPending: Map<string, number>;
   executionIdPending: Map<string, Array<string | null>>;
+  actPinPending: Map<string, Array<ActAssetPin | null>>;
+  run: { id: string; orgId: string; agentId: string; deviceId: string | null };
+  /** For `verifyActExecution`'s `executeCommand` calls — attribution only. */
+  agentUserId: string;
 }): PostToolUseCallback {
-  const { outcome, allowedPending, executionIdPending } = args;
+  const { outcome, allowedPending, executionIdPending, actPinPending, run, agentUserId } = args;
 
-  return async (toolName, input, _output, isError, durationMs) => {
+  return async (toolName, input, output, isError, durationMs) => {
     const remaining = allowedPending.get(toolName) ?? 0;
     if (remaining <= 0) return;
     allowedPending.set(toolName, remaining - 1);
@@ -501,16 +733,90 @@ export function createAgentRunPostToolUse(args: {
       }
     }
 
+    let actPin: ActAssetPin | null = null;
+    const pinQueue = actPinPending.get(toolName);
+    if (pinQueue && pinQueue.length > 0) {
+      actPin = pinQueue.shift() ?? null;
+    }
+
     const action = readToolAction(toolName, input);
-    outcome.executedActions.push({
+    const entry: OutcomeExecutedAction = {
       tool: toolName,
       ...(action ? { action } : {}),
       executionId: executionId ?? '(inline)',
       result: isError ? 'failed' : 'ok',
       durationMs,
-    });
+    };
+
+    // Recorded BEFORE the verification await below, not after: this whole
+    // hook runs under `safePostToolUse`'s POST_TOOL_USE_TIMEOUT_MS cap
+    // (aiAgentSdkTools.ts), which is independent of — and can be shorter
+    // than — `verifyActExecution`'s own per-read budget. If the outer cap
+    // fires while a verify read is still in flight, the entry must already
+    // be in `outcome.executedActions` (the action really did execute) rather
+    // than lost entirely. The object is mutated in place as verification
+    // resolves, never pushed twice.
+    outcome.executedActions.push(entry);
     outcome.toolExecutionCount += 1;
+
+    if (actPin && run.deviceId) {
+      try {
+        const verified = await verifyActExecution({
+          pin: actPin,
+          toolOutput: output,
+          isError,
+          run: { id: run.id, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId },
+          agentUserId,
+        });
+        entry.execution = verified.execution;
+        entry.verification = verified.verification;
+        if (verified.verifyDetail) entry.verifyDetail = verified.verifyDetail;
+        entry.actOpKey = actPin.op.key;
+        entry.actTargetName = actTargetSummary(actPin.target);
+
+        if (verified.verification === 'failed') {
+          await recordActVerifyFailureAlert({
+            run: { id: run.id, orgId: run.orgId, deviceId: run.deviceId, agentId: run.agentId },
+            op: { key: actPin.op.key },
+            target: actPin.target,
+            detail: verified.verifyDetail,
+          });
+        }
+      } catch (error) {
+        // verifyActExecution already catches its own read-back failures —
+        // this is a genuinely unexpected bug in the verify path itself.
+        // Never let it turn a completed tool call into a crashed run.
+        console.error('[aiAgentRunLoop] act verification failed unexpectedly (non-fatal)', {
+          runId: run.id, toolName, error,
+        });
+        entry.execution = 'unknown';
+        entry.verification = 'inconclusive';
+        entry.actOpKey = actPin.op.key;
+        entry.actTargetName = actTargetSummary(actPin.target);
+      }
+    }
   };
+}
+
+/**
+ * Run-level verdict rollup, computed once at finish over every executed
+ * action's (execution, verification) pair — see `AgentRunOutcome.runVerdict`.
+ * Pure; exported for direct unit coverage.
+ */
+export function computeRunVerdict(
+  outcome: Pick<AgentRunOutcome, 'executedActions' | 'proposedActions'>,
+): AgentRunVerdict {
+  const acted = outcome.executedActions.filter((a) => a.verification !== undefined);
+  if (acted.length === 0) return 'no_action';
+  // The rollup is over the (execution, verification) PAIR, not verification
+  // alone: a dispatch that itself failed/timed out/is unknown is not "clean"
+  // even when its read-back reports 'passed' (rare, but not proof), and a
+  // read-back that never ran ('skipped' — e.g. dispatch failed before the
+  // script could produce an exit code) must not roll up as a quiet success
+  // just because it isn't literally 'failed'/'inconclusive'.
+  const allClean = acted.every((a) => a.verification === 'passed' && a.execution === 'succeeded');
+  if (!allClean) return 'needs_attention';
+  return outcome.proposedActions.length > 0 ? 'partial' : 'remediated';
 }
 
 interface SdkUsage {
@@ -621,6 +927,13 @@ interface LoopResult {
 async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<LoopResult> {
   const { run } = ctx;
   const limits = effective.limits;
+  // Computed here (not by the SDK-loop timer below) so the pre-hook's
+  // act-mode playbook executor (Task 5, #3826) can enforce the SAME
+  // wall-clock ceiling independently of the SDK's `abortController` — a
+  // synchronous tool-use hook does not observe that abort while it's still
+  // awaiting inside `executeBuiltInPlaybookForRun`.
+  const wallClockMs = Math.max(1, Math.round(limits.wallClockSeconds * 1000));
+  const deadlineMs = Date.now() + wallClockMs;
 
   const llm = await resolveLlmConfigForOrg(run.orgId);
   if (llm.source === 'unavailable') {
@@ -695,12 +1008,20 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   const intentIds: string[] = [];
   const allowedPending = new Map<string, number>();
   const executionIdPending = new Map<string, Array<string | null>>();
+  const actPinPending = new Map<string, Array<ActAssetPin | null>>();
+  // Shared across every act-mode call in THIS run — see actRevalidation.ts.
+  const actReservation: ActReservationState = { count: 0 };
 
   const preToolUse = createAgentRunPreToolUse({
-    run, agentName: ctx.agent.name, agentAuth, guardrailPolicy, outcome, intentIds, allowedPending,
-    sessionId: ctx.sessionId, executionIdPending,
+    run, agentName: ctx.agent.name, agentAuth, agentKind: ctx.agent.kind, guardrailPolicy, outcome,
+    intentIds, allowedPending, sessionId: ctx.sessionId, executionIdPending, actPinPending,
+    actReservation, deadlineMs,
   });
-  const postToolUse = createAgentRunPostToolUse({ outcome, allowedPending, executionIdPending });
+  const postToolUse = createAgentRunPostToolUse({
+    outcome, allowedPending, executionIdPending, actPinPending,
+    run: { id: run.id, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId },
+    agentUserId: agentAuth.user.id,
+  });
 
   // No getActiveSession: a headless run has no ActiveSession, and the
   // session-aware tools (M365/Google) correctly refuse without one.
@@ -710,7 +1031,6 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   const abortController = new AbortController();
   let wallClockExceeded = false;
   let budgetExceeded = false;
-  const wallClockMs = Math.max(1, Math.round(limits.wallClockSeconds * 1000));
   const wallClockTimer = setTimeout(() => {
     wallClockExceeded = true;
     abortController.abort();
@@ -931,6 +1251,10 @@ export async function executeAgentRun(runId: string): Promise<void> {
   try {
     const result = await driveSdkLoop(ctx, effective);
     const { outcome, intentIds } = result;
+    // Computed once here so every terminal path below (failure, ceiling, or
+    // normal finish) carries the same rollup — `finishRun` serializes
+    // `result.outcome` verbatim into the DB row.
+    outcome.runVerdict = computeRunVerdict(outcome);
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
@@ -1116,6 +1440,23 @@ async function isStoppedBeforeStart(
   agentId: string,
 ): Promise<boolean> {
   if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) return true;
+
+  // Wave 5A Task 2 (#3827): refresh the DB kill-state cache here, at
+  // admission, so the run's whole tool-dispatch loop — which reads the
+  // cached snapshot synchronously through `checkAgentGuardrails` — starts
+  // from state at most 5s stale (`aiKillState.ts`'s own staleness-bound
+  // note). Gate admission on it directly too, matching this function's own
+  // "kill switch" doc comment and the env-flag check immediately above:
+  // belt-and-suspenders with the guardrail's per-dispatch check, not a
+  // replacement for it.
+  const killState = await readAiKillState();
+  if (killState.killed) {
+    console.warn('[aiAgentRunLoop] AI kill switch is engaged — refusing to start', {
+      orgId, kind, agentId, epoch: killState.epoch,
+    });
+    return true;
+  }
+
   try {
     const current = await resolveEffectiveAgentSystem(orgId, kind);
     if (!current) return true;

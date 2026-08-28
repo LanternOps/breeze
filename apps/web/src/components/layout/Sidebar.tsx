@@ -33,6 +33,7 @@ import {
   BarChart3,
   BrainCircuit,
   Bot,
+  History,
   Activity,
   Layers,
   ScrollText,
@@ -298,6 +299,11 @@ export const navSections: NavSection[] = [
       { name: 'Organizations', labelKey: 'nav.organizations', href: '/settings/organizations', icon: Building2, requiredPermission: { resource: 'organizations', action: 'read' } },
       { name: 'AI Usage & Budget', labelKey: 'nav.aiUsageBudget', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
       { name: 'AI Agents', labelKey: 'nav.aiAgents', href: '/settings/ai-agents', icon: Bot, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Execution-trace runs list/detail (Wave 6 PR 1, #3828) — deliberately lives
+      // under /ai-agents/runs (file-routed, not /settings/*) since a run is fleet
+      // activity, not agent configuration, but registers as a sibling item in this
+      // same Settings section per the plan (do not invent a new left-nav section).
+      { name: 'Agent Runs', labelKey: 'nav.aiAgentRuns', href: '/ai-agents/runs', icon: History, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       { name: 'Custom Fields', labelKey: 'nav.customFields', href: '/settings/custom-fields', icon: ListChecks, requiredPermission: { resource: 'organizations', action: 'read' } },
       { name: 'Variables', labelKey: 'nav.variables', href: '/settings/variables', icon: Braces, requiredPermission: { resource: 'variables', action: 'read' } },
       { name: 'Saved Filters', labelKey: 'nav.savedFilters', href: '/settings/filters', icon: Filter },

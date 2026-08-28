@@ -13,6 +13,7 @@ import {
   varchar,
 } from 'drizzle-orm/pg-core';
 import type {
+  AiAgentActAssets,
   AiAgentKind,
   AiAgentLimits,
   AiAgentMode,
@@ -48,6 +49,11 @@ export const aiAgents = pgTable('ai_agents', {
   limits: jsonb('limits').$type<Partial<AiAgentLimits>>().notNull().default({}),
   triggers: jsonb('triggers').$type<Partial<AiAgentTriggers>>().notNull().default({}),
   recipients: jsonb('recipients').$type<Partial<AiAgentRecipients>>().notNull().default({}),
+  // Wave 4 Part B (Task 6, #3826): per-script act-mode authorization — see
+  // AiAgentActAssets's docstring. New column (migrations/2026-09-15-ai-agents-act-assets.sql);
+  // registered CORE_TENANT_EXPORT_POLICY excludedOpen (open jsonb container,
+  // same bucket as every other policy column on this table).
+  actAssets: jsonb('act_assets').$type<Partial<AiAgentActAssets>>().notNull().default({}),
   instructions: text('instructions'),
   cooldownSeconds: integer('cooldown_seconds').notNull().default(900),
   disabledAt: timestamp('disabled_at', { withTimezone: true }),
@@ -101,6 +107,11 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   idOrgUq: unique('ai_agent_runs_id_org_id_key').on(table.id, table.orgId),
   agentQueuedIdx: index('ai_agent_runs_agent_queued_idx').on(table.agentId, table.queuedAt.desc()),
   orgQueuedIdx: index('ai_agent_runs_org_queued_idx').on(table.orgId, table.queuedAt.desc()),
+  // Wave 6 PR 1 (#3828, migrations/2026-09-17-ai-agent-runs-keyset-index.sql):
+  // covers the org-wide keyset list's (org_id, queued_at DESC, id DESC) walk.
+  // orgQueuedIdx above lacks the id tiebreaker a keyset needs and is kept
+  // (not dropped) — see the migration header for why.
+  orgQueuedIdIdx: index('ai_agent_runs_org_queued_id_idx').on(table.orgId, table.queuedAt.desc(), table.id.desc()),
   deviceIdx: index('ai_agent_runs_device_id_idx').on(table.deviceId),
 }));
 

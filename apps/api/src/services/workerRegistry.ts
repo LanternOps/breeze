@@ -969,6 +969,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return { init: m.initializeContractWorkers, shutdown: m.shutdownContractWorkers };
     },
   },
+  {
+    // Wave 5B (#3827 Task 4): 48h sweep of `ai_unattended_exposure`, the
+    // org-wide blast-cap ledger the act + policy-decide lanes share. No
+    // route graph / socket import anywhere in its closure — `global`, same
+    // placement as every other retention worker above.
+    name: 'aiUnattendedExposureRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiUnattendedExposureRetention');
+      return { init: m.initializeAiUnattendedExposureRetention, shutdown: m.shutdownAiUnattendedExposureRetention };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {

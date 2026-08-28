@@ -105,7 +105,7 @@ describe('deliverRunFinishedNotifications', () => {
       type: 'ai',
       title: 'Agent run finished',
       message: 'Front Desk Triage: Investigated the disk alert.',
-      link: null,
+      link: `/ai-agents/runs/${RUN_ID}`,
       dedupeKey: `agent-run:${RUN_ID}`,
       metadata: {
         runId: RUN_ID,
@@ -118,7 +118,7 @@ describe('deliverRunFinishedNotifications', () => {
     });
   });
 
-  it('links to /approvals only when the run left intents pending', async () => {
+  it('links to the run detail page even when the run left intents pending', async () => {
     queueRows('ai_agent_runs', [{ ...baseRun, status: 'awaiting_approval', intentIds: [INTENT_ID] }]);
     queueRows('ai_agents', [baseAgent]);
     resolveRecipientUserIds.mockResolvedValue([USER_A]);
@@ -126,7 +126,7 @@ describe('deliverRunFinishedNotifications', () => {
     await deliverRunFinishedNotifications(RUN_ID);
 
     const [input] = createNotification.mock.calls[0]!;
-    expect((input as { link: string | null }).link).toBe('/approvals');
+    expect((input as { link: string | null }).link).toBe(`/ai-agents/runs/${RUN_ID}`);
     expect((input as { metadata: { status: string } }).metadata.status).toBe('awaiting_approval');
   });
 

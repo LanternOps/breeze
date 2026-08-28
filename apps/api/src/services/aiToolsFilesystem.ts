@@ -11,7 +11,7 @@
  */
 
 import { db } from '../db';
-import { devices, deviceFilesystemCleanupRuns } from '../db/schema';
+import { devices, deviceFilesystemCleanupRuns, users } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -250,6 +250,20 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, action === 'execute');
       if ('error' in access) return JSON.stringify({ error: access.error });
 
+      // Review fix (#3826 Task 5 follow-up): `device_filesystem_cleanup_runs
+      // .requested_by` FK-references users.id (db/schema/filesystem.ts:47),
+      // but an `ai_agent` principal's `auth.user.id` is the agent's
+      // `ai_agents.id`, not a users row (agentAuthContext.ts) — inserting it
+      // verbatim dies on 23503, which is exactly what made the shipped Disk
+      // Cleanup built-in's `preview` (and `execute`) act step unreachable
+      // under act mode. Same probe-degrade precedent as
+      // aiToolsPlaybooks.ts's `triggeredByUserId` and commandQueue.ts:855-889:
+      // one indexed PK lookup, and a non-resolving id degrades the FK column
+      // to NULL. Agent attribution already lives on the run/outcome, not on
+      // this column.
+      const [userRow] = await db.select({ id: users.id }).from(users).where(eq(users.id, auth.user.id)).limit(1);
+      const safeRequestedBy = userRow ? auth.user.id : null;
+
       const snapshot = await getLatestFilesystemCleanupSnapshot(deviceId);
       if (!snapshot) {
         return JSON.stringify({ message: 'No filesystem analysis snapshot available. Run analyze_disk_usage with refresh=true first.' });
@@ -268,7 +282,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           .values({
             deviceId,
             orgId: access.device.orgId,
-            requestedBy: auth.user.id,
+            requestedBy: safeRequestedBy,
             plan: {
               snapshotId: snapshot.id,
               categories: requestedCategories ?? safeCleanupCategories,
@@ -336,7 +350,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         .values({
           deviceId,
           orgId: access.device.orgId,
-          requestedBy: auth.user.id,
+          requestedBy: safeRequestedBy,
           approvedAt: new Date(),
           plan: {
             snapshotId: snapshot.id,
