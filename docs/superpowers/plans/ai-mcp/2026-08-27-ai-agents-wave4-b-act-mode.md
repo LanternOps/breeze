@@ -158,8 +158,8 @@ Tests (matrix, all against the REAL manifest): act+restart → act; act+stop →
 
 ### Task 9: Verification + PR
 
-- [ ] Full api suite + shared suite + typecheck + web tests (`pnpm --filter @breeze/web test` — scope to touched components if the full suite is impractical, but run the i18n parity test explicitly); contract suites (closure/registry/dispatch-boundary/envComposeParity) green; if a migration was added: migration-naming check, export-policy suite note for CI (integration-only).
-- [ ] Grep sweeps: no act path reaches `execute_command`; no manifest key added beyond the locked list; every `disposition === 'act'` consumer handles downgrade/deny.
+- [x] Full api suite + shared suite + typecheck + web tests (`pnpm --filter @breeze/web test` — scope to touched components if the full suite is impractical, but run the i18n parity test explicitly); contract suites (closure/registry/dispatch-boundary/envComposeParity) green; if a migration was added: migration-naming check, export-policy suite note for CI (integration-only).
+- [x] Grep sweeps: no act path reaches `execute_command`; no manifest key added beyond the locked list; every `disposition === 'act'` consumer handles downgrade/deny.
 - [ ] Tick checkboxes. **Open the PR**: `feature/3821-ai-agents/wave-3826-act` → main, `Closes #3826`, body: the locked manifest table, the execution-integration deviation (normal tool path + pre/post hooks vs literal manifest-executes), verify semantics, activation prerequisites, migration yes/no, and rollout guidance (act requires BREEZE_AI_AGENTS_ENABLED + per-agent opt-in + partner baseline permitting). **Stop after opening the PR.**
 
 ## Self-Review Notes
