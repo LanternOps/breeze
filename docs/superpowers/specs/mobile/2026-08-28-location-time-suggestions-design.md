@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-28
 **Source:** Todd, 2026-08-28 — "the app can know their location, the address of the clients, and just simply enters the time against the client." Refined in discussion to one-tap confirm + a selector when several sites match.
-**Status:** Drafted — awaiting plan. Depends on `LanternOps/breeze#3206` W03 (time-entry client) and W05 (timer bar).
+**Status:** Drafted — awaiting plan. Roadmap item `LanternOps/breeze#4186`. Depends on `LanternOps/breeze#3206` W03 (time-entry client) and W05 (timer bar).
 **Parent feature:** Mobile ticketing & time entry (`#3206`). This is a follow-on, not a wave of that plan — it needs backend changes that plan deliberately excludes.
 
 ## 1. Problem & positioning
