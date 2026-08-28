@@ -40,14 +40,18 @@ import {
 } from '../services/sso';
 import { mintStepUpGrant } from '../services/mfaStepUpGrant';
 import {
+  bindIssuedUserSession,
+  createSession,
   getUserEpochs,
   getRefreshFamily,
+  issueUserSession,
   rateLimiter,
   getRedis,
   verifyPassword,
   hashPassword,
   isAccountLocked,
   clearAccountFailures,
+  type UserSessionIdentity,
 } from '../services';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -67,11 +71,13 @@ import { envFlag } from '../utils/envFlag';
 import {
   setRefreshTokenCookie,
   getCookieValue,
+  auditLogin,
   authResponseFloorPromise,
   genericAuthError,
   auditUserLoginFailure,
   userHasUsablePasskey,
   userRequiresSetup,
+  installAuthorizedUserSessionCookies,
   type PendingMfaRecord,
 } from './auth/helpers';
 import { recordAccountFailureAndMaybeNotify } from './auth/login';
@@ -85,6 +91,25 @@ import {
   hashSsoPendingLinkToken,
   SSO_PENDING_LINK_TTL_SECONDS,
 } from '../services/ssoPendingLink';
+import { requestAuthBinding } from './auth/binding';
+import {
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceCapabilityError,
+  AuthIssuanceConflictError,
+  beginAuthIssuance,
+  cancelAuthIssuance,
+  finishAuthIssuance,
+} from '../services/authBrowserTransition';
+import {
+  SsoCallbackStateUnavailableError,
+  checkSsoProviderAuthority,
+  claimSsoCallbackIssuance,
+  consumeDurableSsoExchangeGrant,
+  createDurableSsoExchangeGrant,
+  lockSsoProviderAuthority,
+  withLockedSsoProviderAuthority,
+} from '../services/ssoBrowserTransition';
 
 export const ssoRoutes = new Hono();
 
@@ -315,92 +340,37 @@ function emailDomainOf(email: string): string | null {
 // Helper Functions
 // ============================================
 
-type SsoTokenExchangeGrant = {
-  accessToken: string;
-  refreshToken: string;
-  expiresInSeconds: number;
-  createdAtMs: number;
-  expiresAtMs: number;
-};
-
-const ssoTokenExchangeGrants = new Map<string, SsoTokenExchangeGrant>();
-const SSO_TOKEN_GRANT_TTL_MS = 2 * 60 * 1000;
-const SSO_TOKEN_GRANT_CAP = 20000;
-const SSO_TOKEN_SWEEP_INTERVAL_MS = 60 * 1000;
-
-let lastSsoTokenSweepAtMs = 0;
-
-function capMapByOldest<T>(
-  map: Map<string, T>,
-  cap: number,
-  getAgeMs: (value: T) => number
-) {
-  if (map.size <= cap) {
-    return;
+class SsoLoginFinalizationError extends Error {
+  constructor(readonly location: string) {
+    super(`SSO login finalization rejected: ${location}`);
+    this.name = 'SsoLoginFinalizationError';
   }
+}
 
-  const overflow = map.size - cap;
-  const entries = Array.from(map.entries())
-    .sort(([, left], [, right]) => getAgeMs(left) - getAgeMs(right));
-
-  for (let i = 0; i < overflow; i++) {
-    const key = entries[i]?.[0];
-    if (key) {
-      map.delete(key);
+async function captureSsoBrowserTransition(c: any): Promise<
+  | { transitionId: string; generation: number }
+  | { response: Response }
+> {
+  let capability: Awaited<ReturnType<typeof beginAuthIssuance>> | undefined;
+  try {
+    capability = await beginAuthIssuance(requestAuthBinding(c));
+    const captured = {
+      transitionId: capability.transitionId,
+      generation: capability.generation,
+    };
+    await cancelAuthIssuance(capability);
+    capability = undefined;
+    return captured;
+  } catch (error) {
+    if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+    if (error instanceof AuthBindingRotationRequiredError
+      || error instanceof AuthBindingUnavailableError
+      || error instanceof AuthIssuanceConflictError
+      || error instanceof AuthIssuanceCapabilityError) {
+      return { response: c.json({ error: 'Authentication bootstrap required' }, 409) };
     }
+    throw error;
   }
-}
-
-function sweepSsoTokenExchangeGrants(nowMs: number = Date.now()) {
-  if (nowMs - lastSsoTokenSweepAtMs < SSO_TOKEN_SWEEP_INTERVAL_MS) {
-    return;
-  }
-
-  lastSsoTokenSweepAtMs = nowMs;
-  for (const [code, grant] of ssoTokenExchangeGrants.entries()) {
-    if (grant.expiresAtMs <= nowMs) {
-      ssoTokenExchangeGrants.delete(code);
-    }
-  }
-
-  capMapByOldest(ssoTokenExchangeGrants, SSO_TOKEN_GRANT_CAP, (grant) => grant.createdAtMs);
-}
-
-function createSsoTokenExchangeGrant(
-  accessToken: string,
-  refreshToken: string,
-  expiresInSeconds: number
-): string {
-  const nowMs = Date.now();
-  sweepSsoTokenExchangeGrants(nowMs);
-
-  const code = nanoid(48);
-  ssoTokenExchangeGrants.set(code, {
-    accessToken,
-    refreshToken,
-    expiresInSeconds,
-    createdAtMs: nowMs,
-    expiresAtMs: nowMs + SSO_TOKEN_GRANT_TTL_MS
-  });
-
-  capMapByOldest(ssoTokenExchangeGrants, SSO_TOKEN_GRANT_CAP, (grant) => grant.createdAtMs);
-  return code;
-}
-
-function consumeSsoTokenExchangeGrant(code: string): SsoTokenExchangeGrant | null {
-  sweepSsoTokenExchangeGrants();
-
-  const grant = ssoTokenExchangeGrants.get(code);
-  if (!grant) {
-    return null;
-  }
-
-  ssoTokenExchangeGrants.delete(code);
-  if (grant.expiresAtMs <= Date.now()) {
-    return null;
-  }
-
-  return grant;
 }
 
 // normalizeRedirectPath moved to ./auth/ssoLinkCompletion (shared with the
@@ -631,50 +601,6 @@ async function revalidateSsoDefaultRole(params: {
 }
 
 type SsoCallbackMode = 'login' | 'link' | 'reauth';
-
-/**
- * SR2-11: a pending SSO transaction is valid only against the provider
- * GENERATION it was created under, and only while the provider is still usable
- * for its own mode.
- *
- * Status per mode mirrors each mode's INIT gate: /login/* requires
- * status='active', /link/start requires status!=='inactive' (a `testing`
- * provider may be linked). Neither was checked at the callback before this
- * change — a provider disabled inside the <=10-minute state TTL still completed
- * a full login or link.
- *
- * #4018: reauth mode shares LINK's rule — /reauth/start also admits a
- * `testing` provider and refuses only `inactive` — so it deliberately falls
- * outside the `mode === 'login'` branch below, which needs no change.
- *
- * A NULL providerVersion (a row written before the column existed) is a REJECT,
- * not a pass: those are exactly the unbound sessions this change invalidates.
- *
- * PURE function over already-fetched rows — adds NO db access. Called from the
- * callback right after the org-XOR-partner axis guard and before any
- * default-role work, so a stale/disabled transaction never reaches JIT logic.
- */
-function checkProviderGeneration(
-  provider: typeof ssoProviders.$inferSelect,
-  session: typeof ssoSessions.$inferSelect,
-  mode: SsoCallbackMode,
-):
-  | { ok: true }
-  | { ok: false; reason: 'provider_inactive' | 'provider_not_usable' | 'provider_version_missing' | 'provider_version_mismatch' } {
-  if (provider.status === 'inactive') {
-    return { ok: false, reason: 'provider_inactive' };
-  }
-  if (mode === 'login' && provider.status !== 'active') {
-    return { ok: false, reason: 'provider_not_usable' };
-  }
-  if (session.providerVersion == null) {
-    return { ok: false, reason: 'provider_version_missing' };
-  }
-  if (session.providerVersion !== provider.configVersion) {
-    return { ok: false, reason: 'provider_version_mismatch' };
-  }
-  return { ok: true };
-}
 
 type LinkRejectReason =
   | 'link_binding_missing'
@@ -2441,6 +2367,8 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
   const pkce = generatePKCEChallenge();
   const state = generateState();
   const nonce = generateNonce();
+  const browserTransition = await captureSsoBrowserTransition(c);
+  if ('response' in browserTransition) return browserTransition.response;
 
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
   await withSystemDbAccessContext(async () =>
@@ -2452,6 +2380,8 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
       redirectUrl,
       // SR2-11: snapshot the generation this session was created under.
       providerVersion: provider.configVersion,
+      browserTransitionId: browserTransition.transitionId,
+      browserGeneration: browserTransition.generation,
       expiresAt
     })
   );
@@ -2543,6 +2473,8 @@ ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) 
   const pkce = generatePKCEChallenge();
   const state = generateState();
   const nonce = generateNonce();
+  const browserTransition = await captureSsoBrowserTransition(c);
+  if ('response' in browserTransition) return browserTransition.response;
 
   // Store session for callback verification
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
@@ -2555,6 +2487,8 @@ ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) 
       redirectUrl,
       // SR2-11: snapshot the generation this session was created under.
       providerVersion: provider.configVersion,
+      browserTransitionId: browserTransition.transitionId,
+      browserGeneration: browserTransition.generation,
       expiresAt
     })
   );
@@ -2618,25 +2552,32 @@ ssoRoutes.get('/callback', async (c) => {
     return c.redirect('/login?error=invalid_callback');
   }
 
-  // Find, validate, and CLAIM the session atomically. Deleting with RETURNING in
-  // a single statement makes the state single-use: a captured state cannot be
-  // replayed within its TTL, and a concurrent replay loses the race (only one
-  // delete returns the row). RLS: the public callback runs without a request
-  // scope, so wrap the claim in system scope like the rest of this handler.
-  const [session] = await withSystemDbAccessContext(async () =>
-    db
-      .delete(ssoSessions)
-      .where(and(
-        eq(ssoSessions.state, state),
-        gt(ssoSessions.expiresAt, new Date())
-      ))
-      .returning()
-  );
-
-  if (!session) {
+  let callbackClaim: Awaited<ReturnType<typeof claimSsoCallbackIssuance>>;
+  try {
+    callbackClaim = await claimSsoCallbackIssuance(state);
+  } catch (claimError) {
+    if (!(claimError instanceof AuthBindingUnavailableError)
+      && !(claimError instanceof AuthIssuanceConflictError)
+      && !(claimError instanceof AuthIssuanceCapabilityError)
+      && !(claimError instanceof SsoCallbackStateUnavailableError)) throw claimError;
     clearStateCookie();
     return c.redirect('/login?error=session_expired');
   }
+  if (!callbackClaim) {
+    clearStateCookie();
+    return c.redirect('/login?error=session_expired');
+  }
+  const session = callbackClaim.session;
+  let loginCapability = callbackClaim.kind === 'login'
+    ? callbackClaim.capability
+    : undefined;
+  const abandonLoginClaim = async () => {
+    if (!loginCapability) return;
+    await cancelAuthIssuance(loginCapability).catch(() => undefined);
+    loginCapability = undefined;
+  };
+
+  try {
 
   // Get provider. System context required: the callback is unauthenticated
   // (no request scope exists yet), so a bare `db` read here silently 0-rows
@@ -2676,7 +2617,10 @@ ssoRoutes.get('/callback', async (c) => {
   const callbackMode: SsoCallbackMode =
     session.reauthUserId ? 'reauth' : session.linkUserId ? 'link' : 'login';
 
-  const generation = checkProviderGeneration(provider, session, callbackMode);
+  const generation = checkSsoProviderAuthority(provider, {
+    providerVersion: session.providerVersion,
+    mode: callbackMode,
+  });
   if (!generation.ok) {
     writeRouteAudit(c, {
       orgId: provider.orgId,
@@ -2745,7 +2689,6 @@ ssoRoutes.get('/callback', async (c) => {
     validatedDefaultRoleId = defaultRole.id;
   }
 
-  try {
     const config = getOIDCConfig(provider);
     const callbackUri = buildSsoCallbackUri();
 
@@ -3042,7 +2985,11 @@ ssoRoutes.get('/callback', async (c) => {
     // and BEFORE the login-path user resolution. Link mode NEVER mints tokens,
     // NEVER creates users, and NEVER touches login's identity resolution.
     if (session.linkUserId) {
-      const outcome = await withSystemDbAccessContext(async () => {
+      const lockedOutcome = await withLockedSsoProviderAuthority({
+        providerId: provider.id,
+        providerVersion: session.providerVersion,
+        mode: 'link',
+      }, async (tx) => {
         // SR2-11b: live re-check of the binding captured at /link/start.
         const binding = await validateSessionBinding(session, provider, session.linkUserId!);
         if (!binding.ok) {
@@ -3059,7 +3006,7 @@ ssoRoutes.get('/callback', async (c) => {
 
         // (provider, sub) must not already belong to someone else — a link must
         // never overwrite or hijack another user's identity.
-        const [existing] = await db
+        const [existing] = await tx
           .select({ id: userSsoIdentities.id, userId: userSsoIdentities.userId })
           .from(userSsoIdentities)
           .where(and(
@@ -3072,7 +3019,7 @@ ssoRoutes.get('/callback', async (c) => {
         }
 
         if (!existing) {
-          await db.insert(userSsoIdentities).values({
+          await tx.insert(userSsoIdentities).values({
             userId: linkingUser.id,
             providerId: provider.id,
             externalId: externalSub,
@@ -3088,6 +3035,16 @@ ssoRoutes.get('/callback', async (c) => {
         }
         return { ok: true as const };
       });
+      const outcome = lockedOutcome.ok
+        ? lockedOutcome.value
+        : {
+            error: (lockedOutcome.reason === 'provider_inactive'
+              || lockedOutcome.reason === 'provider_not_found'
+              || lockedOutcome.reason === 'provider_not_usable'
+              ? 'provider_inactive'
+              : 'config_changed') as 'provider_inactive' | 'config_changed',
+            auditReason: lockedOutcome.reason,
+          };
 
       clearStateCookie();
       if ('error' in outcome) {
@@ -3122,7 +3079,12 @@ ssoRoutes.get('/callback', async (c) => {
       return c.redirect('/settings/profile?ssoLinked=1');
     }
 
-    let user = await withSystemDbAccessContext(async () => {
+    if (!loginCapability) {
+      throw new AuthIssuanceCapabilityError();
+    }
+    const finalized = await finishAuthIssuance(loginCapability, async (tx) => {
+      let provisionedRoleId: string | null = null;
+      let user = await withSystemDbAccessContext(async () => {
       const [link] = await db
         .select({ userId: userSsoIdentities.userId })
         .from(userSsoIdentities)
@@ -3190,8 +3152,7 @@ ssoRoutes.get('/callback', async (c) => {
               partnerId: provider.partnerId,
             },
           });
-          clearStateCookie();
-          return c.redirect('/login?error=sso_email_unverified');
+          throw new SsoLoginFinalizationError('/login?error=sso_email_unverified');
         }
       }
 
@@ -3219,8 +3180,7 @@ ssoRoutes.get('/callback', async (c) => {
             partnerId: provider.partnerId,
           },
         });
-        clearStateCookie();
-        return c.redirect('/login?error=sso_domain_unverified');
+        throw new SsoLoginFinalizationError('/login?error=sso_domain_unverified');
       }
     }
 
@@ -3281,28 +3241,19 @@ ssoRoutes.get('/callback', async (c) => {
             .limit(1)
         );
         if (hasPassword) {
-          // #4067 link-on-first-SSO-login. The refusal to AUTO-link stays —
-          // that's the account-takeover guard above — but it is no longer a
-          // dead end: park the VERIFIED IdP identity in a short-lived pending
-          // record and send the user to a "connect your sign-in" page that
-          // demands the account password (and, for MFA-enrolled users, a
-          // Breeze-held second factor) before the link is created. Under
-          // enforce_sso the old sso_link_required bounce was a hard lockout:
-          // the banner told the user to password-login, which
-          // assertPasswordAuthAllowedBySso forbids tenant-wide.
-          //
-          // Entered for EVERY password-holding match — including one already
-          // linked to a different provider: multiple provider links are
-          // legitimate (the Connect SSO flow supports them), and the other
-          // link's existence doesn't prove the user can sign in through it.
-          // The passwordless other-provider case below keeps the legacy
-          // refusal (no password exists to prove ownership with).
+          // Preserve mainline's link-on-first-login ceremony while keeping the
+          // branch's guarded issuer: park the verified IdP assertion together
+          // with the exact browser generation claimed by this callback. The
+          // delayed password/MFA finalizer must reclaim that generation before
+          // it can issue a Breeze session.
           try {
             const { rawToken } = await createSsoPendingLink({
               userId: byEmail.id,
               userEmail: byEmail.email,
               authEpoch: byEmail.authEpoch,
               mfaEpoch: byEmail.mfaEpoch,
+              browserTransitionId: loginCapability!.transitionId,
+              browserGeneration: loginCapability!.generation,
               providerId: provider.id,
               providerOrgId: provider.orgId ?? null,
               providerPartnerId: provider.partnerId ?? null,
@@ -3335,18 +3286,16 @@ ssoRoutes.get('/callback', async (c) => {
             });
             clearStateCookie();
             c.header('Set-Cookie', buildSsoPendingLinkCookie(rawToken), { append: true });
-            return c.redirect('/auth/connect-sso');
-          } catch (err) {
-            // Fail closed to the legacy bounce — never auto-link, never mint.
-            console.error('[sso/callback] failed to park pending link; falling back to sso_link_required:', err);
-            captureException(err, c);
-            clearStateCookie();
-            return c.redirect('/login?error=sso_link_required');
+            throw new SsoLoginFinalizationError('/auth/connect-sso');
+          } catch (error) {
+            if (error instanceof SsoLoginFinalizationError) throw error;
+            console.error('[sso/callback] failed to park pending link; falling back to sso_link_required:', error);
+            captureException(error, c);
+            throw new SsoLoginFinalizationError('/login?error=sso_link_required');
           }
         }
         if (otherProviderLink) {
-          clearStateCookie();
-          return c.redirect('/login?error=sso_link_required');
+          throw new SsoLoginFinalizationError('/login?error=sso_link_required');
         }
         // Safe: an SSO-only account with no conflicting credential.
         user = byEmail;
@@ -3358,19 +3307,16 @@ ssoRoutes.get('/callback', async (c) => {
     // there is no account to log in — the tech must be invited/provisioned out
     // of band. Never auto-provision on the partner axis.
     if (!user && provider.partnerId) {
-      clearStateCookie();
-      return c.redirect('/login?error=invite_required');
+      throw new SsoLoginFinalizationError('/login?error=invite_required');
     }
 
     if (!user) {
       if (!provider.autoProvision) {
-        clearStateCookie();
-        return c.redirect('/login?error=user_not_found');
+        throw new SsoLoginFinalizationError('/login?error=user_not_found');
       }
 
       if (!validatedDefaultRoleId) {
-        clearStateCookie();
-        return c.redirect('/login?error=default_role_required');
+        throw new SsoLoginFinalizationError('/login?error=default_role_required');
       }
 
       // SR2-10: re-validate the standing delegation against LIVE state at the
@@ -3412,8 +3358,7 @@ ssoRoutes.get('/callback', async (c) => {
             remediation: 're-save the provider defaultRoleId as a current admin entitled to grant it',
           },
         });
-        clearStateCookie();
-        return c.redirect('/login?error=invalid_provider_configuration');
+        throw new SsoLoginFinalizationError('/login?error=invalid_provider_configuration');
       }
 
       // Reachable on the ORG axis ONLY — the partner axis returned
@@ -3434,8 +3379,8 @@ ssoRoutes.get('/callback', async (c) => {
       // NOT NULL `organizations.partner_id` column guarantees a real row is never
       // null), so it fails closed exactly like the old re-query's `!providerOrg` did.
       const provisionOrgPartnerId: string | null = jitRole.orgPartnerId;
-      const newUser = provisionOrgPartnerId === null ? null : await withSystemDbAccessContext(async () => {
-        const [created] = await db
+      const newUser = provisionOrgPartnerId === null ? null : await (async () => {
+        const [created] = await tx
           .insert(users)
           .values({
             partnerId: provisionOrgPartnerId,
@@ -3451,90 +3396,377 @@ ssoRoutes.get('/callback', async (c) => {
           return null;
         }
 
-        await db.insert(organizationUsers).values({
-          orgId: provisionOrgId,
-          userId: created.id,
-          roleId: validatedDefaultRoleId
-        });
-
         return created;
-      });
+      })();
 
       if (!newUser) {
-        clearStateCookie();
-        return c.redirect('/login?error=user_creation_failed');
+        throw new SsoLoginFinalizationError('/login?error=user_creation_failed');
       }
 
       user = newUser;
+      provisionedRoleId = validatedDefaultRoleId;
     }
 
-    // Shared completion (#4067): MFA-claim evaluation, axis membership gates,
-    // identity upsert, and the token/session mint live in completeSsoLogin so
-    // the link-on-first-login ceremony finishes through the exact same gates.
-    const completion = await completeSsoLogin(c, {
-      provider,
-      user,
-      idpMfaAsserted: idpAssertedMfa(idClaims),
-      externalSub,
-      email: attrs.email,
-      profile: userInfo,
-      encryptedAccessToken: encryptSecret(tokens.access_token),
-      encryptedRefreshToken: encryptSecret(tokens.refresh_token),
-      tokenExpiresAt: tokens.expires_in
-        ? new Date(Date.now() + tokens.expires_in * 1000)
-        : null,
+    // IdP-asserted MFA — axis-independent, so it is
+    // computed here (above the membership branch) and shared by both the org
+    // and partner token payloads. When the provider opts in via `trustsIdpMfa`
+    // AND the verified id_token's `amr` attests multi-factor, propagate
+    // mfa:true so the tenant can satisfy Breeze's MFA-gated routes via their
+    // IdP. Fail-safe: any provider that hasn't opted in, or an assertion
+    // without the `mfa` amr, yields mfa:false. This claim never satisfies the
+    // L4 step-up (requireFreshMfaStepUp re-verifies a Breeze-held TOTP).
+    //
+    // BUT: trusting an IdP's MFA assertion is NOT the same as the user holding
+    // a factor under OUR policy (the adjudicated rule the CF-Access mint sites
+    // already follow). An UNENROLLED user whose effective policy REQUIRES MFA
+    // must not get mfa:true, however loudly the IdP asserts `amr:mfa` — that
+    // would walk them straight past authMiddleware's forced-enrollment gate and
+    // every hasSatisfiedMfa() route, permanently, through refresh rotation.
+    // `trustsIdpMfa` still satisfies MFA for a user who actually HAS a factor,
+    // and still does so for an unenrolled user under a policy that does not
+    // require one. The callback is unauthenticated (no ambient DB context), so
+    // getEffectiveMfaPolicy's own runOutsideDbContext+withSystemDbAccessContext
+    // read resolves live policy for existing users. Newly provisioned users
+    // conservatively receive mfa:false until their membership commits.
+    const idpMfa = provider.trustsIdpMfa === true && idpAssertedMfa(idClaims);
+    const ssoPolicy = await getEffectiveMfaPolicy({
+      scope: provider.partnerId ? 'partner' : 'organization',
+      userId: user.id,
+      orgId: provider.partnerId ? null : provider.orgId,
+      partnerId: provider.partnerId ?? null,
     });
-    if (!completion.ok) {
-      clearStateCookie();
-      return c.redirect(`/login?error=${completion.error}`);
-    }
-    const { accessToken, refreshToken, expiresInSeconds } = completion;
+    const ssoMfa = idpMfa && (
+      user.mfaEnabled === true
+      || (provisionedRoleId === null && !ssoPolicy.required)
+    );
 
-    const tokenExchangeCode = createSsoTokenExchangeGrant(accessToken, refreshToken, expiresInSeconds);
+    // Membership resolution + guarded session identity, keyed on the provider's axis.
+    let sessionIdentity: UserSessionIdentity;
+    if (provider.partnerId) {
+      // Defense-in-depth: a partner token is ONLY for partner STAFF
+      // (users.orgId IS NULL). Re-assert the invariant at the MINT gate, not
+      // just at link/email-resolution time — so even a resolved user reached
+      // via a pre-existing (provider, sub) link cannot mint a scope:'partner'
+      // / orgId:null token if their row is org-bound. Org-bound users never
+      // authenticate through a partner provider.
+      if (user.orgId != null) {
+        throw new SsoLoginFinalizationError('/login?error=no_partner_access');
+      }
+
+      // Partner axis (#2183): the tech's role membership lives in partner_users
+      // and MUST be partner-scoped. A user with NO partner_users membership is
+      // REJECTED (no_partner_access) — it never falls back to the provider
+      // defaultRoleId, which would recreate the membershipless-user
+      // system-scope-token bug class. defaultRoleId is NEVER applied at login in
+      // v1. orgId is always null on a partner token.
+      const providerPartnerId = provider.partnerId;
+      const [partnerMembership] = await withSystemDbAccessContext(async () =>
+        db
+          .select({ roleId: partnerUsers.roleId, roleScope: roles.scope })
+          .from(partnerUsers)
+          .innerJoin(roles, eq(roles.id, partnerUsers.roleId))
+          .where(and(
+            eq(partnerUsers.userId, user.id),
+            eq(partnerUsers.partnerId, providerPartnerId)
+          ))
+          .limit(1)
+      );
+      if (!partnerMembership) {
+        throw new SsoLoginFinalizationError('/login?error=no_partner_access');
+      }
+      if (partnerMembership.roleScope !== 'partner') {
+        throw new SsoLoginFinalizationError('/login?error=invalid_role_scope');
+      }
+      sessionIdentity = {
+        userId: user.id,
+        email: user.email,
+        roleId: partnerMembership.roleId,
+        orgId: null,
+        partnerId: providerPartnerId,
+        scope: 'partner' as const,
+        mfa: ssoMfa
+      };
+    } else {
+      // System context required: same class of bug as the "Get provider"
+      // fix above — the callback is unauthenticated (no request scope), so a
+      // bare `db` read here silently 0-rows under RLS and every org-axis
+      // login would fail with no_org_access regardless of real membership.
+      // Pre-existing (predates #2183, confirmed via git blame); fixed here
+      // alongside the provider-read fix since both are shared callback
+      // plumbing and the org-axis e2e regression case now exercises this
+      // exact path (see ssoPartnerLogin.integration.test.ts).
+      const orgUser = provisionedRoleId
+        ? {
+            orgId: provider.orgId!,
+            roleId: provisionedRoleId,
+            roleName: null,
+            roleScope: 'organization' as const,
+          }
+        : (await withSystemDbAccessContext(async () =>
+            db
+              .select({
+                orgId: organizationUsers.orgId,
+                roleId: organizationUsers.roleId,
+                roleName: roles.name,
+                roleScope: roles.scope
+              })
+              .from(organizationUsers)
+              .innerJoin(roles, eq(roles.id, organizationUsers.roleId))
+              .where(
+                and(
+                  eq(organizationUsers.userId, user.id),
+                  eq(organizationUsers.orgId, provider.orgId!)
+                )
+              )
+              .limit(1)
+          ))[0];
+
+      if (!orgUser) {
+        throw new SsoLoginFinalizationError('/login?error=no_org_access');
+      }
+
+      if (orgUser.roleScope !== 'organization') {
+        throw new SsoLoginFinalizationError('/login?error=invalid_role_scope');
+      }
+
+      sessionIdentity = {
+        userId: user.id,
+        email: user.email,
+        roleId: orgUser.roleId,
+        orgId: provider.orgId!,
+        partnerId: null,
+        scope: 'organization' as const,
+        mfa: ssoMfa
+      };
+    }
+
+    // Issue first to preserve transition -> user -> family ordering. Identity,
+    // membership, last-login, and grant writes then share this same system
+    // transaction, so any route-specific failure rolls authority back.
+    const issued = await issueUserSession(sessionIdentity, {
+      tx,
+      capability: loginCapability!,
+      expectedEpochs: {
+        authEpoch: user.authEpoch,
+        mfaEpoch: user.mfaEpoch,
+      },
+    });
+
+    // The IdP exchange and assertion verification intentionally happen before
+    // this transaction. Re-lock the provider only after the guarded issuer has
+    // established transition -> user -> family order, then fail closed before
+    // membership, identity, last-login, or exchange-grant writes.
+    const liveProviderAuthority = await lockSsoProviderAuthority(tx, {
+      providerId: provider.id,
+      providerVersion: session.providerVersion,
+      mode: 'login',
+    });
+    if (!liveProviderAuthority.ok) {
+      writeRouteAudit(c, {
+        orgId: provider.orgId,
+        action: 'sso.callback.rejected',
+        resourceType: 'sso_provider',
+        resourceId: provider.id,
+        resourceName: provider.name,
+        result: 'denied',
+        details: {
+          mode: 'login',
+          phase: 'provider_generation_finalization',
+          reason: liveProviderAuthority.reason,
+          partnerId: provider.partnerId,
+          sessionVersion: session.providerVersion,
+        },
+      });
+      throw new SsoLoginFinalizationError(
+        liveProviderAuthority.reason === 'provider_inactive'
+          || liveProviderAuthority.reason === 'provider_not_found'
+          || liveProviderAuthority.reason === 'provider_not_usable'
+          ? '/login?error=sso_provider_inactive'
+          : '/login?error=sso_config_changed',
+      );
+    }
+
+    if (provisionedRoleId) {
+      await tx.insert(organizationUsers).values({
+        orgId: provider.orgId!,
+        userId: user.id,
+        roleId: provisionedRoleId,
+      });
+    }
+
+    const identityOutcome = await (async () => {
+      const [existingIdentity] = await tx
+        .select({ id: userSsoIdentities.id, userId: userSsoIdentities.userId })
+        .from(userSsoIdentities)
+        .where(and(
+          eq(userSsoIdentities.providerId, provider.id),
+          eq(userSsoIdentities.externalId, externalSub)
+        ))
+        .limit(1);
+
+      if (existingIdentity) {
+        if (existingIdentity.userId !== user.id) {
+          return { error: 'identity_in_use' as const };
+        }
+        await tx
+          .update(userSsoIdentities)
+          .set({
+            email: attrs.email,
+            profile: userInfo,
+            accessToken: encryptSecret(tokens.access_token),
+            refreshToken: encryptSecret(tokens.refresh_token),
+            tokenExpiresAt: tokens.expires_in
+              ? new Date(Date.now() + tokens.expires_in * 1000)
+              : null,
+            lastLoginAt: new Date(),
+            updatedAt: new Date()
+          })
+          .where(eq(userSsoIdentities.id, existingIdentity.id));
+      } else {
+        // Race-safe against the unique (provider_id, external_id) index
+        // (#2195): a concurrent callback that linked this subject first turns
+        // this INSERT into a no-op rather than a 23505 throw — postgres.js
+        // rethrows errors through the transaction wrapper even when caught,
+        // so ON CONFLICT is the only clean path here.
+        const inserted = await tx
+          .insert(userSsoIdentities)
+          .values({
+            userId: user.id,
+            providerId: provider.id,
+            externalId: externalSub,
+            email: attrs.email,
+            profile: userInfo,
+            accessToken: encryptSecret(tokens.access_token),
+            refreshToken: encryptSecret(tokens.refresh_token),
+            tokenExpiresAt: tokens.expires_in
+              ? new Date(Date.now() + tokens.expires_in * 1000)
+              : null,
+            lastLoginAt: new Date()
+          })
+          .onConflictDoNothing({
+            target: [userSsoIdentities.providerId, userSsoIdentities.externalId]
+          })
+          .returning({ id: userSsoIdentities.id });
+
+        if (inserted.length === 0) {
+          // Conflict row already exists. Same user (two parallel logins) →
+          // the link is in place, proceed. Different user → this (provider,
+          // sub) identity belongs to someone else; never mint tokens for it.
+          const [conflict] = await tx
+            .select({ userId: userSsoIdentities.userId })
+            .from(userSsoIdentities)
+            .where(and(
+              eq(userSsoIdentities.providerId, provider.id),
+              eq(userSsoIdentities.externalId, externalSub)
+            ))
+            .limit(1);
+          if (conflict && conflict.userId !== user.id) {
+            return { error: 'identity_in_use' as const };
+          }
+          if (!conflict) {
+            // Anomaly: the insert reported a conflict but the conflicting row
+            // vanished before the re-select (concurrent unlink/revocation).
+            // Proceeding is safe — the user was already resolved — but this
+            // login completes WITHOUT a persisted identity row, so leave a
+            // trace for anyone debugging a future linkage report.
+            console.warn(
+              `[sso/callback] identity insert conflicted but conflicting row vanished: provider=${provider.id} user=${user.id}`
+            );
+          }
+        }
+      }
+
+      // Update last login
+      await tx
+        .update(users)
+        .set({ lastLoginAt: new Date() })
+        .where(eq(users.id, user.id));
+      return { ok: true as const };
+    })();
+
+    if ('error' in identityOutcome) {
+      throw new SsoLoginFinalizationError(`/login?error=${identityOutcome.error}`);
+    }
+
+    // The SSO state was durably consumed with operation admission before IdP
+    // work, so cancellation or lease expiry can never make it replayable.
+    const ip = getClientIP(c);
+    const userAgent = c.req.header('user-agent') || 'unknown';
+
+    const tokenExchangeCode = await createDurableSsoExchangeGrant(tx, {
+      capability: loginCapability!,
+      userId: user.id,
+      familyId: issued.familyId,
+      tokens: {
+        accessToken: issued.accessToken,
+        refreshToken: issued.refreshToken,
+        expiresInSeconds: issued.expiresInSeconds,
+      },
+    });
+      return { user, issued, tokenExchangeCode, ip, userAgent, ssoMfa };
+    });
+    loginCapability = undefined;
+    await bindIssuedUserSession(finalized.issued);
+
+    await createSession({
+      userId: finalized.user.id,
+      ipAddress: finalized.ip,
+      userAgent: finalized.userAgent,
+    });
+
+    // Partner-axis logins are audited as user.login with method 'sso-partner'
+    // (org-axis SSO keeps its existing audit path). orgId is null on a partner
+    // token, matching the audit row's tenancy.
+    if (provider.partnerId) {
+      auditLogin(c, {
+        orgId: null,
+        userId: finalized.user.id,
+        email: finalized.user.email,
+        name: finalized.user.name,
+        mfa: finalized.ssoMfa,
+        scope: 'partner',
+        ip: finalized.ip,
+        method: 'sso-partner'
+      });
+    }
+
     const redirectPath = normalizeRedirectPath(session.redirectUrl ?? '/');
     clearStateCookie();
-    return c.redirect(`${redirectPath}#ssoCode=${encodeURIComponent(tokenExchangeCode)}`);
+    return c.redirect(`${redirectPath}#ssoCode=${encodeURIComponent(finalized.tokenExchangeCode)}`);
 
   } catch (error: any) {
-    // The session was already consumed atomically, so even on a failed IdP
-    // token exchange the captured state cannot be replayed. Surface the error
-    // to the login page exactly as before; the user simply re-initiates.
+    if (error instanceof SsoLoginFinalizationError) {
+      clearStateCookie();
+      return c.redirect(error.location);
+    }
+    // State was durably consumed with operation admission, so even a failed
+    // IdP exchange cannot replay it. The user simply re-initiates.
     // Sentry too (#2195): this catch wraps the account-takeover-critical
     // identity-linking path, so failures need more visibility than stderr.
     console.error('SSO callback error:', error);
     captureException(error, c);
     clearStateCookie();
     return c.redirect(`/login?error=sso_error&message=${encodeURIComponent(error.message || 'Authentication failed')}`);
+  } finally {
+    // Every claimed-but-uncommitted login path releases its short issuance
+    // lease, including early redirects before and after the IdP exchange.
+    // Successful finalization clears loginCapability immediately after commit.
+    await abandonLoginClaim();
   }
 });
 
 ssoRoutes.post('/exchange', zValidator('json', tokenExchangeSchema), async (c) => {
   const { code } = c.req.valid('json');
-  const grant = consumeSsoTokenExchangeGrant(code);
+  const grant = await consumeDurableSsoExchangeGrant(code);
   if (!grant) {
     return c.json({ error: 'Invalid or expired token exchange code' }, 400);
   }
 
   setRefreshTokenCookie(c, grant.refreshToken);
 
-  // The refresh token is delivered via the HttpOnly `breeze_refresh_token` cookie set
-  // above. Returning it in the JSON body is now opt-in only for any operator who still
-  // has an external SSO client that reads `response.refreshToken` — set
-  // SSO_EXCHANGE_RETURN_REFRESH_TOKEN=true to restore the legacy behavior. The flag
-  // (and the JSON refreshToken field) will be removed entirely after the Sunset date.
-  const returnRefreshToken = envFlag('SSO_EXCHANGE_RETURN_REFRESH_TOKEN', false);
-  if (returnRefreshToken) {
-    c.header('Deprecation', 'true');
-    c.header('Sunset', 'Fri, 01 Aug 2026 00:00:00 GMT');
-    c.header(
-      'Link',
-      '<https://breezermm.com/docs/api-changes/sso-refresh-cookie>; rel="deprecation"',
-    );
-  }
   return c.json({
     accessToken: grant.accessToken,
     expiresInSeconds: grant.expiresInSeconds,
-    ...(returnRefreshToken ? { refreshToken: grant.refreshToken } : {}),
   });
 });
 
@@ -3762,6 +3994,8 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
       passkeyAvailable,
       authEpoch: pendingEpochs.authEpoch,
       mfaEpoch: pendingEpochs.mfaEpoch,
+      transitionId: record.browserTransitionId,
+      browserGeneration: record.browserGeneration,
       statusExpectation: user.status,
       allowedMethods: pendingPolicy.allowedMethods,
       expiresAt: Date.now() + PENDING_TTL_SECONDS * 1000,
@@ -3798,7 +4032,7 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
     return c.json({ error: 'completion_failed' }, 403);
   }
 
-  setRefreshTokenCookie(c, outcome.refreshToken);
+  installAuthorizedUserSessionCookies(c, outcome.session);
   await floorPromise;
   return c.json({
     user: {

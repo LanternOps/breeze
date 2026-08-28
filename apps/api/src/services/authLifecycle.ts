@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { users } from '../db/schema';
 import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
@@ -71,6 +71,29 @@ export async function advanceUserEpochs(
 
 function truncateReason(reason: string): string {
   return reason.length > 64 ? reason.slice(0, 64) : reason;
+}
+
+/**
+ * Lock active refresh families in the global family_id order before a caller
+ * performs a bulk revocation. The caller must already own the relevant user
+ * row lock(s), preserving transition -> users -> families ordering.
+ */
+export async function lockActiveRefreshFamiliesForUsers(
+  tx: Tx,
+  userIds: readonly string[],
+): Promise<void> {
+  const sortedUserIds = [...new Set(userIds)].sort();
+  if (sortedUserIds.length === 0) return;
+
+  await tx
+    .select({ familyId: refreshTokenFamilies.familyId })
+    .from(refreshTokenFamilies)
+    .where(and(
+      inArray(refreshTokenFamilies.userId, sortedUserIds),
+      isNull(refreshTokenFamilies.revokedAt),
+    ))
+    .orderBy(refreshTokenFamilies.familyId)
+    .for('update');
 }
 
 /** Durably revoke every active refresh family for a user inside `tx`. */

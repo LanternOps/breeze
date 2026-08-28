@@ -49,6 +49,7 @@ import {
 import { encryptSecret } from '../../services/secretCrypto';
 import { createAccessToken } from '../../services/jwt';
 import { loginRoutes } from '../../routes/auth/login';
+import { beginAuthIssuance, cancelAuthIssuance } from '../../services/authBrowserTransition';
 
 vi.mock('../../services/sso', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/sso')>();
@@ -69,6 +70,21 @@ import { ssoRoutes } from '../../routes/sso';
 process.env.APP_ENCRYPTION_KEY = 'integration-test-app-encryption-key-32-bytes!';
 
 const ISSUER = 'https://idp.example.test';
+
+async function freshBrowserBinding(): Promise<string> {
+  try {
+    await beginAuthIssuance({ kind: 'browser', value: '' });
+  } catch (error) {
+    const replacement = (error as { replacement?: { value?: string } }).replacement;
+    if (replacement?.value) return replacement.value;
+    throw error;
+  }
+  throw new Error('Missing browser binding did not rotate');
+}
+
+async function browserBindingCookie(): Promise<string> {
+  return `breeze_auth_binding=${encodeURIComponent(await freshBrowserBinding())}`;
+}
 
 async function createPartnerAxisProvider(
   partnerId: string,
@@ -234,7 +250,9 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
 
     // Step 1: GET /sso/login/partner/:partnerId → 302 to IdP, session row
     // created, state cookie set.
-    const loginRes = await app.request(`/sso/login/partner/${partner.id}`);
+    const loginRes = await app.request(`/sso/login/partner/${partner.id}`, {
+      headers: { cookie: await browserBindingCookie() },
+    });
     expect(loginRes.status).toBe(302);
     const location = loginRes.headers.get('location');
     expect(location).toBeTruthy();
@@ -661,6 +679,11 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
 
     const state = generateState();
     const nonce = generateNonce();
+    const capability = await beginAuthIssuance({
+      kind: 'browser',
+      value: await freshBrowserBinding(),
+    });
+    await cancelAuthIssuance(capability);
     await db.insert(ssoSessions).values({
       providerId: orgProvider.id,
       state,
@@ -671,6 +694,8 @@ describe('SSO partner-axis login + Connect SSO link — real-DB e2e (#2183)', ()
       // Task 4's generation gate rejects a callback whose session provider_version
       // doesn't match the provider's config_version (NULL → provider_version_missing).
       providerVersion: orgProvider.configVersion,
+      browserTransitionId: capability.transitionId,
+      browserGeneration: capability.generation,
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     });
 
@@ -962,7 +987,9 @@ async function initiateOrgLogin(app: Hono, orgId: string): Promise<{ state: stri
 }
 
 async function initiateLoginVia(app: Hono, path: string): Promise<{ state: string; nonce: string; cookiePair: string }> {
-  const loginRes = await app.request(path);
+  const loginRes = await app.request(path, {
+    headers: { cookie: await browserBindingCookie() },
+  });
   if (loginRes.status !== 302) {
     throw new Error(`expected 302 from ${path}, got ${loginRes.status}: ${await loginRes.text()}`);
   }

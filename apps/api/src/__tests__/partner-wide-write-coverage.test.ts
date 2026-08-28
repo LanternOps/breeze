@@ -125,6 +125,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/emailVerification.ts': 'verification-token lifecycle + the authenticating user\'s own columns',
   'services/officeAddin/officeAddinBindings.ts': 'per-user Entra bindings and revocation state, not partner config',
   'services/pendingEmail.ts': 'pending-email state and auth epochs for the acting user only',
+  'services/recoveryCodeAuth.ts': 'atomically consumes one recovery code belonging to the authenticating user',
 
   // --- org-axis writes reached via org-gated routes -------------------------
   'services/contacts/compat.ts': 'updates one org\'s legacy billing-contact blob by org id',

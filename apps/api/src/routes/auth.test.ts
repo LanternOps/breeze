@@ -3,16 +3,49 @@ import { Hono } from 'hono';
 import { authRoutes } from './auth';
 
 // Mock all services
-vi.mock('../services', () => ({
-  hashPassword: vi.fn().mockResolvedValue('$argon2id$hashed'),
-  verifyPassword: vi.fn(),
-  isPasswordStrong: vi.fn(),
-  createTokenPair: vi.fn().mockResolvedValue({
+vi.mock('../services', () => {
+  const createTokenPair = vi.fn().mockResolvedValue({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     refreshJti: 'jti-mock',
-    expiresInSeconds: 900
-  }),
+    expiresInSeconds: 900,
+  });
+  const mintRefreshTokenFamily = vi.fn().mockResolvedValue('family-id-mock');
+  const bindRefreshJtiToFamily = vi.fn().mockResolvedValue(undefined);
+  const getUserEpochs = vi.fn().mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
+  const issueLegacy = vi.fn(async (identity: any) => {
+    const familyId = identity.legacyFamilyId ?? await mintRefreshTokenFamily(identity.userId);
+    const epochs = await getUserEpochs(identity.userId);
+    if (!epochs) throw new Error('Cannot issue session for missing user');
+    const tokens = await createTokenPair({
+      sub: identity.userId,
+      email: identity.email,
+      roleId: identity.roleId,
+      orgId: identity.orgId,
+      partnerId: identity.partnerId,
+      scope: identity.scope,
+      mfa: identity.mfa,
+      aep: epochs.authEpoch,
+      mep: epochs.mfaEpoch,
+      mdid: identity.mobileDeviceId,
+    }, { refreshFam: familyId });
+    await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
+    return { ...tokens, familyId };
+  });
+  class AuthBindingRotationRequiredError extends Error {
+    status = 428;
+    constructor(readonly replacement: unknown) { super('rotation required'); }
+  }
+  class AuthBindingUnavailableError extends Error {}
+  class AuthIssuanceConflictError extends Error {}
+  class AuthIssuanceCapabilityError extends Error {}
+  class RefreshTokenCurrentnessError extends Error {}
+  class RecoveryCodeInvalidError extends Error {}
+  return {
+  hashPassword: vi.fn().mockResolvedValue('$argon2id$hashed'),
+  verifyPassword: vi.fn(),
+  isPasswordStrong: vi.fn(),
+  createTokenPair,
   verifyToken: vi.fn(),
   generateMFASecret: vi.fn().mockReturnValue('MFASECRET123'),
   consumeMFAToken: vi.fn(),
@@ -42,9 +75,9 @@ vi.mock('../services', () => ({
   touchFamilyLastUsed: vi.fn().mockResolvedValue(undefined),
   // Task 7 follow-up: shared family-mint helper used by every authenticated
   // token-mint path (login, mfa, register-partner, accept-invite, sso).
-  mintRefreshTokenFamily: vi.fn().mockResolvedValue('family-id-mock'),
-  bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined),
-  getUserEpochs: vi.fn().mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 }),
+  mintRefreshTokenFamily,
+  bindRefreshJtiToFamily,
+  getUserEpochs,
   getRefreshFamily: vi.fn().mockResolvedValue({ revokedAt: null, absoluteExpiresAt: new Date(Date.now() + 86_400_000) }),
   rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() }),
   loginLimiter: { limit: 5, windowSeconds: 300 },
@@ -70,8 +103,25 @@ vi.mock('../services', () => ({
     setex: vi.fn(),
     get: vi.fn(),
     del: vi.fn()
-  }))
-}));
+  })),
+  beginAuthIssuance: vi.fn(async () => ({ transitionId: 'transition-1', generation: 1 })),
+  finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => Promise<unknown>) => callback({})),
+  cancelAuthIssuance: vi.fn(async () => undefined),
+  assertAuthIssuanceCapability: vi.fn(async () => undefined),
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceConflictError,
+  AuthIssuanceCapabilityError,
+  RefreshTokenCurrentnessError,
+  RecoveryCodeInvalidError,
+  issueUserSession: vi.fn(async (identity: any) => issueLegacy(identity)),
+  issueUserSessionLegacyDuringTransition: issueLegacy,
+  bindIssuedUserSession: vi.fn(async () => undefined),
+  authBrowserTransitionsEnforced: vi.fn(() => process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED === 'true'),
+  recordAuthTransitionLegacyIssuer: vi.fn(),
+  consumeRecoveryCode: vi.fn(async () => ({ hash: 'recovery-hash' })),
+  };
+});
 
 const sendAccountLockedMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../services/email', () => ({
@@ -212,6 +262,12 @@ vi.mock('../services/tenantStatus', () => ({
   assertActiveTenantContext: vi.fn().mockResolvedValue(undefined)
 }));
 
+vi.mock('../services/terminalLogout', () => ({
+  performOrdinaryTerminalLogout: vi.fn().mockResolvedValue({
+    replacement: { kind: 'browser', value: 'replacement-binding' },
+  }),
+}));
+
 // #4067: the /mfa/verify link-ceremony continuation delegates to
 // finalizeSsoPendingLink; stub it so the branch is assertable without the
 // whole SSO completion graph.
@@ -242,7 +298,7 @@ vi.mock('../middleware/auth', () => ({
       // Match the real middleware's `token: payload` shape (auth.ts:580). The
       // logout handler reads `auth.token.sid` to resolve the refresh family —
       // without a `token` object that dereference throws (500).
-      token: { sid: 'family-123', sub: 'user-123', type: 'access' },
+      token: { sid: 'family-123', sub: 'user-123', type: 'access', aep: 1, mep: 1 },
       orgId: null,
     });
     return next();
@@ -276,9 +332,18 @@ import {
   getUserEpochs,
   recordAccountFailure,
   clearAccountFailures,
-  isAccountLocked
+  isAccountLocked,
+  consumeRecoveryCode,
+  RecoveryCodeInvalidError,
+  finishAuthIssuance,
+  cancelAuthIssuance,
+  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
+  recordAuthTransitionLegacyIssuer,
+  AuthIssuanceCapabilityError,
 } from '../services';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
+import { performOrdinaryTerminalLogout } from '../services/terminalLogout';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './auth/ssoPolicy';
 import {
   getPasswordResetEligibility,
@@ -352,6 +417,8 @@ describe('auth routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED;
+    vi.mocked(db.transaction).mockImplementation(async (callback: any) => callback(db));
     // clearAllMocks clears call history but NOT a mockReturnValue base, so a
     // base set inside one test would otherwise bleed into the next. Reset
     // db.select to an empty-resolving default each test (mirrors sso.test.ts).
@@ -1239,7 +1306,7 @@ describe('auth routes', () => {
   // possibly-stale factor/status. A rejected session is consumed (single-use)
   // so it can't be retried.
   describe('POST /auth/mfa/verify — epoch/status-bound pending MFA (SR2-06)', () => {
-    const liveUserRow = {
+    const baseLiveUserRow = {
       id: 'user-1',
       email: 'admin@msp.com',
       name: 'Admin User',
@@ -1247,7 +1314,7 @@ describe('auth routes', () => {
       mfaEnabled: true,
       mfaSecret: 'PLAINSECRET123',
       mfaMethod: 'totp',
-      phoneNumber: null,
+      phoneNumber: null as string | null,
       avatarUrl: null,
       isPlatformAdmin: false,
       // Lets resolveCurrentUserTokenContext (real, unmocked helper) resolve a
@@ -1258,6 +1325,7 @@ describe('auth routes', () => {
       partnerId: 'partner-1',
       roleId: 'role-1',
     };
+    let liveUserRow = { ...baseLiveUserRow };
 
     function pendingRecord(overrides: Record<string, unknown> = {}) {
       return JSON.stringify({
@@ -1268,6 +1336,8 @@ describe('auth routes', () => {
         mfaEpoch: 1,
         statusExpectation: 'active',
         allowedMethods: { totp: true, sms: true, passkey: true },
+        transitionId: 'transition-1',
+        browserGeneration: 1,
         expiresAt: Date.now() + 5 * 60 * 1000,
         ...overrides,
       });
@@ -1277,6 +1347,7 @@ describe('auth routes', () => {
     let delMock: ReturnType<typeof vi.fn>;
 
     beforeEach(() => {
+      liveUserRow = { ...baseLiveUserRow };
       // getEffectiveMfaPolicy's roleForceMfa lookup chains an .innerJoin(roles,
       // ...) onto the partnerUsers select before .where().limit() — a plain
       // from/where/limit chain (sufficient for every other select in this
@@ -1302,10 +1373,13 @@ describe('auth routes', () => {
       vi.mocked(consumeMFAToken).mockResolvedValue(true);
     });
 
-    async function postMfaVerify(body: { tempToken: string; code: string }) {
+    async function postMfaVerify(
+      body: { tempToken: string; code: string; method?: string },
+      extraHeaders: Record<string, string> = {},
+    ) {
       return app.request('/auth/mfa/verify', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...extraHeaders },
         body: JSON.stringify(body),
       });
     }
@@ -1354,10 +1428,14 @@ describe('auth routes', () => {
         refreshToken: 'sso-refresh',
         expiresInSeconds: 900,
         mfa: true,
+        session: { refreshToken: 'sso-refresh' },
         redirectPath: '/dashboard',
       } as any);
 
-      const res = await postMfaVerify({ tempToken: 'temp-token', code: '123456' });
+      const res = await postMfaVerify(
+        { tempToken: 'temp-token', code: '123456' },
+        { 'x-breeze-auth-transition': 'v1' },
+      );
 
       expect(res.status).toBe(200);
       const body = await res.json() as Record<string, unknown>;
@@ -1369,7 +1447,11 @@ describe('auth routes', () => {
       expect(finalizeSsoPendingLink).toHaveBeenCalledWith(
         expect.anything(),
         'link-hash-1',
-        { breezeMfaVerified: true, expectedUserId: 'user-1' },
+        {
+          breezeMfaVerified: true,
+          expectedUserId: 'user-1',
+          capability: expect.objectContaining({ transitionId: 'transition-1', generation: 1 }),
+        },
       );
       // The factor was verified and the temp token consumed, but the
       // password-login mint must NOT run.
@@ -1378,6 +1460,27 @@ describe('auth routes', () => {
       expect(createTokenPair).not.toHaveBeenCalled();
       const setCookie = res.headers.get('set-cookie') ?? '';
       expect(setCookie).toContain('breeze_refresh_token=');
+    });
+
+    it('hands recovery-code authority to the link finalizer and maps an invalid code to 401', async () => {
+      getMock.mockResolvedValue(pendingRecord({ ssoLinkTokenHash: 'link-hash-1' }));
+      vi.mocked(finalizeSsoPendingLink).mockResolvedValue({ ok: false, error: 'invalid_mfa_code' } as any);
+
+      const res = await postMfaVerify(
+        { tempToken: 'temp-token', code: 'ABCD-2345', method: 'recovery' },
+        { 'x-breeze-auth-transition': 'v1' },
+      );
+
+      expect(res.status).toBe(401);
+      expect((await res.json() as Record<string, unknown>).error).toBe('Invalid MFA code');
+      expect(finalizeSsoPendingLink).toHaveBeenCalledWith(
+        expect.anything(),
+        'link-hash-1',
+        expect.objectContaining({
+          recoveryCode: 'ABCD-2345',
+          capability: expect.objectContaining({ transitionId: 'transition-1', generation: 1 }),
+        }),
+      );
     });
 
     it('maps a finalizer identity conflict to 409 identity_in_use (terminal, not retryable)', async () => {
@@ -1415,6 +1518,52 @@ describe('auth routes', () => {
       expect((await res.json() as Record<string, unknown>).error).toBe('sso_link_expired');
       expect(createTokenPair).not.toHaveBeenCalled();
     });
+
+    it.each([
+      { factor: 'totp', requestMethod: undefined, userMethod: 'totp', phoneNumber: null },
+      { factor: 'sms', requestMethod: undefined, userMethod: 'sms', phoneNumber: '+15550000001' },
+      { factor: 'recovery', requestMethod: 'recovery', userMethod: 'totp', phoneNumber: null },
+    ])('does not mint or commit $factor effects when logout wins finalization', async ({
+      factor,
+      requestMethod,
+      userMethod,
+      phoneNumber,
+    }) => {
+      liveUserRow = { ...baseLiveUserRow, mfaMethod: userMethod, phoneNumber };
+      getMock.mockResolvedValue(pendingRecord({ mfaMethod: userMethod }));
+      vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+
+      const res = await postMfaVerify(
+        { tempToken: 'temp-token', code: '123456', ...(requestMethod ? { method: requestMethod } : {}) },
+        { 'x-breeze-auth-transition': 'v1' },
+      );
+
+      expect(res.status).toBe(409);
+      expect(issueUserSession).not.toHaveBeenCalled();
+      expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
+      expect(consumeRecoveryCode).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(createAuditLogAsync).not.toHaveBeenCalled();
+      expect(delMock).not.toHaveBeenCalled();
+      expect(res.headers.get('set-cookie')).toBeNull();
+    });
+
+    it('releases the issuance lease when TOTP verification errors', async () => {
+      getMock.mockResolvedValue(pendingRecord());
+      vi.mocked(consumeMFAToken).mockRejectedValueOnce(new Error('redis unavailable'));
+
+      const res = await postMfaVerify(
+        { tempToken: 'temp-token', code: '123456' },
+        { 'x-breeze-auth-transition': 'v1' },
+      );
+
+      expect(res.status).toBe(500);
+      expect(cancelAuthIssuance).toHaveBeenCalledOnce();
+      expect(issueUserSession).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(delMock).not.toHaveBeenCalled();
+      expect(res.headers.get('set-cookie')).toBeNull();
+    });
   });
 
   // SR2-09: recovery-code login. A user locked out of TOTP/SMS can fall back
@@ -1451,6 +1600,8 @@ describe('auth routes', () => {
         mfaEpoch: 1,
         statusExpectation: 'active',
         allowedMethods: { totp: true, sms: true, passkey: true },
+        transitionId: 'transition-1',
+        browserGeneration: 1,
         expiresAt: Date.now() + 5 * 60 * 1000,
         ...overrides,
       });
@@ -1481,6 +1632,7 @@ describe('auth routes', () => {
       delMock = vi.fn();
       vi.mocked(getRedis).mockReturnValue({ get: getMock, del: delMock, setex: vi.fn() } as any);
       vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
+      vi.mocked(consumeRecoveryCode).mockResolvedValue({ hash: recoveryHash });
     });
 
     async function postMfaVerify(body: { tempToken: string; code: string; method?: string }) {
@@ -1500,22 +1652,10 @@ describe('auth routes', () => {
       const body = await res.json() as Record<string, unknown>;
       expect(body).toMatchObject({ mfaRequired: false });
 
-      // The recovery UPDATE must be the concurrency-safe relative delete —
-      // never a JS-computed "remaining array" SET (that form can resurrect a
-      // sibling code under two concurrent distinct-code removals). It runs
-      // BEFORE the shared mint flow's own "update last login" write, so it
-      // must be the first db.update().set() call.
-      expect(setMock.mock.calls.length).toBeGreaterThanOrEqual(1);
-      const setPayload = setMock.mock.calls[0]![0] as Record<string, unknown>;
-      expect('mfaRecoveryCodes' in setPayload).toBe(true);
-      expect(Array.isArray(setPayload.mfaRecoveryCodes)).toBe(false);
-      const serializedSetPayload = JSON.stringify(setPayload.mfaRecoveryCodes);
-      expect(serializedSetPayload).toContain(recoveryHash);
-      expect(serializedSetPayload).not.toContain(recoveryCode);
-
-      // The removal query is scoped to this exact user + guarded by the
-      // matching-hash containment check (first update().set().where() call).
-      expect(updateWhereMock.mock.calls.length).toBeGreaterThanOrEqual(1);
+      // The service owns the relative jsonb delete shape (covered in its
+      // focused SQL contract); the route passes plaintext only to that
+      // finalization-local authority boundary.
+      expect(consumeRecoveryCode).toHaveBeenCalledWith(expect.anything(), 'user-1', recoveryCode);
 
       expect(createTokenPair).toHaveBeenCalledWith(
         expect.objectContaining({ sub: 'user-1', mfa: true }),
@@ -1530,6 +1670,7 @@ describe('auth routes', () => {
     it('rejects an unknown recovery code with 401 and no code/hash material in the audit trail', async () => {
       getMock.mockResolvedValue(pendingRecord());
       const unknownCode = 'ZZZZ-0000';
+      vi.mocked(consumeRecoveryCode).mockRejectedValueOnce(new RecoveryCodeInvalidError());
 
       const res = await postMfaVerify({ tempToken: 'temp-token', code: unknownCode, method: 'recovery' });
 
@@ -1537,8 +1678,8 @@ describe('auth routes', () => {
       const body = await res.json() as Record<string, unknown>;
       expect(body).toMatchObject({ error: 'Invalid MFA code' });
       expect(createTokenPair).not.toHaveBeenCalled();
-      // Never even attempts the DB removal for a hash that isn't present.
-      expect(setMock).not.toHaveBeenCalled();
+      expect(consumeRecoveryCode).toHaveBeenCalledWith(expect.anything(), 'user-1', unknownCode);
+      expect(recordAuthTransitionLegacyIssuer).not.toHaveBeenCalled();
 
       // The failure audit is fire-and-forget (`void auditUserLoginFailure(...)`)
       // — flush pending microtasks before inspecting the mock.
@@ -1556,7 +1697,7 @@ describe('auth routes', () => {
 
     it('rejects the loser when the DB removal reports zero rows (concurrent winner already consumed this hash)', async () => {
       getMock.mockResolvedValue(pendingRecord());
-      updateWhereMock.mockReturnValue({ returning: vi.fn().mockResolvedValue([]) });
+      vi.mocked(consumeRecoveryCode).mockRejectedValueOnce(new RecoveryCodeInvalidError());
 
       const res = await postMfaVerify({ tempToken: 'temp-token', code: recoveryCode, method: 'recovery' });
 
@@ -3234,7 +3375,7 @@ describe('auth routes', () => {
     });
 
     it('POST /auth/mfa/recovery-codes should rotate recovery codes when MFA is enabled', async () => {
-      const newRecoveryCodes = ['NEW-0001', 'NEW-0002'];
+      const newRecoveryCodes = ['NEWA-0001', 'NEWB-0002'];
       vi.mocked(generateRecoveryCodes).mockReturnValue(newRecoveryCodes);
       vi.mocked(verifyPassword).mockResolvedValue(true);
       vi.mocked(db.select)
@@ -3519,14 +3660,18 @@ describe('auth routes', () => {
       const res = await app.request('/auth/logout', {
         method: 'POST',
         headers: {
-          'Authorization': 'Bearer valid-token'
+          'Authorization': 'Bearer valid-token',
+          'x-breeze-csrf': 'test-csrf-token',
+          Cookie: 'breeze_csrf_token=test-csrf-token; breeze_auth_binding=test-binding',
+          Origin: 'http://localhost',
+          'sec-fetch-site': 'same-origin'
         }
       });
 
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
-      expect(revokeAllUserTokens).toHaveBeenCalledWith('user-123');
+      expect(performOrdinaryTerminalLogout).toHaveBeenCalledOnce();
     });
   });
 

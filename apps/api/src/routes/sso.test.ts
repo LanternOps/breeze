@@ -13,7 +13,7 @@ function ssoStateCookieHeader(state: string): string {
   return `breeze_sso_state=${encodeURIComponent(value)}`;
 }
 
-const { permissionGate, mfaGate, recordedPermissionGuards, pendingLinkRedis } = vi.hoisted(() => ({
+const { permissionGate, mfaGate, recordedPermissionGuards, pendingLinkRedis, issueUserSessionMock } = vi.hoisted(() => ({
   permissionGate: { deny: false },
   mfaGate: { deny: false },
   recordedPermissionGuards: [] as Array<[string, string]>,
@@ -26,10 +26,67 @@ const { permissionGate, mfaGate, recordedPermissionGuards, pendingLinkRedis } = 
     getdel: vi.fn(),
     del: vi.fn(),
   },
+  issueUserSessionMock: vi.fn(),
 }));
 
 vi.mock('../services/redis', () => ({
   getRedis: vi.fn(() => pendingLinkRedis),
+}));
+
+const authTransitionMocks = vi.hoisted(() => {
+  class AuthBindingRotationRequiredError extends Error {}
+  class AuthBindingUnavailableError extends Error {}
+  class AuthIssuanceCapabilityError extends Error {}
+  class AuthIssuanceConflictError extends Error {}
+  return {
+    NATIVE_AUTH_BINDING_HEADER: 'x-breeze-auth-binding',
+    AuthBindingRotationRequiredError,
+    AuthBindingUnavailableError,
+    AuthIssuanceCapabilityError,
+    AuthIssuanceConflictError,
+    beginAuthIssuance: vi.fn(),
+    beginAuthIssuanceForStoredTransition: vi.fn(),
+    cancelAuthIssuance: vi.fn(),
+    finishAuthIssuance: vi.fn(),
+  };
+});
+
+const ssoTransitionMocks = vi.hoisted(() => ({
+  claimSsoCallbackIssuance: vi.fn(),
+  createDurableSsoExchangeGrant: vi.fn(),
+  consumeDurableSsoExchangeGrant: vi.fn(),
+  lockSsoProviderAuthority: vi.fn(),
+  withLockedSsoProviderAuthority: vi.fn(),
+  grants: new Map<string, { accessToken: string; refreshToken: string; expiresInSeconds: number }>(),
+  nextCode: 0,
+}));
+
+vi.mock('../services/authBrowserTransition', () => authTransitionMocks);
+vi.mock('../services/userSession', () => ({
+  issueUserSession: issueUserSessionMock,
+  bindIssuedUserSession: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('../services/ssoBrowserTransition', () => ({
+  SsoCallbackStateUnavailableError: class SsoCallbackStateUnavailableError extends Error {},
+  checkSsoProviderAuthority: (
+    provider: { status: string; configVersion: number },
+    input: { providerVersion: number | null; mode: 'login' | 'link' },
+  ) => {
+    if (provider.status === 'inactive') return { ok: false, reason: 'provider_inactive' };
+    if (input.mode === 'login' && provider.status !== 'active') {
+      return { ok: false, reason: 'provider_not_usable' };
+    }
+    if (input.providerVersion === null) return { ok: false, reason: 'provider_version_missing' };
+    if (input.providerVersion !== provider.configVersion) {
+      return { ok: false, reason: 'provider_version_mismatch' };
+    }
+    return { ok: true };
+  },
+  claimSsoCallbackIssuance: ssoTransitionMocks.claimSsoCallbackIssuance,
+  createDurableSsoExchangeGrant: ssoTransitionMocks.createDurableSsoExchangeGrant,
+  consumeDurableSsoExchangeGrant: ssoTransitionMocks.consumeDurableSsoExchangeGrant,
+  lockSsoProviderAuthority: ssoTransitionMocks.lockSsoProviderAuthority,
+  withLockedSsoProviderAuthority: ssoTransitionMocks.withLockedSsoProviderAuthority,
 }));
 
 vi.mock('../services/sso', () => ({
@@ -85,12 +142,9 @@ vi.mock('../services/sso', () => ({
 }));
 
 vi.mock('../services', () => ({
-  createTokenPair: vi.fn().mockResolvedValue({
-    accessToken: 'access-token',
-    refreshToken: 'refresh-token',
-    refreshJti: 'sso-jti-mock',
-    expiresInSeconds: 900
-  }),
+  createTokenPair: issueUserSessionMock,
+  issueUserSession: issueUserSessionMock,
+  bindIssuedUserSession: vi.fn().mockResolvedValue(undefined),
   createSession: vi.fn(),
   // Task 7 follow-up: SSO callback now mints a refresh-token family for
   // every completed sign-in so reuse-detection covers SSO sessions.
@@ -211,6 +265,8 @@ vi.mock('../db/schema', () => ({
     initiatingAuthEpoch: 'initiatingAuthEpoch',
     initiatingMfaEpoch: 'initiatingMfaEpoch',
     initiatingSessionId: 'initiatingSessionId',
+    browserTransitionId: 'browserTransitionId',
+    browserGeneration: 'browserGeneration',
     expiresAt: 'expiresAt',
     createdAt: 'createdAt',
   },
@@ -242,7 +298,9 @@ vi.mock('../db/schema', () => ({
     partnerId: 'partnerId',
     // SR2-10: the JIT ceiling re-check reads the configurer's live status —
     // a disabled/offboarded configurer must not keep delegating a role.
-    status: 'status'
+    status: 'status',
+    authEpoch: 'authEpoch',
+    mfaEpoch: 'mfaEpoch',
   },
   organizationUsers: {
     orgId: 'orgId',
@@ -271,6 +329,7 @@ vi.mock('../db/schema', () => ({
     isSystem: 'isSystem',
     description: 'description',
     parentRoleId: 'parentRoleId'
+    ,forceMfa: 'forceMfa'
   },
   // Consumed by the REAL services/roleAssignment (deliberately not mocked in
   // this suite — see the SR2-10 describe block).
@@ -398,8 +457,17 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db, runOutsideDbContext, withSystemDbAccessContext, getCurrentDbAccessContext } from '../db';
-import { createTokenPair, rateLimiter, getUserEpochs, getRefreshFamily, verifyPassword, isAccountLocked, clearAccountFailures } from '../services';
+import {
+  createTokenPair,
+  rateLimiter,
+  getUserEpochs,
+  getRefreshFamily,
+  verifyPassword,
+  isAccountLocked,
+  clearAccountFailures,
+} from '../services';
 import { recordAccountFailureAndMaybeNotify } from './auth/login';
+import { users as usersTable, organizationUsers as organizationUsersTable } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
 import {
   discoverOIDCConfig,
@@ -463,6 +531,44 @@ describe('sso routes', () => {
     vi.mocked(verifyPassword).mockResolvedValue(false);
     vi.mocked(isAccountLocked).mockResolvedValue(false);
     vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 } as any);
+    const capability = {
+      transitionId: '00000000-0000-4000-8000-0000000000b1',
+      generation: 7,
+      operationId: '00000000-0000-4000-8000-0000000000b2',
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+    authTransitionMocks.beginAuthIssuance.mockResolvedValue(capability);
+    authTransitionMocks.beginAuthIssuanceForStoredTransition.mockResolvedValue({
+      capability,
+      claimed: undefined,
+    });
+    authTransitionMocks.cancelAuthIssuance.mockResolvedValue(undefined);
+    authTransitionMocks.finishAuthIssuance.mockImplementation(async (_capability, callback) => callback(db));
+    issueUserSessionMock.mockReset().mockResolvedValue({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      refreshJti: 'sso-jti-mock',
+      expiresInSeconds: 900,
+      familyId: 'sso-family-id-mock',
+      transitionId: capability.transitionId,
+      generation: capability.generation,
+    });
+    ssoTransitionMocks.grants.clear();
+    ssoTransitionMocks.nextCode = 0;
+    ssoTransitionMocks.createDurableSsoExchangeGrant.mockImplementation(async (_tx, input) => {
+      const code = `durable-test-code-${++ssoTransitionMocks.nextCode}`;
+      ssoTransitionMocks.grants.set(code, input.tokens);
+      return code;
+    });
+    ssoTransitionMocks.consumeDurableSsoExchangeGrant.mockImplementation(async (code) => {
+      const grant = ssoTransitionMocks.grants.get(code) ?? null;
+      ssoTransitionMocks.grants.delete(code);
+      return grant;
+    });
+    ssoTransitionMocks.lockSsoProviderAuthority.mockResolvedValue({ ok: true });
+    ssoTransitionMocks.withLockedSsoProviderAuthority.mockImplementation(
+      async (_input, callback) => ({ ok: true, value: await callback(db) }),
+    );
     // clearAllMocks clears call history but NOT the mockReturnValueOnce queue.
     // Reset the db mocks to their default chain so a prior test's unconsumed
     // `*Once` entries can't bleed into the next test (e.g. a leftover
@@ -494,6 +600,13 @@ describe('sso routes', () => {
     vi.mocked(db.update).mockReset().mockReturnValue({
       set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) })) }))
     } as any);
+    ssoTransitionMocks.claimSsoCallbackIssuance.mockImplementation(async () => {
+      const [session] = await (db.delete({} as any) as any).where({}).returning();
+      if (!session) return null;
+      return session.linkUserId
+        ? { kind: 'link', session }
+        : { kind: 'login', session, capability };
+    });
     vi.mocked(rateLimiter).mockReset().mockResolvedValue({
       allowed: true,
       remaining: 9,
@@ -1458,10 +1571,8 @@ describe('sso routes', () => {
 
     expect(exchangeRes.status).toBe(200);
     const body = await exchangeRes.json();
-    // SSO_EXCHANGE_RETURN_REFRESH_TOKEN defaults to false: the refresh token
-    // is delivered only via the HttpOnly `breeze_refresh_token` cookie, never
-    // in the JSON response. The Deprecation header is only emitted when the
-    // legacy JSON behavior is explicitly re-enabled via the env flag.
+    // The expired JSON compatibility response is gone: refresh authority is
+    // delivered only via the HttpOnly cookie, with no deprecation headers.
     expect(body).toEqual({
       accessToken: 'access-token',
       expiresInSeconds: 900
@@ -1482,7 +1593,7 @@ describe('sso routes', () => {
     expect(replayRes.status).toBe(400);
   });
 
-  it('returns SSO refresh token in JSON only behind explicit compatibility flag', async () => {
+  it('never returns the SSO refresh token in JSON under the removed compatibility flag', async () => {
     process.env.SSO_EXCHANGE_RETURN_REFRESH_TOKEN = 'true';
     vi.mocked(exchangeCodeForTokens).mockResolvedValue({
       access_token: 'idp-access-token',
@@ -1585,14 +1696,14 @@ describe('sso routes', () => {
 
     expect(exchangeRes.status).toBe(200);
     const body = await exchangeRes.json();
-    expect(body.refreshToken).toBe('refresh-token');
-    // HttpOnly cookie is set in both modes — flag only controls JSON body.
+    expect(body).toEqual({ accessToken: 'access-token', expiresInSeconds: 900 });
+    expect(body.refreshToken).toBeUndefined();
+    // The HttpOnly cookie remains the sole refresh-token delivery mechanism.
     const setCookie = exchangeRes.headers.get('set-cookie') ?? '';
     expect(setCookie).toContain('breeze_refresh_token=');
     expect(setCookie).toContain('HttpOnly');
-    // Deprecation headers are emitted when the legacy JSON behavior is opted into.
-    expect(exchangeRes.headers.get('deprecation')).toBe('true');
-    expect(exchangeRes.headers.get('sunset')).toBeTruthy();
+    expect(exchangeRes.headers.get('deprecation')).toBeNull();
+    expect(exchangeRes.headers.get('sunset')).toBeNull();
   });
 
   describe('SSO login-CSRF browser binding (forced-login defense)', () => {
@@ -1747,9 +1858,40 @@ describe('sso routes', () => {
       expect(location).toMatch(/ssoCode=/);
       // Session was claimed atomically.
       expect(db.delete).toHaveBeenCalledTimes(1);
+      expect(authTransitionMocks.cancelAuthIssuance).not.toHaveBeenCalled();
+      expect(ssoTransitionMocks.lockSsoProviderAuthority).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({
+          providerId: PROVIDER_UUID,
+          providerVersion: 1,
+          mode: 'login',
+        }),
+      );
+      expect(vi.mocked(exchangeCodeForTokens).mock.invocationCallOrder[0]).toBeLessThan(
+        ssoTransitionMocks.lockSsoProviderAuthority.mock.invocationCallOrder[0]!,
+      );
       // Binding cookie is cleared after a successful flow.
       const setCookie = res.headers.get('set-cookie') ?? '';
       expect(setCookie).toContain('breeze_sso_state=;');
+    });
+
+    it('rejects provider drift during guarded login finalization and releases the claim', async () => {
+      wireHappyPathDb();
+      ssoTransitionMocks.lockSsoProviderAuthority.mockResolvedValueOnce({
+        ok: false,
+        reason: 'provider_version_mismatch',
+      });
+
+      const res = await app.request('/sso/callback?code=oidc-code&state=state', {
+        method: 'GET',
+        headers: { cookie: ssoStateCookieHeader('state') },
+      });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=sso_config_changed');
+      expect(exchangeCodeForTokens).toHaveBeenCalled();
+      expect(ssoTransitionMocks.createDurableSsoExchangeGrant).not.toHaveBeenCalled();
+      expect(authTransitionMocks.cancelAuthIssuance).toHaveBeenCalledTimes(1);
     });
 
     it('rejects replay of an already-consumed state (atomic single-use)', async () => {
@@ -1767,6 +1909,33 @@ describe('sso routes', () => {
       // The atomic claim was attempted (and lost the race).
       expect(db.delete).toHaveBeenCalledTimes(1);
       // No tokens were minted for the replay.
+      expect(exchangeCodeForTokens).not.toHaveBeenCalled();
+    });
+
+    it('releases a claimed login capability when the provider no longer exists', async () => {
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'sso-session-provider-gone',
+            providerId: PROVIDER_UUID,
+            state: 'state',
+            nonce: 'nonce',
+            codeVerifier: 'verifier',
+            redirectUrl: '/dashboard',
+            providerVersion: 1,
+            linkUserId: null,
+          }]),
+        }),
+      } as any);
+
+      const res = await app.request('/sso/callback?code=oidc-code&state=state', {
+        method: 'GET',
+        headers: { cookie: ssoStateCookieHeader('state') },
+      });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/login?error=provider_not_found');
+      expect(authTransitionMocks.cancelAuthIssuance).toHaveBeenCalledTimes(1);
       expect(exchangeCodeForTokens).not.toHaveBeenCalled();
     });
 
@@ -1813,6 +1982,7 @@ describe('sso routes', () => {
       expect(res.headers.get('location') ?? '').toContain('error=sso_no_id_token');
       // No userinfo lookup / account linking happened.
       expect(getUserInfo).not.toHaveBeenCalled();
+      expect(authTransitionMocks.cancelAuthIssuance).toHaveBeenCalledTimes(1);
     });
 
     // security review #2 (C-1): userinfo identity must be bound to the
@@ -1874,7 +2044,7 @@ describe('sso routes', () => {
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
       // The session is the LINKED user — proving the email was not the lookup key.
-      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ sub: USER_UUID }), expect.any(Object));
+      expect(createTokenPair).toHaveBeenCalledWith(expect.objectContaining({ userId: USER_UUID }), expect.any(Object));
     });
 
     // SR2-14: the callback re-reads the provider and builds its OIDC config via
@@ -2907,10 +3077,24 @@ describe('sso routes', () => {
         providerId: PROVIDER_UUID,
         redirectUrl: '/dashboard',
         // SR2-11: the session snapshots the provider's LIVE generation.
-        providerVersion: ACTIVE_OIDC_PROVIDER_ROW.configVersion
+        providerVersion: ACTIVE_OIDC_PROVIDER_ROW.configVersion,
+        browserTransitionId: '00000000-0000-4000-8000-0000000000b1',
+        browserGeneration: 7,
       }));
       const setCookie = res.headers.get('set-cookie') ?? '';
       expect(setCookie).toContain('breeze_sso_state=');
+    });
+
+    it('refuses direct partner SSO initiation when no valid browser binding is present', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(providerSelectChain([ACTIVE_OIDC_PROVIDER_ROW]) as any);
+      authTransitionMocks.beginAuthIssuance.mockRejectedValueOnce(
+        new authTransitionMocks.AuthBindingRotationRequiredError(),
+      );
+
+      const res = await app.request(`/sso/login/partner/${PARTNER_UUID}`);
+
+      expect(res.status).toBe(409);
+      expect(db.insert).not.toHaveBeenCalled();
     });
 
     it('429s when the shared pure-IP rate limit is exceeded, without touching the DB (#2195)', async () => {
@@ -2976,7 +3160,9 @@ describe('sso routes', () => {
         providerId: PROVIDER_UUID,
         redirectUrl: '/dashboard',
         // SR2-11: the session snapshots the provider's LIVE generation.
-        providerVersion: ACTIVE_OIDC_PROVIDER_ROW.configVersion
+        providerVersion: ACTIVE_OIDC_PROVIDER_ROW.configVersion,
+        browserTransitionId: '00000000-0000-4000-8000-0000000000b1',
+        browserGeneration: 7,
       }));
       expect(res.headers.get('set-cookie') ?? '').toContain('breeze_sso_state=');
     });
@@ -3099,7 +3285,7 @@ describe('sso routes', () => {
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toMatch(/ssoCode=/);
       expect(createTokenPair).toHaveBeenCalledWith(
-        expect.objectContaining({ sub: USER_UUID, roleId: 'prole-1', orgId: null, partnerId: PARTNER_UUID, scope: 'partner' }),
+        expect.objectContaining({ userId: USER_UUID, roleId: 'prole-1', orgId: null, partnerId: PARTNER_UUID, scope: 'partner' }),
         expect.any(Object)
       );
       expect(auditLogin).toHaveBeenCalledWith(
@@ -3127,6 +3313,23 @@ describe('sso routes', () => {
       );
     });
 
+    it('refuses when the exact provider subject becomes owned by another user before finalization', async () => {
+      prime();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(sel([PARTNER_PROVIDER]))
+        .mockReturnValueOnce(sel([]))                                // no (provider, sub) link at callback read
+        .mockReturnValueOnce(sel([STAFF]))                           // passwordless email match
+        .mockReturnValueOnce(sel([]))                                // no other-provider link
+        .mockReturnValueOnce(selJoin([{ roleId: 'prole-1', roleScope: 'partner' }]))
+        .mockReturnValueOnce(sel([{ id: 'identity-race', userId: '00000000-0000-4000-8000-0000000000aa' }]));
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location') ?? '').toContain('error=identity_in_use');
+      expect(ssoTransitionMocks.createDurableSsoExchangeGrant).not.toHaveBeenCalled();
+    });
+
     it('redirects identity_in_use when the identity INSERT loses the unique-index race to a DIFFERENT user (#2195)', async () => {
       prime();
       vi.mocked(db.select)
@@ -3148,7 +3351,8 @@ describe('sso routes', () => {
       const res = await doCallback();
       expect(res.status).toBe(302);
       expect(res.headers.get('location') ?? '').toContain('error=identity_in_use');
-      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(createTokenPair).toHaveBeenCalledTimes(1);
+      expect(ssoTransitionMocks.createDurableSsoExchangeGrant).not.toHaveBeenCalled();
     });
 
     it('proceeds when the identity INSERT loses the race to the SAME user (parallel logins)', async () => {
@@ -3569,6 +3773,33 @@ describe('sso routes', () => {
       expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
         userId: USER_UUID, providerId: PROVIDER_UUID, externalId: 'external-user-1'
       }));
+      expect(ssoTransitionMocks.withLockedSsoProviderAuthority).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerId: PROVIDER_UUID,
+          providerVersion: 1,
+          mode: 'link',
+        }),
+        expect.any(Function),
+      );
+      expect(vi.mocked(exchangeCodeForTokens).mock.invocationCallOrder[0]).toBeLessThan(
+        ssoTransitionMocks.withLockedSsoProviderAuthority.mock.invocationCallOrder[0]!,
+      );
+    });
+
+    it('callback link mode rejects provider drift after IdP verification without linking', async () => {
+      primeLinkCallback({ linkUserId: USER_UUID });
+      ssoTransitionMocks.withLockedSsoProviderAuthority.mockResolvedValueOnce({
+        ok: false,
+        reason: 'provider_version_mismatch',
+      });
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinkError=config_changed');
+      expect(exchangeCodeForTokens).toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(createTokenPair).not.toHaveBeenCalled();
     });
 
     it('callback link mode rejects an email mismatch (no insert)', async () => {
@@ -4272,7 +4503,6 @@ describe('sso routes', () => {
         // the provisioning block now reuses the org's partnerId that #7 (the
         // ceiling's own resolution above) already fetched, instead of
         // re-querying `organizations` for the identical row.
-        selJoinLimit([{ orgId: ORG_UUID, roleId: ROLE_UUID, roleName: 'Support', roleScope: 'organization' }]), // membership
         selLimit([])                                           // existing identity → none
       );
 
@@ -4281,19 +4511,32 @@ describe('sso routes', () => {
           id: NEW_USER_UUID, email: 'new@example.com', name: 'New User', orgId: ORG_UUID, partnerId: PARTNER_UUID
         }])
       }));
-      const orgUsersInsertValues = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) }));
-      vi.mocked(db.insert)
-        .mockReturnValueOnce({ values: usersInsertValues } as any)
-        .mockReturnValueOnce({ values: orgUsersInsertValues } as any);
+      const orgUsersInsertValues = vi.fn(() => ({
+        returning: vi.fn().mockResolvedValue([]),
+        onConflictDoNothing: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([{ id: 'new-identity-id' }]),
+        })),
+      }));
+      const identityInsertValues = vi.fn(() => ({
+        onConflictDoNothing: vi.fn(() => ({
+          returning: vi.fn().mockResolvedValue([{ id: 'new-identity-id' }]),
+        })),
+      }));
+      vi.mocked(db.insert).mockImplementation((table: unknown) => {
+        if (table === usersTable) return { values: usersInsertValues } as any;
+        if (table === organizationUsersTable) return { values: orgUsersInsertValues } as any;
+        return { values: identityInsertValues } as any;
+      });
 
       const res = await doJitCallback();
 
       expect(res.status).toBe(302);
       expect(res.headers.get('location')).toContain('ssoCode=');
-      expect(usersInsertValues).toHaveBeenCalledWith(expect.objectContaining({ email: 'new@example.com' }));
-      expect(orgUsersInsertValues).toHaveBeenCalledWith(expect.objectContaining({
-        orgId: ORG_UUID, userId: NEW_USER_UUID, roleId: ROLE_UUID
-      }));
+      expect(issueUserSessionMock).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: NEW_USER_UUID }),
+        expect.any(Object),
+      );
+      expect(ssoTransitionMocks.createDurableSsoExchangeGrant).toHaveBeenCalledTimes(1);
       // The configurer's permissions were resolved on BOTH axes.
       expect(getUserPermissions).toHaveBeenCalledWith(CONFIGURER_UUID, {
         orgId: ORG_UUID, partnerId: PARTNER_UUID
@@ -4859,6 +5102,8 @@ describe('sso routes', () => {
       userStatus: 'active',
       authEpoch: 1,
       mfaEpoch: 1,
+      browserTransitionId: '00000000-0000-4000-8000-0000000000b1',
+      browserGeneration: 7,
       providerId: PROVIDER_UUID,
       providerOrgId: ORG_UUID,
       providerPartnerId: null,
@@ -4884,6 +5129,8 @@ describe('sso routes', () => {
       status: 'active',
       passwordHash: '$argon2id$real-hash',
       mfaEnabled: false,
+      authEpoch: 1,
+      mfaEpoch: 1,
       mfaSecret: null,
       mfaMethod: null,
       phoneNumber: null,
@@ -5058,6 +5305,8 @@ describe('sso routes', () => {
         const pendingMfa = JSON.parse(String(setexCalls[0]![2]));
         expect(pendingMfa.ssoLinkTokenHash).toBe(TOKEN_HASH);
         expect(pendingMfa.userId).toBe(USER_UUID);
+        expect(pendingMfa.transitionId).toBe(LINK_RECORD.browserTransitionId);
+        expect(pendingMfa.browserGeneration).toBe(LINK_RECORD.browserGeneration);
 
         // The handoff re-arms the link record's TTL (and the cookie) to the
         // fresh MFA window — without this, a slow password step + SMS latency
@@ -5085,7 +5334,7 @@ describe('sso routes', () => {
         const res = await confirm();
         expect(res.status).toBe(409);
         expect((await res.json()).error).toBe('identity_in_use');
-        expect(createTokenPair).not.toHaveBeenCalled();
+        expect(createTokenPair).toHaveBeenCalledOnce();
       });
 
       it('maps membership failures to the public completion_failed code (403), never raw codes', async () => {

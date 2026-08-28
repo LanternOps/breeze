@@ -1,9 +1,34 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+
+vi.mock('./authLifecycle', () => ({
+  advanceUserEpochs: vi.fn(async (_tx: unknown, userId: string) => ({
+    authEpoch: userId === 'user-1' ? 4 : 7,
+    mfaEpoch: userId === 'user-1' ? 2 : 3,
+    emailEpoch: 1,
+    passwordResetEpoch: 1,
+  })),
+  lockActiveRefreshFamiliesForUsers: vi.fn(async () => undefined),
+  revokeAllRefreshFamilies: vi.fn(async () => undefined),
+}));
+
 import {
   shouldActivatePendingPartner,
   activatePartnerRow,
+  activatePendingPartnerAndInvalidateSessions,
   billingStatusContradictsPayment,
 } from './partnerActivation';
+import {
+  advanceUserEpochs,
+  lockActiveRefreshFamiliesForUsers,
+  revokeAllRefreshFamilies,
+} from './authLifecycle';
+import {
+  organizationUsers,
+  organizations,
+  partners,
+  partnerUsers,
+  users,
+} from '../db/schema';
 
 describe('shouldActivatePendingPartner (#718 reconciliation predicate)', () => {
   const verified = new Date('2026-06-13T00:00:00Z');
@@ -177,14 +202,17 @@ describe('billingStatusContradictsPayment', () => {
 });
 
 describe('activatePartnerRow', () => {
+  beforeEach(() => vi.clearAllMocks());
+
   it('issues an UPDATE flipping status to active, clearing the banner, guarded on pending', async () => {
-    const whereSpy = vi.fn().mockResolvedValue(undefined);
+    const returningSpy = vi.fn().mockResolvedValue([{ id: 'p-1' }]);
+    const whereSpy = vi.fn().mockReturnValue({ returning: returningSpy });
     const setSpy = vi.fn().mockReturnValue({ where: whereSpy });
     const updateSpy = vi.fn().mockReturnValue({ set: setSpy });
     const tx = { update: updateSpy } as any;
 
     const now = new Date('2026-06-13T01:00:00Z');
-    await activatePartnerRow(tx, 'p-1', now);
+    await expect(activatePartnerRow(tx, 'p-1', now)).resolves.toBe(true);
 
     expect(updateSpy).toHaveBeenCalledOnce();
     const setArg = setSpy.mock.calls[0]![0]!;
@@ -194,5 +222,66 @@ describe('activatePartnerRow', () => {
     // The UPDATE must carry a WHERE so a concurrent activation is idempotent
     // (status='pending' guard) and can never clobber a different partner.
     expect(whereSpy).toHaveBeenCalledOnce();
+    expect(returningSpy).toHaveBeenCalledOnce();
+  });
+
+  it('locks users and families before activation, then advances epochs and revokes old families', async () => {
+    const events: string[] = [];
+    const rowsByTable = new Map<unknown, unknown[]>([
+      [organizations, [{ id: 'org-1' }]],
+      [partnerUsers, [{ userId: 'user-2' }, { userId: 'user-1' }]],
+      [organizationUsers, [{ userId: 'user-2' }]],
+    ]);
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn((table: unknown) => {
+          if (table === users) {
+            return {
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  for: vi.fn(async () => {
+                    events.push('lock:users');
+                    return [
+                      { id: 'user-1', authEpoch: 3, mfaEpoch: 2 },
+                      { id: 'user-2', authEpoch: 6, mfaEpoch: 3 },
+                    ];
+                  }),
+                }),
+              }),
+            };
+          }
+          return { where: vi.fn().mockResolvedValue(rowsByTable.get(table) ?? []) };
+        }),
+      }),
+      update: vi.fn((table: unknown) => {
+        if (table === partners) events.push('update:partner');
+        return {
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'p-1' }]),
+            }),
+          }),
+        };
+      }),
+    } as any;
+    vi.mocked(lockActiveRefreshFamiliesForUsers).mockImplementationOnce(async () => {
+      events.push('lock:families');
+    });
+
+    const result = await activatePendingPartnerAndInvalidateSessions(tx, 'p-1');
+
+    expect(events).toEqual(['lock:users', 'lock:families', 'update:partner']);
+    expect(result).toEqual({
+      activated: true,
+      epochs: [
+        { userId: 'user-1', authEpoch: 4, mfaEpoch: 2 },
+        { userId: 'user-2', authEpoch: 7, mfaEpoch: 3 },
+      ],
+    });
+    expect(advanceUserEpochs).toHaveBeenNthCalledWith(1, tx, 'user-1', { auth: true });
+    expect(advanceUserEpochs).toHaveBeenNthCalledWith(2, tx, 'user-2', { auth: true });
+    expect(lockActiveRefreshFamiliesForUsers).toHaveBeenCalledWith(tx, ['user-1', 'user-2']);
+    expect(revokeAllRefreshFamilies).toHaveBeenNthCalledWith(1, tx, 'user-1', 'partner-activated');
+    expect(revokeAllRefreshFamilies).toHaveBeenNthCalledWith(2, tx, 'user-2', 'partner-activated');
   });
 });

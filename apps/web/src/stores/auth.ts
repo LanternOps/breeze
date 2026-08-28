@@ -359,6 +359,18 @@ type RefreshOutcome =
 
 const REFRESH_LOCK_NAME = 'breeze-token-refresh';
 
+async function fetchAuthIssuerWithBindingRetry(
+  input: RequestInfo | URL,
+  init: RequestInit,
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set('x-breeze-auth-transition', 'v1');
+  const capableInit = { ...init, headers };
+  const first = await fetch(input, capableInit);
+  if (first.status !== 428) return first;
+  return fetch(input, capableInit);
+}
+
 // One low-level /auth/refresh attempt. Returns the new tokens on success, or a
 // discriminated result so the caller can tell three cases apart:
 //   - raced:     a benign concurrent race (server reason 'refresh_raced',
@@ -437,7 +449,7 @@ async function refreshFetchOnce(): Promise<RefreshFetchResult> {
 
   let refreshResponse: Response;
   try {
-    refreshResponse = await fetch(buildApiUrl('/auth/refresh'), {
+    refreshResponse = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/refresh'), {
       method: 'POST',
       headers,
       credentials: 'include',
@@ -1187,7 +1199,7 @@ export async function apiLogin(email: string, password: string): Promise<{
   error?: string;
 }> {
   try {
-    const response = await fetch(buildApiUrl('/auth/login'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1229,7 +1241,7 @@ export async function apiLogin(email: string, password: string): Promise<{
 
 export async function apiVerifyMFA(code: string, tempToken: string, method?: MfaMethod): Promise<ApiAuthSuccess> {
   try {
-    const response = await fetch(buildApiUrl('/auth/mfa/verify'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/mfa/verify'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1274,7 +1286,7 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
     const optionsJSON = optionsData.options ?? optionsData.optionsJSON;
     const credential = await getPasskeyCredential(optionsJSON);
 
-    const verifyResponse = await fetch(buildApiUrl('/auth/mfa/passkey/verify'), {
+    const verifyResponse = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/mfa/passkey/verify'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1451,22 +1463,85 @@ export async function apiRegisterPartner(
 // refreshFetchOnce above.
 const LOGOUT_TIMEOUT_MS = 8000;
 
-export async function apiLogout(): Promise<void> {
-  const { tokens, logout } = useAuthStore.getState();
+export type LogoutOutcome =
+  | Readonly<{ kind: 'complete' }>
+  | Readonly<{ kind: 'partial'; message: string }>;
 
-  if (tokens?.accessToken) {
+export type CfTerminalLogoutPreparationOutcome =
+  | Readonly<{ kind: 'ready'; navigationUrl: string }>
+  | Readonly<{ kind: 'partial'; message: string }>;
+
+function evictLocalAuthState(): void {
+  useAuthStore.getState().logout();
+  try {
+    localStorage.removeItem('breeze-auth');
+    localStorage.removeItem('breeze-org');
+    localStorage.removeItem('breeze-ai-chat');
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+function terminalLogoutHeaders(accessToken: string): Headers {
+  const headers = new Headers({
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${accessToken}`,
+    'x-breeze-auth-transition': 'v1',
+  });
+  const csrfToken = readCookie(CSRF_COOKIE_NAME);
+  if (csrfToken) headers.set(CSRF_HEADER_NAME, csrfToken);
+  return headers;
+}
+
+export function validateCfTerminalNavigationUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string' || typeof window === 'undefined') return null;
+  try {
+    const url = new URL(raw, window.location.origin);
+    if (
+      url.origin !== window.location.origin
+      || url.username !== ''
+      || url.password !== ''
+      || url.pathname !== '/api/v1/auth/cf-access-logout'
+      || url.hash !== ''
+    ) return null;
+    const entries = [...url.searchParams.entries()];
+    if (entries.length !== 1 || entries[0]?.[0] !== 'ticket' || !entries[0][1]) return null;
+    return `${url.pathname}?ticket=${encodeURIComponent(entries[0][1])}`;
+  } catch {
+    return null;
+  }
+}
+
+export async function apiLogout(retainedAccessToken?: string): Promise<LogoutOutcome> {
+  const { tokens } = useAuthStore.getState();
+  const accessToken = retainedAccessToken ?? tokens?.accessToken;
+  let outcome: LogoutOutcome = {
+    kind: 'partial',
+    message: 'Your local session was cleared, but durable server sign-out could not be confirmed.',
+  };
+
+  if (accessToken) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
     try {
-      await fetch(buildApiUrl('/auth/logout'), {
+      const response = await fetch(buildApiUrl('/auth/logout'), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${tokens.accessToken}`
-        },
+        headers: terminalLogoutHeaders(accessToken),
         credentials: 'include',
         signal: controller.signal
       });
+      if (response.ok) {
+        const body: unknown = await response.json();
+        if (
+          typeof body === 'object'
+          && body !== null
+          && !Array.isArray(body)
+          && Object.keys(body).length === 1
+          && (body as { success?: unknown }).success === true
+        ) {
+          outcome = { kind: 'complete' };
+        }
+      }
     } catch (err) {
       // Network error, offline, or the 8s abort fired. Ignored on purpose —
       // the refresh-token family may survive server-side, but the client must
@@ -1477,16 +1552,42 @@ export async function apiLogout(): Promise<void> {
     }
   }
 
-  logout();
+  evictLocalAuthState();
+  return outcome;
+}
 
-  // Clear all persisted store data to prevent stale state on next login
-  try {
-    localStorage.removeItem('breeze-auth');
-    localStorage.removeItem('breeze-org');
-    localStorage.removeItem('breeze-ai-chat');
-  } catch {
-    // localStorage may be unavailable
+export async function apiPrepareCfTerminalLogout(
+  retainedAccessToken?: string,
+): Promise<CfTerminalLogoutPreparationOutcome> {
+  const { tokens } = useAuthStore.getState();
+  const accessToken = retainedAccessToken ?? tokens?.accessToken;
+  let outcome: CfTerminalLogoutPreparationOutcome = {
+    kind: 'partial',
+    message: 'Your local session was cleared, but Cloudflare sign-out could not be prepared.',
+  };
+  if (accessToken) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
+    try {
+      const response = await fetch(buildApiUrl('/auth/cf-access-logout/prepare'), {
+        method: 'POST',
+        headers: terminalLogoutHeaders(accessToken),
+        credentials: 'include',
+        signal: controller.signal,
+      });
+      if (response.ok) {
+        const body = await response.json().catch(() => null) as { navigationUrl?: unknown } | null;
+        const navigationUrl = validateCfTerminalNavigationUrl(body?.navigationUrl);
+        if (navigationUrl) outcome = { kind: 'ready', navigationUrl };
+      }
+    } catch (error) {
+      console.warn('[apiLogout] Cloudflare terminal preparation failed; evicting locally', error);
+    } finally {
+      clearTimeout(timeout);
+    }
   }
+  evictLocalAuthState();
+  return outcome;
 }
 
 export async function fetchAndApplyPreferences(): Promise<void> {
@@ -1604,7 +1705,7 @@ export async function apiVerifyEmail(token: string): Promise<{
   redirectUrl?: string;
 }> {
   try {
-    const response = await fetch(buildApiUrl('/auth/verify-email'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/verify-email'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1793,7 +1894,7 @@ export async function apiAcceptInvite(token: string, password: string): Promise<
   error?: string;
 }> {
   try {
-    const response = await fetch(buildApiUrl('/auth/accept-invite'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/accept-invite'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',

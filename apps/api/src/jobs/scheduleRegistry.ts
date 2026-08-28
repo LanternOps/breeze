@@ -95,6 +95,7 @@ export const JOB_SCHEDULES = {
   'audit-chain-anchor': '48 4 * * *',
   'contract-billing-sweep': '8 5 * * *',
   'tdsynnex-sftp-sync': '38 5 * * *',
+  'auth-browser-transition-cleanup': '58 5 * * *',
   'invoice-overdue-sweep': '8 6 * * *',
   'event-log-retention': '3 7 * * *',
   'agent-log-retention': '23 7 * * *',

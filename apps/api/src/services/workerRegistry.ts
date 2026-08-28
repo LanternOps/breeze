@@ -384,6 +384,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'authBrowserTransitionCleanup',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/authBrowserTransitionCleanup');
+      return {
+        init: m.initializeAuthBrowserTransitionCleanupWorker,
+        shutdown: m.shutdownAuthBrowserTransitionCleanupWorker,
+      };
+    },
+  },
+  {
     name: 'stripeAccountCacheRefresh',
     placement: 'global',
     load: async () => {

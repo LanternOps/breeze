@@ -10,6 +10,7 @@ import {
 } from '../services/releaseSource';
 import { EVENT_SUBSCRIBER_IDS, isSubscriberId } from '../services/eventSubscriberIds';
 import {
+  canonicalCfAccessTeamDomain,
   decodePartnerApiCursorSigningKey,
   isRecognizedSelfHostSignal,
   parseEventPermissionEpochMode,
@@ -727,6 +728,8 @@ const envObjectSchema = z
     CF_ACCESS_TEAM_DOMAIN: z.string().optional(),
     CF_ACCESS_AUD: z.string().optional(),
     CF_ACCESS_TRUSTS_MFA: z.string().optional(),
+    AUTH_BROWSER_TRANSITIONS_ENFORCED: z.string().optional(),
+    AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: z.string().optional(),
 
     // -- Native APNs push (replaces the Expo push relay) ---------------------
     // All optional at boot: push is an optional feature. If ANY APNS_* is set,
@@ -1593,7 +1596,7 @@ const envSchema = envObjectSchema
             'CF_ACCESS_TRUST_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set.',
         });
       } else {
-        const teamDomain = (data.CF_ACCESS_TEAM_DOMAIN ?? '').trim();
+        const teamDomain = data.CF_ACCESS_TEAM_DOMAIN ?? '';
         if (!teamDomain) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -1601,12 +1604,12 @@ const envSchema = envObjectSchema
             message:
               'CF_ACCESS_TEAM_DOMAIN is required when CF_ACCESS_TRUST_ENABLED is true (e.g. example.cloudflareaccess.com, no scheme).',
           });
-        } else if (teamDomain.includes('://')) {
+        } else if (!canonicalCfAccessTeamDomain(teamDomain)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['CF_ACCESS_TEAM_DOMAIN'],
             message:
-              'CF_ACCESS_TEAM_DOMAIN must not include a scheme. Use the bare hostname (e.g. example.cloudflareaccess.com).',
+              'CF_ACCESS_TEAM_DOMAIN must be the canonical lowercase bare Cloudflare team hostname (e.g. example.cloudflareaccess.com), with no credentials, port, path, query, or fragment.',
           });
         }
         const aud = (data.CF_ACCESS_AUD ?? '').trim();
@@ -1629,6 +1632,35 @@ const envSchema = envObjectSchema
           });
         }
       }
+    }
+
+    const authTransitionFlagValues = new Set([
+      'true', 'false', '1', '0', 'yes', 'no', 'on', 'off',
+    ]);
+    const transitionsRaw = (data.AUTH_BROWSER_TRANSITIONS_ENFORCED ?? '').trim().toLowerCase();
+    const terminalPreparationRaw = (
+      data.AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED ?? ''
+    ).trim().toLowerCase();
+    for (const [name, value] of [
+      ['AUTH_BROWSER_TRANSITIONS_ENFORCED', transitionsRaw],
+      ['AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED', terminalPreparationRaw],
+    ] as const) {
+      if (value && !authTransitionFlagValues.has(value)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [name],
+          message: `${name} must be a boolean (true/false, 1/0, yes/no, on/off) when set.`,
+        });
+      }
+    }
+    const flagEnabled = (value: string) => ['true', '1', 'yes', 'on'].includes(value);
+    if (flagEnabled(terminalPreparationRaw) && !flagEnabled(transitionsRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED'],
+        message:
+          'AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED=true requires AUTH_BROWSER_TRANSITIONS_ENFORCED=true.',
+      });
     }
 
     // AGENT_AUTO_PROMOTE (controlled fleet rollout). Independent of NODE_ENV —

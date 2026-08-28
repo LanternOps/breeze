@@ -11,11 +11,19 @@ import {
   buildRefreshTokenCookie,
   buildCsrfTokenCookie,
   buildClearRefreshTokenCookie,
+  buildAuthBindingCookie,
+  buildClearAuthBindingCookie,
   setRefreshTokenCookie,
+  installAuthorizedUserSessionCookies,
+  isAuthTransitionV1Request,
+  authClientUpgradeRequiredResponse,
   clearRefreshTokenCookie,
+  validateCookieCsrfRequest,
+  validateStrictCookieCsrfRequest,
   _resetAuthCookieWarnStateForTests,
   type PendingMfaRecord,
 } from './helpers';
+import type { AuthorizedUserSession } from '../../services/userSession';
 import type { RequestLike } from '../../services/auditEvents';
 import type { Context } from 'hono';
 
@@ -34,6 +42,67 @@ function makeContext(headers: Record<string, string | undefined>, remoteAddress?
       : {}),
   } as RequestLike;
 }
+
+function makeCsrfContext(headers: Record<string, string>): Context {
+  const normalized = Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]),
+  );
+  return {
+    req: { header: (name: string) => normalized[name.toLowerCase()] },
+  } as unknown as Context;
+}
+
+describe('terminal strict cookie CSRF boundary', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalOrigins = process.env.CORS_ALLOWED_ORIGINS;
+
+  beforeEach(() => {
+    process.env.NODE_ENV = 'production';
+    process.env.CORS_ALLOWED_ORIGINS = 'https://breeze.example.com';
+  });
+
+  afterEach(() => {
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+    if (originalOrigins === undefined) delete process.env.CORS_ALLOWED_ORIGINS;
+    else process.env.CORS_ALLOWED_ORIGINS = originalOrigins;
+  });
+
+  it('keeps the non-browser sentinel compatibility behavior non-terminal only', () => {
+    const c = makeCsrfContext({ 'x-breeze-csrf': '1' });
+    expect(validateCookieCsrfRequest(c)).toBeNull();
+    expect(validateStrictCookieCsrfRequest(c)).not.toBeNull();
+  });
+
+  it('rejects sentinel cookie/header equality despite valid Origin and fetch-site', () => {
+    const c = makeCsrfContext({
+      cookie: 'breeze_csrf_token=1',
+      'x-breeze-csrf': '1',
+      origin: 'https://breeze.example.com',
+      'sec-fetch-site': 'same-origin',
+    });
+    expect(validateStrictCookieCsrfRequest(c)).toBe('Invalid CSRF token');
+  });
+
+  it.each([
+    [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'different', origin: 'https://breeze.example.com', 'sec-fetch-site': 'same-origin' }, 'Invalid CSRF token'],
+    [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf', 'sec-fetch-site': 'same-origin' }, 'Missing request origin'],
+    [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf', origin: 'https://evil.example', 'sec-fetch-site': 'same-origin' }, 'Invalid request origin'],
+    [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf', origin: 'https://breeze.example.com', 'sec-fetch-site': 'cross-site' }, 'Cross-site request blocked'],
+  ])('rejects malformed strict terminal request %#', (headers, expected) => {
+    expect(validateStrictCookieCsrfRequest(makeCsrfContext(headers))).toBe(expected);
+  });
+
+  it('accepts only matching non-sentinel tokens from an allowed browser origin', () => {
+    const c = makeCsrfContext({
+      cookie: 'breeze_csrf_token=csrf',
+      'x-breeze-csrf': 'csrf',
+      origin: 'https://breeze.example.com',
+      'sec-fetch-site': 'same-site',
+    });
+    expect(validateStrictCookieCsrfRequest(c)).toBeNull();
+  });
+});
 
 describe('getAllowedOrigins (G5 — dev-origin gating)', () => {
   const originalNodeEnv = process.env.NODE_ENV;
@@ -148,11 +217,7 @@ describe('MFA recovery code peppering', () => {
     process.env.SECRET_ENCRYPTION_KEY = 'secret-key-must-not-be-used';
     process.env.JWT_SECRET = 'jwt-key-must-not-be-used';
 
-    expect(hashRecoveryCode('abcd-1234')).toBe(
-      createHash('sha256')
-        .update('dedicated-recovery-pepper-32-chars:ABCD-1234')
-        .digest('hex')
-    );
+    expect(hashRecoveryCode('abcd-1234')).toMatch(/^scrypt\$v1\$[a-f0-9]{64}$/);
   });
 
   it('does not fall back to app, secret, or JWT keys when the pepper is missing', () => {
@@ -176,6 +241,8 @@ describe('parsePendingMfa (SR2-06 strict parse)', () => {
     passkeyAvailable: false,
     authEpoch: 3,
     mfaEpoch: 5,
+    transitionId: '11111111-1111-4111-8111-111111111111',
+    browserGeneration: 3,
     statusExpectation: 'active',
     allowedMethods: { totp: true, sms: false, passkey: true },
     expiresAt: Date.now() + 300_000,
@@ -197,6 +264,13 @@ describe('parsePendingMfa (SR2-06 strict parse)', () => {
   it('returns null for JSON missing mfaEpoch', () => {
     const { mfaEpoch, ...rest } = fullRecord;
     expect(parsePendingMfa(JSON.stringify(rest))).toBeNull();
+  });
+
+  it('returns null for JSON missing the durable browser transition identity', () => {
+    const { transitionId, ...withoutTransition } = fullRecord;
+    const { browserGeneration, ...withoutGeneration } = fullRecord;
+    expect(parsePendingMfa(JSON.stringify(withoutTransition))).toBeNull();
+    expect(parsePendingMfa(JSON.stringify(withoutGeneration))).toBeNull();
   });
 
   it('returns null for JSON missing allowedMethods', () => {
@@ -225,6 +299,8 @@ describe('evaluatePendingMfa (SR2-06)', () => {
     passkeyAvailable: false,
     authEpoch: 3,
     mfaEpoch: 5,
+    transitionId: '11111111-1111-4111-8111-111111111111',
+    browserGeneration: 3,
     statusExpectation: 'active',
     allowedMethods: { totp: true, sms: true, passkey: true },
     expiresAt: Date.now() + 300_000,
@@ -488,6 +564,19 @@ describe('auth cookie Secure flag (#1618 regression)', () => {
     expect(refresh).toContain('SameSite=Lax');
   });
 
+  it('installs refresh authority only from the branded guarded-session boundary', () => {
+    process.env.NODE_ENV = 'production';
+    const { c, setCookies } = makeCookieContext({ forwardedProto: 'https' });
+    const issued = {
+      refreshToken: 'guarded.refresh.jwt',
+    } as AuthorizedUserSession;
+
+    installAuthorizedUserSessionCookies(c, issued);
+
+    expect(setCookies[0]).toContain('breeze_refresh_token=guarded.refresh.jwt');
+    expect(setCookies[1]).toContain('breeze_csrf_token=');
+  });
+
   it('production served over HTTPS still issues Secure cookies', () => {
     process.env.NODE_ENV = 'production';
     const { c, setCookies } = makeCookieContext({ forwardedProto: 'https' });
@@ -541,6 +630,48 @@ describe('auth cookie Secure flag (#1618 regression)', () => {
     expect(buildCsrfTokenCookie('t', false)).not.toContain('Secure');
     expect(buildClearRefreshTokenCookie(true)).toContain('; Secure');
     expect(buildClearRefreshTokenCookie(false)).not.toContain('Secure');
+    expect(buildAuthBindingCookie('binding', true)).toContain('; Secure');
+    expect(buildAuthBindingCookie('binding', false)).not.toContain('Secure');
+    expect(buildClearAuthBindingCookie(true)).toContain('; Secure');
+    expect(buildClearAuthBindingCookie(false)).not.toContain('Secure');
+  });
+
+  it('keeps the dedicated binding host-only, HttpOnly, path-wide, and separate from CSRF', () => {
+    const cookie = buildAuthBindingCookie('binding-value', true);
+    expect(cookie).toContain('breeze_auth_binding=binding-value');
+    expect(cookie).toContain('Path=/');
+    expect(cookie).toContain('HttpOnly');
+    expect(cookie).toContain('SameSite=Lax');
+    expect(cookie).not.toContain('Domain=');
+    expect(cookie).not.toContain('breeze_csrf_token');
+
+    const cleared = buildClearAuthBindingCookie(true);
+    expect(cleared).toContain('breeze_auth_binding=;');
+    expect(cleared).toContain('Max-Age=0');
+  });
+});
+
+describe('auth transition-v1 client dispatch', () => {
+  it('recognizes only the explicit versioned capability header', () => {
+    const request = (value?: string) => ({
+      req: { header: (name: string) => name === 'x-breeze-auth-transition' ? value : undefined },
+    }) as Context;
+    expect(isAuthTransitionV1Request(request('v1'))).toBe(true);
+    expect(isAuthTransitionV1Request(request(' V1 '))).toBe(true);
+    expect(isAuthTransitionV1Request(request())).toBe(false);
+    expect(isAuthTransitionV1Request(request('v2'))).toBe(false);
+  });
+
+  it('returns the stable upgrade-required response for enforcement-time legacy clients', async () => {
+    const json = vi.fn((body: unknown, status: number) =>
+      new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }));
+    const response = authClientUpgradeRequiredResponse({ json } as unknown as Context);
+
+    expect(response.status).toBe(426);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Authentication client upgrade required',
+      reason: 'auth_client_upgrade_required',
+    });
   });
 });
 
