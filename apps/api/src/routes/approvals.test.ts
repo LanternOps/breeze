@@ -3041,9 +3041,21 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
     };
   }
 
+  /**
+   * P2-2 (#4189): `serialize` now also emits the intent's resolved TARGET
+   * device, which `resolveTargetDevices` batches into at most two extra
+   * selects per page — `ai_agent_runs` (only for agent intents with NO
+   * explicit scope, whose target is still the run's device), then `devices`.
+   * Both go through `db.select().from(...).where(...)` with no `leftJoin`, so
+   * the from-stub gains a sibling `where` branch whose results are queued in
+   * that order. Defaults to `[[], []]` — no run, no device, `targetDevice:
+   * null` — which is what every pre-P2-2 assertion in this block expects.
+   */
   function mockPendingJoinResolvesAgent(
     rows: Array<{ approval: unknown; intent: unknown | null }>,
+    targetLookups: unknown[][] = [],
   ) {
+    const queued = [...targetLookups];
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         leftJoin: vi.fn().mockReturnValue({
@@ -3051,8 +3063,21 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
             orderBy: vi.fn().mockResolvedValue(rows),
           }),
         }),
+        where: vi.fn(async () => queued.shift() ?? []),
       }),
     } as any);
+  }
+
+  /** Queues the two `resolveTargetDevices` selects (runs, then devices) onto a
+   *  `mockReturnValueOnce` chain — the shape GET /:id and decide use. */
+  function queueTargetDeviceSelects(runs: unknown[] = [], deviceRows: unknown[] = []) {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(runs) }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(deviceRows) }),
+      } as any);
   }
 
   function buildAgentApproval(overrides: Record<string, unknown> = {}) {
@@ -3174,7 +3199,10 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
 
   // ------------------------------------------------------------ GET /:id ---
 
-  function mockDetailWithAgentIntent(intent: unknown | null) {
+  function mockDetailWithAgentIntent(
+    intent: unknown | null,
+    targetLookups?: { runs?: unknown[]; devices?: unknown[] },
+  ) {
     vi.mocked(db.select)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -3186,6 +3214,7 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
           where: vi.fn().mockResolvedValue(intent ? [intent] : []),
         }),
       } as any);
+    queueTargetDeviceSelects(targetLookups?.runs, targetLookups?.devices);
   }
 
   it('GET /:id serializes origin ai_agent / agentName under the same live rule', async () => {
@@ -3213,7 +3242,10 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
 
   let lastAgentApprovalRow: Record<string, unknown> | undefined;
 
-  function mockDecideWithAgentIntent(opts: { intentOverrides?: Record<string, unknown> } = {}) {
+  function mockDecideWithAgentIntent(opts: {
+    intentOverrides?: Record<string, unknown>;
+    targetLookups?: { runs?: unknown[]; devices?: unknown[] };
+  } = {}) {
     const approvalRow = buildAgentApproval();
     const intentRow = buildAgentIntent(opts.intentOverrides);
 
@@ -3229,6 +3261,12 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
         where: vi.fn().mockResolvedValue([intentRow]),
       }),
     } as any);
+
+    // 3+4) P2-2 target-device resolution for the decide RESPONSE's
+    // `targetDevice` — runs, then devices. Queued here (not in
+    // mockAgentFanInTx) because the 403 tests never reach the transaction
+    // but the `Once` chain must stay aligned for the ones that do.
+    queueTargetDeviceSelects(opts.targetLookups?.runs, opts.targetLookups?.devices);
 
     lastAgentApprovalRow = approvalRow;
     return { approvalRow, intentRow };
@@ -3378,5 +3416,100 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
     const body = await res.json();
     expect(body.approval.origin).toBe('ai_agent');
     expect(body.approval.agentName).toBe(AGENT_NAME);
+  });
+
+  // ---------------------------------------------------------------- P2-2 ---
+  // Task A3 (#4189): the DTO's additive `orgId` / `action` / `targetDevice`.
+
+  describe('P2-2 target-device projection', () => {
+    const scopedApproval = () =>
+      buildAgentApproval({
+        actionToolName: 'manage_services',
+        actionArguments: { deviceId: 'dev-scope', action: 'restart', serviceName: 'spooler' },
+      });
+
+    it('resolves targetDevice from the intent SCOPE (the run is device-less)', async () => {
+      mockPendingJoinResolvesAgent(
+        [
+          {
+            approval: scopedApproval(),
+            intent: buildAgentIntent({ scopeKind: 'device', scopeDeviceId: 'dev-scope' }),
+          },
+        ],
+        // A scoped intent never needs the run read, so `devices` is the only
+        // queued lookup.
+        [[{ id: 'dev-scope', orgId: 'org-9', hostname: 'WS-SCOPE' }]],
+      );
+
+      const res = await buildApp().request('/approvals/pending');
+      expect(res.status).toBe(200);
+      const [approval] = (await res.json()).approvals;
+      expect(approval.targetDevice).toEqual({ id: 'dev-scope', hostname: 'WS-SCOPE' });
+      expect(approval.orgId).toBe('org-9');
+      expect(approval.action).toBe('restart');
+    });
+
+    it('falls back to the RUN device for an intent with no scope', async () => {
+      mockPendingJoinResolvesAgent(
+        [{ approval: buildAgentApproval(), intent: buildAgentIntent() }],
+        [
+          [{ id: AGENT_RUN_ID, deviceId: 'dev-run' }],
+          [{ id: 'dev-run', orgId: 'org-9', hostname: 'WS-RUN' }],
+        ],
+      );
+
+      const res = await buildApp().request('/approvals/pending');
+      const [approval] = (await res.json()).approvals;
+      expect(approval.targetDevice).toEqual({ id: 'dev-run', hostname: 'WS-RUN' });
+      // execute_command's arguments carry no `action` discriminator.
+      expect(approval.action).toBeNull();
+    });
+
+    it('drops a target device that now belongs to another org (never renders its hostname)', async () => {
+      mockPendingJoinResolvesAgent(
+        [
+          {
+            approval: scopedApproval(),
+            intent: buildAgentIntent({ scopeKind: 'device', scopeDeviceId: 'dev-scope' }),
+          },
+        ],
+        [[{ id: 'dev-scope', orgId: 'org-OTHER', hostname: 'FOREIGN-HOST' }]],
+      );
+
+      const res = await buildApp().request('/approvals/pending');
+      const raw = await res.text();
+      expect(raw).not.toContain('FOREIGN-HOST');
+      expect(JSON.parse(raw).approvals[0].targetDevice).toBeNull();
+    });
+
+    it('emits targetDevice null for a tombstoned scope, with no device read at all', async () => {
+      mockPendingJoinResolvesAgent(
+        [
+          {
+            approval: scopedApproval(),
+            intent: buildAgentIntent({ scopeKind: 'device', scopeDeviceId: null }),
+          },
+        ],
+        // Nothing queued: a tombstone resolves to no device id, so neither
+        // the run nor the device lookup is reachable.
+        [],
+      );
+
+      const res = await buildApp().request('/approvals/pending');
+      const [approval] = (await res.json()).approvals;
+      expect(approval.targetDevice).toBeNull();
+    });
+
+    it('emits orgId/action/targetDevice null for a row with no linked intent', async () => {
+      mockPendingJoinResolvesAgent([
+        { approval: buildPendingApproval({ id: 'appr-plain' }), intent: null },
+      ]);
+
+      const res = await buildApp().request('/approvals/pending');
+      const [approval] = (await res.json()).approvals;
+      expect(approval.orgId).toBeNull();
+      expect(approval.targetDevice).toBeNull();
+      expect(approval.action).toBeNull();
+    });
   });
 });

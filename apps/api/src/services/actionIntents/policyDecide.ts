@@ -23,6 +23,7 @@ import { computeExposureBudget } from './exposureBudget';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { recordActionIntentEvent } from './metrics';
 import { runDeferredHumanFanout, RELEASE_LEASE_MS } from './intentService';
+import { IntentScopeLostError, resolveIntentTargetDevice } from './intentTargetScope';
 
 /**
  * Wave 5 Part B (#3827) — the policy-decide attempt pipeline: the ONE
@@ -117,9 +118,29 @@ interface LoadedRunAndAgent {
   agent: { id: string; name: string; kind: AiAgentKind };
   partnerId: string;
   deviceSiteId: string | null;
+  /**
+   * P2-2 (#4189): the INTENT's target device — its explicit `scope_device_id`
+   * when set, `run.deviceId` otherwise. Every device-derived decision below
+   * (the live guardrail re-run, the exposure reservation) uses this, never the
+   * run row's own device: a scheduled sweep's run is device-less and pins each
+   * intent through its scope, and `checkAgentGuardrails` denies any mutating
+   * call whose `policy.deviceId` is null.
+   */
+  targetDeviceId: string | null;
 }
 
-async function loadRunAndAgent(runId: string, orgId: string): Promise<LoadedRunAndAgent | null> {
+/**
+ * `'scope_lost'` is a THIRD outcome, distinct from `null` (run/agent/org
+ * missing): the intent is device-scoped and that device was tombstoned,
+ * deleted, or moved to another org. Controller ruling (P2-2 A3) — the same
+ * fail-closed treatment release applies, surfaced here as its own degrade
+ * reason rather than being mislabeled `agent_run_invalid`.
+ */
+async function loadRunAndAgent(
+  runId: string,
+  orgId: string,
+  scope: { scopeKind: 'device' | null; scopeDeviceId: string | null },
+): Promise<LoadedRunAndAgent | 'scope_lost' | null> {
   return inSystemDbContext(async () => {
     const [run] = await db
       .select({
@@ -151,20 +172,35 @@ async function loadRunAndAgent(runId: string, orgId: string): Promise<LoadedRunA
       .limit(1);
     if (!org) return null;
 
+    const target = resolveIntentTargetDevice(scope, run);
+    if (target.kind === 'tombstone') return 'scope_lost' as const;
+
     // Re-resolve the device's CURRENT site — never the site the run started
     // under (mirrors agentReleaseAuthority.ts / intentService.ts's own
     // creation-time lookup).
     let deviceSiteId: string | null = null;
-    if (run.deviceId) {
+    if (target.kind === 'scope') {
+      // Controller ruling (P2-2 A3): a scoped device must still exist AND
+      // still belong to the intent's org — the backstop for a device
+      // org-move that landed through the DB-side cascade rather than the
+      // HTTP moveOrg route, which leaves scope_device_id live.
+      const [device] = await db
+        .select({ orgId: devices.orgId, siteId: devices.siteId })
+        .from(devices)
+        .where(eq(devices.id, target.deviceId))
+        .limit(1);
+      if (!device || device.orgId !== orgId) return 'scope_lost' as const;
+      deviceSiteId = device.siteId ?? null;
+    } else if (target.deviceId) {
       const [device] = await db
         .select({ siteId: devices.siteId })
         .from(devices)
-        .where(eq(devices.id, run.deviceId))
+        .where(eq(devices.id, target.deviceId))
         .limit(1);
       deviceSiteId = device?.siteId ?? null;
     }
 
-    return { run, agent, partnerId: org.partnerId, deviceSiteId };
+    return { run, agent, partnerId: org.partnerId, deviceSiteId, targetDeviceId: target.deviceId };
   });
 }
 
@@ -183,6 +219,10 @@ type DegradeReason =
   | 'not_run_snapshot_authorized'
   | 'kill_switch_engaged'
   | 'agent_policy_denied'
+  // P2-2 (#4189): the intent's scoped target device is gone. Degrading (not
+  // authorizing) is the fail-closed outcome here; release then refuses the
+  // intent terminally with the same code (agentReleaseAuthority.ts).
+  | 'agent_scope_lost'
   | CapCheckFailure;
 
 async function degradeToHumanRequired(intentId: string, reason: DegradeReason, details?: Record<string, unknown>): Promise<void> {
@@ -232,7 +272,19 @@ type AuthorizeResult = { ok: true } | { ok: false; reason: CapCheckFailure };
  */
 async function runAuthorizeTransaction(args: AuthorizeArgs): Promise<AuthorizeResult> {
   const { intent, run, agentId, partnerId, key, killEpoch, maxFleetPercentPerDay, maxPolicyDecisionsPerDay } = args;
-  const deviceId = run.deviceId;
+  // P2-2 (#4189): the exposure reservation is keyed on the device this intent
+  // actually touches — its explicit scope when it has one, the run's device
+  // otherwise. Resolved here (not just passed in) so this transaction can
+  // never silently reserve exposure against the wrong device.
+  const target = resolveIntentTargetDevice(intent, run);
+  if (target.kind === 'tombstone') {
+    // Structurally unreachable: attemptPolicyDecision's own load already
+    // degraded a scope-lost intent to human_required before reaching here.
+    throw new IntentScopeLostError(
+      `runAuthorizeTransaction: intent ${intent.id} is device-scoped but its scope_device_id was tombstoned`,
+    );
+  }
+  const deviceId = target.deviceId;
   if (!deviceId) {
     // Structurally unreachable: checkAgentGuardrails already denies every
     // mutating call from a device-less run before attemptPolicyDecision ever
@@ -461,12 +513,16 @@ export async function attemptPolicyDecision(intentId: string): Promise<void> {
       return;
     }
 
-    const loadedRun = await loadRunAndAgent(intent.requestingAgentRunId, intent.orgId);
+    const loadedRun = await loadRunAndAgent(intent.requestingAgentRunId, intent.orgId, intent);
+    if (loadedRun === 'scope_lost') {
+      await degradeToHumanRequired(intentId, 'agent_scope_lost', { scopeDeviceId: intent.scopeDeviceId });
+      return;
+    }
     if (!loadedRun) {
       await degradeToHumanRequired(intentId, 'agent_run_invalid');
       return;
     }
-    const { run, agent, partnerId, deviceSiteId } = loadedRun;
+    const { run, agent, partnerId, deviceSiteId, targetDeviceId } = loadedRun;
 
     // Canonical key -> registry membership + headlessCompatible + the
     // defense-in-depth reclassification (policyDecidable.ts's
@@ -546,7 +602,9 @@ export async function attemptPolicyDecision(intentId: string): Promise<void> {
       mode: current.effective.mode,
       toolAllowlist: current.effective.toolAllowlist,
       protectedResources: current.effective.protectedResources,
-      deviceId: run.deviceId,
+      // P2-2: the intent's target device (scope-aware), never the run's own —
+      // a device-less sweep run would otherwise be denied outright here.
+      deviceId: targetDeviceId,
       deviceSiteId,
     };
     const verdict = checkAgentGuardrails(intent.actionName, intent.arguments as Record<string, unknown>, livePolicy);

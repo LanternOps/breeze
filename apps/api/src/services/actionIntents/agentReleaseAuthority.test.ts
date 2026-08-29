@@ -548,4 +548,85 @@ describe('checkAgentReleaseAuthority', () => {
       expect(result).toEqual({ ok: true });
     });
   });
+
+  // -------------------------------------------------------------------------
+  // P2-2 (Task A3, #4189): explicit device scope
+  // -------------------------------------------------------------------------
+
+  /** A SWEEP-minted intent: the run is device-less, the target comes from the
+   *  intent's own `scope_device_id`. */
+  const scopedIntent = (overrides: Partial<ActionIntent> = {}) =>
+    intentFixture({
+      arguments: { deviceId: 'dev-scope', action: 'restart', serviceName: 'spooler', siteId: 'site-a' },
+      scopeKind: 'device',
+      scopeDeviceId: 'dev-scope',
+      ...overrides,
+    } as Partial<ActionIntent>);
+
+  /** run/agent/org rows for a DEVICE-LESS run, plus one scoped-device row
+   *  (which the scope branch projects `org_id` from, unlike the run-device
+   *  read that only ever needed `site_id`). */
+  function seedScopedRows(device: unknown[] | undefined = [{ orgId: 'org-1', siteId: 'site-a' }]) {
+    dbState.selectAgentRunsResults.push([{ ...runRow(), deviceId: null }]);
+    dbState.selectAgentsResults.push([agentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+    dbState.selectDevicesResults.push(device ?? []);
+  }
+
+  describe('device scope (P2-2)', () => {
+    it('pins the rebuilt agent context to the SCOPE device, not the run (which has none)', async () => {
+      seedScopedRows();
+
+      const result = await checkAgentReleaseAuthority(scopedIntent());
+
+      expect(result).toEqual({ ok: true });
+      // Without the scope substitution `checkAgentGuardrails` would deny at
+      // its device-less-mutation gate and this would never reach ok:true —
+      // and the context resolveEffectiveAgent is authorized against must be
+      // narrowed to the scope device, never left org-wide.
+      const [auth] = policyState.resolveEffectiveAgent.mock.calls[0]!;
+      expect(auth.allowedDeviceIds).toEqual(['dev-scope']);
+      expect(auth.allowedSiteIds).toEqual(['site-a']);
+    });
+
+    it('fails agent_scope_lost when the scope was tombstoned (device deleted / moveOrg detach)', async () => {
+      seedScopedRows();
+
+      const result = await checkAgentReleaseAuthority(scopedIntent({ scopeDeviceId: null } as Partial<ActionIntent>));
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'agent_scope_lost' });
+      // Terminal, and never mislabeled as a broken run.
+      expect(policyState.resolveEffectiveAgent).not.toHaveBeenCalled();
+    });
+
+    it('fails agent_scope_lost when the scoped device no longer exists', async () => {
+      seedScopedRows([]);
+
+      const result = await checkAgentReleaseAuthority(scopedIntent());
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'agent_scope_lost' });
+    });
+
+    it('fails agent_scope_lost when the scoped device now belongs to another org', async () => {
+      // Controller ruling: a device org-move that landed through the DB-side
+      // cascade (not the HTTP moveOrg route, which detaches the scope) leaves
+      // scope_device_id live — release is the backstop.
+      seedScopedRows([{ orgId: 'org-2', siteId: 'site-a' }]);
+
+      const result = await checkAgentReleaseAuthority(scopedIntent());
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'agent_scope_lost' });
+      expect(policyState.resolveEffectiveAgent).not.toHaveBeenCalled();
+    });
+
+    it('leaves an UNSCOPED intent on the run device (no behavior change)', async () => {
+      seedHappyRows();
+
+      const result = await checkAgentReleaseAuthority(intentFixture());
+
+      expect(result).toEqual({ ok: true });
+      const [auth] = policyState.resolveEffectiveAgent.mock.calls[0]!;
+      expect(auth.allowedDeviceIds).toEqual(['dev-1']);
+    });
+  });
 });
