@@ -2103,6 +2103,45 @@ describe('verdict profile in the run loop (P2-1)', () => {
     expect(outcome.proposedActions).toEqual([]);
   });
 
+  // Review round 2 (Minor 2): a REAL guardrail deny (here, the device-less-
+  // mutation deny — `policy.deviceId === null`) must keep its own specific
+  // reason on a verdict run, not get overwritten by the generic "verdict
+  // runs are read-only". This is exactly why the verdict-profile branch was
+  // moved BELOW `check.disposition === 'deny'` in runLoop.ts — before the
+  // fix, this deny reason was clobbered.
+  it('a real guardrail deny on a verdict run keeps its own specific reason, not the generic "verdict runs are read-only"', async () => {
+    const outcome = emptyOutcome();
+    const pre = createAgentRunPreToolUse({
+      run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, profile: 'verdict' },
+      agentName: 'Front Desk Triage',
+      agentAuth: {},
+      agentKind: 'triage',
+      guardrailPolicy: {
+        enabled: true,
+        mode: 'shadow',
+        toolAllowlist: ['manage_alerts'],
+        protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
+        deviceId: null, // device-less run — checkAgentGuardrails denies mutations outright
+        deviceSiteId: null,
+      },
+      outcome,
+      intentIds: [],
+      allowedPending: new Map<string, number>(),
+      sessionId: null,
+      executionIdPending: new Map<string, Array<string | null>>(),
+      actPinPending: new Map<string, Array<unknown>>(),
+      actReservation: { count: 0 },
+      deadlineMs: Date.now() + 60_000,
+    } as never);
+
+    const result = await pre('manage_alerts', { action: 'suppress', alertId: ALERT_ID, suppressDuration: 24 });
+
+    const expectedReason = 'Tool "manage_alerts" mutates and the run is not device-bound';
+    expect(result).toEqual({ allowed: false, error: expectedReason });
+    expect(outcome.deniedActions).toContainEqual({ tool: 'manage_alerts', reason: expectedReason });
+    expect(outcome.deniedActions).not.toContainEqual({ tool: 'manage_alerts', reason: 'verdict runs are read-only' });
+  });
+
   // Review fix (fix round 1, IMPORTANT 2 + 5, PLAN CHANGE — supersedes the
   // original "intersects the agent's allowlist" design): the floor is served
   // regardless of what the agent's OWN allowlist grants.
@@ -2226,9 +2265,12 @@ describe('finalizeVerdict → persistAlertVerdict wiring (P2-1, Task 8, review r
 
     expect(persistAlertVerdict).toHaveBeenCalledTimes(1);
     const [runArg, verdictArg, agentAuthArg] = persistAlertVerdict.mock.calls[0]!;
-    // `agentId` was dropped (review round 1 minor fix — unused).
+    // `agentId` was dropped (review round 1 minor fix — unused). `toolAllowlist`
+    // (review round 2, IMPORTANT 1) is the run's own effective allowlist off
+    // its stored policySnapshot — `policy({ toolAllowlist: [] })` above.
     expect(runArg).toEqual({
       id: RUN_ID, orgId: ORG_ID, alertId: ALERT_ID, correlationGroupId: null, deviceId: DEVICE_ID,
+      toolAllowlist: [],
     });
     expect(verdictArg).toEqual(verdictWithSuggestion);
     expect(agentAuthArg).toBeTruthy();

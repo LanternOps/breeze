@@ -146,12 +146,17 @@ const agentAuth = {
 
 // Note: `agentId` was dropped from `persistAlertVerdict`'s `run` param
 // (review round 1 minor fix — it was never used in the function body).
+// `toolAllowlist: ['manage_alerts']` (review round 2, IMPORTANT 1) — the
+// bare tool name admits both `suppress` and `resolve`, matching most tests'
+// intent here: exercising the OTHER refusal gates, not this one. Tests that
+// specifically exercise the allowlist gate override it.
 const runInput = {
   id: RUN_ID,
   orgId: ORG_ID,
   alertId: ALERT_ID,
   correlationGroupId: null,
   deviceId: DEVICE_ID,
+  toolAllowlist: ['manage_alerts'],
 };
 
 const baseVerdict: AlertVerdictOutcome = {
@@ -202,7 +207,9 @@ describe('persistAlertVerdict', () => {
     expect(where).toContain('<>');
   });
 
-  it('creates a Tier-2 supervised manage_alerts intent for a pending-approval suggestion, links it, and uses the run\'s own deviceId without an extra query', async () => {
+  // Also covers "bare `manage_alerts` in allowlist → created" (review round
+  // 2, IMPORTANT 1a): `runInput.toolAllowlist` is the bare tool name.
+  it('creates a Tier-2 supervised manage_alerts intent for a pending-approval suggestion, links it via a separate UPDATE after the verdict row is written, and uses the run\'s own deviceId without an extra query', async () => {
     createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
     state.insertReturningQueue.push([{ id: VERDICT_ROW_ID }]);
     // No `state.selectQueue` entries pushed: `suggestion.alertId ===
@@ -233,29 +240,115 @@ describe('persistAlertVerdict', () => {
     expect(result.intentId).toBe(INTENT_ID);
     expect(result.suggestionDisposition).toBe('intent_created');
     expect(result.suggestionReason).toBeUndefined();
-    expect(state.insertValues[0]).toMatchObject({ suggestedIntentId: INTENT_ID });
+    // Minor 4: the initial INSERT always writes `suggestedIntentId: null` —
+    // it runs BEFORE createActionIntent is even attempted. The id is linked
+    // back with a SECOND, separate UPDATE (updateSets[0] is the supersede
+    // update; [1] is this link).
+    expect(state.insertValues[0]).toMatchObject({ suggestedIntentId: null });
+    expect(state.updateSets[1]).toEqual({ suggestedIntentId: INTENT_ID });
+    expect(sqlText(state.updateWheres[1])).toContain('id');
   });
 
-  it('converts null deviceId to undefined in the intent input (never passes null to the schema)', async () => {
+  // Review round 2 (IMPORTANT 1a): the specific `manage_alerts:<action>`
+  // entry admits it too, not just the bare tool name.
+  it('creates the intent when the allowlist carries the specific manage_alerts:suppress entry', async () => {
     createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
     state.insertReturningQueue.push([{ id: VERDICT_ROW_ID }]);
 
-    const nullDeviceRun = { ...runInput, deviceId: null };
+    const scopedRun = { ...runInput, toolAllowlist: ['manage_alerts:suppress'] };
+    const verdict: AlertVerdictOutcome = {
+      ...baseVerdict,
+      classification: 'actionable',
+      suggestedAction: { tool: 'manage_alerts', action: 'suppress', alertId: ALERT_ID, suppressDuration: 24 },
+    };
+
+    const result = await persistAlertVerdict(scopedRun, verdict, agentAuth);
+
+    expect(createActionIntent).toHaveBeenCalledTimes(1);
+    expect(result.intentId).toBe(INTENT_ID);
+    expect(result.suggestionDisposition).toBe('intent_created');
+  });
+
+  // Review round 2 (IMPORTANT 1a): the creation-time authority gate — a
+  // suggestion is refused before ever reaching `createActionIntent` when the
+  // run's effective allowlist admits neither `manage_alerts` nor
+  // `manage_alerts:<action>`, mirroring what the release-time re-check
+  // (`agentReleaseAuthority.ts`) would deny anyway.
+  it('refuses a suggestion when manage_alerts is not in the run\'s effective allowlist (not_allowlisted)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    state.insertReturningQueue.push([{ id: VERDICT_ROW_ID }]);
+
+    const unallowlistedRun = { ...runInput, toolAllowlist: ['query_devices'] };
+    const verdict: AlertVerdictOutcome = {
+      ...baseVerdict,
+      classification: 'actionable',
+      suggestedAction: { tool: 'manage_alerts', action: 'suppress', alertId: ALERT_ID, suppressDuration: 24 },
+    };
+
+    const result = await persistAlertVerdict(unallowlistedRun, verdict, agentAuth);
+
+    expect(result.intentId).toBeNull();
+    expect(result.suggestionDisposition).toBe('not_created');
+    expect(result.suggestionReason).toBe('not_allowlisted');
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    expect(state.insertValues[0]).toMatchObject({ suggestedIntentId: null });
+    // No link update either — there was never an intent id to link.
+    expect(state.updateSets).toHaveLength(1);
+  });
+
+  // Review round 2 (IMPORTANT 1b): the device-binding gate — a suggestion
+  // targeting an alert on a DIFFERENT device than the run's own is refused,
+  // even though it passed the group-membership check (`suggestionTargetsRun`)
+  // and the allowlist gate. Uses the group path so the alerts.deviceId
+  // lookup actually runs (the single-alert shortcut trivially matches).
+  it('refuses a suggestion whose target alert is on a different device than the run (target_mismatch)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const OTHER_DEVICE_ID = '00000000-0000-4000-8000-0000000000ec';
+    // First select: alertCorrelationMembers membership check (a member).
+    // Second select: alerts.deviceId lookup — a DIFFERENT device.
+    state.selectQueue.push([{ id: 'member-1' }]);
+    state.selectQueue.push([{ deviceId: OTHER_DEVICE_ID }]);
+    state.insertReturningQueue.push([{ id: VERDICT_ROW_ID }]);
+
+    const groupRun = { ...runInput, alertId: null, correlationGroupId: GROUP_ID };
+    const verdict: AlertVerdictOutcome = {
+      ...baseVerdict,
+      classification: 'duplicate_of_group',
+      suggestedAction: { tool: 'manage_alerts', action: 'suppress', alertId: OTHER_ALERT_ID, suppressDuration: 24 },
+    };
+
+    const result = await persistAlertVerdict(groupRun, verdict, agentAuth);
+
+    expect(result.intentId).toBeNull();
+    expect(result.suggestionDisposition).toBe('not_created');
+    expect(result.suggestionReason).toBe('target_mismatch');
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  // Review round 2 (IMPORTANT 1b): a device-less run can never satisfy the
+  // device-binding gate, even when the suggestion targets the run's own
+  // alert (the common single-alert-run shortcut path) — matching
+  // `checkAgentGuardrails`'s own device-less-mutation deny at release time.
+  it('refuses a suggestion when the run has no deviceId at all (target_mismatch)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    state.insertReturningQueue.push([{ id: VERDICT_ROW_ID }]);
+
+    const deviceLessRun = { ...runInput, deviceId: null };
     const verdict: AlertVerdictOutcome = {
       ...baseVerdict,
       classification: 'actionable',
       suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: ALERT_ID },
     };
 
-    const result = await persistAlertVerdict(nullDeviceRun, verdict, agentAuth);
+    const result = await persistAlertVerdict(deviceLessRun, verdict, agentAuth);
 
-    const callArgs = createActionIntent.mock.calls[0];
-    expect(callArgs).toBeDefined();
-    const input = (callArgs?.[1] as Record<string, unknown> | undefined)?.input as Record<string, unknown> | undefined;
-    expect(input).not.toHaveProperty('deviceId', null);
-    expect(input?.deviceId).toBeUndefined();
-    expect(result.intentId).toBe(INTENT_ID);
-    expect(result.suggestionDisposition).toBe('intent_created');
+    expect(result.intentId).toBeNull();
+    expect(result.suggestionDisposition).toBe('not_created');
+    expect(result.suggestionReason).toBe('target_mismatch');
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
   });
 
   // CRITICAL fix (review round 1): createActionIntent does NOT throw on

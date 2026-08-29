@@ -968,6 +968,23 @@ export function googleToolDefinitions(
  * with the SDK's own error-result shape, never reaching the handler), the
  * original handler runs, then postToolUse fires with the result's first text
  * block (or the whole serialized result, if there is none) as `output`.
+ *
+ * What this does NOT do, unlike `makeHandler` (review round 2, Minor 1):
+ *   - No `runOutsideDbContext` around the handler call. `makeHandler` wraps
+ *     its ENTIRE body in it specifically to escape a stale/committed
+ *     AsyncLocalStorage DB context inherited from the SDK's MCP callback
+ *     chain (see that function's own docstring for the hang this prevents).
+ *     This wrapper has no such escape — it runs inside whatever context is
+ *     ambient when the SDK invokes it.
+ *   - No `withToolTimeout`. `makeHandler` bounds every registry tool call to
+ *     `getToolTimeout(toolName)`; a hung `extraTool.handler` (or a hung
+ *     `onPreToolUse`/`onPostToolUse` call made from here) has nothing
+ *     enforcing a ceiling.
+ * `outcomeTools.ts`'s tools are hook-free and never touch the DB, which is
+ * exactly why this wrapper gets away without either — do NOT add an
+ * `extraTools` entry whose handler, `onPreToolUse`, or `onPostToolUse`
+ * touches the database without first adding the same `runOutsideDbContext`
+ * + `withToolTimeout` protection `makeHandler` gives every registry tool.
  */
 export function wrapExtraToolWithHooks(
   extraTool: SdkTool,

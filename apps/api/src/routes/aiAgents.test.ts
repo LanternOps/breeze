@@ -669,6 +669,7 @@ const runDetailResponseSchema = z.object({
         disposition: z.enum(['intent_created', 'not_created']),
         reason: z.enum([
           'low_confidence', 'target_mismatch', 'alert_not_found', 'no_eligible_approvers', 'intent_error',
+          'not_allowlisted',
         ]).nullable(),
       }).strict().nullable(),
     }).strict().nullable(),

@@ -761,25 +761,29 @@ export function createAgentRunPreToolUse(args: {
 
     const check = checkAgentGuardrails(toolName, input, guardrailPolicy);
 
-    // Review fix (wave P2-1 fix round 1, PLAN CHANGE): a verdict run is
-    // read-only, full stop — ANY disposition other than 'allow' (a 'propose'
-    // or an 'act' the ordinary guardrail would otherwise record or execute)
-    // is denied outright instead. Defense in depth on top of
-    // `guardrailPolicy.toolAllowlist` already being built from the verdict
-    // floor in `driveSdkLoop` (which makes an unlisted mutation deny for the
-    // allowlist reason before this is even reached) — this catches anything
-    // that reasoning missed, e.g. a read-only-looking tool with a mutating
-    // action this list didn't anticipate. `check.disposition === 'deny'`
-    // also matches here (denied either way; the reason below is just more
-    // specific to a verdict run than whatever `checkAgentGuardrails` said).
-    if (isVerdictProfile(run) && check.disposition !== 'allow') {
-      const reason = 'verdict runs are read-only';
+    if (check.disposition === 'deny') {
+      const reason = check.reason ?? 'Denied by agent guardrails';
       outcome.deniedActions.push({ tool: toolName, reason });
       return { allowed: false, error: reason };
     }
 
-    if (check.disposition === 'deny') {
-      const reason = check.reason ?? 'Denied by agent guardrails';
+    // Review fix (wave P2-1 fix round 1, PLAN CHANGE; reordered review round
+    // 2, Minor 2): a verdict run is read-only, full stop — a 'propose' or an
+    // 'act' the ordinary guardrail would otherwise record or execute is
+    // denied outright instead. This sits BELOW the `check.disposition ===
+    // 'deny'` branch above (not merged into it) so a REAL guardrail deny —
+    // kill switch, site scope, protected resource, disabled/off, an unknown
+    // action — keeps ITS OWN specific reason instead of being overwritten
+    // with the generic "verdict runs are read-only"; only 'propose'/'act'
+    // ever reach this branch now, since 'deny' and 'allow' have already
+    // returned above. Defense in depth on top of `guardrailPolicy.toolAllowlist`
+    // already being built from the verdict floor in `driveSdkLoop` (which
+    // makes an unlisted mutation deny for the allowlist reason before this
+    // is even reached) — this catches anything that reasoning missed, e.g.
+    // a read-only-looking tool with a mutating action this list didn't
+    // anticipate.
+    if (isVerdictProfile(run) && check.disposition !== 'allow') {
+      const reason = 'verdict runs are read-only';
       outcome.deniedActions.push({ tool: toolName, reason });
       return { allowed: false, error: reason };
     }
@@ -1719,6 +1723,12 @@ async function finalizeVerdict(ctx: RunContext, result: LoopResult): Promise<str
         alertId: ctx.run.alertId,
         correlationGroupId: ctx.run.correlationGroupId,
         deviceId: ctx.run.deviceId,
+        // Review round 2 (IMPORTANT 1) — the run's OWN effective
+        // toolAllowlist, off the already-loaded run row's policySnapshot
+        // (never re-queried): `persistAlertVerdict` gates a suggested
+        // mutation's intent creation on this SAME authority the release
+        // path re-checks (agentReleaseAuthority.ts).
+        toolAllowlist: ctx.run.policySnapshot.effective.toolAllowlist,
       },
       outcome.alertVerdict,
       result.agentAuth,

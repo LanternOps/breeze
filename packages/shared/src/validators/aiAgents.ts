@@ -222,7 +222,13 @@ const alertVerdictSuggestedActionSchema = z.discriminatedUnion('action', [
     tool: z.literal('manage_alerts'),
     action: z.literal('suppress'),
     alertId: z.string().uuid(),
-    suppressDuration: z.number().int().min(0).max(720),
+    // Review round 2 (IMPORTANT 2): a MODEL-suggested suppression may never
+    // be indefinite (`0` = forever on the real `manage_alerts` tool schema,
+    // aiToolSchemas.ts — that one stays `min(0)` deliberately, since a human
+    // approver can choose "forever"). Keep this bound in sync with
+    // `outcomeTools.ts`'s `SUBMIT_ALERT_VERDICT_SHAPE` — the two schemas
+    // validate the same field at two different points in the same pipeline.
+    suppressDuration: z.number().int().min(1).max(720),
   }),
   z.object({
     tool: z.literal('manage_alerts'),

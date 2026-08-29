@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import { VERDICT_TOOL_ALLOWLIST, verdictLimits, verdictToolAllowlist } from './verdictProfile';
-import { TIER2_ACTIONS, TIER2_READONLY_TOOLS } from '../aiGuardrails';
+import { TIER2_ACTIONS, TIER2_READONLY_TOOLS, TIER3_ACTIONS } from '../aiGuardrails';
 import { TOOL_TIERS } from '../aiAgentSdkTools';
 
 describe('verdict profile', () => {
@@ -40,8 +40,16 @@ describe('verdict profile', () => {
       // `T | undefined`; `entry` always has a tool segment before an
       // optional `:action` one, by construction of VERDICT_TOOL_ALLOWLIST.
       const [tool, action] = entry.split(':') as [string, string | undefined];
-      if (action) expect(TIER2_ACTIONS[tool] ?? []).not.toContain(action);
-      else expect(TOOL_TIERS[tool as keyof typeof TOOL_TIERS] === 1 || TIER2_READONLY_TOOLS.has(tool)).toBe(true);
+      if (action) {
+        expect(TIER2_ACTIONS[tool] ?? []).not.toContain(action);
+        // Review round 2 (Minor 5): a `tool:action` entry must not name an
+        // action TIER3_ACTIONS escalates to approval-required — this floor
+        // is meant to be auto-execute read-only, never a Tier-3 mutation
+        // that slipped past the TIER2_ACTIONS check above.
+        expect(TIER3_ACTIONS[tool] ?? []).not.toContain(action);
+      } else {
+        expect(TOOL_TIERS[tool as keyof typeof TOOL_TIERS] === 1 || TIER2_READONLY_TOOLS.has(tool)).toBe(true);
+      }
     }
   });
 });

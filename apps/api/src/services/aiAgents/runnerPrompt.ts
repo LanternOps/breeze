@@ -279,7 +279,7 @@ function buildVerdictTaskPrompt(ctx: AgentRunPromptContext): string {
   lines.push('- needs_human: you cannot decide with ≥0.6 confidence.');
   lines.push(
     'Only suggest an action when confidence ≥ 0.8: resolve for transient_self_healed; '
-    + 'suppress (hours) for recurring_pattern.',
+    + 'suppress (hours, at least 1) for recurring_pattern.',
   );
   lines.push('Finish by calling submit_alert_verdict exactly once. Your rationale is shown to technicians; ≤ 2 sentences.');
 

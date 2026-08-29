@@ -52,7 +52,12 @@ const SUBMIT_ALERT_VERDICT_SHAPE = {
     evidenceAlertIds: z.array(z.string().uuid()).max(50),
   }).optional(),
   suggestedAction: z.union([
-    z.object({ tool: z.literal('manage_alerts'), action: z.literal('suppress'), alertId: z.string().uuid(), suppressDuration: z.number().int().min(0).max(720) }),
+    // Review round 2 (IMPORTANT 2): `min(1)`, not `min(0)` — a model-suggested
+    // suppression may never be indefinite (`0` = forever is a human-only
+    // choice on the real `manage_alerts` tool schema, aiToolSchemas.ts, which
+    // stays `min(0)` deliberately). Keep in sync with
+    // `alertVerdictOutcomeSchema` in packages/shared/src/validators/aiAgents.ts.
+    z.object({ tool: z.literal('manage_alerts'), action: z.literal('suppress'), alertId: z.string().uuid(), suppressDuration: z.number().int().min(1).max(720) }),
     z.object({ tool: z.literal('manage_alerts'), action: z.literal('resolve'), alertId: z.string().uuid() }),
   ]).optional().describe('Optional. Becomes a proposal a human approves; never applied directly.'),
 };

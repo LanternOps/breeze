@@ -261,8 +261,21 @@ export interface AiAgentRunTicketProposalDto {
  * and this DTO so the two can never drift apart.
  */
 export type AlertVerdictSuggestionDisposition = 'intent_created' | 'not_created';
+/**
+ * `'not_allowlisted'` (review round 2, IMPORTANT 1) — the agent's own
+ * effective `toolAllowlist` (the run's stored `policySnapshot.effective`,
+ * not the tool's registry tier) admits neither `manage_alerts` nor
+ * `manage_alerts:<action>`. Checked at CREATION time in `alertVerdicts.ts`
+ * so a human is never asked to approve something the RELEASE-time
+ * `checkAgentGuardrails` re-check (`agentReleaseAuthority.ts`) would
+ * terminally deny anyway. `'target_mismatch'` also covers the sibling
+ * device-binding gate there: a suggestion whose target alert's device does
+ * not equal the run's own `deviceId` (including a device-less run) is
+ * refused with this same reason.
+ */
 export type AlertVerdictSuggestionReason =
-  | 'low_confidence' | 'target_mismatch' | 'alert_not_found' | 'no_eligible_approvers' | 'intent_error';
+  | 'low_confidence' | 'target_mismatch' | 'alert_not_found' | 'no_eligible_approvers' | 'intent_error'
+  | 'not_allowlisted';
 
 /**
  * Phase 2 wave P2-1 (alert verdicts) — the safe projection of one

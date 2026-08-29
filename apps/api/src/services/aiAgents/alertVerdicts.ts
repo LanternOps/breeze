@@ -34,6 +34,15 @@
  * are request-path helpers (explicit `orgId`/RLS-scoped `id` lookups) and are
  * NOT wrapped in a system context — they run inside the caller's own
  * `withDbAccessContext`, same as every other read in `routes/aiAgents.ts`.
+ *
+ * Write ordering (review round 2, Minor 4): the verdict row is INSERTed
+ * (with `suggestedIntentId: null`) and superseded BEFORE `createActionIntent`
+ * is ever called; the intent id is linked back with a separate `UPDATE`
+ * afterward, only when one was actually created. A crash/throw between the
+ * insert and that final `UPDATE` leaves a verdict row with no linked intent
+ * (a `NULL` suggestedIntentId is a valid, already-handled state — see
+ * `projectAlertVerdict`) rather than a live, human-approvable intent nobody
+ * can find because the verdict row it belongs to was never written.
  */
 
 import { and, desc, eq, inArray, isNull, ne } from 'drizzle-orm';
@@ -148,14 +157,34 @@ export async function persistAlertVerdict(
   run: {
     id: string; orgId: string; alertId: string | null;
     correlationGroupId: string | null; deviceId: string | null;
+    /**
+     * Review round 2 (IMPORTANT 1) — the run's own effective
+     * `toolAllowlist`, read once by the caller off the stored
+     * `policySnapshot.effective.toolAllowlist` (`runLoop.ts`'s
+     * `finalizeVerdict` — the run row is already loaded there, so this is
+     * never a second query). Gates whether a suggested mutation may become
+     * an intent at all: RELEASE time (`agentReleaseAuthority.ts`) re-runs
+     * `checkAgentGuardrails` with this SAME effective allowlist and the
+     * RUN's own `deviceId`, so an approved intent whose tool the agent
+     * never allowlisted — or whose target is on another device — is
+     * terminally denied there. Checking the identical authority at
+     * CREATION means a human is never asked to approve something that
+     * cannot release.
+     */
+    toolAllowlist: string[];
   },
   verdict: AlertVerdictOutcome,
   agentAuth: AuthContext,
 ): Promise<PersistAlertVerdictResult> {
-  let intentId: string | null = null;
   let suggestionDisposition: AlertVerdictSuggestionDisposition = 'not_created';
   let suggestionReason: AlertVerdictSuggestionReason | undefined;
   const suggestion = verdict.suggestedAction;
+
+  // Resolved ONLY when every refusal gate below is cleared — the single
+  // condition that decides whether `createActionIntent` is even attempted,
+  // further down, AFTER the verdict row is written (Minor 4).
+  let targetDeviceId: string | null | undefined;
+  let canAttemptIntent = false;
 
   if (suggestion) {
     // Confidence floor mirrors the guardrail spirit elsewhere in this wave:
@@ -180,7 +209,6 @@ export async function persistAlertVerdict(
       // doubles as the existence gate (minor fix: a suggestion naming a
       // real-but-deleted-since alert id must not reach `createActionIntent`
       // with an unresolved device).
-      let targetDeviceId: string | null | undefined;
       let targetFound = true;
       if (suggestion.alertId === run.alertId) {
         targetDeviceId = run.deviceId;
@@ -199,48 +227,28 @@ export async function persistAlertVerdict(
         console.warn('[alertVerdicts] suggestion refused — target alert not found in org', {
           runId: run.id, alertId: suggestion.alertId,
         });
+      } else if (
+        !run.toolAllowlist.includes('manage_alerts')
+        && !run.toolAllowlist.includes(`manage_alerts:${suggestion.action}`)
+      ) {
+        // Review round 2 (IMPORTANT 1a) — same matching rule as
+        // `checkAgentGuardrails` (aiGuardrails.ts): a bare `manage_alerts`
+        // entry OR the specific `manage_alerts:<action>` entry admits it.
+        suggestionReason = 'not_allowlisted';
+        console.warn('[alertVerdicts] suggestion refused — manage_alerts not in the run\'s effective allowlist', {
+          runId: run.id, alertId: suggestion.alertId, action: suggestion.action,
+        });
+      } else if (run.deviceId === null || targetDeviceId !== run.deviceId) {
+        // Review round 2 (IMPORTANT 1b) — the target alert must be on the
+        // RUN's own device; a device-less run (`run.deviceId === null`)
+        // can never satisfy this, matching `checkAgentGuardrails`'s own
+        // device-less-mutation deny at release time.
+        suggestionReason = 'target_mismatch';
+        console.warn('[alertVerdicts] suggestion refused — target alert is not on the run\'s device', {
+          runId: run.id, alertId: suggestion.alertId, targetDeviceId, runDeviceId: run.deviceId,
+        });
       } else {
-        try {
-          const intent = await createActionIntent(agentAuth, {
-            toolName: 'manage_alerts',
-            input: suggestion.action === 'suppress'
-              ? {
-                action: 'suppress', alertId: suggestion.alertId, deviceId: targetDeviceId ?? undefined,
-                suppressDuration: suggestion.suppressDuration, resolutionNote: verdict.rationale,
-              }
-              : { action: 'resolve', alertId: suggestion.alertId, deviceId: targetDeviceId ?? undefined, resolutionNote: verdict.rationale },
-            source: 'ai_agent',
-            orgId: run.orgId,
-            reason: verdict.rationale,
-            idempotencyKey: `verdict:${run.id}`,
-          });
-          // CRITICAL fix (review round 1): createActionIntent does NOT throw
-          // when nobody can approve — it commits the intent and immediately
-          // cancels it with `no_eligible_approvers`, returning that
-          // snapshot (mirrors runLoop.ts's `recordProposal`). Linking/
-          // pushing anything but a genuinely PENDING intent would advertise
-          // a dead intent id and break the "`intent_ids` are pending-only"
-          // invariant `routes/aiAgents.ts` depends on.
-          if (intent.status === 'pending_approval') {
-            intentId = intent.id;
-            suggestionDisposition = 'intent_created';
-          } else {
-            suggestionReason = intent.errorCode === 'no_eligible_approvers' ? 'no_eligible_approvers' : 'intent_error';
-            console.warn('[alertVerdicts] suggestion intent was not left pending approval', {
-              runId: run.id, alertId: suggestion.alertId, intentId: intent.id,
-              status: intent.status, errorCode: intent.errorCode,
-            });
-          }
-        } catch (error) {
-          // agent_policy_denied, org_resolution_failed, … The VERDICT is
-          // still recorded below — losing the classification because the
-          // suggested mutation couldn't be submitted would throw away the
-          // useful half of the run's output.
-          suggestionReason = 'intent_error';
-          console.warn('[alertVerdicts] suggestion intent not created', {
-            runId: run.id, alertId: suggestion.alertId, error: (error as Error).message,
-          });
-        }
+        canAttemptIntent = true;
       }
     }
   }
@@ -249,6 +257,10 @@ export async function persistAlertVerdict(
     ? eq(aiAlertVerdicts.correlationGroupId, run.correlationGroupId)
     : eq(aiAlertVerdicts.alertId, run.alertId!);
 
+  // Minor 4: the verdict row is written (and superseded) BEFORE any intent
+  // is attempted, always with `suggestedIntentId: null` — see the file
+  // header's "Write ordering" note for why. `intentId` (below) is linked
+  // back with a separate UPDATE afterward, only if one was actually created.
   const verdictId = await inSystemDbContext(async () => {
     const [row] = await db.insert(aiAlertVerdicts).values({
       orgId: run.orgId,
@@ -259,7 +271,7 @@ export async function persistAlertVerdict(
       confidence: verdict.confidence.toFixed(2),
       rationale: verdict.rationale,
       pattern: verdict.pattern ?? null,
-      suggestedIntentId: intentId,
+      suggestedIntentId: null,
     }).returning({ id: aiAlertVerdicts.id });
 
     // Supersede every earlier LIVE verdict for the same target, excluding
@@ -275,6 +287,57 @@ export async function persistAlertVerdict(
 
     return row!.id;
   });
+
+  let intentId: string | null = null;
+  if (canAttemptIntent && suggestion) {
+    try {
+      const intent = await createActionIntent(agentAuth, {
+        toolName: 'manage_alerts',
+        input: suggestion.action === 'suppress'
+          ? {
+            action: 'suppress', alertId: suggestion.alertId, deviceId: targetDeviceId ?? undefined,
+            suppressDuration: suggestion.suppressDuration, resolutionNote: verdict.rationale,
+          }
+          : { action: 'resolve', alertId: suggestion.alertId, deviceId: targetDeviceId ?? undefined, resolutionNote: verdict.rationale },
+        source: 'ai_agent',
+        orgId: run.orgId,
+        reason: verdict.rationale,
+        idempotencyKey: `verdict:${run.id}`,
+      });
+      // CRITICAL fix (review round 1): createActionIntent does NOT throw
+      // when nobody can approve — it commits the intent and immediately
+      // cancels it with `no_eligible_approvers`, returning that
+      // snapshot (mirrors runLoop.ts's `recordProposal`). Linking/
+      // pushing anything but a genuinely PENDING intent would advertise
+      // a dead intent id and break the "`intent_ids` are pending-only"
+      // invariant `routes/aiAgents.ts` depends on.
+      if (intent.status === 'pending_approval') {
+        intentId = intent.id;
+        suggestionDisposition = 'intent_created';
+      } else {
+        suggestionReason = intent.errorCode === 'no_eligible_approvers' ? 'no_eligible_approvers' : 'intent_error';
+        console.warn('[alertVerdicts] suggestion intent was not left pending approval', {
+          runId: run.id, alertId: suggestion.alertId, intentId: intent.id,
+          status: intent.status, errorCode: intent.errorCode,
+        });
+      }
+    } catch (error) {
+      // agent_policy_denied, org_resolution_failed, … The VERDICT is
+      // already recorded above — losing the classification because the
+      // suggested mutation couldn't be submitted would throw away the
+      // useful half of the run's output.
+      suggestionReason = 'intent_error';
+      console.warn('[alertVerdicts] suggestion intent not created', {
+        runId: run.id, alertId: suggestion.alertId, error: (error as Error).message,
+      });
+    }
+
+    if (intentId) {
+      await inSystemDbContext(() => db.update(aiAlertVerdicts)
+        .set({ suggestedIntentId: intentId })
+        .where(eq(aiAlertVerdicts.id, verdictId)));
+    }
+  }
 
   return { verdictId, intentId, suggestionDisposition, suggestionReason };
 }

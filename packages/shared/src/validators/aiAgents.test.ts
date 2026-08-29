@@ -285,10 +285,17 @@ describe('alertVerdictOutcomeSchema', () => {
       suggestedAction: { tool: 'run_script', action: 'run', alertId: '0f2e2c7e-0c7d-4f7e-9c1c-1f4f2c1a9b10' },
     }).success).toBe(false);
   });
-  it('bounds suppressDuration to 0..720 hours', () => {
+  // Review round 2 (IMPORTANT 2): bounds tightened to 1..720 — a
+  // MODEL-suggested suppression may never be indefinite (`0` = forever is a
+  // human-only choice on the real `manage_alerts` tool schema,
+  // aiToolSchemas.ts, which stays `min(0)` deliberately). Keep this bound in
+  // sync with `outcomeTools.ts`'s `SUBMIT_ALERT_VERDICT_SHAPE`.
+  it('bounds suppressDuration to 1..720 hours (0 rejects — no indefinite suppression from a model)', () => {
     const base = { classification: 'recurring_pattern', confidence: 0.8, rationale: 'nightly' };
     const id = '0f2e2c7e-0c7d-4f7e-9c1c-1f4f2c1a9b10';
+    expect(alertVerdictOutcomeSchema.safeParse({ ...base, suggestedAction: { tool: 'manage_alerts', action: 'suppress', alertId: id, suppressDuration: 1 } }).success).toBe(true);
     expect(alertVerdictOutcomeSchema.safeParse({ ...base, suggestedAction: { tool: 'manage_alerts', action: 'suppress', alertId: id, suppressDuration: 24 } }).success).toBe(true);
+    expect(alertVerdictOutcomeSchema.safeParse({ ...base, suggestedAction: { tool: 'manage_alerts', action: 'suppress', alertId: id, suppressDuration: 0 } }).success).toBe(false);
     expect(alertVerdictOutcomeSchema.safeParse({ ...base, suggestedAction: { tool: 'manage_alerts', action: 'suppress', alertId: id, suppressDuration: 721 } }).success).toBe(false);
   });
 });

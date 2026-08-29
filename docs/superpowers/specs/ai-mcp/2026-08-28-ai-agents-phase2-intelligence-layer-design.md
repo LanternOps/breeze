@@ -77,11 +77,11 @@ interface AlertVerdictOutcome {
   rationale: string;             // ≤ 400 chars, rendered on the alert row
   pattern?: { kind: 'daily' | 'weekly' | 'after_event'; evidenceAlertIds: string[] };
   suggestedAction?:              // becomes an intent, never applied directly
-    | { tool: 'manage_alerts'; action: 'suppress'; ruleId: string; deviceId?: string; untilIso?: string }
+    | { tool: 'manage_alerts'; action: 'suppress'; alertId: string; suppressDuration: number /* hours, 1–720 */ }
     | { tool: 'manage_alerts'; action: 'resolve'; alertId: string };
 }
 ```
-Produced via the `submit_alert_verdict` outcome tool and persisted to `ai_alert_verdicts` (§5) — one row per (alert | group) per run; a newer verdict marks the older `superseded_by`. `suggestedAction` becomes a **Tier-2 single-approver intent** created by `finishRun` with scope `{ alertId | ruleId+deviceId }`: in act mode with `manage_alerts` in the act manifest it executes (with a `verifySpec: alert_state`); otherwise it is a one-click card in `/approvals`. Nothing in this lane mutates alerts without an intent.
+Produced via the `submit_alert_verdict` outcome tool and persisted to `ai_alert_verdicts` (§5) — one row per (alert | group) per run; a newer verdict marks the older `superseded_by`. `suggestedAction` becomes a **Tier-2 single-approver intent** created by `finishRun` with scope `{ alertId + the alert's deviceId }`: in act mode with `manage_alerts` in the act manifest it executes (with a `verifySpec: alert_state`); otherwise it is a one-click card in `/approvals`. Nothing in this lane mutates alerts without an intent. A suggestion becomes an intent only when the agent's effective `toolAllowlist` admits `manage_alerts` (or `manage_alerts:<action>`) and the alert is on the run's device — the same authority the release path re-checks.
 
 **Trigger plumbing (Amendment):** `upsertGroup` returns only an id and `persistAlertCorrelationGroupsForAlerts` returns only counts, discarded by the job (`alertCorrelationGroups.ts:147`, `:237`; `alertCorrelation.ts:527`). P2-1 changes `upsertGroup` to `RETURNING id, (xmax = 0) AS created`, bubbles `createdGroupIds` up, and the job publishes `alert.correlation_group.created` per new id **after** the persistence transaction commits.
 
@@ -199,7 +199,7 @@ New inbox affordances: batch approve/decline for same-(org, tool, action) Tier-2
 ## 7. Rollout, flags, safety
 
 - **No new env flags.** P2-1..3, P2-6 activate under `BREEZE_AI_AGENTS_ENABLED` for any agent with `mode ≥ shadow`. P2-4 autonomous writes need `mode = act` + `autonomousWrites`. P2-5 promotion needs `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED`; auto-demote is always on.
-- Kill switch, circuit breaker, exposure ledger, `maxActionsPerRun`, cooldowns apply unchanged to every act-mode mutation. Verdict runs are ledger-exempt (§4.1).
+- Kill switch, circuit breaker, exposure ledger, `maxActionsPerRun`, cooldowns apply unchanged to every act-mode mutation. Verdict runs never touch the ledger — structurally (§4.1), not by a profile exemption.
 - Verdict volume guard: `maxVerdictRunsPerHour` + `maxConcurrentVerdictRuns` per agent on their own counters; overflow is `skip('verdict_rate')` / `skip('max_concurrent_verdict_runs')` on admission, visible in the runs list, never queued.
 - Every prompt input in this program is **display fields only** (rule names, counters, hostnames, sanitized titles); no raw alert messages, ticket bodies beyond 6.3's bounded context, or tool outputs.
 - Sentry: no ticket/alert text in tags or breadcrumbs (scrubber allowlist).
