@@ -70,7 +70,7 @@ wave: W01 (#4188) — P2-1 Alert verdicts (PR A foundations + PR B triggers/UI)
 
 ## PR A — Foundations
 
-### Task A1: Migration + Drizzle schema + ceremonies
+### Task 1 (A1): Migration + Drizzle schema + ceremonies
 
 **Files:**
 - Create: `apps/api/migrations/2026-09-20-ai-agents-alert-verdicts.sql`
@@ -272,7 +272,7 @@ git commit -m "feat(api): P2-1 — ai_alert_verdicts table, run profile + correl
 
 ---
 
-### Task A2: Shared types — run profile, limits v5, verdict outcome schema
+### Task 2 (A2): Shared types — run profile, limits v5, verdict outcome schema
 
 **Files:**
 - Modify: `packages/shared/src/types/aiAgents.ts` (limits at :22-73, snapshot version at :153-183, `AgentRunVerdict` at :288)
@@ -439,7 +439,7 @@ git commit -m "feat(shared): P2-1 — run profiles, alert verdict outcome schema
 
 ---
 
-### Task A3: Tier-2 `supervised` intents for the `ai_agent` principal
+### Task 3 (A3): Tier-2 `supervised` intents for the `ai_agent` principal
 
 **Files:**
 - Modify: `apps/api/src/services/actionIntents/intentService.ts:660-676` (tier gate), `:355-363` (`resolvePolicyDecisionState`), `:687` (approvalScope)
@@ -549,7 +549,7 @@ git commit -m "feat(api): P2-1 — Tier-2 supervised action intents for the ai_a
 
 ---
 
-### Task A4: Outcome-tool mechanism + `submit_alert_verdict`
+### Task 4 (A4): Outcome-tool mechanism + `submit_alert_verdict`
 
 **Files:**
 - Create: `apps/api/src/services/aiAgents/outcomeTools.ts`
@@ -692,7 +692,7 @@ git commit -m "feat(api): P2-1 — outcome-tool mechanism and submit_alert_verdi
 
 ---
 
-### Task A5: Verdict profile — allowlist, limits, circuit classification
+### Task 5 (A5): Verdict profile — allowlist, limits, circuit classification
 
 **Files:**
 - Create: `apps/api/src/services/aiAgents/verdictProfile.ts`
@@ -808,7 +808,7 @@ git commit -m "feat(api): P2-1 — verdict profile allowlist/limits; circuit tre
 
 ---
 
-### Task A6: Verdict admission in `createAndEnqueueAgentRun`
+### Task 6 (A6): Verdict admission in `createAndEnqueueAgentRun`
 
 **Files:**
 - Modify: `apps/api/src/services/aiAgents/runService.ts:73-102` (input + skip reasons), `:445-480` (cooldown/concurrency/rate), the insert (~`:560-610`) to write `profile`/`correlationGroupId`
@@ -868,7 +868,7 @@ git commit -m "feat(api): P2-1 — verdict-profile admission on its own concurre
 
 ---
 
-### Task A7: Run loop — verdict tool exposure, capture, prompt
+### Task 7 (A7): Run loop — verdict tool exposure, capture, prompt
 
 **Files:**
 - Modify: `apps/api/src/services/aiAgents/runLoop.ts` (`RunContext` :249-263, context loader :361-380, `createAgentRunPreToolUse` :399-438, `createAgentRunPostToolUse` :709-717, SDK options :1059-1077, `AgentRunOutcome` :190-215)
@@ -976,7 +976,7 @@ git commit -m "feat(api): P2-1 — verdict runs: outcome-tool exposure, capture,
 
 ---
 
-### Task A8: Persist verdicts + convert suggestions to Tier-2 intents; feedback route; trace projection
+### Task 8 (A8): Persist verdicts + convert suggestions to Tier-2 intents; feedback route; trace projection
 
 **Files:**
 - Create: `apps/api/src/services/aiAgents/alertVerdicts.ts`
@@ -1141,7 +1141,7 @@ git commit -m "feat(api): P2-1 — persist alert verdicts, suggestion → Tier-2
 
 ---
 
-### Task A9: Contract test — no profile bypass, outcome tools inert
+### Task 9 (A9): Contract test — no profile bypass, outcome tools inert
 
 **Files:**
 - Create: `apps/api/src/services/aiAgents/verdictProfile.contract.test.ts`
@@ -1185,7 +1185,7 @@ git commit -m "test(api): P2-1 — contract: verdict profile cannot bypass guard
 
 ---
 
-### Task A10: PR A wrap — typecheck, lint, integration suites, PR
+### Task 10 (A10): PR A wrap — typecheck, lint, integration suites, PR
 
 - [ ] **Step 1:** `cd apps/api && NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit -p tsconfig.json` → clean. `pnpm --filter @breeze/api lint && pnpm --filter @breeze/shared lint` → clean.
 - [ ] **Step 2:** Integration (real DB): `cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/rls-coverage.integration.test.ts src/services/tenantCascade.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts` → PASS (verify the files RAN — non-zero test counts).
@@ -1196,7 +1196,7 @@ git commit -m "test(api): P2-1 — contract: verdict profile cannot bypass guard
 
 ## PR B — Triggers + UI
 
-### Task B1: `alert.correlation_group.created` event, emitted after commit
+### Task 11 (B1): `alert.correlation_group.created` event, emitted after commit
 
 **Files:**
 - Modify: `apps/api/src/services/eventBus.ts:11-124` (add `| 'alert.correlation_group.created'` under "Alert events")
@@ -1235,7 +1235,7 @@ it('publishes alert.correlation_group.created once per created group after persi
 
 ---
 
-### Task B2: Durable subscriber `ai-agent-alert-verdict`
+### Task 12 (B2): Durable subscriber `ai-agent-alert-verdict`
 
 **Files:**
 - Create: `apps/api/src/services/aiAgents/alertVerdictSubscriber.ts`
@@ -1278,7 +1278,7 @@ and append `'ai-agent-alert-verdict'` to `EVENT_SUBSCRIBER_IDS`. The handler is 
 
 ---
 
-### Task B3: Ungrouped-alert delayed verdict job
+### Task 13 (B3): Ungrouped-alert delayed verdict job
 
 **Files:**
 - Create: `apps/api/src/jobs/alertVerdictScheduler.ts`
@@ -1295,7 +1295,7 @@ and append `'ai-agent-alert-verdict'` to `EVENT_SUBSCRIBER_IDS`. The handler is 
 
 ---
 
-### Task B4: Alerts API carries the latest verdict
+### Task 14 (B4): Alerts API carries the latest verdict
 
 **Files:**
 - Modify: `apps/api/src/routes/alerts/alerts.ts:134` (list) and `:305` (detail) — after loading rows, call `latestVerdictsForAlerts(orgId, ids)` and attach `aiVerdict: { id, classification, confidence, rationale, patternKind, feedback, suggestedIntentId, createdAt } | null`. Add an optional query param `hideAiNoise=true` on the list that excludes alerts whose latest verdict is `transient_self_healed | recurring_pattern | duplicate_of_group` (applied after the page is loaded is wrong — apply as a `NOT EXISTS` subquery on `ai_alert_verdicts` so pagination stays correct).
@@ -1306,7 +1306,7 @@ and append `'ai-agent-alert-verdict'` to `EVENT_SUBSCRIBER_IDS`. The handler is 
 
 ---
 
-### Task B5: Web — verdict badge, rationale, feedback, noise filter
+### Task 15 (B5): Web — verdict badge, rationale, feedback, noise filter
 
 **Files:**
 - Create: `apps/web/src/components/alerts/AlertVerdictBadge.tsx`
@@ -1324,7 +1324,7 @@ and append `'ai-agent-alert-verdict'` to `EVENT_SUBSCRIBER_IDS`. The handler is 
 
 ---
 
-### Task B6: PR B wrap
+### Task 16 (B6): PR B wrap
 
 - [ ] Typecheck API + web; lint all touched packages; `npx vitest run src/services/aiAgents src/services/alertCorrelationGroups.test.ts src/jobs/alertCorrelation.test.ts src/routes/alerts` (API) and the web files above.
 - [ ] Manual check on a wt-stack: enable `BREEZE_AI_AGENTS_ENABLED=true`, set a triage agent to `shadow`, fire three alerts on one device within 30 minutes → the correlator groups them → one verdict run appears in `/ai-agents/runs` with `profile: verdict`, the alert rows show the badge, 👍 persists, and a `suppress` suggestion shows in `/approvals` as a single-approver card whose approve executes the suppression.
