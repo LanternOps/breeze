@@ -389,6 +389,37 @@ describe('ai-agent-alert-verdict subscriber', () => {
         expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
       });
 
+      // Task 16e fix: an unparseable ISO string parses to `Invalid Date`,
+      // whose `.getTime()` is `NaN` — and `NaN > WINDOW` is `false`, so
+      // without the fail-closed guard this would fall through the window
+      // check above and admit the run instead of skipping it.
+      it('fails closed (skips with a warning, no run admitted) when resolvedAt in the PAYLOAD is unparseable', async () => {
+        queueAlert([{ ...BASE_ALERT_ROW, resolvedBy: null, resolvedAt: new Date('2026-08-28T00:05:00.000Z') }]);
+
+        await handleAlertVerdictEvent(alertResolvedEvent({
+          resolvedBy: null,
+          resolvedAt: 'not-a-real-timestamp',
+          triggeredAt: '2026-08-28T00:00:00.000Z',
+        }));
+
+        expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+        expect(latestVerdictsForAlerts).not.toHaveBeenCalled();
+        expect(console.warn).toHaveBeenCalled();
+      });
+
+      it('fails closed the same way when triggeredAt in the PAYLOAD is unparseable', async () => {
+        queueAlert([{ ...BASE_ALERT_ROW, resolvedBy: null, resolvedAt: new Date('2026-08-28T00:05:00.000Z') }]);
+
+        await handleAlertVerdictEvent(alertResolvedEvent({
+          resolvedBy: null,
+          resolvedAt: '2026-08-28T00:05:00.000Z',
+          triggeredAt: 'also-not-a-real-timestamp',
+        }));
+
+        expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+        expect(console.warn).toHaveBeenCalled();
+      });
+
       it('falls back to the ROW when the payload carries only SOME of resolvedBy/resolvedAt/triggeredAt (older publisher shape)', async () => {
         // Row: system resolve, 10 minutes after trigger — in-window admit.
         mockCleanAutoResolve();

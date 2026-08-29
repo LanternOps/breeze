@@ -714,6 +714,14 @@ describe('latestVerdictsForAlerts', () => {
       expect(map.get(OTHER_ALERT_ID)).toEqual(groupVerdictRow);
     });
 
+    // Task 16e fix: the group-level query previously pinned org scoping only
+    // on `alert_correlation_members` (`memberOrgCondition`), never on the
+    // joined `ai_alert_verdicts` row itself — unlike the alert-level query
+    // above, which pins `orgCondition` directly on `aiAlertVerdicts`. A
+    // string-substring assertion on 'org_id' alone would pass even with that
+    // gap (the member-side condition already renders that column name), so
+    // this compiles the WHERE clause and asserts the org id is an actual
+    // bound PARAMETER, not just present in the SQL text.
     it('the group-level query is scoped to live (non-superseded) rows and is org-scoped', async () => {
       state.selectQueue.push([]); // alert-level: nothing
       state.selectQueue.push([]); // group-level: nothing
@@ -721,9 +729,24 @@ describe('latestVerdictsForAlerts', () => {
       await latestVerdictsForAlerts(ORG_ID, [ALERT_ID]);
 
       expect(state.selectCount).toBe(2);
-      const groupWhere = sqlText(state.selectWheres[1]);
-      expect(groupWhere.toLowerCase()).toContain('is null');
-      expect(groupWhere.toLowerCase()).toContain('org_id');
+      const groupWhereClause = state.selectWheres[1] as SQL;
+      const groupWhereText = sqlText(groupWhereClause);
+      expect(groupWhereText.toLowerCase()).toContain('is null');
+      expect(groupWhereText.toLowerCase()).toContain('org_id');
+      const { params } = dialect.sqlToQuery(groupWhereClause);
+      expect(params).toContain(ORG_ID);
+    });
+
+    it('the group-level query also org-scopes on an array of orgIds, via inArray on both the member and verdict rows', async () => {
+      const OTHER_ORG_ID = '00000000-0000-4000-8000-0000000000ec';
+      state.selectQueue.push([]); // alert-level: nothing
+      state.selectQueue.push([]); // group-level: nothing
+
+      await latestVerdictsForAlerts([ORG_ID, OTHER_ORG_ID], [ALERT_ID]);
+
+      const groupWhereClause = state.selectWheres[1] as SQL;
+      const { params } = dialect.sqlToQuery(groupWhereClause);
+      expect(params).toEqual(expect.arrayContaining([ORG_ID, OTHER_ORG_ID]));
     });
   });
 });
