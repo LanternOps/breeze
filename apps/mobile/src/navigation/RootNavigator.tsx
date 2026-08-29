@@ -28,6 +28,7 @@ import { ApprovalGate } from './ApprovalGate';
 import { OnboardingScreen } from '../screens/onboarding/OnboardingScreen';
 import { Spinner } from '../components/Spinner';
 import { palette } from '../theme';
+import { MfaEnrollmentRequiredScreen } from '../screens/auth/MfaEnrollmentRequiredScreen';
 
 /**
  * Upper bound on how long the native splash may stay up waiting for boot.
@@ -39,7 +40,7 @@ const SPLASH_MAX_HOLD_MS = 4000;
 
 export function RootNavigator() {
   const dispatch = useAppDispatch();
-  const { token, user } = useAppSelector((state) => state.auth);
+  const { token, user, mfaEnrollmentRequired } = useAppSelector((state) => state.auth);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [blockedReason, setBlockedReason] = useState<string | null>(null);
   const blockedHandledRef = useRef(false);
@@ -96,7 +97,7 @@ export function RootNavigator() {
   // call started for user A can resolve after A signed out and B signed in,
   // writing A's outcome into B's session.
   useEffect(() => {
-    if (!token || !user) return;
+    if (!token || !user || mfaEnrollmentRequired) return;
     let active = true;
     // #2707 read-and-clear: take the login-minted grant OUT of Redux before the
     // async attempt. The grant is deliberately NOT in this effect's deps — the
@@ -126,7 +127,7 @@ export function RootNavigator() {
     return () => {
       active = false;
     };
-  }, [token, user, dispatch]);
+  }, [token, user, mfaEnrollmentRequired, dispatch]);
 
   useEffect(() => {
     /**
@@ -300,7 +301,9 @@ export function RootNavigator() {
 
   return (
     <NavigationContainer theme={navigationTheme}>
-      {token ? (
+      {mfaEnrollmentRequired ? (
+        <MfaEnrollmentRequiredScreen />
+      ) : token ? (
         hasOnboarded ? (
           <ApprovalGate>
             <MainNavigator />

@@ -121,17 +121,33 @@ export interface LoginResponse {
   registerGrant: string | null;
 }
 
-export type MfaMethod = 'totp' | 'sms';
+export type MfaMethod = 'totp' | 'sms' | 'passkey' | 'recovery';
+export type MfaPrimaryMethod = Exclude<MfaMethod, 'recovery'>;
+
+export interface MfaAllowedMethods {
+  totp: boolean;
+  sms: boolean;
+  passkey: boolean;
+}
 
 export interface MfaChallenge {
   tempToken: string;
   mfaMethod: MfaMethod;
+  methods: MfaMethod[];
+  allowedMethods: MfaAllowedMethods;
+  recoveryAvailable: boolean;
   phoneLast4: string | null;
+}
+
+export interface MfaEnrollmentRequired {
+  reason: 'mfa_enrollment_required';
+  enrollUrl: string;
 }
 
 export type LoginResult =
   | { kind: 'success'; token: string; user: User; registerGrant: string | null }
-  | { kind: 'mfaRequired'; challenge: MfaChallenge };
+  | { kind: 'mfaRequired'; challenge: MfaChallenge }
+  | { kind: 'mfaEnrollmentRequired'; handoff: MfaEnrollmentRequired };
 
 export interface ApiError {
   message: string;
@@ -162,10 +178,79 @@ interface LoginPayload {
   mfaRequired?: boolean;
   tempToken?: string;
   mfaMethod?: MfaMethod;
+  allowedMethods?: MfaAllowedMethods;
+  recoveryAvailable?: boolean;
+  passkeyAvailable?: boolean;
   phoneLast4?: string | null;
+  mfaEnrollmentRequired?: boolean;
+  enrollUrl?: string;
   error?: string;
   /** #2707: single-use approver-register grant; mobile-header-gated. */
   authenticatorRegisterGrantId?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isPrimaryMfaMethod(value: unknown): value is MfaPrimaryMethod {
+  return value === 'totp' || value === 'sms' || value === 'passkey';
+}
+
+export function parseMfaChallengePayload(value: unknown): MfaChallenge | null {
+  if (
+    !isRecord(value)
+    || value.mfaRequired !== true
+    || typeof value.tempToken !== 'string'
+    || !value.tempToken
+    || !isPrimaryMfaMethod(value.mfaMethod)
+  ) {
+    return null;
+  }
+  const phoneLast4 = value.phoneLast4 === undefined || value.phoneLast4 === null
+    ? null
+    : typeof value.phoneLast4 === 'string' ? value.phoneLast4 : undefined;
+  if (phoneLast4 === undefined) return null;
+  const hasAllowed = Object.prototype.hasOwnProperty.call(value, 'allowedMethods');
+  const hasRecovery = Object.prototype.hasOwnProperty.call(value, 'recoveryAvailable');
+  if (hasAllowed !== hasRecovery) return null;
+
+  if (!hasAllowed) {
+    if (value.passkeyAvailable !== undefined && typeof value.passkeyAvailable !== 'boolean') return null;
+    const allowedMethods: MfaAllowedMethods = {
+      totp: value.mfaMethod === 'totp',
+      sms: value.mfaMethod === 'sms',
+      passkey: value.mfaMethod === 'passkey' || value.passkeyAvailable === true,
+    };
+    const methods: MfaMethod[] = [
+      ...(allowedMethods.totp ? ['totp' as const] : []),
+      ...(allowedMethods.sms ? ['sms' as const] : []),
+      ...(allowedMethods.passkey ? ['passkey' as const] : []),
+    ];
+    return { tempToken: value.tempToken, mfaMethod: value.mfaMethod, methods, allowedMethods, recoveryAvailable: false, phoneLast4 };
+  }
+
+  const allowed = value.allowedMethods;
+  if (
+    !isRecord(allowed)
+    || typeof allowed.totp !== 'boolean'
+    || typeof allowed.sms !== 'boolean'
+    || typeof allowed.passkey !== 'boolean'
+    || typeof value.recoveryAvailable !== 'boolean'
+    || typeof value.passkeyAvailable !== 'boolean'
+    || value.passkeyAvailable !== allowed.passkey
+  ) return null;
+  const allowedMethods = { totp: allowed.totp, sms: allowed.sms, passkey: allowed.passkey };
+  const methods: MfaMethod[] = [
+    ...(allowedMethods.totp ? ['totp' as const] : []),
+    ...(allowedMethods.sms ? ['sms' as const] : []),
+    ...(allowedMethods.passkey ? ['passkey' as const] : []),
+    ...(value.recoveryAvailable ? ['recovery' as const] : []),
+  ];
+  if (methods.length === 0) return null;
+  const mfaMethod = allowedMethods[value.mfaMethod] ? value.mfaMethod : methods[0];
+  if (!mfaMethod) return null;
+  return { tempToken: value.tempToken, mfaMethod, methods, allowedMethods, recoveryAvailable: value.recoveryAvailable, phoneLast4 };
 }
 
 type MobileAlertRecord = {
@@ -438,18 +523,26 @@ export async function login(email: string, password: string): Promise<LoginResul
     body: JSON.stringify({ email, password }),
   });
 
-  if (response.mfaRequired) {
-    if (!response.tempToken || !response.mfaMethod) {
-      throw { message: 'Invalid MFA challenge from server' } as ApiError;
-    }
+  // Fail closed even if a server accidentally includes tempting user/token
+  // fields: enrollment-required is a handoff state, never authentication.
+  if (response.mfaEnrollmentRequired === true) {
     return {
-      kind: 'mfaRequired',
-      challenge: {
-        tempToken: response.tempToken,
-        mfaMethod: response.mfaMethod,
-        phoneLast4: response.phoneLast4 ?? null,
+      kind: 'mfaEnrollmentRequired',
+      handoff: {
+        reason: 'mfa_enrollment_required',
+        enrollUrl: typeof response.enrollUrl === 'string' && response.enrollUrl.startsWith('/')
+          ? response.enrollUrl
+          : '/auth/mfa/setup',
       },
     };
+  }
+
+  if (response.mfaRequired) {
+    const challenge = parseMfaChallengePayload(response);
+    if (!challenge) {
+      throw { message: 'Invalid MFA challenge from server' } as ApiError;
+    }
+    return { kind: 'mfaRequired', challenge };
   }
 
   const token = response.tokens?.accessToken || response.accessToken;
@@ -465,10 +558,14 @@ export async function login(email: string, password: string): Promise<LoginResul
   };
 }
 
-export async function verifyMfa(code: string, tempToken: string): Promise<LoginResponse> {
+export async function verifyMfa(
+  code: string,
+  tempToken: string,
+  method: Exclude<MfaMethod, 'passkey'>,
+): Promise<LoginResponse> {
   const response = await requestWithPrefix<LoginPayload>('/auth/mfa/verify', API_CORE_PREFIX, {
     method: 'POST',
-    body: JSON.stringify({ code, tempToken }),
+    body: JSON.stringify({ code, tempToken, method }),
   });
 
   const token = response.tokens?.accessToken || response.accessToken;
