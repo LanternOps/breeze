@@ -82,7 +82,7 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
   alertId: uuid('alert_id').references(() => alerts.id, { onDelete: 'set null' }),
-  // Phase 2 wave P2-1 (alert verdicts, migrations/2026-09-20-ai-agents-alert-verdicts.sql):
+  // Phase 2 wave P2-1 (alert verdicts, migrations/2026-09-21-ai-agents-alert-verdicts.sql):
   // 'full' is the pre-existing run shape; 'verdict' scopes the run to
   // producing one ai_alert_verdicts row instead of a full triage/patch/
   // helpdesk turn. correlationGroupId is set only for a verdict run

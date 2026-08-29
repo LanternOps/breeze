@@ -173,7 +173,7 @@ export interface AiAgentTriggers {
    * Not part of a versioned snapshot-shape bump: like `anomalyTypes`/
    * `metricNames`/`minAnomalyScore` above (added the same wave, also
    * without a bump), this is a new OPTIONAL field on `triggers`, not on
-   * `limits` — every `AI_AGENT_POLICY_SNAPSHOT_VERSION` bump to date (v2-v4)
+   * `limits` — every `AI_AGENT_POLICY_SNAPSHOT_VERSION` bump to date (v2-v5)
    * was for a `limits` field specifically, because runtime code branches on
    * `schemaVersion` to decide whether a STORED run snapshot's `limits`
    * object can be trusted to carry that key. Nothing branches on

@@ -203,8 +203,7 @@ export interface OutcomeExecutedAction {
 
 /**
  * Wave 6 PR 3 (#3828, Task 4) — the model's structured proposal for a
- * ticket-triggered run. Reserved, exactly like `findings` above: nothing in
- * this PR populates it (there is no SDK structured-output wiring yet — the
+ * ticket-triggered run. Reserved: nothing in this PR populates it (there is no SDK structured-output wiring yet — the
  * model's only output channel is still the free-text summary `driveSdkLoop`
  * already extracts). The field exists now so the outcome shape, the
  * `ai_agent_runs.outcome` jsonb, and `AiAgentRunTicketProposalDto`

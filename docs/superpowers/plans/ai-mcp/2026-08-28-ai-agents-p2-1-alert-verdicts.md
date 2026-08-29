@@ -19,7 +19,7 @@ wave: W01 (#4188) — P2-1 Alert verdicts (PR A foundations + PR B triggers/UI)
 
 - Tests: `cd apps/api && npx vitest run <path>` (never `pnpm … test -- --run`). Shared: `cd packages/shared && npx vitest run <path>`. Web: `cd apps/web && npx vitest run <path>` plus `src/lib/i18n/localeParity.test.ts`. Typecheck: `cd apps/api && NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit -p tsconfig.json`.
 - Run `pnpm lint` in every touched package before finishing a PR — an `eslint-disable` naming an unregistered rule is itself a lint error (use `as never`, real deps arrays).
-- ONE migration in PR A, idempotent, named to sort after the newest committed file. At plan time the newest committed is `2026-09-18-ai-agents-safety-controls.sql` and wave 6.3 (in flight) claims `2026-09-19-ai-agents-ticket-shadow.sql`; use **`2026-09-20-ai-agents-alert-verdicts.sql`** and re-check `ls apps/api/migrations/*.sql | sort | tail -1` at implementation time. No inner `BEGIN;`/`COMMIT;`. Explicit `ON DELETE` on every FK.
+- ONE migration in PR A, idempotent, named to sort after the newest committed file. At plan time the newest committed was `2026-09-18-ai-agents-safety-controls.sql` and wave 6.3 (in flight) claimed `2026-09-19-ai-agents-ticket-shadow.sql`. Both 6.3 and 6.4 have since merged, and 6.4 claimed `2026-09-20-ai-agents-anomaly-pilot.sql`, so this migration was renamed to **`2026-09-21-ai-agents-alert-verdicts.sql`** during the rebase onto them (it was still unmerged, so renaming was allowed). Re-check `ls apps/api/migrations/*.sql | sort | tail -1` at implementation time. No inner `BEGIN;`/`COMMIT;`. Explicit `ON DELETE` on every FK.
 - New org-scoped table `ai_alert_verdicts` → RLS (shape 1, auto-discovered) + `CORE_ORG_CASCADE_DELETE_ORDER` (alphabetical, `localeCompare`) + `CORE_TENANT_EXPORT_POLICY` + `orgMergeRegistry`. Column adds on `ai_agent_runs` (`profile`, `correlation_group_id`) fire the export-policy contract — classify both `included`.
 - Policy snapshot `AI_AGENT_POLICY_SNAPSHOT_VERSION` 4 → 5 (`maxVerdictRunsPerHour`, `maxConcurrentVerdictRuns`, `verdictBudgetCentsPerRun`); every read site tolerates 1–5.
 - DTO rule (wave 6.1): every field enumerated by hand; `AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS` (`args`, `toolInput`, `toolOutput`, `arguments`) must never appear in a projected verdict; Zod-validate response shapes in tests.
@@ -36,7 +36,7 @@ wave: W01 (#4188) — P2-1 Alert verdicts (PR A foundations + PR B triggers/UI)
 
 | File | Responsibility |
 |---|---|
-| `apps/api/migrations/2026-09-20-ai-agents-alert-verdicts.sql` (new) | `ai_agent_runs.profile` + `correlation_group_id`; `ai_alert_verdicts` table + RLS + indexes; `alert_correlation_groups`-adjacent nothing (no schema change there). |
+| `apps/api/migrations/2026-09-21-ai-agents-alert-verdicts.sql` (new) | `ai_agent_runs.profile` + `correlation_group_id`; `ai_alert_verdicts` table + RLS + indexes; `alert_correlation_groups`-adjacent nothing (no schema change there). |
 | `apps/api/src/db/schema/aiAlertVerdicts.ts` (new) + `db/schema/index.ts` + `db/schema/aiAgents.ts` (modify) | Drizzle table; two new run columns. |
 | `apps/api/src/services/tenantCascade.ts`, `tenantExportPolicyRegistry.ts`, `orgMergeRegistry.ts` (modify) | Ceremony. |
 | `packages/shared/src/types/aiAgents.ts`, `packages/shared/src/validators/aiAgents.ts` (modify) | `AI_AGENT_RUN_PROFILES`, limits v5, `AlertVerdictOutcome` type + `alertVerdictOutcomeSchema`, `AI_ALERT_VERDICT_CLASSIFICATIONS`. |
@@ -73,7 +73,7 @@ wave: W01 (#4188) — P2-1 Alert verdicts (PR A foundations + PR B triggers/UI)
 ### Task 1 (A1): Migration + Drizzle schema + ceremonies
 
 **Files:**
-- Create: `apps/api/migrations/2026-09-20-ai-agents-alert-verdicts.sql`
+- Create: `apps/api/migrations/2026-09-21-ai-agents-alert-verdicts.sql`
 - Create: `apps/api/src/db/schema/aiAlertVerdicts.ts`
 - Modify: `apps/api/src/db/schema/aiAgents.ts` (the `aiAgentRuns` table, after `alertId` at ~line 82)
 - Modify: `apps/api/src/db/schema/index.ts:55-58` (add `export * from './aiAlertVerdicts';`)
@@ -130,7 +130,7 @@ Expected: FAIL — `Cannot find module './aiAlertVerdicts'`.
 - [ ] **Step 3: Write the migration**
 
 ```sql
--- apps/api/migrations/2026-09-20-ai-agents-alert-verdicts.sql
+-- apps/api/migrations/2026-09-21-ai-agents-alert-verdicts.sql
 -- Phase 2 wave P2-1 (alert verdicts). Spec:
 -- docs/superpowers/specs/ai-mcp/2026-08-28-ai-agents-phase2-intelligence-layer-design.md §4.1, §5.
 -- Idempotent; no inner BEGIN/COMMIT (autoMigrate wraps the file).
@@ -266,7 +266,7 @@ Expected: PASS. Then `export DATABASE_URL=postgresql://breeze:breeze@localhost:5
 - [ ] **Step 7: Commit**
 
 ```bash
-git add apps/api/migrations/2026-09-20-ai-agents-alert-verdicts.sql apps/api/src/db/schema apps/api/src/services/tenantCascade.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/orgMergeRegistry.ts
+git add apps/api/migrations/2026-09-21-ai-agents-alert-verdicts.sql apps/api/src/db/schema apps/api/src/services/tenantCascade.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/orgMergeRegistry.ts
 git commit -m "feat(api): P2-1 — ai_alert_verdicts table, run profile + correlation group columns, ceremonies"
 ```
 

@@ -13,7 +13,7 @@ import { aiAgentRuns } from './aiAgents';
  * `verdict`-profile run produced for an alert or a correlation group —
  * exactly one of `alert_id` / `correlation_group_id` is set (see the
  * `ai_alert_verdicts_target_chk` CHECK in
- * migrations/2026-09-20-ai-agents-alert-verdicts.sql, which the
+ * migrations/2026-09-21-ai-agents-alert-verdicts.sql, which the
  * `classification` / `confidence` / `feedback` CHECKs also live in and must
  * be edited together with the enums below).
  *
