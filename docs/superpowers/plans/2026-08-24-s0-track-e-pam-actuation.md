@@ -762,7 +762,7 @@ cd agent && go test -race ./...
 
 Expected: all named integration files print an executed-file line and pass; API/unit/typecheck and agent race suites pass. A green job whose PAM suite was skipped by `runIf` is not evidence.
 
-- [ ] **Step 6: Run the exact-candidate environment gate**
+- [x] **Step 6: Run the exact-candidate environment gate**
 
 On the disposable Windows fixture, after explicit lab authorization:
 
@@ -811,6 +811,32 @@ the shipping entitlement-removal disposition remains unresolved. This closure
 does not claim native Windows execution, physical enforcement, deployment,
 hosted reachability, customer mutation, production SLO adoption, or rollout.
 
+Exact-candidate closure (2026-08-29, rc.3 `a11d432a6`): the disposable
+signed-Windows fixture (Server 2022 endpoints, physical Windows 11 harness host,
+lab authorization LAB-2026-08-28-S0-445-DELL70601) executed all 25 matrix cases
+against the SSL.com-signed hosted-gap agent (`9cf3bcb4…9be7`) and the candidate
+API image with **zero invariant failures** and zero missing `received` receipts:
+21 `accepted_cleanup`, `refused_stale_apply`, two `rejected_cross_org`, and
+`legacy_untracked` retained as `blocked_manual_remediation` under an
+operator-entered disposition. Independent process/account/token inspection was
+clean after every accepted cleanup. Measured cleanup latency over 21 accepted
+cases: p95 442.75 ms, maximum 612 ms → `candidate_target_passed`;
+`productionSloAdopted` is false because no Security/Product/Operations decision
+reference was supplied. The run was made possible by two rc.3 fixes recorded in
+`docs/superpowers/specs/2026-08-28-s0-track-e-pam-rc3-design.md`: #4196
+(crash-during-grant cleanup proven by independent endpoint evidence; job absent
+with the exact process alive still fails closed as `job_absent_process_alive`)
+and the synchronous `received` acknowledgement before `Resume`. rc.2 had
+executed 17/25 before #4196 blocked it; the three replay cases that rc.2 could
+not exercise ran for real on rc.3 (`duplicate`, `duplicate`, `stale`).
+
+RMM-QA-445 stays `fixed-unverified` on the plan's own rule: exact-candidate
+Windows evidence and real-Postgres suites are now present, but the candidate
+target is not yet adopted as a production SLO and the shipping
+entitlement-removal disposition (Task 8 entitlement item) remains unresolved.
+Evidence lives in the private lab evidence directory and the QA repository
+(`docs/qa/evidence/2026-08-29-s0-track-e-pam-rc3-candidate.md`).
+
 ## Dependency and Rollout Gate
 
 ```text
@@ -845,6 +871,6 @@ Track D complete
 - [ ] Entitlement removal names a wired shipping caller or a Product-owned shipping-SKU non-applicability disposition.
 - [x] Real-Postgres suites execute rather than skip and prove two-org isolation and zero side effects.
 - [x] Go race/state-machine tests pass and Windows binaries cross-compile.
-- [ ] Disposable signed-Windows evidence covers at least 20 cases and proves zero surviving privileged token/process tree.
+- [x] Disposable signed-Windows evidence covers at least 20 cases and proves zero surviving privileged token/process tree (rc.3, 25/25, 2026-08-29).
 - [ ] The 2-second p95/5-second maximum remains labeled a candidate target until explicitly adopted.
 - [x] No production deployment, customer rollout, or destructive production migration occurred from this branch.
