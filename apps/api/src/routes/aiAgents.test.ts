@@ -674,7 +674,7 @@ const runDetailResponseSchema = z.object({
         disposition: z.enum(['intent_created', 'not_created']),
         reason: z.enum([
           'low_confidence', 'target_mismatch', 'alert_not_found', 'no_eligible_approvers', 'intent_error',
-          'not_allowlisted',
+          'not_allowlisted', 'superseded_concurrently',
         ]).nullable(),
       }).strict().nullable(),
     }).strict().nullable(),
@@ -832,6 +832,44 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(parsed.data.id).toBe(RUN_ID);
     expect(parsed.data.agentName).toBeNull();
     expect(parsed.data.agentKind).toBeNull();
+  });
+
+  // Review round 1, fix round 1 (IMPORTANT 1) — carry-in C's new
+  // `superseded_concurrently` suggestionReason (alertVerdicts.ts's 23505
+  // race handling) must round-trip through `GET /runs/:runId` without
+  // tripping the strict wire schema. `projectAlertVerdict` is the REAL
+  // implementation here (importOriginal, see this file's own mock comment
+  // above `alertVerdicts`), so this exercises the actual projection, not a
+  // stub — the schema parse below is the assertion that matters.
+  it('round-trips alertVerdict.suggestedAction.reason: superseded_concurrently through the strict wire schema', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      runRow({
+        sessionId: null,
+        intentIds: [],
+        outcome: {
+          findings: [],
+          executedActions: [],
+          proposedActions: [],
+          deniedActions: [],
+          toolExecutionCount: 0,
+          runVerdict: 'partial',
+          alertVerdict: {
+            classification: 'actionable',
+            confidence: 0.9,
+            rationale: 'Another run already recorded a verdict for this alert.',
+            suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' },
+          },
+          alertVerdictIntent: { disposition: 'not_created', reason: 'superseded_concurrently' },
+        },
+      }),
+    ]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runDetailResponseSchema.parse(body);
+    expect(parsed.data.alertVerdict?.suggestedAction?.disposition).toBe('not_created');
+    expect(parsed.data.alertVerdict?.suggestedAction?.reason).toBe('superseded_concurrently');
   });
 });
 
