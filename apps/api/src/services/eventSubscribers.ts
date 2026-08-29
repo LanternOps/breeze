@@ -1,6 +1,7 @@
 // Registers the durable production event subscribers onto the registry
 // (wave 3.5c, #4085; joined by the ticket-helpdesk subscriber, wave 6 PR 3,
-// and the anomaly-triggered admission subscriber, wave 6 PR 4, #3828). This
+// the anomaly-triggered admission subscriber, wave 6 PR 4, #3828, and the
+// alert-verdict admission subscriber, Phase 2 wave P2-1 task 12). This
 // is the ONLY call site that should ever call
 // `registerEventSubscriber` for these ids — a subscriber that is both
 // `subscribe()`d on the legacy bus AND registered here would fire twice (see
@@ -41,6 +42,29 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
   registered = true;
 
   configureWebhookFanout(deps);
+
+  registerEventSubscriber({
+    id: 'ai-agent-alert-verdict',
+    // Phase 2 wave P2-1 (alert verdicts), task 12. Admits a profile:'verdict'
+    // run for a newly created alert correlation group (bound to the ROOT
+    // alert's device) or a system/auto-resolved alert within the
+    // auto-resolve window — see alertVerdictSubscriber.ts's header for the
+    // full account.
+    //
+    // Lazy, same reason and same pattern as ai-agent-anomaly below:
+    // alertVerdictSubscriber.ts -> runService.ts's transitive closure
+    // reaches routes/auth/schemas.ts (workerEntrypointClosure.contract.test.ts
+    // caught this the first time a static import was tried here for the
+    // ticket-helpdesk subscriber) — a dynamic import defers that cost to the
+    // first alert.correlation_group.created/alert.resolved delivery instead
+    // of paying it at eventSubscribers.ts's module-eval time.
+    eventTypes: ['alert.correlation_group.created', 'alert.resolved'],
+    handler: async (event: BreezeEvent) => {
+      const { handleAlertVerdictEvent } = await import('./aiAgents/alertVerdictSubscriber');
+      return handleAlertVerdictEvent(event);
+    },
+    retry: { attempts: 3, backoffMs: 30_000 },
+  });
 
   registerEventSubscriber({
     id: 'ai-agent-anomaly',
