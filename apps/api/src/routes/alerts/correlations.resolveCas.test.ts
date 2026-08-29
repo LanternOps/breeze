@@ -66,6 +66,7 @@ const {
     status: 'active',
     severity: 'high',
     title: 'Disk almost full',
+    triggeredAt: new Date('2026-08-20T00:00:00Z'),
   };
   const alertLose = {
     id: '44444444-4444-4444-8444-444444444444',
@@ -76,6 +77,7 @@ const {
     status: 'active',
     severity: 'high',
     title: 'CPU pegged',
+    triggeredAt: new Date('2026-08-20T00:00:00Z'),
   };
 
   // Same table-keyed queue as alertService.autoResolveOutcome.test.ts: seeds are

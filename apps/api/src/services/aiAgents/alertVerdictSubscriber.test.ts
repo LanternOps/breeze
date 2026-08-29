@@ -338,6 +338,68 @@ describe('ai-agent-alert-verdict subscriber', () => {
       expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
       expect(db.select).not.toHaveBeenCalled();
     });
+
+    // C2 fix (P2-1 wave B, task 16d) — the auto-resolve sweep publishes
+    // `alert.resolved` from inside the SAME transaction that performed the
+    // UPDATE, before it commits. A re-read on this subscriber's own
+    // connection can then see the PRE-update row. These pin that resolve
+    // state is decided from the PUBLISHED PAYLOAD, never from such a read.
+    describe('payload-gated resolve state (C2 fix)', () => {
+      it('admits a system resolve using the PAYLOAD even when the row read still shows a stale resolvedAt: null', async () => {
+        const staleRow = { ...BASE_ALERT_ROW, resolvedAt: null, resolvedBy: null };
+        queueAlert([staleRow]); // gating/context read — still shows the PRE-commit row
+        latestVerdictsForAlerts.mockResolvedValue(new Map());
+        queueAlert([staleRow]); // re-load inside enqueueVerdictRunForAlert
+        queueDevice([BASE_DEVICE_ROW]);
+
+        await handleAlertVerdictEvent(alertResolvedEvent({
+          resolvedBy: null,
+          resolvedAt: '2026-08-28T00:10:00.000Z',
+          triggeredAt: '2026-08-28T00:00:00.000Z',
+        }));
+
+        expect(createAndEnqueueAgentRun).toHaveBeenCalledWith(expect.objectContaining({
+          alertId: ALERT_ID,
+          dedupeKey: `alert-verdict:${ALERT_ID}`,
+        }));
+      });
+
+      it('a human resolvedBy in the PAYLOAD skips even when the row itself looks like a system resolve', async () => {
+        queueAlert([{ ...BASE_ALERT_ROW, resolvedBy: null, resolvedAt: new Date('2026-08-28T00:10:00.000Z') }]);
+
+        await handleAlertVerdictEvent(alertResolvedEvent({
+          resolvedBy: 'user-1',
+          resolvedAt: '2026-08-28T00:10:00.000Z',
+          triggeredAt: '2026-08-28T00:00:00.000Z',
+        }));
+
+        expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+        expect(latestVerdictsForAlerts).not.toHaveBeenCalled();
+      });
+
+      it(`skips when resolvedAt - triggeredAt in the PAYLOAD exceeds ${AUTO_RESOLVE_VERDICT_WINDOW_MINUTES} minutes`, async () => {
+        queueAlert([{ ...BASE_ALERT_ROW, resolvedBy: null, resolvedAt: new Date('2026-08-28T00:05:00.000Z') }]);
+
+        await handleAlertVerdictEvent(alertResolvedEvent({
+          resolvedBy: null,
+          resolvedAt: '2026-08-28T01:00:00.001Z',
+          triggeredAt: '2026-08-28T00:00:00.000Z',
+        }));
+
+        expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+      });
+
+      it('falls back to the ROW when the payload carries only SOME of resolvedBy/resolvedAt/triggeredAt (older publisher shape)', async () => {
+        // Row: system resolve, 10 minutes after trigger — in-window admit.
+        mockCleanAutoResolve();
+
+        // Payload only has resolvedBy — resolvedAt/triggeredAt are absent,
+        // so the gate must not treat this as payload-gated.
+        await handleAlertVerdictEvent(alertResolvedEvent({ resolvedBy: null }));
+
+        expect(createAndEnqueueAgentRun).toHaveBeenCalled();
+      });
+    });
   });
 
   describe('feature gate', () => {

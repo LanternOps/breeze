@@ -1,4 +1,16 @@
 /**
+ * CONTRACT (C2 fix, P2-1 wave B task 16d): never re-read a row the
+ * publishing transaction wrote — it may not be committed yet (the
+ * auto-resolve sweep in `jobs/alertWorker.ts` / `jobs/monitorWorker.ts`
+ * publishes `alert.resolved` from inside the SAME `withSystemDbAccessContext`
+ * transaction that performed the UPDATE, before it commits; a re-read on
+ * this subscriber's own fresh connection can see the pre-update row and
+ * silently skip a real system resolve). Gate resolve-state decisions
+ * (`resolvedBy`/`resolvedAt`/`triggeredAt`) on the PUBLISHED payload when it
+ * carries them — the row read is safe ONLY for fields the publisher's
+ * UPDATE never touches (deviceId, ruleId, severity, org membership), which
+ * were committed long before resolve.
+ *
  * Durable alert-verdict admission subscriber (Phase 2 wave P2-1 — alert
  * verdicts, task 12).
  *
@@ -291,7 +303,12 @@ export async function handleAlertVerdictEvent(event: BreezeEvent): Promise<void>
     }
 
     if (event.type === 'alert.resolved') {
-      const payload = event.payload as { alertId?: unknown } | null | undefined;
+      const payload = event.payload as {
+        alertId?: unknown;
+        resolvedBy?: unknown;
+        resolvedAt?: unknown;
+        triggeredAt?: unknown;
+      } | null | undefined;
       const alertId = typeof payload?.alertId === 'string' ? payload.alertId : null;
       if (!alertId || !orgId) {
         console.error(
@@ -301,8 +318,26 @@ export async function handleAlertVerdictEvent(event: BreezeEvent): Promise<void>
         return;
       }
 
+      // C2 fix — see this file's header contract comment. When the payload
+      // carries all three fields, resolve-state is decided ENTIRELY from
+      // the payload; the row read below (still needed for deviceId/ruleId/
+      // severity context) is never consulted for resolvedBy/resolvedAt,
+      // even if it still shows the pre-commit (stale) values. A publisher
+      // that omits any of the three fields falls back to reading them off
+      // the row, matching the pre-existing behavior.
+      const payloadResolvedBy =
+        typeof payload?.resolvedBy === 'string' ? payload.resolvedBy
+        : payload?.resolvedBy === null ? null
+        : undefined;
+      const payloadResolvedAt = typeof payload?.resolvedAt === 'string' ? payload.resolvedAt : undefined;
+      const payloadTriggeredAt = typeof payload?.triggeredAt === 'string' ? payload.triggeredAt : undefined;
+      const payloadGated = payloadResolvedBy !== undefined && payloadResolvedAt !== undefined && payloadTriggeredAt !== undefined;
+
       // Only these reads run under a system context — see
       // `runWithSystemDbAccess`'s header comment (#1105 pool-hold seam).
+      // Existence/org-membership and deviceId/ruleId/severity context are
+      // safe to read regardless of the resolving transaction's commit
+      // state — this UPDATE never touches those columns.
       const alert = await runWithSystemDbAccess(() => loadAlertForVerdict(alertId, orgId));
       if (!alert) {
         console.info('[alertVerdictSubscriber] skipping resolve verdict — alert not found (or not in org)', {
@@ -311,23 +346,39 @@ export async function handleAlertVerdictEvent(event: BreezeEvent): Promise<void>
         return;
       }
 
+      let resolvedBy: string | null;
+      let resolvedAtMs: number;
+      let triggeredAtMs: number;
+
+      if (payloadGated) {
+        resolvedBy = payloadResolvedBy;
+        resolvedAtMs = new Date(payloadResolvedAt).getTime();
+        triggeredAtMs = new Date(payloadTriggeredAt).getTime();
+      } else {
+        // Older publisher without the new payload fields — fall back to the
+        // row's own resolve state (pre-existing behavior).
+        if (!alert.resolvedAt) {
+          // Should not happen for a genuine alert.resolved delivery — the
+          // resolve path always sets resolvedAt in the same UPDATE. Not
+          // retryable: redelivery of the same event answers the same way.
+          console.info('[alertVerdictSubscriber] skipping resolve verdict — no resolvedAt on alert', {
+            alertId, orgId,
+          });
+          return;
+        }
+        resolvedBy = alert.resolvedBy;
+        resolvedAtMs = alert.resolvedAt.getTime();
+        triggeredAtMs = alert.triggeredAt.getTime();
+      }
+
       // Human resolves never trigger a verdict run — only a system/auto
       // resolve (resolvedBy null) does.
-      if (alert.resolvedBy !== null) {
+      if (resolvedBy !== null) {
         console.info('[alertVerdictSubscriber] skipping resolve verdict — human resolve', { alertId, orgId });
         return;
       }
-      if (!alert.resolvedAt) {
-        // Should not happen for a genuine alert.resolved delivery — the
-        // resolve path always sets resolvedAt in the same UPDATE. Not
-        // retryable: redelivery of the same event answers the same way.
-        console.info('[alertVerdictSubscriber] skipping resolve verdict — no resolvedAt on alert', {
-          alertId, orgId,
-        });
-        return;
-      }
 
-      const elapsedMinutes = (alert.resolvedAt.getTime() - alert.triggeredAt.getTime()) / 60_000;
+      const elapsedMinutes = (resolvedAtMs - triggeredAtMs) / 60_000;
       if (elapsedMinutes > AUTO_RESOLVE_VERDICT_WINDOW_MINUTES) {
         console.info('[alertVerdictSubscriber] skipping resolve verdict — outside auto-resolve window', {
           alertId, orgId, elapsedMinutes,

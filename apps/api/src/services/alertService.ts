@@ -380,7 +380,16 @@ export async function resolveAlert(
     }
   }
 
-  // Publish event — attach the device's site so site-restricted users see it
+  // Publish event — attach the device's site so site-restricted users see it.
+  //
+  // C2 fix: resolvedAt/resolvedBy/triggeredAt ride on the payload so a
+  // subscriber never has to re-read this row to learn the resolve state —
+  // a re-read on a fresh connection can observe this transaction's write
+  // before it commits (the auto-resolve sweep and monitorWorker both call
+  // this function from inside one `withSystemDbAccessContext` transaction
+  // spanning the whole sweep). See `alertVerdictSubscriber.ts`'s contract
+  // comment. Values come from `alert`, the RETURNING row this same UPDATE
+  // just produced — never a second read.
   const siteId = await resolveDeviceSiteId(alert.deviceId);
   await publishEvent(
     'alert.resolved',
@@ -389,7 +398,10 @@ export async function resolveAlert(
       alertId,
       ruleId: alert.ruleId,
       deviceId: alert.deviceId,
-      resolutionNote
+      resolutionNote,
+      resolvedAt: alert.resolvedAt!.toISOString(),
+      resolvedBy: alert.resolvedBy,
+      triggeredAt: alert.triggeredAt.toISOString(),
     },
     'alert-service',
     { siteId }

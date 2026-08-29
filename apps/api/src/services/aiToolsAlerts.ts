@@ -254,7 +254,9 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
               ruleId: alert.ruleId,
               deviceId: alert.deviceId,
               resolvedBy: auth.user.id,
-              resolutionNote
+              resolutionNote,
+              resolvedAt: resolvedAt.toISOString(),
+              triggeredAt: alert.triggeredAt.toISOString(),
             },
             'ai-tools',
             { userId: auth.user.id }

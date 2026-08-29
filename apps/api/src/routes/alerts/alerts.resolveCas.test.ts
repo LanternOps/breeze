@@ -39,6 +39,7 @@ const { dbMock, updateWheres, updateReturns, selectRows, alertRow } = vi.hoisted
     context: null as unknown,
     status: 'active',
     title: 'Disk almost full',
+    triggeredAt: new Date('2026-01-01T00:00:00.000Z'),
   };
   const dbMock = {
     select: () => ({

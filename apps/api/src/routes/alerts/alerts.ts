@@ -714,7 +714,7 @@ alertsRoutes.post(
                 deviceId: alert.deviceId,
                 ...(action === 'acknowledge'
                   ? { acknowledgedBy: auth.user.id }
-                  : { resolvedBy: auth.user.id }),
+                  : { resolvedBy: auth.user.id, resolvedAt: now.toISOString(), triggeredAt: alert.triggeredAt.toISOString() }),
               },
               'alerts-route',
               { userId: auth.user.id }
@@ -978,7 +978,9 @@ alertsRoutes.post(
           ruleId: alert.ruleId,
           deviceId: alert.deviceId,
           resolvedBy: auth.user.id,
-          resolutionNote: data.note
+          resolutionNote: data.note,
+          resolvedAt: resolvedAt.toISOString(),
+          triggeredAt: alert.triggeredAt.toISOString(),
         },
         'alerts-route',
         { userId: auth.user.id }
