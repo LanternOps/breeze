@@ -24,6 +24,7 @@ const { dbMock, updateWheres, updateReturns, selectReturns, alertRow } = vi.hois
     context: null as unknown,
     status: 'active',
     title: 'Agent offline',
+    triggeredAt: new Date('2026-08-29T10:00:00.000Z'),
   };
   const dbMock = {
     // mobile.ts keeps its OWN `getAlertWithOrgCheck` (it is not the shared
