@@ -109,7 +109,9 @@ Forced enrollment becomes policy-driven:
 - Recovery is never offered as enrollment because it depends on a primary factor.
 - If no enrollment method is available, the page fails closed and directs the user to an administrator instead of defaulting to TOTP.
 
-Enrolling **any one** permitted method satisfies the policy requirement. Completion is atomic per factor: the existing enable/verify endpoint for that factor (TOTP enable, SMS phone verify, passkey registration finish) sets the account enrolled, generates recovery codes once, and clears the enrollment-required state in the same transaction it uses today; the client then re-issues MFA-assured credentials through the existing refresh path so the pre-enrollment `mfa=false` assurance is not reused. A partial or abandoned enrollment (setup started, never enabled) leaves the user in the 428-gated state with no factor recorded; no half-enrolled factor is ever persisted as enabled.
+Enrolling **any one** permitted method satisfies the policy requirement. Completion is atomic per factor: the terminal enable/verify endpoint for that factor (TOTP enable, SMS enable after phone verification, passkey registration finish) sets the account enrolled, generates recovery codes once, advances `mfa_epoch`, revokes the pre-enrollment refresh family, and issues its replacement MFA-assured W07 session in the same database transaction. The endpoint returns the replacement access-token metadata and installs the replacement refresh/CSRF cookies; the client must install that replacement before leaving the enrollment page. A partial or abandoned enrollment (setup started, never enabled) leaves the user in the 428-gated state with no factor recorded; no half-enrolled factor is ever persisted as enabled.
+
+The post-enrollment replacement is not implemented through `/auth/refresh`: `invalidateMfaAssuranceAfterFactorChange` revokes every existing refresh family, including the pre-enrollment family, so that path cannot authorize a replacement. The enrollment routes instead use the W07 issuance capability and `issueUserSession` inside the terminal factor-change transaction. If issuance cannot complete, the factor write and recovery-code write roll back with it; the response never reports enrollment success without a usable replacement session.
 
 Successful enrollment updates the authenticated user, preserves W07 generation-safe session handling, displays any newly generated recovery codes exactly once, and returns to the intended destination.
 
@@ -163,6 +165,7 @@ Mobile forced enrollment UI is not added in this change because #3854 scopes log
 - SMS selection/resend lifecycle.
 - Recovery input formatting and clearing.
 - Forced enrollment choices for TOTP/SMS/passkey and no-method failure.
+- Atomic factor write, recovery-code persistence, refresh-family revocation, and replacement-session issuance for TOTP/SMS/passkey enrollment.
 - W07 428 retry and session-generation regression coverage.
 
 ### Mobile
