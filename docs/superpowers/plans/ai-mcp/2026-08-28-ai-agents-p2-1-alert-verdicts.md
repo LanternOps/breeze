@@ -1206,6 +1206,8 @@ git commit -m "test(api): P2-1 — contract: verdict profile cannot bypass guard
 
 ### Task 11 (B1): `alert.correlation_group.created` event, emitted after commit
 
+> **Corrected during execution (live check, 2026-08-29):** the premise "the job runs under `withSystemDbAccessContext` with no enclosing transaction — each statement autocommits" was wrong: `withSystemDbAccessContext` opens a transaction, so publishing inside `runAlertCorrelationForDevice` delivered the event before the group row was committed (FK violation on the run insert). The function now returns `createdGroups`; the worker processor publishes after the context resolves.
+
 **Files:**
 - Modify: `apps/api/src/services/eventBus.ts:11-124` (add `| 'alert.correlation_group.created'` under "Alert events")
 - Modify: `apps/api/src/services/alertCorrelationGroups.ts:99-166` (`upsertGroup`), `:19-23` + `:201-242` (`persistAlertCorrelationGroupsForAlerts`)
