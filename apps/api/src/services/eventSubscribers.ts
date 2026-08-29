@@ -51,15 +51,25 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
     // auto-resolve window — see alertVerdictSubscriber.ts's header for the
     // full account.
     //
+    // Task 13 extends this SAME subscriber (not a second id — controller
+    // decision) with `alert.triggered`: an alert that stays open and
+    // uncorrelated for UNGROUPED_VERDICT_DELAY_MINUTES also gets a verdict
+    // run, via jobs/alertVerdictScheduler.ts's delayed BullMQ job. See that
+    // module's header for the full account.
+    //
     // Lazy, same reason and same pattern as ai-agent-anomaly below:
     // alertVerdictSubscriber.ts -> runService.ts's transitive closure
     // reaches routes/auth/schemas.ts (workerEntrypointClosure.contract.test.ts
     // caught this the first time a static import was tried here for the
     // ticket-helpdesk subscriber) — a dynamic import defers that cost to the
-    // first alert.correlation_group.created/alert.resolved delivery instead
-    // of paying it at eventSubscribers.ts's module-eval time.
-    eventTypes: ['alert.correlation_group.created', 'alert.resolved'],
+    // first alert.correlation_group.created/alert.resolved/alert.triggered
+    // delivery instead of paying it at eventSubscribers.ts's module-eval time.
+    eventTypes: ['alert.correlation_group.created', 'alert.resolved', 'alert.triggered'],
     handler: async (event: BreezeEvent) => {
+      if (event.type === 'alert.triggered') {
+        const { handleAlertTriggeredEvent } = await import('../jobs/alertVerdictScheduler');
+        return handleAlertTriggeredEvent(event);
+      }
       const { handleAlertVerdictEvent } = await import('./aiAgents/alertVerdictSubscriber');
       return handleAlertVerdictEvent(event);
     },
