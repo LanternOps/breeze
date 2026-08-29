@@ -983,6 +983,10 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   // high-frequency, cheap run shape, not an integrity failure.
   max_concurrent_verdict_runs: false,
   verdict_rate: false,
+  // Phase 2 wave P2-2 (scheduled sweeps) — the sweep-profile equivalents,
+  // same classification as the verdict pair above.
+  max_concurrent_sweep_runs: false,
+  sweep_rate: false,
 });
 
 // Exported for direct unit coverage of the script_executions correlation

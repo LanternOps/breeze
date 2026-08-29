@@ -53,6 +53,8 @@ const EXPECTED_SUCCESS: Record<AgentRunSkipReason, boolean> = {
   device_not_in_org: false,
   max_concurrent_verdict_runs: true,
   verdict_rate: true,
+  max_concurrent_sweep_runs: true,
+  sweep_rate: true,
 };
 
 const DEFAULT_TRIGGER: AutomationTriggerContext = {

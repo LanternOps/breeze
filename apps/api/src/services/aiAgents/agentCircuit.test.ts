@@ -254,6 +254,29 @@ describe('classifyTerminal with run profile (P2-1)', () => {
   });
 });
 
+// Phase 2 wave P2-2 (scheduled sweeps) — a clean sweep must NOT reset an
+// org's failure streak (design-review ruling): unlike `verdict`, a sweep's
+// job is read-only reconnaissance, not remediation, so its success says
+// nothing about the org's remediation health either way. `failed` is
+// unaffected by profile in every case — the runner/ceiling allowlist is the
+// only thing that decides `increment` vs `neutral` there.
+describe('classifyTerminal with run profile (P2-2 sweep)', () => {
+  it('a sweep completion never resets the streak, clean or needs_attention', () => {
+    expect(classifyTerminal('completed', null, 'no_action', 'sweep')).toBe('neutral');
+    expect(classifyTerminal('completed', null, 'needs_attention', 'sweep')).toBe('neutral');
+  });
+
+  it('awaiting_approval on a sweep run is neutral, not reset', () => {
+    expect(classifyTerminal('awaiting_approval', null, null, 'sweep')).toBe('neutral');
+  });
+
+  it('a genuine failure still increments on a sweep run', () => {
+    // 'sdk_error' is a real INCREMENT_FAILURE_ERROR_CODES entry (the brief's
+    // placeholder 'runner_error' is not — see agentCircuit.ts's allowlist).
+    expect(classifyTerminal('failed', 'sdk_error', null, 'sweep')).toBe('increment');
+  });
+});
+
 describe('isTerminalRunStatus', () => {
   it('is false for queued/running only', () => {
     expect(isTerminalRunStatus('queued')).toBe(false);
