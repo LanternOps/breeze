@@ -14,13 +14,14 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBreezeMcpServer, wrapExtraToolWithHooks } from './aiAgentSdkTools';
-import { buildOutcomeSdkTools } from './aiAgents/outcomeTools';
+import { buildOutcomeSdkTools, type SdkTool } from './aiAgents/outcomeTools';
 import {
   createAgentRunPostToolUse,
   createAgentRunPreToolUse,
   type AgentRunOutcome,
 } from './aiAgents/runLoop';
 import type { AiAgentRunProfile } from '@breeze/shared';
+import { hasDbAccessContext, __runInDbContextForTests } from '../db';
 
 const RUN_ID = '00000000-0000-4000-8000-0000000000e1';
 const ORG_ID = '00000000-0000-4000-8000-0000000000e2';
@@ -180,6 +181,77 @@ describe('createBreezeMcpServer wraps extraTools with the run hooks (P2-1 fix ro
 
       expect(result.isError).toBeFalsy();
       expect(JSON.stringify(result)).toContain('recorded');
+    });
+  });
+
+  // Task 16a: `wrapExtraToolWithHooks` gained the same `runOutsideDbContext`
+  // + `withToolTimeout` protection `makeHandler` gives every registry tool
+  // (PR-A whole-branch review carry-in). These two tests cover the parts the
+  // suite above didn't: that the wrapped call actually escapes an inherited
+  // AsyncLocalStorage DB context, and that a hung handler is cut off rather
+  // than left to run forever.
+  describe('wrapExtraToolWithHooks — runOutsideDbContext + timeout parity with makeHandler (Task 16a)', () => {
+    it('runs preToolUse, the handler, and postToolUse outside an inherited AsyncLocalStorage DB context', async () => {
+      const [outcomeTool] = buildOutcomeSdkTools(['submit_alert_verdict']);
+      const sawContext: { preToolUse?: boolean; handler?: boolean; postToolUse?: boolean } = {};
+
+      const probeTool: SdkTool = {
+        ...outcomeTool!,
+        handler: async (args: Record<string, unknown>, extra: unknown) => {
+          sawContext.handler = hasDbAccessContext();
+          return outcomeTool!.handler(args, extra);
+        },
+      };
+      const preToolUse = vi.fn(async () => {
+        sawContext.preToolUse = hasDbAccessContext();
+        return { allowed: true as const };
+      });
+      const postToolUse = vi.fn(async () => {
+        sawContext.postToolUse = hasDbAccessContext();
+      });
+      const wrapped = wrapExtraToolWithHooks(probeTool, preToolUse, postToolUse);
+
+      // Simulate the stale/committed AsyncLocalStorage DB context inherited
+      // from the SDK's MCP callback chain that `makeHandler`'s
+      // `runOutsideDbContext` wrapping exists to escape (see that function's
+      // docstring) — same production shape as auth.ts's
+      // `runOutsideDbContext(() => withDbAccessContext(...))`.
+      const result = await __runInDbContextForTests(() => wrapped.handler(validVerdict, {}));
+
+      expect((result as { isError?: boolean }).isError).toBeFalsy();
+      expect(sawContext).toEqual({ preToolUse: false, handler: false, postToolUse: false });
+    });
+
+    it('a handler that never resolves is cut off by the tool timeout and surfaces as isError, with the post-hook seeing isError: true', async () => {
+      vi.useFakeTimers();
+      try {
+        const [outcomeTool] = buildOutcomeSdkTools(['submit_alert_verdict']);
+        // submit_alert_verdict has no per-tool override in toolTimeouts.ts, so
+        // it uses the 60s default (TOOL_EXECUTION_TIMEOUT_MS).
+        const hungTool: SdkTool = {
+          ...outcomeTool!,
+          handler: () => new Promise(() => { /* never resolves */ }),
+        };
+        const postToolUse = vi.fn(async () => {});
+        const wrapped = wrapExtraToolWithHooks(hungTool, undefined, postToolUse);
+
+        const resultPromise = wrapped.handler(validVerdict, {});
+        await vi.advanceTimersByTimeAsync(60_000);
+        const result = await resultPromise as { isError?: boolean };
+
+        expect(result.isError).toBe(true);
+        expect(postToolUse).toHaveBeenCalledTimes(1);
+        expect(postToolUse).toHaveBeenCalledWith(
+          'submit_alert_verdict',
+          validVerdict,
+          expect.stringContaining('timed out'),
+          true,
+          expect.any(Number),
+          undefined,
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });
