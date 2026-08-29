@@ -24,7 +24,7 @@ export function MfaEnrollmentRequiredScreen() {
     <SafeAreaView style={[styles.container, { backgroundColor: theme.bg0 }]}>
       <View style={[styles.card, { backgroundColor: theme.bg1, borderColor: theme.border }]}>
         <Text style={[type.title, { color: theme.textHi, textAlign: 'center' }]}>MFA setup required</Text>
-        <Text style={[type.body, { color: theme.textMd, textAlign: 'center' }]}> 
+        <Text style={[type.body, { color: theme.textMd, textAlign: 'center' }]}>
           Your administrator requires multi-factor authentication. Complete setup in a web browser before using the mobile app.
         </Text>
         <Pressable testID="mfa-enrollment-open-web" onPress={() => { void openWebEnrollment(); }} style={[styles.primary, { backgroundColor: theme.brand }]}>
