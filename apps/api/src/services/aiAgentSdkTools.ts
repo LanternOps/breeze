@@ -964,27 +964,26 @@ export function googleToolDefinitions(
  * would never fire for it (found in review: the verdict was silently never
  * captured outside the unit tests, since nothing called the hooks in a real
  * run). This gives an extra tool the SAME contract `makeHandler` gives every
- * registry tool: the preToolUse gate runs first (a denial short-circuits
- * with the SDK's own error-result shape, never reaching the handler), the
- * original handler runs, then postToolUse fires with the result's first text
- * block (or the whole serialized result, if there is none) as `output`.
- *
- * What this does NOT do, unlike `makeHandler` (review round 2, Minor 1):
- *   - No `runOutsideDbContext` around the handler call. `makeHandler` wraps
- *     its ENTIRE body in it specifically to escape a stale/committed
- *     AsyncLocalStorage DB context inherited from the SDK's MCP callback
- *     chain (see that function's own docstring for the hang this prevents).
- *     This wrapper has no such escape — it runs inside whatever context is
- *     ambient when the SDK invokes it.
- *   - No `withToolTimeout`. `makeHandler` bounds every registry tool call to
- *     `getToolTimeout(toolName)`; a hung `extraTool.handler` (or a hung
- *     `onPreToolUse`/`onPostToolUse` call made from here) has nothing
- *     enforcing a ceiling.
- * `outcomeTools.ts`'s tools are hook-free and never touch the DB, which is
- * exactly why this wrapper gets away without either — do NOT add an
- * `extraTools` entry whose handler, `onPreToolUse`, or `onPostToolUse`
- * touches the database without first adding the same `runOutsideDbContext`
- * + `withToolTimeout` protection `makeHandler` gives every registry tool.
+ * registry tool, including the two protections that were originally missing
+ * here (review round 2, Minor 1):
+ *   - The ENTIRE handler (preToolUse, the original handler, postToolUse)
+ *     runs inside `runOutsideDbContext`, exactly where `makeHandler` places
+ *     it — escaping any stale/committed AsyncLocalStorage DB context
+ *     inherited from the SDK's MCP callback chain (see `makeHandler`'s
+ *     docstring for the hang this prevents) so pre/post hooks that touch the
+ *     DB never inherit a dead connection.
+ *   - The original handler runs under `withToolTimeout(…, getToolTimeout(name),
+ *     name)` — the SAME timeout table `makeHandler` uses for registry tools
+ *     (`toolTimeouts.ts`: 60s default, per-name overrides), computed once per
+ *     wrap just like `makeHandler` computes it once per tool.
+ * Otherwise the flow is unchanged: the preToolUse gate runs first (a denial
+ * short-circuits with the SDK's own error-result shape, never reaching the
+ * handler), then postToolUse fires with the result's first text block (or the
+ * whole serialized result, if there is none) as `output` and `isError`
+ * reflecting whether the call actually failed — a timeout included, since
+ * `withToolTimeout`'s rejection lands in the same thrown-error catch block as
+ * any other failure (`sanitizeThrownToolError` → `isError` result →
+ * postToolUse).
  */
 export function wrapExtraToolWithHooks(
   extraTool: SdkTool,
@@ -992,9 +991,14 @@ export function wrapExtraToolWithHooks(
   onPostToolUse?: PostToolUseCallback,
 ): SdkTool {
   const { name, handler } = extraTool;
+  const toolTimeout = getToolTimeout(name);
   return {
     ...extraTool,
     handler: async (args: Record<string, unknown>, extra: unknown): Promise<SdkToolResult> => {
+      // See makeHandler: escape any inherited AsyncLocalStorage DB context so
+      // preToolUse/handler/postToolUse all start with a clean context rather
+      // than a stale/committed one from the SDK's MCP callback chain.
+      return runOutsideDbContext(async (): Promise<SdkToolResult> => {
       const startTime = Date.now();
       if (onPreToolUse) {
         let check: { allowed: true; context?: ToolExecutionContext } | { allowed: false; error: string };
@@ -1011,7 +1015,7 @@ export function wrapExtraToolWithHooks(
         }
       }
       try {
-        const result = await handler(args, extra);
+        const result = await withToolTimeout(handler(args, extra), toolTimeout, name);
         const durationMs = Date.now() - startTime;
         await safePostToolUse(onPostToolUse, name, args, extraToolResultText(result), result.isError === true, durationMs);
         return result;
@@ -1022,6 +1026,7 @@ export function wrapExtraToolWithHooks(
         await safePostToolUse(onPostToolUse, name, args, safeError, true, durationMs);
         return { content: [{ type: 'text' as const, text: safeError }], isError: true };
       }
+      }); // end runOutsideDbContext
     },
   };
 }
