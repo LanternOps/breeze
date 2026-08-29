@@ -971,13 +971,13 @@ describe('createAndEnqueueAgentRun admission success', () => {
   it('routes the enqueue-failure terminalization through recordRunTerminal', async () => {
     seedAdmissionReads();
     enqueueAgentRunJob.mockResolvedValue({ enqueued: false });
-    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'enqueue_failed', outcome: {} }];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'enqueue_failed', outcome: {}, profile: 'full' }];
     dbMockState.rowQueues.ai_agent_runs!.push([{ id: RUN_ID, status: 'failed', errorCode: 'enqueue_failed' }]);
 
     await createAndEnqueueAgentRun(input());
 
     expect(recordRunTerminal).toHaveBeenCalledWith(
-      { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID },
+      { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, profile: 'full' },
       'failed',
       'enqueue_failed',
       null,
@@ -1518,10 +1518,10 @@ describe('transitionRunStatus', () => {
   // logic itself is agentCircuit.test.ts's job.
   describe('circuit bookkeeping wiring', () => {
     it('calls recordRunTerminal with the row identity + to + errorCode when the transition is terminal', async () => {
-      dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'sdk_error', outcome: {} }];
+      dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'sdk_error', outcome: {}, profile: 'full' }];
       await transitionRunStatus(RUN_ID, 'running', 'failed', { errorCode: 'sdk_error' });
       expect(recordRunTerminal).toHaveBeenCalledWith(
-        { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID },
+        { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, profile: 'full' },
         'failed',
         'sdk_error',
         null,
@@ -1531,11 +1531,11 @@ describe('transitionRunStatus', () => {
     it('extracts needs_attention from outcome.runVerdict for a completed transition', async () => {
       dbMockState.updateRows = [{
         id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: null,
-        outcome: { runVerdict: 'needs_attention' },
+        outcome: { runVerdict: 'needs_attention' }, profile: 'full',
       }];
       await transitionRunStatus(RUN_ID, 'running', 'completed', {});
       expect(recordRunTerminal).toHaveBeenCalledWith(
-        { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID },
+        { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, profile: 'full' },
         'completed',
         null,
         'needs_attention',
@@ -1545,11 +1545,11 @@ describe('transitionRunStatus', () => {
     it('passes null runVerdict for any other outcome.runVerdict value', async () => {
       dbMockState.updateRows = [{
         id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: null,
-        outcome: { runVerdict: 'remediated' },
+        outcome: { runVerdict: 'remediated' }, profile: 'full',
       }];
       await transitionRunStatus(RUN_ID, 'running', 'completed', {});
       expect(recordRunTerminal).toHaveBeenCalledWith(
-        { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID },
+        { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, profile: 'full' },
         'completed',
         null,
         null,
@@ -1604,7 +1604,7 @@ describe('createAndEnqueueAgentRun review findings (wave 3c)', () => {
     // Wave 6 PR 2 (#3828): reapStalledAgentRuns now SELECTs candidates, then
     // CAS-es each one through `transitionRunStatus` — no more one bulk UPDATE.
     seedAdmissionReads({ staleCandidates: [{ id: RUN_ID, sessionId: null }] });
-    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'stalled', outcome: {} }];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'stalled', outcome: {}, profile: 'full' }];
 
     await createAndEnqueueAgentRun(input());
 
@@ -1646,7 +1646,7 @@ describe('createAndEnqueueAgentRun review findings (wave 3c)', () => {
 
     // Terminalization routes through the one chokepoint even for a reap.
     expect(recordRunTerminal).toHaveBeenCalledWith(
-      { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID },
+      { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, profile: 'full' },
       'failed',
       'stalled',
       null,

@@ -245,6 +245,15 @@ describe('classifyTerminal', () => {
   });
 });
 
+describe('classifyTerminal with run profile (P2-1)', () => {
+  it('a verdict completion never resets the streak', () => {
+    expect(classifyTerminal('completed', null, null, 'verdict')).toBe('neutral');
+    expect(classifyTerminal('completed', null, 'needs_attention', 'verdict')).toBe('neutral');
+    expect(classifyTerminal('failed', 'sdk_error', null, 'verdict')).toBe('increment');
+    expect(classifyTerminal('completed', null, null, 'full')).toBe('reset');
+  });
+});
+
 describe('isTerminalRunStatus', () => {
   it('is false for queued/running only', () => {
     expect(isTerminalRunStatus('queued')).toBe(false);
@@ -263,7 +272,7 @@ describe('isTerminalRunStatus', () => {
 // recordRunTerminal
 // ---------------------------------------------------------------------------
 describe('recordRunTerminal', () => {
-  const run = { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID };
+  const run = { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, profile: 'full' as const };
 
   it('neutral classification touches no DB at all', async () => {
     await recordRunTerminal(run, 'failed', 'stalled', null);
@@ -402,7 +411,7 @@ describe('recordRunTerminal', () => {
     resetDbState();
     createNotificationMock.mockClear();
     createAuditLogAsyncMock.mockClear();
-    const secondRun = { id: '00000000-0000-4000-8000-0000000000c6', orgId: ORG_ID, agentId: AGENT_ID };
+    const secondRun = { id: '00000000-0000-4000-8000-0000000000c6', orgId: ORG_ID, agentId: AGENT_ID, profile: 'full' as const };
     state.selectQueue.push([agentRow()]);
     state.selectQueue.push([{ partnerId: PARTNER_ID }]);
     state.insertReturningQueue.push([circuitRow({ consecutiveFailures: 3, state: 'closed' })]);

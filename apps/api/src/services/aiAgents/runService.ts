@@ -1008,6 +1008,7 @@ export async function transitionRunStatus(
         agentId: aiAgentRuns.agentId,
         errorCode: aiAgentRuns.errorCode,
         outcome: aiAgentRuns.outcome,
+        profile: aiAgentRuns.profile,
       });
     return rows[0] ?? null;
   });
@@ -1041,7 +1042,7 @@ export async function transitionRunStatus(
       const runVerdict: AgentRunVerdict | null =
         moved.outcome.runVerdict === 'needs_attention' ? 'needs_attention' : null;
       await recordRunTerminal(
-        { id: moved.id, orgId: moved.orgId, agentId: moved.agentId },
+        { id: moved.id, orgId: moved.orgId, agentId: moved.agentId, profile: moved.profile },
         to,
         moved.errorCode,
         runVerdict,
