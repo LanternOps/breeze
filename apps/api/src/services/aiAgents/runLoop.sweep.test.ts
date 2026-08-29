@@ -517,6 +517,12 @@ describe('sweep profile outcome-tool gating (P2-2)', () => {
     const result = await pre('submit_sweep_findings', VALID_FINDINGS);
 
     expect(result.allowed).toBe(false);
+    if (result.allowed) throw new Error('expected the kill switch to deny the outcome tool');
+    // The specific reason matters: a generic "not available" would read as a
+    // profile mismatch, and the kill switch is what a responder needs to see.
+    expect(result.error).toContain('kill-switched');
+    expect(result.error).toContain('epoch 9');
+    expect(outcome.deniedActions[0]!.reason).toContain('kill-switched');
     expect(outcome.sweepFindings).toBeUndefined();
   });
 
