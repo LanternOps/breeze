@@ -87,4 +87,42 @@ describe('recordPamActuationResult', () => {
       result: { ...baseResult, state: 'cleaned', evidence: { bootId: 'boot-1', jobMemberCount: 1 } },
     })).resolves.toBe('rejected');
   });
+
+  // #4196: a cleanup proven after the agent crashed (Job Object already gone)
+  // carries jobObjectAbsent alongside the same four independent negatives.
+  it('applies a crash-recovered cleaned result that carries jobObjectAbsent with independent evidence', async () => {
+    mocks.execute
+      .mockResolvedValueOnce({ rows: [{ ...current, desired_state: 'cleanup' }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 'result-2' }] })
+      .mockResolvedValueOnce({ rows: [current] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(recordPamActuationResult({
+      agentId: 'agent-1', deviceId: current.device_id, commandId: current.current_command_id,
+      result: {
+        ...baseResult,
+        state: 'cleaned',
+        evidence: {
+          bootId: 'boot-1', jobMemberCount: 0, accountEnabled: false, accountInAdministrators: false,
+          privilegedTokenPresent: false, jobObjectAbsent: true,
+        },
+      },
+    })).resolves.toBe('applied');
+    expect(mocks.execute).toHaveBeenCalledTimes(6);
+  });
+
+  it('still rejects an unknown evidence key before opening a transaction', async () => {
+    const evidence = {
+      bootId: 'boot-1', jobMemberCount: 0, accountEnabled: false, accountInAdministrators: false,
+      privilegedTokenPresent: false, jobObjectMissing: true,
+    } as unknown as PamAgentResultV2['evidence'];
+
+    await expect(recordPamActuationResult({
+      agentId: 'agent-1', deviceId: current.device_id, commandId: current.current_command_id,
+      result: { ...baseResult, state: 'cleaned', evidence },
+    })).resolves.toBe('rejected');
+    expect(mocks.transaction).not.toHaveBeenCalled();
+  });
 });

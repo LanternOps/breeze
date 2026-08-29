@@ -12,6 +12,10 @@ const pamEvidenceSchema = z.object({
   accountEnabled: z.boolean().optional(),
   accountInAdministrators: z.boolean().optional(),
   privilegedTokenPresent: z.boolean().optional(),
+  // #4196: set by the agent when a cleanup was proven by independent evidence
+  // after the Job Object had already died with a crashed agent. Audit only;
+  // hasIndependentCleanEvidence still demands the four negatives above.
+  jobObjectAbsent: z.boolean().optional(),
   targetHash: z.string().regex(/^[0-9a-f]{64}$/i).optional(),
 }).strict();
 

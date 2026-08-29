@@ -20,6 +20,13 @@ const (
 	jobObjectLimitKillOnJobClose    uint32 = 0x00002000
 )
 
+// ErrJobObjectAbsent is returned (wrapped) by the Windows primitives when the
+// durable Job Object name cannot be opened because no such object exists any
+// more. Only OpenJobObjectW -> ERROR_FILE_NOT_FOUND maps to it; access denied,
+// truncated lists and terminate failures never do. cleanupLocked uses it to
+// tell "the job is gone" apart from "the job could not be terminated/verified".
+var ErrJobObjectAbsent = errors.New("PAM Job Object does not exist")
+
 type lifetimeStore interface {
 	PrepareApply(ApplyCommand) (Decision, error)
 	PrepareCleanup(CleanupCommand) (Decision, error)
@@ -64,6 +71,11 @@ type windowsPrimitives interface {
 	VerifyActive(context.Context, suspendedProcessOwnership, jobOwnership) (int, error)
 	ReopenAndVerifyActive(context.Context, string, ProcessIdentity) (jobOwnership, int, error)
 	TerminateAndVerifyEmpty(context.Context, string, jobOwnership, ProcessIdentity) (int, error)
+	// VerifyProcessIdentityGone reports whether the durable PID/creation-time
+	// identity is positively gone: no such PID, PID reused by a process with a
+	// different creation time, or same identity but no longer STILL_ACTIVE.
+	// A live exact match returns false; anything unverifiable returns an error.
+	VerifyProcessIdentityGone(context.Context, ProcessIdentity) (bool, error)
 	VerifyNoPrivilegedToken(context.Context, string) (bool, error)
 	CloseProcess(suspendedProcessOwnership)
 	ClosePrimaryThread(suspendedProcessOwnership)
@@ -277,8 +289,28 @@ func (m *lifecycleManager) cleanupLocked(ctx context.Context, cmd CleanupCommand
 	if hasAnyProcessIdentity && !hasCompleteProcessIdentity {
 		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "job_cleanup_failed")
 	}
+	jobObjectAbsent := false
 	if hasCompleteProcessIdentity && entry.BootID == bootID {
 		members, err = m.windows.TerminateAndVerifyEmpty(ctx, entry.JobName, job, process)
+		if err != nil && !ownsJob && errors.Is(err, ErrJobObjectAbsent) {
+			// #4196: the agent that owned the Job Object died on this boot, so
+			// KILL_ON_JOB_CLOSE reaped the tree and the named job no longer
+			// exists. The job handle can no longer prove anything, but the
+			// rule forbids claiming what cannot be proven, not proving it by
+			// other evidence: the durable process identity must be positively
+			// gone before cleanup may continue on account and token evidence.
+			gone, verifyErr := m.windows.VerifyProcessIdentityGone(ctx, process)
+			if verifyErr != nil {
+				return m.failed(cmd.ActuationID, cmd.Generation, bootID, "job_cleanup_failed")
+			}
+			if !gone {
+				// Job gone, exact process still running: an orphaned elevated
+				// process. Its own code, so it never reads as "could not
+				// terminate or verify the job".
+				return m.failed(cmd.ActuationID, cmd.Generation, bootID, "job_absent_process_alive")
+			}
+			members, err, jobObjectAbsent = 0, nil, true
+		}
 		if err != nil || members != 0 {
 			return m.failed(cmd.ActuationID, cmd.Generation, bootID, "job_cleanup_failed")
 		}
@@ -301,6 +333,9 @@ func (m *lifecycleManager) cleanupLocked(ctx context.Context, cmd CleanupCommand
 	evidence.AccountEnabled = boolPtr(verified.Enabled)
 	evidence.AccountInAdministrators = boolPtr(verified.InAdministrators)
 	evidence.PrivilegedTokenPresent = boolPtr(privileged)
+	if jobObjectAbsent {
+		evidence.JobObjectAbsent = boolPtr(true)
+	}
 	if err := m.store.ClearProcessIdentity(cmd.ActuationID, cmd.Generation); err != nil {
 		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "persist_cleanup_evidence_failed")
 	}
