@@ -401,6 +401,9 @@ const dialect = new PgDialect();
 function compiled(cond: SQL | undefined): string {
   return cond ? dialect.sqlToQuery(cond).sql : '';
 }
+function compiledParams(cond: SQL | undefined): unknown[] {
+  return cond ? dialect.sqlToQuery(cond).params : [];
+}
 
 const yielded: unknown[] = [];
 const preVerdicts: Array<{ allowed: boolean; error?: string }> = [];
@@ -1424,11 +1427,17 @@ describe('executeAgentRun', () => {
       const commentSelect = dbMockState.selects.find((s) => s.table === 'ticket_comments');
       const ticketWhere = compiled(ticketSelect?.where);
       const commentWhere = compiled(commentSelect?.where);
+      const ticketParams = compiledParams(ticketSelect?.where);
+      const commentParams = compiledParams(commentSelect?.where);
       // Both reads run inside a system context (full RLS bypass), so the
       // tenant predicate and the design-authority content filters all have
       // to be in the WHERE clause by hand.
       expect(ticketWhere).toContain('"org_id"');
       expect(ticketWhere).toContain('"deleted_at"');
+      // Value-level, not just column-presence: the org pin must be bound to
+      // THIS run's org (`ORG_ID`), not merely reference the org_id column —
+      // a column-name-only check would pass even for `org_id = <other org>`.
+      expect(ticketParams).toContain(ORG_ID);
       expect(commentWhere).toContain('"origin_principal_kind"');
       expect(commentWhere).toContain('"is_public"');
       expect(commentWhere).toContain('"deleted_at"');
@@ -1440,6 +1449,14 @@ describe('executeAgentRun', () => {
       // match ticketHelpdeskSubscriber.ts's loop guard, which treats a
       // comment as agent-originated on EITHER signal.
       expect(commentWhere).toContain('"agent_run_id"');
+      // Value-level for the two equality predicates too: is_public compares
+      // to `true` and origin_principal_kind compares to the human-family
+      // literal `'user'` — not merely present as a column reference. Both
+      // `isNull(...)` arms (deleted_at, agent_run_id) compile to a bare `IS
+      // NULL`/`IS NOT NULL` with no bound parameter, so they are asserted by
+      // the column-presence checks above only.
+      expect(commentParams).toContain(true);
+      expect(commentParams).toContain('user');
     });
 
     it('a non-ticket run carries no ticket section at all', async () => {

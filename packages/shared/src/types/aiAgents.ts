@@ -83,14 +83,15 @@ export interface AiAgentTriggers {
    * Wave 6 PR 3 (#3828) — narrowing filters for `triggerKind: 'ticket'`
    * admission. Same `undefined`-means-unrestricted convention as
    * `siteIds`/`deviceGroupIds` above (never `[]` — see the validator).
-   * Unenforced in this PR: `ticketHelpdeskSubscriber.ts`'s admission does not
-   * evaluate these yet (its own module header documents the v1 scope) — the
-   * fields ship now so operators can pre-configure them and every trigger
-   * config from this point on carries the shape, matching the precedent
-   * `maxActionsPerRun`/`maxPolicyDecisionsPerDay` set (AiAgentLimits above).
+   * Enforced by `runService.ts`'s `evaluateTicketTriggerFilters`, fed by
+   * `ticketHelpdeskSubscriber.ts`'s `ticketContext` (wave 6 PR 3 review
+   * follow-up, #3828). Entries may be either the ticket's free-text
+   * `category` name or its `categoryId` (matched per-value — see
+   * `evaluateTicketTriggerFilters`'s docstring for the id-vs-name rule).
    */
   ticketCategories?: string[];
-  /** `ticket_priority` enum values (`db/schema/portal.ts`). */
+  /** `ticket_priority` enum values (`db/schema/portal.ts`). Enforced by
+   *  `runService.ts`'s `evaluateTicketTriggerFilters`. */
   ticketPriorities?: Array<'low' | 'normal' | 'high' | 'urgent'>;
 }
 

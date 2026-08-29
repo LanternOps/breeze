@@ -136,7 +136,7 @@ async function scanAndClaimOutboxRows(): Promise<ClaimResult> {
     FROM ${ticketOutbox}
     WHERE ${ticketOutbox.publishedAt} IS NULL
       AND ${ticketOutbox.publishAttempts} > ${MAX_PUBLISH_ATTEMPTS}
-    ORDER BY ${ticketOutbox.createdAt} ASC
+    ORDER BY ${ticketOutbox.id} ASC
     LIMIT ${MAX_PUBLISH_PER_RUN}
   `);
   const stuckRows = extractRows<StuckOutboxRow>(stuck);
@@ -155,7 +155,7 @@ async function scanAndClaimOutboxRows(): Promise<ClaimResult> {
       FROM ${ticketOutbox}
       WHERE ${ticketOutbox.publishedAt} IS NULL
         AND ${ticketOutbox.publishAttempts} <= ${MAX_PUBLISH_ATTEMPTS}
-      ORDER BY ${ticketOutbox.createdAt} ASC
+      ORDER BY ${ticketOutbox.id} ASC
       LIMIT ${MAX_PUBLISH_PER_RUN}
       FOR UPDATE SKIP LOCKED
     )

@@ -180,6 +180,7 @@ vi.mock('./agentCircuit', () => ({
 import {
   createAndEnqueueAgentRun,
   evaluateAgentTriggerFilters,
+  evaluateTicketTriggerFilters,
   reapStalledAgentRuns,
   registerAgentRunEnqueuer,
   transitionRunStatus,
@@ -188,6 +189,7 @@ import {
 } from './runService';
 
 type AlertContext = NonNullable<CreateAgentRunInput['alertContext']>;
+type TicketFilterContext = NonNullable<CreateAgentRunInput['ticketContext']>;
 
 const dialect = new PgDialect();
 function compiled(cond: SQL | undefined): string {
@@ -380,6 +382,55 @@ describe('evaluateAgentTriggerFilters', () => {
     expect(
       evaluateAgentTriggerFilters(triggers({ deviceGroupIds: ['group-that-does-not-match'] }), ctx),
     ).toBe(true);
+  });
+});
+
+// Wave 6 PR 3 review follow-up (#3828): ticketCategories/ticketPriorities
+// were validated and merged by effectivePolicy but never read anywhere, so
+// a helpdesk agent fired on EVERY ticket regardless of its configured
+// filters. This pins the fix's match/no-match/unrestricted semantics for
+// each filter independently and combined.
+describe('evaluateTicketTriggerFilters', () => {
+  const CATEGORY_ID = '11111111-1111-4111-8111-111111111111';
+  const OTHER_CATEGORY_ID = '22222222-2222-4222-8222-222222222222';
+
+  const ctx: TicketFilterContext = {
+    category: 'hardware',
+    categoryId: CATEGORY_ID,
+    priority: 'high',
+  };
+
+  const cases: Array<[string, AiAgentTriggers, TicketFilterContext, boolean]> = [
+    ['absent ticketCategories = unrestricted', triggers(), ctx, true],
+    ['empty ticketCategories = unrestricted', triggers({ ticketCategories: [] }), ctx, true],
+    ['matching ticketCategories by name', triggers({ ticketCategories: ['hardware'] }), ctx, true],
+    ['non-matching ticketCategories by name', triggers({ ticketCategories: ['software'] }), ctx, false],
+    ['ticketCategories set but category null', triggers({ ticketCategories: ['hardware'] }), { ...ctx, category: null }, false],
+    ['matching ticketCategories by categoryId (UUID value)', triggers({ ticketCategories: [CATEGORY_ID] }), ctx, true],
+    ['matching ticketCategories by categoryId is case-insensitive', triggers({ ticketCategories: [CATEGORY_ID.toUpperCase()] }), ctx, true],
+    ['non-matching ticketCategories by categoryId', triggers({ ticketCategories: [OTHER_CATEGORY_ID] }), ctx, false],
+    ['ticketCategories set to a UUID but categoryId null', triggers({ ticketCategories: [CATEGORY_ID] }), { ...ctx, categoryId: null }, false],
+    ['mixed name+id list matches on either', triggers({ ticketCategories: ['software', CATEGORY_ID] }), ctx, true],
+    ['absent ticketPriorities = unrestricted', triggers(), ctx, true],
+    ['empty ticketPriorities = unrestricted', triggers({ ticketPriorities: [] }), ctx, true],
+    ['matching ticketPriorities', triggers({ ticketPriorities: ['high', 'urgent'] }), ctx, true],
+    ['non-matching ticketPriorities', triggers({ ticketPriorities: ['low', 'normal'] }), ctx, false],
+    [
+      'both filters satisfied together',
+      triggers({ ticketCategories: ['hardware'], ticketPriorities: ['high'] }),
+      ctx,
+      true,
+    ],
+    [
+      'category matches but priority does not — combined AND, not OR',
+      triggers({ ticketCategories: ['hardware'], ticketPriorities: ['low'] }),
+      ctx,
+      false,
+    ],
+  ];
+
+  it.each(cases)('%s', (_name, trig, context, expected) => {
+    expect(evaluateTicketTriggerFilters(trig, context)).toBe(expected);
   });
 });
 
@@ -898,6 +949,95 @@ describe('createAndEnqueueAgentRun — ticket-triggered admission (#3828 wave-6-
     // Must fail before ever consulting policy or writing a row.
     expect(resolveEffectiveAgentSystem).not.toHaveBeenCalled();
     expect(dbMockState.insertValues).toHaveLength(0);
+  });
+
+  // Wave 6 PR 3 review follow-up (#3828): ticketCategories/ticketPriorities
+  // were validated and merged by effectivePolicy but never evaluated during
+  // admission, so a helpdesk agent fired on EVERY ticket regardless of its
+  // configured filters. These pin the admission-level wiring;
+  // `evaluateTicketTriggerFilters`'s own describe block above covers the
+  // match logic exhaustively.
+  describe('ticket trigger filters (#3828 review follow-up)', () => {
+    it('admits when no ticketContext is supplied at all (no filter to fail)', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(
+        snapshot({ triggers: triggers({ ticketCategories: ['hardware'] }) }),
+      );
+      seedAdmissionReads();
+      const result = await createAndEnqueueAgentRun(ticketInput());
+      expect(result.created).toBe(true);
+    });
+
+    it('admits when the agent has no configured ticket filters (unrestricted)', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(snapshot());
+      seedAdmissionReads();
+      const result = await createAndEnqueueAgentRun(
+        ticketInput({ ticketContext: { category: 'hardware', categoryId: null, priority: 'low' } }),
+      );
+      expect(result.created).toBe(true);
+    });
+
+    it('trigger_filter_mismatch when ticketCategories is configured and the ticket category does not match', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(
+        snapshot({ triggers: triggers({ ticketCategories: ['software'] }) }),
+      );
+      const result = await createAndEnqueueAgentRun(
+        ticketInput({ ticketContext: { category: 'hardware', categoryId: null, priority: 'low' } }),
+      );
+      expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
+    });
+
+    it('admits when ticketCategories matches the ticket category by name', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(
+        snapshot({ triggers: triggers({ ticketCategories: ['hardware'] }) }),
+      );
+      seedAdmissionReads();
+      const result = await createAndEnqueueAgentRun(
+        ticketInput({ ticketContext: { category: 'hardware', categoryId: null, priority: 'low' } }),
+      );
+      expect(result.created).toBe(true);
+    });
+
+    it('trigger_filter_mismatch when ticketPriorities is configured and the ticket priority does not match', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(
+        snapshot({ triggers: triggers({ ticketPriorities: ['urgent'] }) }),
+      );
+      const result = await createAndEnqueueAgentRun(
+        ticketInput({ ticketContext: { category: null, categoryId: null, priority: 'low' } }),
+      );
+      expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
+    });
+
+    it('admits when ticketPriorities matches the ticket priority', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(
+        snapshot({ triggers: triggers({ ticketPriorities: ['urgent'] }) }),
+      );
+      seedAdmissionReads();
+      const result = await createAndEnqueueAgentRun(
+        ticketInput({ ticketContext: { category: null, categoryId: null, priority: 'urgent' } }),
+      );
+      expect(result.created).toBe(true);
+    });
+
+    it('combined: both filters must match — one mismatch is enough to skip', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(
+        snapshot({ triggers: triggers({ ticketCategories: ['hardware'], ticketPriorities: ['urgent'] }) }),
+      );
+      const result = await createAndEnqueueAgentRun(
+        ticketInput({ ticketContext: { category: 'hardware', categoryId: null, priority: 'low' } }),
+      );
+      expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
+    });
+
+    it('combined: admits when both filters match', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(
+        snapshot({ triggers: triggers({ ticketCategories: ['hardware'], ticketPriorities: ['urgent'] }) }),
+      );
+      seedAdmissionReads();
+      const result = await createAndEnqueueAgentRun(
+        ticketInput({ ticketContext: { category: 'hardware', categoryId: null, priority: 'urgent' } }),
+      );
+      expect(result.created).toBe(true);
+    });
   });
 });
 

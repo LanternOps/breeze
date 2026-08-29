@@ -283,3 +283,29 @@ describe('ticketOutboxPublisher — source-level id-only guard', () => {
     }
   });
 });
+
+// #3828 wave-6-3 review follow-up: `ticket_outbox_unpublished_idx` is keyed
+// on (published_at, id) — see the migration
+// (2026-09-19-ai-agents-ticket-shadow.sql)'s comment on that index, which
+// says the claim "orders by id". Both the stuck-scan and the FOR UPDATE SKIP
+// LOCKED claim CTE must actually order by `id` (bigserial, monotonic) to
+// match that index and to give a stable walk order across repeated polling
+// passes — ordering by `created_at` instead (same-millisecond inserts are not
+// distinguishable, and it does not match the index at all) is the bug this
+// guards against. A literal source grep, not a mocked-`db.execute` call-arg
+// assertion, because `scanAndClaimOutboxRows`'s two statements are raw `sql`
+// template literals (`db.execute(sql\`...\`)`), not a Drizzle query-builder
+// chain — there is no `.where()`/`.orderBy()` call to intercept, only a
+// compiled string, and the string IS the source text below.
+describe('ticketOutboxPublisher — claim order matches the (published_at, id) index', () => {
+  it('orders both the stuck scan and the claim CTE by id, never created_at', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'ticketOutboxPublisher.ts'), 'utf8');
+    const orderByClauses = [...src.matchAll(/ORDER BY \$\{[^}]+\}/g)].map((m) => m[0]);
+    expect(orderByClauses.length).toBe(2);
+    for (const clause of orderByClauses) {
+      expect(clause).toContain('ticketOutbox.id');
+      expect(clause).not.toContain('createdAt');
+    }
+    expect(src).not.toContain('ORDER BY ${ticketOutbox.createdAt}');
+  });
+});

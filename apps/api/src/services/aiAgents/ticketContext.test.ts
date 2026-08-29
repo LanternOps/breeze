@@ -5,6 +5,8 @@
  * indirectly through `runLoop.test.ts`'s ticket-context integration tests.
  */
 import { describe, expect, it } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   assembleTicketContext,
   TICKET_CONTEXT_HARD_LIMIT_BYTES,
@@ -176,5 +178,45 @@ describe('assembleTicketContext — size ceiling and truncation', () => {
     });
     expect(ctx.truncated).toBe(false);
     expect(ctx.description).not.toMatch(/truncated/);
+  });
+});
+
+// #3828 wave-6-3 review follow-up: `loadTicketContext`'s two `.select({...})`
+// projections are the trust boundary that decides which columns EVER leave
+// the `tickets`/`ticket_comments` tables for this module — the WHERE-clause
+// tests in runLoop.test.ts prove the row-filtering predicates, but nothing
+// previously asserted the SELECTED COLUMN LIST itself never widens to
+// include requester PII or free-form attacker-controlled containers. A
+// source-level grep (not a mocked-`db.select` call-arg assertion, matching
+// the established convention in ticketOutboxPublisher.test.ts's "id-only
+// guard") because `loadTicketContext`'s two projection objects are literal,
+// so the source text IS the column list — a future edit that starts
+// forwarding `tickets.submitterEmail` or `ticketComments.attachments` fails
+// here before it fails anywhere else.
+describe('loadTicketContext — source-level PII/attachment projection guard', () => {
+  it('never selects submitterEmail/submitterName/submittedBy/customFields/attachments/externalTicketUrl', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'ticketContext.ts'), 'utf8');
+    // Scoped to the literal `db.select({...})` projection object bodies only
+    // — the module's own doc comments name every one of these fields
+    // (explaining why each is excluded), so a whole-file grep would fail on
+    // the documentation itself. Matching just the projection call sites is
+    // what actually proves no forbidden column is ever selected.
+    const selectBlocks = [...src.matchAll(/\.select\(\{[\s\S]*?\}\)/g)].map((m) => m[0]);
+    expect(selectBlocks.length).toBe(2); // the tickets read + the ticket_comments read
+    for (const block of selectBlocks) {
+      for (const forbidden of [
+        'submitterEmail',
+        'submitterName',
+        'submittedBy',
+        'customFields',
+        'attachments',
+        'externalTicketUrl',
+        // The comment projection must never select the requester/author's
+        // own display name either — see TicketContextComment's docstring.
+        'authorName',
+      ]) {
+        expect(block).not.toContain(forbidden);
+      }
+    }
   });
 });

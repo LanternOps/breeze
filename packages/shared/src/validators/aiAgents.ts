@@ -61,8 +61,9 @@ const triggersFields = z.object({
   respectMaintenanceWindows: z.boolean(),
   // Wave 6 PR 3 (#3828) — ticket-trigger narrowing filters. Same
   // undefined-means-unrestricted / `.min(1)` convention as siteIds/
-  // deviceGroupIds above; unenforced by the admission subscriber this PR
-  // (see AiAgentTriggers.ticketCategories's docstring).
+  // deviceGroupIds above; enforced by runService.ts's
+  // evaluateTicketTriggerFilters (see AiAgentTriggers.ticketCategories's
+  // docstring for the id-vs-name matching rule).
   ticketCategories: z.array(z.string().trim().min(1).max(100)).min(1).max(100),
   ticketPriorities: z.array(z.enum(['low', 'normal', 'high', 'urgent'])).min(1).max(4),
 });

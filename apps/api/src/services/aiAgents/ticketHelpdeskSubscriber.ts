@@ -34,14 +34,21 @@
  *     driven admission (also deferred) or an autonomous-note write would be
  *     required to route through, and it is exercised directly by this
  *     file's own tests against a synthesized agent-originated comment row.
- *  3. Call `createAndEnqueueAgentRun` with `kind: 'helpdesk'`,
+ *  3. Load the ticket's category/priority (`loadTicketFilterContext`) and
+ *     pass them as `ticketContext` so `runService.ts`'s
+ *     `evaluateTicketTriggerFilters` can enforce `policy.triggers.
+ *     ticketCategories`/`ticketPriorities` (wave 6 PR 3 review follow-up,
+ *     #3828 — previously validated/merged by effectivePolicy but never read
+ *     anywhere, so a helpdesk agent fired on every ticket regardless of its
+ *     configured filters).
+ *  4. Call `createAndEnqueueAgentRun` with `kind: 'helpdesk'`,
  *     `triggerKind: 'ticket'`, `deviceId: null` (tickets have no device
- *     axis in v1), and a dedupe key stable across redelivery of the same
- *     `ticket.created` event.
+ *     axis in v1), `ticketContext`, and a dedupe key stable across
+ *     redelivery of the same `ticket.created` event.
  */
 import { and, eq, isNotNull, ne, or } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { ticketComments } from '../../db/schema';
+import { ticketComments, tickets } from '../../db/schema';
 import type { BreezeEvent } from '../eventBus';
 import { createAndEnqueueAgentRun } from './runService';
 
@@ -104,6 +111,32 @@ async function ticketHasAgentOriginatedActivity(ticketId: string): Promise<boole
 }
 
 /**
+ * The ticket-trigger-filter shape `runService.ts`'s `evaluateTicketTriggerFilters`
+ * evaluates against `policy.triggers.ticketCategories`/`ticketPriorities`
+ * (wave 6 PR 3 review follow-up, #3828 — previously validated/merged by
+ * effectivePolicy but never read anywhere, so a helpdesk agent fired on
+ * EVERY ticket regardless of its configured filters). Org-pinned (Shape 1
+ * RLS would normally cover this, but this read runs under the same system
+ * DB context as the origin-guard probe above — see this module's header —
+ * so the org predicate has to be explicit here too, matching
+ * `ticketContext.ts`'s `loadTicketContext`). `null` means the ticket is not
+ * (or no longer) in this org — same "moved/deleted reads as absent" posture
+ * used throughout this PR.
+ */
+async function loadTicketFilterContext(
+  ticketId: string,
+  orgId: string,
+): Promise<{ category: string | null; categoryId: string | null; priority: string } | null> {
+  const { db } = dbModule;
+  const [row] = await db
+    .select({ category: tickets.category, categoryId: tickets.categoryId, priority: tickets.priority })
+    .from(tickets)
+    .where(and(eq(tickets.id, ticketId), eq(tickets.orgId, orgId)))
+    .limit(1);
+  return row ?? null;
+}
+
+/**
  * Registered handler for `ticket.created` (`eventSubscribers.ts`). MUST
  * throw on failure — queue-mode dispatch (#4085) retries on a thrown
  * rejection; local delivery's wrapper (eventBus.ts's invokeLocalHandlers)
@@ -139,6 +172,21 @@ export async function handleTicketCreatedEvent(event: BreezeEvent): Promise<void
       return;
     }
 
+    // Load the ticket's category/priority for `runService.ts`'s trigger-filter
+    // evaluation (`evaluateTicketTriggerFilters`) — same system-context read
+    // as the origin-guard probe above. A `null` result means the ticket is
+    // not (or no longer) in this org; there is nothing to admit a run for.
+    const ticketFilterCtx = await runWithSystemDbAccess(() =>
+      loadTicketFilterContext(ticketId, orgId),
+    );
+    if (!ticketFilterCtx) {
+      console.info(
+        '[ticketHelpdeskSubscriber] skipping admission — ticket not found (or not in org)',
+        { ticketId, orgId },
+      );
+      return;
+    }
+
     // Called with NO system DB context active — `createAndEnqueueAgentRun`
     // manages its own (see the header comment on `runWithSystemDbAccess`).
     const result = await createAndEnqueueAgentRun({
@@ -147,6 +195,11 @@ export async function handleTicketCreatedEvent(event: BreezeEvent): Promise<void
       triggerKind: 'ticket',
       deviceId: null,
       ticketId,
+      ticketContext: {
+        category: ticketFilterCtx.category,
+        categoryId: ticketFilterCtx.categoryId,
+        priority: ticketFilterCtx.priority as 'low' | 'normal' | 'high' | 'urgent',
+      },
       triggerRef: { ticketId },
       dedupeKey: `ticket-created:${ticketId}`,
     });

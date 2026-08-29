@@ -10,6 +10,7 @@ import type {
   AiAgentTriggers,
 } from '@breeze/shared';
 import { envFlag } from '../../config/env';
+import { PG_UUID_REGEX } from '../../utils/uuid';
 import {
   db,
   getCurrentDbAccessContext,
@@ -91,6 +92,19 @@ export interface CreateAgentRunInput {
    * them — so this is the run's only trigger-target identity.
    */
   ticketId?: string | null;
+  /**
+   * Wave 6 PR 3 review follow-up (#3828) — the triggering ticket's category/
+   * priority, evaluated against `policy.triggers.ticketCategories`/
+   * `ticketPriorities` (`evaluateTicketTriggerFilters` below), same shape as
+   * `alertContext` above: the CALLER (`ticketHelpdeskSubscriber.ts`) loads
+   * the ticket row and passes its narrowing-relevant fields in, rather than
+   * this module re-reading the ticket itself.
+   */
+  ticketContext?: {
+    category: string | null;
+    categoryId: string | null;
+    priority: 'low' | 'normal' | 'high' | 'urgent';
+  };
   /** e.g. `alert:${alertId}`, `manual:${randomUUID()}`. Unique per org. */
   dedupeKey: string;
 }
@@ -171,6 +185,51 @@ export function evaluateAgentTriggerFilters(
 
   const deviceTags = triggers.deviceTags ?? [];
   if (deviceTags.length > 0 && !deviceTags.some((tag) => ctx.deviceTags.includes(tag))) return false;
+
+  return true;
+}
+
+/**
+ * Wave 6 PR 3 review follow-up (#3828) — ticket-trigger narrowing filters.
+ * `ticketCategories`/`ticketPriorities` were validated and merged by
+ * `effectivePolicy` since the original PR but never evaluated anywhere,
+ * so a helpdesk agent fired on EVERY ticket created in the org regardless
+ * of its configured filters. This mirrors `evaluateAgentTriggerFilters`
+ * above: same narrowing (empty/absent = unrestricted) convention as
+ * `siteIds`/`deviceTags`, NOT `alertSeverities`' opt-in-list asymmetry —
+ * `AiAgentTriggers.ticketCategories`/`ticketPriorities` are both declared
+ * `undefined`-means-unrestricted in the validator (`.min(1)`-or-undefined).
+ *
+ * `ticketCategories` id-vs-name semantics: the validator does NOT constrain
+ * entries to guid format (`z.array(z.string().trim().min(1).max(100))`),
+ * unlike `alertRuleIds`/`siteIds`/`deviceGroupIds` (all `.string().guid()`)
+ * — a deliberate signal that this field holds the ticket's free-text
+ * `category` NAME (`tickets.category`, varchar(100)), not its `categoryId`
+ * FK. Matching is per-value rather than picking one column ahead of time: a
+ * configured value that parses as a UUID (`PG_UUID_REGEX` — same "would this
+ * cast cleanly" pattern the FK-typed columns use elsewhere) is matched
+ * against `ctx.categoryId`; every other value is matched against
+ * `ctx.category` by exact string equality. This lets an operator configure
+ * the filter with either category names or ids (the categories admin UI
+ * exposes both) without the filter silently going inert for one or the
+ * other.
+ */
+export function evaluateTicketTriggerFilters(
+  triggers: AiAgentTriggers,
+  ctx: NonNullable<CreateAgentRunInput['ticketContext']>,
+): boolean {
+  const categories = triggers.ticketCategories ?? [];
+  if (categories.length > 0) {
+    const matchesCategory = categories.some((value) => (
+      PG_UUID_REGEX.test(value)
+        ? ctx.categoryId !== null && value.toLowerCase() === ctx.categoryId.toLowerCase()
+        : ctx.category !== null && value === ctx.category
+    ));
+    if (!matchesCategory) return false;
+  }
+
+  const priorities = triggers.ticketPriorities ?? [];
+  if (priorities.length > 0 && !priorities.includes(ctx.priority)) return false;
 
   return true;
 }
@@ -433,6 +492,12 @@ export async function createAndEnqueueAgentRun(
   // 3. Trigger filters. Only an event-shaped trigger carries a context; a human
   //    pressing "run now" has already made the selection the filters encode.
   if (input.alertContext && !evaluateAgentTriggerFilters(effective.triggers, input.alertContext)) {
+    return skip('trigger_filter_mismatch');
+  }
+  // 3b. Ticket trigger filters (wave 6 PR 3 review follow-up, #3828) — same
+  // "only an event-shaped trigger carries a context" gating as alertContext
+  // above. `ticketContext` is populated by `ticketHelpdeskSubscriber.ts`.
+  if (input.ticketContext && !evaluateTicketTriggerFilters(effective.triggers, input.ticketContext)) {
     return skip('trigger_filter_mismatch');
   }
 
