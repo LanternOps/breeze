@@ -694,6 +694,8 @@ git commit -m "feat(api): P2-1 — outcome-tool mechanism and submit_alert_verdi
 
 ### Task 5 (A5): Verdict profile — allowlist, limits, circuit classification
 
+> **Amended during execution (Task 7 review, 2026-08-28):** `VERDICT_TOOL_ALLOWLIST` is a **floor**, not an intersection — `verdictToolAllowlist()` always returns the pinned read-only set plus the outcome tool, regardless of the agent allowlist (every entry already bypasses the allowlist on full runs, so nothing widens; intersecting against the empty default allowlist produced evidence-free verdicts). The intersection test below is superseded.
+
 **Files:**
 - Create: `apps/api/src/services/aiAgents/verdictProfile.ts`
 - Modify: `apps/api/src/services/aiAgents/agentCircuit.ts:128-141` (`classifyTerminal`), `:310-315` (`recordRunTerminal`)
@@ -869,6 +871,8 @@ git commit -m "feat(api): P2-1 — verdict-profile admission on its own concurre
 ---
 
 ### Task 7 (A7): Run loop — verdict tool exposure, capture, prompt
+
+> **Amended during execution (review, 2026-08-28):** SDK `extraTools` handlers never reach `onPreToolUse`/`onPostToolUse` (only registry tools do, via `makeHandler`). `createBreezeMcpServer` therefore wraps each extra tool's handler in the same pre/post-hook contract; the kill switch is checked inside the pre-hook's outcome-tool branch; `producedSomething` counts `alertVerdict`; the guardrail allowlist for a verdict run is the pinned floor; `finishRun` skips notifications and fix-watches for verdict runs; the local budget backstop reads `runLimits`.
 
 **Files:**
 - Modify: `apps/api/src/services/aiAgents/runLoop.ts` (`RunContext` :249-263, context loader :361-380, `createAgentRunPreToolUse` :399-438, `createAgentRunPostToolUse` :709-717, SDK options :1059-1077, `AgentRunOutcome` :190-215)
