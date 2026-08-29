@@ -46,7 +46,7 @@ describe('AlertVerdictBadge', () => {
     expect(screen.getByTestId('alert-verdict-badge').getAttribute('title')).toBe(baseVerdict.rationale);
   });
 
-  it('clicking thumbs-up calls onFeedback("up") and disables both buttons', async () => {
+  it('clicking thumbs-up calls onFeedback("up"), marks it selected, and re-enables both buttons once resolved', async () => {
     const onFeedback = vi.fn().mockResolvedValue(undefined);
     render(<AlertVerdictBadge verdict={baseVerdict} onFeedback={onFeedback} />);
 
@@ -54,12 +54,15 @@ describe('AlertVerdictBadge', () => {
 
     expect(onFeedback).toHaveBeenCalledWith('up');
     await waitFor(() => {
-      expect(screen.getByTestId('alert-verdict-feedback-up')).toBeDisabled();
-      expect(screen.getByTestId('alert-verdict-feedback-down')).toBeDisabled();
+      expect(screen.getByTestId('alert-verdict-feedback-up').getAttribute('aria-pressed')).toBe('true');
+      // Minor 9 (P2-1 wave B task 16d): a recorded vote no longer locks the
+      // buttons — the API's CAS lets the same user change their vote.
+      expect(screen.getByTestId('alert-verdict-feedback-up')).not.toBeDisabled();
+      expect(screen.getByTestId('alert-verdict-feedback-down')).not.toBeDisabled();
     });
   });
 
-  it('clicking thumbs-down calls onFeedback("down") and disables both buttons', async () => {
+  it('clicking thumbs-down calls onFeedback("down"), marks it selected, and re-enables both buttons once resolved', async () => {
     const onFeedback = vi.fn().mockResolvedValue(undefined);
     render(<AlertVerdictBadge verdict={baseVerdict} onFeedback={onFeedback} />);
 
@@ -67,26 +70,64 @@ describe('AlertVerdictBadge', () => {
 
     expect(onFeedback).toHaveBeenCalledWith('down');
     await waitFor(() => {
-      expect(screen.getByTestId('alert-verdict-feedback-up')).toBeDisabled();
-      expect(screen.getByTestId('alert-verdict-feedback-down')).toBeDisabled();
+      expect(screen.getByTestId('alert-verdict-feedback-down').getAttribute('aria-pressed')).toBe('true');
+      expect(screen.getByTestId('alert-verdict-feedback-up')).not.toBeDisabled();
+      expect(screen.getByTestId('alert-verdict-feedback-down')).not.toBeDisabled();
     });
   });
 
-  it('renders both buttons disabled when feedback was already recorded', () => {
+  it('disables both buttons only WHILE a vote is in flight', async () => {
+    let resolveFeedback: () => void = () => {};
+    const onFeedback = vi.fn(() => new Promise<void>((resolve) => { resolveFeedback = resolve; }));
+    render(<AlertVerdictBadge verdict={baseVerdict} onFeedback={onFeedback} />);
+
+    fireEvent.click(screen.getByTestId('alert-verdict-feedback-up'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('alert-verdict-feedback-up')).toBeDisabled();
+      expect(screen.getByTestId('alert-verdict-feedback-down')).toBeDisabled();
+    });
+
+    resolveFeedback();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('alert-verdict-feedback-up')).not.toBeDisabled();
+      expect(screen.getByTestId('alert-verdict-feedback-down')).not.toBeDisabled();
+    });
+  });
+
+  it('renders the already-decided button as selected but BOTH buttons enabled — the vote is changeable', () => {
     render(
       <AlertVerdictBadge verdict={{ ...baseVerdict, feedback: 'down' }} onFeedback={vi.fn()} />
     );
-    expect(screen.getByTestId('alert-verdict-feedback-up')).toBeDisabled();
-    expect(screen.getByTestId('alert-verdict-feedback-down')).toBeDisabled();
+    expect(screen.getByTestId('alert-verdict-feedback-down').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('alert-verdict-feedback-up').getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByTestId('alert-verdict-feedback-up')).not.toBeDisabled();
+    expect(screen.getByTestId('alert-verdict-feedback-down')).not.toBeDisabled();
   });
 
-  it('does not call onFeedback again once a decision is already recorded', () => {
-    const onFeedback = vi.fn();
+  it('allows changing an already-recorded vote — clicking the OTHER button calls onFeedback with the new value', async () => {
+    const onFeedback = vi.fn().mockResolvedValue(undefined);
+    render(
+      <AlertVerdictBadge verdict={{ ...baseVerdict, feedback: 'up' }} onFeedback={onFeedback} />
+    );
+
+    fireEvent.click(screen.getByTestId('alert-verdict-feedback-down'));
+
+    expect(onFeedback).toHaveBeenCalledWith('down');
+    await waitFor(() => {
+      expect(screen.getByTestId('alert-verdict-feedback-down').getAttribute('aria-pressed')).toBe('true');
+      expect(screen.getByTestId('alert-verdict-feedback-up').getAttribute('aria-pressed')).toBe('false');
+    });
+  });
+
+  it('re-submitting the SAME already-selected vote still calls onFeedback (idempotent re-affirm on the API side)', () => {
+    const onFeedback = vi.fn().mockResolvedValue(undefined);
     render(
       <AlertVerdictBadge verdict={{ ...baseVerdict, feedback: 'up' }} onFeedback={onFeedback} />
     );
     fireEvent.click(screen.getByTestId('alert-verdict-feedback-up'));
-    expect(onFeedback).not.toHaveBeenCalled();
+    expect(onFeedback).toHaveBeenCalledWith('up');
   });
 });
 

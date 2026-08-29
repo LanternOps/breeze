@@ -73,10 +73,17 @@ export default function AlertVerdictBadge({ verdict, onFeedback, compact = false
   const { t } = useTranslation('alerts');
   const [submitting, setSubmitting] = useState(false);
   // Seeded from the verdict's own persisted feedback — a page landing on an
-  // already-decided verdict must render disabled/chosen immediately, not just
-  // after a fresh click in this session.
+  // already-decided verdict must render the SELECTED state immediately, not
+  // just after a fresh click in this session.
+  //
+  // Minor 9 (P2-1 wave B task 16d): a recorded vote no longer locks the
+  // buttons. The API's compare-and-swap (`recordVerdictFeedback`'s `WHERE
+  // feedback_by IS NULL OR feedback_by = <this user>`) lets the SAME user
+  // change their own vote, so both buttons stay enabled after a decision —
+  // only an in-flight submission disables them. `decided` still drives the
+  // selected (`aria-pressed`) visual.
   const [decided, setDecided] = useState<'up' | 'down' | null>(verdict.feedback);
-  const locked = submitting || decided !== null;
+  const locked = submitting;
 
   const handleFeedback = async (value: 'up' | 'down') => {
     if (locked) return;
