@@ -24,6 +24,7 @@ import type {
   TicketProposalOutcome,
 } from './runLoop';
 import { projectAlertVerdict } from './alertVerdicts';
+import { projectSweep } from './sweepFindings';
 import {
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
   type AiAgentKind,
@@ -50,6 +51,19 @@ export interface RunTraceRunInput {
   modeAtStart: Exclude<AiAgentMode, 'off'>;
   status: AiAgentRunStatus;
   summary: string | null;
+  /**
+   * Phase 2 wave P2-2 (scheduled sweeps), Task A7 — the `ai_agent_schedules`
+   * row a `sweep`-profile run was fanned out from; `null` for every other
+   * trigger (including a manually-triggered sweep).
+   */
+  scheduleId: string | null;
+  /**
+   * The raw `ai_agent_runs.trigger_ref` jsonb — a sweep run's carries
+   * `{ scheduleId, occurrenceKey, sweepKinds }`. Read DEFENSIVELY by
+   * `projectSweep` (any field may be missing or the wrong shape); `{}` for
+   * every run that carries no trigger provenance.
+   */
+  triggerRef: Record<string, unknown>;
   /**
    * The raw `ai_agent_runs.outcome` jsonb column — typed `Record<string,
    * unknown>` at the schema layer (see aiAgents.ts) because Postgres jsonb
@@ -203,6 +217,12 @@ export function buildRunTrace(
   device: RunTraceDeviceInput | null,
   ledgerRows: RunTraceLedgerRowInput[],
   intents: RunTraceIntentRowInput[],
+  // Phase 2 wave P2-2, Task A7 — deviceId -> hostname for the device ids a
+  // SWEEP run's findings name, built by the route from ONE batched,
+  // org-pinned `devices` read (see `sweepFindingDeviceIds`). Defaults empty
+  // so every non-sweep caller is unchanged; a missing id projects a `null`
+  // hostname rather than dropping the finding.
+  deviceHostnames: ReadonlyMap<string, string> = new Map(),
 ): AiAgentRunDetailDto {
   const outcome = run.outcome as Partial<AgentRunOutcome>;
   return {
@@ -240,5 +260,11 @@ export function buildRunTrace(
     // contract. `outcome.alertVerdictIntent` (review round 1, IMPORTANT 2)
     // carries the suggestion's intent-creation disposition alongside it.
     alertVerdict: projectAlertVerdict(outcome.alertVerdict, outcome.alertVerdictIntent),
+    // Phase 2 wave P2-2 (scheduled sweeps), Task A7: null for every
+    // full/verdict-profile run and for a sweep run that has not produced
+    // findings — see `projectSweep`'s own safe-projection contract. The raw
+    // `proposedAction` args on each finding are never carried; only the
+    // proposal's disposition and, when one exists, its PENDING intent id.
+    sweep: projectSweep(run, outcome, deviceHostnames),
   };
 }

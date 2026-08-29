@@ -20,6 +20,11 @@ function baseRun(overrides: Partial<RunTraceRunInput> = {}): RunTraceRunInput {
     modeAtStart: 'shadow',
     status: 'completed',
     summary: 'Restarted the print spooler.',
+    // Phase 2 wave P2-2 (scheduled sweeps), Task A7 — `null`/`{}` for every
+    // non-sweep run; the sweep projection reads the occurrence + kinds off
+    // `triggerRef` (see `projectSweep`).
+    scheduleId: null,
+    triggerRef: {},
     outcome: {},
     turnCount: 3,
     costCents: 12,
@@ -435,6 +440,97 @@ describe('buildRunTrace — safe projection (#3828)', () => {
       expect(detail.alertVerdict?.suggestedAction).toEqual({
         tool: 'manage_alerts', action: 'suppress', disposition: 'not_created', reason: 'no_eligible_approvers',
       });
+    });
+  });
+
+  // Phase 2 wave P2-2 (scheduled sweeps), Task A7.
+  describe('sweep projection (P2-2, Task A7)', () => {
+    const SCHEDULE_ID = '66666666-6666-4666-8666-666666666666';
+
+    it('is null for every non-sweep run (no sweepFindings on the outcome)', () => {
+      const detail = buildRunTrace(baseRun({ outcome: {} }), AGENT, DEVICE, [], []);
+      expect(detail.sweep).toBeNull();
+    });
+
+    it('projects a sweep run\'s findings with batched hostnames and leaks no tripwire key', () => {
+      const detail = buildRunTrace(
+        baseRun({
+          deviceId: null,
+          triggerKind: 'schedule',
+          scheduleId: SCHEDULE_ID,
+          triggerRef: {
+            scheduleId: SCHEDULE_ID,
+            occurrenceKey: '2026-08-29T06:00:00Z',
+            sweepKinds: ['service_down'],
+          },
+          outcome: {
+            executedActions: [],
+            proposedActions: [],
+            deniedActions: [],
+            toolExecutionCount: 0,
+            sweepFindings: {
+              summary: 'One service is down.',
+              findings: [{
+                kind: 'service_down',
+                severity: 'critical',
+                deviceId: DEVICE_ID,
+                title: 'Spooler is stopped',
+                detail: 'Spooler has been stopped for 3 days.',
+                evidence: { state: 'stopped' },
+                proposedAction: {
+                  tool: 'manage_services', action: 'restart',
+                  deviceId: DEVICE_ID, serviceName: 'Spooler',
+                },
+              }],
+            },
+            sweepProposals: [{
+              findingIndex: 0,
+              tool: 'manage_services',
+              action: 'restart',
+              deviceId: DEVICE_ID,
+              disposition: 'intent_created',
+              intentId: INTENT_ID,
+            }],
+            sweepEvidenceTruncated: false,
+          },
+        }),
+        AGENT,
+        null,
+        [],
+        [],
+        new Map([[DEVICE_ID, 'WS-ACCT-04']]),
+      );
+
+      expect(detail.sweep).toEqual({
+        scheduleId: SCHEDULE_ID,
+        occurrenceKey: '2026-08-29T06:00:00Z',
+        kinds: ['service_down'],
+        summary: 'One service is down.',
+        evidenceTruncated: false,
+        findings: [{
+          kind: 'service_down',
+          severity: 'critical',
+          deviceId: DEVICE_ID,
+          deviceHostname: 'WS-ACCT-04',
+          title: 'Spooler is stopped',
+          detail: 'Spooler has been stopped for 3 days.',
+          evidence: { state: 'stopped' },
+          proposal: {
+            tool: 'manage_services',
+            action: 'restart',
+            disposition: 'intent_created',
+            reason: null,
+            intentId: INTENT_ID,
+          },
+        }],
+      });
+
+      const json = JSON.stringify(detail);
+      for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+        expect(json).not.toContain(`"${forbidden}"`);
+      }
+      expect(json).not.toContain('proposedAction');
+      expect(json).not.toContain('serviceName');
     });
   });
 });

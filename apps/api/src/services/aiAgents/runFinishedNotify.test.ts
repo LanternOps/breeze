@@ -189,3 +189,121 @@ describe('deliverRunFinishedNotifications', () => {
     await expect(deliverRunFinishedNotifications(RUN_ID)).rejects.toThrow('notifications table unavailable');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 2 wave P2-2 (scheduled sweeps), Task A7 — the sweep digest.
+// ---------------------------------------------------------------------------
+describe('deliverRunFinishedNotifications — sweep digest (P2-2)', () => {
+  function sweepFinding(severity: string, kind = 'service_down') {
+    return {
+      kind,
+      severity,
+      deviceId: null,
+      title: `${kind} finding`,
+      detail: 'detail',
+      evidence: {},
+    };
+  }
+
+  function sweepRun(overrides: Record<string, unknown> = {}) {
+    return {
+      ...baseRun,
+      profile: 'sweep',
+      summary: 'Sweep complete.',
+      outcome: {
+        toolExecutionCount: 0,
+        sweepFindings: {
+          summary: 'Two machines need attention.\nSee the run detail for the list.',
+          findings: [sweepFinding('critical'), sweepFinding('high', 'disk_pressure')],
+        },
+      },
+      ...overrides,
+    };
+  }
+
+  it('titles the digest with the finding + critical counts and escalates priority when anything is critical', async () => {
+    queueRows('ai_agent_runs', [sweepRun({ intentIds: [INTENT_ID] })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]!;
+    expect(input).toMatchObject({
+      title: 'Sweep finished: 2 finding(s) (1 critical) — Front Desk Triage',
+      // The FIRST line of the sweep summary, not the run summary.
+      message: 'Two machines need attention.',
+      priority: 'high',
+      link: `/ai-agents/runs/${RUN_ID}`,
+      metadata: {
+        runId: RUN_ID,
+        agentId: AGENT_ID,
+        status: 'completed',
+        sweep: {
+          findings: 2,
+          critical: 1,
+          proposals: 1,
+          kinds: ['disk_pressure', 'service_down'],
+        },
+      },
+    });
+  });
+
+  it('omits the critical clause and keeps the default priority when nothing is critical', async () => {
+    queueRows('ai_agent_runs', [sweepRun({
+      outcome: {
+        toolExecutionCount: 0,
+        sweepFindings: { summary: 'All quiet.', findings: [sweepFinding('low', 'stale_agents')] },
+      },
+    })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.title).toBe('Sweep finished: 1 finding(s) — Front Desk Triage');
+    expect(input.priority).toBeUndefined();
+    expect((input.metadata as { sweep: unknown }).sweep).toEqual({
+      findings: 1, critical: 0, proposals: 0, kinds: ['stale_agents'],
+    });
+  });
+
+  it('still reports a zero-finding sweep rather than falling back to the generic title', async () => {
+    queueRows('ai_agent_runs', [sweepRun({
+      outcome: { toolExecutionCount: 0, sweepFindings: { summary: 'Nothing found.', findings: [] } },
+    })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.title).toBe('Sweep finished: 0 finding(s) — Front Desk Triage');
+    expect(input.message).toBe('Nothing found.');
+  });
+
+  it('falls back to the generic title for a sweep run that never produced findings', async () => {
+    queueRows('ai_agent_runs', [sweepRun({ outcome: { toolExecutionCount: 0 } })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.title).toBe('Agent run finished');
+    expect((input.metadata as Record<string, unknown>).sweep).toBeUndefined();
+  });
+
+  it('never applies the sweep digest to a non-sweep run, even with sweep findings on the outcome', async () => {
+    queueRows('ai_agent_runs', [sweepRun({ profile: 'full' })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.title).toBe('Agent run finished');
+    expect((input.metadata as Record<string, unknown>).sweep).toBeUndefined();
+  });
+});

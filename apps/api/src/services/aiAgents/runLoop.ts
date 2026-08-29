@@ -53,7 +53,7 @@ import type {
   AlertVerdictOutcome,
   SweepFindingsOutcome,
 } from '@breeze/shared';
-import { AI_SWEEP_KINDS } from '@breeze/shared';
+import { AI_AGENT_LIMIT_DEFAULTS, AI_SWEEP_KINDS } from '@breeze/shared';
 import { envFlag } from '../../config/env';
 import {
   db,
@@ -133,6 +133,7 @@ import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdict
 import { isSweepProfile, sweepLimits, sweepToolAllowlist } from './sweepProfile';
 import { loadSweepEvidence, type SweepEvidence } from './sweepEvidence';
 import { persistAlertVerdict, type AlertVerdictIntentInfo } from './alertVerdicts';
+import { persistSweepFindings, type SweepProposalRecord } from './sweepFindings';
 
 /** `ai_agent_runs.summary` is `text`, but a reviewer reads the first screen. */
 const RUN_SUMMARY_MAX_CHARS = 2000;
@@ -281,6 +282,23 @@ export interface AgentRunOutcome {
    * `proposedAction` into a supervised action intent — NOTHING here executes.
    */
   sweepFindings?: SweepFindingsOutcome;
+  /**
+   * Phase 2 wave P2-2 (scheduled sweeps), Task A7 — one bookkeeping record
+   * per finding that carried a `proposedAction`, written by `finalizeSweep`
+   * below. Absent when the run proposed nothing at all (nothing to report on)
+   * and for every non-sweep profile. Display strings only — NEVER the raw
+   * `Error.message` from `createActionIntent`; see `SweepProposalRecord`'s own
+   * docstring (sweepFindings.ts).
+   */
+  sweepProposals?: SweepProposalRecord[];
+  /**
+   * Phase 2 wave P2-2, Task A7 — whether the SYSTEM evidence this sweep run
+   * reported on was capped/byte-trimmed (`SweepEvidence.truncated`, Task 5).
+   * Persisted here because the evidence itself is never stored on the run,
+   * and the run-detail projection has to be able to tell a reader "the model
+   * saw a sample, not the whole fleet". Absent for every non-sweep profile.
+   */
+  sweepEvidenceTruncated?: boolean;
 }
 
 /** Error carrying the short code that lands in `ai_agent_runs.error_code` (varchar(64)). */
@@ -1736,7 +1754,13 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // `ceiling` branches, which already carry a real, more specific code —
     // see `finalizeVerdict`'s own docstring for why).
     const verdictErrorCode = await finalizeVerdict(ctx, result);
-    if (isSweepProfile(ctx.run)) { /* Task A7: finalizeSweep(ctx, outcome) */ }
+    // Task A7 (wave P2-2) — the sweep sibling, same placement and for the
+    // same reason: proposal→intent conversion must happen BEFORE the
+    // awaiting_approval/completed decision below so a freshly created pending
+    // intent is counted by `intentIds.length > 0`. A run is either a verdict
+    // run or a sweep run, never both, so at most one of these two codes is
+    // ever non-null.
+    const sweepErrorCode = await finalizeSweep(ctx, result);
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
@@ -1790,7 +1814,12 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // done thinking and a human now owns the decision. Release of an approved
     // intent is 3b's machinery, not a continuation of this run.
     ledgerOutcome = 'completed';
-    await finishRun(ctx, intentIds.length > 0 ? 'awaiting_approval' : 'completed', verdictErrorCode, result);
+    await finishRun(
+      ctx,
+      intentIds.length > 0 ? 'awaiting_approval' : 'completed',
+      verdictErrorCode ?? sweepErrorCode,
+      result,
+    );
   } catch (error) {
     const errorCode = error instanceof AgentRunError
       ? error.errorCode
@@ -1905,6 +1934,88 @@ async function finalizeVerdict(ctx: RunContext, result: LoopResult): Promise<str
   } catch (error) {
     console.error('[aiAgentRunLoop] failed to persist alert verdict', { runId: ctx.run.id, error });
     return 'verdict_persist_failed';
+  }
+}
+
+/**
+ * Phase 2 wave P2-2 (scheduled sweeps), Task A7 — the sweep sibling of
+ * `finalizeVerdict` above, called from the SAME place in `executeAgentRun`
+ * (before the awaiting_approval/completed decision, outside any ambient DB
+ * context — `persistSweepFindings` inherits `createActionIntent`'s
+ * no-ambient-context precondition; see `alertVerdicts.ts:208-226`).
+ *
+ * Returns an errorCode override the caller applies ONLY on the normal-finish
+ * path, exactly as it does for `finalizeVerdict`'s. Unlike a verdict run, a
+ * sweep run that produced no findings is NOT an error: task 6 already treats
+ * `outcome.sweepFindings` as this profile's "produced something" signal, and a
+ * sweep that legitimately found nothing to report still completes cleanly.
+ *
+ * `evidenceDeviceIds` is built from `ctx.sweep.evidence` — the rows the
+ * SYSTEM loaded, not anything the model said — and is the control that keeps
+ * a crafted proposal from reaching a device this run never looked at. A run
+ * whose context carries no sweep block at all (defensive: `ctx.sweep` is
+ * populated for every sweep-profile run today) therefore has an EMPTY
+ * evidence set, which refuses every proposal — fail closed, never open.
+ */
+async function finalizeSweep(ctx: RunContext, result: LoopResult): Promise<string | null> {
+  if (!isSweepProfile(ctx.run)) return null;
+  const { outcome } = result;
+
+  // Recorded even when there are no findings: "the model only saw a sample"
+  // is true of the run regardless of what it chose to report.
+  if (ctx.sweep) outcome.sweepEvidenceTruncated = ctx.sweep.evidence.truncated;
+
+  if (!outcome.sweepFindings) return null;
+
+  // Same IMPORTANT-4 re-read as `finalizeVerdict`: the stall reaper
+  // (`reapStalledAgentRuns`) or a second executor may have moved this run out
+  // of `running` while the SDK loop was in flight. Skip persistence rather
+  // than mint live, human-approvable intents under a run nobody owns anymore.
+  const stillRunning = await isRunStillRunning(ctx.run.id, ctx.run.orgId);
+  if (!stillRunning) {
+    console.warn('[aiAgentRunLoop] skipped sweep persistence — run left `running` before it could be persisted', {
+      runId: ctx.run.id,
+    });
+    return null;
+  }
+
+  const evidenceDeviceIds = new Set<string>();
+  for (const kind of Object.values(ctx.sweep?.evidence.kinds ?? {})) {
+    for (const row of kind?.rows ?? []) {
+      if (row.deviceId) evidenceDeviceIds.add(row.deviceId);
+    }
+  }
+
+  try {
+    const { proposals, intentIds } = await persistSweepFindings(
+      {
+        id: ctx.run.id,
+        orgId: ctx.run.orgId,
+        agentId: ctx.run.agentId,
+        // A sweep run is device-less by construction — that is exactly why
+        // every intent it mints carries its own explicit device scope.
+        deviceId: null,
+        scheduleId: ctx.run.scheduleId,
+        // The AGENT's effective allowlist off the already-loaded run row —
+        // the same authority `agentReleaseAuthority.ts` re-checks at release.
+        toolAllowlist: ctx.run.policySnapshot.effective.toolAllowlist,
+        // The AGENT's action cap, NOT `sweepLimits`' hard `0` (which governs
+        // what the run LOOP may execute, and a sweep executes nothing). `??`
+        // tolerates a v1 policy snapshot, which predates the field entirely.
+        maxActionsPerRun:
+          ctx.run.policySnapshot.effective.limits.maxActionsPerRun
+          ?? AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun,
+        evidenceDeviceIds,
+      },
+      outcome.sweepFindings,
+      result.agentAuth,
+    );
+    if (proposals.length > 0) outcome.sweepProposals = proposals;
+    for (const intentId of intentIds) result.intentIds.push(intentId);
+    return null;
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to persist sweep findings', { runId: ctx.run.id, error });
+    return 'sweep_persist_failed';
   }
 }
 

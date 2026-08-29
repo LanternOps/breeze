@@ -5,6 +5,7 @@ import type {
   AgentRunVerdict,
   AiAgentKind,
   AiAgentMode,
+  AiAgentRunProfile,
   AiAgentRunStatus,
   AiAgentTriggerKind,
   AiAlertVerdictClassification,
@@ -95,6 +96,15 @@ export interface AiAgentRunListItemDto {
   deviceId: string | null;
   status: AiAgentRunStatus;
   triggerKind: AiAgentTriggerKind;
+  /**
+   * Phase 2 wave P2-2 (scheduled sweeps), Task A7 — which run profile
+   * produced this row (`full` | `verdict` | `sweep`). The web runs list
+   * badges sweep/verdict rows off this rather than inferring one from
+   * `triggerKind`, which cannot distinguish a scheduled SWEEP from any other
+   * schedule-triggered run. Additive and always present, so it does NOT bump
+   * `AI_AGENT_RUN_DTO_SCHEMA_VERSION` (see the bump rule above).
+   */
+  profile: AiAgentRunProfile;
   /** Absent until `finishRun` computes it (services/aiAgents/runLoop.ts); null for any run that hasn't reached a terminal rollup yet. */
   runVerdict: AgentRunVerdict | null;
   queuedAt: string;

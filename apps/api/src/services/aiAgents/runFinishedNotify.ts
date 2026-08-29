@@ -88,6 +88,55 @@ function readActSummaries(outcome: Record<string, unknown>): ActSummary[] {
   return summaries;
 }
 
+/**
+ * Phase 2 wave P2-2 (scheduled sweeps), Task A7 — the sweep digest read off
+ * `run.outcome.sweepFindings`. Nobody is watching a 06:00 cron occurrence and
+ * a sweep leaves no badge on an alert row a technician was already looking at,
+ * so this notification IS the surface for it (see `finishRun`'s notify/
+ * fix-watch split). `null` for every run that produced no findings outcome,
+ * which falls back to the generic title.
+ *
+ * `kinds` is the distinct set of kinds that actually PRODUCED a finding
+ * (sorted, so the list is stable regardless of the order the model emitted
+ * them) — not the kinds the schedule swept. Everything else on this
+ * digest is an outcome count, and "what was found" is what a recipient acts
+ * on; "what was checked" stays on the run-detail trace, which reads it off
+ * `trigger_ref` (`projectSweep`).
+ *
+ * Read defensively at every step: `outcome` is jsonb with no compile-time
+ * shape, and a pre-A7 row simply lacks these keys.
+ */
+interface SweepDigest {
+  findings: number;
+  critical: number;
+  kinds: string[];
+  summaryFirstLine: string;
+}
+
+function readSweepDigest(outcome: Record<string, unknown>): SweepDigest | null {
+  const sweep = outcome.sweepFindings;
+  if (!sweep || typeof sweep !== 'object') return null;
+  const entry = sweep as Record<string, unknown>;
+  const findings = Array.isArray(entry.findings) ? entry.findings : [];
+
+  let critical = 0;
+  const kinds = new Set<string>();
+  for (const raw of findings) {
+    if (!raw || typeof raw !== 'object') continue;
+    const finding = raw as Record<string, unknown>;
+    if (finding.severity === 'critical') critical += 1;
+    if (typeof finding.kind === 'string') kinds.add(finding.kind);
+  }
+
+  const summary = typeof entry.summary === 'string' ? entry.summary : '';
+  return {
+    findings: findings.length,
+    critical,
+    kinds: [...kinds].sort(),
+    summaryFirstLine: summary.split('\n')[0]?.trim() ?? '',
+  };
+}
+
 /** Only the two verdicts the plan names get a distinct title; `partial` and
  *  `no_action`/null keep the existing generic title (still carry `verdict`
  *  in metadata) — most orgs are not act-mode, and this keeps their
@@ -107,6 +156,10 @@ interface FinishedRunRow {
   id: string;
   orgId: string;
   agentId: string;
+  /** Phase 2 wave P2-2, Task A7 — gates the sweep digest below. Absent on a
+   *  row read back through an older mock/fixture, which simply never matches
+   *  `'sweep'` and keeps the generic copy. */
+  profile: string;
   status: string;
   summary: string | null;
   outcome: Record<string, unknown>;
@@ -141,6 +194,7 @@ async function loadFinishedRun(
         id: aiAgentRuns.id,
         orgId: aiAgentRuns.orgId,
         agentId: aiAgentRuns.agentId,
+        profile: aiAgentRuns.profile,
         status: aiAgentRuns.status,
         summary: aiAgentRuns.summary,
         outcome: aiAgentRuns.outcome,
@@ -216,6 +270,21 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
     typeof run.outcome?.toolExecutionCount === 'number' ? (run.outcome.toolExecutionCount as number) : 0;
   const verdict = readRunVerdict(run.outcome ?? {});
   const actSummary = readActSummaries(run.outcome ?? {});
+  // Task A7 — a sweep run gets its own digest copy; every other profile (and
+  // a sweep run that never produced findings) keeps the generic verdict-aware
+  // title untouched.
+  const sweep = run.profile === 'sweep' ? readSweepDigest(run.outcome ?? {}) : null;
+  const title = sweep
+    ? `Sweep finished: ${sweep.findings} finding(s)`
+      + `${sweep.critical > 0 ? ` (${sweep.critical} critical)` : ''} — ${agent.name}`
+    : verdictAwareTitle(agent.name, verdict);
+  const message = sweep
+    ? sweep.summaryFirstLine || `${agent.name}: ${firstLine || run.status}`
+    : `${agent.name}: ${firstLine || run.status}`;
+  // Anything critical escalates, exactly as `needs_attention` does for a
+  // full-profile run — the two are mutually exclusive here (a sweep run never
+  // produces a run verdict of its own).
+  const priority = sweep ? (sweep.critical > 0 ? 'high' : null) : (verdict === 'needs_attention' ? 'high' : null);
 
   // AFTER the status commit and outside any held transaction (#1105).
   await inSystemDbContext(async () => {
@@ -224,16 +293,17 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
         userId,
         orgId: run.orgId,
         type: 'ai',
-        title: verdictAwareTitle(agent.name, verdict),
-        message: `${agent.name}: ${firstLine || run.status}`,
+        title,
+        message,
         // The run-detail page (wave 6.1) surfaces pending approvals itself,
         // so every run-finished notification links there unconditionally —
         // no more branching to '/approvals'.
         link: `/ai-agents/runs/${run.id}`,
-        // Only 'needs_attention' escalates priority — every other verdict
-        // (including null, the pre-Part-B/non-act-mode default) keeps the
-        // existing 'normal' default createNotification already applies.
-        ...(verdict === 'needs_attention' ? { priority: 'high' as const } : {}),
+        // Only 'needs_attention' (or, for a sweep, any critical finding)
+        // escalates priority — every other verdict, including null, the
+        // pre-Part-B/non-act-mode default, keeps the existing 'normal'
+        // default createNotification already applies.
+        ...(priority ? { priority: 'high' as const } : {}),
         metadata: {
           runId: run.id,
           agentId: agent.id,
@@ -242,6 +312,20 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
           executedActionCount,
           verdict,
           ...(actSummary.length > 0 ? { actSummary } : {}),
+          // `proposals` is the run's own pending-intent count: for a sweep
+          // run every entry in `intent_ids` came from a converted proposal
+          // (a sweep executes nothing and proposes nothing through the run
+          // loop's own tool gate — `sweepLimits` pins `maxActionsPerRun: 0`).
+          ...(sweep
+            ? {
+              sweep: {
+                findings: sweep.findings,
+                critical: sweep.critical,
+                proposals: run.intentIds.length,
+                kinds: sweep.kinds,
+              },
+            }
+            : {}),
         },
         dedupeKey: `agent-run:${run.id}`,
       });

@@ -647,6 +647,110 @@ describe('sweep profile exposure and context in the run loop (P2-2)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Task A7 — `finalizeSweep`'s wiring. The per-gate behaviour of
+// `persistSweepFindings` itself is covered exhaustively in
+// sweepFindings.test.ts; these two cases pin the RUN-LOOP contract: the
+// conversion happens before the terminal-status decision, and it is driven by
+// the SYSTEM evidence rather than by anything the model said.
+// ---------------------------------------------------------------------------
+describe('sweep findings persistence at finish (P2-2, Task A7)', () => {
+  const FINDINGS_WITH_PROPOSAL = {
+    summary: 'A monitored service is down.',
+    findings: [{
+      kind: 'service_down' as const,
+      severity: 'critical' as const,
+      deviceId: DEVICE_ID,
+      title: 'Spooler is stopped',
+      detail: 'Spooler on WS-ACCT-04 has been stopped for 3 days.',
+      evidence: { state: 'stopped' },
+      proposedAction: {
+        tool: 'manage_services' as const,
+        action: 'restart' as const,
+        deviceId: DEVICE_ID,
+        serviceName: 'Spooler',
+      },
+    }],
+  };
+
+  it('converts a proposal into a device-scoped intent and finishes awaiting_approval', async () => {
+    // The agent's OWN allowlist grants the mutating tool (the sweep tool
+    // FLOOR is read-only and never admits it) — and its `maxActionsPerRun`,
+    // not `sweepLimits`' hard 0, is the cap that applies.
+    seedRows({ profile: 'sweep', effective: policy({ toolAllowlist: ['manage_services'] }) });
+    // The gate-2 device existence read (org-pinned, non-ephemeral).
+    dbMockState.rowQueues.devices = [[{ id: DEVICE_ID }]];
+    createActionIntent.mockResolvedValue({ id: 'intent-sweep-1', status: 'pending_approval' });
+    scriptQuery({
+      toolCalls: [{ tool: 'submit_sweep_findings', input: FINDINGS_WITH_PROPOSAL }],
+      assistantText: 'Reported one finding.',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(createActionIntent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      toolName: 'manage_services',
+      input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'Spooler' },
+      source: 'ai_agent',
+      orgId: ORG_ID,
+      idempotencyKey: `sweep:${RUN_ID}:0`,
+      // The whole point of A3's explicit scope: a DEVICE-LESS sweep run
+      // still mints a device-bound intent.
+      scope: { deviceId: DEVICE_ID },
+    }));
+
+    const final = finalTransition()!;
+    // Status is computed AFTER persistence — a sweep run that created a
+    // pending approval must not finish `completed`.
+    expect(final.to).toBe('awaiting_approval');
+    expect(final.patch.intentIds).toEqual(['intent-sweep-1']);
+    const outcome = final.patch.outcome as AgentRunOutcome;
+    expect(outcome.sweepProposals).toEqual([{
+      findingIndex: 0,
+      tool: 'manage_services',
+      action: 'restart',
+      deviceId: DEVICE_ID,
+      disposition: 'intent_created',
+      intentId: 'intent-sweep-1',
+    }]);
+    expect(outcome.sweepEvidenceTruncated).toBe(false);
+  });
+
+  it('refuses a proposal for a device the system never collected evidence for', async () => {
+    const OFF_EVIDENCE_DEVICE = '00000000-0000-4000-8000-0000000000f9';
+    seedRows({ profile: 'sweep', effective: policy({ toolAllowlist: ['manage_services'] }) });
+    createActionIntent.mockResolvedValue({ id: 'intent-sweep-1', status: 'pending_approval' });
+    scriptQuery({
+      toolCalls: [{
+        tool: 'submit_sweep_findings',
+        input: {
+          ...FINDINGS_WITH_PROPOSAL,
+          findings: [{
+            ...FINDINGS_WITH_PROPOSAL.findings[0]!,
+            deviceId: OFF_EVIDENCE_DEVICE,
+            proposedAction: {
+              ...FINDINGS_WITH_PROPOSAL.findings[0]!.proposedAction,
+              deviceId: OFF_EVIDENCE_DEVICE,
+            },
+          }],
+        },
+      }],
+      assistantText: 'Reported one finding.',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    // No intent, and no device read either — the evidence gate short-circuits
+    // before any query (no `devices` rows are queued, so one would throw).
+    expect(createActionIntent).not.toHaveBeenCalled();
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect((final.patch.outcome as AgentRunOutcome).sweepProposals).toEqual([
+      expect.objectContaining({ disposition: 'refused', reason: 'device_not_in_evidence' }),
+    ]);
+  });
+});
+
 describe('notify / fix-watch split at finish (P2-2)', () => {
   it('a sweep run DOES notify its recipients but schedules NO fix-watch', async () => {
     seedRows({ profile: 'sweep' });

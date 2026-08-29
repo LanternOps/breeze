@@ -38,6 +38,7 @@ import { InvalidAgentRecipientsError } from '../services/aiAgents/recipients';
 import { SUPPORTED_AGENT_MODES } from '../services/aiAgents/constants';
 import { buildRunTrace } from '../services/aiAgents/runTrace';
 import { recordVerdictFeedback } from '../services/aiAgents/alertVerdicts';
+import { sweepFindingDeviceIds } from '../services/aiAgents/sweepFindings';
 import {
   buildRunsKeysetPredicate, decodeRunsCursor, encodeRunsCursor, runsCursorFromRow,
 } from '../services/aiAgents/runsListCursor';
@@ -306,6 +307,7 @@ function mapRunListItem(row: {
   deviceId: string | null;
   status: AiAgentRunListItemDto['status'];
   triggerKind: AiAgentRunListItemDto['triggerKind'];
+  profile: AiAgentRunListItemDto['profile'];
   runVerdict: string | null;
   queuedAt: Date;
   finishedAt: Date | null;
@@ -321,6 +323,9 @@ function mapRunListItem(row: {
     deviceId: row.deviceId,
     status: row.status,
     triggerKind: row.triggerKind,
+    // Phase 2 wave P2-2, Task A7 — the web list badges sweep/verdict rows off
+    // this; `triggerKind: 'schedule'` alone cannot identify a sweep.
+    profile: row.profile,
     runVerdict: (row.runVerdict as AgentRunVerdict | null) ?? null,
     queuedAt: row.queuedAt.toISOString(),
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
@@ -389,6 +394,7 @@ aiAgentsRoutes.get(
         deviceId: aiAgentRuns.deviceId,
         status: aiAgentRuns.status,
         triggerKind: aiAgentRuns.triggerKind,
+        profile: aiAgentRuns.profile,
         // Pulled straight out of the outcome jsonb by key rather than
         // selecting the whole column — this is a list endpoint, and the
         // full outcome (which is where the SAFE-projection risk lives) has
@@ -460,6 +466,10 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       modeAtStart: aiAgentRuns.modeAtStart,
       status: aiAgentRuns.status,
       summary: aiAgentRuns.summary,
+      // Phase 2 wave P2-2, Task A7 — the sweep projection's occurrence/kinds
+      // provenance; `null`/`{}` for every non-sweep run.
+      scheduleId: aiAgentRuns.scheduleId,
+      triggerRef: aiAgentRuns.triggerRef,
       outcome: aiAgentRuns.outcome,
       intentIds: aiAgentRuns.intentIds,
       turnCount: aiAgentRuns.turnCount,
@@ -521,6 +531,22 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       .where(and(inArray(actionIntents.id, run.intentIds), auth.orgCondition(actionIntents.orgId)))
     : [];
 
+  // Phase 2 wave P2-2 (scheduled sweeps), Task A7 — a sweep run is
+  // device-less but its findings each name one device, so the detail needs
+  // hostnames for ids that are NOT `run.device_id`. ONE batched, org-pinned
+  // read for the whole findings list (never a lookup per finding); empty for
+  // every non-sweep run, which skips the query entirely. The org predicate is
+  // defence-in-depth beside RLS, matching the two reads above — a device the
+  // caller cannot see simply projects a null hostname.
+  const sweepDeviceIds = sweepFindingDeviceIds(run.outcome);
+  const hostnameRows = sweepDeviceIds.length > 0
+    ? await db
+      .select({ id: devices.id, hostname: devices.hostname })
+      .from(devices)
+      .where(and(inArray(devices.id, sweepDeviceIds), auth.orgCondition(devices.orgId)))
+    : [];
+  const deviceHostnames = new Map(hostnameRows.map((row) => [row.id, row.hostname]));
+
   // Both fields come from the same left-joined ai_agents row, so they are
   // either both present or both null together.
   const agent = run.agentName !== null && run.agentKind !== null
@@ -532,6 +558,7 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     run.deviceHostname ? { hostname: run.deviceHostname } : null,
     ledgerRows,
     intentRows,
+    deviceHostnames,
   );
   return c.json({ data: detail });
 });
@@ -627,6 +654,7 @@ aiAgentsRoutes.get(
         deviceId: aiAgentRuns.deviceId,
         status: aiAgentRuns.status,
         triggerKind: aiAgentRuns.triggerKind,
+        profile: aiAgentRuns.profile,
         runVerdict: sql<string | null>`${aiAgentRuns.outcome}->>'runVerdict'`,
         queuedAt: aiAgentRuns.queuedAt,
         finishedAt: aiAgentRuns.finishedAt,

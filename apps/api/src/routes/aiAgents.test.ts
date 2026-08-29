@@ -678,6 +678,33 @@ const runDetailResponseSchema = z.object({
         ]).nullable(),
       }).strict().nullable(),
     }).strict().nullable(),
+    // Phase 2 wave P2-2 (scheduled sweeps), Task A7: `null` for every
+    // full/verdict-profile run. Strict all the way down — a finding carries
+    // its bounded scalar `evidence` map and the DISPOSITION of its proposal,
+    // never the raw `proposedAction` args the model wrote.
+    sweep: z.object({
+      scheduleId: z.string().nullable(),
+      occurrenceKey: z.string().nullable(),
+      kinds: z.array(z.string()),
+      summary: z.string(),
+      evidenceTruncated: z.boolean(),
+      findings: z.array(z.object({
+        kind: z.string(),
+        severity: z.string(),
+        deviceId: z.string().nullable(),
+        deviceHostname: z.string().nullable(),
+        title: z.string(),
+        detail: z.string(),
+        evidence: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])),
+        proposal: z.object({
+          tool: z.string(),
+          action: z.string().nullable(),
+          disposition: z.enum(['intent_created', 'refused', 'cap_reached', 'error']),
+          reason: z.string().nullable(),
+          intentId: z.string().nullable(),
+        }).strict().nullable(),
+      }).strict()),
+    }).strict().nullable(),
   }).strict(),
 }).strict();
 
@@ -692,6 +719,9 @@ const runListResponseSchema = z.object({
     deviceId: z.string().nullable(),
     status: z.string(),
     triggerKind: z.string(),
+    // Phase 2 wave P2-2, Task A7 — the web list badge reads this; a
+    // schedule-triggered SWEEP is not distinguishable from `triggerKind`.
+    profile: z.enum(['full', 'verdict', 'sweep']),
     runVerdict: z.string().nullable(),
     queuedAt: z.string(),
     finishedAt: z.string().nullable(),
@@ -802,6 +832,97 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     }
     expect(json).not.toContain('do-not-leak-me');
     expect(json).not.toContain('scriptId');
+  });
+
+  // Phase 2 wave P2-2 (scheduled sweeps), Task A7.
+  it('resolves sweep finding hostnames with ONE batched org-pinned read and leaks no raw proposal args', async () => {
+    const OTHER_DEVICE_ID = '99999999-9999-4999-8999-999999999999';
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        scheduleId: '88888888-8888-4888-8888-888888888888',
+        triggerRef: {
+          scheduleId: '88888888-8888-4888-8888-888888888888',
+          occurrenceKey: '2026-08-29T06:00:00Z',
+          sweepKinds: ['service_down'],
+        },
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          sweepFindings: {
+            summary: 'One service is down on two machines.',
+            findings: [
+              {
+                kind: 'service_down', severity: 'critical', deviceId: DEVICE_ID,
+                title: 'Spooler is stopped', detail: 'Stopped for 3 days.',
+                evidence: { state: 'stopped' },
+                proposedAction: {
+                  tool: 'manage_services', action: 'restart',
+                  deviceId: DEVICE_ID, serviceName: 'DoNotLeakSpooler',
+                },
+              },
+              {
+                kind: 'service_down', severity: 'high', deviceId: OTHER_DEVICE_ID,
+                title: 'W32Time is stopped', detail: 'Stopped for 1 day.',
+                evidence: { state: 'stopped' },
+              },
+            ],
+          },
+          sweepProposals: [{
+            findingIndex: 0, tool: 'manage_services', action: 'restart',
+            deviceId: DEVICE_ID, disposition: 'intent_created',
+            intentId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          }],
+          sweepEvidenceTruncated: true,
+        },
+      })]))
+      // The ONE batched hostname read (no session, no intent ids, so this is
+      // the only other query the route makes).
+      .mockReturnValueOnce(selectChain([{ id: DEVICE_ID, hostname: 'WKS-042' }]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runDetailResponseSchema.parse(body);
+
+    // Two selects total: the run row and ONE batched device read for BOTH
+    // findings — never a lookup per finding.
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(parsed.data.sweep).toEqual({
+      scheduleId: '88888888-8888-4888-8888-888888888888',
+      occurrenceKey: '2026-08-29T06:00:00Z',
+      kinds: ['service_down'],
+      summary: 'One service is down on two machines.',
+      evidenceTruncated: true,
+      findings: [
+        {
+          kind: 'service_down', severity: 'critical', deviceId: DEVICE_ID,
+          deviceHostname: 'WKS-042', title: 'Spooler is stopped', detail: 'Stopped for 3 days.',
+          evidence: { state: 'stopped' },
+          proposal: {
+            tool: 'manage_services', action: 'restart', disposition: 'intent_created',
+            reason: null, intentId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          },
+        },
+        {
+          kind: 'service_down', severity: 'high', deviceId: OTHER_DEVICE_ID,
+          // Not in the batched read's result (deleted, or RLS-invisible) —
+          // the finding still projects, with a null hostname.
+          deviceHostname: null, title: 'W32Time is stopped', detail: 'Stopped for 1 day.',
+          evidence: { state: 'stopped' }, proposal: null,
+        },
+      ],
+    });
+
+    const json = JSON.stringify(body);
+    for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+      expect(json).not.toContain(`"${forbidden}"`);
+    }
+    expect(json).not.toContain('proposedAction');
+    expect(json).not.toContain('DoNotLeakSpooler');
   });
 
   it('skips the ledger/intents queries when the run has no session and no intent ids', async () => {
@@ -975,7 +1096,7 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
       {
         id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp',
         deviceId: DEVICE_ID,
-        status: 'completed', triggerKind: 'manual', runVerdict: 'remediated',
+        status: 'completed', triggerKind: 'manual', profile: 'full', runVerdict: 'remediated',
         queuedAt: new Date('2026-08-28T10:00:00.000Z'),
         queuedAtRaw: '2026-08-28T10:00:00.000000Z',
         finishedAt: new Date('2026-08-28T10:00:30.000Z'),
@@ -998,7 +1119,7 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
     const makeRow = (i: number) => ({
       id: `cccccccc-cccc-4ccc-8ccc-${String(i).padStart(12, '0')}`,
       agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp', deviceId: null,
-      status: 'completed', triggerKind: 'schedule', runVerdict: null,
+      status: 'completed', triggerKind: 'schedule', profile: 'full', runVerdict: null,
       queuedAt: new Date(Date.UTC(2026, 7, 28, 10, 0, i)),
       queuedAtRaw: `2026-08-28T10:00:${String(i).padStart(2, '0')}.000000Z`,
       finishedAt: null, costCents: 0,
@@ -1023,7 +1144,7 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
     const makeRow = (i: number) => ({
       id: `dddddddd-dddd-4ddd-8ddd-${String(i).padStart(12, '0')}`,
       agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp', deviceId: null,
-      status: 'completed', triggerKind: 'schedule', runVerdict: null,
+      status: 'completed', triggerKind: 'schedule', profile: 'full', runVerdict: null,
       // Every row shares the same millisecond-truncated Date — the last
       // (limit+1-th, trimmed) row's true value differs only in microseconds.
       queuedAt: new Date('2026-08-28T10:00:00.123Z'),
@@ -1053,7 +1174,7 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
       {
         id: RUN_ID, agentId: AGENT_ID, agentName: null, orgId: ORG_ID, orgName: 'Acme Corp',
         deviceId: DEVICE_ID,
-        status: 'completed', triggerKind: 'schedule', runVerdict: 'remediated',
+        status: 'completed', triggerKind: 'schedule', profile: 'full', runVerdict: 'remediated',
         queuedAt: new Date('2026-08-28T10:00:00.000Z'),
         queuedAtRaw: '2026-08-28T10:00:00.000000Z',
         finishedAt: new Date('2026-08-28T10:00:30.000Z'),
@@ -1096,7 +1217,7 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
       {
         id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp',
         deviceId: DEVICE_ID,
-        status: 'completed', triggerKind: 'manual', runVerdict: 'remediated',
+        status: 'completed', triggerKind: 'manual', profile: 'full', runVerdict: 'remediated',
         queuedAt: new Date('2026-08-28T10:00:00.000Z'),
         queuedAtRaw: '2026-08-28T10:00:00.000000Z',
         finishedAt: new Date('2026-08-28T10:00:30.000Z'),
@@ -1141,7 +1262,7 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
       {
         id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp',
         deviceId: DEVICE_ID,
-        status: 'completed', triggerKind: 'manual', runVerdict: 'remediated',
+        status: 'completed', triggerKind: 'manual', profile: 'full', runVerdict: 'remediated',
         queuedAt: new Date('2026-08-28T10:00:00.000Z'),
         finishedAt: new Date('2026-08-28T10:00:30.000Z'),
         costCents: 12,
