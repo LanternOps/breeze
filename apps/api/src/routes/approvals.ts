@@ -4,7 +4,7 @@ import { zValidator } from '../lib/validation';
 import { and, eq, gt, desc, inArray, isNull, ne } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { authMiddleware } from '../middleware/auth';
+import { authMiddleware, isInteractiveUserSession } from '../middleware/auth';
 import { approvalRequests } from '../db/schema/approvals';
 import { aiToolExecutions, aiSessions } from '../db/schema/ai';
 import { delegantM365Connections } from '../db/schema/delegant';
@@ -39,6 +39,11 @@ import {
   type IntentAttribution,
   type IntentTargetRef,
 } from '../services/approvals/decideApprovalRequest';
+import {
+  batchAssertionKey,
+  decideApprovalBatch,
+  loadHomogeneousBatch,
+} from '../services/approvals/batchDecide';
 import {
   assertionProofSchema,
   mobileHwKeyProofSchema,
@@ -465,6 +470,115 @@ approvalRoutes.post('/dev/seed', zValidator('json', seedSchema), async (c) => {
     },
     201
   );
+});
+
+// ---------------------------------------------------------------- batch ---
+//
+// P2-2 (#4189). MUST stay registered ABOVE the `/:id/...` routes below:
+// `/batch/assertion-challenge` has the same shape as `/:id/assertion-challenge`
+// and Hono matches in registration order, so a later registration would be
+// swallowed as `id === 'batch'`. Mounted on `approvalRoutes` (not a sub-router)
+// so both `/approvals` and `/mobile/approvals` get them.
+//
+// The array cap here is a parse bound only; `BATCH_MAX` is enforced in
+// `loadHomogeneousBatch` so a direct service caller cannot slip past it and the
+// over-cap answer is the semantic `batch_too_large`, not a schema error.
+const BATCH_ID_CAP = 200;
+const batchTargetSchema = z.object({
+  approvalRequestIds: z.array(z.string().min(1)).min(1).max(BATCH_ID_CAP),
+  decision: z.enum(['approved', 'denied']),
+});
+const batchDecideSchema = batchTargetSchema.extend({
+  reason: z.string().max(500).optional(),
+  proof: approveProofSchema.optional(),
+});
+
+/**
+ * One assertion challenge for a whole homogeneous set of supervised
+ * agent-originated cards. Validates the set with the SAME rule the decide below
+ * applies, BEFORE minting anything: a caller who cannot batch this set must
+ * never consume a challenge for it (same ordering rule the single-card
+ * challenge route follows against its live-authorization check).
+ */
+approvalRoutes.post(
+  '/batch/assertion-challenge',
+  zValidator('json', batchTargetSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    if (!isInteractiveUserSession(auth)) {
+      return c.json({ error: 'human_decision_required' }, 403);
+    }
+    const userId = auth.user.id;
+    const { approvalRequestIds, decision } = c.req.valid('json');
+
+    const loaded = await loadHomogeneousBatch(userId, approvalRequestIds);
+    if (!loaded.ok) return c.json(loaded.body, loaded.httpStatus as 422);
+
+    const challengeKey = batchAssertionKey(loaded.ids, decision);
+
+    // Identical device query to the single-card challenge route: the caller's
+    // active platform approver devices (the userId predicate is
+    // defense-in-depth on top of RLS).
+    const approverDevices = await db
+      .select()
+      .from(authenticatorDevices)
+      .where(
+        and(
+          eq(authenticatorDevices.userId, userId),
+          eq(authenticatorDevices.kind, 'webauthn_platform'),
+          isNull(authenticatorDevices.disabledAt),
+        ),
+      );
+
+    const options = await generateApprovalAssertionOptions({
+      approvalId: challengeKey,
+      userId,
+      devices: approverDevices
+        .filter((d) => d.credentialId)
+        .map((d) => ({ credentialId: d.credentialId!, transports: d.transports })),
+    });
+
+    // Phase 3 parity: a registered mobile approver device also gets a nonce,
+    // bound to the same batch key, so a phone can sign the batch decision.
+    const [mobileDevice] = await db
+      .select({ id: authenticatorDevices.id })
+      .from(authenticatorDevices)
+      .where(
+        and(
+          eq(authenticatorDevices.userId, userId),
+          eq(authenticatorDevices.kind, 'mobile_hw_key'),
+          isNull(authenticatorDevices.disabledAt),
+        ),
+      );
+
+    let mobileNonce: string | undefined;
+    if (mobileDevice) {
+      mobileNonce = await issueMobileAssertionNonce(challengeKey, userId);
+    }
+
+    return c.json(mobileNonce ? { options, mobileNonce } : { options });
+  },
+);
+
+/**
+ * Decide the whole set. 200 carries a per-row `results` array — a row that lost
+ * its own race (409) or expired (410) does not stop the others; a batch-level
+ * refusal (422 heterogeneous, 403 step-up, 400 too large) decides NOTHING.
+ */
+approvalRoutes.post('/batch/decide', zValidator('json', batchDecideSchema), async (c) => {
+  const auth = c.get('auth');
+  if (!isInteractiveUserSession(auth)) {
+    return c.json({ error: 'human_decision_required' }, 403);
+  }
+  const body = c.req.valid('json');
+  const outcome = await decideApprovalBatch(auth, {
+    approvalRequestIds: body.approvalRequestIds,
+    decision: body.decision,
+    reason: body.reason,
+    proof: body.proof,
+  });
+  if (!outcome.ok) return c.json(outcome.body, outcome.httpStatus as 422);
+  return c.json({ results: outcome.results });
 });
 
 approvalRoutes.get('/:id', async (c) => {

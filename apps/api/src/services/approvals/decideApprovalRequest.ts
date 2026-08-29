@@ -279,6 +279,23 @@ export interface DecideApprovalInput {
   reason?: string;
   proof?: ApprovalProof;
   reauthVerified?: boolean;
+  /**
+   * P2-2 batch decide (#4189): an `AssuranceDecision` already established for
+   * this decider by ONE ceremony covering the whole batch
+   * (`services/approvals/batchDecide.ts`). Its ONLY effect is to skip the
+   * assurance-ladder block below — the proof verification, the partner-policy
+   * floor read and the sole-operator step-up gate all ran once at batch level
+   * against `batchAssertionKey(...)`, and re-running them per row would try to
+   * consume a single-use challenge N times.
+   *
+   * Every OTHER gate still runs per row, unchanged: the human-principal
+   * assertion, the row pre-fetch (pending/expiry), the linked-intent load, the
+   * digest binding, `isAgentIntentDecideAuthorized`, the approval CAS, the
+   * release lease, the intent fan-in, the outbox event and the audit
+   * projection. The batch is a shortcut through the CEREMONY, never through
+   * authorization.
+   */
+  preverifiedAssurance?: AssuranceDecision;
 }
 
 /** The route adapter re-emits this as `c.json(body, httpStatus)`; the batch
@@ -639,15 +656,24 @@ export async function decideApprovalRequest(
   // (rather than hand-rolling the literal) keeps the recorded factor
   // byte-for-byte identical to that existing no-proof shape and impossible to
   // drift from `assertDecisionConsistent`'s invariants.
+  //
+  // P2-2 batch decide: `preverifiedAssurance` short-circuits this ENTIRE block
+  // (proof verification, partner-policy floor, sole-operator step-up) because
+  // the batch already ran it ONCE against `batchAssertionKey(...)` — the
+  // single-use WebAuthn challenge / mobile nonce cannot be consumed again per
+  // row. Nothing else about this handler changes; see `preverifiedAssurance`
+  // on `DecideApprovalInput` for the full list of gates that still run.
   const isPartnerEnforcingForSupervised =
-    isSupervisedSelfDecide && status === 'approved'
+    !input.preverifiedAssurance && isSupervisedSelfDecide && status === 'approved'
       ? isEnforcing(await loadPartnerPolicy(input.auth.partnerId ?? null), new Date())
       : false;
   const skipAssuranceLadder =
     isSupervisedSelfDecide && !isPartnerEnforcingForSupervised && proof === undefined;
 
   let assurance: AssuranceDecision;
-  if (skipAssuranceLadder) {
+  if (input.preverifiedAssurance) {
+    assurance = input.preverifiedAssurance;
+  } else if (skipAssuranceLadder) {
     assurance = resolveApprovalAssurance(existing.riskTier as RiskTier);
   } else {
     try {

@@ -3513,3 +3513,215 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
     });
   });
 });
+
+// ---------------------------------------------------------------- P2-2 ----
+// Task B1 (#4189): batch challenge + batch decide. These live at the ROUTE
+// level (the rule logic itself is covered in
+// services/approvals/batchDecide.test.ts) because the thing that can only
+// break here is registration order: `/batch/assertion-challenge` has the same
+// shape as `/:id/assertion-challenge`, and Hono matches in registration order,
+// so a batch route declared after the param route would silently be handled
+// as `id === 'batch'`.
+describe('P2-2 batch decide routes', () => {
+  const BATCH_USER = TEST_USER.id;
+
+  function batchIntent(n: number, overrides: Record<string, unknown> = {}) {
+    return {
+      id: `intent-b${n}`,
+      orgId: 'org-9',
+      actionName: 'manage_services',
+      arguments: { deviceId: `dev-${n}`, action: 'restart' },
+      argumentDigest: `digest-b${n}`,
+      source: 'ai_agent',
+      status: 'pending_approval',
+      approvalScope: 'supervised',
+      requestedByUserId: null,
+      requestingAgentRunId: 'run-sweep-1',
+      requestingClientLabel: 'Patch Hygiene Agent',
+      scopeKind: 'device',
+      scopeDeviceId: `dev-${n}`,
+      ...overrides,
+    };
+  }
+
+  function batchApproval(n: number, overrides: Record<string, unknown> = {}) {
+    return buildPendingApproval({
+      id: `appr-b${n}`,
+      userId: BATCH_USER,
+      actionToolName: 'manage_services',
+      actionArguments: { deviceId: `dev-${n}`, action: 'restart' },
+      riskTier: 'medium',
+      intentId: `intent-b${n}`,
+      boundArgumentDigest: `digest-b${n}`,
+      elevationRequestId: null,
+      ...overrides,
+    });
+  }
+
+  /** Table-dispatched select stub — same idea as the service suite's, so the
+   *  per-row reads don't depend on a global call-order queue. */
+  function mockBatchDb(rows: Array<{ approval: any; intent: any }>, devicesRows: unknown[] = []) {
+    const byId = new Map(rows.map((r) => [r.approval.id, r]));
+    const order = rows.map((r) => r.approval.id);
+    let cursor = 0;
+    let currentId: string | undefined;
+    vi.mocked(db.select).mockImplementation(
+      (proj?: any) =>
+        ({
+          from: (table: any) => {
+            if (table === approvalRequests) {
+              return {
+                leftJoin: () => ({ where: async () => rows }),
+                where: async () => {
+                  currentId = order[cursor++]!;
+                  return [byId.get(currentId)!.approval];
+                },
+              };
+            }
+            if (proj && 'customerDisplayName' in proj) {
+              return { innerJoin: () => ({ innerJoin: () => ({ where: async () => [] }) }) };
+            }
+            return { where: async () => (table === undefined ? [] : devicesRows) };
+          },
+        }) as any,
+    );
+    // The intent load and the authenticator-device reads both land on the
+    // generic branch above; distinguish the intent one by its own table.
+    const base = vi.mocked(db.select).getMockImplementation()!;
+    vi.mocked(db.select).mockImplementation((proj?: any) => {
+      const chain = base(proj) as any;
+      const from = chain.from;
+      chain.from = (table: any) => {
+        if (table && table.id === 'id' && table.orgId === 'org_id' && table.status === 'status') {
+          return { where: async () => [byId.get(currentId!)!.intent] };
+        }
+        return from(table);
+      };
+      return chain;
+    });
+  }
+
+  function mockBatchTx() {
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const set = () => ({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn(async () => [{ ...batchApproval(1), status: 'approved' }]),
+        }),
+      });
+      const tx = {
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({ for: vi.fn(async () => [{ id: 'intent-b1' }]) })),
+          })),
+        })),
+        update: vi.fn(() => ({ set: vi.fn(set) })),
+        insert: vi.fn(() => ({ values: vi.fn(async () => undefined) }) as any),
+      };
+      return fn(tx);
+    });
+  }
+
+  it('POST /batch/assertion-challenge mints ONE challenge under the batch key', async () => {
+    mockBatchDb([
+      { approval: batchApproval(1), intent: batchIntent(1) },
+      { approval: batchApproval(2), intent: batchIntent(2) },
+    ]);
+
+    const res = await buildApp().request('/approvals/batch/assertion-challenge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        approvalRequestIds: ['appr-b1', 'appr-b2'],
+        decision: 'approved',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    // Registration order held: the param route would have 404'd on id 'batch'.
+    expect(vi.mocked(generateApprovalAssertionOptions)).toHaveBeenCalledTimes(1);
+    const key = vi.mocked(generateApprovalAssertionOptions).mock.calls[0]![0].approvalId;
+    expect(key).toMatch(/^batch-approved-[0-9a-f]{64}$/);
+  });
+
+  it('POST /batch/assertion-challenge 422s a heterogeneous set without minting', async () => {
+    mockBatchDb([
+      { approval: batchApproval(1), intent: batchIntent(1) },
+      {
+        approval: batchApproval(2, { actionToolName: 'execute_command' }),
+        intent: batchIntent(2, { actionName: 'execute_command' }),
+      },
+    ]);
+
+    const res = await buildApp().request('/approvals/batch/assertion-challenge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        approvalRequestIds: ['appr-b1', 'appr-b2'],
+        decision: 'approved',
+      }),
+    });
+
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({
+      error: 'batch_not_homogeneous',
+      offending: ['appr-b2'],
+    });
+    expect(vi.mocked(generateApprovalAssertionOptions)).not.toHaveBeenCalled();
+  });
+
+  it('POST /batch/decide returns per-row results and verifies assurance ONCE', async () => {
+    mockBatchDb([
+      { approval: batchApproval(1), intent: batchIntent(1) },
+      { approval: batchApproval(2), intent: batchIntent(2) },
+    ]);
+    mockBatchTx();
+
+    const res = await buildApp().request('/approvals/batch/decide', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        approvalRequestIds: ['appr-b1', 'appr-b2'],
+        decision: 'approved',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.results.map((r: any) => [r.id, r.httpStatus])).toEqual([
+      ['appr-b1', 200],
+      ['appr-b2', 200],
+    ]);
+    expect(vi.mocked(assertApprovalAssurance)).toHaveBeenCalledTimes(1);
+  });
+
+  it('POST /batch/decide 403s step_up_required for the whole batch', async () => {
+    mockBatchDb([{ approval: batchApproval(1), intent: batchIntent(1) }]);
+    mockBatchTx();
+    vi.mocked(assertApprovalAssurance).mockRejectedValue(new StepUpRequiredError(3, 1));
+
+    const res = await buildApp().request('/approvals/batch/decide', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approvalRequestIds: ['appr-b1'], decision: 'approved' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'step_up_required', requiredLevel: 3 });
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/assertion-challenge still reaches the single-card route', async () => {
+    // Regression guard for the inverse of the ordering bug above: adding the
+    // batch routes must not shadow the param route for a real approval id.
+    // An unlinked row, so the shared live-authorization filter short-circuits
+    // and the only thing under test is which handler the path reached.
+    mockSelectResolves([buildPendingApproval({ id: 'appr-b1' })]);
+    const res = await buildApp().request('/approvals/appr-b1/assertion-challenge', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(200);
+    expect(vi.mocked(generateApprovalAssertionOptions).mock.calls[0]![0].approvalId).toBe(
+      'appr-b1',
+    );
+  });
+});
