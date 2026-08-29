@@ -127,8 +127,10 @@ export default function AlertList({
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const [filtersExpanded, setFiltersExpanded] = useState(false);
 
-  const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all' || deviceFilter !== 'all' || dateRangeFilter !== 'all';
-  const activeFilterCount = [statusFilter, severityFilter, deviceFilter, dateRangeFilter].filter(f => f !== 'all').length;
+  const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all' || deviceFilter !== 'all' || dateRangeFilter !== 'all' || hideAiNoise;
+  const activeFilterCount =
+    [statusFilter, severityFilter, deviceFilter, dateRangeFilter].filter(f => f !== 'all').length +
+    (hideAiNoise ? 1 : 0);
 
   const filteredAlerts = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -208,6 +210,7 @@ export default function AlertList({
     setSeverityFilter('all');
     setDeviceFilter('all');
     setDateRangeFilter('all');
+    onHideAiNoiseChange?.(false);
     setCurrentPage(1);
   };
 

@@ -85,4 +85,20 @@ describe('AlertList — hide AI-flagged noise toggle', () => {
     fireEvent.click(screen.getByRole('button', { name: /filters/i }));
     expect(screen.getByTestId('alert-hide-ai-noise-toggle')).toBeChecked();
   });
+
+  it('counts as an active filter — shows "Clear all" even with no other filter set', () => {
+    render(<AlertList alerts={[baseAlert]} hideAiNoise onHideAiNoiseChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /filters/i }));
+    expect(screen.getByText('Clear all')).toBeTruthy();
+  });
+
+  it('"Clear all" also turns hideAiNoise off', () => {
+    const onHideAiNoiseChange = vi.fn();
+    render(
+      <AlertList alerts={[baseAlert]} hideAiNoise onHideAiNoiseChange={onHideAiNoiseChange} />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /filters/i }));
+    fireEvent.click(screen.getByText('Clear all'));
+    expect(onHideAiNoiseChange).toHaveBeenCalledWith(false);
+  });
 });

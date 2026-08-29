@@ -5,8 +5,9 @@ import { ThumbsDown, ThumbsUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { AlertAiVerdictSummaryDto } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
-import { runAction } from '../../lib/runAction';
+import { handleActionError, runAction } from '../../lib/runAction';
 import { i18n } from '../../lib/i18n';
+import { navigateTo } from '@/lib/navigation';
 
 /**
  * Phase 2 wave P2-1 (alert verdicts), Task 15. The literal `error` string
@@ -20,10 +21,19 @@ const FEEDBACK_CONFLICT_ERROR = 'Feedback already recorded by another user';
 
 /**
  * POSTs thumbs up/down for one alert verdict. Exported (rather than folded
- * into a component) so both the alert list row (AlertList.tsx) and the alert
- * detail page (AlertDetailPage.tsx) share one runAction-wrapped
- * implementation instead of each duplicating the fetch — mirrors
- * `decideIntentApproval` in `lib/intentApprovals.ts`.
+ * into a component) so the alert list row (AlertList.tsx), the routed detail
+ * page (AlertDetailPage.tsx), and the inline detail modal (AlertDetails.tsx)
+ * share one runAction-wrapped implementation instead of each duplicating the
+ * fetch — mirrors `decideIntentApproval` in `lib/intentApprovals.ts`.
+ *
+ * Unlike `decideIntentApproval` (which deliberately OMITS `onUnauthorized`
+ * because ITS route's 401 means a rejected WebAuthn assertion, not session
+ * expiry — see that function's own docstring), this route
+ * (`POST /ai/agents/verdicts/:id/feedback`) is gated only by the standard
+ * `requireAiRead` auth middleware, so a 401 here really does mean the
+ * session expired. `onUnauthorized` therefore mirrors
+ * `AlertDetailPage.tsx`'s `handleAcknowledge`/`handleResolve` exactly: same
+ * redirect, no toast on top of the navigation (review fix, P2-1 Task 15).
  */
 export async function submitVerdictFeedback(
   verdictId: string,
@@ -39,6 +49,7 @@ export async function submitVerdictFeedback(
     friendly: (token) =>
       token === FEEDBACK_CONFLICT_ERROR ? i18n.t('alerts:alertVerdict.feedbackTaken') : undefined,
     successMessage: i18n.t('alerts:alertVerdict.feedbackThanks'),
+    onUnauthorized: () => void navigateTo('/login', { replace: true }),
   });
 }
 
@@ -73,9 +84,14 @@ export default function AlertVerdictBadge({ verdict, onFeedback, compact = false
     try {
       await onFeedback(value);
       setDecided(value);
-    } catch {
-      // The caller's runAction (submitVerdictFeedback) already toasted the
-      // failure — just let the buttons re-enable so the user can retry.
+    } catch (err) {
+      // CLAUDE.md "Web Mutation Handlers" catch pattern: a 401 was already
+      // redirected (submitVerdictFeedback's onUnauthorized) with no toast on
+      // top of the navigation; any other ActionError was already toasted by
+      // runAction inside submitVerdictFeedback; anything else (a non-runAction
+      // onFeedback implementation) gets a fallback toast so a failure is
+      // never silent. Buttons just re-enable either way so the user can retry.
+      handleActionError(err, t('alertVerdict.feedbackFailed'));
     } finally {
       setSubmitting(false);
     }

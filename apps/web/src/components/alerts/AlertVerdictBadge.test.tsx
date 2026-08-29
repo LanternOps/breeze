@@ -1,8 +1,27 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '../../lib/i18n';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { AlertAiVerdictSummaryDto } from '@breeze/shared';
-import AlertVerdictBadge from './AlertVerdictBadge';
+
+const fetchWithAuth = vi.fn();
+const showToast = vi.fn();
+const navigateTo = vi.fn();
+
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args),
+}));
+// Resolved relative to THIS file (components/alerts/), same module
+// runAction.ts reaches via '../components/shared/Toast' — Vitest matches on
+// the resolved path, so this mock also intercepts runAction's import
+// (established pattern: AlertDetailPage.resolveConflict.test.tsx).
+vi.mock('../shared/Toast', () => ({
+  showToast: (...args: unknown[]) => showToast(...args),
+}));
+vi.mock('@/lib/navigation', () => ({
+  navigateTo: (...args: unknown[]) => navigateTo(...args),
+}));
+
+import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
 
 const baseVerdict: AlertAiVerdictSummaryDto = {
   id: 'verdict-1',
@@ -40,6 +59,19 @@ describe('AlertVerdictBadge', () => {
     });
   });
 
+  it('clicking thumbs-down calls onFeedback("down") and disables both buttons', async () => {
+    const onFeedback = vi.fn().mockResolvedValue(undefined);
+    render(<AlertVerdictBadge verdict={baseVerdict} onFeedback={onFeedback} />);
+
+    fireEvent.click(screen.getByTestId('alert-verdict-feedback-down'));
+
+    expect(onFeedback).toHaveBeenCalledWith('down');
+    await waitFor(() => {
+      expect(screen.getByTestId('alert-verdict-feedback-up')).toBeDisabled();
+      expect(screen.getByTestId('alert-verdict-feedback-down')).toBeDisabled();
+    });
+  });
+
   it('renders both buttons disabled when feedback was already recorded', () => {
     render(
       <AlertVerdictBadge verdict={{ ...baseVerdict, feedback: 'down' }} onFeedback={vi.fn()} />
@@ -55,5 +87,41 @@ describe('AlertVerdictBadge', () => {
     );
     fireEvent.click(screen.getByTestId('alert-verdict-feedback-up'));
     expect(onFeedback).not.toHaveBeenCalled();
+  });
+});
+
+describe('submitVerdictFeedback', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('redirects to /login on a 401 without an extra toast (review fix, Task 15 round 1)', async () => {
+    fetchWithAuth.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 })
+    );
+
+    await expect(submitVerdictFeedback('verdict-1', 'up')).rejects.toThrow();
+
+    expect(navigateTo).toHaveBeenCalledWith('/login', { replace: true });
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('shows the feedbackTaken toast on a 409 conflict', async () => {
+    fetchWithAuth.mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: 'Feedback already recorded by another user' }),
+        { status: 409 }
+      )
+    );
+
+    await expect(submitVerdictFeedback('verdict-1', 'up')).rejects.toThrow();
+
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'error',
+        message: 'Someone already gave feedback on this verdict',
+      })
+    );
   });
 });
