@@ -26,9 +26,8 @@
  *   1. compute the occurrence key;
  *   2. skip when it equals `last_occurrence_key` (this tick already ran it);
  *   3. `queue.add('occurrence', …, { jobId })` — `getSweepOccurrenceJobId` is
- *      a pure function of (scheduleId, key), and BullMQ SILENTLY NO-OPS an
- *      add whose jobId is already present. That, not the CAS, is the real
- *      exactly-once mechanism;
+ *      a pure function of (scheduleId, key), and BullMQ SILENTLY NO-OPS an add
+ *      whose jobId is already present;
  *   4. THEN `UPDATE … SET last_occurrence_key = $key WHERE id = $id AND
  *      last_occurrence_key IS NOT DISTINCT FROM $previous` — a compare-and-set
  *      so two replicas ticking together do not both claim the occurrence. Zero
@@ -37,8 +36,19 @@
  *
  * A crash between (3) and (4) leaves the key unstamped, so the next tick
  * recomputes the SAME key and re-adds the SAME jobId — BullMQ no-ops, the CAS
- * lands, and the occurrence ran exactly once. The reverse order (stamp first,
- * add second) would lose the occurrence entirely on the same crash.
+ * lands. The reverse order (stamp first, add second) would lose the occurrence
+ * entirely on the same crash.
+ *
+ * **The jobId is a cheap first line of defence, NOT the exactly-once guard.**
+ * BullMQ only rejects a duplicate id while a job with that id still exists in
+ * Redis, so once the completed job ages out of `removeOnComplete` retention the
+ * same id can be added again. The durable guarantee is one level down: every
+ * run the fan-out admits carries `dedupeKey = sweep-<scheduleId>-<orgId>-<key>`
+ * and `ai_agent_runs_org_dedupe_key_uq` is what actually makes a replayed
+ * occurrence a no-op (proven against real Postgres in
+ * `aiAgentSweepFanout.integration.test.ts`). Retention is nevertheless kept
+ * well above one tick interval (`removeOnComplete: { count: 200 }`) so the id
+ * survives the window in which a re-add is even plausible.
  *
  * ## Worker shape — one worker, not two (deviation, deliberate)
  *
@@ -75,7 +85,7 @@
  * Do not relitigate the value by reasoning about it — run the tool.
  */
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, isNull, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 
 import type { AiAgentScheduleRunSummary, AiSweepKind } from '@breeze/shared';
 
@@ -233,34 +243,53 @@ export async function processSweepTick(now: Date = new Date()): Promise<{ scanne
 
   let enqueued = 0;
   for (const baseline of baselines) {
-    const occurrence = latestCronOccurrence(baseline.cron, baseline.timezone, now);
-    if (!occurrence) continue;
-    if (occurrence.key === baseline.lastOccurrenceKey) continue;
+    // Per-baseline error boundary. One partner must never be able to stop the
+    // scan for every other partner, and there are two realistic ways it could:
+    // an invalid IANA `timezone` on the row makes `isCronDue`'s
+    // `Intl.DateTimeFormat` throw `RangeError` on the FIRST candidate minute,
+    // and a transient Redis blip fails `queue.add`. Both are per-schedule
+    // faults; the tick is idempotent and re-runs in 5 minutes, so the right
+    // response is to log this one loudly and keep scanning.
+    try {
+      const occurrence = latestCronOccurrence(baseline.cron, baseline.timezone, now);
+      if (!occurrence) continue;
+      if (occurrence.key === baseline.lastOccurrenceKey) continue;
 
-    // Enqueue OUTSIDE any DB context: a BullMQ add is a Redis round trip, and
-    // holding a pooled Postgres connection across it is what exhausted the
-    // pool on 2026-05-21 (same note as runService.ts's step 10).
-    await getAiAgentSweepQueue().add(
-      OCCURRENCE_JOB,
-      { scheduleId: baseline.id, occurrenceKey: occurrence.key },
-      {
-        jobId: getSweepOccurrenceJobId(baseline.id, occurrence.key),
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 30_000 },
-        removeOnComplete: true,
-        removeOnFail: 50,
-      },
-    );
-    enqueued++;
+      // Enqueue OUTSIDE any DB context: a BullMQ add is a Redis round trip, and
+      // holding a pooled Postgres connection across it is what exhausted the
+      // pool on 2026-05-21 (same note as runService.ts's step 10).
+      await getAiAgentSweepQueue().add(
+        OCCURRENCE_JOB,
+        { scheduleId: baseline.id, occurrenceKey: occurrence.key },
+        {
+          jobId: getSweepOccurrenceJobId(baseline.id, occurrence.key),
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 30_000 },
+          // Retention, not `true`: the jobId must outlive at least one tick
+          // interval to be worth anything as a duplicate guard — see the
+          // header on why the run-level dedupe key is the real guarantee.
+          removeOnComplete: { count: 200 },
+          removeOnFail: 50,
+        },
+      );
+      enqueued++;
 
-    const claimed = await runWithSystemDbAccess(() => claimOccurrence(
-      baseline.id,
-      baseline.lastOccurrenceKey,
-      occurrence.key,
-    ));
-    if (!claimed) {
-      console.debug('[AiAgentSweepScheduler] occurrence already claimed by another replica', {
-        scheduleId: baseline.id, occurrenceKey: occurrence.key,
+      const claimed = await runWithSystemDbAccess(() => claimOccurrence(
+        baseline.id,
+        baseline.lastOccurrenceKey,
+        occurrence.key,
+      ));
+      if (!claimed) {
+        console.debug('[AiAgentSweepScheduler] occurrence already claimed by another replica', {
+          scheduleId: baseline.id, occurrenceKey: occurrence.key,
+        });
+      }
+    } catch (error) {
+      console.error('[AiAgentSweepScheduler] tick failed for one schedule — continuing the scan', {
+        scheduleId: baseline.id,
+        cron: baseline.cron,
+        timezone: baseline.timezone,
+        error,
       });
     }
   }
@@ -310,10 +339,26 @@ async function loadOccurrenceBaseline(scheduleId: string): Promise<OccurrenceBas
 }
 
 /**
- * Every org a partner-wide schedule fans out to — the
- * `policyEvaluationService.policyDeviceScopeCondition` predicate.
- * `quick_support` orgs are the partner's hidden holder for ephemeral support
- * enrolments; a scheduled hygiene sweep must never run against one.
+ * Statuses a sweep may run against — the SAME live-org definition
+ * `middleware/auth.ts`'s partner-scope org resolution uses. Everything else
+ * (`suspended`, `churned`, `offboarding`, `merging`, `archived`, `purging`) is
+ * a tenant in a terminal or frozen lifecycle state; `archived` is what an
+ * archived_at org carries.
+ */
+const SWEEPABLE_ORG_STATUSES = ['active', 'trial'] as const;
+
+/**
+ * Every org a partner-wide schedule fans out to.
+ *
+ * Starts from `policyEvaluationService.policyDeviceScopeCondition`'s predicate
+ * (`partner_id` + `type <> 'quick_support'` — quick_support is the partner's
+ * hidden holder for ephemeral support enrolments, which no scheduled hygiene
+ * sweep may touch) and narrows it to LIVE tenants: soft-deleted orgs and orgs
+ * outside `SWEEPABLE_ORG_STATUSES` are excluded from the enumeration entirely,
+ * so they are not merely skipped — they never appear in `orgsTotal` either.
+ * A sweep is unattended, recurring, LLM-spending work; billing a churned or
+ * mid-offboarding tenant for it, or raising findings a nobody will action, is
+ * strictly worse than not running.
  */
 async function loadPartnerOrgIds(partnerId: string): Promise<string[]> {
   const { db } = dbModule;
@@ -323,6 +368,8 @@ async function loadPartnerOrgIds(partnerId: string): Promise<string[]> {
     .where(and(
       eq(organizations.partnerId, partnerId),
       ne(organizations.type, 'quick_support'),
+      isNull(organizations.deletedAt),
+      inArray(organizations.status, [...SWEEPABLE_ORG_STATUSES]),
     ));
   return rows.map((row) => row.id);
 }
@@ -383,6 +430,14 @@ export async function processSweepOccurrence(
   }
   const overridesByOrg: Map<string, ScheduleOverrideSummary> = entry.overridesByOrg;
 
+  // The resolver read happens AFTER the eligibility read above, so a partner
+  // disabling the baseline in between lands here as `entry.baseline.enabled ===
+  // false`. Reported as its own reason rather than folded into the per-org
+  // merge: `effectiveSchedule` would return `enabled: false` for EVERY org and
+  // the summary would read "every org opted out", which is a different — and
+  // much more alarming — statement than "the schedule was turned off".
+  const scheduleDisabled = !entry.baseline.enabled;
+
   const orgIds = await runWithSystemDbAccess(() => loadPartnerOrgIds(baseline.partnerId as string));
 
   const skipReasons: Record<string, number> = {};
@@ -393,44 +448,83 @@ export async function processSweepOccurrence(
     runsSkipped++;
   };
 
-  for (const orgId of orgIds) {
-    const effective = effectiveSchedule(
-      { enabled: entry.baseline.enabled, sweepKinds: entry.baseline.sweepKinds },
-      overridesByOrg.get(orgId) ?? null,
-    );
-    // An override that disables, or that intersects the baseline down to no
-    // kinds at all, is the same outcome: this org has nothing to sweep.
-    if (!effective.enabled || effective.sweepKinds.length === 0) {
-      countSkip('override_disabled');
-      continue;
-    }
-
-    // No ambient DB context here — `createAndEnqueueAgentRun` manages its own
-    // (see `alertVerdictSubscriber.ts`'s header on the #1105 pool-hold seam).
-    const result = await createAndEnqueueAgentRun({
-      orgId,
-      kind: 'triage',
-      triggerKind: 'schedule',
-      deviceId: null,
-      profile: 'sweep',
-      scheduleId: baseline.id,
-      triggerRef: { scheduleId: baseline.id, occurrenceKey, sweepKinds: effective.sweepKinds },
-      dedupeKey: `sweep-${baseline.id}-${orgId}-${occurrenceKey}`,
-    });
-
-    if (result.created) runsAdmitted++;
-    else countSkip(result.skipped);
-  }
-
-  const summary: AiAgentScheduleRunSummary = {
+  const buildSummary = (): AiAgentScheduleRunSummary => ({
     occurrenceKey,
     orgsTotal: orgIds.length,
     runsAdmitted,
     runsSkipped,
     skipReasons,
     enqueuedAt: new Date().toISOString(),
-  };
-  await runWithSystemDbAccess(() => writeRunSummary(scheduleId, summary));
+  });
+
+  let summary: AiAgentScheduleRunSummary;
+  try {
+    for (const orgId of orgIds) {
+      if (scheduleDisabled) {
+        countSkip('schedule_disabled');
+        continue;
+      }
+
+      // `enabled` comes from the ELIGIBILITY read (which gated `enabled =
+      // true`), so this merge expresses only what the ORG's override does; the
+      // baseline's own disable is handled above. `sweepKinds` comes from the
+      // resolver, which is the fresher read of the kind set.
+      const effective = effectiveSchedule(
+        { enabled: baseline.enabled, sweepKinds: entry.baseline.sweepKinds },
+        overridesByOrg.get(orgId) ?? null,
+      );
+      // An override that disables, or that intersects the baseline down to no
+      // kinds at all, is the same outcome: this org has nothing to sweep.
+      if (!effective.enabled || effective.sweepKinds.length === 0) {
+        countSkip('override_disabled');
+        continue;
+      }
+
+      // Per-org error boundary. Admission touches Postgres, Redis and the
+      // budget/billing lookups, so one org's transient failure (or one corrupt
+      // policy row that fails schema parsing) must not cost every OTHER org
+      // under the partner its sweep. Counted as its own `error` reason so a
+      // partner-visible summary distinguishes "we chose not to run" from "we
+      // tried and it broke".
+      try {
+        // No ambient DB context here — `createAndEnqueueAgentRun` manages its
+        // own (see `alertVerdictSubscriber.ts`'s header on the #1105
+        // pool-hold seam).
+        const result = await createAndEnqueueAgentRun({
+          orgId,
+          kind: 'triage',
+          triggerKind: 'schedule',
+          deviceId: null,
+          profile: 'sweep',
+          scheduleId: baseline.id,
+          triggerRef: { scheduleId: baseline.id, occurrenceKey, sweepKinds: effective.sweepKinds },
+          dedupeKey: `sweep-${baseline.id}-${orgId}-${occurrenceKey}`,
+        });
+
+        if (result.created) runsAdmitted++;
+        else countSkip(result.skipped);
+      } catch (error) {
+        countSkip('error');
+        console.error('[AiAgentSweepScheduler] sweep admission threw for one org — continuing the fan-out', {
+          scheduleId, occurrenceKey, orgId, error,
+        });
+      }
+    }
+  } finally {
+    // ALWAYS written, including on a partial failure: the summary is the only
+    // durable record that this occurrence was attempted at all, and losing it
+    // would leave `last_run_summary` showing the PREVIOUS occurrence's numbers
+    // as if they were this one's. A write failure here is logged rather than
+    // rethrown so it can never mask an in-flight error from the loop.
+    summary = buildSummary();
+    try {
+      await runWithSystemDbAccess(() => writeRunSummary(scheduleId, summary));
+    } catch (error) {
+      console.error('[AiAgentSweepScheduler] failed to persist last_run_summary', {
+        scheduleId, occurrenceKey, error,
+      });
+    }
+  }
 
   console.info('[AiAgentSweepScheduler] sweep occurrence fanned out', { scheduleId, ...summary });
   return summary;

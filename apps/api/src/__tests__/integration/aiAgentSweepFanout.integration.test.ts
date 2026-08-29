@@ -131,17 +131,26 @@ function agentPolicyFields() {
   };
 }
 
-async function createQuickSupportOrg(partnerId: string): Promise<{ id: string }> {
+/**
+ * Direct org insert for the shapes db-utils' typed options cannot express —
+ * `type: 'quick_support'` and the non-live statuses (`offboarding`, …) this
+ * suite needs as negative controls.
+ */
+async function insertOrg(
+  partnerId: string,
+  over: { type?: 'customer' | 'quick_support'; status?: string; deletedAt?: Date | null } = {},
+): Promise<{ id: string }> {
   const unique = randomUUID().slice(0, 8);
   const [org] = await withSystemDbAccessContext(() =>
     db
       .insert(organizations)
       .values({
         partnerId,
-        name: `Quick Support ${unique}`,
-        slug: `quick-support-${unique}`,
-        type: 'quick_support',
-        status: 'active',
+        name: `Sweep org ${unique}`,
+        slug: `sweep-org-${unique}`,
+        type: (over.type ?? 'customer') as 'customer',
+        status: (over.status ?? 'active') as 'active',
+        deletedAt: over.deletedAt ?? null,
         currencyCode: 'USD',
       })
       .returning({ id: organizations.id }),
@@ -181,6 +190,8 @@ interface Fixture {
   orgA: { id: string };
   orgB: { id: string };
   orgQuickSupport: { id: string };
+  orgOffboarding: { id: string };
+  orgDeleted: { id: string };
   siteA: { id: string };
   agent: { id: string; name: string };
   baseline: { id: string; cron: string; timezone: string };
@@ -194,7 +205,13 @@ async function seedFixture(): Promise<Fixture> {
   // The partner's hidden holder for ephemeral support enrolments — the org a
   // scheduled hygiene sweep must never reach. Inserted directly: db-utils'
   // `CreateOrganizationOptions.type` only admits 'customer' | 'internal'.
-  const orgQuickSupport = await createQuickSupportOrg(partner.id);
+  const orgQuickSupport = await insertOrg(partner.id, { type: 'quick_support' });
+  // Two dead-tenant negative controls: a lifecycle status outside
+  // ['active','trial'] and a soft-deleted org. Neither may be swept, and
+  // neither may be COUNTED — they must be absent from `orgsTotal`, not merely
+  // skipped inside it.
+  const orgOffboarding = await insertOrg(partner.id, { status: 'offboarding' });
+  const orgDeleted = await insertOrg(partner.id, { deletedAt: new Date() });
   const siteA = await createSite({ orgId: orgA.id });
   const user = await createUser({
     partnerId: partner.id,
@@ -260,6 +277,8 @@ async function seedFixture(): Promise<Fixture> {
     orgA,
     orgB,
     orgQuickSupport,
+    orgOffboarding,
+    orgDeleted,
     siteA,
     agent: { id: agent!.id, name: agent!.name },
     baseline: { id: baseline!.id, cron: baseline!.cron, timezone: baseline!.timezone },
@@ -360,6 +379,8 @@ describe('sweep fan-out (real Postgres)', () => {
 
     expect(await runsForOrg(f.orgB.id)).toHaveLength(0);
     expect(await runsForOrg(f.orgQuickSupport.id)).toHaveLength(0);
+    expect(await runsForOrg(f.orgOffboarding.id)).toHaveLength(0);
+    expect(await runsForOrg(f.orgDeleted.id)).toHaveLength(0);
 
     // The summary really landed on the row, and carries no org identifier.
     const stored = await readSchedule(f.baseline.id);
@@ -367,6 +388,36 @@ describe('sweep fan-out (real Postgres)', () => {
     const serialized = JSON.stringify(stored.lastRunSummary);
     expect(serialized).not.toContain(f.orgA.id);
     expect(serialized).not.toContain(f.orgB.id);
+  });
+
+  it('a non-live org (offboarding, or soft-deleted) gets no run and is not even counted', async () => {
+    const f = await seedFixture();
+
+    const summary = await processSweepOccurrence({
+      scheduleId: f.baseline.id,
+      occurrenceKey: OCCURRENCE_KEY,
+    });
+
+    // Five orgs exist under this partner (A, B, quick_support, offboarding,
+    // soft-deleted); exactly two are live customers. Excluded by the
+    // ENUMERATION predicate, so they never reach the skip tally either.
+    expect(summary.orgsTotal).toBe(2);
+    expect(summary.runsAdmitted + summary.runsSkipped).toBe(2);
+    expect(await runsForOrg(f.orgOffboarding.id)).toHaveLength(0);
+    expect(await runsForOrg(f.orgDeleted.id)).toHaveLength(0);
+
+    // Control: the two dead orgs really are under this partner and really do
+    // hold the states under test, so the zero above is the predicate's doing
+    // and not a seeding miss.
+    const partnerOrgs = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: organizations.id, status: organizations.status, deletedAt: organizations.deletedAt })
+        .from(organizations)
+        .where(eq(organizations.partnerId, f.partner.id)),
+    );
+    expect(partnerOrgs).toHaveLength(5);
+    expect(partnerOrgs.find((o) => o.id === f.orgOffboarding.id)!.status).toBe('offboarding');
+    expect(partnerOrgs.find((o) => o.id === f.orgDeleted.id)!.deletedAt).not.toBeNull();
   });
 
   it('re-running the same occurrence is a no-op (dedupe)', async () => {

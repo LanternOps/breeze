@@ -203,7 +203,9 @@ describe('processSweepTick', () => {
         jobId: getSweepOccurrenceJobId(SCHEDULE_ID, OCCURRENCE_KEY),
         attempts: 3,
         backoff: { type: 'exponential', delay: 30_000 },
-        removeOnComplete: true,
+        // Retention, not `true`: the jobId is only a duplicate guard for as
+        // long as the job still exists in Redis.
+        removeOnComplete: { count: 200 },
         removeOnFail: 50,
       }),
     );
@@ -244,6 +246,39 @@ describe('processSweepTick', () => {
     queueUpdate([]); // zero rows updated
 
     await expect(processSweepTick(NOW)).resolves.toEqual({ scanned: 1, enqueued: 1 });
+  });
+
+  it('one bad baseline (invalid IANA timezone) does not abort the scan for the others', async () => {
+    const broken = baselineRow({ id: 'schedule-broken', timezone: 'Mars/Olympus' });
+    queueSelect([broken, baselineRow()]);
+    queueUpdate([{ id: SCHEDULE_ID }]);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // `isCronDue` builds an Intl.DateTimeFormat for the row's zone and throws
+    // RangeError on the first candidate minute — a per-schedule fault.
+    const result = await processSweepTick(NOW);
+
+    expect(result).toEqual({ scanned: 2, enqueued: 1 });
+    expect(addMock).toHaveBeenCalledTimes(1);
+    expect((addMock.mock.calls[0]![1] as { scheduleId: string }).scheduleId).toBe(SCHEDULE_ID);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('tick failed for one schedule'),
+      expect.objectContaining({ scheduleId: 'schedule-broken', timezone: 'Mars/Olympus' }),
+    );
+  });
+
+  it('a transient queue.add failure is logged and the scan continues', async () => {
+    queueSelect([baselineRow({ id: 'schedule-redis-blip' }), baselineRow()]);
+    queueUpdate([{ id: SCHEDULE_ID }]);
+    addMock
+      .mockRejectedValueOnce(new Error('ECONNRESET'))
+      .mockResolvedValueOnce(undefined);
+
+    const result = await processSweepTick(NOW);
+
+    expect(result).toEqual({ scanned: 2, enqueued: 1 });
+    // The failed baseline's CAS never ran, so the next tick retries it.
+    expect(db.update).toHaveBeenCalledTimes(1);
   });
 
   it('is a no-op when AI_AGENTS_ENABLED is false — nothing is read and nothing is added', async () => {
@@ -358,6 +393,52 @@ describe('processSweepOccurrence', () => {
     });
   });
 
+  it('one org whose admission THROWS does not cost the other orgs their sweep', async () => {
+    const ORG_C = '00000000-0000-4000-8000-00000000a0dd';
+    seedFanout({ orgs: [{ id: ORG_A }, { id: ORG_B }, { id: ORG_C }] });
+    createAndEnqueueAgentRun
+      .mockRejectedValueOnce(new Error('pool exhausted'))
+      .mockResolvedValueOnce({ created: true, run: { id: 'run-b' } })
+      .mockResolvedValueOnce({ created: true, run: { id: 'run-c' } });
+
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledTimes(3);
+    expect(summary).toMatchObject({
+      orgsTotal: 3,
+      runsAdmitted: 2,
+      runsSkipped: 1,
+      skipReasons: { error: 1 },
+    });
+    // The summary is written even though the fan-out was only partly
+    // successful — it is the only durable record the occurrence was attempted.
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(callOrder.current).toContain('summary');
+  });
+
+  it('a baseline disabled between the two reads reports schedule_disabled, not override_disabled', async () => {
+    // The eligibility read gated `enabled = true`; the LATER resolver read sees
+    // the disable. Folding that into the per-org merge would claim every org
+    // opted out.
+    const eligible = baselineRow();
+    queueSelect([eligible]);
+    resolveEffectiveSchedulesForPartner.mockResolvedValue([
+      { baseline: { ...eligible, enabled: false }, overridesByOrg: new Map() },
+    ]);
+    queueSelect([{ id: ORG_A }, { id: ORG_B }]);
+    queueUpdate([], 'summary');
+
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({
+      orgsTotal: 2,
+      runsAdmitted: 0,
+      runsSkipped: 2,
+      skipReasons: { schedule_disabled: 2 },
+    });
+  });
+
   it('writes only aggregate counters — never an org id or name', async () => {
     seedFanout({
       overridesByOrg: new Map([[ORG_B, { id: 'ovr-b', enabled: false, sweepKinds: [] }]]),
@@ -398,7 +479,16 @@ describe('processSweepOccurrence', () => {
     const compiled = new PgDialect().sqlToQuery(captured[0] as SQL);
     expect(compiled.sql).toMatch(/"partner_id"\s*=/);
     expect(compiled.sql).toMatch(/"type"\s*<>/);
-    expect(compiled.params).toEqual(expect.arrayContaining([PARTNER_ID, 'quick_support']));
+    // Live tenants only: a soft-deleted or non-active/trial org is excluded
+    // from the ENUMERATION, so it never even reaches `orgsTotal`.
+    expect(compiled.sql).toMatch(/"deleted_at"\s+is\s+null/i);
+    expect(compiled.sql).toMatch(/"status"\s+in\s*\(/i);
+    expect(compiled.params).toEqual(
+      expect.arrayContaining([PARTNER_ID, 'quick_support', 'active', 'trial']),
+    );
+    // And nothing else: `['active','trial']` is the same live-org definition
+    // middleware/auth.ts uses, so a widened list here is a real divergence.
+    expect(compiled.params.filter((p) => p === 'suspended' || p === 'offboarding')).toEqual([]);
   });
 
   it('returns an empty summary when the baseline is gone, disabled, or its agent is disabled', async () => {
