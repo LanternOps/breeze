@@ -71,8 +71,8 @@ function anomalyCtx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunPro
           baselineValue: 41.0,
           baselineMin: 30.0,
           baselineMax: 55.0,
-          evidence: {},
-          baseline: {},
+          evidence: { startingValue: 12.5, lastValue: 97.1 },
+          baseline: { baselineStddev: 6.2, baselineBuckets: 24 },
         },
       ],
       truncated: false,
@@ -282,9 +282,38 @@ describe('buildAgentRunTaskPrompt', () => {
     expect(prompt).toContain('98.2');
     expect(prompt).toContain('41');
     expect(prompt).toContain('baseline_deviation');
+    // The whitelisted evidence/baseline jsonb excerpts — the entire point of
+    // anomalyContext.ts — must actually reach the prompt, not just be
+    // assembled and then dropped.
+    expect(prompt).toContain('lastValue 97.1');
+    expect(prompt).toContain('startingValue 12.5');
+    expect(prompt).toContain('baselineStddev 6.2');
+    expect(prompt).toContain('baselineBuckets 24');
     // Anomaly runs are device-bound (unlike ticket runs) — the device line
     // still renders.
     expect(prompt).toContain('WS-ACCT-04');
+  });
+
+  it('does not double-render an evidence key that already has its own typed sibling column', () => {
+    const prompt = buildAgentRunTaskPrompt(anomalyCtx({
+      anomaly: {
+        anomalyType: 'sustained_high', bucketSeconds: 300,
+        windowStart: '2026-08-28T10:00:00.000Z', firstSeenAt: '2026-08-28T10:00:00.000Z',
+        lastSeenAt: '2026-08-28T10:20:00.000Z', peakScore: 7.5, rowCount: 1,
+        metricNames: ['cpu_percent'],
+        siblings: [{
+          metricName: 'cpu_percent', kind: 'baseline_deviation', score: 7.5,
+          observedValue: 98.2, baselineValue: 41.0, baselineMin: 30.0, baselineMax: 55.0,
+          // observedValue/baselineValue/baselineMax also appear in the raw
+          // evidence excerpt here — they must not be printed a second time.
+          evidence: { observedValue: 98.2, baselineValue: 41.0, baselineMax: 55.0 },
+          baseline: {},
+        }],
+        truncated: false,
+      },
+    }));
+    expect(countOccurrences(prompt, '98.2')).toBe(1);
+    expect(countOccurrences(prompt, '41')).toBe(1);
   });
 
   it('handles an anomaly incident with no siblings without emitting "undefined"/"null"', () => {

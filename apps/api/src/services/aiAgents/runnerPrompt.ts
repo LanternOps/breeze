@@ -328,10 +328,27 @@ function ticketPromptLines(ticket: AgentRunTicketPromptContext): string[] {
 }
 
 /**
+ * `evidence` keys that are ALSO surfaced as their own typed sibling columns
+ * (`observedValue`/`baselineValue`/`baselineMax` — see `anomalyContext.ts`'s
+ * `EVIDENCE_NUMERIC_KEYS`) — skipped when rendering the whitelisted
+ * `evidence` excerpt below so the same number never appears twice under two
+ * different labels.
+ */
+const EVIDENCE_KEYS_ALREADY_TYPED = new Set(['observedValue', 'baselineValue', 'baselineMax']);
+
+/**
  * The anomaly portion of the task turn: the canonical incident summary, then
  * per-metric detail (highest score first) from the already-bounded,
  * already-whitelisted excerpt `anomalyContext.ts` assembled. Mirrors
  * `ticketPromptLines` above in shape.
+ *
+ * Renders every field `anomalyContext.ts` put on the sibling excerpt,
+ * including the whitelisted `evidence`/`baseline` jsonb pairs — those are
+ * the entire point of the excerpt (they're what lets the model judge how
+ * anomalous the window actually is), and `anomalyContext.ts` has already
+ * done the hostile-jsonb filtering: only known numeric keys ever reach
+ * `sibling.evidence`/`sibling.baseline` in the first place, so it's safe to
+ * render every key present here.
  */
 function anomalyPromptLines(anomaly: AgentRunAnomalyPromptContext): string[] {
   const lines: string[] = [''];
@@ -350,7 +367,15 @@ function anomalyPromptLines(anomaly: AgentRunAnomalyPromptContext): string[] {
       const parts = [`score ${sibling.score}`];
       if (sibling.observedValue !== null) parts.push(`observed ${sibling.observedValue}`);
       if (sibling.baselineValue !== null) parts.push(`baseline ${sibling.baselineValue}`);
+      if (sibling.baselineMin !== null) parts.push(`baselineMin ${sibling.baselineMin}`);
+      if (sibling.baselineMax !== null) parts.push(`baselineMax ${sibling.baselineMax}`);
       if (sibling.kind) parts.push(`detector ${sibling.kind}`);
+      for (const [key, value] of Object.entries(sibling.evidence)) {
+        if (value !== undefined && !EVIDENCE_KEYS_ALREADY_TYPED.has(key)) parts.push(`${key} ${value}`);
+      }
+      for (const [key, value] of Object.entries(sibling.baseline)) {
+        if (value !== undefined) parts.push(`${key} ${value}`);
+      }
       lines.push(`- ${sibling.metricName}: ${parts.join(', ')}`);
     }
   }
