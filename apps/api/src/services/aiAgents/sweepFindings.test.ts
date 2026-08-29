@@ -148,6 +148,16 @@ function outcomeWith(...findings: SweepFindingsOutcome['findings']): SweepFindin
   return { summary: 'Sweep found issues.', findings };
 }
 
+/** A restart finding whose `deviceId` is OMITTED entirely (not `null` — the
+ *  schema's `.nullable().optional()` allows either, and the model omits the
+ *  field far more often than it sends an explicit `null`). Only
+ *  `proposedAction.deviceId` names the device; gate 1 must treat the
+ *  proposal's device as authoritative in this shape (#4189 bug fix). */
+function restartFindingNoFindingDeviceId(deviceId: string, serviceName = 'Spooler') {
+  const { deviceId: _omit, ...rest } = restartFinding(deviceId, serviceName);
+  return rest;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   resetDbState();
@@ -267,6 +277,44 @@ describe('persistSweepFindings', () => {
     expect(state.selectCount).toBe(0);
     expect(result.proposals[0]).toMatchObject({
       disposition: 'refused', reason: 'device_not_in_evidence',
+    });
+  });
+
+  // #4189 bug fix: the proposal's deviceId is authoritative when the finding
+  // omits its own. Observed live — two valid restart proposals produced zero
+  // intents on a run because the model omitted `finding.deviceId` while
+  // `proposedAction.deviceId` correctly named an evidence device.
+  it('creates an intent from the proposal device when the finding omits deviceId', async () => {
+    state.selectQueue.push([{ id: DEVICE_A }]);
+    createActionIntent.mockResolvedValue({ id: INTENT_A, status: 'pending_approval' });
+
+    const result = await persistSweepFindings(
+      runInput(),
+      outcomeWith(restartFindingNoFindingDeviceId(DEVICE_A)),
+      agentAuth,
+    );
+
+    expect(createActionIntent).toHaveBeenCalledTimes(1);
+    expect(createActionIntent).toHaveBeenCalledWith(agentAuth, expect.objectContaining({
+      scope: { deviceId: DEVICE_A },
+    }));
+    expect(result.intentIds).toEqual([INTENT_A]);
+    expect(result.proposals[0]).toMatchObject({
+      deviceId: DEVICE_A, disposition: 'intent_created', intentId: INTENT_A,
+    });
+  });
+
+  it('refuses when the finding omits deviceId and the proposal device is not in evidence', async () => {
+    const result = await persistSweepFindings(
+      runInput(),
+      outcomeWith(restartFindingNoFindingDeviceId(DEVICE_OUTSIDE_EVIDENCE)),
+      agentAuth,
+    );
+
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(state.selectCount).toBe(0);
+    expect(result.proposals[0]).toMatchObject({
+      deviceId: DEVICE_OUTSIDE_EVIDENCE, disposition: 'refused', reason: 'device_not_in_evidence',
     });
   });
 
@@ -415,6 +463,24 @@ describe('sweepFindingDeviceIds', () => {
   it('tolerates a maximally-corrupt outcome jsonb', () => {
     expect(sweepFindingDeviceIds({})).toEqual([]);
     expect(sweepFindingDeviceIds({ sweepFindings: { findings: 'nope' } })).toEqual([]);
+  });
+
+  // #4189 bug fix: a finding that omitted `deviceId` still names a device via
+  // its `sweepProposals` record — the route's hostname read must resolve it
+  // too, or the finding renders "—" even though `projectSweep` now falls back
+  // to the proposal's device.
+  it('also includes proposal device ids for findings that omitted deviceId', () => {
+    expect(sweepFindingDeviceIds({
+      sweepFindings: outcomeWith(restartFindingNoFindingDeviceId(DEVICE_A)),
+      sweepProposals: [{
+        findingIndex: 0,
+        tool: 'manage_services',
+        action: 'restart',
+        deviceId: DEVICE_A,
+        disposition: 'intent_created',
+        intentId: INTENT_A,
+      }] as SweepProposalRecord[],
+    })).toEqual([DEVICE_A]);
   });
 });
 
@@ -568,6 +634,30 @@ describe('projectSweep', () => {
     for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
       expect(serialized).not.toContain(`"${forbidden}"`);
     }
+  });
+
+  // #4189 bug fix: a finding whose `deviceId` was omitted but which carries a
+  // proposal must still project a `deviceId`/`deviceHostname` — never "—" —
+  // by falling back to the proposal record's device.
+  it('falls back to the proposal device when the finding omits deviceId', () => {
+    const dto = projectSweep(
+      traceRun,
+      {
+        sweepFindings: outcomeWith(restartFindingNoFindingDeviceId(DEVICE_A)),
+        sweepProposals: [{
+          findingIndex: 0,
+          tool: 'manage_services',
+          action: 'restart',
+          deviceId: DEVICE_A,
+          disposition: 'intent_created',
+          intentId: INTENT_A,
+        }] as SweepProposalRecord[],
+      },
+      new Map([[DEVICE_A, 'WS-ACCT-04']]),
+    );
+
+    expect(dto!.findings[0]!.deviceId).toBe(DEVICE_A);
+    expect(dto!.findings[0]!.deviceHostname).toBe('WS-ACCT-04');
   });
 
   it('tolerates a run with no schedule and a missing triggerRef', () => {

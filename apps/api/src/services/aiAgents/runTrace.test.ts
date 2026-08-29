@@ -532,5 +532,57 @@ describe('buildRunTrace — safe projection (#3828)', () => {
       expect(json).not.toContain('proposedAction');
       expect(json).not.toContain('serviceName');
     });
+
+    // #4189 bug fix: a finding that omitted `deviceId` (the model didn't
+    // repeat the id it already put on `proposedAction`) must still project a
+    // resolved device and hostname — never "—" — via the proposal record.
+    it('projects the proposal device and hostname for a finding that omitted its own deviceId', () => {
+      const detail = buildRunTrace(
+        baseRun({
+          deviceId: null,
+          triggerKind: 'schedule',
+          scheduleId: SCHEDULE_ID,
+          triggerRef: { scheduleId: SCHEDULE_ID, sweepKinds: ['service_down'] },
+          outcome: {
+            executedActions: [],
+            proposedActions: [],
+            deniedActions: [],
+            toolExecutionCount: 0,
+            sweepFindings: {
+              summary: 'One service is down.',
+              findings: [{
+                kind: 'service_down',
+                severity: 'critical',
+                // deviceId intentionally omitted — only the proposal names it.
+                title: 'Spooler is stopped',
+                detail: 'Spooler has been stopped for 3 days.',
+                evidence: { state: 'stopped' },
+                proposedAction: {
+                  tool: 'manage_services', action: 'restart',
+                  deviceId: DEVICE_ID, serviceName: 'Spooler',
+                },
+              }],
+            },
+            sweepProposals: [{
+              findingIndex: 0,
+              tool: 'manage_services',
+              action: 'restart',
+              deviceId: DEVICE_ID,
+              disposition: 'intent_created',
+              intentId: INTENT_ID,
+            }],
+            sweepEvidenceTruncated: false,
+          },
+        }),
+        AGENT,
+        null,
+        [],
+        [],
+        new Map([[DEVICE_ID, 'WS-ACCT-04']]),
+      );
+
+      expect(detail.sweep?.findings[0]?.deviceId).toBe(DEVICE_ID);
+      expect(detail.sweep?.findings[0]?.deviceHostname).toBe('WS-ACCT-04');
+    });
   });
 });

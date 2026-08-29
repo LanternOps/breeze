@@ -37,8 +37,17 @@
  *
  * ## Gate order (per finding carrying a `proposedAction`)
  *
- *  1. `device_not_in_evidence` — `finding.deviceId` and
- *     `proposedAction.deviceId` must agree AND be in `run.evidenceDeviceIds`.
+ *  1. `device_not_in_evidence` — `proposedAction.deviceId` must be in
+ *     `run.evidenceDeviceIds`. The PROPOSAL's device is authoritative:
+ *     `finding.deviceId` is `.nullable().optional()` on the schema, and the
+ *     model omits it more often than it repeats it, so a present
+ *     `finding.deviceId` need only AGREE with the proposal's device — an
+ *     absent one is treated as agreeing, not as a mismatch. A
+ *     present-but-different `finding.deviceId` is still refused; that is a
+ *     genuinely contradictory finding, not an omission (bug fix, #4189 — the
+ *     old "both must be set and equal" reading refused valid proposals
+ *     whenever the model omitted `finding.deviceId`, silently, since a
+ *     refusal is recorded on the outcome rather than surfaced as an error).
  *  2. `device_not_in_org` — the device must still resolve inside `run.orgId`
  *     and must not be an ephemeral (Quick Support) enrolment. Evidence is a
  *     point-in-time snapshot; a device can be deleted or moved to another org
@@ -232,11 +241,14 @@ export async function persistSweepFindings(
     const proposal = finding.proposedAction;
     if (!proposal) continue;
     const deviceId = proposal.deviceId;
-    const agrees = (finding.deviceId ?? null) === deviceId;
+    // The proposal's device is authoritative (see the header). A missing
+    // `finding.deviceId` agrees trivially; a present one must match.
+    const findingDeviceId = finding.deviceId ?? null;
+    const agrees = findingDeviceId === null || findingDeviceId === deviceId;
     if (!agrees || !run.evidenceDeviceIds.has(deviceId)) {
       console.warn('[sweepFindings] proposal refused — device is not in the run\'s evidence set', {
         runId: run.id, agentId: run.agentId, findingIndex: index,
-        findingDeviceId: finding.deviceId ?? null, proposalDeviceId: deviceId,
+        findingDeviceId, proposalDeviceId: deviceId,
       });
       refusals.set(index, 'device_not_in_evidence');
     }
@@ -360,18 +372,32 @@ export async function persistSweepFindings(
 }
 
 /**
- * The distinct, non-null device ids a run's findings name — the id set
- * `GET /ai/agents/runs/:runId` batches ONE org-pinned `devices` read over to
- * build `projectSweep`'s hostname map. Exported so the route never has to
- * reach into the raw `outcome` jsonb itself, and reads defensively for the
- * same reason `runTrace.ts` does: the column carries no compile-time shape.
+ * The distinct, non-null device ids a run's findings (and their proposals)
+ * name — the id set `GET /ai/agents/runs/:runId` batches ONE org-pinned
+ * `devices` read over to build `projectSweep`'s hostname map. Exported so the
+ * route never has to reach into the raw `outcome` jsonb itself, and reads
+ * defensively for the same reason `runTrace.ts` does: the column carries no
+ * compile-time shape.
+ *
+ * `sweepProposals` device ids are included too (bug fix, #4189): a finding
+ * that omitted its own `deviceId` still names a device through
+ * `proposedAction.deviceId` — and `persistSweepFindings` always copies that
+ * onto the proposal record's `deviceId`, regardless of disposition —
+ * `projectSweep` now falls back to that id, so the hostname read must
+ * resolve it too or the finding would still render a `null` hostname.
  */
 export function sweepFindingDeviceIds(outcome: Record<string, unknown>): string[] {
   const sweep = outcome.sweepFindings as SweepFindingsOutcome | undefined;
   const findings = Array.isArray(sweep?.findings) ? sweep.findings : [];
+  const proposals = outcome.sweepProposals as SweepProposalRecord[] | undefined;
   const ids = new Set<string>();
   for (const finding of findings) {
     if (typeof finding?.deviceId === 'string') ids.add(finding.deviceId);
+  }
+  if (Array.isArray(proposals)) {
+    for (const record of proposals) {
+      if (typeof record?.deviceId === 'string') ids.add(record.deviceId);
+    }
   }
   return [...ids];
 }
@@ -461,8 +487,14 @@ export function projectSweep(
     summary: typeof sweep.summary === 'string' ? sweep.summary : '',
     evidenceTruncated: outcome.sweepEvidenceTruncated ?? false,
     findings: findings.map((finding, index): AiAgentRunSweepFindingDto => {
-      const deviceId = finding.deviceId ?? null;
       const record = byIndex.get(index);
+      // Fall back to the proposal's device when the finding omitted its own
+      // (bug fix, #4189): gate 1 in `persistSweepFindings` now accepts that
+      // shape and always copies `proposedAction.deviceId` onto the record's
+      // `deviceId`, for every disposition — so a finding carrying a proposal
+      // never projects a `null` device merely because the model didn't repeat
+      // the id on the finding itself.
+      const deviceId = finding.deviceId ?? record?.deviceId ?? null;
       return {
         kind: finding.kind,
         severity: finding.severity,

@@ -952,6 +952,66 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(json).not.toContain('DoNotLeakSpooler');
   });
 
+  // #4189 bug fix: the model omitted `finding.deviceId` while
+  // `proposedAction.deviceId` correctly named an evidence device — the
+  // batched hostname read must resolve THAT device (via `sweepProposals`,
+  // not just `sweepFindings`), or the finding renders a null hostname even
+  // though `projectSweep` now falls back to the proposal's device.
+  it('resolves a finding\'s hostname from its proposal device when the finding omitted deviceId', async () => {
+    let hostnameWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        scheduleId: '88888888-8888-4888-8888-888888888888',
+        triggerRef: {
+          scheduleId: '88888888-8888-4888-8888-888888888888',
+          sweepKinds: ['service_down'],
+        },
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          sweepFindings: {
+            summary: 'One service is down.',
+            findings: [{
+              kind: 'service_down', severity: 'critical',
+              // deviceId intentionally omitted — only the proposal names it.
+              title: 'Spooler is stopped', detail: 'Stopped for 3 days.',
+              evidence: { state: 'stopped' },
+              proposedAction: {
+                tool: 'manage_services', action: 'restart',
+                deviceId: DEVICE_ID, serviceName: 'Spooler',
+              },
+            }],
+          },
+          sweepProposals: [{
+            findingIndex: 0, tool: 'manage_services', action: 'restart',
+            deviceId: DEVICE_ID, disposition: 'intent_created',
+            intentId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          }],
+          sweepEvidenceTruncated: false,
+        },
+      })]))
+      .mockReturnValueOnce(selectChain(
+        [{ id: DEVICE_ID, hostname: 'WKS-042' }],
+        (predicate) => { hostnameWhere = predicate; },
+      ));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runDetailResponseSchema.parse(body);
+
+    const hostnameParams = sqlParams(hostnameWhere);
+    expect(hostnameParams).toContain(DEVICE_ID);
+    expect(parsed.data.sweep?.findings[0]).toMatchObject({
+      deviceId: DEVICE_ID,
+      deviceHostname: 'WKS-042',
+    });
+  });
+
   it('skips the ledger/intents queries when the run has no session and no intent ids', async () => {
     selectMock.mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]));
 
