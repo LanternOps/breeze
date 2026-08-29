@@ -1471,7 +1471,8 @@
         "alert": "Alerta",
         "manual": "Manual",
         "schedule": "Programado",
-        "ticket": "Ticket"
+        "ticket": "Ticket",
+        "anomaly": "Anomalía"
       },
       "noAgent": "Agente desconocido",
       "loading": "Cargando ejecuciones…",
@@ -1554,6 +1555,7 @@
           "empty": "No hay aprobaciones vinculadas.",
           "viewAll": "Revisar en Aprobaciones"
         },
+        "anomalyLink": "Anomalías del dispositivo abierto",
         "budget": {
           "title": "Presupuesto de exposición",
           "caption": "Exposición registrada — últimas {{hours}} h",

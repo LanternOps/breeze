@@ -181,6 +181,7 @@
     "title": "Titolo",
     "severity": "Gravità",
     "status": "Stato",
+    "aiVerdict": "Verdetto IA",
     "triggered": "Attivato",
     "actions": "Azioni",
     "noAlertsMatchYourFilters": "Nessun avviso corrisponde ai filtri.",
@@ -520,6 +521,24 @@
     "deleteConfirm": "Eliminare il modello \"{{name}}\"? Questa azione non può essere annullata.",
     "deleteFailed": "Impossibile eliminare il modello.",
     "deleted": "Modello eliminato"
+  },
+  "alertVerdict": {
+    "label": {
+      "actionable": "Richiede azione",
+      "transient_self_healed": "Autorisolto",
+      "recurring_pattern": "Schema ricorrente",
+      "duplicate_of_group": "Duplicato",
+      "needs_human": "Richiede revisione umana"
+    },
+    "confidence": "{{pct}}% di confidenza",
+    "feedbackUp": "Questo verdetto è stato utile",
+    "feedbackDown": "Questo verdetto non è stato utile",
+    "feedbackThanks": "Grazie per il tuo feedback",
+    "feedbackTaken": "Qualcuno ha già lasciato un feedback su questo verdetto",
+    "feedbackFailed": "Impossibile registrare il feedback",
+    "hideNoise": "Nascondi rumore segnalato dall'IA",
+    "suggestionPending": "L'IA ha suggerito un'azione — verifica in Approvazioni",
+    "none": "Nessun verdetto IA per ora"
   },
   "alertsPage": {
     "loadingAlerts": "Caricamento avvisi...",

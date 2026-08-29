@@ -37,6 +37,7 @@ import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
 import { InvalidAgentRecipientsError } from '../services/aiAgents/recipients';
 import { SUPPORTED_AGENT_MODES } from '../services/aiAgents/constants';
 import { buildRunTrace } from '../services/aiAgents/runTrace';
+import { recordVerdictFeedback } from '../services/aiAgents/alertVerdicts';
 import {
   buildRunsKeysetPredicate, decodeRunsCursor, encodeRunsCursor, runsCursorFromRow,
 } from '../services/aiAgents/runsListCursor';
@@ -453,6 +454,7 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       orgId: aiAgentRuns.orgId,
       deviceId: aiAgentRuns.deviceId,
       alertId: aiAgentRuns.alertId,
+      anomalyIncidentId: aiAgentRuns.anomalyIncidentId,
       sessionId: aiAgentRuns.sessionId,
       triggerKind: aiAgentRuns.triggerKind,
       modeAtStart: aiAgentRuns.modeAtStart,
@@ -533,6 +535,53 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   );
   return c.json({ data: detail });
 });
+
+/**
+ * Phase 2 wave P2-1 (alert verdicts), Task 8. Thumbs up/down on a verdict a
+ * `verdict`-profile run produced — NOT a mutation of customer data (it never
+ * touches `alerts` or anything an org admin would consider "theirs"), so
+ * this is gated on the same read permission as `GET /runs`/`GET
+ * /runs/:runId` above, not `requireAiWrite`. `recordVerdictFeedback` updates
+ * by `verdictId` alone and relies on the request's ambient RLS context (see
+ * its own docstring) — a verdict outside the caller's org 404s the same way
+ * an out-of-org run id does on the routes above.
+ *
+ * Task 14 carry-in B (PR-A review): a caller must not silently overwrite
+ * ANOTHER user's already-recorded feedback (their own changed mind is fine)
+ * — `recordVerdictFeedback`'s `'conflict'` result answers 409 here. A
+ * successful write is audited (`ai_agent.verdict_feedback`), same as the
+ * other two write paths that answer through this file directly (manual
+ * trigger, circuit reset) — see the file-level NOTE for why the AGENT
+ * mutation handlers above are the exception, not this one.
+ */
+aiAgentsRoutes.post(
+  '/verdicts/:verdictId/feedback',
+  scopes,
+  requireAiRead,
+  zValidator('json', z.object({ feedback: z.enum(['up', 'down']) })),
+  async (c) => {
+    const auth = c.get('auth');
+    const verdictId = uuidParam(c, 'verdictId');
+    if (!verdictId) return c.json({ error: 'Verdict not found' }, 404);
+
+    const { feedback } = c.req.valid('json');
+    const result = await recordVerdictFeedback(auth, verdictId, feedback);
+    if (result.status === 'not_found') return c.json({ error: 'Verdict not found' }, 404);
+    if (result.status === 'conflict') {
+      return c.json({ error: 'Feedback already recorded by another user' }, 409);
+    }
+
+    writeRouteAudit(c, {
+      orgId: result.orgId,
+      action: 'ai_agent.verdict_feedback',
+      resourceType: 'ai_alert_verdict',
+      resourceId: verdictId,
+      details: { feedback },
+      result: 'success',
+    });
+    return c.json({ ok: true });
+  },
+);
 
 aiAgentsRoutes.get('/:id', scopes, requireAiRead, async (c) => {
   const auth = c.get('auth');

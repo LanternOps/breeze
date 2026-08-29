@@ -423,22 +423,30 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     patch: z.record(z.string(), z.unknown()).optional(),
   }),
 
+  // Review round 1 (IMPORTANT 5, P2-1): `suppress` and `suppressDuration`
+  // were missing here even though the tool definition (aiToolsAlerts.ts)
+  // has always supported them — an approved `suppress` action-intent
+  // (including one an alert verdict's suggestedAction created, wave P2-1)
+  // failed THIS validation at release time, after approval, the worst place
+  // for a rejection. `suppressDuration` bounds mirror the tool definition's
+  // own doc string: 0-720 hours, 0 meaning "suppress forever".
   manage_alerts: z.object({
-    action: z.enum(['list', 'get', 'acknowledge', 'resolve']),
+    action: z.enum(['list', 'get', 'acknowledge', 'resolve', 'suppress']),
     alertId: uuid.optional(),
     status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
     severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
     deviceId: uuid.optional(),
     limit: z.number().int().min(1).max(100).optional(),
     resolutionNote: z.string().max(1000).optional(),
+    suppressDuration: z.number().int().min(0).max(720).optional(),
   }).refine(
     (data) => {
-      if (['get', 'acknowledge', 'resolve'].includes(data.action) && !data.alertId) {
+      if (['get', 'acknowledge', 'resolve', 'suppress'].includes(data.action) && !data.alertId) {
         return false;
       }
       return true;
     },
-    { message: 'alertId is required for get/acknowledge/resolve actions' }
+    { message: 'alertId is required for get/acknowledge/resolve/suppress actions' }
   ),
 
   get_dns_security: z.object({

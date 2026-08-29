@@ -23,6 +23,7 @@ import type {
   OutcomeProposedAction,
   TicketProposalOutcome,
 } from './runLoop';
+import { projectAlertVerdict } from './alertVerdicts';
 import {
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
   type AiAgentKind,
@@ -43,6 +44,8 @@ export interface RunTraceRunInput {
   orgId: string;
   deviceId: string | null;
   alertId: string | null;
+  /** Wave 6 PR 4 (#3828) — see AiAgentRunDetailDto.anomalyIncidentId. */
+  anomalyIncidentId: string | null;
   triggerKind: AiAgentTriggerKind;
   modeAtStart: Exclude<AiAgentMode, 'off'>;
   status: AiAgentRunStatus;
@@ -212,6 +215,7 @@ export function buildRunTrace(
     deviceId: run.deviceId,
     deviceHostname: device?.hostname ?? null,
     alertId: run.alertId,
+    anomalyIncidentId: run.anomalyIncidentId,
     triggerKind: run.triggerKind,
     modeAtStart: run.modeAtStart,
     status: run.status,
@@ -230,5 +234,11 @@ export function buildRunTrace(
     ledger: ledgerRows.map(mapLedgerRow),
     intents: intents.map(mapIntentRow),
     ticketProposal: outcome.ticketProposal ? mapTicketProposal(outcome.ticketProposal) : null,
+    // Phase 2 wave P2-1 (alert verdicts), Task 8: null for every full-profile
+    // run and for a verdict-profile run that has not (yet, or ever)
+    // produced one — see `projectAlertVerdict`'s own safe-projection
+    // contract. `outcome.alertVerdictIntent` (review round 1, IMPORTANT 2)
+    // carries the suggestion's intent-creation disposition alongside it.
+    alertVerdict: projectAlertVerdict(outcome.alertVerdict, outcome.alertVerdictIntent),
   };
 }

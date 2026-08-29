@@ -1471,7 +1471,8 @@
         "alert": "Uyarı",
         "manual": "Manuel",
         "schedule": "Zamanlanmış",
-        "ticket": "Talep"
+        "ticket": "Talep",
+        "anomaly": "Anormallik"
       },
       "noAgent": "Bilinmeyen aracı",
       "loading": "Çalıştırmalar yükleniyor…",
@@ -1554,6 +1555,7 @@
           "empty": "Bağlantılı onay yok.",
           "viewAll": "Onaylar'da incele"
         },
+        "anomalyLink": "Açık cihaz anormallikleri",
         "budget": {
           "title": "Maruziyet bütçesi",
           "caption": "Kaydedilen maruziyet — son {{hours}} saat",

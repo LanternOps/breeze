@@ -59,7 +59,17 @@ vi.mock('./alertCorrelationQueue', () => ({ enqueueAlertCorrelation: vi.fn() }))
 
 import { resolveAlert } from './alertService';
 
-const WINNER = [{ id: 'alert-1', orgId: 'org-1', ruleId: null, deviceId: 'device-1', configPolicyId: null }];
+// The RETURNING row: triggeredAt is NOT NULL and this same UPDATE sets resolvedAt —
+// resolveAlert publishes both on `alert.resolved` (C2 fix), so the fixture models them.
+const WINNER = [{
+  id: 'alert-1',
+  orgId: 'org-1',
+  ruleId: null,
+  deviceId: 'device-1',
+  configPolicyId: null,
+  triggeredAt: new Date('2026-08-29T10:00:00.000Z'),
+  resolvedAt: new Date('2026-08-29T10:05:00.000Z'),
+}];
 
 describe('resolveAlert is a compare-and-swap', () => {
   beforeEach(() => {

@@ -6,6 +6,7 @@ import {
   type AiAgentLimits,
   type AiAgentPolicy,
   type AiAgentPolicySnapshot,
+  type AiAgentRunProfile,
   type AiAgentTriggerKind,
 } from '@breeze/shared';
 
@@ -159,15 +160,21 @@ vi.mock('./effectivePolicy', () => ({ resolveEffectiveAgentSystem }));
 // table-queue db mock's coverage of a table it never otherwise touches.
 // Default: not killed, always — this file's own dedicated kill-switch
 // coverage lives in `aiGuardrails.agentPrincipal.contract.test.ts` and
-// `actRevalidation.test.ts`; here it only has to stay inert. Both exports
-// matter: `readAiKillState` is what `isStoppedBeforeStart` calls directly,
+// `actRevalidation.test.ts`; here it only has to stay inert EXCEPT for the
+// dedicated "verdict pre-hook kill-switch" tests below, which override it
+// per-case (review fix, wave P2-1 fix round 1 — the outcome-tool branch of
+// `createAgentRunPreToolUse` now reads this directly). Both exports matter:
+// `readAiKillState` is what `isStoppedBeforeStart` calls directly,
 // `getCachedAiKillStateSnapshot` is what the REAL (unmocked)
-// `checkAgentGuardrails` reads on every dispatch in this file.
+// `checkAgentGuardrails` — and now the outcome-tool branch too — reads on
+// every dispatch in this file.
 const readAiKillState = vi.hoisted(() =>
   vi.fn<() => Promise<{ killed: boolean; epoch: number }>>(async () => ({ killed: false, epoch: 0 })));
+const getCachedAiKillStateSnapshot = vi.hoisted(() =>
+  vi.fn<() => { killed: boolean; epoch: number }>(() => ({ killed: false, epoch: 0 })));
 vi.mock('../aiKillState', () => ({
   readAiKillState,
-  getCachedAiKillStateSnapshot: () => ({ killed: false, epoch: 0 }),
+  getCachedAiKillStateSnapshot,
 }));
 
 // `revalidateActExecution` and `verifyActExecution`/`recordActVerifyFailureAlert`
@@ -223,10 +230,23 @@ vi.mock('../eventBus', () => ({ publishEvent }));
 
 const queryMock = vi.hoisted(() =>
   vi.fn<(params: { prompt: unknown; options: Record<string, unknown> }) => unknown>());
-vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
+// Partial mock (not a full replacement): `outcomeTools.ts`'s `buildOutcomeSdkTools`
+// calls the REAL `tool()` to build the `submit_alert_verdict` SDK tool for a
+// verdict-profile run (Phase 2 wave P2-1) — only `query` needs faking here.
+vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@anthropic-ai/claude-agent-sdk')>();
+  return { ...actual, query: queryMock };
+});
 
 const createBreezeMcpServer = vi.hoisted(() =>
-  vi.fn<(getAuth: () => unknown, pre?: Hooks['pre'], post?: Hooks['post']) => unknown>());
+  vi.fn<(
+    getAuth: () => unknown,
+    pre?: Hooks['pre'],
+    post?: Hooks['post'],
+    getActiveSession?: () => unknown,
+    extraTools?: unknown[],
+    options?: { onlyTools?: ReadonlySet<string> },
+  ) => unknown>());
 vi.mock('../aiAgentSdkTools', () => ({
   createBreezeMcpServer,
   BREEZE_MCP_TOOL_NAMES: ['mcp__breeze__query_devices'],
@@ -240,6 +260,31 @@ const createActionIntent = vi.hoisted(() =>
   vi.fn<(auth: unknown, input: Record<string, unknown>) =>
     Promise<{ id: string; status: string; errorCode?: string | null }>>());
 vi.mock('../actionIntents/intentService', () => ({ createActionIntent }));
+
+// Phase 2 wave P2-1 (alert verdicts), Task 8: `finalizeVerdict`'s own wiring
+// into `persistAlertVerdict` — the persistence logic itself has full unit
+// coverage in `alertVerdicts.test.ts` (real db mock, real `createActionIntent`
+// interplay). Mocked here so THIS suite exercises only the run-loop-level
+// call/errorCode/intentIds/status wiring, not persistence internals — same
+// division of labor as `agentCircuit`/`recipients`/`fixWatchWorker` above.
+// `importOriginal` (review round 1 minor fix) keeps every OTHER export of
+// `./alertVerdicts` (`projectAlertVerdict`, `AlertVerdictIntentInfo`'s
+// runtime shape, …) real, so this mock can't silently drift out of sync
+// with the module's actual export surface the way a hand-written object
+// literal would.
+const persistAlertVerdict = vi.hoisted(() =>
+  vi.fn<(
+    run: unknown, verdict: unknown, agentAuth: unknown,
+  ) => Promise<{
+    verdictId: string;
+    intentId: string | null;
+    suggestionDisposition: 'intent_created' | 'not_created';
+    suggestionReason?: string;
+  }>>());
+vi.mock('./alertVerdicts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./alertVerdicts')>();
+  return { ...actual, persistAlertVerdict };
+});
 
 const resolveRecipientUserIds = vi.hoisted(() =>
   vi.fn<(agent: unknown, orgId: string) => Promise<string[]>>(async () => []));
@@ -285,11 +330,11 @@ vi.mock('../aiCostTracker', () => ({ recordSessionlessSdkUsage, calculateCostCen
 // the red-team suite (Task 5). Here we assert the loop never imports it by
 // asserting on the guardrail path it DOES take.
 import {
-  computeRunVerdict, createAgentRunPostToolUse, executeAgentRun, PROPOSAL_RECORDED_TEXT,
+  computeRunVerdict, createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun, PROPOSAL_RECORDED_TEXT,
 } from './runLoop';
 import type { AgentRunOutcome } from './runLoop';
 import { VERIFY_READ_TIMEOUT_MS } from './actVerify';
-import { POST_TOOL_USE_TIMEOUT_MS } from '../aiAgentSdkTools';
+import { BREEZE_MCP_TOOL_NAMES, POST_TOOL_USE_TIMEOUT_MS } from '../aiAgentSdkTools';
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -344,11 +389,23 @@ function seedRows(options: {
   ticketId?: string | null;
   ticket?: Record<string, unknown>;
   ticketComments?: Array<Record<string, unknown>>;
+  /** Wave 6 PR 4 (#3828, Task 4) — undefined (default) means no anomaly, i.e.
+   *  every existing test is unaffected. Pass an incident id AND
+   *  `anomalyIncident`/`anomalySiblings` to exercise an anomaly-triggered
+   *  run's bounded context. */
+  anomalyIncidentId?: string | null;
+  anomalyIncident?: Record<string, unknown>;
+  anomalySiblings?: Array<Record<string, unknown>>;
+  /** Phase 2 wave P2-1 (alert verdicts). Defaults to 'full', matching the
+   *  DB column default. */
+  profile?: AiAgentRunProfile;
+  correlationGroupId?: string | null;
 } = {}) {
   const effective = options.effective ?? policy();
   const deviceId = options.deviceId === undefined ? DEVICE_ID : options.deviceId;
   const alertId = options.alertId === undefined ? ALERT_ID : options.alertId;
   const ticketId = options.ticketId === undefined ? null : options.ticketId;
+  const anomalyIncidentId = options.anomalyIncidentId === undefined ? null : options.anomalyIncidentId;
 
   dbMockState.rowQueues.ai_agent_runs = [[{
     id: RUN_ID,
@@ -357,10 +414,13 @@ function seedRows(options: {
     deviceId,
     alertId,
     ticketId,
+    anomalyIncidentId,
     status: 'queued',
     modeAtStart: options.modeAtStart ?? 'shadow',
     triggerKind: options.triggerKind ?? 'alert',
     policySnapshot: snapshot(effective),
+    profile: options.profile ?? 'full',
+    correlationGroupId: options.correlationGroupId === undefined ? null : options.correlationGroupId,
   }]];
   dbMockState.rowQueues.ai_agents = [[{
     id: AGENT_ID,
@@ -383,6 +443,20 @@ function seedRows(options: {
       status: 'open', priority: 'high', category: 'hardware', tags: ['printer'], dueDate: null,
     }]];
     dbMockState.rowQueues.ticket_comments = [options.ticketComments ?? []];
+  }
+  if (anomalyIncidentId) {
+    dbMockState.rowQueues.metric_anomaly_incidents = [[options.anomalyIncident ?? {
+      id: anomalyIncidentId, deviceId: deviceId ?? DEVICE_ID, anomalyType: 'sustained_high',
+      bucketSeconds: 300, windowStart: new Date('2026-08-28T10:00:00Z'),
+      firstSeenAt: new Date('2026-08-28T10:00:00Z'), lastSeenAt: new Date('2026-08-28T10:20:00Z'),
+      peakScore: 7.5, rowCount: 1, metricNames: ['cpu_percent'],
+    }]];
+    dbMockState.rowQueues.metric_anomalies = [options.anomalySiblings ?? [{
+      metricName: 'cpu_percent', score: 7.5, observedValue: 98.2, baselineValue: 41.0,
+      baselineMin: 30.0, baselineMax: 55.0,
+      evidence: { kind: 'baseline_deviation', observedValue: 98.2, baselineValue: 41.0 },
+      baselineSummary: { baselineStddev: 4.2, baselineBuckets: 120 },
+    }]];
   }
   resolveEffectiveAgentSystem.mockResolvedValue(snapshot(effective));
   return effective;
@@ -489,10 +563,12 @@ beforeEach(() => {
   resolveRecipientUserIds.mockResolvedValue([]);
   enqueueAgentNotifyRetry.mockResolvedValue(undefined);
   createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
+  persistAlertVerdict.mockResolvedValue({ verdictId: 'verdict-1', intentId: null, suggestionDisposition: 'not_created' });
   // Never reached unless a test's script drives a manifest-matched call
   // under a live `mode: 'act'` guardrail policy — a mismatched default here
   // would only ever surface as "Cannot use 'in' operator on undefined" in a
   // test that forgot to configure it, which is exactly what should happen.
+  getCachedAiKillStateSnapshot.mockReset().mockReturnValue({ killed: false, epoch: 0 });
   revalidateActExecution.mockReset();
   verifyActExecution.mockReset().mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
   recordActVerifyFailureAlert.mockReset().mockResolvedValue(undefined);
@@ -808,7 +884,7 @@ describe('executeAgentRun', () => {
       );
 
       const outcome: AgentRunOutcome = {
-        findings: [], proposedActions: [], executedActions: [], deniedActions: [], toolExecutionCount: 0,
+        proposedActions: [], executedActions: [], deniedActions: [], toolExecutionCount: 0,
       };
       const allowedPending = new Map<string, number>([['manage_services', 1]]);
       const executionIdPending = new Map<string, Array<string | null>>([['manage_services', ['exec-1']]]);
@@ -1484,6 +1560,107 @@ describe('executeAgentRun', () => {
     });
   });
 
+  describe('anomaly context (wave 6 PR 4, #3828, Task 4)', () => {
+    const INCIDENT_ID = '00000000-0000-4000-8000-0000000000f1';
+
+    it('loads bounded anomaly context and feeds it into the task prompt', async () => {
+      seedRows({
+        triggerKind: 'anomaly',
+        alertId: null,
+        anomalyIncidentId: INCIDENT_ID,
+        anomalyIncident: {
+          id: INCIDENT_ID, deviceId: DEVICE_ID, anomalyType: 'sustained_high',
+          bucketSeconds: 300, windowStart: new Date('2026-08-28T10:00:00Z'),
+          firstSeenAt: new Date('2026-08-28T10:00:00Z'), lastSeenAt: new Date('2026-08-28T10:20:00Z'),
+          peakScore: 7.5, rowCount: 1, metricNames: ['cpu_percent'],
+        },
+        anomalySiblings: [{
+          metricName: 'cpu_percent', score: 7.5, observedValue: 98.2, baselineValue: 41.0,
+          baselineMin: 30.0, baselineMax: 55.0,
+          evidence: { kind: 'baseline_deviation', observedValue: 98.2, baselineValue: 41.0 },
+          baselineSummary: { baselineStddev: 4.2, baselineBuckets: 120 },
+        }],
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).toContain('sustained_high');
+      expect(prompt).toContain('cpu_percent');
+      expect(prompt).toContain('7.5');
+
+      const systemPrompt = String(lastQueryOptions!.systemPrompt);
+      expect(systemPrompt).toContain('metric-anomaly detector');
+    });
+
+    it('never dumps raw evidence/baselineSummary jsonb keys into the prompt', async () => {
+      seedRows({
+        triggerKind: 'anomaly',
+        alertId: null,
+        anomalyIncidentId: INCIDENT_ID,
+        anomalySiblings: [{
+          metricName: 'cpu_percent', score: 7.5, observedValue: 98.2, baselineValue: 41.0,
+          baselineMin: 30.0, baselineMax: 55.0,
+          evidence: { kind: 'baseline_deviation', secretApiKey: 'sk-should-never-appear' },
+          baselineSummary: { baselineStddev: 4.2, internalDebugPayload: 'x'.repeat(5000) },
+        }],
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).not.toContain('secretApiKey');
+      expect(prompt).not.toContain('sk-should-never-appear');
+      expect(prompt).not.toContain('internalDebugPayload');
+    });
+
+    it('org-pins the RLS-bypassing incident/sibling reads and matches the collapsing key', async () => {
+      seedRows({ triggerKind: 'anomaly', anomalyIncidentId: INCIDENT_ID });
+
+      await executeAgentRun(RUN_ID);
+
+      const incidentSelect = dbMockState.selects.find((s) => s.table === 'metric_anomaly_incidents');
+      const siblingSelect = dbMockState.selects.find((s) => s.table === 'metric_anomalies');
+      const incidentWhere = compiled(incidentSelect?.where);
+      const siblingWhere = compiled(siblingSelect?.where);
+      const incidentParams = compiledParams(incidentSelect?.where);
+      const siblingParams = compiledParams(siblingSelect?.where);
+      // Both reads run inside a system context (full RLS bypass), so the
+      // tenant predicate has to be in the WHERE clause by hand.
+      expect(incidentWhere).toContain('"org_id"');
+      expect(incidentParams).toContain(ORG_ID);
+      expect(siblingWhere).toContain('"org_id"');
+      expect(siblingWhere).toContain('"device_id"');
+      expect(siblingWhere).toContain('"anomaly_type"');
+      expect(siblingWhere).toContain('"bucket_seconds"');
+      expect(siblingWhere).toContain('"window_start"');
+      expect(siblingParams).toContain(ORG_ID);
+    });
+
+    it('a non-anomaly run carries no anomaly section at all', async () => {
+      seedRows();
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).not.toContain('Anomaly:');
+      const systemPrompt = String(lastQueryOptions!.systemPrompt);
+      expect(systemPrompt).not.toContain('metric-anomaly detector');
+    });
+
+    it('a missing/deleted incident is not fed into the prompt (same "moved reads as absent" posture as device/alert/ticket)', async () => {
+      seedRows({ triggerKind: 'anomaly', anomalyIncidentId: INCIDENT_ID });
+      dbMockState.rowQueues.metric_anomaly_incidents = [[]];
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).not.toContain('Anomaly:');
+      const final = finalTransition()!;
+      expect(final.to).toBe('completed');
+    });
+  });
+
   it('notifies the MERGED recipient set from the run snapshot, not the baseline row', async () => {
     // Partner baseline row lists only USER_A; the org override added USER_B, so
     // the run's immutable snapshot carries the union.
@@ -1798,3 +1975,447 @@ describe('computeRunVerdict', () => {
   });
 });
 
+describe('verdict profile in the run loop (P2-1)', () => {
+  function emptyOutcome(): AgentRunOutcome {
+    return { proposedActions: [], executedActions: [], deniedActions: [], toolExecutionCount: 0 };
+  }
+
+  const validVerdict = {
+    classification: 'transient_self_healed' as const,
+    confidence: 0.9,
+    rationale: 'Disk usage returned to normal on its own; no action needed.',
+  };
+
+  /** Every field the outcome-tool branch bypasses (guardrailPolicy, sessionId,
+   *  act plumbing…) is dead weight for these tests — the branch returns
+   *  before touching any of it — so the whole object is cast `as never` at
+   *  the call site, same precedent as the direct post-hook test above. */
+  function preArgs(profile: AiAgentRunProfile) {
+    return {
+      run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, profile },
+      agentName: 'Front Desk Triage',
+      agentAuth: {},
+      agentKind: 'triage',
+      guardrailPolicy: {
+        enabled: true,
+        mode: 'shadow',
+        toolAllowlist: [],
+        protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
+        deviceId: null,
+        deviceSiteId: null,
+      },
+      outcome: emptyOutcome(),
+      intentIds: [],
+      allowedPending: new Map<string, number>(),
+      sessionId: null,
+      executionIdPending: new Map<string, Array<string | null>>(),
+      actPinPending: new Map<string, Array<unknown>>(),
+      actReservation: { count: 0 },
+      deadlineMs: Date.now() + 60_000,
+    };
+  }
+
+  it('pre-hook allows submit_alert_verdict on a verdict run and denies it on a full run', async () => {
+    const pre = createAgentRunPreToolUse(preArgs('verdict') as never);
+    expect(await pre('submit_alert_verdict', validVerdict)).toEqual({ allowed: true });
+
+    const preFull = createAgentRunPreToolUse(preArgs('full') as never);
+    expect((await preFull('submit_alert_verdict', validVerdict)).allowed).toBe(false);
+  });
+
+  it('post-hook captures the validated verdict into outcome.alertVerdict and counts no execution', async () => {
+    const outcome = emptyOutcome();
+    const post = createAgentRunPostToolUse({
+      outcome,
+      allowedPending: new Map<string, number>(),
+      executionIdPending: new Map<string, Array<string | null>>(),
+      actPinPending: new Map<string, Array<unknown>>(),
+      run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, deviceId: null, profile: 'verdict' },
+      agentUserId: USER_A,
+    } as never);
+
+    await post('submit_alert_verdict', validVerdict, '{"status":"recorded"}', false, 5);
+
+    expect(outcome.alertVerdict).toEqual(validVerdict);
+    expect(outcome.toolExecutionCount).toBe(0);
+  });
+
+  // Review fix (fix round 1, IMPORTANT 4): the outcome-tool branch sits AHEAD
+  // of `checkAgentGuardrails`, which is where the env-flag + DB kill switch
+  // are normally enforced — closing that gap so a kill-switched run cannot
+  // record a verdict either.
+  it('outcome tool is denied when the env-level kill switch is off, even on a verdict run', async () => {
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'false');
+    const outcome = emptyOutcome();
+    const pre = createAgentRunPreToolUse({ ...preArgs('verdict'), outcome } as never);
+
+    const result = await pre('submit_alert_verdict', validVerdict);
+
+    expect(result).toEqual({ allowed: false, error: 'Autonomous AI agents are disabled' });
+    expect(outcome.alertVerdict).toBeUndefined();
+  });
+
+  it('outcome tool is denied when the DB kill switch is engaged, even on a verdict run', async () => {
+    getCachedAiKillStateSnapshot.mockReturnValue({ killed: true, epoch: 7 });
+    const outcome = emptyOutcome();
+    const pre = createAgentRunPreToolUse({ ...preArgs('verdict'), outcome } as never);
+
+    const result = await pre('submit_alert_verdict', validVerdict);
+
+    expect(result).toEqual({ allowed: false, error: 'Autonomous AI agents are kill-switched (epoch 7)' });
+    expect(outcome.alertVerdict).toBeUndefined();
+  });
+
+  // Review fix (fix round 1, IMPORTANT 2, PLAN CHANGE): a bare `manage_alerts`
+  // in the guardrail's toolAllowlist (which on a FULL run also grants
+  // acknowledge/resolve/suppress) must never let this mutation reach
+  // 'propose' on a verdict run — denied outright instead, defense-in-depth
+  // on top of `driveSdkLoop` no longer building that allowlist from the
+  // agent's raw `full`-profile list in the first place.
+  it('verdict run denies any non-allow disposition outright (propose/act), even with a broad allowlist', async () => {
+    const outcome = emptyOutcome();
+    const pre = createAgentRunPreToolUse({
+      run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, profile: 'verdict' },
+      agentName: 'Front Desk Triage',
+      agentAuth: {},
+      agentKind: 'triage',
+      guardrailPolicy: {
+        enabled: true,
+        mode: 'shadow',
+        toolAllowlist: ['manage_alerts'],
+        protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
+        deviceId: DEVICE_ID,
+        deviceSiteId: SITE_ID,
+      },
+      outcome,
+      intentIds: [],
+      allowedPending: new Map<string, number>(),
+      sessionId: null,
+      executionIdPending: new Map<string, Array<string | null>>(),
+      actPinPending: new Map<string, Array<unknown>>(),
+      actReservation: { count: 0 },
+      deadlineMs: Date.now() + 60_000,
+    } as never);
+
+    const result = await pre('manage_alerts', { action: 'suppress', alertId: ALERT_ID, suppressDuration: 24 });
+
+    expect(result).toEqual({ allowed: false, error: 'verdict runs are read-only' });
+    expect(outcome.deniedActions).toContainEqual({ tool: 'manage_alerts', reason: 'verdict runs are read-only' });
+    expect(outcome.proposedActions).toEqual([]);
+  });
+
+  // Review round 2 (Minor 2): a REAL guardrail deny (here, the device-less-
+  // mutation deny — `policy.deviceId === null`) must keep its own specific
+  // reason on a verdict run, not get overwritten by the generic "verdict
+  // runs are read-only". This is exactly why the verdict-profile branch was
+  // moved BELOW `check.disposition === 'deny'` in runLoop.ts — before the
+  // fix, this deny reason was clobbered.
+  it('a real guardrail deny on a verdict run keeps its own specific reason, not the generic "verdict runs are read-only"', async () => {
+    const outcome = emptyOutcome();
+    const pre = createAgentRunPreToolUse({
+      run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, profile: 'verdict' },
+      agentName: 'Front Desk Triage',
+      agentAuth: {},
+      agentKind: 'triage',
+      guardrailPolicy: {
+        enabled: true,
+        mode: 'shadow',
+        toolAllowlist: ['manage_alerts'],
+        protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
+        deviceId: null, // device-less run — checkAgentGuardrails denies mutations outright
+        deviceSiteId: null,
+      },
+      outcome,
+      intentIds: [],
+      allowedPending: new Map<string, number>(),
+      sessionId: null,
+      executionIdPending: new Map<string, Array<string | null>>(),
+      actPinPending: new Map<string, Array<unknown>>(),
+      actReservation: { count: 0 },
+      deadlineMs: Date.now() + 60_000,
+    } as never);
+
+    const result = await pre('manage_alerts', { action: 'suppress', alertId: ALERT_ID, suppressDuration: 24 });
+
+    const expectedReason = 'Tool "manage_alerts" mutates and the run is not device-bound';
+    expect(result).toEqual({ allowed: false, error: expectedReason });
+    expect(outcome.deniedActions).toContainEqual({ tool: 'manage_alerts', reason: expectedReason });
+    expect(outcome.deniedActions).not.toContainEqual({ tool: 'manage_alerts', reason: 'verdict runs are read-only' });
+  });
+
+  // Review fix (fix round 1, IMPORTANT 2 + 5, PLAN CHANGE — supersedes the
+  // original "intersects the agent's allowlist" design): the floor is served
+  // regardless of what the agent's OWN allowlist grants.
+  it('always exposes the pinned floor + outcome tool to the SDK, regardless of the agent allowlist, with the verdict limits', async () => {
+    seedRows({
+      // Deliberately mismatched agent allowlist — proves the floor is served
+      // regardless, not intersected.
+      effective: policy({ toolAllowlist: ['manage_services'] }),
+      profile: 'verdict',
+    });
+    scriptQuery({ assistantText: 'Verdict recorded.' });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions?.allowedTools).toEqual([
+      'mcp__breeze__manage_alerts',
+      'mcp__breeze__get_device_details',
+      'mcp__breeze__analyze_metrics',
+      'mcp__breeze__query_monitors',
+      'mcp__breeze__submit_alert_verdict',
+    ]);
+    expect(lastQueryOptions?.maxTurns).toBe(4);
+    expect(lastQueryOptions?.maxBudgetUsd).toBe(0.05);
+
+    const extraTools = createBreezeMcpServer.mock.calls[0]?.[4] as unknown[] | undefined;
+    expect(extraTools).toBeDefined();
+    expect(extraTools!.length).toBeGreaterThan(0);
+
+    // F2 fix (Task 16c): createBreezeMcpServer's 6th param (options.onlyTools)
+    // must narrow the REGISTRY, not just allowedTools — same four bare names
+    // as the allowedTools assertion above, minus the mcp__breeze__ prefix and
+    // the outcome tool (which is never in the registry — it rides on
+    // extraTools instead, asserted separately above).
+    const mcpServerOptions = createBreezeMcpServer.mock.calls[0]?.[5] as
+      | { onlyTools?: ReadonlySet<string> }
+      | undefined;
+    expect(mcpServerOptions?.onlyTools).toEqual(
+      new Set(['manage_alerts', 'get_device_details', 'analyze_metrics', 'query_monitors']),
+    );
+  });
+
+  // Task 16e — live-check follow-up. `outcome.budgetExceeded` must reflect
+  // THIS run's effective budget (`runLimits.maxBudgetCentsPerRun`, 5 cents
+  // for the default verdict profile — asserted via `maxBudgetUsd` above),
+  // not the agent's top-level `limits.maxBudgetCentsPerRun` (50 cents by
+  // default). A run costing 3 cents against a 5-cent verdict budget is
+  // under both the SDK's own `maxBudgetUsd` ceiling and the local
+  // `costCents > runLimits.maxBudgetCentsPerRun` backstop, so neither one
+  // should ever flip `budgetExceeded` true.
+  it('a verdict run costing 3 cents against the 5-cent verdict budget does NOT flag budgetExceeded', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({
+      assistantText: 'Verdict recorded.',
+      results: [resultMessage({ total_cost_usd: 0.03 })],
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions?.maxBudgetUsd).toBe(0.05);
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect(final.patch.costCents).toBe(3);
+    const outcome = final.patch.outcome as AgentRunOutcome;
+    expect(outcome.budgetExceeded).toBeFalsy();
+  });
+
+  it('a full-profile run gets the unrestricted registry tool set and no extraTools (negative control)', async () => {
+    seedRows({ effective: policy({ toolAllowlist: ['manage_services'] }) }); // profile defaults to 'full'
+    scriptQuery({ assistantText: 'All good.' });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions?.allowedTools).toEqual(BREEZE_MCP_TOOL_NAMES);
+    const extraTools = createBreezeMcpServer.mock.calls[0]?.[4] as unknown[] | undefined;
+    expect(extraTools ?? []).toEqual([]);
+
+    // F2 fix (Task 16c) negative control: a full-profile run must pass NO
+    // onlyTools — it keeps registering (and therefore exposing) the whole
+    // tool registry, unchanged.
+    const mcpServerOptions = createBreezeMcpServer.mock.calls[0]?.[5];
+    expect(mcpServerOptions).toBeUndefined();
+  });
+
+  // Review fix (fix round 1, IMPORTANT 3): a verdict run that submitted its
+  // verdict but then hit `error_max_turns` before any further assistant text
+  // must NOT be marked a ceiling failure — `outcome.alertVerdict` alone is
+  // "produced something", same as an executed action or a proposal.
+  it('a verdict run that submitted its verdict then hit max_turns finishes normally, not failed', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({
+      toolCalls: [{ tool: 'submit_alert_verdict', input: validVerdict }],
+      // No assistantText: `result.summary` stays empty, so alertVerdict is
+      // the ONLY thing that can save this run from `!producedSomething`.
+      results: [resultMessage({ subtype: 'error_max_turns', is_error: true })],
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect(final.patch.errorCode).toBeUndefined();
+    const outcome = final.patch.outcome as AgentRunOutcome;
+    expect(outcome.alertVerdict).toEqual(validVerdict);
+    expect(outcome.maxTurnsExceeded).toBe(true);
+  });
+
+  // Review fix (fix round 1, MINOR 10): the badge is the surface for a
+  // verdict run, and fix-watches are act-lane only — neither applies.
+  it('finishRun skips run-finished notifications and fix-watch scheduling for a verdict-profile run', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({ assistantText: 'Verdict recorded.' });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(finalTransition()?.to).toBe('completed');
+    expect(resolveRecipientUserIds).not.toHaveBeenCalled();
+    expect(scheduleFixWatch).not.toHaveBeenCalled();
+  });
+
+  it('finishRun still notifies and schedules fix-watch for a full-profile run (contrast)', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }) }); // profile defaults to 'full'
+    scriptQuery({ assistantText: 'All good.' });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(finalTransition()?.to).toBe('completed');
+    expect(resolveRecipientUserIds).toHaveBeenCalled();
+    expect(scheduleFixWatch).toHaveBeenCalled();
+  });
+});
+
+// Phase 2 wave P2-1 (alert verdicts), Task 8, review round 1: `finalizeVerdict`'s
+// wiring into `persistAlertVerdict` — call args, intentId propagation
+// (BEFORE the awaiting_approval/completed decision, IMPORTANT 3), the
+// IMPORTANT-4 stale-status skip, and the verdict_missing /
+// verdict_persist_failed error codes. Persistence internals (insert/
+// supersede/createActionIntent) are covered in alertVerdicts.test.ts;
+// `persistAlertVerdict` is mocked here (see its `vi.mock` above) so these
+// tests exercise only the run-loop-level wiring.
+describe('finalizeVerdict → persistAlertVerdict wiring (P2-1, Task 8, review round 1)', () => {
+  const validVerdict = {
+    classification: 'transient_self_healed' as const,
+    confidence: 0.9,
+    rationale: 'Disk usage returned to normal on its own; no action needed.',
+  };
+
+  const verdictWithSuggestion = {
+    classification: 'actionable' as const,
+    confidence: 0.9,
+    rationale: 'Disk at 96%; safe to suppress while capacity is added.',
+    suggestedAction: {
+      tool: 'manage_alerts' as const, action: 'suppress' as const, alertId: ALERT_ID, suppressDuration: 24,
+    },
+  };
+
+  it('calls persistAlertVerdict with the run (no agentId field) + the loop\'s agentAuth, pushes a returned intentId onto intentIds BEFORE the status decision, and records alertVerdictIntent', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: verdictWithSuggestion }] });
+    persistAlertVerdict.mockResolvedValue({
+      verdictId: 'verdict-99', intentId: 'intent-xyz', suggestionDisposition: 'intent_created',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(persistAlertVerdict).toHaveBeenCalledTimes(1);
+    const [runArg, verdictArg, agentAuthArg] = persistAlertVerdict.mock.calls[0]!;
+    // `agentId` was dropped (review round 1 minor fix — unused). `toolAllowlist`
+    // (review round 2, IMPORTANT 1) is the run's own effective allowlist off
+    // its stored policySnapshot — `policy({ toolAllowlist: [] })` above.
+    expect(runArg).toEqual({
+      id: RUN_ID, orgId: ORG_ID, alertId: ALERT_ID, correlationGroupId: null, deviceId: DEVICE_ID,
+      toolAllowlist: [],
+    });
+    expect(verdictArg).toEqual(verdictWithSuggestion);
+    expect(agentAuthArg).toBeTruthy();
+
+    const final = finalTransition()!;
+    // IMPORTANT 3: a pending intent linked by persistAlertVerdict must be
+    // counted BEFORE the awaiting_approval/completed decision — this run
+    // must NOT finish `completed` despite creating a live approval.
+    expect(final.to).toBe('awaiting_approval');
+    expect(final.patch.errorCode).toBeUndefined();
+    expect(final.patch.intentIds).toContain('intent-xyz');
+    const outcome = final.patch.outcome as AgentRunOutcome;
+    expect(outcome.alertVerdictIntent).toEqual({ disposition: 'intent_created' });
+  });
+
+  it('records alertVerdictIntent with a reason when the suggestion was not turned into an intent', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: verdictWithSuggestion }] });
+    persistAlertVerdict.mockResolvedValue({
+      verdictId: 'verdict-99', intentId: null, suggestionDisposition: 'not_created', suggestionReason: 'no_eligible_approvers',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed'); // no intent id was linked — stays completed
+    const outcome = final.patch.outcome as AgentRunOutcome;
+    expect(outcome.alertVerdictIntent).toEqual({ disposition: 'not_created', reason: 'no_eligible_approvers' });
+  });
+
+  it('does not record alertVerdictIntent when the verdict carried no suggestedAction at all', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: validVerdict }] });
+    // Default beforeEach mock: intentId null, suggestionDisposition 'not_created'.
+
+    await executeAgentRun(RUN_ID);
+
+    const final = finalTransition()!;
+    const outcome = final.patch.outcome as AgentRunOutcome;
+    expect(outcome.alertVerdictIntent).toBeUndefined();
+  });
+
+  it('sets errorCode verdict_missing and runVerdict needs_attention when a verdict run finishes without ever calling submit_alert_verdict', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({ assistantText: 'Looked into it.' }); // no submit_alert_verdict call
+
+    await executeAgentRun(RUN_ID);
+
+    expect(persistAlertVerdict).not.toHaveBeenCalled();
+    const final = finalTransition()!;
+    // Status stays whatever the loop chose — 'completed' — NOT converted to 'failed'.
+    expect(final.to).toBe('completed');
+    expect(final.patch.errorCode).toBe('verdict_missing');
+    const outcome = final.patch.outcome as AgentRunOutcome;
+    expect(outcome.runVerdict).toBe('needs_attention');
+  });
+
+  it('sets errorCode verdict_persist_failed (without converting the run to failed) when persistAlertVerdict throws', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: validVerdict }] });
+    persistAlertVerdict.mockRejectedValue(new Error('db unavailable'));
+
+    await executeAgentRun(RUN_ID);
+
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect(final.patch.errorCode).toBe('verdict_persist_failed');
+  });
+
+  // IMPORTANT 4: the stall reaper (or a second executor) may have already
+  // moved this run out of `running` while the SDK loop was in flight —
+  // persistence must be skipped rather than orphan a live verdict row + a
+  // live approval request under a run nobody owns anymore.
+  it('skips persistAlertVerdict and warns when the run has left `running` before persistence could run', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: validVerdict }] });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // `finalizeVerdict`'s IMPORTANT-4 re-read of `ai_agent_runs.status` is
+    // the SECOND read of that table (the first is `loadRunContext`'s seeded
+    // one) — queue it explicitly rather than let the default synthesis
+    // (which would report 'running') answer it.
+    dbMockState.rowQueues.ai_agent_runs!.push([{ status: 'cancelled' }]);
+
+    await executeAgentRun(RUN_ID);
+
+    expect(persistAlertVerdict).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect(final.patch.errorCode).toBeUndefined(); // not verdict_missing — the verdict WAS produced, just not persisted
+  });
+
+  it('does not touch persistAlertVerdict or the errorCode for a full-profile run (negative control)', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }) }); // profile defaults to 'full'
+    scriptQuery({ assistantText: 'All good.' });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(persistAlertVerdict).not.toHaveBeenCalled();
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect(final.patch.errorCode).toBeUndefined();
+  });
+});

@@ -1,6 +1,8 @@
 // Registers the durable production event subscribers onto the registry
 // (wave 3.5c, #4085; joined by the ticket-helpdesk subscriber, wave 6 PR 3,
-// #3828). This is the ONLY call site that should ever call
+// the anomaly-triggered admission subscriber, wave 6 PR 4, #3828, and the
+// alert-verdict admission subscriber, Phase 2 wave P2-1 task 12). This
+// is the ONLY call site that should ever call
 // `registerEventSubscriber` for these ids — a subscriber that is both
 // `subscribe()`d on the legacy bus AND registered here would fire twice (see
 // eventSubscribers.contract.test.ts, which statically asserts none of the
@@ -40,6 +42,60 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
   registered = true;
 
   configureWebhookFanout(deps);
+
+  registerEventSubscriber({
+    id: 'ai-agent-alert-verdict',
+    // Phase 2 wave P2-1 (alert verdicts), task 12. Admits a profile:'verdict'
+    // run for a newly created alert correlation group (bound to the ROOT
+    // alert's device) or a system/auto-resolved alert within the
+    // auto-resolve window — see alertVerdictSubscriber.ts's header for the
+    // full account.
+    //
+    // Task 13 extends this SAME subscriber (not a second id — controller
+    // decision) with `alert.triggered`: an alert that stays open and
+    // uncorrelated for UNGROUPED_VERDICT_DELAY_MINUTES also gets a verdict
+    // run, via jobs/alertVerdictScheduler.ts's delayed BullMQ job. See that
+    // module's header for the full account.
+    //
+    // Lazy, same reason and same pattern as ai-agent-anomaly below:
+    // alertVerdictSubscriber.ts -> runService.ts's transitive closure
+    // reaches routes/auth/schemas.ts (workerEntrypointClosure.contract.test.ts
+    // caught this the first time a static import was tried here for the
+    // ticket-helpdesk subscriber) — a dynamic import defers that cost to the
+    // first alert.correlation_group.created/alert.resolved/alert.triggered
+    // delivery instead of paying it at eventSubscribers.ts's module-eval time.
+    eventTypes: ['alert.correlation_group.created', 'alert.resolved', 'alert.triggered'],
+    handler: async (event: BreezeEvent) => {
+      if (event.type === 'alert.triggered') {
+        const { handleAlertTriggeredEvent } = await import('../jobs/alertVerdictScheduler');
+        return handleAlertTriggeredEvent(event);
+      }
+      const { handleAlertVerdictEvent } = await import('./aiAgents/alertVerdictSubscriber');
+      return handleAlertVerdictEvent(event);
+    },
+    retry: { attempts: 3, backoffMs: 30_000 },
+  });
+
+  registerEventSubscriber({
+    id: 'ai-agent-anomaly',
+    // v1 scope: admission is triggered on anomaly.incident_opened only —
+    // Task 2's metricAnomalyIncidentPublisher.ts is the only publisher of
+    // this event type.
+    //
+    // Lazy, same reason and same pattern as ai-agent-ticket-helpdesk below:
+    // metricAnomalySubscriber.ts -> runService.ts's transitive closure
+    // reaches routes/auth/schemas.ts (workerEntrypointClosure.contract.test.ts
+    // caught this the first time a static import was tried here for the
+    // ticket-helpdesk subscriber) — a dynamic import defers that cost to the
+    // first anomaly.incident_opened delivery instead of paying it at
+    // eventSubscribers.ts's module-eval time.
+    eventTypes: ['anomaly.incident_opened'],
+    handler: async (event: BreezeEvent) => {
+      const { handleAnomalyIncidentOpenedEvent } = await import('./aiAgents/metricAnomalySubscriber');
+      return handleAnomalyIncidentOpenedEvent(event);
+    },
+    retry: { attempts: 5, backoffMs: 10_000 },
+  });
 
   registerEventSubscriber({
     id: 'webhook-delivery',

@@ -7,6 +7,8 @@ import type {
   AiAgentMode,
   AiAgentRunStatus,
   AiAgentTriggerKind,
+  AiAlertVerdictClassification,
+  AiAlertVerdictPattern,
 } from './aiAgents';
 
 /**
@@ -37,9 +39,25 @@ import type {
  */
 export const AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS = ['args', 'toolInput', 'toolOutput', 'arguments'] as const;
 
-/** All DTOs in this file are versioned (Partner-API schema precedent,
- *  routes/partnerApi/schemas.ts): a shape change bumps this, never mutates
- *  version 1 in place. */
+/**
+ * All DTOs in this file are versioned (Partner-API schema precedent,
+ * routes/partnerApi/schemas.ts) — this never mutates in place once a
+ * version has shipped.
+ *
+ * The bump rule is precise, not "any shape change": an ADDITIVE field that
+ * is always present on the DTO and nullable (a caller that has never seen
+ * the key still gets a value it can type-check against, `null`) does NOT
+ * bump the version — every consumer already has to tolerate unknown keys on
+ * a versioned wire type (that is the whole point of versioning being
+ * available at all), and requiring a version bump for every such addition
+ * would make the version number churn on every backward-compatible change,
+ * defeating its purpose as a signal. `AiAgentRunDetailDto.alertVerdict`
+ * (phase 2 P2-1) is exactly this case — added at version 1, still version 1.
+ *
+ * The version bumps ONLY when a field is removed, renamed, or changes type
+ * or semantics — i.e. when an existing consumer parsing the OLD shape would
+ * misinterpret or reject the NEW one.
+ */
 export const AI_AGENT_RUN_DTO_SCHEMA_VERSION = 1 as const;
 
 /**
@@ -231,6 +249,66 @@ export interface AiAgentRunTicketProposalDto {
   notes: string[];
 }
 
+/**
+ * Phase 2 wave P2-1 (alert verdicts), review round 1 (IMPORTANT 2) — the
+ * disposition of `suggestedAction`'s Tier-2 `manage_alerts` intent attempt.
+ * `'intent_created'` means a genuinely PENDING approval was created (see
+ * `createActionIntent`'s `pending_approval`-only linking contract in
+ * `alertVerdicts.ts`); every other outcome (refused before an attempt,
+ * cancelled for lack of an approver, a thrown error) is `'not_created'`,
+ * discriminated by `reason`. Shared between the API's internal
+ * `AgentRunOutcome.alertVerdictIntent` (services/aiAgents/alertVerdicts.ts)
+ * and this DTO so the two can never drift apart.
+ */
+export type AlertVerdictSuggestionDisposition = 'intent_created' | 'not_created';
+/**
+ * `'not_allowlisted'` (review round 2, IMPORTANT 1) — the agent's own
+ * effective `toolAllowlist` (the run's stored `policySnapshot.effective`,
+ * not the tool's registry tier) admits neither `manage_alerts` nor
+ * `manage_alerts:<action>`. Checked at CREATION time in `alertVerdicts.ts`
+ * so a human is never asked to approve something the RELEASE-time
+ * `checkAgentGuardrails` re-check (`agentReleaseAuthority.ts`) would
+ * terminally deny anyway. `'target_mismatch'` also covers the sibling
+ * device-binding gate there: a suggestion whose target alert's device does
+ * not equal the run's own `deviceId` (including a device-less run) is
+ * refused with this same reason.
+ *
+ * `'superseded_concurrently'` (carry-in C, live-verdict partial unique) — a
+ * concurrent `persistAlertVerdict` call for the SAME target (alert or
+ * correlation group) committed first. This run's own verdict row was never
+ * written; the run's suggestion is skipped rather than attempted against a
+ * verdict that lost the race. See `alertVerdicts.ts`'s write-ordering
+ * docstring for the full mechanism (deferred self-FK + 23505 handling).
+ */
+export type AlertVerdictSuggestionReason =
+  | 'low_confidence' | 'target_mismatch' | 'alert_not_found' | 'no_eligible_approvers' | 'intent_error'
+  | 'not_allowlisted' | 'superseded_concurrently';
+
+/**
+ * Phase 2 wave P2-1 (alert verdicts) — the safe projection of one
+ * `ai_alert_verdicts` row for `GET /ai/agents/runs/:runId`'s detail DTO.
+ * Display fields only, mirroring the rest of this file's leak-impossible
+ * convention: no raw tool `args`, just the classification, confidence,
+ * rationale, and a flattened summary of `pattern`/`suggestedAction`.
+ */
+export interface AiAgentRunAlertVerdictDto {
+  classification: AiAlertVerdictClassification;
+  confidence: number;
+  rationale: string;
+  patternKind: AiAlertVerdictPattern['kind'] | null;
+  evidenceAlertIds: string[];
+  suggestedAction: {
+    tool: 'manage_alerts';
+    action: 'suppress' | 'resolve';
+    /** Review round 1, IMPORTANT 2: was a suggested mutation actually
+     *  turned into a live, pending-approval intent? */
+    disposition: AlertVerdictSuggestionDisposition;
+    /** Display string only — never the raw `Error.message` from
+     *  `createActionIntent`. `null` when `disposition === 'intent_created'`. */
+    reason: AlertVerdictSuggestionReason | null;
+  } | null;
+}
+
 export interface AiAgentRunDetailDto {
   schemaVersion: 1;
   id: string;
@@ -243,6 +321,9 @@ export interface AiAgentRunDetailDto {
   deviceId: string | null;
   deviceHostname: string | null;
   alertId: string | null;
+  /** Wave 6 PR 4 (#3828) — the triggering `metric_anomaly_incidents` row for
+   *  a `triggerKind: 'anomaly'` run; null for every other trigger kind. */
+  anomalyIncidentId: string | null;
   triggerKind: AiAgentTriggerKind;
   modeAtStart: Exclude<AiAgentMode, 'off'>;
   status: AiAgentRunStatus;
@@ -268,4 +349,42 @@ export interface AiAgentRunDetailDto {
    * simply lacks the key). See `AiAgentRunTicketProposalDto`'s docstring.
    */
   ticketProposal: AiAgentRunTicketProposalDto | null;
+  /**
+   * Phase 2 wave P2-1 (alert verdicts) — the verdict this run produced, for a
+   * `verdict`-profile run that reached a `submit_alert_verdict` outcome. Null
+   * for every `full`-profile run and for a `verdict`-profile run that has not
+   * (yet, or ever) produced one. Populated by Task 8's projection; every
+   * caller before that lands sees `null` unconditionally.
+   */
+  alertVerdict: AiAgentRunAlertVerdictDto | null;
+}
+
+/**
+ * Phase 2 wave P2-1 (alert verdicts), Task 14 — the safe projection of one
+ * LIVE `ai_alert_verdicts` row carried on `GET /alerts` (list), `GET
+ * /alerts/:id` (detail), and a correlation group's `GET
+ * /correlations/:groupId` detail. Deliberately NOT `AiAgentRunAlertVerdictDto`
+ * (the run-detail projection above): that DTO is built from the in-flight
+ * `AlertVerdictOutcome` + this file's own `intentInfo` bookkeeping, neither of
+ * which is available where the alerts API attaches this — only the persisted
+ * `ai_alert_verdicts` row is. In particular `suggestedAction.disposition`
+ * (was a Tier-2 intent actually created?) is NOT reproduced here: answering
+ * that cheaply would require re-reading the verdict's owning run row, which
+ * this call site never loads. `suggestedIntentId` alone (present only when an
+ * intent WAS created and linked back) is what the alerts UI has to work with.
+ *
+ * `confidence` is `Number(...)` of the `numeric(3,2)` column — never the raw
+ * Postgres string. `feedback`/`suggestedIntentId` mirror the row verbatim
+ * (both already nullable, already display-safe — no raw tool payload lives on
+ * this table at all, unlike `ai_agent_runs.outcome`).
+ */
+export interface AlertAiVerdictSummaryDto {
+  id: string;
+  classification: AiAlertVerdictClassification;
+  confidence: number;
+  rationale: string;
+  patternKind: AiAlertVerdictPattern['kind'] | null;
+  feedback: 'up' | 'down' | null;
+  suggestedIntentId: string | null;
+  createdAt: string;
 }

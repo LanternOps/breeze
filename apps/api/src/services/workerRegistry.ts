@@ -987,6 +987,20 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #3828 wave-6-4 task 2. Same shape/precedent as ticketOutboxPublisher —
+    // drains metric_anomaly_incidents' dispatch marker onto the generic
+    // eventBus. No agent-socket-local dispatch dependency, so 'global'.
+    name: 'metricAnomalyIncidentPublisher',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/metricAnomalyIncidentPublisher');
+      return {
+        init: m.initializeMetricAnomalyIncidentPublisher,
+        shutdown: m.shutdownMetricAnomalyIncidentPublisher,
+      };
+    },
+  },
+  {
     name: 'contractWorker',
     placement: 'global',
     load: async () => {
@@ -1004,6 +1018,23 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/aiUnattendedExposureRetention');
       return { init: m.initializeAiUnattendedExposureRetention, shutdown: m.shutdownAiUnattendedExposureRetention };
+    },
+  },
+  {
+    // Phase 2 wave P2-1 (alert verdicts), task 13: delayed BullMQ job that
+    // admits a verdict run for an alert that stays open and uncorrelated for
+    // UNGROUPED_VERDICT_DELAY_MINUTES. Its closure reaches
+    // `enqueueVerdictRunForAlert` (alertVerdictSubscriber.ts) ->
+    // `createAndEnqueueAgentRun` (runService.ts) -> `routes/agentWs.ts` /
+    // `services/agentCommandAwait.ts` (verified by
+    // workerEntrypointClosure.contract.test.ts, which is the mechanical
+    // authority here — do not relitigate by guessing) — so `socket-owner`,
+    // same placement as `aiAgentRunner` above for the identical reason.
+    name: 'alertVerdictScheduler',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/alertVerdictScheduler');
+      return { init: m.initializeAlertVerdictScheduler, shutdown: m.shutdownAlertVerdictScheduler };
     },
   },
 ];

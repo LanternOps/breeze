@@ -89,6 +89,7 @@ const openAlert = (id: string, status: 'active' | 'acknowledged' | 'suppressed' 
   deviceId: DEVICE_ID,
   status,
   suppressedUntil: null as Date | null,
+  triggeredAt: new Date('2026-08-29T10:00:00.000Z'),
 });
 
 const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});

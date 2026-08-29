@@ -79,6 +79,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_agent_fix_watches',
   'ai_agent_runs',
   'ai_agents',
+  // ai_alert_verdicts (Phase 2 wave P2-1, #4187): references ai_agent_runs
+  // (ON DELETE CASCADE) and action_intents (SET NULL). Both carry an
+  // explicit ON DELETE, so position relative to them does not matter for FK
+  // direction — topologicalCascadeOrder()'s runtime pg_constraint read
+  // orders the actual DELETE, not this list's alphabetization (same
+  // reasoning as ai_unattended_exposure above).
+  'ai_alert_verdicts',
   'ai_budgets',
   'ai_cost_usage',
   'ai_screenshots',
@@ -248,6 +255,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'maintenance_windows',
   'metric_anomalies',
   'metric_anomaly_candidates',
+  'metric_anomaly_incidents',
   'metric_rollups',
   'metric_rollups_default',
   'ml_feedback_events',

@@ -2,9 +2,14 @@
 // event_delivery_receipts rows and the EVENT_DISPATCH_QUEUE_SUBSCRIBERS flag —
 // renaming one orphans receipts and silently drops it from the queue cohort.
 export const EVENT_SUBSCRIBER_IDS = [
+  // Phase 2 wave P2-1 (alert verdicts), task 12 — durable alert-verdict
+  // admission subscriber. Alphabetically first
+  // ('ai-agent-alert-verdict' < 'ai-agent-anomaly'); otherwise an ordinary
+  // entry, subject to every rule the header comment above describes.
+  'ai-agent-alert-verdict',
+  // Wave 6 PR 4 (#3828) — durable anomaly-triggered admission subscriber.
+  'ai-agent-anomaly',
   // Wave 6 PR 3 (#3828) — durable ticket-helpdesk admission subscriber.
-  // Listed first alphabetically ('ai-' < 'au-'); it is otherwise an ordinary
-  // sixth entry, subject to every rule the header comment above describes.
   'ai-agent-ticket-helpdesk',
   'automation-worker',
   'dns-threat-alerts',

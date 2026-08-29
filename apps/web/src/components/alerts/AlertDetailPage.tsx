@@ -25,6 +25,8 @@ import {
   normalizeMetricAnomalyContext,
   type MetricAnomalyAlertContext,
 } from './alertMlContext';
+import type { AlertAiVerdictSummaryDto } from '@breeze/shared';
+import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
 
 type Alert = {
   id: string;
@@ -48,6 +50,9 @@ type Alert = {
   context?: Record<string, unknown>;
   contextData?: Record<string, unknown>;
   anomalyContext?: MetricAnomalyAlertContext | null;
+  // Phase 2 wave P2-1 (alert verdicts), Task 15. Null when the alert has no
+  // verdict yet (or the org has AI agents disabled).
+  aiVerdict?: AlertAiVerdictSummaryDto | null;
 };
 
 type LinkedTicket = {
@@ -284,7 +289,25 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                   <StatusIcon className="h-3 w-3" />
                   {t(/* i18n-dynamic */ `alertDetailPage.status.${alert.status}`)}
                 </span>
+                {alert.aiVerdict && (
+                  <AlertVerdictBadge
+                    verdict={alert.aiVerdict}
+                    onFeedback={value => submitVerdictFeedback(alert.aiVerdict!.id, value)}
+                  />
+                )}
               </div>
+              {alert.aiVerdict && (
+                <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{alert.aiVerdict.rationale}</p>
+              )}
+              {alert.aiVerdict?.suggestedIntentId && (
+                <a
+                  href="/approvals"
+                  className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                >
+                  {t('alertVerdict.suggestionPending')}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
             </div>
           </div>
 

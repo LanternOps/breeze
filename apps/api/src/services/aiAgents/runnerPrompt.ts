@@ -21,7 +21,7 @@
  *  - the task turn NEVER repeats the instructions — a second, undelimited copy
  *    would defeat the fence.
  */
-import type { AiAgentKind, AiAgentMode, AiAgentTriggerKind } from '@breeze/shared';
+import type { AiAgentKind, AiAgentMode, AiAgentRunProfile, AiAgentTriggerKind } from '@breeze/shared';
 
 export const OPERATOR_GUIDANCE_OPEN_TAG = '<operator-guidance>';
 export const OPERATOR_GUIDANCE_CLOSE_TAG = '</operator-guidance>';
@@ -55,6 +55,22 @@ export const TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER =
   + 'ticket must be stated in your final summary as a PROPOSAL for a human to review and post '
   + 'themselves; it is never sent on your behalf.';
 
+/**
+ * Wave 6 PR 4 (#3828) — design authority: an anomaly-triggered run is a
+ * PILOT signal, not a proven one, and is FORCED shadow regardless of the
+ * agent's configured mode (`runService.ts`'s forced-shadow conditional).
+ * This is reinforcement, not the enforcement mechanism — the shadow-mode
+ * section above already guarantees every mutating call is intercepted as a
+ * proposal. Telling the model the detector is unproven keeps its summary
+ * honest about false-positive risk instead of treating the anomaly as an
+ * already-confirmed incident.
+ */
+export const ANOMALY_UNPROVEN_DETECTOR_DISCLAIMER =
+  'This run was triggered by an automated metric-anomaly detector that is still being '
+  + 'validated (pilot). Treat the anomaly as a lead to investigate, not a confirmed problem — '
+  + 'many flagged windows turn out to be ordinary variance. If your investigation shows this '
+  + 'looks like a false positive, say so plainly in your summary.';
+
 /** Matches an operator-guidance tag in any case, with or without attributes. */
 const GUIDANCE_TAG_RE = /<\s*\/?\s*operator-guidance[^>]*>/gi;
 
@@ -82,6 +98,37 @@ export interface AgentRunTicketPromptContext {
   truncated: boolean;
 }
 
+/**
+ * Already-bounded anomaly context (`anomalyContext.ts`'s `AnomalyRunContext`)
+ * — the run-loop-facing type is declared HERE, mirroring
+ * `AgentRunTicketPromptContext` above: this module has no DB dependency of
+ * its own, and `runLoop.ts` is the one place that reconciles both shapes.
+ */
+export interface AgentRunAnomalyPromptContext {
+  anomalyType: string;
+  bucketSeconds: number;
+  windowStart: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  peakScore: number;
+  rowCount: number;
+  metricNames: string[];
+  /** Highest score first — see `anomalyContext.ts`'s `assembleAnomalyContext`. */
+  siblings: Array<{
+    metricName: string;
+    kind: string | null;
+    score: number;
+    observedValue: number | null;
+    baselineValue: number | null;
+    baselineMin: number | null;
+    baselineMax: number | null;
+    evidence: Record<string, number | undefined>;
+    baseline: Record<string, number | undefined>;
+  }>;
+  /** True when `anomalyContext.ts` capped or trimmed siblings to fit its byte ceiling. */
+  truncated: boolean;
+}
+
 export interface AgentRunPromptContext {
   agent: { name: string; kind: AiAgentKind };
   run: {
@@ -93,7 +140,24 @@ export interface AgentRunPromptContext {
   device: { id: string; hostname: string; osType: string } | null;
   alert: { title: string; severity: string; message: string | null } | null;
   ticket: AgentRunTicketPromptContext | null;
+  anomaly: AgentRunAnomalyPromptContext | null;
   instructions: string | null;
+  /** Phase 2 wave P2-1 (alert verdicts) — see `verdictProfile.ts`. */
+  profile: AiAgentRunProfile;
+  /**
+   * Set only for a verdict-profile run admitted against a correlation group
+   * (`run.correlationGroupId`) — structurally the same shape as
+   * `RunContext['correlationGroup']` (runLoop.ts), declared independently
+   * here to avoid a circular import between the two modules, same as
+   * `device`/`alert` above.
+   */
+  correlationGroup: {
+    id: string;
+    memberCount: number;
+    noiseReductionPercent: number;
+    rootAlertId: string | null;
+    correlationTypes: string[];
+  } | null;
 }
 
 /**
@@ -124,7 +188,15 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
     + 'answer questions, so never ask one — investigate with the tools you have and report.',
   );
 
-  if (ctx.run.mode === 'shadow') {
+  if (ctx.profile === 'verdict') {
+    sections.push(
+      '## Mode: verdict\n'
+      + 'This run has NO act permissions: every tool exposed to you is read-only, and there is no '
+      + 'mechanism on this run to execute — or even propose — a mutation directly. Investigate '
+      + 'using only the tools available to you, then finish by calling submit_alert_verdict '
+      + 'exactly once with your classification. That call IS the output of this run.',
+    );
+  } else if (ctx.run.mode === 'shadow') {
     sections.push(
       '## Mode: shadow\n'
       + 'You are in SHADOW mode. You may read and diagnose freely, but you must PROPOSE and '
@@ -164,6 +236,10 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
     sections.push(`## Ticket\n${TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER}`);
   }
 
+  if (ctx.anomaly) {
+    sections.push(`## Anomaly\n${ANOMALY_UNPROVEN_DETECTOR_DISCLAIMER}`);
+  }
+
   const instructions = sanitizeOperatorInstructions(ctx.instructions);
   if (instructions) {
     sections.push(
@@ -178,10 +254,72 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
 }
 
 /**
+ * Phase 2 wave P2-1 (alert verdicts) — the task turn for a verdict-profile
+ * run. Deliberately does NOT reuse the `full`-profile prompt below: a
+ * verdict run has no act permissions and a completely different job
+ * (classify, don't fix), so the rubric replaces the investigate/summarize
+ * instruction entirely rather than layering on top of it.
+ */
+function buildVerdictTaskPrompt(ctx: AgentRunPromptContext): string {
+  const group = ctx.correlationGroup;
+  const lines: string[] = [];
+
+  lines.push(
+    `You are judging ${group ? `a correlation group of ${group.memberCount} alerts` : 'ONE alert'}. `
+    + 'Use only the read tools available to you.',
+  );
+  // P2-1 live check (task 16): 3 of 4 real claude-sonnet-4-6 runs spent every
+  // available turn on read tools and never reached submit_alert_verdict.
+  // Push toward submitting fast when the facts already suffice, rather than
+  // investigating exhaustively before deciding.
+  lines.push(
+    'If the alert, device and group facts below already let you decide with '
+    + '≥ 0.6 confidence, call submit_alert_verdict on your FIRST turn. You '
+    + 'have at most 3 read-tool calls before you must submit; a run that ends '
+    + 'without submit_alert_verdict is a failure.',
+  );
+  lines.push('Decide: actionable | transient_self_healed | recurring_pattern | duplicate_of_group | needs_human.');
+  lines.push('- transient_self_healed: the alert has already resolved on its own and the metric is normal now.');
+  lines.push(
+    '- recurring_pattern: the same rule on this device fired and cleared ≥3 times on a schedule '
+    + '(use manage_alerts list with the rule/device to check history); include pattern.kind and evidence alert ids.',
+  );
+  lines.push("- duplicate_of_group: this alert shares a root cause with its correlation group's root alert.");
+  lines.push('- actionable: something still needs fixing. Do not propose a fix — that is a different run.');
+  lines.push('- needs_human: you cannot decide with ≥0.6 confidence.');
+  lines.push(
+    'Only suggest an action when confidence ≥ 0.8: resolve for transient_self_healed; '
+    + 'suppress (hours, at least 1) for recurring_pattern.',
+  );
+  lines.push('Finish by calling submit_alert_verdict exactly once. Your rationale is shown to technicians; ≤ 2 sentences.');
+
+  lines.push('');
+  if (ctx.alert) {
+    lines.push(`Alert severity: ${ctx.alert.severity}`);
+    lines.push(`Alert: ${ctx.alert.title}`);
+    if (ctx.alert.message) lines.push(`Alert detail: ${ctx.alert.message}`);
+  }
+  if (ctx.device) {
+    lines.push(`Target device: ${ctx.device.hostname} (${ctx.device.osType}, id ${ctx.device.id})`);
+  }
+  if (group) {
+    lines.push(
+      `Correlation group ${group.id}: ${group.memberCount} member alerts, `
+      + `${group.noiseReductionPercent}% noise reduction, root alert ${group.rootAlertId ?? 'none'}`
+      + (group.correlationTypes.length > 0 ? `, correlation types: ${group.correlationTypes.join(', ')}` : ''),
+    );
+  }
+
+  return lines.join('\n');
+}
+
+/**
  * The single user turn that starts the run. Facts only — the operator's
  * instructions deliberately do NOT appear here (see the module header).
  */
 export function buildAgentRunTaskPrompt(ctx: AgentRunPromptContext): string {
+  if (ctx.profile === 'verdict') return buildVerdictTaskPrompt(ctx);
+
   const lines: string[] = [];
 
   lines.push(`Trigger: ${ctx.run.triggerKind}`);
@@ -202,6 +340,7 @@ export function buildAgentRunTaskPrompt(ctx: AgentRunPromptContext): string {
   }
 
   if (ctx.ticket) lines.push(...ticketPromptLines(ctx.ticket));
+  if (ctx.anomaly) lines.push(...anomalyPromptLines(ctx.anomaly));
 
   lines.push('');
   lines.push(
@@ -209,11 +348,15 @@ export function buildAgentRunTaskPrompt(ctx: AgentRunPromptContext): string {
       ? 'Investigate this ticket: establish what is actually going wrong for the requester, '
         + 'what the likely cause is, and what should be done about it. Then summarize — your '
         + 'summary is the ONLY place a proposed reply or note may appear.'
-      : ctx.alert
-        ? 'Investigate this alert on the target device: establish what is actually happening, '
-          + 'what the likely cause is, and what should be done about it. Then summarize.'
-        : 'Assess the health of the target scope: establish whether anything needs attention, '
-          + 'what the likely cause is, and what should be done about it. Then summarize.',
+      : ctx.anomaly
+        ? 'Investigate this anomaly on the target device: establish whether it reflects a real '
+          + 'problem or is more likely noise, what the probable cause is (if real), and what '
+          + 'should be done about it. Then summarize.'
+        : ctx.alert
+          ? 'Investigate this alert on the target device: establish what is actually happening, '
+            + 'what the likely cause is, and what should be done about it. Then summarize.'
+          : 'Assess the health of the target scope: establish whether anything needs attention, '
+            + 'what the likely cause is, and what should be done about it. Then summarize.',
   );
 
   return lines.join('\n');
@@ -264,6 +407,70 @@ function ticketPromptLines(ticket: AgentRunTicketPromptContext): string[] {
       '(Some ticket history was too large to include in full and was truncated — the most '
       + 'recent comments and structured fields above are complete; older comments and/or the '
       + 'description tail may be missing.)',
+    );
+  }
+
+  return lines;
+}
+
+/**
+ * `evidence` keys that are ALSO surfaced as their own typed sibling columns
+ * (`observedValue`/`baselineValue`/`baselineMax` — see `anomalyContext.ts`'s
+ * `EVIDENCE_NUMERIC_KEYS`) — skipped when rendering the whitelisted
+ * `evidence` excerpt below so the same number never appears twice under two
+ * different labels.
+ */
+const EVIDENCE_KEYS_ALREADY_TYPED = new Set(['observedValue', 'baselineValue', 'baselineMax']);
+
+/**
+ * The anomaly portion of the task turn: the canonical incident summary, then
+ * per-metric detail (highest score first) from the already-bounded,
+ * already-whitelisted excerpt `anomalyContext.ts` assembled. Mirrors
+ * `ticketPromptLines` above in shape.
+ *
+ * Renders every field `anomalyContext.ts` put on the sibling excerpt,
+ * including the whitelisted `evidence`/`baseline` jsonb pairs — those are
+ * the entire point of the excerpt (they're what lets the model judge how
+ * anomalous the window actually is), and `anomalyContext.ts` has already
+ * done the hostile-jsonb filtering: only known numeric keys ever reach
+ * `sibling.evidence`/`sibling.baseline` in the first place, so it's safe to
+ * render every key present here.
+ */
+function anomalyPromptLines(anomaly: AgentRunAnomalyPromptContext): string[] {
+  const lines: string[] = [''];
+  lines.push(`Anomaly: ${anomaly.anomalyType} (peak score ${anomaly.peakScore})`);
+  lines.push(
+    `Window: ${anomaly.windowStart} (bucket ${anomaly.bucketSeconds}s) | `
+    + `First seen: ${anomaly.firstSeenAt} | Last seen: ${anomaly.lastSeenAt}`,
+  );
+  if (anomaly.metricNames.length > 0) lines.push(`Metrics involved: ${anomaly.metricNames.join(', ')}`);
+  lines.push(`Detector rows collapsed into this incident: ${anomaly.rowCount}`);
+
+  if (anomaly.siblings.length > 0) {
+    lines.push('');
+    lines.push('Per-metric detail (highest score first):');
+    for (const sibling of anomaly.siblings) {
+      const parts = [`score ${sibling.score}`];
+      if (sibling.observedValue !== null) parts.push(`observed ${sibling.observedValue}`);
+      if (sibling.baselineValue !== null) parts.push(`baseline ${sibling.baselineValue}`);
+      if (sibling.baselineMin !== null) parts.push(`baselineMin ${sibling.baselineMin}`);
+      if (sibling.baselineMax !== null) parts.push(`baselineMax ${sibling.baselineMax}`);
+      if (sibling.kind) parts.push(`detector ${sibling.kind}`);
+      for (const [key, value] of Object.entries(sibling.evidence)) {
+        if (value !== undefined && !EVIDENCE_KEYS_ALREADY_TYPED.has(key)) parts.push(`${key} ${value}`);
+      }
+      for (const [key, value] of Object.entries(sibling.baseline)) {
+        if (value !== undefined) parts.push(`${key} ${value}`);
+      }
+      lines.push(`- ${sibling.metricName}: ${parts.join(', ')}`);
+    }
+  }
+
+  if (anomaly.truncated) {
+    lines.push('');
+    lines.push(
+      '(Some lower-scoring per-metric detail was omitted to keep this context bounded — the '
+      + 'highest-scoring detectors above are complete.)',
     );
   }
 

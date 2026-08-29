@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { and, count, eq, gte, inArray, isNotNull, isNull, lt, or, sql, sum } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
+import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import type {
   AgentRunVerdict,
   AiAgentKind,
   AiAgentPolicySnapshot,
+  AiAgentRunProfile,
   AiAgentRunStatus,
   AiAgentTriggerKind,
   AiAgentTriggers,
@@ -21,7 +23,7 @@ import {
 // admission gate every trigger path calls, and pulling the barrel would force
 // every partial-mock unit test of those paths to stub the whole schema surface.
 import { aiAgents, aiAgentRuns, type AiAgentRunRow } from '../../db/schema/aiAgents';
-import { devices } from '../../db/schema/devices';
+import { deviceGroupMemberships, devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
 import { checkBudget } from '../aiCostTracker';
 import { isDeviceInMaintenanceWindow } from '../deploymentEngine';
@@ -69,6 +71,14 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *                            breaker itself (recordRunTerminal, the
  *                            terminalization chokepoint) is a later task in
  *                            this same PR.
+ *  - maxVerdictRunsPerHour — HERE (admission rule 6b), verdict-profile runs
+ *                            only — counted separately from maxRunsPerHour so
+ *                            verdict volume can never starve full-profile runs.
+ *  - maxConcurrentVerdictRuns — HERE (admission rule 6b), verdict-profile runs
+ *                            only — counted separately from maxConcurrentRuns.
+ *  - verdictBudgetCentsPerRun — run loop (verdictLimits(), verdictProfile.ts):
+ *                            substitutes for maxBudgetCentsPerRun on a
+ *                            verdict-profile run; not enforced here.
  */
 
 export interface CreateAgentRunInput {
@@ -105,8 +115,46 @@ export interface CreateAgentRunInput {
     categoryId: string | null;
     priority: 'low' | 'normal' | 'high' | 'urgent';
   };
+  /**
+   * The triggering canonical incident for `triggerKind: 'anomaly'` runs
+   * (wave 6 PR 4, #3828 Task 3). Unlike ticket runs, anomaly runs ARE
+   * device-bound — `deviceId` above is the incident's device, so the run
+   * still passes device pinning / site-scope / maintenance-window checks.
+   */
+  anomalyIncidentId?: string | null;
+  /**
+   * Evaluated against `policy.triggers.anomalyTypes`/`metricNames`/
+   * `minAnomalyScore` (`evaluateAnomalyTriggerFilters` below) plus the same
+   * device-bound narrowing filters `evaluateAgentTriggerFilters` applies to
+   * an alert trigger (siteIds/deviceGroupIds/deviceTags) — same shape as
+   * `alertContext`/`ticketContext` above: the CALLER
+   * (`metricAnomalySubscriber.ts`) loads the incident + device row and
+   * passes the narrowing-relevant fields in, rather than this module
+   * re-reading them itself.
+   */
+  anomalyContext?: {
+    anomalyType: string;
+    metricNames: string[];
+    peakScore: number;
+    siteId: string | null;
+    deviceTags: string[];
+  };
   /** e.g. `alert:${alertId}`, `manual:${randomUUID()}`. Unique per org. */
   dedupeKey: string;
+  /**
+   * Phase 2 wave P2-1 (alert verdicts). `'full'` (the default when omitted)
+   * is the pre-existing run shape; `'verdict'` is a lighter-weight run scoped
+   * to producing one `ai_alert_verdicts` row instead of a full triage/patch/
+   * helpdesk turn. Admission counts a verdict run against its OWN
+   * concurrency/rate caps (`maxConcurrentVerdictRuns`/`maxVerdictRunsPerHour`)
+   * and skips the cooldown step entirely — see step 5/6b below.
+   */
+  profile?: AiAgentRunProfile;
+  /**
+   * Set only for a verdict run evaluating a correlation group rather than a
+   * single alert. `null`/omitted for every other run.
+   */
+  correlationGroupId?: string | null;
 }
 
 export type AgentRunSkipReason =
@@ -115,7 +163,14 @@ export type AgentRunSkipReason =
   | 'trigger_filter_mismatch' | 'maintenance_window' | 'cooldown'
   | 'max_concurrent_runs' | 'max_runs_per_hour' | 'org_budget_exceeded'
   | 'agent_daily_budget_exceeded' | 'duplicate' | 'ownership_mismatch'
-  | 'device_not_in_org';
+  | 'device_not_in_org'
+  // Phase 2 wave P2-1 (alert verdicts) — the verdict-profile equivalents of
+  // max_concurrent_runs/max_runs_per_hour, counted against
+  // maxConcurrentVerdictRuns/maxVerdictRunsPerHour instead (admission rule
+  // 6b). Deliberately NOT added to PUBLISHED_SKIP_REASONS below: these are
+  // volume guards on a high-frequency, cheap run shape, not a policy event
+  // worth a bus publish.
+  | 'max_concurrent_verdict_runs' | 'verdict_rate';
 
 export type CreateAgentRunResult =
   | { created: true; run: AiAgentRunRow }
@@ -157,6 +212,35 @@ function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * Org-pinned device-group membership lookup shared by every trigger-filter
+ * evaluator below (`evaluateAgentTriggerFilters` today; the anomaly path,
+ * Task 3, reuses it too). Mirrors `alertService.ts`'s
+ * `getApplicableRules` group-membership query, with an explicit `org_id`
+ * pin added: this runs inside a SYSTEM db context (see call sites), which
+ * bypasses RLS, so the org scoping that RLS would otherwise provide has to
+ * be asserted in the WHERE clause itself rather than assumed from context.
+ *
+ * Skipped entirely (no query) when `groupIds` is empty — the common case,
+ * and consistent with every other narrowing filter's
+ * undefined/empty-means-unrestricted convention costing nothing extra.
+ */
+async function deviceMatchesAnyGroup(
+  deviceId: string,
+  orgId: string,
+  groupIds: readonly string[],
+): Promise<boolean> {
+  if (groupIds.length === 0) return true;
+  const memberships = await inSystemDbContext(() => db
+    .select({ groupId: deviceGroupMemberships.groupId })
+    .from(deviceGroupMemberships)
+    .where(and(
+      eq(deviceGroupMemberships.deviceId, deviceId),
+      eq(deviceGroupMemberships.orgId, orgId),
+    )));
+  return memberships.some((m) => groupIds.includes(m.groupId));
+}
+
+/**
  * Spec §5.3 trigger filters.
  *
  * Asymmetry is deliberate and load-bearing: `alertSeverities` is an explicit
@@ -164,16 +248,30 @@ function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
  * must not fire on everything), while every other filter is a narrowing one
  * where empty/absent means "all".
  *
- * `deviceGroupIds` is deliberately NOT evaluated here: resolving group
- * membership costs a query per trigger, and the caller has no group ids on the
- * alert context. Deferred to wave 6 — until then a group filter is inert and
- * WIDER than the operator asked for, which is why it is called out in the PR
- * body rather than silently ignored.
+ * `deviceGroupIds` (wave 6 PR 4, #3828 Task 1 — previously "deliberately NOT
+ * evaluated", see git history for the old docstring): resolves group
+ * membership via an org-pinned `device_group_memberships` lookup
+ * (`deviceMatchesAnyGroup` above), so this function is now ASYNC. Blast-
+ * radius decision recorded here rather than threading `deviceGroupIds`
+ * through every caller-supplied context: at the time of this change there
+ * was exactly one production call site (`createAndEnqueueAgentRun` below)
+ * and one context-building caller (`automationRuntime.ts`, which does not
+ * need to change at all) — awaiting here is strictly smaller than adding a
+ * membership query to every current AND future caller that builds an
+ * `alertContext`, and centralizes the lookup for Task 3's anomaly path to
+ * reuse via `deviceMatchesAnyGroup` rather than re-implementing it.
+ *
+ * A non-empty `deviceGroupIds` passes iff `deviceId` is a member of ANY
+ * listed group; `deviceId === null` (no device to check) fails the filter
+ * whenever the list is non-empty, same treatment as `ctx.siteId === null`
+ * above it.
  */
-export function evaluateAgentTriggerFilters(
+export async function evaluateAgentTriggerFilters(
   triggers: AiAgentTriggers,
   ctx: NonNullable<CreateAgentRunInput['alertContext']>,
-): boolean {
+  deviceId: string | null,
+  orgId: string,
+): Promise<boolean> {
   const severities = triggers.alertSeverities ?? [];
   if (!severities.includes(ctx.severity)) return false;
 
@@ -185,6 +283,12 @@ export function evaluateAgentTriggerFilters(
 
   const deviceTags = triggers.deviceTags ?? [];
   if (deviceTags.length > 0 && !deviceTags.some((tag) => ctx.deviceTags.includes(tag))) return false;
+
+  const groupIds = triggers.deviceGroupIds ?? [];
+  if (groupIds.length > 0) {
+    if (deviceId === null) return false;
+    if (!(await deviceMatchesAnyGroup(deviceId, orgId, groupIds))) return false;
+  }
 
   return true;
 }
@@ -235,6 +339,51 @@ export function evaluateTicketTriggerFilters(
 }
 
 /**
+ * Wave 6 PR 4 (#3828 Task 3) — anomaly-trigger narrowing filters.
+ *
+ * `anomalyTypes`/`metricNames`/`minAnomalyScore` follow the same
+ * narrowing (empty/absent = unrestricted) convention as every OTHER filter
+ * here — NOT `alertSeverities`' opt-in-list asymmetry — matching the
+ * validator's `.min(1)`-or-undefined declaration for these fields
+ * (`packages/shared/src/validators/aiAgents.ts`). `minAnomalyScore` is a
+ * floor: the incident's `peakScore` must be `>=` it.
+ *
+ * The device-bound filters (`siteIds`/`deviceTags`/`deviceGroupIds`) are
+ * evaluated with the EXACT same semantics `evaluateAgentTriggerFilters`
+ * uses for an alert trigger — anomaly runs are device-bound too (unlike
+ * ticket runs), so `deviceGroupIds` reuses `deviceMatchesAnyGroup` directly
+ * rather than re-implementing the membership lookup.
+ */
+export async function evaluateAnomalyTriggerFilters(
+  triggers: AiAgentTriggers,
+  ctx: NonNullable<CreateAgentRunInput['anomalyContext']>,
+  deviceId: string | null,
+  orgId: string,
+): Promise<boolean> {
+  const anomalyTypes = triggers.anomalyTypes ?? [];
+  if (anomalyTypes.length > 0 && !anomalyTypes.includes(ctx.anomalyType)) return false;
+
+  const metricNames = triggers.metricNames ?? [];
+  if (metricNames.length > 0 && !metricNames.some((name) => ctx.metricNames.includes(name))) return false;
+
+  if (triggers.minAnomalyScore !== undefined && ctx.peakScore < triggers.minAnomalyScore) return false;
+
+  const siteIds = triggers.siteIds ?? [];
+  if (siteIds.length > 0 && (ctx.siteId === null || !siteIds.includes(ctx.siteId))) return false;
+
+  const deviceTags = triggers.deviceTags ?? [];
+  if (deviceTags.length > 0 && !deviceTags.some((tag) => ctx.deviceTags.includes(tag))) return false;
+
+  const groupIds = triggers.deviceGroupIds ?? [];
+  if (groupIds.length > 0) {
+    if (deviceId === null) return false;
+    if (!(await deviceMatchesAnyGroup(deviceId, orgId, groupIds))) return false;
+  }
+
+  return true;
+}
+
+/**
  * Skips that are worth an event on the bus vs. skips that are merely logged.
  *
  * Everything before the agent is resolved-and-enabled fires on EVERY trigger in
@@ -242,6 +391,10 @@ export function evaluateTicketTriggerFilters(
  * publishing there would put one Redis stream write on the hot alert path for a
  * non-event. Once a live agent has genuinely declined a trigger, the skip IS
  * the news, so it goes on the bus.
+ *
+ * `max_concurrent_verdict_runs`/`verdict_rate` (phase 2 P2-1) are
+ * deliberately absent: they are volume guards on a high-frequency, cheap
+ * run shape, not a policy event — see `AgentRunSkipReason`'s docstring.
  */
 const PUBLISHED_SKIP_REASONS: ReadonlySet<AgentRunSkipReason> = new Set([
   'circuit_open',
@@ -424,6 +577,20 @@ export async function createAndEnqueueAgentRun(
     );
   }
 
+  // Wave 6 PR 4 (#3828 Task 3) — same posture as the ticketId guard above,
+  // for the same reason: `runLoop.loadRunContext`'s anomaly-context branch
+  // (Task 4) is gated on `run.anomalyIncidentId` alone, and the forced-shadow
+  // override two lines below is keyed on the same condition. A caller that
+  // set `anomalyIncidentId` on a non-'anomaly' triggerKind would therefore
+  // decouple "hostile anomaly evidence reaches the prompt" from "the run is
+  // forced shadow" — a caller bug, rejected outright rather than silently
+  // admitted.
+  if (input.anomalyIncidentId && triggerKind !== 'anomaly') {
+    throw new Error(
+      `createAndEnqueueAgentRun: anomalyIncidentId is only valid with triggerKind 'anomaly' (got '${triggerKind}')`,
+    );
+  }
+
   let snapshot: AiAgentPolicySnapshot | null = null;
   const skip = (reason: AgentRunSkipReason): CreateAgentRunResult => {
     // A dropped trigger must never be invisible (spec §7's silent-drop finding).
@@ -480,7 +647,16 @@ export async function createAndEnqueueAgentRun(
   // check structurally tied to the thing it protects (hostile ticket content
   // reaching an act-mode run) rather than to a value that would silently
   // stop matching if the guard above were ever loosened.
-  const modeAtStart = (triggerKind === 'ticket' || input.ticketId) ? 'shadow' : effective.mode;
+  //
+  // Wave 6 PR 4 (#3828 Task 3) — anomaly runs are ALSO always forced shadow
+  // (design authority: an unproven detector must never drive act mode).
+  // Unlike ticket runs, anomaly runs ARE device-bound, so this downgrade is
+  // narrower in effect: it changes only `modeAtStart` (and therefore the
+  // guardrail tool gate's shadow branch) — device pinning, site scope, and
+  // maintenance-window checks below still apply normally, exactly as they
+  // would for any other device-bound trigger.
+  const modeAtStart = (triggerKind === 'ticket' || input.ticketId
+    || triggerKind === 'anomaly' || input.anomalyIncidentId) ? 'shadow' : effective.mode;
 
   // 2b. Circuit breaker (wave 6 PR 2, #3828). Placed as early as possible
   // after the kill switch — this is the first point `resolved.agentId` is
@@ -489,15 +665,39 @@ export async function createAndEnqueueAgentRun(
   // for an (org, agent) pair a human has not yet reset with MFA.
   if (await isCircuitOpen(orgId, resolved.agentId)) return skip('circuit_open');
 
+  // 2c. Anomaly opt-in gate (wave-6-4 follow-up, #3828) — conservative pilot
+  // default: an org must never start receiving anomaly-triggered shadow runs
+  // "for free" just because `ml.anomalies.enabled` is on and it happens to
+  // have an enabled `triage` agent. Gated on `triggerKind` alone — NOT on
+  // `input.anomalyContext` being supplied, unlike the narrowing filters in
+  // step 3c below — so there is no path (context supplied or not) that
+  // reaches admission for an anomaly trigger without this agent's effective
+  // triggers explicitly carrying `anomalyEnabled: true`. See
+  // `AiAgentTriggers.anomalyEnabled`'s docstring (packages/shared) for the
+  // merge semantics: only the org's OWN trigger override can set this — a
+  // partner-wide baseline can never silently opt an org in by itself.
+  if (triggerKind === 'anomaly' && effective.triggers.anomalyEnabled !== true) {
+    return skip('trigger_filter_mismatch');
+  }
+
   // 3. Trigger filters. Only an event-shaped trigger carries a context; a human
   //    pressing "run now" has already made the selection the filters encode.
-  if (input.alertContext && !evaluateAgentTriggerFilters(effective.triggers, input.alertContext)) {
+  if (input.alertContext
+    && !(await evaluateAgentTriggerFilters(effective.triggers, input.alertContext, deviceId, orgId))) {
     return skip('trigger_filter_mismatch');
   }
   // 3b. Ticket trigger filters (wave 6 PR 3 review follow-up, #3828) — same
   // "only an event-shaped trigger carries a context" gating as alertContext
   // above. `ticketContext` is populated by `ticketHelpdeskSubscriber.ts`.
   if (input.ticketContext && !evaluateTicketTriggerFilters(effective.triggers, input.ticketContext)) {
+    return skip('trigger_filter_mismatch');
+  }
+  // 3c. Anomaly trigger filters (wave 6 PR 4, #3828 Task 3) — same
+  // "only an event-shaped trigger carries a context" gating as alertContext/
+  // ticketContext above. `anomalyContext` is populated by
+  // `metricAnomalySubscriber.ts`.
+  if (input.anomalyContext
+    && !(await evaluateAnomalyTriggerFilters(effective.triggers, input.anomalyContext, deviceId, orgId))) {
     return skip('trigger_filter_mismatch');
   }
 
@@ -551,12 +751,26 @@ export async function createAndEnqueueAgentRun(
     // and org A's traffic must not consume org B's caps or cooldown.
     const agentOrgScope = and(eq(aiAgentRuns.agentId, resolved.agentId), eq(aiAgentRuns.orgId, orgId));
 
+    // Phase 2 wave P2-1 (alert verdicts). `profileScope` narrows the
+    // concurrency/rate counts below (step 6b) to this run's OWN profile, so a
+    // burst of cheap verdict-profile runs can never starve — or be starved
+    // by — the full triage/patch/helpdesk budget. Ordered agentOrgScope,
+    // profileScope, status/queuedAt to match
+    // ai_agent_runs_agent_profile_queued_idx (agent_id, org_id, profile,
+    // queued_at DESC), the index Task 1 added for exactly these counts.
+    const profile: AiAgentRunProfile = input.profile ?? 'full';
+    const profileScope = eq(aiAgentRuns.profile, profile);
+
     // 4c. Release runs a worker can no longer be executing before counting
     //     them, or one SIGKILLed replica wedges this (agent, org) forever.
     await reapStalledAgentRuns({ agentId: resolved.agentId, orgId });
 
-    // 5. Cooldown for this exact target.
-    if (effective.cooldownSeconds > 0) {
+    // 5. Cooldown for this exact target. Verdict-profile runs skip this
+    //    entirely — they dedupe on `dedupeKey` (`alert-verdict:<id>` /
+    //    `group-verdict:<id>`), not cooldown, and a cheap verdict run must
+    //    never wait out a full-profile agent's cooldown window (or vice
+    //    versa).
+    if (profile === 'full' && effective.cooldownSeconds > 0) {
       const deviceScope: SQL | undefined = deviceId
         ? eq(aiAgentRuns.deviceId, deviceId)
         : isNull(aiAgentRuns.deviceId);
@@ -572,23 +786,35 @@ export async function createAndEnqueueAgentRun(
       if (recent) return skip('cooldown');
     }
 
-    // 6. Concurrency and rate. Plain counts are sufficient BECAUSE step 4b
-    //    serialises every concurrent admission for this (agent, org) — they
-    //    were not before, and the caps were bypassable by an unbounded factor.
+    // 6b. Concurrency and rate — counted PER PROFILE (phase 2 P2-1), against
+    //    that profile's own cap: maxConcurrentVerdictRuns/maxVerdictRunsPerHour
+    //    for a verdict run, maxConcurrentRuns/maxRunsPerHour (unchanged) for a
+    //    full run. Plain counts are sufficient BECAUSE step 4b serialises
+    //    every concurrent admission for this (agent, org) — they were not
+    //    before, and the caps were bypassable by an unbounded factor.
+    //    The v5 limits fields (`?? AI_AGENT_LIMIT_DEFAULTS...`) may be absent
+    //    on a v1-v4 policy snapshot — same tolerant-read pattern the file uses
+    //    elsewhere for a limits field added in a later schema version.
     const [concurrent] = await db
       .select({ value: count() })
       .from(aiAgentRuns)
-      .where(and(agentOrgScope, inArray(aiAgentRuns.status, ['queued', 'running'])));
-    if ((concurrent?.value ?? 0) >= effective.limits.maxConcurrentRuns) {
-      return skip('max_concurrent_runs');
+      .where(and(agentOrgScope, profileScope, inArray(aiAgentRuns.status, ['queued', 'running'])));
+    const maxConcurrentForProfile = profile === 'verdict'
+      ? (effective.limits.maxConcurrentVerdictRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentVerdictRuns)
+      : effective.limits.maxConcurrentRuns;
+    if ((concurrent?.value ?? 0) >= maxConcurrentForProfile) {
+      return skip(profile === 'verdict' ? 'max_concurrent_verdict_runs' : 'max_concurrent_runs');
     }
 
     const [lastHour] = await db
       .select({ value: count() })
       .from(aiAgentRuns)
-      .where(and(agentOrgScope, gte(aiAgentRuns.queuedAt, new Date(now - 3_600_000))));
-    if ((lastHour?.value ?? 0) >= effective.limits.maxRunsPerHour) {
-      return skip('max_runs_per_hour');
+      .where(and(agentOrgScope, profileScope, gte(aiAgentRuns.queuedAt, new Date(now - 3_600_000))));
+    const maxPerHourForProfile = profile === 'verdict'
+      ? (effective.limits.maxVerdictRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxVerdictRunsPerHour)
+      : effective.limits.maxRunsPerHour;
+    if ((lastHour?.value ?? 0) >= maxPerHourForProfile) {
+      return skip(profile === 'verdict' ? 'verdict_rate' : 'max_runs_per_hour');
     }
 
     // 7. Budgets: the org's AI budget first, then the agent's own daily cap
@@ -677,6 +903,9 @@ export async function createAndEnqueueAgentRun(
         deviceId,
         alertId: input.alertId ?? null,
         ticketId: input.ticketId ?? null,
+        anomalyIncidentId: input.anomalyIncidentId ?? null,
+        profile,
+        correlationGroupId: input.correlationGroupId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
         triggerRef: input.triggerRef ?? {},
@@ -713,6 +942,9 @@ export async function createAndEnqueueAgentRun(
         deviceId,
         alertId: input.alertId ?? null,
         ticketId: input.ticketId ?? null,
+        anomalyIncidentId: input.anomalyIncidentId ?? null,
+        profile,
+        correlationGroupId: input.correlationGroupId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
         triggerRef: input.triggerRef ?? {},
@@ -730,6 +962,18 @@ export async function createAndEnqueueAgentRun(
         eq(aiAgentRuns.dedupeKey, dedupeKey),
         eq(aiAgentRuns.status, 'failed'),
         eq(aiAgentRuns.errorCode, 'enqueue_failed'),
+        // #3828 branch-review blocker 3: wave 6 PR 4 is the first time two
+        // trigger kinds can share (org_id, dedupe_key) — the anomaly path's
+        // cross-dedupe deliberately collides onto `alert:<linkedAlertId>`.
+        // Without this predicate, an enqueue_failed row from a DIFFERENT
+        // trigger kind still matches the CAS above, and the SET list
+        // (triggerKind/triggerRef/modeAtStart/policySnapshot — all columns
+        // ai_agent_runs_immutable_guard() DISTINCT-FROM checks) then raises
+        // 23000 the moment triggerKind actually changes. Scoping to the same
+        // triggerKind makes a cross-kind collision match nothing here, so it
+        // falls through to skip('duplicate') below instead of attempting (and
+        // failing) the mutation.
+        eq(aiAgentRuns.triggerKind, triggerKind),
       ))
       .returning();
     if (reclaimed) {
@@ -829,6 +1073,7 @@ export async function transitionRunStatus(
         agentId: aiAgentRuns.agentId,
         errorCode: aiAgentRuns.errorCode,
         outcome: aiAgentRuns.outcome,
+        profile: aiAgentRuns.profile,
       });
     return rows[0] ?? null;
   });
@@ -862,7 +1107,7 @@ export async function transitionRunStatus(
       const runVerdict: AgentRunVerdict | null =
         moved.outcome.runVerdict === 'needs_attention' ? 'needs_attention' : null;
       await recordRunTerminal(
-        { id: moved.id, orgId: moved.orgId, agentId: moved.agentId },
+        { id: moved.id, orgId: moved.orgId, agentId: moved.agentId, profile: moved.profile },
         to,
         moved.errorCode,
         runVerdict,

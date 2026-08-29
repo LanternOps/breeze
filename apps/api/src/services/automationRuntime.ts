@@ -978,6 +978,11 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   duplicate: false,
   ownership_mismatch: true,
   device_not_in_org: true,
+  // Phase 2 wave P2-1 (alert verdicts) — the verdict-profile equivalents of
+  // max_concurrent_runs/max_runs_per_hour above: volume guards on a
+  // high-frequency, cheap run shape, not an integrity failure.
+  max_concurrent_verdict_runs: false,
+  verdict_rate: false,
 });
 
 // Exported for direct unit coverage of the script_executions correlation

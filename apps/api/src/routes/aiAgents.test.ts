@@ -15,6 +15,7 @@ const {
   writeRouteAuditMock,
   getCircuitStateMock,
   resetCircuitMock,
+  recordVerdictFeedbackMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   // Explicit generic: vitest infers a zero-arg tuple from a bare `() => true`
@@ -29,6 +30,12 @@ const {
   writeRouteAuditMock: vi.fn(),
   getCircuitStateMock: vi.fn(),
   resetCircuitMock: vi.fn(),
+  // Carry-in B (PR-A review, feedback-route hardening) — `recordVerdictFeedback`
+  // now returns a discriminated result, not a bare boolean; see
+  // `RecordVerdictFeedbackResult` in services/aiAgents/alertVerdicts.ts.
+  recordVerdictFeedbackMock: vi.fn<(auth: unknown, verdictId: string, feedback: string) => Promise<
+    { status: 'ok'; orgId: string } | { status: 'not_found' } | { status: 'conflict'; orgId: string }
+  >>(),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -86,6 +93,22 @@ vi.mock('../services/aiAgents/agentCircuit', () => ({
   getCircuitState: getCircuitStateMock,
   resetCircuit: resetCircuitMock,
 }));
+
+// Phase 2 wave P2-1 (alert verdicts), Task 8: `recordVerdictFeedback` has its
+// own full unit coverage in alertVerdicts.test.ts — mocked here so this
+// route test exercises only routing/auth/validation, matching how
+// agentCircuit/runService above are mocked rather than re-driven through db.
+// `projectAlertVerdict` is passed through to the REAL implementation
+// (importOriginal) — `buildRunTrace` (runTrace.ts) calls it unconditionally
+// on every `GET /runs/:runId`, and it has no db/service dependency of its
+// own to mock away, so it stays the real safe-projection function here too.
+vi.mock('../services/aiAgents/alertVerdicts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/aiAgents/alertVerdicts')>();
+  return {
+    ...actual,
+    recordVerdictFeedback: recordVerdictFeedbackMock,
+  };
+});
 
 vi.mock('../services/aiTools', () => ({
   verifyDeviceAccess: verifyDeviceAccessMock,
@@ -177,6 +200,7 @@ beforeEach(() => {
     run: { id: RUN_ID, status: 'queued' },
   });
   envMock.policyDecideEnabled.mockReturnValue(true);
+  recordVerdictFeedbackMock.mockResolvedValue({ status: 'ok', orgId: ORG_ID });
 });
 
 describe('POST /ai-agents/:id/runs', () => {
@@ -634,6 +658,26 @@ const runDetailResponseSchema = z.object({
       proposedPriority: z.string().optional(),
       notes: z.array(z.string()),
     }).strict().nullable(),
+    // Phase 2 wave P2-1 (alert verdicts): `null` for a full-profile run and
+    // for a verdict run that hasn't produced one. `suggestedAction`'s
+    // `disposition`/`reason` (review round 1, IMPORTANT 2) are the Tier-2
+    // intent attempt's outcome, never the raw tool args/error message.
+    alertVerdict: z.object({
+      classification: z.string(),
+      confidence: z.number(),
+      rationale: z.string(),
+      patternKind: z.string().nullable(),
+      evidenceAlertIds: z.array(z.string()),
+      suggestedAction: z.object({
+        tool: z.literal('manage_alerts'),
+        action: z.enum(['suppress', 'resolve']),
+        disposition: z.enum(['intent_created', 'not_created']),
+        reason: z.enum([
+          'low_confidence', 'target_mismatch', 'alert_not_found', 'no_eligible_approvers', 'intent_error',
+          'not_allowlisted', 'superseded_concurrently',
+        ]).nullable(),
+      }).strict().nullable(),
+    }).strict().nullable(),
   }).strict(),
 }).strict();
 
@@ -788,6 +832,133 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(parsed.data.id).toBe(RUN_ID);
     expect(parsed.data.agentName).toBeNull();
     expect(parsed.data.agentKind).toBeNull();
+  });
+
+  // Review round 1, fix round 1 (IMPORTANT 1) — carry-in C's new
+  // `superseded_concurrently` suggestionReason (alertVerdicts.ts's 23505
+  // race handling) must round-trip through `GET /runs/:runId` without
+  // tripping the strict wire schema. `projectAlertVerdict` is the REAL
+  // implementation here (importOriginal, see this file's own mock comment
+  // above `alertVerdicts`), so this exercises the actual projection, not a
+  // stub — the schema parse below is the assertion that matters.
+  it('round-trips alertVerdict.suggestedAction.reason: superseded_concurrently through the strict wire schema', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      runRow({
+        sessionId: null,
+        intentIds: [],
+        outcome: {
+          findings: [],
+          executedActions: [],
+          proposedActions: [],
+          deniedActions: [],
+          toolExecutionCount: 0,
+          runVerdict: 'partial',
+          alertVerdict: {
+            classification: 'actionable',
+            confidence: 0.9,
+            rationale: 'Another run already recorded a verdict for this alert.',
+            suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' },
+          },
+          alertVerdictIntent: { disposition: 'not_created', reason: 'superseded_concurrently' },
+        },
+      }),
+    ]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runDetailResponseSchema.parse(body);
+    expect(parsed.data.alertVerdict?.suggestedAction?.disposition).toBe('not_created');
+    expect(parsed.data.alertVerdict?.suggestedAction?.reason).toBe('superseded_concurrently');
+  });
+});
+
+// Phase 2 wave P2-1 (alert verdicts), Task 8.
+describe('POST /ai-agents/verdicts/:verdictId/feedback', () => {
+  const VERDICT_ID = '88888888-8888-4888-8888-888888888888';
+
+  it('records feedback, audits it, and returns { ok: true }', async () => {
+    const res = await buildApp().request(`/ai-agents/verdicts/${VERDICT_ID}/feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ feedback: 'up' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(recordVerdictFeedbackMock).toHaveBeenCalledWith(
+      expect.objectContaining({ user: expect.objectContaining({ id: USER_ID }) }),
+      VERDICT_ID,
+      'up',
+    );
+    // Carry-in B — every successful write is audited.
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: ORG_ID,
+        action: 'ai_agent.verdict_feedback',
+        resourceType: 'ai_alert_verdict',
+        resourceId: VERDICT_ID,
+        details: { feedback: 'up' },
+        result: 'success',
+      }),
+    );
+  });
+
+  it('is gated on ai_agents:read (not ai_agents:write)', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request(`/ai-agents/verdicts/${VERDICT_ID}/feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ feedback: 'up' }),
+    });
+    expect(res.status).toBe(403);
+    expect(recordVerdictFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-uuid verdict id without touching the service', async () => {
+    const res = await buildApp().request('/ai-agents/verdicts/not-a-uuid/feedback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ feedback: 'up' }),
+    });
+    expect(res.status).toBe(404);
+    expect(recordVerdictFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid feedback value', async () => {
+    const res = await buildApp().request(`/ai-agents/verdicts/${VERDICT_ID}/feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ feedback: 'sideways' }),
+    });
+    expect(res.status).toBe(400);
+    expect(recordVerdictFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when no verdict row matched (not found, or RLS-denied cross-org)', async () => {
+    recordVerdictFeedbackMock.mockResolvedValue({ status: 'not_found' });
+    const res = await buildApp().request(`/ai-agents/verdicts/${VERDICT_ID}/feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ feedback: 'down' }),
+    });
+    expect(res.status).toBe(404);
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  // Carry-in B (PR-A review) — a caller must not silently overwrite ANOTHER
+  // user's already-recorded feedback.
+  it('returns 409 (and does not audit) when the row already carries another user\'s feedback', async () => {
+    recordVerdictFeedbackMock.mockResolvedValue({ status: 'conflict', orgId: ORG_ID });
+    const res = await buildApp().request(`/ai-agents/verdicts/${VERDICT_ID}/feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ feedback: 'down' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Feedback already recorded by another user' });
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
   });
 });
 

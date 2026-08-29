@@ -47,7 +47,9 @@ import type {
   AiAgentPolicy,
   AiAgentPolicySnapshot,
   AiAgentRecipients,
+  AiAgentRunProfile,
   AiAgentTriggerKind,
+  AlertVerdictOutcome,
 } from '@breeze/shared';
 import { envFlag } from '../../config/env';
 import {
@@ -58,7 +60,7 @@ import {
 } from '../../db';
 // Direct module imports, not the schema barrel — see the same note in runService.
 import { aiAgents, aiAgentRuns } from '../../db/schema/aiAgents';
-import { alerts } from '../../db/schema/alerts';
+import { alertCorrelationGroups, alerts } from '../../db/schema/alerts';
 import { devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
 import { createActionIntent } from '../actionIntents/intentService';
@@ -88,7 +90,8 @@ import { actTargetSummary, recordActVerifyFailureAlert, verifyActExecution } fro
 import { executeBuiltInPlaybookForRun } from './playbookActExecutor';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
 import { loadTicketContext, type TicketRunContext } from './ticketContext';
-import { readAiKillState } from '../aiKillState';
+import { loadAnomalyContext, type AnomalyRunContext } from './anomalyContext';
+import { getCachedAiKillStateSnapshot, readAiKillState } from '../aiKillState';
 import {
   closeAgentRunSession,
   completeToolExecution,
@@ -111,9 +114,18 @@ import { scheduleFixWatch } from '../../jobs/fixWatchWorker';
 import {
   buildAgentRunSystemPrompt,
   buildAgentRunTaskPrompt,
+  type AgentRunAnomalyPromptContext,
   type AgentRunPromptContext,
   type AgentRunTicketPromptContext,
 } from './runnerPrompt';
+import {
+  buildOutcomeSdkTools,
+  isOutcomeTool,
+  OUTCOME_MCP_TOOL_NAMES,
+  validateOutcomeToolInput,
+} from './outcomeTools';
+import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdictProfile';
+import { persistAlertVerdict, type AlertVerdictIntentInfo } from './alertVerdicts';
 
 /** `ai_agent_runs.summary` is `text`, but a reviewer reads the first screen. */
 const RUN_SUMMARY_MAX_CHARS = 2000;
@@ -191,8 +203,7 @@ export interface OutcomeExecutedAction {
 
 /**
  * Wave 6 PR 3 (#3828, Task 4) — the model's structured proposal for a
- * ticket-triggered run. Reserved, exactly like `findings` above: nothing in
- * this PR populates it (there is no SDK structured-output wiring yet — the
+ * ticket-triggered run. Reserved: nothing in this PR populates it (there is no SDK structured-output wiring yet — the
  * model's only output channel is still the free-text summary `driveSdkLoop`
  * already extracts). The field exists now so the outcome shape, the
  * `ai_agent_runs.outcome` jsonb, and `AiAgentRunTicketProposalDto`
@@ -213,13 +224,6 @@ export interface TicketProposalOutcome {
 }
 
 export interface AgentRunOutcome {
-  /**
-   * Reserved for structured findings. Nothing populates it in wave 3 — the
-   * narrative lives in `run.summary` and the transcript work that would produce
-   * structured findings is wave 6. Kept as a declared key so the shape of the
-   * jsonb does not change under reviewers when it lands.
-   */
-  findings: unknown[];
   /** Reserved — see `TicketProposalOutcome`'s own docstring for why it is
    *  unpopulated in this PR. Absent for every non-ticket run. */
   ticketProposal?: TicketProposalOutcome;
@@ -240,6 +244,26 @@ export interface AgentRunOutcome {
    * don't need a migration.
    */
   runVerdict?: AgentRunVerdict;
+  /**
+   * Phase 2 wave P2-1 (alert verdicts) — the validated `submit_alert_verdict`
+   * input, captured by the post-tool-use hook on a verdict-profile run. Set
+   * at most once (the outcome tool's own description tells the model to call
+   * it exactly once); absent for a `full`-profile run, which never has the
+   * outcome tool exposed at all. Persisted to `ai_alert_verdicts` by
+   * `finalizeVerdict` (below), which also carries this value into
+   * `finishRun`'s persisted `outcome` jsonb.
+   */
+  alertVerdict?: AlertVerdictOutcome;
+  /**
+   * Phase 2 wave P2-1 (alert verdicts), review round 1 (IMPORTANT 2) — the
+   * disposition of `alertVerdict.suggestedAction`'s Tier-2 intent attempt,
+   * set by `finalizeVerdict` alongside `alertVerdict` itself. Absent when
+   * there was no `suggestedAction` to act on in the first place (nothing to
+   * report) OR for a `full`-profile run. Display strings only — NEVER the
+   * raw `Error.message` from `createActionIntent` (that could carry
+   * tool-input detail); see `AlertVerdictIntentInfo`'s own docstring.
+   */
+  alertVerdictIntent?: AlertVerdictIntentInfo;
 }
 
 /** Error carrying the short code that lands in `ai_agent_runs.error_code` (varchar(64)). */
@@ -262,10 +286,16 @@ interface RunRow {
   /** Wave 6 PR 3 (#3828, Task 1/4) — the triggering ticket for `triggerKind:
    *  'ticket'` runs; always `null` for every other trigger kind. */
   ticketId: string | null;
+  /** Wave 6 PR 4 (#3828, Task 1/4) — the triggering canonical incident for
+   *  `triggerKind: 'anomaly'` runs; always `null` for every other trigger kind. */
+  anomalyIncidentId: string | null;
   status: string;
   modeAtStart: Exclude<AiAgentMode, 'off'>;
   triggerKind: AiAgentTriggerKind;
   policySnapshot: AiAgentPolicySnapshot;
+  /** Phase 2 wave P2-1 (alert verdicts) — see `verdictProfile.ts`. */
+  profile: AiAgentRunProfile;
+  correlationGroupId: string | null;
 }
 
 interface AgentRow {
@@ -287,6 +317,26 @@ interface RunContext {
    *  run, and for a ticket run whose ticket has vanished/moved org (same
    *  "moved/deleted reads as absent" posture `device`/`alert` already use). */
   ticket: TicketRunContext | null;
+  /** Bounded anomaly context (wave 6 PR 4, #3828, Task 4) — `null` for every
+   *  non-anomaly run, and for an anomaly run whose incident has vanished/
+   *  moved org (same "moved/deleted reads as absent" posture as `ticket`
+   *  above). */
+  anomaly: AnomalyRunContext | null;
+  /**
+   * Phase 2 wave P2-1 (alert verdicts). Set only when `run.correlationGroupId`
+   * is set AND the group still resolves inside the run's org — same
+   * missing-reads-as-null shape as `device`/`alert` above (a group can be
+   * deleted/re-scoped between admission and delivery). `correlationTypes` is
+   * the `metadata.correlationTypes` array, narrowed to strings only — the
+   * jsonb column carries no compile-time shape.
+   */
+  correlationGroup: {
+    id: string;
+    memberCount: number;
+    noiseReductionPercent: number;
+    rootAlertId: string | null;
+    correlationTypes: string[];
+  } | null;
   /**
    * The execution-ledger `ai_sessions` row for this run (Task 1/2). Set once,
    * inside `driveSdkLoop`, right after the model is resolved — `null` until
@@ -331,10 +381,13 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         deviceId: aiAgentRuns.deviceId,
         alertId: aiAgentRuns.alertId,
         ticketId: aiAgentRuns.ticketId,
+        anomalyIncidentId: aiAgentRuns.anomalyIncidentId,
         status: aiAgentRuns.status,
         modeAtStart: aiAgentRuns.modeAtStart,
         triggerKind: aiAgentRuns.triggerKind,
         policySnapshot: aiAgentRuns.policySnapshot,
+        profile: aiAgentRuns.profile,
+        correlationGroupId: aiAgentRuns.correlationGroupId,
       })
       .from(aiAgentRuns)
       .where(eq(aiAgentRuns.id, runId))
@@ -429,6 +482,64 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       }
     }
 
+    // Same "moved/deleted reads as absent" posture as device/alert/ticket
+    // above — this read is ALSO org-pinned inside `loadAnomalyContext` itself
+    // (it runs under this same system context), for the identical reason: an
+    // incident can move org between admission and delivery.
+    let anomaly: RunContext['anomaly'] = null;
+    if (run.anomalyIncidentId) {
+      try {
+        anomaly = await loadAnomalyContext(run.anomalyIncidentId, run.orgId);
+      } catch (error) {
+        console.error('[aiAgentRunLoop] failed to load anomaly context', {
+          runId, orgId: run.orgId, anomalyIncidentId: run.anomalyIncidentId, error,
+        });
+      }
+      if (!anomaly) {
+        console.warn('[aiAgentRunLoop] run anomaly incident is not (or no longer) in the run org', {
+          runId, orgId: run.orgId, anomalyIncidentId: run.anomalyIncidentId,
+        });
+      }
+    }
+
+    // Phase 2 wave P2-1 (alert verdicts). Same "missing reads as null, never
+    // as a hard failure" shape as the device/alert reads above — a group can
+    // be deleted or its org can drift between admission and delivery.
+    let correlationGroup: RunContext['correlationGroup'] = null;
+    if (run.correlationGroupId) {
+      const [row] = await db
+        .select({
+          id: alertCorrelationGroups.id,
+          memberCount: alertCorrelationGroups.memberCount,
+          noiseReductionPercent: alertCorrelationGroups.noiseReductionPercent,
+          rootAlertId: alertCorrelationGroups.rootAlertId,
+          metadata: alertCorrelationGroups.metadata,
+        })
+        .from(alertCorrelationGroups)
+        .where(and(
+          eq(alertCorrelationGroups.id, run.correlationGroupId),
+          eq(alertCorrelationGroups.orgId, run.orgId),
+        ))
+        .limit(1);
+      if (row) {
+        const metadata = row.metadata as Record<string, unknown> | null;
+        const correlationTypes = Array.isArray(metadata?.correlationTypes)
+          ? (metadata.correlationTypes as unknown[]).filter((s): s is string => typeof s === 'string')
+          : [];
+        correlationGroup = {
+          id: row.id,
+          memberCount: row.memberCount,
+          noiseReductionPercent: row.noiseReductionPercent,
+          rootAlertId: row.rootAlertId,
+          correlationTypes,
+        };
+      } else {
+        console.warn('[aiAgentRunLoop] run correlation group is not (or no longer) in the run org', {
+          runId, orgId: run.orgId, correlationGroupId: run.correlationGroupId,
+        });
+      }
+    }
+
     return {
       run: run as RunRow,
       agent: agent as AgentRow,
@@ -436,6 +547,8 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       device,
       alert,
       ticket,
+      anomaly,
+      correlationGroup,
       sessionId: null,
     };
   });
@@ -454,7 +567,7 @@ function readToolAction(toolName: string, input: Record<string, unknown>): strin
  * no RBAC helper is ever reached from an agent run.
  */
 export function createAgentRunPreToolUse(args: {
-  run: Pick<RunRow, 'id' | 'orgId' | 'agentId'>;
+  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile'>;
   agentName: string;
   agentAuth: AuthContext;
   agentKind: AiAgentKind;
@@ -609,10 +722,68 @@ export function createAgentRunPreToolUse(args: {
   }
 
   return async (toolName, input) => {
+    // Outcome tools (Phase 2 wave P2-1, spec §9): checked FIRST, before
+    // `checkAgentGuardrails` below, because that guardrail has no allowlist
+    // entry for an outcome tool — it isn't in `aiTools`/`TOOL_TIERS` at all —
+    // and would deny it as an unknown tool. `submit_alert_verdict` is only
+    // ever exposed to the SDK on a verdict-profile run (see the `allowedTools`
+    // computation in `driveSdkLoop`), so a full-profile run reaching here is
+    // either a stale prompt/tool cache or a hostile attempt to call it
+    // anyway — denied and recorded either way.
+    if (isOutcomeTool(toolName)) {
+      // Review fix (wave P2-1 fix round 1): this branch sits AHEAD of
+      // `checkAgentGuardrails`, which is where the env-flag + DB kill switch
+      // are normally enforced — an outcome tool bypassed both entirely.
+      // Same two checks, same deny reasons, so a kill-switched run cannot
+      // record a verdict either.
+      if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) {
+        const reason = 'Autonomous AI agents are disabled';
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: reason };
+      }
+      const killState = getCachedAiKillStateSnapshot();
+      if (killState.killed) {
+        const reason = `Autonomous AI agents are kill-switched (epoch ${killState.epoch})`;
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: reason };
+      }
+      if (!isVerdictProfile(run)) {
+        outcome.deniedActions.push({ tool: toolName, reason: 'outcome tool is only available to verdict-profile runs' });
+        return { allowed: false, error: 'not available on this run' };
+      }
+      try {
+        validateOutcomeToolInput(toolName, input);
+      } catch (e) {
+        return { allowed: false, error: `invalid ${toolName} input: ${(e as Error).message}` };
+      }
+      return { allowed: true };
+    }
+
     const check = checkAgentGuardrails(toolName, input, guardrailPolicy);
 
     if (check.disposition === 'deny') {
       const reason = check.reason ?? 'Denied by agent guardrails';
+      outcome.deniedActions.push({ tool: toolName, reason });
+      return { allowed: false, error: reason };
+    }
+
+    // Review fix (wave P2-1 fix round 1, PLAN CHANGE; reordered review round
+    // 2, Minor 2): a verdict run is read-only, full stop — a 'propose' or an
+    // 'act' the ordinary guardrail would otherwise record or execute is
+    // denied outright instead. This sits BELOW the `check.disposition ===
+    // 'deny'` branch above (not merged into it) so a REAL guardrail deny —
+    // kill switch, site scope, protected resource, disabled/off, an unknown
+    // action — keeps ITS OWN specific reason instead of being overwritten
+    // with the generic "verdict runs are read-only"; only 'propose'/'act'
+    // ever reach this branch now, since 'deny' and 'allow' have already
+    // returned above. Defense in depth on top of `guardrailPolicy.toolAllowlist`
+    // already being built from the verdict floor in `driveSdkLoop` (which
+    // makes an unlisted mutation deny for the allowlist reason before this
+    // is even reached) — this catches anything that reasoning missed, e.g.
+    // a read-only-looking tool with a mutating action this list didn't
+    // anticipate.
+    if (isVerdictProfile(run) && check.disposition !== 'allow') {
+      const reason = 'verdict runs are read-only';
       outcome.deniedActions.push({ tool: toolName, reason });
       return { allowed: false, error: reason };
     }
@@ -768,13 +939,24 @@ export function createAgentRunPostToolUse(args: {
   allowedPending: Map<string, number>;
   executionIdPending: Map<string, Array<string | null>>;
   actPinPending: Map<string, Array<ActAssetPin | null>>;
-  run: { id: string; orgId: string; agentId: string; deviceId: string | null };
+  run: { id: string; orgId: string; agentId: string; deviceId: string | null; profile: AiAgentRunProfile };
   /** For `verifyActExecution`'s `executeCommand` calls — attribution only. */
   agentUserId: string;
 }): PostToolUseCallback {
   const { outcome, allowedPending, executionIdPending, actPinPending, run, agentUserId } = args;
 
   return async (toolName, input, output, isError, durationMs) => {
+    // Outcome tools (Phase 2 wave P2-1): never went through
+    // `recordAllowedExecution` in the pre-hook, so they never touch
+    // `allowedPending`/the execution ledger/the act pipeline — capture the
+    // validated verdict and stop, before any of the ordinary accounting below.
+    if (isOutcomeTool(toolName)) {
+      if (!isError && isVerdictProfile(run)) {
+        outcome.alertVerdict = validateOutcomeToolInput(toolName, input);
+      }
+      return;
+    }
+
     const remaining = allowedPending.get(toolName) ?? 0;
     if (remaining <= 0) return;
     allowedPending.set(toolName, remaining - 1);
@@ -972,6 +1154,21 @@ function ticketPromptContext(ticket: TicketRunContext): AgentRunTicketPromptCont
   };
 }
 
+function anomalyPromptContext(anomaly: AnomalyRunContext): AgentRunAnomalyPromptContext {
+  return {
+    anomalyType: anomaly.anomalyType,
+    bucketSeconds: anomaly.bucketSeconds,
+    windowStart: anomaly.windowStart,
+    firstSeenAt: anomaly.firstSeenAt,
+    lastSeenAt: anomaly.lastSeenAt,
+    peakScore: anomaly.peakScore,
+    rowCount: anomaly.rowCount,
+    metricNames: anomaly.metricNames,
+    siblings: anomaly.siblings,
+    truncated: anomaly.truncated,
+  };
+}
+
 function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromptContext {
   return {
     agent: { name: ctx.agent.name, kind: ctx.agent.kind },
@@ -981,7 +1178,10 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
       : null,
     alert: ctx.alert,
     ticket: ctx.ticket ? ticketPromptContext(ctx.ticket) : null,
+    anomaly: ctx.anomaly ? anomalyPromptContext(ctx.anomaly) : null,
     instructions: effective.instructions,
+    profile: ctx.run.profile,
+    correlationGroup: ctx.correlationGroup,
   };
 }
 
@@ -991,6 +1191,20 @@ interface LoopResult {
   turnCount: number;
   outcome: AgentRunOutcome;
   intentIds: string[];
+  /**
+   * The run's `ai_agent` principal context (built once, near the top of
+   * `driveSdkLoop`, via `buildAgentAuthContext`) — carried out on `result`
+   * rather than recomputed, since `finishRun` (Task 8, P2-1) needs it to call
+   * `persistAlertVerdict`/`createActionIntent` for a verdict run and has no
+   * other way to reach it: `driveSdkLoop` has exactly one return statement,
+   * reached only after `buildAgentAuthContext` has already succeeded (a
+   * throw there returns straight to `executeAgentRun`'s catch block, never
+   * through here — see that call site's own comment), so this is always
+   * populated whenever `finishRun` reads it. Smaller diff than widening
+   * `RunContext` with a second mutated-after-construction field alongside
+   * `sessionId`.
+   */
+  agentAuth: AuthContext;
   /**
    * Set when the SDK loop itself threw. Carried back rather than rethrown so
    * the tokens already burned still land on the run row — a crashed run that
@@ -1003,6 +1217,24 @@ interface LoopResult {
 async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<LoopResult> {
   const { run } = ctx;
   const limits = effective.limits;
+  // Phase 2 wave P2-1 (alert verdicts). Computed FIRST — before
+  // `guardrailPolicy` and the execution-ledger session below — so both can
+  // read off it. `verdictLimits`'s output is used ONLY for the SDK `query()`
+  // options further down (`maxTurns`/`maxBudgetUsd`) and the local budget
+  // backstop — never re-validated through `aiAgentLimitsSchema` (its
+  // `maxActionsPerRun: 0` is below that schema's `min(1)`) and never written
+  // back into `run.policySnapshot`. `verdictAllowlist` is `null` for a
+  // `full`-profile run (nothing to narrow); for a verdict run it is
+  // `verdictToolAllowlist`'s pinned floor, reused below for BOTH
+  // `guardrailPolicy.toolAllowlist` (review fix, wave P2-1 fix round 1 —
+  // supersedes the original "intersects the agent's allowlist" design: a
+  // bare `manage_alerts` entry in the agent's OWN allowlist must never let
+  // `acknowledge`/`resolve`/`suppress` reach `checkAgentGuardrails`'s
+  // allowlist gate on a verdict run) and the SDK's `allowedTools` exposure —
+  // one computation, one source of truth for what a verdict run can reach.
+  const verdict = isVerdictProfile(run);
+  const runLimits = verdict ? verdictLimits(limits) : limits;
+  const verdictAllowlist = verdict ? verdictToolAllowlist(effective.toolAllowlist) : null;
   // Computed here (not by the SDK-loop timer below) so the pre-hook's
   // act-mode playbook executor (Task 5, #3826) can enforce the SAME
   // wall-clock ceiling independently of the SDK's `abortController` — a
@@ -1026,7 +1258,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   const guardrailPolicy: AgentGuardrailPolicy = {
     enabled: effective.enabled,
     mode: run.modeAtStart,
-    toolAllowlist: effective.toolAllowlist,
+    toolAllowlist: verdictAllowlist ?? effective.toolAllowlist,
     protectedResources: effective.protectedResources,
     deviceId: run.deviceId,
     deviceSiteId: ctx.device?.siteId ?? null,
@@ -1066,7 +1298,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
       orgId: run.orgId,
       deviceId: run.deviceId,
       model,
-      maxTurns: Math.max(1, limits.maxTurnsPerRun),
+      maxTurns: Math.max(1, runLimits.maxTurnsPerRun),
     });
   } catch (error) {
     console.error('[aiAgentRunLoop] failed to create the execution-ledger session', {
@@ -1075,7 +1307,6 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   }
 
   const outcome: AgentRunOutcome = {
-    findings: [],
     proposedActions: [],
     executedActions: [],
     deniedActions: [],
@@ -1095,13 +1326,48 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   });
   const postToolUse = createAgentRunPostToolUse({
     outcome, allowedPending, executionIdPending, actPinPending,
-    run: { id: run.id, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId },
+    run: { id: run.id, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId, profile: run.profile },
     agentUserId: agentAuth.user.id,
   });
 
+  // `exposedNames` governs SDK-level tool EXPOSURE for a verdict run, not a
+  // second guardrail — `checkAgentGuardrails` (via `guardrailPolicy` above)
+  // is still the sole authority for anything the model does manage to call;
+  // see `verdictToolAllowlist`'s own docstring. Reuses `verdictAllowlist`
+  // computed at the top of this function — the SAME list that narrowed
+  // `guardrailPolicy.toolAllowlist` above, so exposure and authority can
+  // never drift apart.
+  const exposedNames = verdictAllowlist
+    ? verdictAllowlist.map((name) => (
+      isOutcomeTool(name) ? OUTCOME_MCP_TOOL_NAMES[name] : `mcp__breeze__${name.split(':')[0]}`
+    ))
+    : BREEZE_MCP_TOOL_NAMES;
+
+  // F2 fix (P2-1 second live check): `allowedTools` above only gates
+  // PERMISSION to call a tool — the MCP server still sends every REGISTERED
+  // tool's full schema to the model on every turn regardless of
+  // `allowedTools`. `onlyTools` (createBreezeMcpServer's 6th param) narrows
+  // what gets registered in the first place. Reuses `verdictAllowlist` again
+  // — same source of truth as `exposedNames`/`guardrailPolicy.toolAllowlist`
+  // above — collapsed to bare tool names (`manage_alerts:list` and
+  // `manage_alerts:get` both collapse to `manage_alerts`) with the outcome
+  // tool excluded: `submit_alert_verdict` is never in the registry `tools`
+  // array to begin with (see outcomeTools.ts) — it rides on `extraTools`
+  // below instead, which `createBreezeMcpServer` always includes regardless
+  // of `onlyTools`. Full runs pass no `onlyTools` and keep registering the
+  // whole registry, unchanged.
+  const onlyTools = verdictAllowlist
+    ? new Set(verdictAllowlist.map((name) => name.split(':')[0]!).filter((name) => !isOutcomeTool(name)))
+    : undefined;
+
   // No getActiveSession: a headless run has no ActiveSession, and the
-  // session-aware tools (M365/Google) correctly refuse without one.
-  const mcpServer = createBreezeMcpServer(() => agentAuth, preToolUse, postToolUse);
+  // session-aware tools (M365/Google) correctly refuse without one. The
+  // outcome tool (`submit_alert_verdict`) is passed as `extraTools` ONLY for
+  // a verdict-profile run — a `full`-profile run never even registers it on
+  // the MCP server, let alone exposes it via `allowedTools`.
+  const mcpServer = createBreezeMcpServer(() => agentAuth, preToolUse, postToolUse, undefined,
+    verdict ? buildOutcomeSdkTools(['submit_alert_verdict']) : [],
+    onlyTools ? { onlyTools } : undefined);
 
   const prompt = promptContext(ctx, effective);
   const abortController = new AbortController();
@@ -1133,12 +1399,12 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
         options: {
           systemPrompt: buildAgentRunSystemPrompt(prompt),
           model,
-          maxTurns: Math.max(1, limits.maxTurnsPerRun),
+          maxTurns: Math.max(1, runLimits.maxTurnsPerRun),
           // Belt to the mid-stream braces below: the SDK stops itself, and the
           // loop stops the SDK if a result lands over budget anyway.
-          maxBudgetUsd: limits.maxBudgetCentsPerRun / 100,
+          maxBudgetUsd: runLimits.maxBudgetCentsPerRun / 100,
           tools: [],
-          allowedTools: BREEZE_MCP_TOOL_NAMES,
+          allowedTools: [...new Set(exposedNames)],
           mcpServers: { breeze: mcpServer },
           abortController,
           env: buildClaudeSdkChildEnv(usableLlm),
@@ -1199,7 +1465,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
             break;
           }
 
-          if (costCents > limits.maxBudgetCentsPerRun) {
+          if (costCents > runLimits.maxBudgetCentsPerRun) {
             budgetExceeded = true;
             abortController.abort();
             break;
@@ -1269,6 +1535,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     turnCount,
     outcome,
     intentIds,
+    agentAuth,
     ...(failure ? { failure } : {}),
   };
 }
@@ -1332,6 +1599,18 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // `result.outcome` verbatim into the DB row.
     outcome.runVerdict = computeRunVerdict(outcome);
 
+    // Phase 2 wave P2-1 (alert verdicts), Task 8 — review round 1
+    // (IMPORTANT 3): verdict persistence + suggestion→intent linking runs
+    // HERE, before the awaiting_approval/completed decision further down,
+    // so a newly created pending intent is counted by
+    // `intentIds.length > 0` — a verdict run whose suggestion produced a
+    // pending approval must itself finish `awaiting_approval`, like any
+    // other run with a pending intent. `verdictErrorCode` is applied ONLY
+    // at the normal-finish `finishRun` call below (not to the `failure`/
+    // `ceiling` branches, which already carry a real, more specific code —
+    // see `finalizeVerdict`'s own docstring for why).
+    const verdictErrorCode = await finalizeVerdict(ctx, result);
+
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
     // status, which the bare `failed` transition in the catch below cannot.
@@ -1343,10 +1622,24 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // A run that hit a ceiling before producing anything a human can act on is
     // a FAILURE, not a quiet success: the reviewer needs to know the agent was
     // cut off, not that it found nothing. A run that was cut off after doing
-    // useful work finishes normally, with the flag in `outcome`.
+    // useful work finishes normally, with the flag in `outcome`. A verdict
+    // run's "useful work" IS `outcome.alertVerdict` (review fix, wave P2-1 fix
+    // round 1) — without this, a verdict run that called `submit_alert_verdict`
+    // and then hit `error_max_turns` with no further prose would finish
+    // `failed('max_turns_exceeded')` despite having done its ONE job, wrongly
+    // counting against the agent's circuit breaker (`recordRunTerminal`).
+    //
+    // `outcome.budgetExceeded` itself is relative to THIS run's effective
+    // budget (`runLimits.maxBudgetCentsPerRun` above) — for a verdict-profile
+    // run that's `verdictBudgetCentsPerRun` (5 cents by default, see
+    // `verdictProfile.ts`'s `verdictLimits`), not the agent's top-level
+    // `maxBudgetCentsPerRun` (50 cents by default). Don't read a verdict run's
+    // `budgetExceeded: true` as "spent close to 50 cents" — it means the run
+    // crossed its own, much smaller, profile ceiling.
     const producedSomething =
       outcome.executedActions.length > 0
       || outcome.proposedActions.length > 0
+      || outcome.alertVerdict !== undefined
       || result.summary.trim().length > 0;
 
     const ceiling = outcome.wallClockExceeded
@@ -1365,7 +1658,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // done thinking and a human now owns the decision. Release of an approved
     // intent is 3b's machinery, not a continuation of this run.
     ledgerOutcome = 'completed';
-    await finishRun(ctx, intentIds.length > 0 ? 'awaiting_approval' : 'completed', null, result);
+    await finishRun(ctx, intentIds.length > 0 ? 'awaiting_approval' : 'completed', verdictErrorCode, result);
   } catch (error) {
     const errorCode = error instanceof AgentRunError
       ? error.errorCode
@@ -1397,6 +1690,102 @@ const TERMINAL_EVENT = {
   awaiting_approval: 'ai.agent.run.awaiting_approval',
   failed: 'ai.agent.run.failed',
 } as const;
+
+/**
+ * Phase 2 wave P2-1 (alert verdicts), Task 8 — review round 1 fixes
+ * (IMPORTANT 3 + 4). Runs from `executeAgentRun`, BEFORE the
+ * awaiting_approval/completed decision and before any of the three
+ * `finishRun` call sites — not inside `finishRun` itself (moved there in
+ * the original Task 8 pass; the ordering was the bug IMPORTANT 3 found: the
+ * status ternary read `intentIds.length` before this ran, so a verdict run
+ * that created a pending intent still finished `completed`).
+ *
+ * Returns an errorCode override. The caller applies it ONLY to the
+ * normal-finish `finishRun` call — the `result.failure`/ceiling branches
+ * already carry a real, more specific code (`llm_unavailable`,
+ * `max_turns_exceeded`, …) that must not be clobbered with the generic
+ * `verdict_missing`/`verdict_persist_failed`, and `classifyTerminal`
+ * (agentCircuit.ts) still needs that real code to classify a genuine
+ * runner failure correctly for the circuit breaker regardless of profile.
+ * Returning `null` and letting those two branches ignore it entirely keeps
+ * that scoping intact without this function needing to know which branch
+ * the caller is about to take.
+ */
+async function finalizeVerdict(ctx: RunContext, result: LoopResult): Promise<string | null> {
+  if (!isVerdictProfile(ctx.run)) return null;
+  const { outcome } = result;
+
+  if (!outcome.alertVerdict) {
+    // A verdict run that reached a normal finish without ever calling
+    // `submit_alert_verdict` is a runner failure a human needs to see —
+    // never a silent `completed` with nothing to show for it. (On the
+    // failure/ceiling branches this return value is discarded by the
+    // caller, so this only actually takes effect on the normal-finish path
+    // — see this function's own docstring.)
+    outcome.runVerdict = 'needs_attention';
+    return 'verdict_missing';
+  }
+
+  // IMPORTANT 4: re-read the run's live status right before writing — the
+  // stall reaper (`reapStalledAgentRuns`, runService.ts) or a second
+  // executor may have already moved this run out of `running` while the
+  // SDK loop was in flight. Skip persistence rather than orphan a live
+  // verdict row + a live approval request under a run nobody owns anymore.
+  // A tiny window remains between this read and the writes inside
+  // `persistAlertVerdict` below — accepted per review ruling.
+  const stillRunning = await isRunStillRunning(ctx.run.id, ctx.run.orgId);
+  if (!stillRunning) {
+    console.warn('[aiAgentRunLoop] skipped verdict persistence — run left `running` before it could be persisted', {
+      runId: ctx.run.id,
+    });
+    return null;
+  }
+
+  try {
+    const { intentId, suggestionDisposition, suggestionReason } = await persistAlertVerdict(
+      {
+        id: ctx.run.id,
+        orgId: ctx.run.orgId,
+        alertId: ctx.run.alertId,
+        correlationGroupId: ctx.run.correlationGroupId,
+        deviceId: ctx.run.deviceId,
+        // Review round 2 (IMPORTANT 1) — the run's OWN effective
+        // toolAllowlist, off the already-loaded run row's policySnapshot
+        // (never re-queried): `persistAlertVerdict` gates a suggested
+        // mutation's intent creation on this SAME authority the release
+        // path re-checks (agentReleaseAuthority.ts).
+        toolAllowlist: ctx.run.policySnapshot.effective.toolAllowlist,
+      },
+      outcome.alertVerdict,
+      result.agentAuth,
+    );
+    if (intentId) result.intentIds.push(intentId);
+    // Review round 1 (IMPORTANT 2): only recorded when there was a
+    // `suggestedAction` to report on at all — see `AlertVerdictIntentInfo`'s
+    // own docstring for why this is absent rather than a vacuous
+    // `not_created` on every verdict.
+    if (outcome.alertVerdict.suggestedAction) {
+      const intentInfo: AlertVerdictIntentInfo = { disposition: suggestionDisposition };
+      if (suggestionReason) intentInfo.reason = suggestionReason;
+      outcome.alertVerdictIntent = intentInfo;
+    }
+    return null;
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to persist alert verdict', { runId: ctx.run.id, error });
+    return 'verdict_persist_failed';
+  }
+}
+
+/** IMPORTANT 4 helper — see `finalizeVerdict`. System-scoped: this runs from
+ *  the background run loop, with no ambient request context. */
+async function isRunStillRunning(runId: string, orgId: string): Promise<boolean> {
+  return inSystemDbContext(async () => {
+    const [row] = await db.select({ status: aiAgentRuns.status }).from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, orgId)))
+      .limit(1);
+    return row?.status === 'running';
+  });
+}
 
 async function finishRun(
   ctx: RunContext,
@@ -1442,27 +1831,37 @@ async function finishRun(
   // SAME by-id entry point. A failure here must never redefine the run's
   // terminal status, so it's caught here and durably retried instead of
   // left to just fail silently as the old inline version did.
-  try {
-    await deliverRunFinishedNotifications(ctx.run.id);
-  } catch (error) {
-    console.error('[aiAgentRunLoop] failed to notify run recipients — enqueuing durable retry', {
-      runId: ctx.run.id, error,
-    });
-    await enqueueAgentNotifyRetry(ctx.run.id);
-  }
+  //
+  // Review fix (wave P2-1 fix round 1): a verdict run is skipped entirely —
+  // its "finished" surface is the alert badge/classification, not a run
+  // notification a technician has to act on, and `scheduleFixWatch` just
+  // below is act-lane only (a verdict run never executes anything to watch
+  // for regression). Both are best-effort/failure-tolerant machinery built
+  // for `full`-profile runs; there is nothing here for a verdict run to skip
+  // INTO a gap — this is a deliberate no-op, not a missing feature.
+  if (!isVerdictProfile(ctx.run)) {
+    try {
+      await deliverRunFinishedNotifications(ctx.run.id);
+    } catch (error) {
+      console.error('[aiAgentRunLoop] failed to notify run recipients — enqueuing durable retry', {
+        runId: ctx.run.id, error,
+      });
+      await enqueueAgentNotifyRetry(ctx.run.id);
+    }
 
-  // Fix-held watch scheduling (wave 6 PR 2, Task 3, #3828) — best-effort and
-  // deliberately never affects this run's own status: `scheduleFixWatch`
-  // swallows every failure internally (see its header). Only a clean
-  // `completed` finish is eligible at all (`awaiting_approval`/`failed` never
-  // are — `isFixWatchEligible` would reject them anyway via `modeAtStart`/
-  // `verification`, but gating on `status` here avoids the query entirely on
-  // the common non-completed paths).
-  if (status === 'completed') {
-    await scheduleFixWatch(
-      { id: ctx.run.id, orgId: ctx.run.orgId, agentId: ctx.run.agentId, alertId: ctx.run.alertId, modeAtStart: ctx.run.modeAtStart },
-      result.outcome,
-    );
+    // Fix-held watch scheduling (wave 6 PR 2, Task 3, #3828) — best-effort and
+    // deliberately never affects this run's own status: `scheduleFixWatch`
+    // swallows every failure internally (see its header). Only a clean
+    // `completed` finish is eligible at all (`awaiting_approval`/`failed` never
+    // are — `isFixWatchEligible` would reject them anyway via `modeAtStart`/
+    // `verification`, but gating on `status` here avoids the query entirely on
+    // the common non-completed paths).
+    if (status === 'completed') {
+      await scheduleFixWatch(
+        { id: ctx.run.id, orgId: ctx.run.orgId, agentId: ctx.run.agentId, alertId: ctx.run.alertId, modeAtStart: ctx.run.modeAtStart },
+        result.outcome,
+      );
+    }
   }
 }
 
