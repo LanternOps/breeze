@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { getTableColumns, getTableName } from 'drizzle-orm';
+import { getTableConfig } from 'drizzle-orm/pg-core';
 import { aiAlertVerdicts } from './aiAlertVerdicts';
 import { aiAgentRuns } from './aiAgents';
 import { ORG_CASCADE_DELETE_ORDER } from '../../services/tenantCascade';
@@ -33,5 +34,17 @@ describe('ai_alert_verdicts schema + ceremonies', () => {
     expect(CORE_TENANT_EXPORT_POLICY.ai_agent_runs!.columns.profile).toBeDefined();
     expect(CORE_TENANT_EXPORT_POLICY.ai_agent_runs!.columns.correlation_group_id).toBeDefined();
     expect(getOrgMergePolicies().get('ai_alert_verdicts')).toBeDefined();
+  });
+
+  // Task 14 carry-in C — at most one LIVE verdict per alert / per group.
+  // Mirrors migrations/2026-09-22-ai-alert-verdicts-live-unique.sql.
+  it('declares the live-verdict partial unique indexes', () => {
+    const cfg = getTableConfig(aiAlertVerdicts);
+    const liveAlertUq = cfg.indexes.find((i) => i.config.name === 'ai_alert_verdicts_live_alert_uq');
+    const liveGroupUq = cfg.indexes.find((i) => i.config.name === 'ai_alert_verdicts_live_group_uq');
+    expect(liveAlertUq?.config.unique).toBe(true);
+    expect((liveAlertUq?.config.columns as Array<{ name: string }>).map((c) => c.name)).toEqual(['alert_id']);
+    expect(liveGroupUq?.config.unique).toBe(true);
+    expect((liveGroupUq?.config.columns as Array<{ name: string }>).map((c) => c.name)).toEqual(['correlation_group_id']);
   });
 });

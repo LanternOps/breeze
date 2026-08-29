@@ -2,9 +2,10 @@ import { Hono, type MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { zValidator, formatZodError, isJsonContentType } from '../../lib/validation';
 import { z } from 'zod';
-import { and, or, eq, ne, sql, desc, gte, lte, inArray, isNull, type SQL } from 'drizzle-orm';
+import { and, or, eq, ne, sql, desc, gte, lte, inArray, isNull, notExists, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
+  aiAlertVerdicts,
   alertCorrelationGroups,
   alertCorrelationMembers,
   alertRules,
@@ -23,6 +24,7 @@ import { ALERT_CAS_LOST_MESSAGE, buildResolveAlertCas } from '../../services/ale
 import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
 import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
+import { latestVerdictsForAlerts, projectAlertAiVerdictSummary } from '../../services/aiAgents/alertVerdicts';
 import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertActionSchema, type AlertStatusValue } from './schemas';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck } from './helpers';
 import { withAlertActorNames } from './actorNames';
@@ -130,6 +132,35 @@ export function attachAlertCorrelationSummaries<T extends { id: string; context?
   });
 }
 
+// Phase 2 wave P2-1 (alert verdicts), Task 14 — an AI verdict classification
+// counts as "noise" for `hideAiNoise=true`: the alert either healed on its
+// own, is a recurring low-value pattern, or is a duplicate already
+// represented elsewhere. `actionable` and `needs_human` are never hidden —
+// those are exactly the alerts a human still needs to see.
+const AI_NOISE_VERDICT_CLASSIFICATIONS = ['transient_self_healed', 'recurring_pattern', 'duplicate_of_group'] as const;
+
+/**
+ * `hideAiNoise=true`'s WHERE-clause predicate: exclude an alert whose
+ * LATEST live verdict (`superseded_by IS NULL`) classified it as noise.
+ * A correlated `NOT EXISTS` subquery, not a post-fetch filter — applied
+ * inside the SAME `conditions` array as every other list filter so
+ * `total`/pagination stay correct (mirrors `hasNoOsVulnFacts` in
+ * `services/vulnerabilityCorrelation.ts`, the repo's other correlated-
+ * NOT-EXISTS precedent). Exported for the compiled-SQL test — a mocked
+ * `where` assertion can only substring-match column names, which cannot
+ * distinguish EXISTS from NOT EXISTS or confirm the classification list
+ * survived (repo rule against vacuous Drizzle where-clause assertions).
+ */
+export function hideAiNoiseCondition(): SQL {
+  return notExists(
+    db.select({ one: sql`1` }).from(aiAlertVerdicts).where(and(
+      eq(aiAlertVerdicts.alertId, alerts.id),
+      isNull(aiAlertVerdicts.supersededBy),
+      inArray(aiAlertVerdicts.classification, AI_NOISE_VERDICT_CLASSIFICATIONS),
+    ))
+  );
+}
+
 // GET /alerts - List alerts with filters
 alertsRoutes.get(
   '/',
@@ -228,6 +259,13 @@ alertsRoutes.get(
       conditions.push(lte(alerts.triggeredAt, new Date(query.endDate)));
     }
 
+    // Phase 2 wave P2-1 (alert verdicts), Task 14 — a WHERE-clause NOT
+    // EXISTS, applied here alongside every other filter so pagination
+    // (computed from the SAME `conditions`, below) stays correct.
+    if (query.hideAiNoise === 'true') {
+      conditions.push(hideAiNoiseCondition());
+    }
+
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
     // Get total count
@@ -294,8 +332,27 @@ alertsRoutes.get(
     // never have to print a raw UUID (#3966).
     const alertsWithActorNames = await withAlertActorNames(alertsList);
 
+    // Phase 2 wave P2-1 (alert verdicts), Task 14 — attach each alert's
+    // latest live verdict. A partner/system caller with no `orgId` query
+    // filter can see alerts spanning MULTIPLE orgs on one page (the org
+    // scoping above uses `inArray(alerts.orgId, orgIds)` in that case), so
+    // `orgId` is derived per-row from the already-loaded `alertsList`
+    // (its select projection already carries `orgId`) rather than off
+    // `auth` alone. `latestVerdictsForAlerts` takes the org id(s) directly
+    // (widened to accept an array) instead of the route grouping alert ids
+    // per org and issuing one query per org — see that function's own
+    // docstring for why this was the smaller change.
+    const orgIdsForVerdicts = [...new Set(alertsList.map((alert) => alert.orgId))];
+    const verdictMap = await latestVerdictsForAlerts(orgIdsForVerdicts, alertIds);
+
+    const correlatedAlerts = attachAlertCorrelationSummaries(alertsWithActorNames, correlationRows);
+    const data = correlatedAlerts.map((alert) => {
+      const verdict = verdictMap.get(alert.id);
+      return { ...alert, aiVerdict: verdict ? projectAlertAiVerdictSummary(verdict) : null };
+    });
+
     return c.json({
-      data: attachAlertCorrelationSummaries(alertsWithActorNames, correlationRows),
+      data,
       pagination: { page, limit, total }
     });
   }
@@ -1163,6 +1220,12 @@ alertsRoutes.get(
 
     const [alertWithActorNames] = await withAlertActorNames([alert]);
 
+    // Phase 2 wave P2-1 (alert verdicts), Task 14 — the alert's latest live
+    // verdict, if any. A detail lookup is always single-org (`alert.orgId`,
+    // from `getAlertWithOrgCheck`'s already access-checked row).
+    const verdictMap = await latestVerdictsForAlerts(alert.orgId, [alertId]);
+    const verdict = verdictMap.get(alertId);
+
     return c.json(withMlAlertContext({
       ...alertWithActorNames,
       device: device ? {
@@ -1179,7 +1242,8 @@ alertsRoutes.get(
         targetId: rule.targetId,
         isActive: rule.isActive
       } : null,
-      notifications
+      notifications,
+      aiVerdict: verdict ? projectAlertAiVerdictSummary(verdict) : null,
     }));
   }
 );

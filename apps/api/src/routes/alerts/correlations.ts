@@ -7,6 +7,7 @@ import { db } from '../../db';
 import { alertCorrelationGroups, alertCorrelationMembers, alertCorrelations, alerts, devices, mlFeedbackEvents } from '../../db/schema';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { latestVerdictForGroup, projectAlertAiVerdictSummary } from '../../services/aiAgents/alertVerdicts';
 import { RESOLVABLE_ALERT_STATUSES } from '../../services/alertService';
 import { buildAlertCorrelationRca } from '../../services/alertCorrelationRca';
 import { publishEvent } from '../../services/eventBus';
@@ -191,6 +192,12 @@ type GroupAlert = ReturnType<typeof toGroupAlert>;
 
 interface CorrelationGroupForUi {
   id: string;
+  // Phase 2 wave P2-1 (alert verdicts), Task 14 — needed by the `:groupId`
+  // detail handler to call `latestVerdictForGroup(orgId, id)`. Additive on
+  // the shared list mapping (also reaches `GET /correlations`'s per-group
+  // rows, harmlessly — no extra query, `orgId` was already loaded off the
+  // raw `alert_correlation_groups` row this maps from).
+  orgId: string;
   rootCause: GroupAlert | null;
   relatedCount: number;
   alerts: GroupAlert[];
@@ -276,6 +283,11 @@ async function buildCorrelationGroups(auth: AuthContext): Promise<CorrelationGro
 
     return {
       id: rootId,
+      // Ephemeral (non-persisted) clustering path — `aiVerdict` is only
+      // wired for `buildPersistedCorrelationGroups`'s `GET
+      // /correlations/:groupId`, so `orgId` here exists solely to satisfy
+      // `CorrelationGroupForUi`, not to be read.
+      orgId: rootCause?.orgId ?? '',
       rootCause: rootCause ? toGroupAlert(rootCause) : null,
       relatedCount: Math.max(groupAlerts.length - 1, 0),
       alerts: groupAlerts.map(toGroupAlert),
@@ -367,6 +379,7 @@ async function buildPersistedCorrelationGroups(auth: AuthContext, groupId?: stri
 
     return {
       id: group.id,
+      orgId: group.orgId,
       rootCause: rootCause ? toGroupAlert(rootCause) : null,
       relatedCount: Math.max(groupAlerts.length - 1, 0),
       alerts: groupAlerts.map(toGroupAlert),
@@ -749,7 +762,13 @@ alertCorrelationRoutes.get(
       return c.json({ error: 'Correlation group not found' }, 404);
     }
 
-    return c.json({ group, data: group });
+    // Phase 2 wave P2-1 (alert verdicts), Task 14 — detail-only: NOT added to
+    // the list mapping above, which would N+1 a `latestVerdictForGroup` call
+    // per row of `GET /correlations`.
+    const verdict = await latestVerdictForGroup(group.orgId, group.id);
+    const groupWithVerdict = { ...group, aiVerdict: verdict ? projectAlertAiVerdictSummary(verdict) : null };
+
+    return c.json({ group: groupWithVerdict, data: groupWithVerdict });
   }
 );
 

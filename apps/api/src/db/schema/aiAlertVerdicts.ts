@@ -1,6 +1,6 @@
 // apps/api/src/db/schema/aiAlertVerdicts.ts
 import { sql } from 'drizzle-orm';
-import { index, jsonb, numeric, pgTable, text, timestamp, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import { index, jsonb, numeric, pgTable, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { AiAlertVerdictClassification, AiAlertVerdictPattern } from '@breeze/shared';
 import { organizations } from './orgs';
 import { users } from './users';
@@ -38,6 +38,16 @@ export const aiAlertVerdicts = pgTable('ai_alert_verdicts', {
   // Self-FK: lazy reference (repo pattern — see ticketCategories.parentId,
   // scriptCategories.parentId) since aiAlertVerdicts isn't defined yet at
   // this point in the object literal.
+  //
+  // migrations/2026-09-22-ai-alert-verdicts-live-unique.sql additionally
+  // alters this constraint DEFERRABLE INITIALLY DEFERRED — drizzle-orm's
+  // `.references()` builder has no deferrable option (same limitation
+  // documented on `deviceMtlsCertificates.ts`'s composite FK), so that detail
+  // lives in the migration only; db:check-drift does not compare FK options
+  // against the DB. `persistAlertVerdict` (services/aiAgents/alertVerdicts.ts)
+  // depends on the deferral to supersede an existing live row by pointing it
+  // at a not-yet-inserted id within one transaction — see that file's
+  // "Write ordering, part 2" docstring.
   supersededBy: uuid('superseded_by').references((): AnyPgColumn => aiAlertVerdicts.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
@@ -45,6 +55,14 @@ export const aiAlertVerdicts = pgTable('ai_alert_verdicts', {
   index('ai_alert_verdicts_org_group_idx').on(t.orgId, t.correlationGroupId).where(sql`${t.correlationGroupId} IS NOT NULL`),
   index('ai_alert_verdicts_latest_idx').on(t.orgId, t.createdAt.desc()).where(sql`${t.supersededBy} IS NULL`),
   index('ai_alert_verdicts_run_idx').on(t.runId),
+  // Carry-in C (P2-1 Task 14) — at most one LIVE (superseded_by IS NULL)
+  // verdict per alert / per correlation group. Mirrors
+  // migrations/2026-09-22-ai-alert-verdicts-live-unique.sql; see
+  // `persistAlertVerdict`'s docstring for the write-ordering this forces.
+  uniqueIndex('ai_alert_verdicts_live_alert_uq').on(t.alertId)
+    .where(sql`${t.supersededBy} IS NULL AND ${t.alertId} IS NOT NULL`),
+  uniqueIndex('ai_alert_verdicts_live_group_uq').on(t.correlationGroupId)
+    .where(sql`${t.supersededBy} IS NULL AND ${t.correlationGroupId} IS NOT NULL`),
 ]);
 
 export type AiAlertVerdictRow = typeof aiAlertVerdicts.$inferSelect;

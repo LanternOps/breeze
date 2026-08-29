@@ -10,6 +10,8 @@ const {
   emitRcaFeedbackMock,
   shouldProduceMlOutputMock,
   captureExceptionMock,
+  latestVerdictForGroupMock,
+  projectAlertAiVerdictSummaryMock,
   state,
   tables,
   dbMock,
@@ -151,6 +153,13 @@ const {
     emitRcaFeedbackMock: vi.fn(),
     shouldProduceMlOutputMock: vi.fn(),
     captureExceptionMock: vi.fn(),
+    // Phase 2 wave P2-1 (alert verdicts), Task 14 — mocked directly rather
+    // than modelled as a table in the elaborate `state`/`tables` fixture
+    // above: `latestVerdictForGroup` already has its own dedicated unit
+    // suite (services/aiAgents/alertVerdicts.test.ts). This file only needs
+    // to prove `GET /correlations/:groupId` calls it and places the result.
+    latestVerdictForGroupMock: vi.fn(),
+    projectAlertAiVerdictSummaryMock: vi.fn(),
     state,
     tables,
     dbMock,
@@ -208,6 +217,10 @@ vi.mock('../../services/mlFeedbackEmitters', () => ({
 }));
 vi.mock('../../services/mlFeatureFlags', () => ({
   shouldProduceMlOutput: shouldProduceMlOutputMock,
+}));
+vi.mock('../../services/aiAgents/alertVerdicts', () => ({
+  latestVerdictForGroup: latestVerdictForGroupMock,
+  projectAlertAiVerdictSummary: projectAlertAiVerdictSummaryMock,
 }));
 vi.mock('../../services/permissions', () => ({
   PERMISSIONS: {
@@ -287,6 +300,8 @@ describe('/alerts correlation routes', () => {
     vi.clearAllMocks();
     seed();
     shouldProduceMlOutputMock.mockResolvedValue(true);
+    latestVerdictForGroupMock.mockResolvedValue(null);
+    projectAlertAiVerdictSummaryMock.mockReturnValue(null);
     buildAlertCorrelationRcaMock.mockResolvedValue({
       groupId: GROUP_1,
       scope: {
@@ -540,9 +555,41 @@ describe('/alerts correlation routes', () => {
     expect(allowed.status).toBe(200);
     const allowedBody = await allowed.json();
     expect(allowedBody.group.id).toBe(GROUP_1);
+    // Phase 2 wave P2-1 (alert verdicts), Task 14 — aiVerdict: null when no
+    // live verdict exists, and latestVerdictForGroup is called with the
+    // group's own org + id (not the caller's auth.orgId alone).
+    expect(allowedBody.group.aiVerdict).toBeNull();
+    expect(allowedBody.data.aiVerdict).toBeNull();
+    expect(latestVerdictForGroupMock).toHaveBeenCalledWith(ORG_1, GROUP_1);
 
     const denied = await makeApp().request('/alerts/correlations/ffffffff-ffff-4fff-8fff-ffffffffffff');
     expect(denied.status).toBe(404);
+  });
+
+  it('carries the projected aiVerdict on the group detail when latestVerdictForGroup returns one', async () => {
+    seedPersistedGroup();
+    const verdictRow = { id: 'verdict-1', correlationGroupId: GROUP_1 };
+    const verdictDto = {
+      id: 'verdict-1', classification: 'duplicate_of_group', confidence: 0.72,
+      rationale: 'Same root cause as an already-open group.', patternKind: null,
+      feedback: null, suggestedIntentId: null, createdAt: '2026-09-22T10:00:00.000Z',
+    };
+    latestVerdictForGroupMock.mockResolvedValue(verdictRow);
+    projectAlertAiVerdictSummaryMock.mockReturnValue(verdictDto);
+
+    const res = await makeApp().request(`/alerts/correlations/${GROUP_1}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.group.aiVerdict).toEqual(verdictDto);
+    expect(projectAlertAiVerdictSummaryMock).toHaveBeenCalledWith(verdictRow);
+  });
+
+  it('does NOT attach aiVerdict on the LIST endpoint (GET /correlations) — detail-only, to avoid an N+1 per group', async () => {
+    seedPersistedGroup();
+
+    const res = await makeApp().request('/alerts/correlations');
+    expect(res.status).toBe(200);
+    expect(latestVerdictForGroupMock).not.toHaveBeenCalled();
   });
 
   it('returns a deterministic RCA bundle for a persisted correlation group', async () => {

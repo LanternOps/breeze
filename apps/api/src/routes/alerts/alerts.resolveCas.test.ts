@@ -108,6 +108,17 @@ vi.mock('./helpers', () => ({
   getAlertWithOrgCheck: (...args: unknown[]) => getAlertWithOrgCheck(...args),
   validateNotificationChannelConfig: vi.fn(),
 }));
+// Phase 2 wave P2-1 (alert verdicts), Task 14 — `alerts.ts` now imports
+// `latestVerdictsForAlerts`/`projectAlertAiVerdictSummary`. Unmocked, the
+// real module drags in `createActionIntent` (services/actionIntents/
+// intentService.ts) and its own transitive graph (aiTools/aiToolSchemas,
+// commandQueue, …), which this file's other partial mocks were never built
+// to cover. Mocked here purely to sever that transitive chain — this suite
+// doesn't exercise aiVerdict at all.
+vi.mock('../../services/aiAgents/alertVerdicts', () => ({
+  latestVerdictsForAlerts: vi.fn(async () => new Map()),
+  projectAlertAiVerdictSummary: vi.fn(),
+}));
 
 import { alertsRoutes } from './alerts';
 

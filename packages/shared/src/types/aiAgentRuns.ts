@@ -272,10 +272,17 @@ export type AlertVerdictSuggestionDisposition = 'intent_created' | 'not_created'
  * device-binding gate there: a suggestion whose target alert's device does
  * not equal the run's own `deviceId` (including a device-less run) is
  * refused with this same reason.
+ *
+ * `'superseded_concurrently'` (carry-in C, live-verdict partial unique) — a
+ * concurrent `persistAlertVerdict` call for the SAME target (alert or
+ * correlation group) committed first. This run's own verdict row was never
+ * written; the run's suggestion is skipped rather than attempted against a
+ * verdict that lost the race. See `alertVerdicts.ts`'s write-ordering
+ * docstring for the full mechanism (deferred self-FK + 23505 handling).
  */
 export type AlertVerdictSuggestionReason =
   | 'low_confidence' | 'target_mismatch' | 'alert_not_found' | 'no_eligible_approvers' | 'intent_error'
-  | 'not_allowlisted';
+  | 'not_allowlisted' | 'superseded_concurrently';
 
 /**
  * Phase 2 wave P2-1 (alert verdicts) — the safe projection of one
@@ -350,4 +357,34 @@ export interface AiAgentRunDetailDto {
    * caller before that lands sees `null` unconditionally.
    */
   alertVerdict: AiAgentRunAlertVerdictDto | null;
+}
+
+/**
+ * Phase 2 wave P2-1 (alert verdicts), Task 14 — the safe projection of one
+ * LIVE `ai_alert_verdicts` row carried on `GET /alerts` (list), `GET
+ * /alerts/:id` (detail), and a correlation group's `GET
+ * /correlations/:groupId` detail. Deliberately NOT `AiAgentRunAlertVerdictDto`
+ * (the run-detail projection above): that DTO is built from the in-flight
+ * `AlertVerdictOutcome` + this file's own `intentInfo` bookkeeping, neither of
+ * which is available where the alerts API attaches this — only the persisted
+ * `ai_alert_verdicts` row is. In particular `suggestedAction.disposition`
+ * (was a Tier-2 intent actually created?) is NOT reproduced here: answering
+ * that cheaply would require re-reading the verdict's owning run row, which
+ * this call site never loads. `suggestedIntentId` alone (present only when an
+ * intent WAS created and linked back) is what the alerts UI has to work with.
+ *
+ * `confidence` is `Number(...)` of the `numeric(3,2)` column — never the raw
+ * Postgres string. `feedback`/`suggestedIntentId` mirror the row verbatim
+ * (both already nullable, already display-safe — no raw tool payload lives on
+ * this table at all, unlike `ai_agent_runs.outcome`).
+ */
+export interface AlertAiVerdictSummaryDto {
+  id: string;
+  classification: AiAlertVerdictClassification;
+  confidence: number;
+  rationale: string;
+  patternKind: AiAlertVerdictPattern['kind'] | null;
+  feedback: 'up' | 'down' | null;
+  suggestedIntentId: string | null;
+  createdAt: string;
 }
