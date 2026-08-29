@@ -8,6 +8,8 @@ tracking_issue: https://github.com/LanternOps/breeze/issues/4060
 
 **Goal:** Close RMM-QA-445 by making PAM apply and cleanup durable, generation-ordered, capability-gated, endpoint-verifiable, and truthful across server, agent, restart, reboot, and result-transport boundaries.
 
+**Closure decisions:** [`2026-08-29-s0-track-e-pam-closure-decisions.md`](../specs/2026-08-29-s0-track-e-pam-closure-decisions.md) adopts the 2-second p95 / 5-second maximum production cleanup SLO with a hosted-canary re-measure condition and records the Product-owned v0.109 shipping-entitlement non-applicability disposition with an explicit reopen trigger.
+
 **Architecture:** One mutable `pam_actuations` row holds desired generation/state and the latest accepted observation, while append-only `pam_actuation_results` rows preserve endpoint evidence. Approval or cleanup transition, actuation mutation, and publication intent commit atomically through the existing physical `intent_outbox`; a dedicated worker dispatches capability-gated v2 commands, and one result service handles REST and WebSocket reports. On Windows, v2 is token-launch-only: the manager launches suspended, assigns the process to a deterministic named Job Object configured with kill-on-close, persists the revocable identity, and resumes only after successful attachment.
 
 **Tech Stack:** TypeScript, Hono, Drizzle ORM, PostgreSQL RLS, BullMQ/Redis, Vitest, Go, Windows Win32 token/process/Job Object APIs.
@@ -27,8 +29,8 @@ tracking_issue: https://github.com/LanternOps/breeze/issues/4060
 - Cleanup is dispatched only to v2-capable agents. Existing v1 `active`/`actuating` rows are exposed as `legacy_untracked` with disposition `blocked_manual_remediation`; they are never backfilled as cleaned and their endpoints remain blocked from new PAM admission.
 - REST and WebSocket result paths must call the same registered handler and persistence service. Transport-specific code may authenticate and parse an envelope but may not implement PAM state transitions.
 - Request compatibility status (`revoked`/`expired`) is distinct from endpoint enforcement status. Only an accepted current-generation `cleaned` observation writes `session_ended_at`, terminal cleanup audit, `cleaned_at`, or enforcement status `cleaned`.
-- Instrument cleanup latency from the agent's durable `cleanup_received`/`received` observation. QA's 2-second p95 and 5-second maximum is a candidate acceptance target requiring explicit Security/Product/Operations adoption; it is not a production SLO or closure fact until adopted and passed by the exact candidate.
-- Entitlement removal is not presumed to have a caller. Task 3 must discover the shipping entitlement-removal owner, wire and test it if present, and block closure until either a real caller is integrated or Product records a named shipping-SKU non-applicability decision.
+- Instrument cleanup latency from the agent's durable `cleanup_received`/`received` observation. The 2-second p95 and 5-second maximum is adopted as the production cleanup SLO by the 2026-08-29 closure decision after the exact candidate passed it. The lab result is not a fleet measurement: the hosted 5/25-device canary must re-measure and pass it before any rollout expansion.
+- Entitlement removal is not presumed to have a caller. Task 3 must discover the shipping entitlement-removal owner and wire and test it if present. Product's v0.109 decision records PAM as available on all plan tiers and not separately entitled; this disposition reopens immediately if PAM becomes plan- or billing-gated, and that producer must call `removePamEntitlement` in its winning transaction.
 - All new tenant tables use direct `org_id` tenancy, enable and force RLS in the creation migration, and are registered in organization/device cascade and tenant-export policy. JSON/JSONB evidence is `excludedOpen`; append-only results use audit-admin erasure handling.
 - Migrations are additive, idempotent, ordered after shipped migrations, never edit shipped files, and report every quarantine/backfill row count. Agent-write result transactions remain short and never update a `devices` parent row in the same transaction as a child insert.
 - Queue publication, Redis calls, command delivery, provider work, and audit/event fan-out happen outside request/system database transaction contexts except for the durable SQL rows that define the transaction boundary.
@@ -294,9 +296,15 @@ Expected: at least approval/revoke/expiry transitions commit without atomic actu
 
 Call `createPamDecisionIntent` or `requestPamCleanup` inside the same transaction as the winning request decision. Remove the best-effort PAM mobile mirror. Change expiry from status-only CTE behavior to a bounded lock/return loop that creates cleanup intent before commit. Preserve legacy request statuses for compatibility, but return accepted/pending cleanup unless endpoint evidence is already cleaned. Wire policy deletion/disable to cause `policy_removed`. Wire the discovered shipping entitlement caller to `removePamEntitlement` with cause `entitlement_removed`; if no caller exists, expose and test the service without claiming transition coverage.
 
-- [ ] **Step 5: Run GREEN and enforce the entitlement gate**
+- [x] **Step 5: Run GREEN and enforce the entitlement gate**
 
 Run the RED commands again. Then inspect the task report/coverage assertion: it must name the wired shipping caller and test, or name the Product-owned non-applicability decision. Otherwise mark this task code-complete but closure-blocked; do not silently check off entitlement-removal coverage.
+
+Closure decision (2026-08-29): Product records
+`{ kind: 'not_applicable', shippingSku: 'breeze-rmm v0.109 — PAM available on all plan tiers; not a separately entitled SKU', productDecisionRef: 'docs/superpowers/specs/2026-08-29-s0-track-e-pam-closure-decisions.md#decision-2-shipping-entitlement-disposition' }`.
+The disposition reopens immediately if PAM becomes plan- or billing-gated; the
+new producer must call `removePamEntitlement` inside its winning transaction and
+pass the real-PostgreSQL transition contract before shipping.
 
 - [x] **Step 6: Commit**
 
@@ -830,12 +838,16 @@ and the synchronous `received` acknowledgement before `Resume`. rc.2 had
 executed 17/25 before #4196 blocked it; the three replay cases that rc.2 could
 not exercise ran for real on rc.3 (`duplicate`, `duplicate`, `stale`).
 
-RMM-QA-445 stays `fixed-unverified` on the plan's own rule: exact-candidate
-Windows evidence and real-Postgres suites are now present, but the candidate
-target is not yet adopted as a production SLO and the shipping
-entitlement-removal disposition (Task 8 entitlement item) remains unresolved.
-Evidence lives in the private lab evidence directory and the QA repository
-(`docs/qa/evidence/2026-08-29-s0-track-e-pam-rc3-candidate.md`).
+Closure decision (2026-08-29): the exact-candidate Windows and real-PostgreSQL
+evidence above remain the verification basis. The 2-second p95 / 5-second
+maximum is now an adopted production cleanup SLO with mandatory hosted-canary
+re-measurement before rollout expansion, and Product records PAM in v0.109 as
+available on all plan tiers and not separately entitled. The entitlement
+disposition reopens immediately if PAM becomes plan- or billing-gated. These
+decisions satisfy the remaining Task 8 Step 7 inputs, so RMM-QA-445 may leave
+`fixed-unverified`; no production deployment, hosted canary, or rollout is
+claimed. The authoritative reference is
+[`2026-08-29-s0-track-e-pam-closure-decisions.md`](../specs/2026-08-29-s0-track-e-pam-closure-decisions.md).
 
 ## Dependency and Rollout Gate
 
@@ -853,7 +865,7 @@ Track D complete
 
 - Keep v1 `actuate_elevation` only for rollout compatibility. It is not eligible for new v2 admission, cannot advertise v2, and cannot close RMM-QA-445.
 - Land schema and tolerant parsing before any producer emits protocol v2. Land the inert agent capability before server admission is enabled.
-- PAM stays internal-lab-only until restart/reboot cases and the candidate 5-second maximum pass. Hosted 5/25-device canaries require separate explicit deployment authorization and adopted operational gates.
+- PAM stays internal-lab-only until restart/reboot cases and the adopted 5-second maximum pass. The exact candidate met those prerequisites; hosted 5/25-device canaries still require separate explicit deployment authorization and must re-measure the adopted 2-second p95 / 5-second maximum before any rollout expansion.
 - Pause expansion on any foreign-scope rejection, digest/identity equivocation, cleanup timeout, unverified state, legacy command claim, or material queue backlog.
 - One independent whole-branch review occurs after all remediation tracks, not per Task E1-E8. Review fixes use targeted tests; re-review only when a fix changes tenancy, migrations, concurrency, or shipped-agent behavior.
 
@@ -865,12 +877,12 @@ Track D complete
 - [x] Legacy active/actuating v1 rows surface `legacy_untracked` / `blocked_manual_remediation` and are never marked cleaned.
 - [x] Missing or unsupported heartbeat capability prevents v2 apply admission.
 - [x] REST and WebSocket results use the same registered service.
-- [ ] Only token-launch v2 uses the named kill-on-close Job Object contract; SendInput remains v1 only.
+- [x] Only token-launch v2 uses the named kill-on-close Job Object contract; SendInput remains v1 only (`TestV2WindowsImplementationDoesNotUseConsentOrSendInputProof`).
 - [x] Cleanup tombstones reject delayed older apply commands across restart/reboot.
 - [x] Only verified current-generation endpoint evidence advances session/terminal cleanup truth.
-- [ ] Entitlement removal names a wired shipping caller or a Product-owned shipping-SKU non-applicability disposition.
+- [x] Entitlement removal names a wired shipping caller or a Product-owned shipping-SKU non-applicability disposition (v0.109 Product decision; reopens on plan/billing gating).
 - [x] Real-Postgres suites execute rather than skip and prove two-org isolation and zero side effects.
 - [x] Go race/state-machine tests pass and Windows binaries cross-compile.
 - [x] Disposable signed-Windows evidence covers at least 20 cases and proves zero surviving privileged token/process tree (rc.3, 25/25, 2026-08-29).
-- [ ] The 2-second p95/5-second maximum remains labeled a candidate target until explicitly adopted.
+- [x] The 2-second p95 / 5-second maximum is adopted by the 2026-08-29 closure decision; hosted 5/25-device canaries must re-measure it before rollout expansion.
 - [x] No production deployment, customer rollout, or destructive production migration occurred from this branch.
