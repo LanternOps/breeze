@@ -193,7 +193,7 @@ describe('metric anomaly incidents upsert (#3828 wave-6-4 task 2)', () => {
     expect(incidentSql).not.toContain('first_seen_at = EXCLUDED.first_seen_at');
   });
 
-  it('binds the range lower bound (no upper bound) so a growth-trend row whose window_start predates `from` still collapses in on a later pass', async () => {
+  it('filters on window_end (not window_start), with no upper bound against `to`', async () => {
     await detectMetricAnomaliesRange({
       orgId: '22222222-2222-2222-2222-222222222222',
       from: new Date('2026-06-18T12:00:00.000Z'),
@@ -202,10 +202,41 @@ describe('metric anomaly incidents upsert (#3828 wave-6-4 task 2)', () => {
 
     const incidentCall = executeMock.mock.calls[3];
     const incidentSql = JSON.stringify(incidentCall);
-    expect(incidentSql).toContain('ma.window_start >=');
+    // window_end, not window_start: a growth-trend row's window_start is the
+    // START of its multi-bucket trend window and can predate `from`, but
+    // every detector writes window_end >= its own bucket_start >= `from`, so
+    // filtering on window_end (rather than window_start) is what keeps every
+    // row this pass just wrote in range — see the comment above
+    // upsertMetricAnomalyIncidents for the arithmetic.
+    expect(incidentSql).toContain('ma.window_end >=');
     expect(incidentSql).toContain('2026-06-18T12:00:00.000Z');
-    // No upper-bound comparison against `to` for metric_anomalies.window_start.
-    expect(incidentSql).not.toContain('ma.window_start <');
+    expect(incidentSql).not.toContain('ma.window_start >=');
+    // No upper-bound comparison against `to` for metric_anomalies.window_end
+    // — an incident keeps collapsing across later revisit passes instead of
+    // falling out of range once its window_end ages past a subsequent
+    // pass's `from`.
+    expect(incidentSql).not.toContain('ma.window_end <');
+  });
+
+  it('includes a growth-trend row whose window_start predates `from` (window_end is what gates it, and is still >= from)', async () => {
+    await detectMetricAnomaliesRange({
+      orgId: '33333333-3333-3333-3333-333333333333',
+      from: new Date('2026-06-18T12:00:00.000Z'),
+      to: new Date('2026-06-18T12:30:00.000Z'),
+    });
+
+    const incidentCall = executeMock.mock.calls[3];
+    const incidentSql = JSON.stringify(incidentCall);
+    // `ma.window_start` legitimately appears in SELECT and GROUP BY (it's
+    // the collapsing key), so assert on the WHERE-clause predicate shape
+    // specifically: no comparison operator is ever applied to
+    // `ma.window_start` anywhere in the statement. A growth-trend row with,
+    // e.g., window_start = 2026-06-18T11:35:00.000Z (25 minutes before
+    // `from`, the MIN_TREND_BUCKETS lookback) and
+    // window_end = 2026-06-18T12:05:00.000Z (still >= `from`) is included by
+    // the actual filter (window_end >= from) and would have been wrongly
+    // excluded by a window_start >= from filter.
+    expect(incidentSql).not.toMatch(/ma\.window_start\s*(>=|<=|>|<)/);
   });
 
   it('is gated by the same ml.anomalies.enabled flag as the rest of the detect job', async () => {

@@ -157,12 +157,15 @@ describe('metricAnomalyIncidentPublisher.publishPendingIncidents', () => {
     expect(captured.message).toContain('6 dispatch attempts');
   });
 
-  // Wave 6 PR 4 (#3828) Task 2's core idempotency contract: an already-
-  // dispatched incident is never claimed again, so re-publishing it is
-  // structurally impossible from the publisher side (the detector-side
-  // guarantee — the DO UPDATE SET list never clears dispatched_at — lives in
-  // metricAnomalies.test.ts's "re-publish guard" test).
-  it('re-run does not double-publish an already-dispatched incident', async () => {
+  // NOTE: this exercises publishPendingIncidents' empty-claim early return
+  // (result driven entirely by executeMock's programmed `{ rows: [] }`
+  // return value), NOT the actual dispatched_at IS NULL claim predicate —
+  // this mock can't observe SQL WHERE-clause contents at all. The real
+  // idempotency guarantee (an already-dispatched row is never re-claimed) is
+  // asserted at the source level below, in the "claim predicate" describe
+  // block, since it's the CTE's `WHERE dispatched_at IS NULL` that a real
+  // Postgres instance would enforce — no mock here can substitute for that.
+  it('empty-claim early return: a claim pass with no rows publishes and marks-dispatched nothing', async () => {
     executeMock.mockResolvedValueOnce({ rows: [] });
     executeMock.mockResolvedValueOnce({ rows: [claimedRow({ id: 'incident-8' })] });
     updateMock.mockReturnValue({ set: makeUpdateChain().set });
@@ -171,16 +174,17 @@ describe('metricAnomalyIncidentPublisher.publishPendingIncidents', () => {
     expect(first.published).toBe(1);
     expect(publishEventMock).toHaveBeenCalledTimes(1);
 
-    // Simulates the detector's re-upsert running again for the same
-    // org/range between publisher passes: dispatched_at stays non-NULL
-    // (never touched by that SET list), so the next claim scan finds
-    // nothing to claim for this row.
+    // Second pass: claim scan returns no rows (whatever the reason in
+    // production — the row already having dispatched_at set is exactly one
+    // such reason, enforced by Postgres via the WHERE clause asserted below,
+    // not by this mock).
     executeMock.mockResolvedValueOnce({ rows: [] });
     executeMock.mockResolvedValueOnce({ rows: [] });
 
     const second = await publishPendingIncidents();
     expect(second).toEqual({ published: 0, skipped: 0 });
     expect(publishEventMock).toHaveBeenCalledTimes(1);
+    expect(updateMock).toHaveBeenCalledTimes(1); // only from the first pass
   });
 
   it('leaves dispatched_at unset and does not crash when publishEvent rejects', async () => {
@@ -228,6 +232,31 @@ describe('metricAnomalyIncidentPublisher — source-level id-only guard', () => 
     for (const forbidden of ['.anomaly_type', '.anomalyType', '.metric_names', '.metricNames', '.peak_score', '.peakScore', '.evidence', 'row.row_count']) {
       expect(src).not.toContain(forbidden);
     }
+  });
+});
+
+// Wave 6 PR 4 (#3828) Task 2's core idempotency contract, asserted at the
+// source level: the mocked db/schema modules above can't execute real SQL,
+// so there is no way for a mock-driven test to prove an already-dispatched
+// row is excluded from the claim — that's a property of the compiled WHERE
+// clause a real Postgres evaluates. Assert the predicate survives in both
+// places it must: the read-only stuck scan and the FOR UPDATE SKIP LOCKED
+// claim CTE (see scanAndClaimIncidentRows in metricAnomalyIncidentPublisher.ts).
+// A future edit that drops either occurrence — e.g. loosening the claim CTE
+// to re-claim already-dispatched rows — fails here first, before it ever
+// reaches production as a 5-second-interval re-publish storm.
+describe('metricAnomalyIncidentPublisher — dispatched_at IS NULL claim guard (source-level)', () => {
+  it('both the stuck scan and the claim CTE gate on dispatched_at IS NULL', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'metricAnomalyIncidentPublisher.ts'), 'utf8');
+    const guardOccurrences = [
+      ...src.matchAll(/WHERE \$\{metricAnomalyIncidents\.dispatchedAt\} IS NULL/g),
+    ];
+    expect(guardOccurrences.length).toBe(2);
+  });
+
+  it('the claim CTE additionally locks with FOR UPDATE SKIP LOCKED', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'metricAnomalyIncidentPublisher.ts'), 'utf8');
+    expect(src).toContain('FOR UPDATE SKIP LOCKED');
   });
 });
 

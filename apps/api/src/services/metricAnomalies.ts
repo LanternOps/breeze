@@ -586,12 +586,21 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
  * appears folded into `array_agg(DISTINCT metric_name)`, listing every
  * sibling metric name the incident collapses).
  *
- * `ma.window_start >= $1` has NO upper bound — a growth-trend row's
- * `window_start` is the START of its multi-bucket trend window and can
+ * Filtered on `ma.window_end >= $1`, NOT `ma.window_start` — a growth-trend
+ * row's `window_start` is the START of its multi-bucket trend window and can
  * predate this pass's `from` (the trend CTE looks up to `MIN_TREND_BUCKETS`
- * buckets before its anchor), so bounding only from below keeps those rows
- * folding into the same incident across the 10-min/30-min-lookback
- * revisit passes instead of falling out of range on a later pass.
+ * buckets before its anchor), so filtering on `window_start >= from` would
+ * exclude every growth-trend row whose anchor lands in the first
+ * `MIN_TREND_BUCKETS * RAW_BUCKET_SECONDS` of the range — which, given the
+ * cron's `to - from` spacing, is every anchor except the single bucket
+ * nearest `to`. `window_end` (`last_bucket_start + RAW_BUCKET_SECONDS` for
+ * growth trends, always `bucket_start + RAW_BUCKET_SECONDS` for the other
+ * two detectors) is always `>= from` for any row this pass just wrote, since
+ * every detector's own bucket-selection CTE already requires
+ * `bucket_start >= from`. There is deliberately no upper bound against `to`:
+ * an incident can keep collapsing across later revisit passes rather than
+ * falling out of range once its window_end ages past a subsequent pass's
+ * `from`.
  *
  * `metric_anomalies.window_start`/`detected_at` are naive `timestamp` (no
  * tz) — always written in UTC by the rollup pipeline (see the detectors
@@ -637,7 +646,7 @@ async function upsertMetricAnomalyIncidents(options: MetricAnomalyRange): Promis
     FROM metric_anomalies ma
     WHERE ma.org_id = ${options.orgId}
       AND ma.status = 'open'
-      AND ma.window_start >= ${fromIso}::timestamp
+      AND ma.window_end >= ${fromIso}::timestamp
     GROUP BY ma.org_id, ma.device_id, ma.anomaly_type, ma.bucket_seconds, ma.window_start
     ON CONFLICT (org_id, device_id, anomaly_type, bucket_seconds, window_start)
     DO UPDATE SET ${incidentUpsertAssignments()}
