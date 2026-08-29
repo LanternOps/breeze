@@ -19,6 +19,18 @@ export type EventType =
   // Alert events
   | 'alert.triggered'
   | 'alert.acknowledged'
+  // C2 fix (P2-1 wave B, task 16d): every publisher SHOULD include
+  // `resolvedAt` (ISO string), `resolvedBy` (uuid | null — null means a
+  // system/auto resolve), and `triggeredAt` (ISO string) on the payload,
+  // sourced from the row the publisher's own UPDATE just wrote/returned —
+  // never from a second read. This lets a subscriber (see
+  // `alertVerdictSubscriber.ts`'s contract comment) gate on the PUBLISHED
+  // payload instead of re-reading the alert row, which can be stale when
+  // the publisher runs inside a still-open transaction (the auto-resolve
+  // sweep in `jobs/alertWorker.ts` / `jobs/monitorWorker.ts` publishes
+  // before its wrapping `withSystemDbAccessContext` commits). A publisher
+  // that omits these fields falls back to the pre-existing re-read
+  // behavior — not every one currently sets them, but new ones should.
   | 'alert.resolved'
   | 'alert.suppressed'
   | 'alert.escalated'

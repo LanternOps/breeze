@@ -334,11 +334,12 @@ async function autoResolveWarrantyAlerts(deviceId: string): Promise<void> {
     // whether this evaluator performed the transition. Updating by id alone let a
     // technician's resolve and this sweep both publish `alert.resolved` for one
     // real transition.
+    const resolvedAt = new Date();
     const written = await db
       .update(alerts)
       .set({
         status: 'resolved',
-        resolvedAt: new Date(),
+        resolvedAt,
         resolutionNote: 'Auto-resolved: warranty no longer expiring within threshold',
       })
       .where(buildResolveAlertCas(alert.id))
@@ -356,6 +357,9 @@ async function autoResolveWarrantyAlerts(deviceId: string): Promise<void> {
         alertId: alert.id,
         deviceId,
         resolutionNote: 'Auto-resolved: warranty no longer expiring within threshold',
+        resolvedAt: resolvedAt.toISOString(),
+        resolvedBy: null,
+        triggeredAt: alert.triggeredAt.toISOString(),
       },
       'warranty-alert-evaluator'
     );

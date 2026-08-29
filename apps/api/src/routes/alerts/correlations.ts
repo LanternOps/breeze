@@ -699,7 +699,9 @@ async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'reso
         alertId: alert.id,
         ruleId: alert.ruleId,
         deviceId: alert.deviceId,
-        ...(action === 'acknowledge' ? { acknowledgedBy: userId } : { resolvedBy: userId }),
+        ...(action === 'acknowledge'
+          ? { acknowledgedBy: userId }
+          : { resolvedBy: userId, resolvedAt: now.toISOString(), triggeredAt: alert.triggeredAt.toISOString() }),
       },
       'alerts-correlation-route',
       { userId }
