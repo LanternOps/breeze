@@ -53,6 +53,7 @@ vi.mock('../../db', () => {
     state.selectCount += 1;
     const builder: Record<string, unknown> = {
       from: vi.fn(() => builder),
+      innerJoin: vi.fn(() => builder),
       where: vi.fn((w: unknown) => {
         state.selectWheres.push(w);
         return builder;
@@ -671,6 +672,59 @@ describe('latestVerdictsForAlerts', () => {
     const { sql: compiled, params } = dialect.sqlToQuery(state.selectWheres[0] as SQL);
     expect(compiled.toLowerCase()).toContain('in');
     expect(params).toEqual(expect.arrayContaining([ORG_ID, OTHER_ORG_ID]));
+  });
+
+  // I3 fix (P2-1 wave B task 16d) — `persistAlertVerdict` writes a GROUP
+  // verdict with `alert_id IS NULL` / `correlation_group_id` set. Ruling: a
+  // group verdict applies to every member alert that doesn't already carry
+  // its own alert-level verdict.
+  describe('group-level verdicts apply to member alerts (I3 fix)', () => {
+    it('an alert-level verdict WINS: no group-level query is issued when every id is already covered', async () => {
+      state.selectQueue.push([
+        { id: VERDICT_ROW_ID, alertId: ALERT_ID, orgId: ORG_ID },
+        { id: PRIOR_VERDICT_ID, alertId: OTHER_ALERT_ID, orgId: ORG_ID },
+      ]);
+
+      const map = await latestVerdictsForAlerts(ORG_ID, [ALERT_ID, OTHER_ALERT_ID]);
+
+      expect(map.get(ALERT_ID)).toMatchObject({ id: VERDICT_ROW_ID });
+      expect(map.get(OTHER_ALERT_ID)).toMatchObject({ id: PRIOR_VERDICT_ID });
+      expect(state.selectCount).toBe(1); // one query, not two — group-level never queried
+    });
+
+    it('applies the latest live GROUP-level verdict to a member alert with no alert-level verdict of its own', async () => {
+      state.selectQueue.push([]); // alert-level query: nothing for ALERT_ID
+      const groupVerdictRow = { id: PRIOR_VERDICT_ID, alertId: null, correlationGroupId: GROUP_ID, orgId: ORG_ID };
+      state.selectQueue.push([{ alertId: ALERT_ID, verdict: groupVerdictRow }]);
+
+      const map = await latestVerdictsForAlerts(ORG_ID, [ALERT_ID]);
+
+      expect(map.get(ALERT_ID)).toEqual(groupVerdictRow);
+      expect(state.selectCount).toBe(2); // one or two queries, never N
+    });
+
+    it('does not let a group-level verdict for one alert overwrite an alert-level verdict already found for another', async () => {
+      state.selectQueue.push([{ id: VERDICT_ROW_ID, alertId: ALERT_ID, orgId: ORG_ID }]); // alert-level: only ALERT_ID
+      const groupVerdictRow = { id: PRIOR_VERDICT_ID, alertId: null, correlationGroupId: GROUP_ID, orgId: ORG_ID };
+      state.selectQueue.push([{ alertId: OTHER_ALERT_ID, verdict: groupVerdictRow }]); // group-level: only for the still-unmapped id
+
+      const map = await latestVerdictsForAlerts(ORG_ID, [ALERT_ID, OTHER_ALERT_ID]);
+
+      expect(map.get(ALERT_ID)).toMatchObject({ id: VERDICT_ROW_ID });
+      expect(map.get(OTHER_ALERT_ID)).toEqual(groupVerdictRow);
+    });
+
+    it('the group-level query is scoped to live (non-superseded) rows and is org-scoped', async () => {
+      state.selectQueue.push([]); // alert-level: nothing
+      state.selectQueue.push([]); // group-level: nothing
+
+      await latestVerdictsForAlerts(ORG_ID, [ALERT_ID]);
+
+      expect(state.selectCount).toBe(2);
+      const groupWhere = sqlText(state.selectWheres[1]);
+      expect(groupWhere.toLowerCase()).toContain('is null');
+      expect(groupWhere.toLowerCase()).toContain('org_id');
+    });
   });
 });
 

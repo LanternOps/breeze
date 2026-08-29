@@ -486,6 +486,20 @@ export function projectAlertAiVerdictSummary(row: AiAlertVerdictRow): AlertAiVer
  * narrower read of the SAME already-authorized id set, not a new access
  * decision, so one widened query is both the smaller change and the cheaper
  * one (a single round trip instead of up to N).
+ *
+ * I3 fix (P2-1 wave B task 16d): `persistAlertVerdict` writes a group
+ * verdict with `alert_id IS NULL` / `correlation_group_id` set — a
+ * `duplicate_of_group` classification on the GROUP was otherwise invisible
+ * to every member alert (neither this map nor `hideAiNoiseCondition` ever
+ * matched it). Ruling: a group verdict applies to every member alert. Two
+ * queries, not N:
+ *   1. ALERT-level live verdicts for the requested ids — these WIN when an
+ *      alert has both an alert-level and (via its group) a group-level
+ *      verdict.
+ *   2. For the ids still unmapped after (1), the latest live GROUP-level
+ *      verdict of any correlation group the alert is a member of
+ *      (`alert_correlation_members`, org-scoped on the join row — same
+ *      tenancy axis `alert_correlation_members` already carries).
  */
 export async function latestVerdictsForAlerts(
   orgId: string | string[],
@@ -507,6 +521,29 @@ export async function latestVerdictsForAlerts(
   for (const row of rows) {
     if (row.alertId && !map.has(row.alertId)) map.set(row.alertId, row);
   }
+
+  const remaining = alertIds.filter((id) => !map.has(id));
+  if (remaining.length > 0) {
+    const memberOrgCondition = Array.isArray(orgId)
+      ? inArray(alertCorrelationMembers.orgId, orgId)
+      : eq(alertCorrelationMembers.orgId, orgId);
+    const groupRows = await db.select({
+      alertId: alertCorrelationMembers.alertId,
+      verdict: aiAlertVerdicts,
+    })
+      .from(alertCorrelationMembers)
+      .innerJoin(aiAlertVerdicts, eq(aiAlertVerdicts.correlationGroupId, alertCorrelationMembers.groupId))
+      .where(and(
+        memberOrgCondition,
+        inArray(alertCorrelationMembers.alertId, remaining),
+        isNull(aiAlertVerdicts.supersededBy),
+      ))
+      .orderBy(desc(aiAlertVerdicts.createdAt));
+    for (const row of groupRows) {
+      if (!map.has(row.alertId)) map.set(row.alertId, row.verdict);
+    }
+  }
+
   return map;
 }
 

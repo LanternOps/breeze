@@ -150,11 +150,27 @@ const AI_NOISE_VERDICT_CLASSIFICATIONS = ['transient_self_healed', 'recurring_pa
  * `where` assertion can only substring-match column names, which cannot
  * distinguish EXISTS from NOT EXISTS or confirm the classification list
  * survived (repo rule against vacuous Drizzle where-clause assertions).
+ *
+ * I3 fix (P2-1 wave B task 16d): a verdict counts against THIS alert when
+ * either it is the alert's own live verdict (`alert_id = alerts.id`), OR it
+ * is a live GROUP verdict on a correlation group this alert is a member of
+ * (`correlation_group_id IN (SELECT group_id FROM alert_correlation_members
+ * WHERE alert_id = alerts.id)`) — a `duplicate_of_group` verdict lives on
+ * the group row (`alert_id IS NULL`), so without the second branch it never
+ * matched any member alert here.
  */
 export function hideAiNoiseCondition(): SQL {
   return notExists(
     db.select({ one: sql`1` }).from(aiAlertVerdicts).where(and(
-      eq(aiAlertVerdicts.alertId, alerts.id),
+      or(
+        eq(aiAlertVerdicts.alertId, alerts.id),
+        inArray(
+          aiAlertVerdicts.correlationGroupId,
+          db.select({ groupId: alertCorrelationMembers.groupId })
+            .from(alertCorrelationMembers)
+            .where(eq(alertCorrelationMembers.alertId, alerts.id)),
+        ),
+      )!,
       isNull(aiAlertVerdicts.supersededBy),
       inArray(aiAlertVerdicts.classification, AI_NOISE_VERDICT_CLASSIFICATIONS),
     ))

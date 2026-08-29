@@ -56,13 +56,20 @@ import { hideAiNoiseCondition } from './alerts';
 describe('hideAiNoiseCondition (compiled SQL)', () => {
   const dialect = new PgDialect();
 
-  it('compiles a correlated NOT EXISTS over ai_alert_verdicts, scoped to this alert, live rows, and the three noise classifications', () => {
+  it('compiles a correlated NOT EXISTS over ai_alert_verdicts, scoped to this alert (or a group it is a member of), live rows, and the three noise classifications', () => {
     const { sql, params } = dialect.sqlToQuery(hideAiNoiseCondition());
     const normalized = sql.replace(/\s+/g, ' ').trim();
 
+    // I3 fix (P2-1 wave B task 16d): a group verdict (`alert_id IS NULL`,
+    // `correlation_group_id` set) counts against a member alert too — the
+    // `or (... correlation_group_id in (select group_id from
+    // alert_correlation_members where alert_id = alerts.id))` branch.
     expect(normalized).toBe(
       'not exists (select 1 from "ai_alert_verdicts" where '
-      + '("ai_alert_verdicts"."alert_id" = "alerts"."id" and '
+      + '(("ai_alert_verdicts"."alert_id" = "alerts"."id" or '
+      + '"ai_alert_verdicts"."correlation_group_id" in '
+      + '(select "group_id" from "alert_correlation_members" where '
+      + '"alert_correlation_members"."alert_id" = "alerts"."id")) and '
       + '"ai_alert_verdicts"."superseded_by" is null and '
       + '"ai_alert_verdicts"."classification" in ($1, $2, $3)))'
     );
