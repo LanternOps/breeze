@@ -341,7 +341,31 @@ function makeAgentRow(overrides?: Record<string, unknown>) {
   return { id: AGENT_ID, orgId: ORG_ID, partnerId: null, name: 'Verdict agent', kind: 'verdict', ...overrides };
 }
 
-/** Queues the run → agent → device system-context loads the agent branch performs. */
+/**
+ * A full run row (same shape `makeRunRow` returns) with the policy snapshot's
+ * `effective.mode` overridden — mirrors intentService.test.ts's identical
+ * helper. `makeRunRow`'s own `overrides` param is a shallow spread, so
+ * passing `{ policySnapshot: {...} }` there would REPLACE the whole snapshot
+ * rather than patch one field; this deep-clones instead. Used by the P2-1
+ * policy-decide-guard test below, which needs `effective.mode` to actually
+ * be `'act'`.
+ */
+function agentRunRowWithMode(mode: string, overrides?: Record<string, unknown>) {
+  const base = makeRunRow(overrides);
+  return {
+    ...base,
+    policySnapshot: {
+      ...base.policySnapshot,
+      effective: { ...base.policySnapshot.effective, mode },
+    },
+  };
+}
+
+/** Queues the run → agent → device system-context loads the agent branch
+ * performs. `opts.run` is shallow-merged onto makeRunRow's defaults, so
+ * passing a COMPLETE row (e.g. from agentRunRowWithMode) works too — every
+ * field, including the nested `policySnapshot`, is simply overwritten
+ * wholesale by the full object's own value. */
 function queueAgentContext(opts?: { run?: Record<string, unknown>; agent?: Record<string, unknown> }) {
   const run = makeRunRow(opts?.run);
   dbState.selectAgentRunsResults.push([run]);
@@ -474,8 +498,17 @@ describe('Tier-2 intents from the ai_agent principal (P2-1)', () => {
     expect(inserted?.policyDecisionState).toBe('human_required');
     expect(snapshot.status).toBe('pending_approval');
     // Fanned out to agentEligibleApprovers (the existing requester-less
-    // branch at ~465-480) — one approval row created.
+    // branch at ~465-480) — one approval row, owned by the mocked
+    // agent-eligible approver, not some other user.
     expect(dbState.insertedApprovalRequestsValues.length).toBeGreaterThan(0);
+    const insertedApprovals = dbState.insertedApprovalRequestsValues[0] as Array<{ userId: string; riskTier: string }>;
+    expect(insertedApprovals.map((r) => r.userId)).toEqual([APPROVER_1]);
+    // IMPORTANT 2 (fix round 1): the approval row's `riskTier` LABEL (distinct
+    // from the intent's smallint `riskTier` column asserted above) maps
+    // guardrail.tier 2 -> 'medium', which floors assurance at L2
+    // (DEFAULT_ASSURANCE_FLOOR.medium, @breeze/shared) — deliberate per the
+    // controller's ruling, see the comment on this mapping in intentService.ts.
+    expect(insertedApprovals[0]?.riskTier).toBe('medium');
   });
 
   it('still rejects Tier-2 tools for user principals', async () => {
@@ -493,7 +526,41 @@ describe('Tier-2 intents from the ai_agent principal (P2-1)', () => {
       input: {},
       source: 'ai_agent',
       orgId: ORG_ID,
-    })).rejects.toBeInstanceOf(ActionIntentTierError);
+    })).rejects.toMatchObject({ code: 'tool_not_tier3' });
     expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  // IMPORTANT 1 (fix round 1): without this test, `envMock.policyDecideEnabled`
+  // is pinned `false` in every OTHER test in this file (see beforeEach), so
+  // `resolvePolicyDecisionState`'s `if (!policyDecideEnabled()) return
+  // 'human_required'` short-circuits before ever reaching the new
+  // `if (args.guardrail.tier < 3) return 'human_required'` line — the
+  // 'creates a supervised...' test above asserts human_required but does NOT
+  // discriminate whether the tier<3 guard is the reason. This test flips the
+  // flag on AND puts the run in `mode: 'act'` (the other two preconditions
+  // 'unattempted' needs — see resolvePolicyDecisionState's doc comment),
+  // isolating the tier<3 guard as the ONLY thing standing between this fixture
+  // and 'unattempted'. Verified to actually discriminate: temporarily
+  // commenting out `if (args.guardrail.tier < 3) return 'human_required';` in
+  // intentService.ts turns this test red (see task-3-report.md's fix-round-1
+  // section for the exact red output), confirming it is not vacuous.
+  it('flag on + agent-originated + Tier-2 (supervised, act mode) -> still human_required, never triggers attemptPolicyDecision', async () => {
+    envMock.policyDecideEnabled.mockReturnValue(true);
+    queueAgentContext({ run: agentRunRowWithMode('act') });
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-tier2-policy-decide' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-1' }]);
+
+    const snapshot = await createActionIntent(makeAgentAuth(), agentInput());
+
+    const inserted = dbState.insertedActionIntentValues[0];
+    expect(inserted?.policyDecisionState).toBe('human_required');
+    expect(snapshot.status).toBe('pending_approval');
+    // 'unattempted' is the only decisionState that skips ordinary human
+    // fan-out (see createActionIntent's runHumanFanout gating) — proving the
+    // fan-out still ran is a second, independent signal (beyond the state
+    // string itself) that this took the human_required path, not unattempted.
+    expect(dbState.insertedApprovalRequestsValues.length).toBeGreaterThan(0);
+    expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
   });
 });

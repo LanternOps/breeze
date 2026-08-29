@@ -813,8 +813,20 @@ export async function createActionIntent(
   const requestingClientLabel = input.requestingClientLabel
     ?? (agentRow ? agentRow.name : input.source === 'chat' ? 'Breeze AI' : 'MCP API client');
   // Tier → riskTier mapping mirrors aiAgentSdk.ts's mobile-approval bridge.
-  // Tier is always 3 by the time we reach here (T4 refused, T<=2 rejected
-  // above), but computed generically for forward-compat.
+  // T4 is refused above, so only two labels are reachable here: Tier-3 (every
+  // non-agent intent, and any agent intent that isn't Tier-2) maps to 'high',
+  // which DEFAULT_ASSURANCE_FLOOR (@breeze/shared) floors at L3 — the normal
+  // approval bar. Phase 2 P2-1's `agentTier2` path is the ONE way `guardrail.
+  // tier` can be 2 here (the tier gate's `tier <= 2 && !agentTier2` throws
+  // tool_not_tier3 for a Tier-2 call from every other principal, above), and
+  // it deliberately maps to 'medium' → L2,
+  // not a bug carried over from a stale "tier is always 3" assumption.
+  // CONTROLLER RULING (P2-1 fix round 1): L2 is the INTENDED floor for these
+  // rows — an agent-originated Tier-2 approval is a one-click inbox approval
+  // of a reversible, single-target, already-auto-executable-for-every-other-
+  // principal operation (manage_alerts:suppress and friends); requiring L3
+  // re-auth on every one of them would defeat the point of a lightweight
+  // supervised lane. Pinned by intentService.tier2Agent.test.ts.
   const riskTier: 'medium' | 'high' | 'critical' =
     guardrail.tier >= 4 ? 'critical' : guardrail.tier >= 3 ? 'high' : 'medium';
 
