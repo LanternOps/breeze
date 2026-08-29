@@ -1529,6 +1529,47 @@
         "ticket": "Talep",
         "anomaly": "Anormallik"
       },
+      "profile": {
+        "sweep": "Tarama"
+      },
+      "sweep": {
+        "title": "Tarama bulguları",
+        "kindsLabel": "Kontroller: {{kinds}}",
+        "empty": "Bildirilen bulgu yok.",
+        "evidenceTruncated": "Kanıtlar kısaltıldı: eşleşen tüm satırlar aracıya gösterilmedi.",
+        "proposalCreated": "Onay istendi",
+        "columns": {
+          "kind": "Kontrol",
+          "severity": "Önem düzeyi",
+          "device": "Cihaz",
+          "title": "Bulgu",
+          "detail": "Ayrıntı",
+          "proposal": "Öneri"
+        },
+        "kinds": {
+          "disk_pressure": "Disk baskısı",
+          "stale_agents": "Sessiz aracılar",
+          "pending_reboots": "Bekleyen yeniden başlatmalar",
+          "failed_backups": "Başarısız yedeklemeler",
+          "service_down": "Servis durdu",
+          "unpatched_critical": "Yamalanmamış kritik açıklar"
+        },
+        "severities": {
+          "critical": "Kritik",
+          "high": "Yüksek",
+          "medium": "Orta",
+          "low": "Düşük",
+          "info": "Bilgi"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Cihaz tarama kanıtlarında yok",
+          "device_not_in_org": "Cihaz bu organizasyona ait değil",
+          "not_allowlisted": "Bu aracı için araç izinli değil",
+          "no_eligible_approvers": "Uygun onaylayıcı yok",
+          "intent_error": "Onay oluşturulamadı",
+          "max_actions_per_run": "Bu çalıştırma için eylem sınırına ulaşıldı"
+        }
+      },
       "noAgent": "Bilinmeyen aracı",
       "loading": "Çalıştırmalar yükleniyor…",
       "empty": "Henüz çalıştırma yok.",

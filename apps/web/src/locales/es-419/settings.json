@@ -1529,6 +1529,47 @@
         "ticket": "Ticket",
         "anomaly": "Anomalía"
       },
+      "profile": {
+        "sweep": "Barrido"
+      },
+      "sweep": {
+        "title": "Hallazgos del barrido",
+        "kindsLabel": "Comprobaciones: {{kinds}}",
+        "empty": "No se reportaron hallazgos.",
+        "evidenceTruncated": "La evidencia se truncó: no se le mostraron al agente todas las filas coincidentes.",
+        "proposalCreated": "Aprobación solicitada",
+        "columns": {
+          "kind": "Comprobación",
+          "severity": "Gravedad",
+          "device": "Dispositivo",
+          "title": "Hallazgo",
+          "detail": "Detalle",
+          "proposal": "Propuesta"
+        },
+        "kinds": {
+          "disk_pressure": "Presión de disco",
+          "stale_agents": "Agentes sin reportar",
+          "pending_reboots": "Reinicios pendientes",
+          "failed_backups": "Copias de seguridad fallidas",
+          "service_down": "Servicio detenido",
+          "unpatched_critical": "Vulnerabilidades críticas sin parchear"
+        },
+        "severities": {
+          "critical": "Crítica",
+          "high": "Alta",
+          "medium": "Media",
+          "low": "Baja",
+          "info": "Información"
+        },
+        "reasons": {
+          "device_not_in_evidence": "El dispositivo no aparece en la evidencia del barrido",
+          "device_not_in_org": "El dispositivo no pertenece a esta organización",
+          "not_allowlisted": "Herramienta no permitida para este agente",
+          "no_eligible_approvers": "Sin aprobadores elegibles",
+          "intent_error": "No se pudo crear la aprobación",
+          "max_actions_per_run": "Se alcanzó el límite de acciones de esta ejecución"
+        }
+      },
       "noAgent": "Agente desconocido",
       "loading": "Cargando ejecuciones…",
       "empty": "Aún no hay ejecuciones.",

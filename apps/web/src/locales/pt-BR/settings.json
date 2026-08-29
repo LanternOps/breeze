@@ -1529,6 +1529,47 @@
         "ticket": "Chamado",
         "anomaly": "Anomalia"
       },
+      "profile": {
+        "sweep": "Varredura"
+      },
+      "sweep": {
+        "title": "Constatações da varredura",
+        "kindsLabel": "Verificações: {{kinds}}",
+        "empty": "Nenhuma constatação relatada.",
+        "evidenceTruncated": "As evidências foram truncadas: nem todas as linhas correspondentes foram mostradas ao agente.",
+        "proposalCreated": "Aprovação solicitada",
+        "columns": {
+          "kind": "Verificação",
+          "severity": "Gravidade",
+          "device": "Dispositivo",
+          "title": "Constatação",
+          "detail": "Detalhe",
+          "proposal": "Proposta"
+        },
+        "kinds": {
+          "disk_pressure": "Pressão de disco",
+          "stale_agents": "Agentes sem reportar",
+          "pending_reboots": "Reinicializações pendentes",
+          "failed_backups": "Backups com falha",
+          "service_down": "Serviço parado",
+          "unpatched_critical": "Vulnerabilidades críticas sem correção"
+        },
+        "severities": {
+          "critical": "Crítica",
+          "high": "Alta",
+          "medium": "Média",
+          "low": "Baixa",
+          "info": "Informação"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Dispositivo ausente nas evidências da varredura",
+          "device_not_in_org": "O dispositivo não pertence a esta organização",
+          "not_allowlisted": "Ferramenta não permitida para este agente",
+          "no_eligible_approvers": "Sem aprovadores elegíveis",
+          "intent_error": "Não foi possível criar a aprovação",
+          "max_actions_per_run": "Limite de ações atingido para esta execução"
+        }
+      },
       "noAgent": "Agente desconhecido",
       "loading": "Carregando execuções…",
       "empty": "Ainda não há execuções.",

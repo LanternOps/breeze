@@ -7,7 +7,10 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import type {
   AiAgentRunDetailDto,
+  AiAgentRunSweepFindingDto,
   AiAgentRunTraceEntryDto,
+  AiSweepKind,
+  AiSweepSeverity,
   ExposureBudgetDto,
 } from '@breeze/shared';
 
@@ -236,6 +239,116 @@ function TraceEntryRow({
         <p className="text-xs text-muted-foreground">{entry.reason}</p>
       )}
     </li>
+  );
+}
+
+/**
+ * Phase 2 wave P2-2 (#4189) — the sweep-findings surfaces.
+ *
+ * Same leak-impossible contract as the trace above: `AiAgentRunSweepDto` is
+ * the SAFE projection (packages/shared/src/types/aiAgentRuns.ts), so nothing
+ * rendered here can be a raw tool input/output. `evidence` is the bounded
+ * scalar map the finding schema enforces and is rendered as `key: value`
+ * pairs — never `JSON.stringify`d, which is how an unexpectedly nested value
+ * would end up dumped verbatim into the DOM.
+ */
+const SWEEP_SEVERITY_BADGE: Record<AiSweepSeverity, string> = {
+  critical: 'bg-red-500/10 text-red-600',
+  high: 'bg-orange-500/10 text-orange-700',
+  medium: 'bg-amber-500/10 text-amber-700',
+  low: 'bg-blue-500/10 text-blue-600',
+  info: 'bg-muted text-muted-foreground',
+};
+
+/**
+ * Every `reason` a non-created sweep proposal can carry (the gate order in
+ * `projectSweep`/`sweepProposals`, #4189 Task 7). Checked before the dynamic
+ * `t()` so an unrecognized token renders as itself rather than as a raw
+ * `aiAgentsPage.runs.sweep.reasons.<token>` key path.
+ */
+const SWEEP_PROPOSAL_REASONS: readonly string[] = [
+  'device_not_in_evidence',
+  'device_not_in_org',
+  'not_allowlisted',
+  'no_eligible_approvers',
+  'intent_error',
+  'max_actions_per_run',
+];
+
+function sweepKindLabel(t: (key: string) => string, kind: AiSweepKind): string {
+  return t(/* i18n-dynamic */ `aiAgentsPage.runs.sweep.kinds.${kind}`);
+}
+
+function sweepSeverityLabel(t: (key: string) => string, severity: AiSweepSeverity): string {
+  return t(/* i18n-dynamic */ `aiAgentsPage.runs.sweep.severities.${severity}`);
+}
+
+function sweepReasonLabel(t: (key: string) => string, reason: string | null): string {
+  if (!reason) return '—';
+  if (!SWEEP_PROPOSAL_REASONS.includes(reason)) return reason;
+  return t(/* i18n-dynamic */ `aiAgentsPage.runs.sweep.reasons.${reason}`);
+}
+
+/** `k: v · k: v` — the bounded scalar evidence map, never a JSON dump. */
+function formatSweepEvidence(evidence: AiAgentRunSweepFindingDto['evidence']): string {
+  return Object.entries(evidence)
+    .map(([key, value]) => `${key}: ${value === null ? '—' : String(value)}`)
+    .join(' · ');
+}
+
+function SweepFindingRow({
+  finding,
+  index,
+  t,
+}: {
+  finding: AiAgentRunSweepFindingDto;
+  index: number;
+  t: (key: string) => string;
+}) {
+  const evidence = formatSweepEvidence(finding.evidence);
+  const { proposal } = finding;
+
+  return (
+    <tr data-testid={`ai-agent-run-sweep-finding-${index}`} className="align-top">
+      <td className="px-2 py-2 whitespace-nowrap">{sweepKindLabel(t, finding.kind)}</td>
+      <td className="px-2 py-2">
+        <span
+          className={`inline-flex rounded px-1.5 py-0.5 text-xs font-medium ${SWEEP_SEVERITY_BADGE[finding.severity] ?? 'bg-muted text-muted-foreground'}`}
+        >
+          {sweepSeverityLabel(t, finding.severity)}
+        </span>
+      </td>
+      <td className="px-2 py-2 text-muted-foreground" data-testid={`ai-agent-run-sweep-finding-${index}-device`}>
+        {finding.deviceHostname ?? '—'}
+      </td>
+      <td className="px-2 py-2 font-medium">{finding.title}</td>
+      <td className="px-2 py-2 text-muted-foreground">
+        <span>{finding.detail}</span>
+        {evidence && (
+          <span
+            className="mt-1 block text-xs"
+            data-testid={`ai-agent-run-sweep-finding-${index}-evidence`}
+          >
+            {evidence}
+          </span>
+        )}
+      </td>
+      <td className="px-2 py-2" data-testid={`ai-agent-run-sweep-finding-${index}-proposal`}>
+        {proposal === null ? (
+          <span className="text-muted-foreground">—</span>
+        ) : proposal.disposition === 'intent_created' ? (
+          <a
+            href="/approvals"
+            data-testid={`ai-agent-run-sweep-proposal-link-${index}`}
+            className="text-primary hover:underline"
+          >
+            {t('aiAgentsPage.runs.sweep.proposalCreated')}
+          </a>
+        ) : (
+          <span className="text-muted-foreground">{sweepReasonLabel(t, proposal.reason)}</span>
+        )}
+      </td>
+    </tr>
   );
 }
 
@@ -494,6 +607,57 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
 
       {run.orgId && run.agentKind && (
         <ExposureBudgetCard orgId={run.orgId} kind={run.agentKind} t={t} />
+      )}
+
+      {/* Phase 2 wave P2-2 (#4189) — a `sweep`-profile run's findings. Null
+          for every `full`/`verdict`-profile run, so the whole section is
+          absent rather than empty for them. */}
+      {run.sweep && (
+        <section data-testid="ai-agent-run-sweep" className="rounded-lg border bg-card p-4">
+          <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.sweep.title')}</h2>
+
+          {run.sweep.kinds.length > 0 && (
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="ai-agent-run-sweep-kinds">
+              {t('aiAgentsPage.runs.sweep.kindsLabel', {
+                kinds: run.sweep.kinds.map((kind) => sweepKindLabel(t, kind)).join(', '),
+              })}
+            </p>
+          )}
+
+          <p className="mt-2 text-sm" data-testid="ai-agent-run-sweep-summary">
+            {run.sweep.summary}
+          </p>
+
+          {run.sweep.evidenceTruncated && (
+            <p className="mt-2 text-xs text-amber-700" data-testid="ai-agent-run-sweep-truncated">
+              {t('aiAgentsPage.runs.sweep.evidenceTruncated')}
+            </p>
+          )}
+
+          {run.sweep.findings.length === 0 ? (
+            <p className="mt-2 text-sm text-muted-foreground">{t('aiAgentsPage.runs.sweep.empty')}</p>
+          ) : (
+            <div className="mt-3 overflow-x-auto">
+              <table className="min-w-full divide-y text-sm" data-testid="ai-agent-run-sweep-findings">
+                <thead>
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.kind')}</th>
+                    <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.severity')}</th>
+                    <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.device')}</th>
+                    <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.title')}</th>
+                    <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.detail')}</th>
+                    <th className="px-2 py-2">{t('aiAgentsPage.runs.sweep.columns.proposal')}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {run.sweep.findings.map((finding, index) => (
+                    <SweepFindingRow key={index} finding={finding} index={index} t={t} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
       )}
 
       <div className="rounded-lg border bg-card p-4">

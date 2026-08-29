@@ -1529,6 +1529,47 @@
         "ticket": "Ticket",
         "anomaly": "Anomalie"
       },
+      "profile": {
+        "sweep": "Prüflauf"
+      },
+      "sweep": {
+        "title": "Ergebnisse des Prüflaufs",
+        "kindsLabel": "Prüfungen: {{kinds}}",
+        "empty": "Keine Befunde gemeldet.",
+        "evidenceTruncated": "Die Belege wurden gekürzt — dem Agenten wurde nicht jede passende Zeile gezeigt.",
+        "proposalCreated": "Genehmigung angefordert",
+        "columns": {
+          "kind": "Prüfung",
+          "severity": "Schweregrad",
+          "device": "Gerät",
+          "title": "Befund",
+          "detail": "Beschreibung",
+          "proposal": "Vorschlag"
+        },
+        "kinds": {
+          "disk_pressure": "Speicherplatzmangel",
+          "stale_agents": "Veraltete Agenten",
+          "pending_reboots": "Ausstehende Neustarts",
+          "failed_backups": "Fehlgeschlagene Sicherungen",
+          "service_down": "Dienst gestoppt",
+          "unpatched_critical": "Ungepatchte kritische Schwachstellen"
+        },
+        "severities": {
+          "critical": "Kritisch",
+          "high": "Hoch",
+          "medium": "Mittel",
+          "low": "Niedrig",
+          "info": "Information"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Gerät nicht in den Belegen des Prüflaufs",
+          "device_not_in_org": "Gerät gehört nicht zu dieser Organisation",
+          "not_allowlisted": "Werkzeug für diesen Agenten nicht freigegeben",
+          "no_eligible_approvers": "Keine berechtigten Genehmiger",
+          "intent_error": "Genehmigung konnte nicht erstellt werden",
+          "max_actions_per_run": "Aktionslimit für diesen Lauf erreicht"
+        }
+      },
       "noAgent": "Unbekannter Agent",
       "loading": "Läufe werden geladen…",
       "empty": "Noch keine Läufe.",

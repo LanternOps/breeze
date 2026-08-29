@@ -1529,6 +1529,47 @@
         "ticket": "Ticket",
         "anomaly": "Anomalia"
       },
+      "profile": {
+        "sweep": "Scansione"
+      },
+      "sweep": {
+        "title": "Rilevazioni della scansione",
+        "kindsLabel": "Controlli: {{kinds}}",
+        "empty": "Nessuna rilevazione segnalata.",
+        "evidenceTruncated": "Le evidenze sono state troncate: non tutte le righe corrispondenti sono state mostrate all’agente.",
+        "proposalCreated": "Approvazione richiesta",
+        "columns": {
+          "kind": "Controllo",
+          "severity": "Gravità",
+          "device": "Dispositivo",
+          "title": "Rilevazione",
+          "detail": "Dettaglio",
+          "proposal": "Proposta"
+        },
+        "kinds": {
+          "disk_pressure": "Pressione del disco",
+          "stale_agents": "Agenti inattivi",
+          "pending_reboots": "Riavvii in sospeso",
+          "failed_backups": "Backup non riusciti",
+          "service_down": "Servizio non attivo",
+          "unpatched_critical": "Vulnerabilità critiche non corrette"
+        },
+        "severities": {
+          "critical": "Critica",
+          "high": "Alta",
+          "medium": "Media",
+          "low": "Bassa",
+          "info": "Informazione"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Dispositivo assente nelle evidenze della scansione",
+          "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione",
+          "not_allowlisted": "Strumento non consentito per questo agente",
+          "no_eligible_approvers": "Nessun approvatore idoneo",
+          "intent_error": "Impossibile creare l’approvazione",
+          "max_actions_per_run": "Limite di azioni raggiunto per questa esecuzione"
+        }
+      },
       "noAgent": "Agente sconosciuto",
       "loading": "Caricamento delle esecuzioni…",
       "empty": "Nessuna esecuzione ancora.",

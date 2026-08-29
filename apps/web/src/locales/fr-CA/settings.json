@@ -1529,6 +1529,47 @@
         "ticket": "Ticket",
         "anomaly": "Anomalie"
       },
+      "profile": {
+        "sweep": "Balayage"
+      },
+      "sweep": {
+        "title": "Constats du balayage",
+        "kindsLabel": "Vérifications : {{kinds}}",
+        "empty": "Aucun constat signalé.",
+        "evidenceTruncated": "Les éléments ont été tronqués : toutes les lignes correspondantes n’ont pas été présentées à l’agent.",
+        "proposalCreated": "Approbation demandée",
+        "columns": {
+          "kind": "Vérification",
+          "severity": "Gravité",
+          "device": "Appareil",
+          "title": "Constat",
+          "detail": "Détail",
+          "proposal": "Proposition"
+        },
+        "kinds": {
+          "disk_pressure": "Pression disque",
+          "stale_agents": "Agents inactifs",
+          "pending_reboots": "Redémarrages en attente",
+          "failed_backups": "Sauvegardes en échec",
+          "service_down": "Service arrêté",
+          "unpatched_critical": "Vulnérabilités critiques non corrigées"
+        },
+        "severities": {
+          "critical": "Critique",
+          "high": "Élevée",
+          "medium": "Moyenne",
+          "low": "Faible",
+          "info": "Information"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Appareil absent des éléments du balayage",
+          "device_not_in_org": "Appareil absent de cette organisation",
+          "not_allowlisted": "Outil non autorisé pour cet agent",
+          "no_eligible_approvers": "Aucun approbateur éligible",
+          "intent_error": "Impossible de créer l’approbation",
+          "max_actions_per_run": "Limite d’actions atteinte pour cette exécution"
+        }
+      },
       "noAgent": "Agent inconnu",
       "loading": "Chargement des exécutions…",
       "empty": "Aucune exécution pour le moment.",

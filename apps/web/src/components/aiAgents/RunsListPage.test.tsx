@@ -182,6 +182,26 @@ describe('RunsListPage', () => {
     expect(screen.getAllByText('Acme Corp')).toHaveLength(2);
   });
 
+  // Phase 2 wave P2-2 (#4189, Task 14) — a sweep-profile run is a fleet-wide
+  // scheduled read, not a device incident, so it reads very differently from
+  // the alert/anomaly runs beside it in the list.
+  it('badges a sweep-profile run beside its verdict', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, id: 'run-9', profile: 'sweep' as const }] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-9')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-profile-sweep-run-9')).toHaveTextContent('Sweep');
+  });
+
+  it('omits the sweep badge for every other run profile', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, id: 'run-8', profile: 'verdict' as const }, RUN_2] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-8')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-profile-sweep-run-8')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-run-profile-sweep-run-2')).not.toBeInTheDocument();
+  });
+
   it('hides the Organization column when a single org is selected', async () => {
     mockEndpoints();
     render(<RunsListPage />);

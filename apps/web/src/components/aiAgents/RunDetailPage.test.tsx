@@ -90,6 +90,109 @@ const BUDGET = {
   accountingMode: 'full' as const,
 };
 
+// Phase 2 wave P2-2 (#4189, Task 14) — a `sweep`-profile run's outcome
+// projection (`AiAgentRunSweepDto`). Six findings, one per sweep kind, so the
+// table exercises every kind label plus a proposal in each disposition.
+const SWEEP = {
+  scheduleId: 'sched-1',
+  occurrenceKey: '2026-08-29T02:00',
+  kinds: ['service_down', 'unpatched_critical', 'disk_pressure', 'stale_agents', 'pending_reboots', 'failed_backups'],
+  summary: 'Six problems found across three devices.',
+  evidenceTruncated: true,
+  findings: [
+    {
+      kind: 'service_down',
+      severity: 'critical',
+      deviceId: 'd1',
+      deviceHostname: 'WKS-01',
+      title: 'Print Spooler is stopped',
+      detail: 'The watched Spooler service has been stopped since 09:12.',
+      evidence: { serviceName: 'Spooler', state: 'stopped' },
+      proposal: {
+        tool: 'manage_services',
+        action: 'restart',
+        disposition: 'intent_created',
+        reason: null,
+        intentId: 'intent-9',
+      },
+    },
+    {
+      kind: 'unpatched_critical',
+      severity: 'high',
+      deviceId: 'd2',
+      deviceHostname: 'WKS-02',
+      title: '3 critical CVEs unpatched',
+      detail: 'Three critical vulnerabilities have no applied patch.',
+      evidence: { cveCount: 3 },
+      proposal: {
+        tool: 'remediate_vulnerability',
+        action: null,
+        disposition: 'refused',
+        reason: 'not_allowlisted',
+        intentId: null,
+      },
+    },
+    {
+      kind: 'disk_pressure',
+      severity: 'medium',
+      deviceId: null,
+      deviceHostname: null,
+      title: 'Volume C: is 94% full',
+      detail: 'Free space has fallen below the 10% floor.',
+      evidence: { percentUsed: 94 },
+      proposal: null,
+    },
+    {
+      kind: 'stale_agents',
+      severity: 'low',
+      deviceId: 'd3',
+      deviceHostname: 'SRV-03',
+      title: 'Agent has not checked in for 6 days',
+      detail: 'Last heartbeat was 2026-08-23.',
+      evidence: { lastSeenDays: 6 },
+      proposal: {
+        tool: 'manage_services',
+        action: 'restart',
+        disposition: 'cap_reached',
+        reason: 'max_actions_per_run',
+        intentId: null,
+      },
+    },
+    {
+      kind: 'pending_reboots',
+      severity: 'info',
+      deviceId: 'd3',
+      deviceHostname: 'SRV-03',
+      title: 'Reboot pending since Tuesday',
+      detail: 'A servicing operation is waiting on a restart.',
+      evidence: { pendingSince: '2026-08-25' },
+      proposal: {
+        tool: 'manage_services',
+        action: 'restart',
+        disposition: 'error',
+        reason: 'intent_error',
+        intentId: null,
+      },
+    },
+    {
+      kind: 'failed_backups',
+      severity: 'high',
+      deviceId: 'd2',
+      deviceHostname: 'WKS-02',
+      title: 'Nightly backup failed twice',
+      detail: 'The last two scheduled backup jobs ended in failure.',
+      evidence: { failures: 2 },
+      proposal: {
+        tool: 'remediate_vulnerability',
+        action: null,
+        disposition: 'refused',
+        reason: 'device_not_in_org',
+        intentId: null,
+      },
+    },
+  ],
+};
+
 function mockEndpoints(opts: {
   detail?: unknown;
   detailOk?: boolean;
@@ -204,5 +307,139 @@ describe('RunDetailPage', () => {
     for (const forbidden of ['toolInput', 'toolOutput', 'args', 'arguments']) {
       expect(html).not.toContain(forbidden);
     }
+  });
+});
+
+// Phase 2 wave P2-2 (#4189, Task 14) — the sweep-findings section.
+describe('RunDetailPage sweep findings', () => {
+  it('renders nothing when the run carries no sweep outcome', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: null } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-sweep')).not.toBeInTheDocument();
+  });
+
+  it('renders the summary, the evidence-truncated note and one row per finding', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-sweep-summary')).toHaveTextContent(
+      'Six problems found across three devices.',
+    );
+    expect(screen.getByTestId('ai-agent-run-sweep-truncated')).toBeInTheDocument();
+    for (let index = 0; index < 6; index += 1) {
+      expect(screen.getByTestId(`ai-agent-run-sweep-finding-${index}`)).toBeInTheDocument();
+    }
+    expect(screen.queryByTestId('ai-agent-run-sweep-finding-6')).not.toBeInTheDocument();
+  });
+
+  it('omits the evidence-truncated note when nothing was truncated', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: { ...SWEEP, evidenceTruncated: false } } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-sweep-truncated')).not.toBeInTheDocument();
+  });
+
+  it('translates the kind and severity and shows the hostname, title and detail', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
+    const row = screen.getByTestId('ai-agent-run-sweep-finding-0');
+    expect(row).toHaveTextContent('Service down');
+    expect(row).toHaveTextContent('Critical');
+    expect(row).toHaveTextContent('WKS-01');
+    expect(row).toHaveTextContent('Print Spooler is stopped');
+    expect(row).toHaveTextContent('The watched Spooler service has been stopped since 09:12.');
+  });
+
+  it('renders evidence as key/value pairs rather than a raw JSON blob', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    const { container } = render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-sweep-finding-0-evidence')).toHaveTextContent('serviceName: Spooler');
+    expect(screen.getByTestId('ai-agent-run-sweep-finding-0-evidence')).toHaveTextContent('state: stopped');
+    // A JSON dump would carry the object punctuation; the k/v rendering never does.
+    expect(container.innerHTML).not.toContain('{&quot;serviceName&quot;');
+  });
+
+  it('falls back to an em dash for a fleet-wide finding with no hostname', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-2')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-sweep-finding-2-device')).toHaveTextContent('—');
+  });
+
+  it('links an intent_created proposal to Approvals', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
+    const link = screen.getByTestId('ai-agent-run-sweep-proposal-link-0');
+    expect(link).toHaveAttribute('href', '/approvals');
+    expect(link).toHaveTextContent('Approval requested');
+  });
+
+  it('shows a translated reason instead of a link for a refused proposal', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-1')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-sweep-proposal-link-1')).not.toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-run-sweep-finding-1-proposal')).toHaveTextContent(
+      'Tool not allowed for this agent',
+    );
+  });
+
+  it('shows an em dash when a finding proposed nothing', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-2')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-sweep-finding-2-proposal')).toHaveTextContent('—');
+  });
+
+  it('translates every proposal reason rather than leaking the raw token', async () => {
+    const reasons = [
+      'device_not_in_evidence',
+      'device_not_in_org',
+      'not_allowlisted',
+      'no_eligible_approvers',
+      'intent_error',
+      'max_actions_per_run',
+    ];
+    const findings = reasons.map((reason, index) => ({
+      ...SWEEP.findings[1],
+      title: `Finding ${index}`,
+      proposal: { ...SWEEP.findings[1].proposal, reason },
+    }));
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: { ...SWEEP, findings } } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-5')).toBeInTheDocument());
+    reasons.forEach((reason, index) => {
+      const cell = screen.getByTestId(`ai-agent-run-sweep-finding-${index}-proposal`);
+      expect(cell.textContent).not.toBe(reason);
+      expect(cell.textContent?.trim().length).toBeGreaterThan(0);
+      // The raw enum token must never reach the DOM — an untranslated key
+      // renders as the key itself, which would contain the token.
+      expect(cell.textContent).not.toContain(reason);
+    });
+  });
+
+  it('names the sweep kinds it checked', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-kinds')).toBeInTheDocument());
+    const kinds = screen.getByTestId('ai-agent-run-sweep-kinds');
+    expect(kinds).toHaveTextContent('Service down');
+    expect(kinds).toHaveTextContent('Failed backups');
+    expect(kinds.textContent).not.toContain('service_down');
   });
 });

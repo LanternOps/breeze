@@ -6,7 +6,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency } from '@/lib/i18n/format';
-import type { AiAgentRunListItemDto, AiAgentRunStatus } from '@breeze/shared';
+import type { AiAgentRunListItemDto, AiAgentRunProfile, AiAgentRunStatus } from '@breeze/shared';
 import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 
 interface RunsResponse {
@@ -104,6 +104,24 @@ function triggerLabel(t: (key: string) => string, value: string): string {
     default:
       return value;
   }
+}
+
+/**
+ * Phase 2 wave P2-2 (#4189) — a `sweep`-profile run is a fleet-wide scheduled
+ * read, not a device incident, so it reads very differently from the
+ * alert/anomaly runs beside it in this list and gets its own badge.
+ *
+ * `AiAgentRunListItemDto` does not (yet) declare `profile`:
+ * `ai_agent_runs.profile` exists on the row and the DB CHECK is pinned to
+ * `AI_AGENT_RUN_PROFILES`, but `GET /ai/agents/runs`'s list projection does
+ * not carry it onto the wire. Widening the shared DTO and the API projection
+ * is an api+shared change and out of this (web-only) task's scope, so the
+ * field is read defensively here: until the API sends it this is `undefined`
+ * and no badge renders. This is a read of an OPTIONAL wire field, not an
+ * invented one — nothing else on the row is synthesized.
+ */
+function runProfile(run: AiAgentRunListItemDto): AiAgentRunProfile | undefined {
+  return (run as AiAgentRunListItemDto & { profile?: AiAgentRunProfile }).profile;
 }
 
 /**
@@ -347,6 +365,14 @@ export default function RunsListPage() {
                       >
                         {verdictLabel(t, run.runVerdict)}
                       </span>
+                      {runProfile(run) === 'sweep' && (
+                        <span
+                          data-testid={`ai-agent-run-profile-sweep-${run.id}`}
+                          className="ml-1.5 inline-flex rounded bg-sky-500/10 px-1.5 py-0.5 text-xs font-medium text-sky-700"
+                        >
+                          {t('aiAgentsPage.runs.profile.sweep')}
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
                       {formatDateTime(run.queuedAt)}

@@ -1529,6 +1529,47 @@
         "ticket": "Ticket",
         "anomaly": "Anomaly"
       },
+      "profile": {
+        "sweep": "Sweep"
+      },
+      "sweep": {
+        "title": "Sweep findings",
+        "kindsLabel": "Checks: {{kinds}}",
+        "empty": "No findings reported.",
+        "evidenceTruncated": "Evidence was truncated — not every matching row was shown to the agent.",
+        "proposalCreated": "Approval requested",
+        "columns": {
+          "kind": "Check",
+          "severity": "Severity",
+          "device": "Device",
+          "title": "Finding",
+          "detail": "Detail",
+          "proposal": "Proposal"
+        },
+        "kinds": {
+          "disk_pressure": "Disk pressure",
+          "stale_agents": "Stale agents",
+          "pending_reboots": "Pending reboots",
+          "failed_backups": "Failed backups",
+          "service_down": "Service down",
+          "unpatched_critical": "Unpatched critical vulnerabilities"
+        },
+        "severities": {
+          "critical": "Critical",
+          "high": "High",
+          "medium": "Medium",
+          "low": "Low",
+          "info": "Info"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Device not in the sweep evidence",
+          "device_not_in_org": "Device not in this organization",
+          "not_allowlisted": "Tool not allowed for this agent",
+          "no_eligible_approvers": "No eligible approvers",
+          "intent_error": "Could not create the approval",
+          "max_actions_per_run": "Action limit reached for this run"
+        }
+      },
       "noAgent": "Unknown agent",
       "loading": "Loading runs…",
       "empty": "No runs yet.",
