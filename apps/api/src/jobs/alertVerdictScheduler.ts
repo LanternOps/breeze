@@ -57,7 +57,11 @@ import { latestVerdictsForAlerts } from '../services/aiAgents/alertVerdicts';
 import { enqueueVerdictRunForAlert } from '../services/aiAgents/alertVerdictSubscriber';
 import type { BreezeEvent } from '../services/eventBus';
 
-const { db } = dbModule;
+// Minor 5 (P2-1 wave B task 16d): late-bound — `const { db } = dbModule` at
+// module scope froze the binding at import time, before a test's
+// `vi.mock('../db', ...)` factory could ever be observed (same trap
+// `alertVerdictSubscriber.ts` avoids by reading `dbModule.db` inside each
+// function instead).
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   if (typeof dbModule.withSystemDbAccessContext !== 'function') {
     throw new Error(
@@ -152,6 +156,7 @@ async function loadAlertForUngroupedVerdict(
   alertId: string,
   orgId: string,
 ): Promise<UngroupedVerdictAlertRow | null> {
+  const { db } = dbModule;
   const [row] = await db
     .select({ id: alerts.id, status: alerts.status })
     .from(alerts)
@@ -161,6 +166,7 @@ async function loadAlertForUngroupedVerdict(
 }
 
 async function hasCorrelationMembership(alertId: string, orgId: string): Promise<boolean> {
+  const { db } = dbModule;
   const [row] = await db
     .select({ id: alertCorrelationMembers.id })
     .from(alertCorrelationMembers)

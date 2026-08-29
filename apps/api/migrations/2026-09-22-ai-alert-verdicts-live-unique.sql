@@ -36,6 +36,63 @@ ALTER TABLE ai_alert_verdicts
   ON DELETE SET NULL
   DEFERRABLE INITIALLY DEFERRED;
 
+-- Minor 8 (P2-1 wave B task 16d) pre-pass: the two CREATE UNIQUE INDEX
+-- statements below fail outright if more than one LIVE (superseded_by IS
+-- NULL) row already exists for the same alert_id / correlation_group_id —
+-- which the pre-Task-14 code allowed. Supersede all-but-the-newest live row
+-- per target FIRST, pointing its superseded_by at the newest (highest
+-- created_at, id DESC as a deterministic same-millisecond tiebreak — mirrors
+-- the ordering `latestVerdictsForAlerts` already uses at the app layer).
+-- Idempotent: after the first run no target has more than one live row left,
+-- so a re-run's UPDATEs match zero rows. Per the repo rule on cleanup
+-- statements, the row count is reported via RAISE WARNING rather than fixed
+-- silently — these rows would otherwise have caused a "different" verdict to
+-- read as live depending on query ordering, so the count belongs in the
+-- Postgres logs even when it's 0.
+DO $$
+DECLARE
+  n INTEGER;
+BEGIN
+  WITH ranked AS (
+    SELECT
+      id,
+      FIRST_VALUE(id) OVER (PARTITION BY alert_id ORDER BY created_at DESC, id DESC) AS newest_id,
+      ROW_NUMBER() OVER (PARTITION BY alert_id ORDER BY created_at DESC, id DESC) AS rn
+    FROM ai_alert_verdicts
+    WHERE superseded_by IS NULL AND alert_id IS NOT NULL
+  )
+  UPDATE ai_alert_verdicts v
+  SET superseded_by = ranked.newest_id
+  FROM ranked
+  WHERE v.id = ranked.id AND ranked.rn > 1;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN
+    RAISE WARNING 'superseded % duplicate live ai_alert_verdicts row(s) by alert_id before adding ai_alert_verdicts_live_alert_uq', n;
+  END IF;
+END $$;
+
+DO $$
+DECLARE
+  n INTEGER;
+BEGIN
+  WITH ranked AS (
+    SELECT
+      id,
+      FIRST_VALUE(id) OVER (PARTITION BY correlation_group_id ORDER BY created_at DESC, id DESC) AS newest_id,
+      ROW_NUMBER() OVER (PARTITION BY correlation_group_id ORDER BY created_at DESC, id DESC) AS rn
+    FROM ai_alert_verdicts
+    WHERE superseded_by IS NULL AND correlation_group_id IS NOT NULL
+  )
+  UPDATE ai_alert_verdicts v
+  SET superseded_by = ranked.newest_id
+  FROM ranked
+  WHERE v.id = ranked.id AND ranked.rn > 1;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN
+    RAISE WARNING 'superseded % duplicate live ai_alert_verdicts row(s) by correlation_group_id before adding ai_alert_verdicts_live_group_uq', n;
+  END IF;
+END $$;
+
 CREATE UNIQUE INDEX IF NOT EXISTS ai_alert_verdicts_live_alert_uq
   ON ai_alert_verdicts (alert_id)
   WHERE superseded_by IS NULL AND alert_id IS NOT NULL;
