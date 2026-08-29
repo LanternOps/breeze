@@ -533,6 +533,89 @@ func (h *Heartbeat) reresolveRejectedPamEntry(ctx context.Context, entry pamReco
 	}
 }
 
+// pamAcknowledgementDisposition is the single interpretation of the server's
+// acknowledgement classification, shared by the synchronous apply-path handoff
+// and the reconciliation worker so the two can never drift apart.
+type pamAcknowledgementDisposition int
+
+const (
+	// pamAcknowledgementAnchored: the server durably holds this observation for
+	// this envelope. It is the only disposition an apply may proceed on.
+	pamAcknowledgementAnchored pamAcknowledgementDisposition = iota
+	// pamAcknowledgementSuperseded: the post was accepted but the server has
+	// already moved past this envelope, so the observation anchors nothing.
+	pamAcknowledgementSuperseded
+	// pamAcknowledgementRefused: the server refuses this envelope. Any
+	// classification the agent does not recognise lands here so an unexpected
+	// answer fails closed rather than being read as consent.
+	pamAcknowledgementRefused
+)
+
+func classifyPamAcknowledgement(classification string) pamAcknowledgementDisposition {
+	switch classification {
+	case pamResultClassificationApplied, pamResultClassificationDuplicate:
+		return pamAcknowledgementAnchored
+	case pamResultClassificationStale:
+		return pamAcknowledgementSuperseded
+	default:
+		return pamAcknowledgementRefused
+	}
+}
+
+func (h *Heartbeat) removePendingPamReconciliationEntry(commandID, observationID string) error {
+	if h.pamReconciliationOutbox == nil {
+		return errors.New("PAM reconciliation outbox unavailable")
+	}
+	if err := h.pamReconciliationOutbox.Remove(pamReconciliationStatePending, commandID, observationID); err != nil {
+		return err
+	}
+	h.setPamReconciliationBlocked(observationID, false)
+	return nil
+}
+
+// handOffPamReceivedObservation makes the `received` observation durable and
+// then gets it acknowledged inline, on the apply's own goroutine, before the
+// caller resumes the target.
+//
+// rc.2 handed the observation to the reconciliation worker and returned; the
+// command result then reached the server over the command-result transport
+// first, the server's reorder guard classified the late observation `stale`,
+// and on roughly half of all applies no durable received anchor survived at all
+// (#4060, 2026-08-29T00:06Z). Taking the acknowledgement synchronously removes
+// that race rather than trying to order two independent transports.
+func (h *Heartbeat) handOffPamReceivedObservation(ctx context.Context, commandID string, received pamlifetime.Result) error {
+	if h == nil || h.pamReconciliationOutbox == nil {
+		return errors.New("PAM received observation outbox unavailable")
+	}
+	if err := h.pamReconciliationOutbox.Enqueue(commandID, received); err != nil {
+		return fmt.Errorf("enqueue PAM received observation: %w", err)
+	}
+	// From here the observation is on disk, so admission stays closed for the
+	// duration of the submit; readiness is recomputed from the outbox below
+	// rather than being left forced false, or back-to-back applies would be
+	// refused with "received observation transport unavailable".
+	h.pamReceivedObservationReady.Store(false)
+	acknowledgement, submitErr := h.pamResultSubmitter()(ctx, commandID, received)
+	// The pending entry is dropped on every outcome, success or failure. Leaving
+	// it for the worker to retry would let a late `received` land after this
+	// apply has already reported `failed` and regress the server's
+	// observed_state; the apply is failing and the process never ran, so there
+	// is nothing to reconcile. The ledger reconcile on restart still covers a
+	// crash between the enqueue and the submit.
+	if err := h.removePendingPamReconciliationEntry(commandID, received.ObservationID); err != nil {
+		h.signalPamReconciliationWork()
+	}
+	h.recomputePamReconciliationReadiness()
+	if submitErr != nil {
+		return fmt.Errorf("submit PAM received observation: %w", submitErr)
+	}
+	if classifyPamAcknowledgement(acknowledgement.Classification) != pamAcknowledgementAnchored {
+		return fmt.Errorf("%w: server classified the received observation as %q",
+			pamlifetime.ErrReceivedObservationRejected, acknowledgement.Classification)
+	}
+	return nil
+}
+
 func (h *Heartbeat) submitPendingPamReconciliation(ctx context.Context, entry pamReconciliationOutboxEntry, retryRebound bool) {
 	acknowledgement, err := h.pamResultSubmitter()(ctx, entry.CommandID, entry.Observation)
 	if err != nil {
@@ -542,12 +625,10 @@ func (h *Heartbeat) submitPendingPamReconciliation(ctx context.Context, entry pa
 	if h.pamReconciliationOutbox == nil {
 		return
 	}
-	switch acknowledgement.Classification {
-	case pamResultClassificationApplied, pamResultClassificationDuplicate, pamResultClassificationStale:
-		if err := h.pamReconciliationOutbox.Remove(pamReconciliationStatePending, entry.CommandID, entry.Observation.ObservationID); err == nil {
-			h.setPamReconciliationBlocked(entry.Observation.ObservationID, false)
-		}
-	case pamResultClassificationRejected:
+	switch classifyPamAcknowledgement(acknowledgement.Classification) {
+	case pamAcknowledgementAnchored, pamAcknowledgementSuperseded:
+		_ = h.removePendingPamReconciliationEntry(entry.CommandID, entry.Observation.ObservationID)
+	case pamAcknowledgementRefused:
 		h.reresolveRejectedPamEntry(ctx, entry, retryRebound)
 	}
 }

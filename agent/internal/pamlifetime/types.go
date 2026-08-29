@@ -2,6 +2,7 @@ package pamlifetime
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -22,6 +23,14 @@ const (
 )
 
 const FailureUnsupportedPlatform = "unsupported_platform"
+
+// ErrReceivedObservationRejected marks a `received` handoff that the server
+// answered and refused for this envelope (a `stale` or `rejected`
+// acknowledgement), as opposed to one the agent could not deliver at all.
+// Callers map it to its own failure code: reporting "the server has moved on"
+// as a transport outage would send operators looking for a network fault that
+// is not there.
+var ErrReceivedObservationRejected = errors.New("pam received observation rejected by server")
 
 type ApplyCommand struct {
 	ProtocolVersion        int       `json:"protocolVersion"`

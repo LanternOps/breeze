@@ -92,15 +92,7 @@ func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
 	ctx, cancel := context.WithTimeout(context.Background(), pamLifecycleOperationTimeout)
 	defer cancel()
 	result := manager.ApplyWithReceivedObservation(ctx, payload, func(received pamlifetime.Result) error {
-		if h.pamReconciliationOutbox == nil {
-			return errors.New("PAM received observation outbox unavailable")
-		}
-		if err := h.pamReconciliationOutbox.Enqueue(cmd.ID, received); err != nil {
-			return fmt.Errorf("enqueue PAM received observation: %w", err)
-		}
-		h.pamReceivedObservationReady.Store(false)
-		h.signalPamReconciliationWork()
-		return nil
+		return h.handOffPamReceivedObservation(ctx, cmd.ID, received)
 	})
 	h.refreshPamLifetimeAvailability()
 	commandResult := tools.NewSuccessResult(result, time.Since(start).Milliseconds())

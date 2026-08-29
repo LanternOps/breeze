@@ -70,9 +70,15 @@ func (m *fakePamLifetimeManager) ApplyWithReceivedObservation(
 		m.handoffCheck(err)
 	}
 	if err != nil {
+		// Mirrors lifecycleManager.apply's mapping so the handler test proves the
+		// handoff returns an error the manager can tell apart. The mapping itself
+		// is owned and tested by internal/pamlifetime.
 		failed := *m.receivedResult
 		failed.State = pamlifetime.ResultFailed
 		failed.FailureCode = "received_observation_handoff_failed"
+		if errors.Is(err, pamlifetime.ErrReceivedObservationRejected) {
+			failed.FailureCode = "received_observation_rejected"
+		}
 		return failed
 	}
 	return m.applyResult
@@ -172,11 +178,23 @@ func readyPamApplyTestHeartbeat(manager pamlifetime.Manager, outbox *pamReconcil
 		pamLifetimeManager:      manager,
 		pamReconciliationOutbox: outbox,
 	}
+	h.setPamReconciliationManagerAvailable(true)
 	h.pamReconciled.Store(true)
 	h.pamReceivedObservationReady.Store(true)
 	h.pamVerificationAvailable.Store(true)
 	h.uacInterceptionEnabled.Store(true)
 	return h
+}
+
+func pamReceivedTestObservation() pamlifetime.Result {
+	return pamlifetime.Result{
+		ProtocolVersion: 2,
+		ObservationID:   "20000000-0000-4000-8000-000000000001",
+		ActuationID:     "30000000-0000-4000-8000-000000000001",
+		Generation:      1,
+		State:           pamlifetime.ResultReceived,
+		ObservedAt:      time.Now().UTC(),
+	}
 }
 
 func TestPamApplyV2RequiresReceivedObservationManager(t *testing.T) {
@@ -192,33 +210,48 @@ func TestPamApplyV2RequiresReceivedObservationManager(t *testing.T) {
 	}
 }
 
+// TestPamApplyV2EnqueuesExactEnvelopeCommandBeforeVerification keeps the rc.3
+// handoff ordering honest end to end: the observation is durably enqueued for
+// the exact envelope command before it is submitted, the submission is
+// acknowledged before the manager is allowed to continue, and the pending entry
+// is gone by the time the apply proceeds.
 func TestPamApplyV2EnqueuesExactEnvelopeCommandBeforeVerification(t *testing.T) {
-	received := pamlifetime.Result{
-		ProtocolVersion: 2,
-		ObservationID:   "20000000-0000-4000-8000-000000000001",
-		ActuationID:     "30000000-0000-4000-8000-000000000001",
-		Generation:      1,
-		State:           pamlifetime.ResultReceived,
-		ObservedAt:      time.Now().UTC(),
-	}
+	received := pamReceivedTestObservation()
 	verified := received
 	verified.ObservationID = "20000000-0000-4000-8000-000000000002"
 	verified.State = pamlifetime.ResultVerifiedActive
 	outbox := newPamReconciliationOutbox(t.TempDir())
 	manager := &fakePamLifetimeManager{receivedResult: &received, applyResult: verified, available: true}
+	var order []string
 	manager.handoffCheck = func(err error) {
 		if err != nil {
 			t.Fatalf("handoff error: %v", err)
+		}
+		order = append(order, "handoff returned")
+		snapshot, snapshotErr := outbox.Snapshot()
+		if snapshotErr != nil {
+			t.Fatal(snapshotErr)
+		}
+		if len(snapshot.Pending) != 0 {
+			t.Fatalf("acknowledged observation left pending before the apply proceeded: %+v", snapshot)
+		}
+	}
+	h := readyPamApplyTestHeartbeat(manager, outbox)
+	h.pamSubmitResultFn = func(_ context.Context, commandID string, observation pamlifetime.Result) (pamResultAcknowledgement, error) {
+		order = append(order, "submit")
+		if commandID != "60000000-0000-4000-8000-000000000001" || observation != received {
+			t.Fatalf("submitted commandID/observation = %q/%+v", commandID, observation)
 		}
 		snapshot, snapshotErr := outbox.Snapshot()
 		if snapshotErr != nil {
 			t.Fatal(snapshotErr)
 		}
-		if len(snapshot.Pending) != 1 || snapshot.Pending[0].CommandID != "60000000-0000-4000-8000-000000000001" || snapshot.Pending[0].Observation != received {
-			t.Fatalf("outbox before manager return = %+v", snapshot)
+		if len(snapshot.Pending) != 1 || snapshot.Pending[0].CommandID != commandID || snapshot.Pending[0].Observation != received {
+			t.Fatalf("outbox at submit time = %+v, want the exact envelope entry pending", snapshot)
 		}
+		order = append(order, "acknowledged")
+		return pamResultAcknowledgement{ProtocolVersion: 1, Classification: pamResultClassificationApplied}, nil
 	}
-	h := readyPamApplyTestHeartbeat(manager, outbox)
 
 	result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000001"))
 	if result.Status != "completed" || result.Result != verified {
@@ -227,24 +260,127 @@ func TestPamApplyV2EnqueuesExactEnvelopeCommandBeforeVerification(t *testing.T) 
 	if manager.applyCalls != 0 || manager.receivedCalls != 1 {
 		t.Fatalf("apply calls=%d received calls=%d", manager.applyCalls, manager.receivedCalls)
 	}
-	if h.pamReceivedObservationReady.Load() || h.pamLifetimeProtocolVersion() != 0 {
-		t.Fatalf("received transport stayed advertised after enqueue: ready=%v protocol=%d", h.pamReceivedObservationReady.Load(), h.pamLifetimeProtocolVersion())
+	if want := []string{"submit", "acknowledged", "handoff returned"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("handoff order = %q, want %q", order, want)
+	}
+}
+
+// TestPamApplyV2SynchronousReceivedAcknowledgementKeepsTransportAdvertised is
+// the rc.2 regression: the observation used to be drained by the reconciliation
+// worker after the command result had already reached the server, so the
+// received anchor was lost or classified stale. With the acknowledgement taken
+// inline the outbox is empty and back-to-back applies must not be refused with
+// "received observation transport unavailable".
+func TestPamApplyV2SynchronousReceivedAcknowledgementKeepsTransportAdvertised(t *testing.T) {
+	for _, classification := range []string{pamResultClassificationApplied, pamResultClassificationDuplicate} {
+		t.Run(classification, func(t *testing.T) {
+			received := pamReceivedTestObservation()
+			verified := received
+			verified.ObservationID = "20000000-0000-4000-8000-000000000002"
+			verified.State = pamlifetime.ResultVerifiedActive
+			outbox := newPamReconciliationOutbox(t.TempDir())
+			manager := &fakePamLifetimeManager{receivedResult: &received, applyResult: verified, available: true}
+			h := readyPamApplyTestHeartbeat(manager, outbox)
+			submits := 0
+			h.pamSubmitResultFn = func(context.Context, string, pamlifetime.Result) (pamResultAcknowledgement, error) {
+				submits++
+				return pamResultAcknowledgement{ProtocolVersion: 1, Classification: classification}, nil
+			}
+
+			result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000001"))
+			if result.Status != "completed" || result.Result != verified {
+				t.Fatalf("result = %+v", result)
+			}
+			if submits != 1 {
+				t.Fatalf("submit calls = %d, want 1", submits)
+			}
+			snapshot, err := outbox.Snapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(snapshot.Pending) != 0 || len(snapshot.Quarantined) != 0 {
+				t.Fatalf("outbox after acknowledgement = %+v, want empty", snapshot)
+			}
+			if !h.pamReceivedObservationReady.Load() || h.pamLifetimeProtocolVersion() != 2 {
+				t.Fatalf("received transport stayed blocked after acknowledgement: ready=%v protocol=%d",
+					h.pamReceivedObservationReady.Load(), h.pamLifetimeProtocolVersion())
+			}
+		})
+	}
+}
+
+// TestPamApplyV2RefusedReceivedAcknowledgementFailsClosed covers the two
+// answers that mean the server will not anchor this envelope. The apply must
+// fail with its own code - the agent reached the server, so this is not a
+// transport outage - and must not leave a pending entry the worker would later
+// re-post as a `received` after the command result already said `failed`.
+func TestPamApplyV2RefusedReceivedAcknowledgementFailsClosed(t *testing.T) {
+	for _, classification := range []string{pamResultClassificationStale, pamResultClassificationRejected} {
+		t.Run(classification, func(t *testing.T) {
+			received := pamReceivedTestObservation()
+			outbox := newPamReconciliationOutbox(t.TempDir())
+			manager := &fakePamLifetimeManager{receivedResult: &received, applyResult: received, available: true}
+			h := readyPamApplyTestHeartbeat(manager, outbox)
+			h.pamSubmitResultFn = func(context.Context, string, pamlifetime.Result) (pamResultAcknowledgement, error) {
+				return pamResultAcknowledgement{ProtocolVersion: 1, Classification: classification}, nil
+			}
+
+			result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000001"))
+			structured, ok := result.Result.(pamlifetime.Result)
+			if result.Status != "completed" || !ok || structured.State != pamlifetime.ResultFailed ||
+				structured.FailureCode != "received_observation_rejected" {
+				t.Fatalf("result = %+v", result)
+			}
+			snapshot, err := outbox.Snapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(snapshot.Pending) != 0 || len(snapshot.Quarantined) != 0 {
+				t.Fatalf("outbox after refusal = %+v, want empty", snapshot)
+			}
+		})
+	}
+}
+
+// TestPamApplyV2ReceivedSubmitTransportFailureReturnsHandoffFailure keeps the
+// transport outage on its existing code, and still clears the pending entry so
+// no late `received` can regress the server's observed_state after this apply
+// reports failed.
+func TestPamApplyV2ReceivedSubmitTransportFailureReturnsHandoffFailure(t *testing.T) {
+	received := pamReceivedTestObservation()
+	outbox := newPamReconciliationOutbox(t.TempDir())
+	manager := &fakePamLifetimeManager{receivedResult: &received, applyResult: received, available: true}
+	h := readyPamApplyTestHeartbeat(manager, outbox)
+	h.pamSubmitResultFn = func(context.Context, string, pamlifetime.Result) (pamResultAcknowledgement, error) {
+		return pamResultAcknowledgement{}, errors.New("connection reset")
+	}
+
+	result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000001"))
+	structured, ok := result.Result.(pamlifetime.Result)
+	if result.Status != "completed" || !ok || structured.State != pamlifetime.ResultFailed ||
+		structured.FailureCode != "received_observation_handoff_failed" {
+		t.Fatalf("result = %+v", result)
+	}
+	snapshot, err := outbox.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Pending) != 0 || len(snapshot.Quarantined) != 0 {
+		t.Fatalf("outbox after transport failure = %+v, want empty", snapshot)
 	}
 }
 
 func TestPamApplyV2EnqueueFailureReturnsStableManagerFailure(t *testing.T) {
-	received := pamlifetime.Result{
-		ProtocolVersion: 2,
-		ObservationID:   "20000000-0000-4000-8000-000000000001",
-		ActuationID:     "30000000-0000-4000-8000-000000000001",
-		Generation:      1,
-		State:           pamlifetime.ResultReceived,
-		ObservedAt:      time.Now().UTC(),
-	}
+	received := pamReceivedTestObservation()
 	outbox := newPamReconciliationOutbox(t.TempDir())
 	outbox.writeFn = func(*os.File, []byte) error { return errors.New("disk full") }
 	manager := &fakePamLifetimeManager{receivedResult: &received, applyResult: received, available: true}
 	h := readyPamApplyTestHeartbeat(manager, outbox)
+	submits := 0
+	h.pamSubmitResultFn = func(context.Context, string, pamlifetime.Result) (pamResultAcknowledgement, error) {
+		submits++
+		return pamResultAcknowledgement{ProtocolVersion: 1, Classification: pamResultClassificationApplied}, nil
+	}
 
 	result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000001"))
 	structured, ok := result.Result.(pamlifetime.Result)
@@ -253,6 +389,9 @@ func TestPamApplyV2EnqueueFailureReturnsStableManagerFailure(t *testing.T) {
 	}
 	if manager.applyCalls != 0 || manager.receivedCalls != 1 {
 		t.Fatalf("apply calls=%d received calls=%d", manager.applyCalls, manager.receivedCalls)
+	}
+	if submits != 0 {
+		t.Fatalf("submit calls = %d, want 0: an observation that was never durable must not be submitted", submits)
 	}
 }
 
