@@ -49,6 +49,12 @@ const limitsFields = z.object({
   maxVerdictRunsPerHour: z.number().int().min(1).max(2000),
   maxConcurrentVerdictRuns: z.number().int().min(1).max(20),
   verdictBudgetCentsPerRun: z.number().int().min(1).max(50),
+  // Sweep-profile admission caps (phase 2 P2-2) — see
+  // AiAgentLimits.maxConcurrentSweepRuns's docstring.
+  maxConcurrentSweepRuns: z.number().int().min(1).max(10),
+  maxSweepRunsPerHour: z.number().int().min(1).max(200),
+  sweepBudgetCentsPerRun: z.number().int().min(5).max(100),
+  sweepMaxTurns: z.number().int().min(3).max(20),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({

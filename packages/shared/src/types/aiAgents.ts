@@ -68,6 +68,18 @@ export interface AiAgentLimits {
   maxVerdictRunsPerHour: number;
   maxConcurrentVerdictRuns: number;
   verdictBudgetCentsPerRun: number;
+  /**
+   * Phase 2 wave P2-2 (scheduled sweeps) — the `sweep`-profile admission
+   * caps, kept separate from `full`'s `maxConcurrentRuns`/`maxRunsPerHour`
+   * and `verdict`'s `maxConcurrentVerdictRuns`/`maxVerdictRunsPerHour` for
+   * the same reason those two are split from each other: a burst of
+   * scheduled sweep runs (one per org per cron occurrence) must never starve
+   * either of the other two profiles' admission budget, and vice versa.
+   */
+  maxConcurrentSweepRuns: number;
+  maxSweepRunsPerHour: number;
+  sweepBudgetCentsPerRun: number;
+  sweepMaxTurns: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -90,6 +102,12 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   // before reaching a submittable turn. See maxTurnsPerRun's sibling bump in
   // apps/api/src/services/aiAgents/verdictProfile.ts (VERDICT_MAX_TURNS).
   verdictBudgetCentsPerRun: 5,
+  // Sweep-profile admission caps (phase 2 P2-2) — see
+  // AiAgentLimits.maxConcurrentSweepRuns's docstring.
+  maxConcurrentSweepRuns: 2,
+  maxSweepRunsPerHour: 20,
+  sweepBudgetCentsPerRun: 30,
+  sweepMaxTurns: 8,
 });
 
 export interface AiAgentTriggers {
@@ -284,7 +302,7 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * circuit accounting. Every site that switches on `schemaVersion` must
  * tolerate 1, 2, 3, AND 4. Write side always stamps the current version.
  *
- * v5 (this bump, phase 2 P2-1): `effective.limits` gained
+ * v5 (phase 2 P2-1): `effective.limits` gained
  * `maxVerdictRunsPerHour`, `maxConcurrentVerdictRuns`,
  * `verdictBudgetCentsPerRun`; read sites fall back to
  * `AI_AGENT_LIMIT_DEFAULTS` for a v1–v4 snapshot. `verdictBudgetCentsPerRun`'s
@@ -292,12 +310,20 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * 2¢/3 turns to 5¢/4 turns shortly after this bump, after the P2-1 live
  * check (task 16) found 3 of 4 Sonnet verdict runs ran out before submitting
  * — the schema shape didn't change again, so this is still a v5 snapshot.
+ *
+ * v6 (this bump, P2-2): sweep-profile counters/budget/turns —
+ * `effective.limits` gained `maxConcurrentSweepRuns`, `maxSweepRunsPerHour`,
+ * `sweepBudgetCentsPerRun`, `sweepMaxTurns`. Same rule as every prior bump:
+ * a v1–v5 in-flight run's snapshot lacks these fields and MUST still
+ * execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS` for a pre-v6
+ * snapshot. Every site that switches on `schemaVersion` must tolerate 1
+ * through 6.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 5 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 6 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), or 5 (current). Read sites must tolerate all five. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), or 6 (current). Read sites must tolerate all six. */
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;
@@ -409,8 +435,15 @@ export type AgentRunVerdict = 'remediated' | 'needs_attention' | 'partial' | 'no
  * an `AiAlertVerdict` for one alert or correlation group instead of a full
  * triage/patch/helpdesk turn. See runService step 6b for how admission is
  * counted per-profile.
+ *
+ * Phase 2 wave P2-2 (scheduled sweeps) added `sweep`: a `schedule`-triggered
+ * run profile that evaluates a fixed set of `AiSweepKind`s against one org's
+ * fleet and produces a `SweepFindingsOutcome` instead of a full triage turn.
+ * Admission for `sweep`-profile runs is counted against
+ * `AiAgentLimits.maxConcurrentSweepRuns`/`maxSweepRunsPerHour`, not the
+ * `full`/`verdict` counters above — see that field's docstring.
  */
-export const AI_AGENT_RUN_PROFILES = ['full', 'verdict'] as const;
+export const AI_AGENT_RUN_PROFILES = ['full', 'verdict', 'sweep'] as const;
 export type AiAgentRunProfile = (typeof AI_AGENT_RUN_PROFILES)[number];
 
 /**
