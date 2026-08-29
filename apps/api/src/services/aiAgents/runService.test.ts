@@ -1775,3 +1775,110 @@ describe('createAndEnqueueAgentRun review findings (wave 3c)', () => {
     expect(dbMockState.selects.some((sel) => sel.table === 'devices')).toBe(false);
   });
 });
+
+describe('createAndEnqueueAgentRun verdict-profile admission (P2-1)', () => {
+  /**
+   * Verdict-profile runs skip the cooldown probe entirely (step 5 wraps in
+   * `profile === 'full'`), so the seeded ai_agent_runs queue drops
+   * seedAdmissionReads' cooldown slot: [reap, concurrency, per-hour, daily
+   * spend]. If admission still probed cooldown for a verdict run, the
+   * concurrency-count row seeded here (a non-empty array) would be misread as
+   * a cooldown "recent run" hit and wrongly skip('cooldown').
+   */
+  function seedVerdictAdmissionReads(options: {
+    concurrent?: number;
+    perHour?: number;
+    dailyCents?: number | null;
+  } = {}): void {
+    const { concurrent = 0, perHour = 0, dailyCents = 0 } = options;
+    seedAdmissionReads({ concurrent, perHour, dailyCents });
+    dbMockState.rowQueues.ai_agent_runs = [
+      [], // 4c reap candidates
+      [{ value: concurrent }], // 6b concurrency
+      [{ value: perHour }], // 6b per-hour
+      [{ totalCostCents: dailyCents }], // 7 daily spend
+    ];
+  }
+
+  it('max_concurrent_verdict_runs when queued+running verdict runs reach the verdict-only cap', async () => {
+    seedVerdictAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentVerdictRuns });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'verdict', dedupeKey: 'alert-verdict:a1' }),
+    );
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_verdict_runs' });
+  });
+
+  it('never counts a verdict run against maxConcurrentRuns — the verdict cap is scoped and counted independently', async () => {
+    // maxConcurrentRuns (default 1) would already refuse a FULL run; the
+    // verdict-only count is 0, so a verdict run is still admitted, and the
+    // concurrency SELECT itself is scoped by profile (not merely a
+    // coincidentally low seeded value).
+    seedVerdictAdmissionReads({ concurrent: 0 });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'verdict', dedupeKey: 'alert-verdict:a2' }),
+    );
+    expect(result).toMatchObject({ created: true });
+    const runSelects = dbMockState.selects.filter((s) => s.table === 'ai_agent_runs');
+    // [0] reap, [1] concurrency, [2] per-hour — no cooldown probe for verdict.
+    expect(compiled(runSelects[1]?.where)).toContain('"profile"');
+  });
+
+  it('rate-limits verdict-profile runs on maxVerdictRunsPerHour with skip verdict_rate', async () => {
+    seedVerdictAdmissionReads({ perHour: AI_AGENT_LIMIT_DEFAULTS.maxVerdictRunsPerHour });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'verdict', dedupeKey: 'alert-verdict:a3' }),
+    );
+    expect(result).toEqual({ created: false, skipped: 'verdict_rate' });
+  });
+
+  it('skips the cooldown step entirely for a verdict run, even with cooldownSeconds > 0', async () => {
+    // Default snapshot() carries cooldownSeconds: 900 — proves the guard is
+    // keyed on profile, not on cooldownSeconds being zero.
+    seedVerdictAdmissionReads({ concurrent: 0, perHour: 0, dailyCents: 0 });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'verdict', dedupeKey: 'alert-verdict:a4' }),
+    );
+    expect(result).toMatchObject({ created: true });
+  });
+
+  it('a full run is not blocked by concurrent verdict runs — the full cap is scoped by profile too', async () => {
+    // The real concurrency/per-hour counts would exclude verdict rows via the
+    // profile-scoped WHERE; seeded as 0 to represent that. The SQL assertions
+    // prove the scoping is actually applied, not merely a coincidental value.
+    seedAdmissionReads({ concurrent: 0 });
+    const result = await createAndEnqueueAgentRun(input());
+    expect(result).toMatchObject({ created: true });
+    const runSelects = dbMockState.selects.filter((s) => s.table === 'ai_agent_runs');
+    // [0] reap, [1] cooldown, [2] concurrency, [3] per-hour, [4] daily spend
+    expect(compiled(runSelects[2]?.where)).toContain('"profile"');
+    expect(compiled(runSelects[3]?.where)).toContain('"profile"');
+  });
+
+  it('writes profile and correlation_group_id on the run row for a verdict run', async () => {
+    seedVerdictAdmissionReads();
+    await createAndEnqueueAgentRun(
+      input({
+        profile: 'verdict',
+        dedupeKey: 'group-verdict:g1',
+        correlationGroupId: 'correlation-group-1',
+      }),
+    );
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values).toMatchObject({ profile: 'verdict', correlationGroupId: 'correlation-group-1' });
+  });
+
+  it('defaults profile to full and correlation_group_id to null when omitted', async () => {
+    seedAdmissionReads();
+    await createAndEnqueueAgentRun(input());
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values).toMatchObject({ profile: 'full', correlationGroupId: null });
+  });
+
+  it('does not publish max_concurrent_verdict_runs or verdict_rate — logged only, volume guards not policy events', async () => {
+    seedVerdictAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentVerdictRuns });
+    await createAndEnqueueAgentRun(
+      input({ profile: 'verdict', dedupeKey: 'alert-verdict:a5' }),
+    );
+    expect(publishEvent).not.toHaveBeenCalled();
+  });
+});
