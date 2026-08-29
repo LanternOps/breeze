@@ -882,6 +882,18 @@ export async function createAndEnqueueAgentRun(
         eq(aiAgentRuns.dedupeKey, dedupeKey),
         eq(aiAgentRuns.status, 'failed'),
         eq(aiAgentRuns.errorCode, 'enqueue_failed'),
+        // #3828 branch-review blocker 3: wave 6 PR 4 is the first time two
+        // trigger kinds can share (org_id, dedupe_key) — the anomaly path's
+        // cross-dedupe deliberately collides onto `alert:<linkedAlertId>`.
+        // Without this predicate, an enqueue_failed row from a DIFFERENT
+        // trigger kind still matches the CAS above, and the SET list
+        // (triggerKind/triggerRef/modeAtStart/policySnapshot — all columns
+        // ai_agent_runs_immutable_guard() DISTINCT-FROM checks) then raises
+        // 23000 the moment triggerKind actually changes. Scoping to the same
+        // triggerKind makes a cross-kind collision match nothing here, so it
+        // falls through to skip('duplicate') below instead of attempting (and
+        // failing) the mutation.
+        eq(aiAgentRuns.triggerKind, triggerKind),
       ))
       .returning();
     if (reclaimed) {

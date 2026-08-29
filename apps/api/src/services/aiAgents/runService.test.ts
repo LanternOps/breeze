@@ -1347,6 +1347,89 @@ describe('createAndEnqueueAgentRun — anomaly-triggered admission (#3828 wave-6
   });
 });
 
+// #3828 branch-review blocker 3: this PR is the first time two trigger kinds
+// can share an (org_id, dedupe_key) — metricAnomalySubscriber deliberately
+// cross-dedupes onto `alert:<linkedAlertId>` when an anomaly's sibling has a
+// linked alert. When the incumbent row at that key is
+// status='failed' AND error_code='enqueue_failed', the reclaim UPDATE
+// re-SETs triggerKind/triggerRef/modeAtStart/policySnapshot — all columns
+// ai_agent_runs_immutable_guard() DISTINCT-FROM checks — so an UNGUARDED
+// cross-kind reclaim always raises 23000 (integrity_constraint_violation)
+// against a genuinely different trigger's row. The fix scopes the reclaim's
+// WHERE to `trigger_kind = <this admission's triggerKind>` so a cross-kind
+// collision can never match and falls through to `skip('duplicate')` instead
+// of attempting (and failing) the mutation.
+describe('createAndEnqueueAgentRun — cross-kind enqueue_failed reclaim guard (#3828 branch-review blocker 3)', () => {
+  it('an anomaly admission colliding with an alert-kind enqueue_failed row at the same key reports duplicate, not a reclaim', async () => {
+    seedAdmissionReads();
+    const dedupeKey = `alert:${ALERT_ID}`;
+    // The insert loses the unique race: an alert-triggered row already holds
+    // this key (this is exactly the cross-dedupe metricAnomalySubscriber
+    // deliberately creates for a promoted anomaly).
+    dbMockState.insertRows = [];
+    // The CAS is scoped to this admission's own triggerKind ('anomaly'), so
+    // it cannot match the incumbent alert-kind row — the reclaim UPDATE
+    // affects zero rows.
+    dbMockState.updateRows = [];
+
+    const result = await createAndEnqueueAgentRun(
+      input({
+        triggerKind: 'anomaly',
+        anomalyIncidentId: ANOMALY_INCIDENT_ID,
+        triggerRef: { incidentId: ANOMALY_INCIDENT_ID },
+        dedupeKey,
+      }),
+    );
+
+    expect(result).toEqual({ created: false, skipped: 'duplicate' });
+    expect(enqueueAgentRunJob).not.toHaveBeenCalled();
+
+    // The reclaim WHERE must scope on trigger_kind — without it, this same
+    // scenario against a REAL database updates the alert-kind row's
+    // trigger_kind to 'anomaly' and immediately trips the immutable guard.
+    const where = compiled(dbMockState.updateWheres.at(-1) as SQL);
+    expect(where).toContain('"trigger_kind"');
+  });
+
+  it('an alert admission colliding with an anomaly-kind enqueue_failed row at the same key reports duplicate, not a reclaim', async () => {
+    seedAdmissionReads();
+    const dedupeKey = `alert:${ALERT_ID}`;
+    // The incumbent row at this key is the anomaly-triggered run whose
+    // cross-dedupe collapsed onto the alert's key.
+    dbMockState.insertRows = [];
+    dbMockState.updateRows = [];
+
+    const result = await createAndEnqueueAgentRun(
+      input({
+        triggerKind: 'alert',
+        alertId: ALERT_ID,
+        dedupeKey,
+      }),
+    );
+
+    expect(result).toEqual({ created: false, skipped: 'duplicate' });
+    expect(enqueueAgentRunJob).not.toHaveBeenCalled();
+
+    const where = compiled(dbMockState.updateWheres.at(-1) as SQL);
+    expect(where).toContain('"trigger_kind"');
+  });
+
+  it('a SAME-kind enqueue_failed reclaim still succeeds (regression: the trigger_kind predicate must not block legitimate same-kind retries)', async () => {
+    seedAdmissionReads();
+    dbMockState.insertRows = [];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, status: 'queued', deviceId: DEVICE_ID }];
+
+    const result = await createAndEnqueueAgentRun(
+      input({ triggerKind: 'alert', alertId: ALERT_ID, dedupeKey: `alert:${ALERT_ID}` }),
+    );
+
+    expect(result).toMatchObject({ created: true });
+    expect(enqueueAgentRunJob).toHaveBeenCalledWith(RUN_ID);
+    const where = compiled(dbMockState.updateWheres.at(-1) as SQL);
+    expect(where).toContain('"trigger_kind"');
+  });
+});
+
 describe('transitionRunStatus', () => {
   it('returns true and applies the patch when the CAS matches', async () => {
     dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: null, outcome: {} }];

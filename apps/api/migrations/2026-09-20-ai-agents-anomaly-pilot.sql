@@ -124,3 +124,60 @@ CREATE POLICY breeze_org_isolation_delete ON metric_anomaly_incidents
 ALTER TABLE ai_agent_runs ADD COLUMN IF NOT EXISTS anomaly_incident_id UUID
   REFERENCES metric_anomaly_incidents(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS ai_agent_runs_anomaly_incident_id_idx ON ai_agent_runs (anomaly_incident_id);
+
+-- Branch-review blocker 1 (#3828): ai_agent_runs_trigger_kind_chk was created
+-- inside an `IF NOT EXISTS` guard in the shipped 2026-09-02-ai-agents.sql, so
+-- an already-migrated database never picked up 'anomaly' when it was added to
+-- AI_AGENT_TRIGGER_KINDS above — every anomaly-triggered admission attempt
+-- failed 23514. Drop and re-add so the DB-side CHECK stays in lockstep with
+-- the shared trigger-kind enum. Contract test:
+-- aiAgentRuns.integration.test.ts's "ai_agent_runs_trigger_kind_chk — DB
+-- constraint matches AI_AGENT_TRIGGER_KINDS" reads pg_get_constraintdef back
+-- and asserts value-set equality against AI_AGENT_TRIGGER_KINDS in both
+-- directions, so the next new trigger kind cannot repeat this silently.
+ALTER TABLE ai_agent_runs DROP CONSTRAINT IF EXISTS ai_agent_runs_trigger_kind_chk;
+ALTER TABLE ai_agent_runs ADD CONSTRAINT ai_agent_runs_trigger_kind_chk
+  CHECK (trigger_kind IN ('alert', 'manual', 'schedule', 'ticket', 'anomaly'));
+
+-- Branch-review blocker 2 (#3828): breeze_cascade_device_org_id() (last
+-- replaced in 2026-09-06-a-agent-runs-org-immutable.sql) detaches
+-- ai_agent_runs' device-lineage pointers on a device org-move but was never
+-- extended for anomaly_incident_id (added above, after that migration
+-- shipped) — a source-org run kept pointing at a now-foreign incident once
+-- the generic denormalized-table loop re-stamped metric_anomaly_incidents to
+-- the destination org, and GET /runs/:id would project a cross-tenant
+-- incident id. Also null the reverse pointer
+-- (metric_anomaly_incidents.agent_run_id, no FK) for the moved device BEFORE
+-- the generic loop re-stamps its org_id, for the same reason: left alone, it
+-- keeps naming a source-org run after the move. Full function body copied
+-- from 2026-09-06-a (the newest definition; no later migration replaces this
+-- function) with both fixes added — only the two new statements are new.
+CREATE OR REPLACE FUNCTION public.breeze_cascade_device_org_id()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = public, pg_catalog
+  AS $$
+DECLARE
+  child_table text;
+BEGIN
+  -- Agent-run history stays with the SOURCE org (owner decision 2026-08-23):
+  -- sever the moved device's lineage links instead of re-stamping org_id.
+  UPDATE public.ai_agent_runs
+    SET device_id = NULL, alert_id = NULL, session_id = NULL, anomaly_incident_id = NULL
+    WHERE device_id = NEW.id;
+  -- Reverse pointer: the incident's back-link to the (now-detached) run must
+  -- not keep naming a source-org run once the incident itself is re-stamped
+  -- to the destination org by the generic loop below.
+  UPDATE public.metric_anomaly_incidents
+    SET agent_run_id = NULL
+    WHERE device_id = NEW.id;
+  FOR child_table IN SELECT public.breeze_device_child_orgid_tables() LOOP
+    EXECUTE format(
+      'UPDATE public.%I SET org_id = $1 WHERE device_id = $2 AND org_id IS DISTINCT FROM $1',
+      child_table
+    ) USING NEW.org_id, NEW.id;
+  END LOOP;
+  RETURN NULL; -- AFTER trigger; return value ignored
+END;
+$$;

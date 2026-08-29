@@ -233,14 +233,25 @@ moveOrgRoutes.post(
         // runs are not re-stamped (org_id is trigger-immutable, and re-stamping
         // would 23503 against the action_intents composite tenant FK the moment an
         // agent proposal exists). Sever ALL device-lineage links, not just
-        // device_id: alerts and ai_sessions ARE re-stamped to the target org by
-        // the loop below, so a retained source-org run keeping alert_id/session_id
-        // would point across tenants (and /ai-agents/:id/runs would serve those
-        // foreign ids to the source org). All three FKs are ON DELETE SET NULL —
+        // device_id: alerts, ai_sessions, and metric_anomaly_incidents ARE
+        // re-stamped to the target org by the loop below, so a retained
+        // source-org run keeping alert_id/session_id/anomaly_incident_id would
+        // point across tenants (and /ai-agents/:id/runs would serve those
+        // foreign ids to the source org). All four FKs are ON DELETE SET NULL —
         // nullable by design.
         await tx.execute(
-          sql`UPDATE ai_agent_runs SET device_id = NULL, alert_id = NULL, session_id = NULL
+          sql`UPDATE ai_agent_runs SET device_id = NULL, alert_id = NULL, session_id = NULL, anomaly_incident_id = NULL
               WHERE device_id = ${deviceId}::uuid`,
+        );
+
+        // Reverse pointer: metric_anomaly_incidents.agent_run_id (no FK) must
+        // not keep naming a source-org run once the incident row itself is
+        // re-stamped to the target org by the denormalized-table loop below —
+        // same cross-tenant-pointer class as the ai_agent_runs detach above,
+        // just the other direction of the link. Must run BEFORE that loop so
+        // it targets the incident by its still-source device_id.
+        await tx.execute(
+          sql`UPDATE metric_anomaly_incidents SET agent_run_id = NULL WHERE device_id = ${deviceId}::uuid`,
         );
 
         // Rewrite the denormalized org_id on every device-scoped table.
