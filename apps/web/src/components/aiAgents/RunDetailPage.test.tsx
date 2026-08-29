@@ -174,6 +174,24 @@ describe('RunDetailPage', () => {
     await waitFor(() => expect(screen.getByTestId('run-detail-not-found')).toBeInTheDocument());
   });
 
+  it('renders a translated trigger label and a device-anomalies link for an anomaly-triggered run (wave 6 PR 4, #3828)', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, triggerKind: 'anomaly' as const, anomalyIncidentId: 'incident-1' } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.getByText('Anomaly')).toBeInTheDocument();
+    const link = screen.getByTestId('run-detail-anomaly-link');
+    expect(link).toHaveAttribute('href', '/devices/d1#anomalies');
+  });
+
+  it('omits the device-anomalies link for a non-anomaly run', async () => {
+    mockEndpoints();
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.queryByTestId('run-detail-anomaly-link')).not.toBeInTheDocument();
+  });
+
   it('never renders raw tool args/input/output anywhere on the page', async () => {
     // The SAFETY RULE: the DTO union has no such fields, but this test proves
     // it end to end — even if a future trace variant grew one of these keys,

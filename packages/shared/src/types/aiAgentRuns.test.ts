@@ -105,6 +105,13 @@ describe('AiAgentRunTicketProposalDto (wave 6 PR 3, #3828) — safe projection, 
     const detail: Pick<AiAgentRunDetailDto, 'ticketProposal'> = { ticketProposal: null };
     expect(detail.ticketProposal).toBeNull();
   });
+
+  it('AiAgentRunDetailDto carries anomalyIncidentId as nullable (wave 6 PR 4, #3828)', () => {
+    const detail: Pick<AiAgentRunDetailDto, 'anomalyIncidentId'> = { anomalyIncidentId: null };
+    expect(detail.anomalyIncidentId).toBeNull();
+    const withIncident: Pick<AiAgentRunDetailDto, 'anomalyIncidentId'> = { anomalyIncidentId: 'incident-1' };
+    expect(withIncident.anomalyIncidentId).toBe('incident-1');
+  });
 });
 
 describe('AI_AGENT_RUN_DTO_SCHEMA_VERSION', () => {

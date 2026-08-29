@@ -131,3 +131,4 @@ export * from './extensions';
 export * from './deviceMtlsCertificates';
 export * from './supportSessions';
 export * from './eventDispatch';
+export * from './metricAnomalyIncidents';

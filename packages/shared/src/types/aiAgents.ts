@@ -16,7 +16,7 @@ export const AI_AGENT_RUN_STATUSES = [
 ] as const;
 export type AiAgentRunStatus = (typeof AI_AGENT_RUN_STATUSES)[number];
 
-export const AI_AGENT_TRIGGER_KINDS = ['alert', 'manual', 'schedule', 'ticket'] as const;
+export const AI_AGENT_TRIGGER_KINDS = ['alert', 'manual', 'schedule', 'ticket', 'anomaly'] as const;
 export type AiAgentTriggerKind = (typeof AI_AGENT_TRIGGER_KINDS)[number];
 
 export interface AiAgentLimits {
@@ -93,6 +93,79 @@ export interface AiAgentTriggers {
   /** `ticket_priority` enum values (`db/schema/portal.ts`). Enforced by
    *  `runService.ts`'s `evaluateTicketTriggerFilters`. */
   ticketPriorities?: Array<'low' | 'normal' | 'high' | 'urgent'>;
+  /**
+   * Wave 6 PR 4 (#3828) — narrowing filters for `triggerKind: 'anomaly'`
+   * admission (`evaluateAnomalyTriggerFilters`, Task 3). Same
+   * undefined-means-unrestricted / `.min(1)` convention as `ticketCategories`
+   * above, NOT `alertSeverities`' opt-in-list asymmetry.
+   *
+   * `anomalyTypes` matches `metric_anomaly_incidents.anomaly_type` /
+   * `metric_anomalies.anomaly_type` — free text (`'spike'`/`'drop'`/`'trend'`
+   * today, `apps/api/src/services/metricAnomalies.ts`), NOT a fixed pg enum,
+   * so this is `string[]`, not a literal union — the detector can grow new
+   * anomaly types without a shared-package release.
+   */
+  anomalyTypes?: string[];
+  /** Matches `metric_anomalies.metric_name` (free text, e.g. `cpu_percent`). */
+  metricNames?: string[];
+  /**
+   * Minimum `metric_anomaly_incidents.peak_score` (the detector's raw,
+   * UNBOUNDED `score` magnitude — see `metric_anomalies.score`, a
+   * `doublePrecision`) an incident's peak must reach to admit a run.
+   * Deliberately NOT constrained to 0-1: unlike `confidence` (a derived,
+   * bounded 0.5-0.99 value the detector computes FROM score), `score` itself
+   * has no fixed ceiling across the spike/drop/trend detectors — see the
+   * `peakScore` column comment on `metricAnomalyIncidents.ts`. `undefined`
+   * means unrestricted (no floor), same convention as every other
+   * trigger-filter field on this interface.
+   */
+  minAnomalyScore?: number;
+  /**
+   * Wave 6 PR 4 follow-up (#3828) — conservative per-agent opt-in for
+   * `triggerKind: 'anomaly'` admission. Default `false` (see the validator's
+   * `aiAgentTriggersSchema` transform): without this, any org with
+   * `ml.anomalies.enabled` AND an enabled `triage` agent started receiving
+   * anomaly-triggered shadow runs with zero configuration and no per-agent
+   * opt-out — the `anomalyTypes`/`metricNames`/`minAnomalyScore` filters
+   * above follow the repo's absent-means-unrestricted convention, so none of
+   * them could act as an opt-in gate.
+   *
+   * Deliberately NOT this interface's usual "undefined means unrestricted"
+   * convention: this is a binary safety gate for an unproven pilot
+   * detector, not a narrowing filter, so its default must be the closed
+   * (off) state.
+   *
+   * **Merge semantics (deliberately NOT the tighten-only intersection every
+   * other trigger field above uses):** `evaluateAgentTriggerFilters`-style
+   * tighten-only merges compute `partner ∩ org`, but for a boolean opt-in
+   * gate that shape is unsafe in the common "org has no override row"
+   * case — `mergeAgentPolicies` falls back to the partner baseline
+   * VERBATIM when there is no org override, which would let a partner-wide
+   * baseline row silently opt every org under it into an unproven pilot
+   * with zero org-level action. So this field reads ONLY the org's own
+   * trigger override: `effective.triggers.anomalyEnabled` is `true` iff the
+   * ORG-level `ai_agents` row for this agent has `triggers.anomalyEnabled:
+   * true` set explicitly. The partner baseline's own value for this field
+   * is never consulted, in either direction: an org with no override row at
+   * all always resolves to unset (falsy) here, and an org that HAS
+   * explicitly opted in stays opted in regardless of what the partner
+   * baseline separately holds. See `mergeAgentPolicies` (effectivePolicy.ts)
+   * for the implementation and `evaluateAnomalyTriggerFilters`'s admission
+   * gate in runService.ts for the enforcement point (checked unconditionally
+   * for `triggerKind: 'anomaly'`, not only when an `anomalyContext` happens
+   * to be supplied).
+   *
+   * Not part of a versioned snapshot-shape bump: like `anomalyTypes`/
+   * `metricNames`/`minAnomalyScore` above (added the same wave, also
+   * without a bump), this is a new OPTIONAL field on `triggers`, not on
+   * `limits` — every `AI_AGENT_POLICY_SNAPSHOT_VERSION` bump to date (v2-v4)
+   * was for a `limits` field specifically, because runtime code branches on
+   * `schemaVersion` to decide whether a STORED run snapshot's `limits`
+   * object can be trusted to carry that key. Nothing branches on
+   * `schemaVersion` for `triggers` fields; every read site already treats a
+   * missing trigger-filter key as its default (unrestricted, or here, off).
+   */
+  anomalyEnabled?: boolean;
 }
 
 export interface AiAgentRecipients {

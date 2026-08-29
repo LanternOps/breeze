@@ -21,6 +21,9 @@ const RULE_B = '00000000-0000-4000-8000-0000000000b1';
 const OTHER_ORG_ID = '00000000-0000-4000-8000-0000000000b2';
 const OTHER_PARTNER_ID = '00000000-0000-4000-8000-0000000000b3';
 const TICKET_ID = '00000000-0000-4000-8000-0000000000b4';
+const ANOMALY_INCIDENT_ID = '00000000-0000-4000-8000-0000000000c9';
+const GROUP_A = '00000000-0000-4000-8000-0000000000b5';
+const GROUP_B = '00000000-0000-4000-8000-0000000000b6';
 
 interface CapturedSelect {
   table: string;
@@ -180,6 +183,7 @@ vi.mock('./agentCircuit', () => ({
 import {
   createAndEnqueueAgentRun,
   evaluateAgentTriggerFilters,
+  evaluateAnomalyTriggerFilters,
   evaluateTicketTriggerFilters,
   reapStalledAgentRuns,
   registerAgentRunEnqueuer,
@@ -190,6 +194,7 @@ import {
 
 type AlertContext = NonNullable<CreateAgentRunInput['alertContext']>;
 type TicketFilterContext = NonNullable<CreateAgentRunInput['ticketContext']>;
+type AnomalyFilterContext = NonNullable<CreateAgentRunInput['anomalyContext']>;
 
 const dialect = new PgDialect();
 function compiled(cond: SQL | undefined): string {
@@ -374,14 +379,70 @@ describe('evaluateAgentTriggerFilters', () => {
     ],
   ];
 
-  it.each(cases)('%s', (_name, trig, context, expected) => {
-    expect(evaluateAgentTriggerFilters(trig, context)).toBe(expected);
+  it.each(cases)('%s', async (_name, trig, context, expected) => {
+    expect(await evaluateAgentTriggerFilters(trig, context, DEVICE_ID, ORG_ID)).toBe(expected);
   });
 
-  it('ignores deviceGroupIds (deferred to wave 6)', () => {
-    expect(
-      evaluateAgentTriggerFilters(triggers({ deviceGroupIds: ['group-that-does-not-match'] }), ctx),
-    ).toBe(true);
+  // Wave 6 PR 4 (#3828 Task 1) — deviceGroupIds is no longer inert. The
+  // member/non-member/unrestricted matrix below pins the new async
+  // membership-lookup behavior; the org-pin test asserts the query is
+  // scoped by BOTH device_id AND org_id (deviceMatchesAnyGroup runs inside
+  // a system db context, which bypasses RLS, so the org scoping has to be
+  // in the WHERE clause itself).
+  describe('deviceGroupIds', () => {
+    it('absent deviceGroupIds = unrestricted (no membership query)', async () => {
+      expect(await evaluateAgentTriggerFilters(triggers(), ctx, DEVICE_ID, ORG_ID)).toBe(true);
+      expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
+    });
+
+    it('empty deviceGroupIds = unrestricted (no membership query)', async () => {
+      expect(
+        await evaluateAgentTriggerFilters(triggers({ deviceGroupIds: [] }), ctx, DEVICE_ID, ORG_ID),
+      ).toBe(true);
+      expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
+    });
+
+    it('device is a member of a listed group', async () => {
+      dbMockState.rowQueues.device_group_memberships = [[{ groupId: GROUP_A }]];
+      expect(
+        await evaluateAgentTriggerFilters(
+          triggers({ deviceGroupIds: [GROUP_A, GROUP_B] }), ctx, DEVICE_ID, ORG_ID,
+        ),
+      ).toBe(true);
+    });
+
+    it('device is not a member of any listed group', async () => {
+      dbMockState.rowQueues.device_group_memberships = [[{ groupId: GROUP_B }]];
+      expect(
+        await evaluateAgentTriggerFilters(triggers({ deviceGroupIds: [GROUP_A] }), ctx, DEVICE_ID, ORG_ID),
+      ).toBe(false);
+    });
+
+    it('device has no group memberships at all', async () => {
+      dbMockState.rowQueues.device_group_memberships = [[]];
+      expect(
+        await evaluateAgentTriggerFilters(triggers({ deviceGroupIds: [GROUP_A] }), ctx, DEVICE_ID, ORG_ID),
+      ).toBe(false);
+    });
+
+    it('deviceId null fails a non-empty deviceGroupIds filter without querying', async () => {
+      expect(
+        await evaluateAgentTriggerFilters(triggers({ deviceGroupIds: [GROUP_A] }), ctx, null, ORG_ID),
+      ).toBe(false);
+      expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
+    });
+
+    it('is org-pinned: the membership query filters by device_id AND org_id', async () => {
+      dbMockState.rowQueues.device_group_memberships = [[{ groupId: GROUP_A }]];
+      await evaluateAgentTriggerFilters(triggers({ deviceGroupIds: [GROUP_A] }), ctx, DEVICE_ID, ORG_ID);
+
+      const call = dbMockState.selects.find((s) => s.table === 'device_group_memberships');
+      expect(call).toBeDefined();
+      const sql = compiled(call?.where);
+      expect(sql).toContain('device_id');
+      expect(sql).toContain('org_id');
+      expect(sql).toMatch(/\band\b/i);
+    });
   });
 });
 
@@ -431,6 +492,81 @@ describe('evaluateTicketTriggerFilters', () => {
 
   it.each(cases)('%s', (_name, trig, context, expected) => {
     expect(evaluateTicketTriggerFilters(trig, context)).toBe(expected);
+  });
+});
+
+// Wave 6 PR 4 (#3828 Task 3) — anomalyTypes/metricNames/minAnomalyScore
+// narrowing, plus the SAME device-bound filters (siteIds/deviceTags/
+// deviceGroupIds) evaluateAgentTriggerFilters applies for an alert trigger.
+// Anomaly runs are device-bound, unlike ticket runs, so this evaluator is
+// async for the same deviceGroupIds membership-lookup reason.
+describe('evaluateAnomalyTriggerFilters', () => {
+  const ctx: AnomalyFilterContext = {
+    anomalyType: 'cpu_spike',
+    metricNames: ['cpu_percent', 'load_avg'],
+    peakScore: 5,
+    siteId: SITE_A,
+    deviceTags: ['prod', 'sql'],
+  };
+
+  const cases: Array<[string, AiAgentTriggers, AnomalyFilterContext, boolean]> = [
+    ['absent anomalyTypes = unrestricted', triggers(), ctx, true],
+    ['empty anomalyTypes = unrestricted', triggers({ anomalyTypes: [] }), ctx, true],
+    ['matching anomalyTypes', triggers({ anomalyTypes: ['cpu_spike', 'disk_full'] }), ctx, true],
+    ['non-matching anomalyTypes', triggers({ anomalyTypes: ['disk_full'] }), ctx, false],
+    ['absent metricNames = unrestricted', triggers(), ctx, true],
+    ['empty metricNames = unrestricted', triggers({ metricNames: [] }), ctx, true],
+    ['intersecting metricNames', triggers({ metricNames: ['cpu_percent', 'other'] }), ctx, true],
+    ['disjoint metricNames', triggers({ metricNames: ['other'] }), ctx, false],
+    ['absent minAnomalyScore = unrestricted', triggers(), ctx, true],
+    ['peakScore at the minAnomalyScore floor passes', triggers({ minAnomalyScore: 5 }), ctx, true],
+    ['peakScore above the minAnomalyScore floor passes', triggers({ minAnomalyScore: 4.9 }), ctx, true],
+    ['peakScore below the minAnomalyScore floor fails', triggers({ minAnomalyScore: 5.1 }), ctx, false],
+    ['empty siteIds = all sites', triggers({ siteIds: [] }), ctx, true],
+    ['matching siteIds', triggers({ siteIds: [SITE_A] }), ctx, true],
+    ['non-matching siteIds', triggers({ siteIds: [SITE_B] }), ctx, false],
+    ['siteIds set but siteId null', triggers({ siteIds: [SITE_A] }), { ...ctx, siteId: null }, false],
+    ['empty deviceTags = all devices', triggers({ deviceTags: [] }), ctx, true],
+    ['intersecting deviceTags', triggers({ deviceTags: ['sql', 'other'] }), ctx, true],
+    ['disjoint deviceTags', triggers({ deviceTags: ['other'] }), ctx, false],
+    [
+      'all filters satisfied together',
+      triggers({ anomalyTypes: ['cpu_spike'], metricNames: ['load_avg'], minAnomalyScore: 1, siteIds: [SITE_A], deviceTags: ['prod'] }),
+      ctx,
+      true,
+    ],
+  ];
+
+  it.each(cases)('%s', async (_name, trig, context, expected) => {
+    expect(await evaluateAnomalyTriggerFilters(trig, context, DEVICE_ID, ORG_ID)).toBe(expected);
+  });
+
+  describe('deviceGroupIds (reused from evaluateAgentTriggerFilters via deviceMatchesAnyGroup)', () => {
+    it('absent deviceGroupIds = unrestricted (no membership query)', async () => {
+      expect(await evaluateAnomalyTriggerFilters(triggers(), ctx, DEVICE_ID, ORG_ID)).toBe(true);
+      expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
+    });
+
+    it('device is a member of a listed group', async () => {
+      dbMockState.rowQueues.device_group_memberships = [[{ groupId: GROUP_A }]];
+      expect(
+        await evaluateAnomalyTriggerFilters(triggers({ deviceGroupIds: [GROUP_A, GROUP_B] }), ctx, DEVICE_ID, ORG_ID),
+      ).toBe(true);
+    });
+
+    it('device is not a member of any listed group', async () => {
+      dbMockState.rowQueues.device_group_memberships = [[{ groupId: GROUP_B }]];
+      expect(
+        await evaluateAnomalyTriggerFilters(triggers({ deviceGroupIds: [GROUP_A] }), ctx, DEVICE_ID, ORG_ID),
+      ).toBe(false);
+    });
+
+    it('deviceId null fails a non-empty deviceGroupIds filter without querying', async () => {
+      expect(
+        await evaluateAnomalyTriggerFilters(triggers({ deviceGroupIds: [GROUP_A] }), ctx, null, ORG_ID),
+      ).toBe(false);
+      expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
+    });
   });
 });
 
@@ -1038,6 +1174,319 @@ describe('createAndEnqueueAgentRun — ticket-triggered admission (#3828 wave-6-
       );
       expect(result.created).toBe(true);
     });
+  });
+});
+
+// Wave 6 PR 4 (#3828 Task 3) — anomaly-shadow admission. Anomaly-triggered
+// runs ARE device-bound (unlike ticket runs), so device pinning, site scope,
+// and maintenance-window checks apply normally; the ONLY forced downgrade is
+// modeAtStart, since an unproven detector must never drive act mode.
+describe('createAndEnqueueAgentRun — anomaly-triggered admission (#3828 wave-6-4 task 3)', () => {
+  function anomalyInput(over: Partial<CreateAgentRunInput> = {}): CreateAgentRunInput {
+    return input({
+      kind: 'triage',
+      triggerKind: 'anomaly',
+      anomalyIncidentId: ANOMALY_INCIDENT_ID,
+      triggerRef: { incidentId: ANOMALY_INCIDENT_ID },
+      dedupeKey: `anomaly:${ANOMALY_INCIDENT_ID}`,
+      ...over,
+    });
+  }
+
+  // Wave-6-4 follow-up (#3828): the opt-in gate (2c) is dedicated coverage
+  // in its own describe block below — every OTHER test in this suite is
+  // about admission mechanics that assume the gate has already passed, so
+  // opt in by default here rather than repeating `anomalyEnabled: true` at
+  // every call site.
+  function anomalyTriggers(over: Partial<AiAgentTriggers> = {}): AiAgentTriggers {
+    return triggers({ anomalyEnabled: true, ...over });
+  }
+
+  it('forces modeAtStart to shadow even when the effective policy mode is act', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'act', triggers: anomalyTriggers() }));
+    seedAdmissionReads();
+    const result = await createAndEnqueueAgentRun(anomalyInput());
+
+    expect(result.created).toBe(true);
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values).toMatchObject({
+      triggerKind: 'anomaly',
+      deviceId: DEVICE_ID,
+      anomalyIncidentId: ANOMALY_INCIDENT_ID,
+      modeAtStart: 'shadow',
+    });
+  });
+
+  it('persists shadow modeAtStart when the effective policy mode is already shadow', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'shadow', triggers: anomalyTriggers() }));
+    seedAdmissionReads();
+    await createAndEnqueueAgentRun(anomalyInput());
+
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values.modeAtStart).toBe('shadow');
+  });
+
+  // Unlike a ticket run (always device-less), an anomaly run IS device-bound
+  // — the opposite assertion of the ticket suite's equivalent test.
+  it('DOES consult maintenance windows for an anomaly-triggered (device-bound) run', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(
+      snapshot({ mode: 'act', triggers: anomalyTriggers({ respectMaintenanceWindows: true }) }),
+    );
+    seedAdmissionReads();
+    await createAndEnqueueAgentRun(anomalyInput());
+    expect(isDeviceInMaintenanceWindow).toHaveBeenCalledWith(DEVICE_ID);
+  });
+
+  it('skips with maintenance_window when the device is in one and the agent respects them', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(
+      snapshot({ mode: 'act', triggers: anomalyTriggers({ respectMaintenanceWindows: true }) }),
+    );
+    seedAdmissionReads();
+    isDeviceInMaintenanceWindow.mockResolvedValue(true);
+    const result = await createAndEnqueueAgentRun(anomalyInput());
+    expect(result).toEqual({ created: false, skipped: 'maintenance_window' });
+  });
+
+  it('kill_switch_off still precedes the forced-shadow override', async () => {
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'false');
+    const result = await createAndEnqueueAgentRun(anomalyInput());
+    expect(result).toEqual({ created: false, skipped: 'kill_switch_off' });
+    expect(resolveEffectiveAgentSystem).not.toHaveBeenCalled();
+  });
+
+  it('circuit_open still precedes the forced-shadow override', async () => {
+    isCircuitOpen.mockResolvedValue(true);
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'act' }));
+    const result = await createAndEnqueueAgentRun(anomalyInput());
+    expect(result).toEqual({ created: false, skipped: 'circuit_open' });
+    expect(dbMockState.insertValues).toHaveLength(0);
+  });
+
+  it('a duplicate anomaly.incident_opened delivery collapses onto the same dedupe key (no second row)', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'act', triggers: anomalyTriggers() }));
+    seedAdmissionReads();
+    dbMockState.insertRows = []; // ON CONFLICT DO NOTHING — the row already exists
+    dbMockState.updateRows = []; // not an enqueue_failed reclaim either — genuinely a repeat
+
+    const result = await createAndEnqueueAgentRun(anomalyInput());
+    expect(result).toEqual({ created: false, skipped: 'duplicate' });
+  });
+
+  // Same posture as the ticketId guard (runLoop.loadRunContext's anomaly-
+  // context branch, Task 4, is gated on run.anomalyIncidentId alone, not
+  // triggerKind — see this module's caller-guard comment).
+  it('rejects a request that carries anomalyIncidentId with a non-anomaly triggerKind, even for an act-mode agent', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'act' }));
+
+    await expect(
+      createAndEnqueueAgentRun(
+        input({
+          triggerKind: 'alert', alertId: ALERT_ID, anomalyIncidentId: ANOMALY_INCIDENT_ID,
+          dedupeKey: `alert:${ALERT_ID}`,
+        }),
+      ),
+    ).rejects.toThrow(/anomalyIncidentId/i);
+
+    expect(resolveEffectiveAgentSystem).not.toHaveBeenCalled();
+    expect(dbMockState.insertValues).toHaveLength(0);
+  });
+
+  describe('anomaly trigger filters (#3828 wave-6-4 task 3)', () => {
+    function anomalyCtx(over: Partial<AnomalyFilterContext> = {}): AnomalyFilterContext {
+      return {
+        anomalyType: 'cpu_spike',
+        metricNames: ['cpu_percent'],
+        peakScore: 5,
+        siteId: null,
+        deviceTags: [],
+        ...over,
+      };
+    }
+
+    it('admits when no anomalyContext is supplied at all (no filter to fail)', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(
+        snapshot({ triggers: anomalyTriggers({ anomalyTypes: ['disk_full'] }) }),
+      );
+      seedAdmissionReads();
+      const result = await createAndEnqueueAgentRun(anomalyInput());
+      expect(result.created).toBe(true);
+    });
+
+    it('trigger_filter_mismatch when anomalyTypes is configured and the incident type does not match', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(
+        snapshot({ triggers: anomalyTriggers({ anomalyTypes: ['disk_full'] }) }),
+      );
+      const result = await createAndEnqueueAgentRun(
+        anomalyInput({ anomalyContext: anomalyCtx() }),
+      );
+      expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
+    });
+
+    it('admits when anomalyTypes matches the incident type', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(
+        snapshot({ triggers: anomalyTriggers({ anomalyTypes: ['cpu_spike'] }) }),
+      );
+      seedAdmissionReads();
+      const result = await createAndEnqueueAgentRun(
+        anomalyInput({ anomalyContext: anomalyCtx() }),
+      );
+      expect(result.created).toBe(true);
+    });
+
+    it('trigger_filter_mismatch when minAnomalyScore is configured above the incident peakScore', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(
+        snapshot({ triggers: anomalyTriggers({ minAnomalyScore: 9 }) }),
+      );
+      const result = await createAndEnqueueAgentRun(
+        anomalyInput({ anomalyContext: anomalyCtx({ peakScore: 5 }) }),
+      );
+      expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
+    });
+
+    it('admits when minAnomalyScore is at or below the incident peakScore', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(
+        snapshot({ triggers: anomalyTriggers({ minAnomalyScore: 5 }) }),
+      );
+      seedAdmissionReads();
+      const result = await createAndEnqueueAgentRun(
+        anomalyInput({ anomalyContext: anomalyCtx({ peakScore: 5 }) }),
+      );
+      expect(result.created).toBe(true);
+    });
+  });
+
+  // Wave-6-4 follow-up (#3828) — the conservative per-agent opt-in gate
+  // itself (admission step 2c). Distinct from the "anomaly trigger filters"
+  // suite above: this gate fires on `triggerKind === 'anomaly'` alone,
+  // BEFORE (and regardless of) whether an `anomalyContext` is even supplied
+  // — see runService.ts's step-2c comment.
+  describe('anomaly trigger opt-in gate (wave-6-4 follow-up, #3828)', () => {
+    it('skips trigger_filter_mismatch when anomalyEnabled is absent (conservative default)', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers() }));
+      const result = await createAndEnqueueAgentRun(anomalyInput());
+      expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
+      expect(dbMockState.insertValues).toHaveLength(0);
+    });
+
+    it('skips trigger_filter_mismatch when anomalyEnabled is explicitly false', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(
+        snapshot({ triggers: triggers({ anomalyEnabled: false }) }),
+      );
+      const result = await createAndEnqueueAgentRun(anomalyInput());
+      expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
+    });
+
+    it('proceeds past the gate (and into narrowing filters) when anomalyEnabled is true', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: anomalyTriggers() }));
+      seedAdmissionReads();
+      const result = await createAndEnqueueAgentRun(anomalyInput());
+      expect(result.created).toBe(true);
+    });
+
+    it('fires even when no anomalyContext is supplied — NOT conditioned on the narrowing-filter context', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers() }));
+      // No anomalyContext on this input — the narrowing-filter branch (step
+      // 3c) would never even call evaluateAnomalyTriggerFilters, so this
+      // proves the opt-in gate does not depend on that branch running.
+      const result = await createAndEnqueueAgentRun(anomalyInput());
+      expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
+    });
+
+    it('does not gate a non-anomaly trigger kind (alert admission unaffected by anomalyEnabled being unset)', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers() }));
+      seedAdmissionReads();
+      const result = await createAndEnqueueAgentRun(
+        input({ triggerKind: 'alert', alertId: ALERT_ID, dedupeKey: `alert:${ALERT_ID}` }),
+      );
+      expect(result.created).toBe(true);
+    });
+  });
+});
+
+// #3828 branch-review blocker 3: this PR is the first time two trigger kinds
+// can share an (org_id, dedupe_key) — metricAnomalySubscriber deliberately
+// cross-dedupes onto `alert:<linkedAlertId>` when an anomaly's sibling has a
+// linked alert. When the incumbent row at that key is
+// status='failed' AND error_code='enqueue_failed', the reclaim UPDATE
+// re-SETs triggerKind/triggerRef/modeAtStart/policySnapshot — all columns
+// ai_agent_runs_immutable_guard() DISTINCT-FROM checks — so an UNGUARDED
+// cross-kind reclaim always raises 23000 (integrity_constraint_violation)
+// against a genuinely different trigger's row. The fix scopes the reclaim's
+// WHERE to `trigger_kind = <this admission's triggerKind>` so a cross-kind
+// collision can never match and falls through to `skip('duplicate')` instead
+// of attempting (and failing) the mutation.
+describe('createAndEnqueueAgentRun — cross-kind enqueue_failed reclaim guard (#3828 branch-review blocker 3)', () => {
+  it('an anomaly admission colliding with an alert-kind enqueue_failed row at the same key reports duplicate, not a reclaim', async () => {
+    // Wave-6-4 follow-up (#3828): this admission must clear the anomaly
+    // opt-in gate to reach the insert/dedupe step this test is actually
+    // about — the suite's default snapshot() (beforeEach) does not opt in.
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers({ anomalyEnabled: true }) }));
+    seedAdmissionReads();
+    const dedupeKey = `alert:${ALERT_ID}`;
+    // The insert loses the unique race: an alert-triggered row already holds
+    // this key (this is exactly the cross-dedupe metricAnomalySubscriber
+    // deliberately creates for a promoted anomaly).
+    dbMockState.insertRows = [];
+    // The CAS is scoped to this admission's own triggerKind ('anomaly'), so
+    // it cannot match the incumbent alert-kind row — the reclaim UPDATE
+    // affects zero rows.
+    dbMockState.updateRows = [];
+
+    const result = await createAndEnqueueAgentRun(
+      input({
+        triggerKind: 'anomaly',
+        anomalyIncidentId: ANOMALY_INCIDENT_ID,
+        triggerRef: { incidentId: ANOMALY_INCIDENT_ID },
+        dedupeKey,
+      }),
+    );
+
+    expect(result).toEqual({ created: false, skipped: 'duplicate' });
+    expect(enqueueAgentRunJob).not.toHaveBeenCalled();
+
+    // The reclaim WHERE must scope on trigger_kind — without it, this same
+    // scenario against a REAL database updates the alert-kind row's
+    // trigger_kind to 'anomaly' and immediately trips the immutable guard.
+    const where = compiled(dbMockState.updateWheres.at(-1) as SQL);
+    expect(where).toContain('"trigger_kind"');
+  });
+
+  it('an alert admission colliding with an anomaly-kind enqueue_failed row at the same key reports duplicate, not a reclaim', async () => {
+    seedAdmissionReads();
+    const dedupeKey = `alert:${ALERT_ID}`;
+    // The incumbent row at this key is the anomaly-triggered run whose
+    // cross-dedupe collapsed onto the alert's key.
+    dbMockState.insertRows = [];
+    dbMockState.updateRows = [];
+
+    const result = await createAndEnqueueAgentRun(
+      input({
+        triggerKind: 'alert',
+        alertId: ALERT_ID,
+        dedupeKey,
+      }),
+    );
+
+    expect(result).toEqual({ created: false, skipped: 'duplicate' });
+    expect(enqueueAgentRunJob).not.toHaveBeenCalled();
+
+    const where = compiled(dbMockState.updateWheres.at(-1) as SQL);
+    expect(where).toContain('"trigger_kind"');
+  });
+
+  it('a SAME-kind enqueue_failed reclaim still succeeds (regression: the trigger_kind predicate must not block legitimate same-kind retries)', async () => {
+    seedAdmissionReads();
+    dbMockState.insertRows = [];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, status: 'queued', deviceId: DEVICE_ID }];
+
+    const result = await createAndEnqueueAgentRun(
+      input({ triggerKind: 'alert', alertId: ALERT_ID, dedupeKey: `alert:${ALERT_ID}` }),
+    );
+
+    expect(result).toMatchObject({ created: true });
+    expect(enqueueAgentRunJob).toHaveBeenCalledWith(RUN_ID);
+    const where = compiled(dbMockState.updateWheres.at(-1) as SQL);
+    expect(where).toContain('"trigger_kind"');
   });
 });
 

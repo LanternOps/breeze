@@ -99,6 +99,8 @@ function triggerLabel(t: (key: string) => string, value: string): string {
       return t('aiAgentsPage.runs.triggers.schedule');
     case 'ticket':
       return t('aiAgentsPage.runs.triggers.ticket');
+    case 'anomaly':
+      return t('aiAgentsPage.runs.triggers.anomaly');
     default:
       return value;
   }

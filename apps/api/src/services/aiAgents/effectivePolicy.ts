@@ -132,7 +132,26 @@ export function mergeAgentPolicies(
   opts: { allowedModels: string[] | null },
 ): { effective: AiAgentPolicy; provenance: AiAgentPolicyProvenance } {
   const provenance = partnerProvenance();
-  if (!org) return { effective: partner, provenance };
+  if (!org) {
+    return {
+      // Wave 6 PR 4 follow-up (#3828) — `anomalyEnabled` is the one field on
+      // this policy that must NOT pass through from the partner baseline
+      // unchanged, even in this "no org override at all" fast path. Every
+      // other field's tighten-only contract is "org can only narrow the
+      // partner's ceiling", which correctly degrades to "use the partner's
+      // value" when there is no org row to narrow with. A binary opt-in
+      // safety gate is different: if the partner baseline alone could turn
+      // it on, every org under that partner would start receiving
+      // anomaly-triggered runs the moment the partner flips one row, with
+      // zero action at any individual org. So this ignores partner.triggers.
+      // anomalyEnabled here and always resolves to `undefined` (falsy) —
+      // see AiAgentTriggers.anomalyEnabled's docstring for the full account,
+      // and the general-merge branch below for the "org override present"
+      // case (same rule: only the org's OWN value is ever consulted).
+      effective: { ...partner, triggers: { ...partner.triggers, anomalyEnabled: undefined } },
+      provenance,
+    };
+  }
 
   const pick = <K extends keyof AiAgentPolicy>(
     key: K,
@@ -196,6 +215,13 @@ export function mergeAgentPolicies(
       ) as AiAgentPolicy['triggers']['ticketPriorities'],
       respectMaintenanceWindows:
         partner.triggers.respectMaintenanceWindows || org.triggers.respectMaintenanceWindows,
+      // Wave 6 PR 4 follow-up (#3828) — deliberately NOT tighten-only
+      // intersection/AND, and deliberately NOT "either layer true → true".
+      // Reads ONLY the org's own override: `partner.triggers.anomalyEnabled`
+      // is never consulted in either direction. See this field's docstring
+      // on AiAgentTriggers (packages/shared) and the `!org` branch above
+      // (same rule applied to the "no org override" fast path).
+      anomalyEnabled: org.triggers.anomalyEnabled === true ? true : undefined,
     }, 'merged'),
     recipients: pick('recipients', {
       userIds: union(partner.recipients.userIds, org.recipients.userIds),

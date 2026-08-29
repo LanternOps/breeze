@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AGENT_PROMPT_AUTHORITY_DISCLAIMER,
+  ANOMALY_UNPROVEN_DETECTOR_DISCLAIMER,
   MAX_OPERATOR_INSTRUCTION_CHARS,
   OPERATOR_GUIDANCE_CLOSE_TAG,
   OPERATOR_GUIDANCE_OPEN_TAG,
@@ -18,6 +19,7 @@ function ctx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunPromptCont
     device: { id: 'device-1', hostname: 'WS-ACCT-04', osType: 'windows' },
     alert: { title: 'Disk almost full', severity: 'high', message: 'C: at 96%' },
     ticket: null,
+    anomaly: null,
     instructions: null,
     ...overrides,
   };
@@ -39,6 +41,39 @@ function ticketCtx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunProm
       dueDate: '2026-09-01T00:00:00.000Z',
       comments: [
         { authorType: 'portal', content: 'Still broken after reboot.', createdAt: '2026-08-27T12:00:00.000Z' },
+      ],
+      truncated: false,
+    },
+    ...overrides,
+  });
+}
+
+function anomalyCtx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunPromptContext {
+  return ctx({
+    agent: { name: 'Front Desk Triage', kind: 'triage' },
+    alert: null,
+    run: { id: 'run-4', mode: 'shadow', triggerKind: 'anomaly' },
+    anomaly: {
+      anomalyType: 'sustained_high',
+      bucketSeconds: 300,
+      windowStart: '2026-08-28T10:00:00.000Z',
+      firstSeenAt: '2026-08-28T10:00:00.000Z',
+      lastSeenAt: '2026-08-28T10:20:00.000Z',
+      peakScore: 7.5,
+      rowCount: 1,
+      metricNames: ['cpu_percent'],
+      siblings: [
+        {
+          metricName: 'cpu_percent',
+          kind: 'baseline_deviation',
+          score: 7.5,
+          observedValue: 98.2,
+          baselineValue: 41.0,
+          baselineMin: 30.0,
+          baselineMax: 55.0,
+          evidence: { startingValue: 12.5, lastValue: 97.1 },
+          baseline: { baselineStddev: 6.2, baselineBuckets: 24 },
+        },
       ],
       truncated: false,
     },
@@ -134,6 +169,16 @@ describe('buildAgentRunSystemPrompt', () => {
     const prompt = buildAgentRunSystemPrompt(ticketCtx());
     expect(prompt).toContain(TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER);
   });
+
+  it('omits the anomaly unproven-detector disclaimer for a non-anomaly run', () => {
+    const prompt = buildAgentRunSystemPrompt(ctx());
+    expect(prompt).not.toContain(ANOMALY_UNPROVEN_DETECTOR_DISCLAIMER);
+  });
+
+  it('an anomaly run carries the exact unproven-detector disclaimer (wave 6 PR 4, #3828 — pilot design authority)', () => {
+    const prompt = buildAgentRunSystemPrompt(anomalyCtx());
+    expect(prompt).toContain(ANOMALY_UNPROVEN_DETECTOR_DISCLAIMER);
+  });
 });
 
 describe('buildAgentRunTaskPrompt', () => {
@@ -226,5 +271,79 @@ describe('buildAgentRunTaskPrompt', () => {
   it('omits the ticket section entirely for a non-ticket run', () => {
     const prompt = buildAgentRunTaskPrompt(ctx());
     expect(prompt.toLowerCase()).not.toContain('ticket:');
+  });
+
+  it('carries the bounded anomaly context: incident summary and per-metric detail', () => {
+    const prompt = buildAgentRunTaskPrompt(anomalyCtx());
+
+    expect(prompt).toContain('sustained_high');
+    expect(prompt).toContain('7.5');
+    expect(prompt).toContain('cpu_percent');
+    expect(prompt).toContain('98.2');
+    expect(prompt).toContain('41');
+    expect(prompt).toContain('baseline_deviation');
+    // The whitelisted evidence/baseline jsonb excerpts — the entire point of
+    // anomalyContext.ts — must actually reach the prompt, not just be
+    // assembled and then dropped.
+    expect(prompt).toContain('lastValue 97.1');
+    expect(prompt).toContain('startingValue 12.5');
+    expect(prompt).toContain('baselineStddev 6.2');
+    expect(prompt).toContain('baselineBuckets 24');
+    // Anomaly runs are device-bound (unlike ticket runs) — the device line
+    // still renders.
+    expect(prompt).toContain('WS-ACCT-04');
+  });
+
+  it('does not double-render an evidence key that already has its own typed sibling column', () => {
+    const prompt = buildAgentRunTaskPrompt(anomalyCtx({
+      anomaly: {
+        anomalyType: 'sustained_high', bucketSeconds: 300,
+        windowStart: '2026-08-28T10:00:00.000Z', firstSeenAt: '2026-08-28T10:00:00.000Z',
+        lastSeenAt: '2026-08-28T10:20:00.000Z', peakScore: 7.5, rowCount: 1,
+        metricNames: ['cpu_percent'],
+        siblings: [{
+          metricName: 'cpu_percent', kind: 'baseline_deviation', score: 7.5,
+          observedValue: 98.2, baselineValue: 41.0, baselineMin: 30.0, baselineMax: 55.0,
+          // observedValue/baselineValue/baselineMax also appear in the raw
+          // evidence excerpt here — they must not be printed a second time.
+          evidence: { observedValue: 98.2, baselineValue: 41.0, baselineMax: 55.0 },
+          baseline: {},
+        }],
+        truncated: false,
+      },
+    }));
+    expect(countOccurrences(prompt, '98.2')).toBe(1);
+    expect(countOccurrences(prompt, '41')).toBe(1);
+  });
+
+  it('handles an anomaly incident with no siblings without emitting "undefined"/"null"', () => {
+    const prompt = buildAgentRunTaskPrompt(anomalyCtx({
+      anomaly: {
+        anomalyType: 'sustained_high', bucketSeconds: 300,
+        windowStart: '2026-08-28T10:00:00.000Z', firstSeenAt: '2026-08-28T10:00:00.000Z',
+        lastSeenAt: '2026-08-28T10:00:00.000Z', peakScore: 3.1, rowCount: 0,
+        metricNames: [], siblings: [], truncated: false,
+      },
+    }));
+    expect(prompt).toContain('sustained_high');
+    expect(prompt).not.toContain('undefined');
+    expect(prompt).not.toContain('null');
+  });
+
+  it('surfaces the truncation flag so the model knows anomaly detail was cut', () => {
+    const prompt = buildAgentRunTaskPrompt(anomalyCtx({
+      anomaly: {
+        anomalyType: 'sustained_high', bucketSeconds: 300,
+        windowStart: '2026-08-28T10:00:00.000Z', firstSeenAt: '2026-08-28T10:00:00.000Z',
+        lastSeenAt: '2026-08-28T10:00:00.000Z', peakScore: 3.1, rowCount: 1,
+        metricNames: ['cpu_percent'], siblings: [], truncated: true,
+      },
+    }));
+    expect(prompt.toLowerCase()).toContain('bounded');
+  });
+
+  it('omits the anomaly section entirely for a non-anomaly run', () => {
+    const prompt = buildAgentRunTaskPrompt(ctx());
+    expect(prompt).not.toContain('Anomaly:');
   });
 });

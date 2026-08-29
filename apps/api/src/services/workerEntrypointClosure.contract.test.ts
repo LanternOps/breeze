@@ -297,7 +297,7 @@ const EXPECTED_NAMES = [
   'intentOutboxPublisher', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep',
   'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'ticketSlaWorker', 'inboundEmailWorker', 'ticketMailboxPollWorker', 'invoiceWorker',
-  'contractWorker', 'aiUnattendedExposureRetention',
+  'metricAnomalyIncidentPublisher', 'contractWorker', 'aiUnattendedExposureRetention',
 ];
 
 // ---------------------------------------------------------------------------
@@ -449,7 +449,7 @@ describe('workerEntrypointClosure contract (#4086 Task 5)', () => {
 
   describe('global-placement entries never reach socket-local dispatch', () => {
     const entries = parseRegistrySource();
-    expect(entries.length).toBe(110); // sanity: the source-parsing regex itself must find all 110
+    expect(entries.length).toBe(111); // sanity: the source-parsing regex itself must find all 111
 
     const globalEntries = entries.filter((e) => e.placement === 'global');
     expect(globalEntries.length).toBeGreaterThan(0);

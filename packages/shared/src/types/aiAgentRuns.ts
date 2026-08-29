@@ -243,6 +243,9 @@ export interface AiAgentRunDetailDto {
   deviceId: string | null;
   deviceHostname: string | null;
   alertId: string | null;
+  /** Wave 6 PR 4 (#3828) — the triggering `metric_anomaly_incidents` row for
+   *  a `triggerKind: 'anomaly'` run; null for every other trigger kind. */
+  anomalyIncidentId: string | null;
   triggerKind: AiAgentTriggerKind;
   modeAtStart: Exclude<AiAgentMode, 'off'>;
   status: AiAgentRunStatus;

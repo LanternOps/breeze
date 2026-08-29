@@ -73,6 +73,12 @@ export type EventType =
   | 'ticket.created'
   | 'ticket.commented'
   | 'ticket.status_changed'
+  // Metric-anomaly incident events (#3828 wave-6-4 task 2). Published by
+  // metricAnomalyIncidentPublisher.ts from the metric_anomaly_incidents
+  // transactional dispatch marker (never re-published on re-upsert — see
+  // that table's file header). Id-only payload: { incidentId, deviceId }.
+  // Consumed by the Task 3 durable metric-anomaly subscriber.
+  | 'anomaly.incident_opened'
   // Security events
   | 'security.score_changed'
   // CIS compliance events
@@ -550,6 +556,8 @@ export const EVENT_TYPES = {
   TICKET_CREATED: 'ticket.created' as const,
   TICKET_COMMENTED: 'ticket.commented' as const,
   TICKET_STATUS_CHANGED: 'ticket.status_changed' as const,
+  // Metric-anomaly incidents (#3828 wave-6-4 task 2)
+  ANOMALY_INCIDENT_OPENED: 'anomaly.incident_opened' as const,
   // Security
   SECURITY_SCORE_CHANGED: 'security.score_changed' as const,
   CIS_DEVIATION: 'compliance.cis_deviation' as const,

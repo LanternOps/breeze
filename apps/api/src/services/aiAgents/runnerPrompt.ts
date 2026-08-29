@@ -55,6 +55,22 @@ export const TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER =
   + 'ticket must be stated in your final summary as a PROPOSAL for a human to review and post '
   + 'themselves; it is never sent on your behalf.';
 
+/**
+ * Wave 6 PR 4 (#3828) — design authority: an anomaly-triggered run is a
+ * PILOT signal, not a proven one, and is FORCED shadow regardless of the
+ * agent's configured mode (`runService.ts`'s forced-shadow conditional).
+ * This is reinforcement, not the enforcement mechanism — the shadow-mode
+ * section above already guarantees every mutating call is intercepted as a
+ * proposal. Telling the model the detector is unproven keeps its summary
+ * honest about false-positive risk instead of treating the anomaly as an
+ * already-confirmed incident.
+ */
+export const ANOMALY_UNPROVEN_DETECTOR_DISCLAIMER =
+  'This run was triggered by an automated metric-anomaly detector that is still being '
+  + 'validated (pilot). Treat the anomaly as a lead to investigate, not a confirmed problem — '
+  + 'many flagged windows turn out to be ordinary variance. If your investigation shows this '
+  + 'looks like a false positive, say so plainly in your summary.';
+
 /** Matches an operator-guidance tag in any case, with or without attributes. */
 const GUIDANCE_TAG_RE = /<\s*\/?\s*operator-guidance[^>]*>/gi;
 
@@ -82,6 +98,37 @@ export interface AgentRunTicketPromptContext {
   truncated: boolean;
 }
 
+/**
+ * Already-bounded anomaly context (`anomalyContext.ts`'s `AnomalyRunContext`)
+ * — the run-loop-facing type is declared HERE, mirroring
+ * `AgentRunTicketPromptContext` above: this module has no DB dependency of
+ * its own, and `runLoop.ts` is the one place that reconciles both shapes.
+ */
+export interface AgentRunAnomalyPromptContext {
+  anomalyType: string;
+  bucketSeconds: number;
+  windowStart: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  peakScore: number;
+  rowCount: number;
+  metricNames: string[];
+  /** Highest score first — see `anomalyContext.ts`'s `assembleAnomalyContext`. */
+  siblings: Array<{
+    metricName: string;
+    kind: string | null;
+    score: number;
+    observedValue: number | null;
+    baselineValue: number | null;
+    baselineMin: number | null;
+    baselineMax: number | null;
+    evidence: Record<string, number | undefined>;
+    baseline: Record<string, number | undefined>;
+  }>;
+  /** True when `anomalyContext.ts` capped or trimmed siblings to fit its byte ceiling. */
+  truncated: boolean;
+}
+
 export interface AgentRunPromptContext {
   agent: { name: string; kind: AiAgentKind };
   run: {
@@ -93,6 +140,7 @@ export interface AgentRunPromptContext {
   device: { id: string; hostname: string; osType: string } | null;
   alert: { title: string; severity: string; message: string | null } | null;
   ticket: AgentRunTicketPromptContext | null;
+  anomaly: AgentRunAnomalyPromptContext | null;
   instructions: string | null;
 }
 
@@ -164,6 +212,10 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
     sections.push(`## Ticket\n${TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER}`);
   }
 
+  if (ctx.anomaly) {
+    sections.push(`## Anomaly\n${ANOMALY_UNPROVEN_DETECTOR_DISCLAIMER}`);
+  }
+
   const instructions = sanitizeOperatorInstructions(ctx.instructions);
   if (instructions) {
     sections.push(
@@ -202,6 +254,7 @@ export function buildAgentRunTaskPrompt(ctx: AgentRunPromptContext): string {
   }
 
   if (ctx.ticket) lines.push(...ticketPromptLines(ctx.ticket));
+  if (ctx.anomaly) lines.push(...anomalyPromptLines(ctx.anomaly));
 
   lines.push('');
   lines.push(
@@ -209,11 +262,15 @@ export function buildAgentRunTaskPrompt(ctx: AgentRunPromptContext): string {
       ? 'Investigate this ticket: establish what is actually going wrong for the requester, '
         + 'what the likely cause is, and what should be done about it. Then summarize — your '
         + 'summary is the ONLY place a proposed reply or note may appear.'
-      : ctx.alert
-        ? 'Investigate this alert on the target device: establish what is actually happening, '
-          + 'what the likely cause is, and what should be done about it. Then summarize.'
-        : 'Assess the health of the target scope: establish whether anything needs attention, '
-          + 'what the likely cause is, and what should be done about it. Then summarize.',
+      : ctx.anomaly
+        ? 'Investigate this anomaly on the target device: establish whether it reflects a real '
+          + 'problem or is more likely noise, what the probable cause is (if real), and what '
+          + 'should be done about it. Then summarize.'
+        : ctx.alert
+          ? 'Investigate this alert on the target device: establish what is actually happening, '
+            + 'what the likely cause is, and what should be done about it. Then summarize.'
+          : 'Assess the health of the target scope: establish whether anything needs attention, '
+            + 'what the likely cause is, and what should be done about it. Then summarize.',
   );
 
   return lines.join('\n');
@@ -264,6 +321,70 @@ function ticketPromptLines(ticket: AgentRunTicketPromptContext): string[] {
       '(Some ticket history was too large to include in full and was truncated — the most '
       + 'recent comments and structured fields above are complete; older comments and/or the '
       + 'description tail may be missing.)',
+    );
+  }
+
+  return lines;
+}
+
+/**
+ * `evidence` keys that are ALSO surfaced as their own typed sibling columns
+ * (`observedValue`/`baselineValue`/`baselineMax` — see `anomalyContext.ts`'s
+ * `EVIDENCE_NUMERIC_KEYS`) — skipped when rendering the whitelisted
+ * `evidence` excerpt below so the same number never appears twice under two
+ * different labels.
+ */
+const EVIDENCE_KEYS_ALREADY_TYPED = new Set(['observedValue', 'baselineValue', 'baselineMax']);
+
+/**
+ * The anomaly portion of the task turn: the canonical incident summary, then
+ * per-metric detail (highest score first) from the already-bounded,
+ * already-whitelisted excerpt `anomalyContext.ts` assembled. Mirrors
+ * `ticketPromptLines` above in shape.
+ *
+ * Renders every field `anomalyContext.ts` put on the sibling excerpt,
+ * including the whitelisted `evidence`/`baseline` jsonb pairs — those are
+ * the entire point of the excerpt (they're what lets the model judge how
+ * anomalous the window actually is), and `anomalyContext.ts` has already
+ * done the hostile-jsonb filtering: only known numeric keys ever reach
+ * `sibling.evidence`/`sibling.baseline` in the first place, so it's safe to
+ * render every key present here.
+ */
+function anomalyPromptLines(anomaly: AgentRunAnomalyPromptContext): string[] {
+  const lines: string[] = [''];
+  lines.push(`Anomaly: ${anomaly.anomalyType} (peak score ${anomaly.peakScore})`);
+  lines.push(
+    `Window: ${anomaly.windowStart} (bucket ${anomaly.bucketSeconds}s) | `
+    + `First seen: ${anomaly.firstSeenAt} | Last seen: ${anomaly.lastSeenAt}`,
+  );
+  if (anomaly.metricNames.length > 0) lines.push(`Metrics involved: ${anomaly.metricNames.join(', ')}`);
+  lines.push(`Detector rows collapsed into this incident: ${anomaly.rowCount}`);
+
+  if (anomaly.siblings.length > 0) {
+    lines.push('');
+    lines.push('Per-metric detail (highest score first):');
+    for (const sibling of anomaly.siblings) {
+      const parts = [`score ${sibling.score}`];
+      if (sibling.observedValue !== null) parts.push(`observed ${sibling.observedValue}`);
+      if (sibling.baselineValue !== null) parts.push(`baseline ${sibling.baselineValue}`);
+      if (sibling.baselineMin !== null) parts.push(`baselineMin ${sibling.baselineMin}`);
+      if (sibling.baselineMax !== null) parts.push(`baselineMax ${sibling.baselineMax}`);
+      if (sibling.kind) parts.push(`detector ${sibling.kind}`);
+      for (const [key, value] of Object.entries(sibling.evidence)) {
+        if (value !== undefined && !EVIDENCE_KEYS_ALREADY_TYPED.has(key)) parts.push(`${key} ${value}`);
+      }
+      for (const [key, value] of Object.entries(sibling.baseline)) {
+        if (value !== undefined) parts.push(`${key} ${value}`);
+      }
+      lines.push(`- ${sibling.metricName}: ${parts.join(', ')}`);
+    }
+  }
+
+  if (anomaly.truncated) {
+    lines.push('');
+    lines.push(
+      '(Some lower-scoring per-metric detail was omitted to keep this context bounded — the '
+      + 'highest-scoring detectors above are complete.)',
     );
   }
 

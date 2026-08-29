@@ -396,6 +396,59 @@ describe('mergeAgentPolicies — tighten only', () => {
   });
 });
 
+// Wave 6 PR 4 follow-up (#3828) — conservative per-agent opt-in for anomaly
+// admission. Deliberately NOT this file's usual tighten-only (AND/
+// intersection) contract, and deliberately NOT "either layer true → true":
+// only the ORG's own triggers row governs. See AiAgentTriggers.
+// anomalyEnabled's docstring (packages/shared) for the full rationale.
+describe('mergeAgentPolicies — anomalyEnabled conservative opt-in (wave-6-4 follow-up, #3828)', () => {
+  it('a partner baseline alone can NEVER opt an org in: no org override at all, partner sets true -> effective is falsy', () => {
+    const partner = policy({ triggers: { ...policy().triggers, anomalyEnabled: true } });
+    const { effective } = mergeAgentPolicies(partner, null, { allowedModels: null });
+
+    expect(effective.triggers.anomalyEnabled).not.toBe(true);
+  });
+
+  it('org override present but does not set anomalyEnabled -> effective is falsy even when partner is true', () => {
+    const partner = policy({ triggers: { ...policy().triggers, anomalyEnabled: true } });
+    const org = policy(); // no anomalyEnabled key at all
+    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+
+    expect(effective.triggers.anomalyEnabled).not.toBe(true);
+  });
+
+  it('org override explicitly sets anomalyEnabled: false -> effective is false even when partner is true', () => {
+    const partner = policy({ triggers: { ...policy().triggers, anomalyEnabled: true } });
+    const org = policy({ triggers: { ...policy().triggers, anomalyEnabled: false } });
+    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+
+    expect(effective.triggers.anomalyEnabled).not.toBe(true);
+  });
+
+  it("the org's OWN override governs regardless of the partner's value: org true + partner false -> effective true", () => {
+    const partner = policy({ triggers: { ...policy().triggers, anomalyEnabled: false } });
+    const org = policy({ triggers: { ...policy().triggers, anomalyEnabled: true } });
+    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+
+    expect(effective.triggers.anomalyEnabled).toBe(true);
+  });
+
+  it("the org's OWN override governs even when the partner never set it at all: org true + partner absent -> effective true", () => {
+    const partner = policy(); // no anomalyEnabled key at all
+    const org = policy({ triggers: { ...policy().triggers, anomalyEnabled: true } });
+    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+
+    expect(effective.triggers.anomalyEnabled).toBe(true);
+  });
+
+  it('does not disturb the general "no org override -> effective === partner" invariant for every other field', () => {
+    const partner = policy({ triggers: { ...policy().triggers, anomalyEnabled: true } });
+    const { effective } = mergeAgentPolicies(partner, null, { allowedModels: null });
+
+    expect(effective).toEqual({ ...partner, triggers: { ...partner.triggers, anomalyEnabled: undefined } });
+  });
+});
+
 describe('resolveEffectiveAgentSystem', () => {
   it('returns the same merged snapshot as the authorized resolver', async () => {
     seedResolverRows();

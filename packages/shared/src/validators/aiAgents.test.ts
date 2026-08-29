@@ -3,17 +3,23 @@ import {
   aiAgentActAssetsSchema,
   aiAgentLimitsSchema,
   aiAgentPolicyFieldsSchema,
+  aiAgentTriggersPatchSchema,
   createAiAgentSchema,
   updateAiAgentSchema,
 } from './aiAgents';
 import {
   AI_AGENT_LIMIT_DEFAULTS,
   AI_AGENT_POLICY_SNAPSHOT_VERSION,
+  AI_AGENT_TRIGGER_KINDS,
   SUPPORTED_AGENT_MODES,
   minAgentMode,
 } from '../types/aiAgents';
 
 describe('aiAgents validators', () => {
+  it("AI_AGENT_TRIGGER_KINDS includes 'anomaly' (wave 6 PR 4, #3828)", () => {
+    expect(AI_AGENT_TRIGGER_KINDS).toContain('anomaly');
+  });
+
   it('fills limit defaults and clamps maxima', () => {
     expect(aiAgentLimitsSchema.parse({})).toEqual(AI_AGENT_LIMIT_DEFAULTS);
     expect(aiAgentLimitsSchema.safeParse({ maxDevicesPerRun: 51 }).success).toBe(false);
@@ -124,6 +130,63 @@ describe('aiAgents validators', () => {
     it('rejects a priority value outside the ticket_priority enum', () => {
       const result = aiAgentPolicyFieldsSchema.safeParse({ triggers: { ticketPriorities: ['critical'] } });
       expect(result.success).toBe(false);
+    });
+  });
+
+  describe('triggers.anomalyTypes / metricNames / minAnomalyScore (wave 6 PR 4, #3828)', () => {
+    it('are absent (unrestricted) by default — no default value is invented', () => {
+      const created = createAiAgentSchema.parse({ kind: 'triage', name: 'Triage' });
+      expect(created.triggers.anomalyTypes).toBeUndefined();
+      expect(created.triggers.metricNames).toBeUndefined();
+      expect(created.triggers.minAnomalyScore).toBeUndefined();
+    });
+
+    it('accepts a narrowing list of anomaly types/metric names and a score floor', () => {
+      const parsed = aiAgentPolicyFieldsSchema.parse({
+        triggers: { anomalyTypes: ['spike', 'drop'], metricNames: ['cpu_percent'], minAnomalyScore: 2.5 },
+      });
+      expect(parsed.triggers.anomalyTypes).toEqual(['spike', 'drop']);
+      expect(parsed.triggers.metricNames).toEqual(['cpu_percent']);
+      expect(parsed.triggers.minAnomalyScore).toBe(2.5);
+    });
+
+    it('rejects the empty array for anomalyTypes/metricNames — [] would read as "matches nothing"', () => {
+      expect(aiAgentPolicyFieldsSchema.safeParse({ triggers: { anomalyTypes: [] } }).success).toBe(false);
+      expect(aiAgentPolicyFieldsSchema.safeParse({ triggers: { metricNames: [] } }).success).toBe(false);
+    });
+
+    it('rejects a negative minAnomalyScore (unbounded-above, floor-only domain)', () => {
+      expect(aiAgentPolicyFieldsSchema.safeParse({ triggers: { minAnomalyScore: -1 } }).success).toBe(false);
+      expect(aiAgentPolicyFieldsSchema.safeParse({ triggers: { minAnomalyScore: 0 } }).success).toBe(true);
+      expect(aiAgentPolicyFieldsSchema.safeParse({ triggers: { minAnomalyScore: 999 } }).success).toBe(true);
+    });
+
+    it('accepts free-text anomaly types beyond the current spike/drop/trend set — not a fixed enum', () => {
+      const result = aiAgentPolicyFieldsSchema.safeParse({ triggers: { anomalyTypes: ['future_type'] } });
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe('triggers.anomalyEnabled — conservative per-agent opt-in (wave 6 PR 4 follow-up, #3828)', () => {
+    it('defaults to false — NOT the "absent = unrestricted" convention every other narrowing filter uses', () => {
+      const created = createAiAgentSchema.parse({ kind: 'triage', name: 'Triage' });
+      expect(created.triggers.anomalyEnabled).toBe(false);
+    });
+
+    it('a patch omitting anomalyEnabled leaves it unset (no invented default on the patch variant)', () => {
+      const parsed = aiAgentTriggersPatchSchema.parse({});
+      expect(parsed.anomalyEnabled).toBeUndefined();
+    });
+
+    it('accepts an explicit true/false', () => {
+      expect(aiAgentPolicyFieldsSchema.parse({ triggers: { anomalyEnabled: true } }).triggers.anomalyEnabled)
+        .toBe(true);
+      expect(aiAgentPolicyFieldsSchema.parse({ triggers: { anomalyEnabled: false } }).triggers.anomalyEnabled)
+        .toBe(false);
+    });
+
+    it('rejects a non-boolean value', () => {
+      expect(aiAgentPolicyFieldsSchema.safeParse({ triggers: { anomalyEnabled: 'true' } }).success).toBe(false);
     });
   });
 

@@ -43,6 +43,8 @@ export interface RunTraceRunInput {
   orgId: string;
   deviceId: string | null;
   alertId: string | null;
+  /** Wave 6 PR 4 (#3828) — see AiAgentRunDetailDto.anomalyIncidentId. */
+  anomalyIncidentId: string | null;
   triggerKind: AiAgentTriggerKind;
   modeAtStart: Exclude<AiAgentMode, 'off'>;
   status: AiAgentRunStatus;
@@ -212,6 +214,7 @@ export function buildRunTrace(
     deviceId: run.deviceId,
     deviceHostname: device?.hostname ?? null,
     alertId: run.alertId,
+    anomalyIncidentId: run.anomalyIncidentId,
     triggerKind: run.triggerKind,
     modeAtStart: run.modeAtStart,
     status: run.status,

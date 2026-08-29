@@ -93,6 +93,14 @@ describe('RunsListPage', () => {
     expect(screen.getByTestId('runs-list-row-run-2')).toBeInTheDocument();
   });
 
+  it('renders a translated trigger label for an anomaly-triggered run (wave 6 PR 4, #3828)', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, id: 'run-3', triggerKind: 'anomaly' as const }] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-3')).toBeInTheDocument());
+    expect(screen.getByTestId('runs-list-row-run-3')).toHaveTextContent('Anomaly');
+  });
+
   it('shows an error state when the list fails to load', async () => {
     mockEndpoints({ runsOk: false, runsStatus: 500 });
     render(<RunsListPage />);

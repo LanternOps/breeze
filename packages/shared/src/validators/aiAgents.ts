@@ -66,11 +66,34 @@ const triggersFields = z.object({
   // docstring for the id-vs-name matching rule).
   ticketCategories: z.array(z.string().trim().min(1).max(100)).min(1).max(100),
   ticketPriorities: z.array(z.enum(['low', 'normal', 'high', 'urgent'])).min(1).max(4),
+  // Wave 6 PR 4 (#3828) — anomaly-trigger narrowing filters. Same
+  // undefined-means-unrestricted / `.min(1)` convention as ticketCategories/
+  // ticketPriorities above; enforced by runService.ts's (Task 3)
+  // evaluateAnomalyTriggerFilters. anomalyTypes/metricNames are free text
+  // (not a fixed enum — see AiAgentTriggers.anomalyTypes's docstring), capped
+  // to the same lengths as the source columns
+  // (metric_anomalies.anomaly_type varchar(40), .metric_name varchar(120)).
+  anomalyTypes: z.array(z.string().trim().min(1).max(40)).min(1).max(20),
+  metricNames: z.array(z.string().trim().min(1).max(120)).min(1).max(50),
+  // Unbounded score domain (NOT 0-1) — see AiAgentTriggers.minAnomalyScore's
+  // docstring. 1000 is a generous ceiling against garbage input, not a
+  // modeled bound: every detector formula in metricAnomalies.ts produces
+  // scores well under this today.
+  minAnomalyScore: z.number().finite().min(0).max(1000),
+  // Wave 6 PR 4 follow-up (#3828) — conservative per-agent opt-in for
+  // `triggerKind: 'anomaly'` admission. Unlike every narrowing filter above
+  // (undefined = unrestricted), this is a binary safety gate, so its
+  // default below is `false` (closed), not omitted. See
+  // `AiAgentTriggers.anomalyEnabled`'s docstring (packages/shared/src/types
+  // /aiAgents.ts) for the merge semantics — the org's own triggers must set
+  // this; a partner-wide baseline can never silently opt an org in.
+  anomalyEnabled: z.boolean(),
 });
 export const aiAgentTriggersPatchSchema = triggersFields.partial();
 export const aiAgentTriggersSchema = aiAgentTriggersPatchSchema.transform((v) => ({
   alertSeverities: ['critical', 'high'] as Array<(typeof ALERT_SEVERITIES)[number]>,
   respectMaintenanceWindows: true,
+  anomalyEnabled: false,
   ...v,
 }));
 
