@@ -352,10 +352,17 @@ function resolvePolicyDecisionState(args: {
    */
   agentMode: string | undefined;
 }): ActionIntentPolicyDecisionState {
-  void args.guardrail;
   void args.toolName;
   void args.input;
   if (!policyDecideEnabled()) return 'human_required';
+  // Phase 2 P2-1: a Tier-2 intent (only ever agent-originated + supervised —
+  // see the `agentTier2` gate above) is NEVER policy-decidable. Policy-decide
+  // exists to stand in for a human on a Tier-3 supervised call the operator
+  // has pre-authorized; a Tier-2 call already auto-executes for every OTHER
+  // principal and only reaches this function at all because the ai_agent
+  // principal is filing it as a supervised intent for a human to see — that
+  // human step is the point, not a gap to skip.
+  if (args.guardrail.tier < 3) return 'human_required';
   if (!args.agentRun) return 'human_required';
   if (args.approvalScope !== 'supervised') return 'human_required';
   if (args.agentMode !== 'act') return 'human_required';
@@ -665,7 +672,15 @@ export async function createActionIntent(
       guardrail.tier,
     );
   }
-  if (guardrail.tier <= 2) {
+  // Phase 2 P2-1: the ai_agent principal may file Tier-2 intents. They are
+  // always `supervised` (one human approver from agentEligibleApprovers —
+  // the requester-less branch at the fan-out below), never four_eyes, and
+  // never policy-decidable (resolvePolicyDecisionState returns
+  // human_required for tier < 3). Chat/MCP principals keep the Tier-3-only
+  // contract: their Tier-2 calls auto-execute in-session and never need an
+  // approval object.
+  const agentTier2 = auth.principal.kind === 'ai_agent' && guardrail.tier === 2;
+  if (guardrail.tier <= 2 && !agentTier2) {
     throw new ActionIntentTierError(
       `Tool "${input.toolName}" is tier ${guardrail.tier}; action intents are for Tier-3 approval-required tools only`,
       'tool_not_tier3',
@@ -684,7 +699,7 @@ export async function createActionIntent(
   // absent) fall back to four_eyes — the stricter, pre-split behavior — never
   // the weaker supervised path. Mirrors the column's own DEFAULT 'four_eyes'
   // (migration 2026-08-14-intent-approval-scope-and-deadlines.sql).
-  const approvalScope: ActionIntentApprovalScope = guardrail.approvalScope ?? 'four_eyes';
+  const approvalScope: ActionIntentApprovalScope = agentTier2 ? 'supervised' : (guardrail.approvalScope ?? 'four_eyes');
 
   if (input.binding) {
     // Both columns are Postgres `uuid`. An uppercase or malformed GUID would

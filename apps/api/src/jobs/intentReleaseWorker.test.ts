@@ -1480,6 +1480,94 @@ describe('releaseApprovedIntent', () => {
       expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
     });
   });
+
+  // P2-1 (#4188, Task 3): a Tier-2 `supervised` agent intent (manage_alerts:
+  // suppress — see intentService.tier2Agent.test.ts for the creation-side
+  // classification) needs NO change to this worker's own release logic: the
+  // release path never hard-codes `riskTier >= 3` anywhere (checked directly
+  // — revalidateApprovedIntentForRelease's own tier check at (b) only rejects
+  // an ESCALATION, `currentTier > intent.riskTier`, which a Tier-2 row with a
+  // Tier-1 base-registered tool never trips), so this is a same-shape release
+  // as any other agent-originated intent. This test proves that empirically
+  // rather than by inspection alone. Modeled on "dispatches normally for an
+  // agent-originated release when the pre-dispatch read is not killed" above
+  // — the only difference is the intent's own content (manage_alerts, riskTier
+  // 2, approvalScope supervised) and a distinct `agentAuth` (rather than the
+  // human `fakeAuth`) returned by `buildAuthContextForIntent`, proving
+  // `executeTool` is invoked with the REBUILT AGENT auth, not a human one.
+  describe('Tier-2 supervised agent intents (P2-1, #4188)', () => {
+    const agentAuth = {
+      principal: { kind: 'ai_agent' as const, agentId: 'agent-1', runId: 'run-1' },
+      user: { id: 'agent-1', email: 'agent+agent-1@breeze.internal', name: 'Verdict agent', isPlatformAdmin: false },
+      token: {},
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      scope: 'organization' as const,
+      accessibleOrgIds: ['org-1'],
+      orgCondition: () => undefined,
+      canAccessOrg: () => true,
+    };
+
+    it('releaseApprovedIntent executes a Tier-2 manage_alerts intent through executeTool with the agent auth', async () => {
+      const args = { action: 'suppress', alertId: 'alert-1', suppressDuration: 24 };
+      const intent = baseIntent({
+        actionName: 'manage_alerts',
+        arguments: args,
+        argumentDigest: computeArgumentDigest(canonicalizeArguments(args)),
+        riskTier: 2,
+        approvalScope: 'supervised',
+        requestedByUserId: null,
+        requestingAgentRunId: 'run-1',
+      } as Partial<ActionIntent>);
+
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([
+        { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+      ]);
+      // revalidateApprovedIntentForRelease's (b) tier-escalation check: the
+      // tool's CURRENT base-registered tier (1 for manage_alerts) must not
+      // exceed the intent's OWN stored riskTier (2) — it doesn't, so this
+      // passes exactly like every other release's tier check.
+      aiToolsMock.getToolTier.mockReturnValue(1);
+      // manage_alerts is not session-required, but `requiresLiveSession` is a
+      // plain vi.fn() whose LAST mockReturnValue survives vi.clearAllMocks()
+      // (it clears call history, not implementations) — an earlier test in
+      // this suite sets it to true, so pin it explicitly rather than
+      // inheriting whatever the previous test left behind.
+      aiToolsMock.requiresLiveSession.mockReturnValue(false);
+      actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(agentAuth);
+      tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+      // Same leakage risk as requiresLiveSession above, one level worse: an
+      // earlier test ("does NOT consult the kill switch... for a human/
+      // chat-originated release") deliberately queues a killed:true
+      // ONCE-value it never consumes (that IS its point — a human release
+      // must never read it). A plain mockResolvedValueOnce here would queue
+      // BEHIND that leaked entry, not replace it (vi.clearAllMocks() drains
+      // neither), so this test would still consume the STALE killed:true
+      // first. mockReset() is the only thing that actually empties the
+      // once-queue; re-establish the not-killed default afterward.
+      killStateMock.readAiKillState.mockReset();
+      killStateMock.readAiKillState.mockResolvedValue({ killed: false, epoch: 0 });
+      toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(agentReleaseAuthorityMock.checkAgentReleaseAuthority).toHaveBeenCalledWith(
+        expect.objectContaining({ id: intent.id, requestingAgentRunId: 'run-1' }),
+      );
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        'manage_alerts',
+        expect.objectContaining({ action: 'suppress', alertId: 'alert-1' }),
+        agentAuth,
+      );
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.anything(),
+      );
+    });
+  });
 });
 
 describe('secret-bearing release', () => {
