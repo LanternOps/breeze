@@ -18,7 +18,13 @@ const authenticatorMock = vi.hoisted(() => ({
 }));
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
-vi.mock('../../stores/authenticator', () => authenticatorMock);
+// Spreads the ACTUAL module so `AssertionChallengeError` is the real class the
+// batch client `instanceof`-checks against — a bare object mock leaves that
+// export undefined and the challenge-refusal branch silently unreachable.
+vi.mock('../../stores/authenticator', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/authenticator')>()),
+  ...authenticatorMock,
+}));
 vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
 vi.mock('@/hooks/useEventStream', () => ({
   useEventStream: () => ({
@@ -431,6 +437,7 @@ describe('ApprovalsInbox — grouped agent cards and batch decisions', () => {
       ['two cards from different tools', [agentCard('ap-a'), agentCard('ap-b', { actionToolName: 'manage_services' })]],
       ['two human-originated cards', [agentCard('ap-a', { origin: 'human' }), agentCard('ap-b', { origin: 'human' })]],
       ['two four_eyes cards', [agentCard('ap-a', { approvalScope: 'four_eyes' }), agentCard('ap-b', { approvalScope: 'four_eyes' })]],
+      ['two critical-tier cards', [agentCard('ap-a', { riskTier: 'critical' }), agentCard('ap-b', { riskTier: 'critical' })]],
     ];
 
     for (const [label, approvals] of cases) {
@@ -557,9 +564,83 @@ describe('ApprovalsInbox — grouped agent cards and batch decisions', () => {
       expect(screen.queryByTestId('approval-row-ap-a')).not.toBeInTheDocument(),
     );
     expect(screen.getByTestId('approval-row-ap-b')).toBeInTheDocument();
-    expect(screen.getByTestId('approval-error-ap-b')).toHaveTextContent(
+    // A 409 is a lost race, not a transient failure — "try again" would be
+    // advice that cannot work.
+    expect(screen.getByTestId('approval-error-ap-b')).toHaveTextContent(/already decided/i);
+    expect(screen.getByTestId('approval-error-ap-b')).not.toHaveTextContent(
       /could not be submitted/i,
     );
+  });
+
+  it('gives a per-row 410 its own expiry copy rather than the generic retry', async () => {
+    routeFetch([agentCard('ap-a'), agentCard('ap-b')], {
+      status: 200,
+      payload: {
+        results: [
+          { id: 'ap-a', httpStatus: 200, body: {} },
+          { id: 'ap-b', httpStatus: 410, body: { error: 'expired' } },
+        ],
+      },
+    });
+    render(<ApprovalsInbox />);
+    await screen.findByTestId(`approval-group-${GROUP_KEY}`);
+
+    fireEvent.click(screen.getByTestId(`approval-group-approve-${GROUP_KEY}`));
+
+    expect(await screen.findByTestId('approval-error-ap-b')).toHaveTextContent(/expired/i);
+  });
+
+  it('never batches critical-tier cards: the batch route cannot collect re-auth', async () => {
+    // decideApprovalBatch does not plumb reauthVerified, so an L4 set can only
+    // ever 401 `reauth_required` — a dead end. Critical cards stay single-card,
+    // where the re-auth is collected per decision.
+    routeFetch([
+      agentCard('ap-a', { riskTier: 'critical' }),
+      agentCard('ap-b', { riskTier: 'critical' }),
+    ]);
+    render(<ApprovalsInbox />);
+
+    await screen.findByTestId('approval-row-ap-a');
+    expect(screen.getByTestId('approval-row-ap-b')).toBeInTheDocument();
+    expect(screen.queryAllByTestId(/^approval-group-/)).toHaveLength(0);
+    // ...and each still offers its own single-card approve.
+    expect(screen.getByTestId('approval-approve-ap-a')).toBeInTheDocument();
+  });
+
+  it('does not let ONE critical card sink an otherwise batchable group', async () => {
+    // The ceremony runs at the HIGHEST tier present, so a critical card mixed
+    // into a group would 401 the whole set. It must fall out of the group, and
+    // the remaining two must still batch.
+    routeFetch([
+      agentCard('ap-a'),
+      agentCard('ap-b'),
+      agentCard('ap-crit', { riskTier: 'critical' }),
+    ]);
+    render(<ApprovalsInbox />);
+
+    const header = await screen.findByTestId(`approval-group-${GROUP_KEY}`);
+    expect(header).toHaveTextContent('2 similar requests');
+    expect(screen.getByTestId(`approval-group-approve-${GROUP_KEY}`)).toHaveTextContent(
+      'Approve all (2)',
+    );
+    expect(header).not.toContainElement(screen.getByTestId('approval-row-ap-crit'));
+  });
+
+  it('maps a whole-batch 401 reauth_required to the step-up copy, not a scan failure', async () => {
+    routeFetch([agentCard('ap-a'), agentCard('ap-b')], {
+      status: 401,
+      payload: { error: 'reauth_required' },
+    });
+    render(<ApprovalsInbox />);
+    await screen.findByTestId(`approval-group-${GROUP_KEY}`);
+
+    fireEvent.click(screen.getByTestId(`approval-group-approve-${GROUP_KEY}`));
+
+    const error = await screen.findByTestId(`approval-group-error-${GROUP_KEY}`);
+    expect(error).toHaveTextContent(/one at a time/i);
+    expect(error).not.toHaveTextContent(/canceled or failed/i);
+    expect(screen.getByTestId('approval-row-ap-a')).toBeInTheDocument();
+    expect(navigateToMock).not.toHaveBeenCalled();
   });
 
   it('renders the target device hostname only on rows that carry one', async () => {

@@ -32,6 +32,8 @@ type DecisionErrorKind =
   | 'noApproverDevice'
   | 'notSoleApprover'
   | 'verificationFailed'
+  | 'alreadyDecided'
+  | 'expired'
   | 'decisionFailed';
 /** Group headers add the two WHOLE-batch refusals, which are never per-row:
  *  nothing was decided, so they belong above the cards, not on one of them. */
@@ -104,7 +106,15 @@ function isGroupable(approval: PendingApproval): boolean {
   return (
     approval.origin === 'ai_agent' &&
     approval.approvalScope === 'supervised' &&
-    approval.orgId !== null
+    approval.orgId !== null &&
+    // A CRITICAL card can never be batched. The batch route deliberately does
+    // not plumb `reauthVerified` (batchDecide.ts), so the L4 ladder a critical
+    // card has to clear is unsatisfiable in a batch and the whole set 401s
+    // `reauth_required` — a permanent dead end, since re-auth is collected per
+    // decision. The ceremony runs at the HIGHEST tier present, so ONE critical
+    // card would sink an otherwise decidable group; excluding it here leaves
+    // every critical card on the single-card path, which can collect re-auth.
+    approval.riskTier !== 'critical'
   );
 }
 
@@ -217,6 +227,13 @@ function rowErrorKind(result: BatchRowResult): DecisionErrorKind {
   if (token === 'assertion_failed' || token === 'reauth_required') {
     return 'verificationFailed';
   }
+  // The two per-row races the batch core reports by STATUS rather than token:
+  // somebody (or some other session) decided the card first, or it expired
+  // while the set was being decided. Neither is retryable, so the generic
+  // "The decision could not be submitted. Try again." is actively wrong — it
+  // invites a retry that cannot succeed.
+  if (result.httpStatus === 409) return 'alreadyDecided';
+  if (result.httpStatus === 410) return 'expired';
   return 'decisionFailed';
 }
 

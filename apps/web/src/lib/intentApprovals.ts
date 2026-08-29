@@ -106,12 +106,33 @@ export function isBatchNotHomogeneous(err: unknown): boolean {
   return errorToken(err) === 'batch_not_homogeneous';
 }
 
+/**
+ * The batch route's 401 `reauth_required`. On the SINGLE-card path this is a
+ * WebAuthn proof rejection ("your scan failed, try again"); on the batch path
+ * it is structural and permanent: `decideApprovalBatch` deliberately does not
+ * plumb `reauthVerified`, so a set whose highest tier demands re-auth can never
+ * clear the ladder no matter how many times it is retried. Same remedy as
+ * `step_up_required` — decide the cards one at a time, where the re-auth is
+ * collected per decision — so it maps to the same outcome and the same copy.
+ * Without this it surfaced as "Verification was canceled or failed. Try again."
+ * on a batch that can only ever fail: wrong blame, and a dead end.
+ */
+export function isBatchReauthRequired(err: unknown): boolean {
+  return (
+    err instanceof ActionError && err.status === 401 && errorToken(err) === 'reauth_required'
+  );
+}
+
 /** Batch copy for the two whole-batch refusals, falling back to the single-card
  *  map. `step_up_required` MUST NOT reuse the single-card "register a device"
  *  copy: a batch 403s because the highest tier in the set outranks what one
  *  ceremony can clear, and the remedy is to decide the cards one at a time. */
 export function batchDecideErrorCopy(token: string): string | undefined {
-  if (token === 'step_up_required') return i18n.t('approvals:errors.batchStepUp');
+  // `reauth_required` shares the copy because it shares the remedy — see
+  // isBatchReauthRequired.
+  if (token === 'step_up_required' || token === 'reauth_required') {
+    return i18n.t('approvals:errors.batchStepUp');
+  }
   if (token === 'batch_not_homogeneous') return i18n.t('approvals:errors.batchNotHomogeneous');
   return decideErrorCopy(token);
 }
@@ -220,9 +241,11 @@ export async function decideIntentApproval(
  * Returns per-row outcomes on a 200; the three refusal variants mean NOTHING
  * was decided:
  *   - `needs_device`      — no registered approver device (no POST happened)
- *   - `batch_step_up`     — 403 `step_up_required`: the tier ceiling this batch
- *                           would have to clear is above what one ceremony can,
- *                           so these cards must be decided individually
+ *   - `batch_step_up`     — 403 `step_up_required` OR 401 `reauth_required`:
+ *                           the tier ceiling this batch would have to clear is
+ *                           above what one ceremony can, so these cards must be
+ *                           decided individually (where re-auth is collected
+ *                           per decision)
  *   - `batch_not_homogeneous` — 422: the set drifted (a row was decided
  *                           elsewhere, an intent settled); the cards remain
  *                           individually decidable
@@ -315,7 +338,9 @@ export async function decideIntentApprovalBatch(
           : [],
       };
     }
-    if (isStepUpRequired(err)) return { outcome: 'batch_step_up' };
+    if (isStepUpRequired(err) || isBatchReauthRequired(err)) {
+      return { outcome: 'batch_step_up' };
+    }
     throw err;
   }
 }

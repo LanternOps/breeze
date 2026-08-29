@@ -35,6 +35,8 @@
     "noApproverDevice": "Profilinizde bir onay cihazı kaydedip yeniden deneyin.",
     "notSoleApprover": "Bu isteğe başka bir yetkili onaylayıcı karar vermelidir.",
     "verificationFailed": "Doğrulama iptal edildi veya başarısız oldu. Yeniden deneyin.",
+    "alreadyDecided": "Bu isteğe zaten karar verildi.",
+    "expired": "Bu istek, karar verilmeden önce sona erdi.",
     "decisionFailed": "Karar gönderilemedi. Yeniden deneyin.",
     "batchStepUp": "Bu toplu işlem için daha güçlü bir oturum açma gerekiyor. İstekleri tek tek onaylayın.",
     "batchNotHomogeneous": "Bu isteklere artık birlikte karar verilemez."

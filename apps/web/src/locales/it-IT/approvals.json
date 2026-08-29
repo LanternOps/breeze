@@ -35,6 +35,8 @@
     "noApproverDevice": "Registra un dispositivo di approvazione nel profilo e riprova.",
     "notSoleApprover": "Un’altra persona autorizzata deve decidere su questa richiesta.",
     "verificationFailed": "La verifica è stata annullata o non è riuscita. Riprova.",
+    "alreadyDecided": "Questa richiesta è già stata decisa.",
+    "expired": "Questa richiesta è scaduta prima che si potesse decidere.",
     "decisionFailed": "Impossibile inviare la decisione. Riprova.",
     "batchStepUp": "Questo gruppo richiede un accesso più sicuro. Approva le richieste una alla volta.",
     "batchNotHomogeneous": "Non è più possibile decidere queste richieste insieme."
