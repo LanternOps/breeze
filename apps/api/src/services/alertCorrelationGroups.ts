@@ -146,9 +146,15 @@ async function upsertGroup(orgId: string, component: Component): Promise<{ id: s
       ${memberCount},
       ${sqlTimestamp(firstSeenAt)},
       ${sqlTimestamp(lastSeenAt)},
+      -- jsonb_build_object is VARIADIC "any": a bare parameter used only as an
+      -- argument to it (never as a direct INSERT column value) gives Postgres no
+      -- column type to infer from, so it raises 42P18 "could not determine data
+      -- type of parameter" on the extended query protocol postgres.js uses. The
+      -- other params above bind straight to a typed INSERT column and don't need
+      -- this — only args inside jsonb_build_object() do.
       jsonb_build_object(
-        'version', ${GROUP_METADATA_VERSION},
-        'correlationTypes', ${JSON.stringify(correlationTypes)}
+        'version', ${GROUP_METADATA_VERSION}::text,
+        'correlationTypes', ${JSON.stringify(correlationTypes)}::jsonb
       )
     )
     ON CONFLICT (org_id, group_key)
@@ -197,7 +203,11 @@ async function upsertMembers(orgId: string, groupId: string, component: Componen
         ${alert.id},
         ${role},
         ${confidence.toFixed(2)},
-        jsonb_build_object('version', ${GROUP_METADATA_VERSION})
+        -- Same 42P18 hazard as upsertGroup's jsonb_build_object above — the
+        -- version param is a bare arg to a VARIADIC "any" function, so it needs
+        -- an explicit cast rather than the target-column inference INSERT
+        -- normally gives every other param here.
+        jsonb_build_object('version', ${GROUP_METADATA_VERSION}::text)
       )
       ON CONFLICT (group_id, alert_id)
       DO UPDATE SET
