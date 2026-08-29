@@ -120,7 +120,13 @@ export const listAlertsSchema = z.object({
   severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
   deviceId: z.string().guid().optional(),
   startDate: z.string().optional(),
-  endDate: z.string().optional()
+  endDate: z.string().optional(),
+  // Phase 2 wave P2-1 (alert verdicts), Task 14 — exclude alerts whose
+  // LATEST AI verdict classified them as noise (transient_self_healed /
+  // recurring_pattern / duplicate_of_group). Applied as a WHERE-clause
+  // NOT EXISTS in the route (see hideAiNoiseCondition in alerts.ts), not a
+  // post-fetch filter, so pagination stays correct.
+  hideAiNoise: z.enum(['true', 'false']).optional()
 });
 
 export const resolveAlertSchema = z.object({

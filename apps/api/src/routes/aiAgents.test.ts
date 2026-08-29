@@ -30,7 +30,12 @@ const {
   writeRouteAuditMock: vi.fn(),
   getCircuitStateMock: vi.fn(),
   resetCircuitMock: vi.fn(),
-  recordVerdictFeedbackMock: vi.fn<(auth: unknown, verdictId: string, feedback: string) => Promise<boolean>>(),
+  // Carry-in B (PR-A review, feedback-route hardening) — `recordVerdictFeedback`
+  // now returns a discriminated result, not a bare boolean; see
+  // `RecordVerdictFeedbackResult` in services/aiAgents/alertVerdicts.ts.
+  recordVerdictFeedbackMock: vi.fn<(auth: unknown, verdictId: string, feedback: string) => Promise<
+    { status: 'ok'; orgId: string } | { status: 'not_found' } | { status: 'conflict'; orgId: string }
+  >>(),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -195,7 +200,7 @@ beforeEach(() => {
     run: { id: RUN_ID, status: 'queued' },
   });
   envMock.policyDecideEnabled.mockReturnValue(true);
-  recordVerdictFeedbackMock.mockResolvedValue(true);
+  recordVerdictFeedbackMock.mockResolvedValue({ status: 'ok', orgId: ORG_ID });
 });
 
 describe('POST /ai-agents/:id/runs', () => {
@@ -834,7 +839,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
 describe('POST /ai-agents/verdicts/:verdictId/feedback', () => {
   const VERDICT_ID = '88888888-8888-4888-8888-888888888888';
 
-  it('records feedback and returns { ok: true }', async () => {
+  it('records feedback, audits it, and returns { ok: true }', async () => {
     const res = await buildApp().request(`/ai-agents/verdicts/${VERDICT_ID}/feedback`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -847,6 +852,18 @@ describe('POST /ai-agents/verdicts/:verdictId/feedback', () => {
       expect.objectContaining({ user: expect.objectContaining({ id: USER_ID }) }),
       VERDICT_ID,
       'up',
+    );
+    // Carry-in B — every successful write is audited.
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: ORG_ID,
+        action: 'ai_agent.verdict_feedback',
+        resourceType: 'ai_alert_verdict',
+        resourceId: VERDICT_ID,
+        details: { feedback: 'up' },
+        result: 'success',
+      }),
     );
   });
 
@@ -882,13 +899,28 @@ describe('POST /ai-agents/verdicts/:verdictId/feedback', () => {
   });
 
   it('returns 404 when no verdict row matched (not found, or RLS-denied cross-org)', async () => {
-    recordVerdictFeedbackMock.mockResolvedValue(false);
+    recordVerdictFeedbackMock.mockResolvedValue({ status: 'not_found' });
     const res = await buildApp().request(`/ai-agents/verdicts/${VERDICT_ID}/feedback`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ feedback: 'down' }),
     });
     expect(res.status).toBe(404);
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  // Carry-in B (PR-A review) — a caller must not silently overwrite ANOTHER
+  // user's already-recorded feedback.
+  it('returns 409 (and does not audit) when the row already carries another user\'s feedback', async () => {
+    recordVerdictFeedbackMock.mockResolvedValue({ status: 'conflict', orgId: ORG_ID });
+    const res = await buildApp().request(`/ai-agents/verdicts/${VERDICT_ID}/feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ feedback: 'down' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Feedback already recorded by another user' });
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
   });
 });
 
