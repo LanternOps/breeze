@@ -30,7 +30,7 @@ Phase 2 fills the payload without adding new safety machinery: every capability 
 
 | # | Decision | Choice |
 |---|---|---|
-| D1 | Phase-1 close-out | Finish 6.3 (ticket shadow); drop "anomaly sources" as its own wave — alert-verdict lane subsumes it. |
+| D1 | Phase-1 close-out | Finish 6.3 (ticket shadow); drop "anomaly sources" as its own wave — alert-verdict lane subsumes it. **Superseded 2026-08-29:** wave 6.4 (#4203) shipped metric anomalies as a first-class `anomaly` trigger kind (forced-shadow, opt-in per agent) while P2-1 was being built; anomaly runs are therefore a phase-1 lane, and P2-1's verdict lane stays alert/correlation-group scoped. Roadmap item #4178 is closed by 6.4. |
 | D2 | Program optimizes for | **Visible value to every customer with no flag flips** — read-only intelligence first, autonomy grows on the data it generates. |
 | D3 | Ticket-lane autonomy ceiling | **Metadata + private notes autonomously** (category, priority, queue, device link, one private note attributed to the `ai_agent` principal). Customer-facing text is always a draft a technician sends under their own identity. |
 | D4 | Feedback loop authority | **Recommend-only promotion + automatic demotion.** Stats never raise autonomy on their own; a failure drops an (org, op) back to propose-only automatically. |
