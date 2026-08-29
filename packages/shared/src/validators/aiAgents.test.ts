@@ -58,6 +58,13 @@ describe('aiAgents validators', () => {
     expect(aiAgentLimitsSchema.safeParse({ maxConsecutiveFailures: 2.5 }).success).toBe(false);
   });
 
+  it('maxVerdictRunsPerHour/maxConcurrentVerdictRuns/verdictBudgetCentsPerRun default-fill on an empty parse (phase 2 P2-1)', () => {
+    const parsed = aiAgentLimitsSchema.parse({});
+    expect(parsed.maxVerdictRunsPerHour).toBe(200);
+    expect(parsed.maxConcurrentVerdictRuns).toBe(4);
+    expect(parsed.verdictBudgetCentsPerRun).toBe(2);
+  });
+
   it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 5 (phase 2 P2-1 bump)', () => {
     expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(5);
   });

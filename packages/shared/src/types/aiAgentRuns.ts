@@ -39,9 +39,25 @@ import type {
  */
 export const AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS = ['args', 'toolInput', 'toolOutput', 'arguments'] as const;
 
-/** All DTOs in this file are versioned (Partner-API schema precedent,
- *  routes/partnerApi/schemas.ts): a shape change bumps this, never mutates
- *  version 1 in place. */
+/**
+ * All DTOs in this file are versioned (Partner-API schema precedent,
+ * routes/partnerApi/schemas.ts) — this never mutates in place once a
+ * version has shipped.
+ *
+ * The bump rule is precise, not "any shape change": an ADDITIVE field that
+ * is always present on the DTO and nullable (a caller that has never seen
+ * the key still gets a value it can type-check against, `null`) does NOT
+ * bump the version — every consumer already has to tolerate unknown keys on
+ * a versioned wire type (that is the whole point of versioning being
+ * available at all), and requiring a version bump for every such addition
+ * would make the version number churn on every backward-compatible change,
+ * defeating its purpose as a signal. `AiAgentRunDetailDto.alertVerdict`
+ * (phase 2 P2-1) is exactly this case — added at version 1, still version 1.
+ *
+ * The version bumps ONLY when a field is removed, renamed, or changes type
+ * or semantics — i.e. when an existing consumer parsing the OLD shape would
+ * misinterpret or reject the NEW one.
+ */
 export const AI_AGENT_RUN_DTO_SCHEMA_VERSION = 1 as const;
 
 /**
