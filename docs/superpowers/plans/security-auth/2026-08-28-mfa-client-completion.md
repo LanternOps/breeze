@@ -103,6 +103,8 @@ export interface CompleteInitialMfaEnrollmentInput<T> {
   userId: string;
   identity: UserSessionIdentity;
   capability: AuthIssuanceCapability;
+  expectedAuthEpoch: number;
+  expectedMfaEpoch: number;
   revokeReason: string;
   recoveryCodes: readonly string[];
   recoveryCodeHashes: readonly string[];
@@ -122,7 +124,7 @@ export async function completeInitialMfaEnrollment<T>(
 ): Promise<CompletedInitialMfaEnrollment<T>>;
 ```
 
-Generate and hash recovery codes before beginning guarded finalization; do not expose them unless finalization commits. Implementation order inside `finishAuthIssuance(capability, tx => ...)` is: advance `mfa_epoch` while locking the user, revoke all existing refresh families, issue the replacement family/session with the new epochs, then call `persistFactor` with the precomputed hashes. The transaction rollback removes the new family, factor, recovery hashes, epoch change, and revocations together. After commit, routes bind the issued session, install refresh/CSRF cookies, run best-effort Redis/remote-session cleanup, and return public access metadata plus the precomputed plaintext recovery codes.
+Generate and hash recovery codes before beginning guarded finalization; do not expose them unless finalization commits. Implementation order inside `finishAuthIssuance(capability, tx => ...)` is: conditionally advance `mfa_epoch` while locking the active, still-unenrolled user at both `expectedAuthEpoch` and `expectedMfaEpoch`, revoke all existing refresh families, issue the replacement family/session with the new epochs, then call `persistFactor` with the precomputed hashes. The conditional epoch write makes concurrent terminal enrollments single-winner and prevents a request authenticated before a password/reset/logout cutoff from laundering stale authority into the newer auth epoch. The transaction rollback removes the new family, factor, recovery hashes, epoch change, and revocations together. After commit, routes bind the issued session, install refresh/CSRF cookies, run best-effort Redis/remote-session cleanup, and return public access metadata plus the precomputed plaintext recovery codes.
 
 ---
 

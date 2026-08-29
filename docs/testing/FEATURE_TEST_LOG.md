@@ -5102,3 +5102,25 @@ above. The previous sweep reached #3494 — the window between #3494 and #3805 i
    404s on every device-tab switch to mean "no data yet"; the channels empty state blames filters
    when there is simply nothing yet.
 
+---
+
+## MFA Client Completion — 2026-08-28
+
+Implemented the approved #2489 / #3853 / #3854 client-completion slices on
+`feat/2489-mfa-client-completion` without push, deploy, rollout-flag changes, or W07 native transport.
+
+- API full unit suite: **PASS** — 1,597 files passed, 3 skipped; 28,118 tests passed, 22 skipped.
+- Web full unit suite: **PASS** — 660 files / 6,806 tests passed.
+- Mobile full unit suite: **PASS** — 54 files passed; 648 tests passed, 3 skipped.
+- Auth-focused API regression set: **PASS** — 163 tests, including live TOTP policy checks,
+  auth/MFA epoch CAS behavior, method switching, recovery handling, SMS, passkey, and atomic enrollment.
+- Web MFA/store regressions: **PASS** — delayed enrollment responses cannot overwrite logout or a
+  replacement login; locale parity passes for all supported locales.
+- API and web TypeScript checks, mobile typecheck, API/web lint, and API/web production builds: **PASS**.
+- Independent security review: no critical findings; all three important findings were fixed and
+  covered by regressions. The passkey compatibility alias was also aligned with the policy-filtered
+  method set.
+- Real-Postgres atomicity suite: **NOT RUN (environment unavailable)** — the integration runner could
+  not connect to PostgreSQL at `localhost:5433` (`ECONNREFUSED`). The suite contains rollback,
+  concurrent single-winner enrollment, and concurrent `auth_epoch` cutoff coverage and must run in CI
+  or once the integration database is available.

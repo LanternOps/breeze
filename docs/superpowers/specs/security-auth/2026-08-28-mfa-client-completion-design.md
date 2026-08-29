@@ -1,8 +1,8 @@
 # MFA Client Completion Design
 
-**Date:** 2026-08-28  
-**Issues:** #2489, #3853, #3854  
-**Scope:** API challenge negotiation, web MFA completion, and mobile MFA completion  
+**Date:** 2026-08-28
+**Issues:** #2489, #3853, #3854
+**Scope:** API challenge negotiation, web MFA completion, and mobile MFA completion
 **Out of scope:** deployment, production flag changes, W07 Phase 2 compatibility removal, unrelated W03-W06 follow-ups, and the #3854 items that belong to W07 native transport — native-binding bootstrap/retry (`x-breeze-native-auth-binding`) and the mobile v1 transition header. Those are deferred to a W07-native follow-up and are not claimed by this spec; #3854 stays open after slice 4 until they land.
 
 ## Objective
