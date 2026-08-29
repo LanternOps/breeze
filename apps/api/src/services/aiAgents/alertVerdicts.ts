@@ -205,10 +205,10 @@ export async function persistAlertVerdict(
             toolName: 'manage_alerts',
             input: suggestion.action === 'suppress'
               ? {
-                action: 'suppress', alertId: suggestion.alertId, deviceId: targetDeviceId,
+                action: 'suppress', alertId: suggestion.alertId, deviceId: targetDeviceId ?? undefined,
                 suppressDuration: suggestion.suppressDuration, resolutionNote: verdict.rationale,
               }
-              : { action: 'resolve', alertId: suggestion.alertId, deviceId: targetDeviceId, resolutionNote: verdict.rationale },
+              : { action: 'resolve', alertId: suggestion.alertId, deviceId: targetDeviceId ?? undefined, resolutionNote: verdict.rationale },
             source: 'ai_agent',
             orgId: run.orgId,
             reason: verdict.rationale,

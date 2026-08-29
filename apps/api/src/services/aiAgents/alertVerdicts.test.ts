@@ -236,6 +236,28 @@ describe('persistAlertVerdict', () => {
     expect(state.insertValues[0]).toMatchObject({ suggestedIntentId: INTENT_ID });
   });
 
+  it('converts null deviceId to undefined in the intent input (never passes null to the schema)', async () => {
+    createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
+    state.insertReturningQueue.push([{ id: VERDICT_ROW_ID }]);
+
+    const nullDeviceRun = { ...runInput, deviceId: null };
+    const verdict: AlertVerdictOutcome = {
+      ...baseVerdict,
+      classification: 'actionable',
+      suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: ALERT_ID },
+    };
+
+    const result = await persistAlertVerdict(nullDeviceRun, verdict, agentAuth);
+
+    const callArgs = createActionIntent.mock.calls[0];
+    expect(callArgs).toBeDefined();
+    const input = (callArgs?.[1] as Record<string, unknown> | undefined)?.input as Record<string, unknown> | undefined;
+    expect(input).not.toHaveProperty('deviceId', null);
+    expect(input?.deviceId).toBeUndefined();
+    expect(result.intentId).toBe(INTENT_ID);
+    expect(result.suggestionDisposition).toBe('intent_created');
+  });
+
   // CRITICAL fix (review round 1): createActionIntent does NOT throw on
   // no_eligible_approvers — it commits the intent then immediately cancels
   // it, returning that snapshot. Linking a cancelled intent's id would
