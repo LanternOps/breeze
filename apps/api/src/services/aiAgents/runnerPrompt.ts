@@ -21,7 +21,7 @@
  *  - the task turn NEVER repeats the instructions — a second, undelimited copy
  *    would defeat the fence.
  */
-import type { AiAgentKind, AiAgentMode, AiAgentTriggerKind } from '@breeze/shared';
+import type { AiAgentKind, AiAgentMode, AiAgentRunProfile, AiAgentTriggerKind } from '@breeze/shared';
 
 export const OPERATOR_GUIDANCE_OPEN_TAG = '<operator-guidance>';
 export const OPERATOR_GUIDANCE_CLOSE_TAG = '</operator-guidance>';
@@ -142,6 +142,22 @@ export interface AgentRunPromptContext {
   ticket: AgentRunTicketPromptContext | null;
   anomaly: AgentRunAnomalyPromptContext | null;
   instructions: string | null;
+  /** Phase 2 wave P2-1 (alert verdicts) — see `verdictProfile.ts`. */
+  profile: AiAgentRunProfile;
+  /**
+   * Set only for a verdict-profile run admitted against a correlation group
+   * (`run.correlationGroupId`) — structurally the same shape as
+   * `RunContext['correlationGroup']` (runLoop.ts), declared independently
+   * here to avoid a circular import between the two modules, same as
+   * `device`/`alert` above.
+   */
+  correlationGroup: {
+    id: string;
+    memberCount: number;
+    noiseReductionPercent: number;
+    rootAlertId: string | null;
+    correlationTypes: string[];
+  } | null;
 }
 
 /**
@@ -172,7 +188,15 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
     + 'answer questions, so never ask one — investigate with the tools you have and report.',
   );
 
-  if (ctx.run.mode === 'shadow') {
+  if (ctx.profile === 'verdict') {
+    sections.push(
+      '## Mode: verdict\n'
+      + 'This run has NO act permissions: every tool exposed to you is read-only, and there is no '
+      + 'mechanism on this run to execute — or even propose — a mutation directly. Investigate '
+      + 'using only the tools available to you, then finish by calling submit_alert_verdict '
+      + 'exactly once with your classification. That call IS the output of this run.',
+    );
+  } else if (ctx.run.mode === 'shadow') {
     sections.push(
       '## Mode: shadow\n'
       + 'You are in SHADOW mode. You may read and diagnose freely, but you must PROPOSE and '
@@ -230,10 +254,62 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
 }
 
 /**
+ * Phase 2 wave P2-1 (alert verdicts) — the task turn for a verdict-profile
+ * run. Deliberately does NOT reuse the `full`-profile prompt below: a
+ * verdict run has no act permissions and a completely different job
+ * (classify, don't fix), so the rubric replaces the investigate/summarize
+ * instruction entirely rather than layering on top of it.
+ */
+function buildVerdictTaskPrompt(ctx: AgentRunPromptContext): string {
+  const group = ctx.correlationGroup;
+  const lines: string[] = [];
+
+  lines.push(
+    `You are judging ${group ? `a correlation group of ${group.memberCount} alerts` : 'ONE alert'}. `
+    + 'Use only the read tools available to you.',
+  );
+  lines.push('Decide: actionable | transient_self_healed | recurring_pattern | duplicate_of_group | needs_human.');
+  lines.push('- transient_self_healed: the alert has already resolved on its own and the metric is normal now.');
+  lines.push(
+    '- recurring_pattern: the same rule on this device fired and cleared ≥3 times on a schedule '
+    + '(use manage_alerts list with the rule/device to check history); include pattern.kind and evidence alert ids.',
+  );
+  lines.push("- duplicate_of_group: this alert shares a root cause with its correlation group's root alert.");
+  lines.push('- actionable: something still needs fixing. Do not propose a fix — that is a different run.');
+  lines.push('- needs_human: you cannot decide with ≥0.6 confidence.');
+  lines.push(
+    'Only suggest an action when confidence ≥ 0.8: resolve for transient_self_healed; '
+    + 'suppress (hours) for recurring_pattern.',
+  );
+  lines.push('Finish by calling submit_alert_verdict exactly once. Your rationale is shown to technicians; ≤ 2 sentences.');
+
+  lines.push('');
+  if (ctx.alert) {
+    lines.push(`Alert severity: ${ctx.alert.severity}`);
+    lines.push(`Alert: ${ctx.alert.title}`);
+    if (ctx.alert.message) lines.push(`Alert detail: ${ctx.alert.message}`);
+  }
+  if (ctx.device) {
+    lines.push(`Target device: ${ctx.device.hostname} (${ctx.device.osType}, id ${ctx.device.id})`);
+  }
+  if (group) {
+    lines.push(
+      `Correlation group ${group.id}: ${group.memberCount} member alerts, `
+      + `${group.noiseReductionPercent}% noise reduction, root alert ${group.rootAlertId ?? 'none'}`
+      + (group.correlationTypes.length > 0 ? `, correlation types: ${group.correlationTypes.join(', ')}` : ''),
+    );
+  }
+
+  return lines.join('\n');
+}
+
+/**
  * The single user turn that starts the run. Facts only — the operator's
  * instructions deliberately do NOT appear here (see the module header).
  */
 export function buildAgentRunTaskPrompt(ctx: AgentRunPromptContext): string {
+  if (ctx.profile === 'verdict') return buildVerdictTaskPrompt(ctx);
+
   const lines: string[] = [];
 
   lines.push(`Trigger: ${ctx.run.triggerKind}`);

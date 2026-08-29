@@ -39,7 +39,6 @@ describe('buildRunTrace — safe projection (#3828)', () => {
     const detail = buildRunTrace(
       baseRun({
         outcome: {
-          findings: [],
           executedActions: [
             {
               tool: 'manage_services',
@@ -136,7 +135,6 @@ describe('buildRunTrace — safe projection (#3828)', () => {
     const detail = buildRunTrace(
       baseRun({
         outcome: {
-          findings: [],
           executedActions: [
             { tool: 'get_processes', executionId: 'exec-9', result: 'ok', durationMs: 50 },
           ],
