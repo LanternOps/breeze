@@ -943,6 +943,8 @@ export async function createAndEnqueueAgentRun(
         alertId: input.alertId ?? null,
         ticketId: input.ticketId ?? null,
         anomalyIncidentId: input.anomalyIncidentId ?? null,
+        profile,
+        correlationGroupId: input.correlationGroupId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
         triggerRef: input.triggerRef ?? {},

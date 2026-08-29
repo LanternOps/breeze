@@ -813,6 +813,12 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
     expect(where).toContain('"error_code"');
     expect(dbMockState.updateSets.at(-1)).toMatchObject({ status: 'queued', errorCode: null });
     expect(dbMockState.updateSets.at(-1)?.finishedAt).toBeNull();
+    // Phase 2 wave P2-1: the reclaim SET must carry the retrying caller's
+    // profile/correlationGroupId too, not just leave the reclaimed row on
+    // whatever it was originally inserted with — profile governs tool
+    // exposure (guardrail-relevant), so a stale value here is a real bug, not
+    // cosmetic drift.
+    expect(dbMockState.updateSets.at(-1)).toMatchObject({ profile: 'full', correlationGroupId: null });
     expect(enqueueAgentRunJob).toHaveBeenCalledWith(RUN_ID);
   });
 
@@ -1823,12 +1829,38 @@ describe('createAndEnqueueAgentRun verdict-profile admission (P2-1)', () => {
     expect(compiled(runSelects[1]?.where)).toContain('"profile"');
   });
 
+  it('admits a verdict run whose concurrency count sits strictly between the full cap (1) and the verdict cap (4)', async () => {
+    // A regression that hard-coded maxConcurrentForProfile to
+    // effective.limits.maxConcurrentRuns for BOTH profiles would refuse this
+    // (2 >= 1), even though the skip-REASON ternary is untouched by that bug
+    // and would still report 'max_concurrent_verdict_runs' correctly — the
+    // other 8 tests only pin the reason, not the magnitude. Reading the real
+    // verdict cap (4) is what admits it.
+    seedVerdictAdmissionReads({ concurrent: 2 });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'verdict', dedupeKey: 'alert-verdict:a6' }),
+    );
+    expect(result).toMatchObject({ created: true });
+  });
+
   it('rate-limits verdict-profile runs on maxVerdictRunsPerHour with skip verdict_rate', async () => {
     seedVerdictAdmissionReads({ perHour: AI_AGENT_LIMIT_DEFAULTS.maxVerdictRunsPerHour });
     const result = await createAndEnqueueAgentRun(
       input({ profile: 'verdict', dedupeKey: 'alert-verdict:a3' }),
     );
     expect(result).toEqual({ created: false, skipped: 'verdict_rate' });
+  });
+
+  it('admits a verdict run whose hourly count sits strictly between the full cap (20) and the verdict cap (200)', async () => {
+    // Same discrimination gap as the concurrency test above, for the
+    // per-hour cap: a hard-coded maxRunsPerHour for both profiles would
+    // refuse this (50 >= 20) even though the skip-reason ternary alone would
+    // still report 'verdict_rate'.
+    seedVerdictAdmissionReads({ perHour: 50 });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'verdict', dedupeKey: 'alert-verdict:a7' }),
+    );
+    expect(result).toMatchObject({ created: true });
   });
 
   it('skips the cooldown step entirely for a verdict run, even with cooldownSeconds > 0', async () => {
