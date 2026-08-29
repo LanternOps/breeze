@@ -218,5 +218,6 @@ describe('Sidebar — SSO (sso:admin) and platform-admin gating', () => {
 
     expect(has(container, '/admin/third-party-catalog')).toBe(true);
     expect(has(container, '/admin/connected-apps')).toBe(true);
+    expect(hasSectionHeader(container, 'Administration')).toBe(true);
   });
 });

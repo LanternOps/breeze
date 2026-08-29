@@ -248,6 +248,20 @@ describe('sidebar i18n seed', () => {
     expect(screen.queryByText('Network Monitor')).not.toBeInTheDocument();
   });
 
+  it.each(['/software-inventory', '/software-policies'])(
+    'highlights the single Software item for alias path %s',
+    async (path) => {
+      const { container } = render(<Sidebar currentPath={path} />);
+      const link = await waitFor(() => {
+        const a = container.querySelector('a[href="/software"]');
+        expect(a).not.toBeNull();
+        return a as HTMLAnchorElement;
+      });
+      expect(link.className).toContain('bg-primary');
+      expect(container.querySelector(`a[href="${path}"]`)).toBeNull();
+    },
+  );
+
   it('switches an already-mounted sidebar when the language changes', async () => {
     render(<Sidebar currentPath="/" />);
     expect(await screen.findByText('Dashboard')).toBeInTheDocument();
