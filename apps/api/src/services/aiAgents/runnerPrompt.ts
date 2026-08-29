@@ -73,8 +73,11 @@ export interface AgentRunTicketPromptContext {
   category: string | null;
   tags: string[];
   dueDate: string | null;
-  /** Oldest first — see `ticketContext.ts`'s `assembleTicketContext`. */
-  comments: Array<{ authorName: string | null; content: string; createdAt: string }>;
+  /** Oldest first — see `ticketContext.ts`'s `assembleTicketContext`.
+   *  `authorType` is a non-identifying role label ('portal'/'email'/
+   *  'internal'/...), never the commenter's name — see
+   *  `ticketContext.ts`'s `TicketContextComment` for why. */
+  comments: Array<{ authorType: string | null; content: string; createdAt: string }>;
   /** True when `ticketContext.ts` cut comments/description to fit its byte ceiling. */
   truncated: boolean;
 }
@@ -222,6 +225,20 @@ export function buildAgentRunTaskPrompt(ctx: AgentRunPromptContext): string {
  * history `ticketContext.ts` assembled. Comments are oldest-first — see
  * `AgentRunTicketPromptContext`'s docstring.
  */
+/**
+ * Non-identifying role label for a comment, from `ticket_comments.author_type`
+ * ('portal' | 'email' | 'internal' | ...) — never the commenter's own name.
+ * Requester-originated comments (submitted via the portal or by inbound
+ * email) are the ones the design authority's PII exclusion is actually
+ * guarding, so they get an explicit label; anything else falls back to a
+ * generic 'Technician' since only staff can author the non-portal/email
+ * comment types this module ever sees (see `ticketContext.ts`'s
+ * `HUMAN_ORIGIN_KIND`/`isPublic` filters).
+ */
+function commentAuthorLabel(authorType: string | null): string {
+  return authorType === 'portal' || authorType === 'email' ? 'Requester' : 'Technician';
+}
+
 function ticketPromptLines(ticket: AgentRunTicketPromptContext): string[] {
   const lines: string[] = [''];
   lines.push(`Ticket: ${ticket.subject}`);
@@ -237,7 +254,7 @@ function ticketPromptLines(ticket: AgentRunTicketPromptContext): string[] {
     lines.push('');
     lines.push('Comment history (oldest first):');
     for (const comment of ticket.comments) {
-      lines.push(`- [${comment.createdAt}] ${comment.authorName ?? 'Unknown'}: ${comment.content}`);
+      lines.push(`- [${comment.createdAt}] ${commentAuthorLabel(comment.authorType)}: ${comment.content}`);
     }
   }
 

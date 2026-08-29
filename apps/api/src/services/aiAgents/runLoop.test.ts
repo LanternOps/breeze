@@ -1354,7 +1354,7 @@ describe('executeAgentRun', () => {
           dueDate: null,
         },
         ticketComments: [
-          { authorName: 'Jane Doe', content: 'Still <b>broken</b> after reboot.', createdAt: '2026-08-27T12:00:00Z' },
+          { authorType: 'portal', content: 'Still <b>broken</b> after reboot.', createdAt: '2026-08-27T12:00:00Z' },
         ],
       });
 
@@ -1363,13 +1363,75 @@ describe('executeAgentRun', () => {
       const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
       expect(prompt).toContain('Printer not working');
       expect(prompt).toContain('The printer shows an error light.');
-      expect(prompt).toContain('Jane Doe');
+      // Role label, never the requester's own name (PII exclusion).
+      expect(prompt).toContain('Requester');
       expect(prompt).toContain('Still broken after reboot.');
       // The trust boundary held: no raw markup reached the model.
       expect(prompt).not.toMatch(/<[a-z/][^>]*>/i);
 
       const systemPrompt = String(lastQueryOptions!.systemPrompt);
       expect(systemPrompt).toContain('NEVER posts a reply or note to the ticket automatically');
+    });
+
+    it('never leaks a comment author\'s name or ticket submitter PII into the prompt', async () => {
+      seedRows({
+        triggerKind: 'ticket',
+        deviceId: null,
+        alertId: null,
+        ticketId: TICKET_ID,
+        ticket: {
+          id: TICKET_ID,
+          subject: 'Printer not working',
+          description: 'The printer shows an error light.',
+          status: 'open',
+          priority: 'high',
+          category: 'hardware',
+          tags: ['printer'],
+          dueDate: null,
+          // Named projection, not a spread — these must never reach the
+          // prompt even though the mock row carries them.
+          submitterName: 'Jane Doe',
+          submitterEmail: 'jane.doe@example.com',
+          customFields: { secretNote: 'internal-only-value' },
+        },
+        ticketComments: [
+          { authorType: 'portal', authorName: 'Jane Doe', content: 'Still broken after reboot.', createdAt: '2026-08-27T12:00:00Z' },
+        ],
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).not.toContain('Jane Doe');
+      expect(prompt).not.toContain('jane.doe@example.com');
+      expect(prompt).not.toContain('internal-only-value');
+    });
+
+    it('org-pins the RLS-bypassing ticket/comment reads and applies the design-authority filters', async () => {
+      seedRows({
+        triggerKind: 'ticket',
+        deviceId: null,
+        alertId: null,
+        ticketId: TICKET_ID,
+        ticketComments: [
+          { authorType: 'portal', content: 'Still broken.', createdAt: '2026-08-27T12:00:00Z' },
+        ],
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      const ticketSelect = dbMockState.selects.find((s) => s.table === 'tickets');
+      const commentSelect = dbMockState.selects.find((s) => s.table === 'ticket_comments');
+      const ticketWhere = compiled(ticketSelect?.where);
+      const commentWhere = compiled(commentSelect?.where);
+      // Both reads run inside a system context (full RLS bypass), so the
+      // tenant predicate and the design-authority content filters all have
+      // to be in the WHERE clause by hand.
+      expect(ticketWhere).toContain('"org_id"');
+      expect(ticketWhere).toContain('"deleted_at"');
+      expect(commentWhere).toContain('"origin_principal_kind"');
+      expect(commentWhere).toContain('"is_public"');
+      expect(commentWhere).toContain('"deleted_at"');
     });
 
     it('a non-ticket run carries no ticket section at all', async () => {

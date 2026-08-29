@@ -38,7 +38,7 @@ function ticketCtx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunProm
       tags: ['printer', 'hardware'],
       dueDate: '2026-09-01T00:00:00.000Z',
       comments: [
-        { authorName: 'Jane Doe', content: 'Still broken after reboot.', createdAt: '2026-08-27T12:00:00.000Z' },
+        { authorType: 'portal', content: 'Still broken after reboot.', createdAt: '2026-08-27T12:00:00.000Z' },
       ],
       truncated: false,
     },
@@ -174,8 +174,31 @@ describe('buildAgentRunTaskPrompt', () => {
     expect(prompt).toContain('hardware');
     expect(prompt).toContain('printer');
     expect(prompt).toContain('The office printer shows an error light.');
-    expect(prompt).toContain('Jane Doe');
+    // A portal-origin comment renders as a role label, never the requester's
+    // own name — see `commentAuthorLabel` / `TicketContextComment`'s header.
+    expect(prompt).toContain('Requester');
     expect(prompt).toContain('Still broken after reboot.');
+  });
+
+  it('never renders a comment author\'s identity — only the non-identifying authorType role label', () => {
+    // Even if a raw author name somehow reached this layer, the prompt
+    // context type carries only `authorType` — there is no name field to
+    // render. Prove the requester-identifying fixture value never surfaces.
+    const prompt = buildAgentRunTaskPrompt(ticketCtx());
+    expect(prompt).not.toContain('Jane Doe');
+  });
+
+  it('renders "Technician" for an internal-staff comment', () => {
+    const prompt = buildAgentRunTaskPrompt(ticketCtx({
+      ticket: {
+        subject: 'Printer not working', description: null, status: 'open', priority: 'high',
+        category: 'hardware', tags: [], dueDate: null,
+        comments: [{ authorType: 'internal', content: 'Dispatched a tech.', createdAt: '2026-08-27T12:00:00.000Z' }],
+        truncated: false,
+      },
+    }));
+    expect(prompt).toContain('Technician');
+    expect(prompt).not.toContain('Requester');
   });
 
   it('handles a ticket with no comments and no due date without emitting "undefined"/"null"', () => {

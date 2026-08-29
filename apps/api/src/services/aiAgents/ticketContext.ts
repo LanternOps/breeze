@@ -17,7 +17,9 @@
  *  - **PII-excluded.** `submitterEmail`/`submitterName`/`submittedBy`,
  *    `customFields`, `attachments`, and `externalTicketUrl` are never
  *    selected off the `tickets` row at all — there is no field to
- *    accidentally forward.
+ *    accidentally forward. The same applies to comments: `authorName` (for a
+ *    portal/email comment, the REQUESTER's own display name) is never
+ *    selected either — only `authorType`, a non-identifying role label, is.
  *  - **Agent-note-excluded.** Only comments with `originPrincipalKind =
  *    'user'` are read (see `ticketHelpdeskSubscriber.ts`'s
  *    `HUMAN_ORIGIN_KIND`) — an agent's own prior proposal (were one ever
@@ -56,7 +58,11 @@ const DESCRIPTION_TRUNCATE_STEP_CHARS = 256;
 const TRUNCATION_SUFFIX = '… [truncated]';
 
 export interface TicketContextComment {
-  authorName: string | null;
+  /** `ticket_comments.author_type` ('portal' | 'email' | 'internal' | ...) —
+   *  NEVER `authorName`: that column holds the actor's own display name
+   *  (for a portal/email comment, the REQUESTER's name), which is exactly
+   *  the `submitterName` PII the design authority excludes from context. */
+  authorType: string | null;
   content: string;
   createdAt: string;
 }
@@ -104,7 +110,7 @@ interface RawTicketRow {
 }
 
 interface RawCommentRow {
-  authorName: string | null;
+  authorType: string | null;
   content: string;
   createdAt: Date | string;
 }
@@ -129,7 +135,7 @@ export function assembleTicketContext(args: {
     .slice()
     .reverse()
     .map((c) => ({
-      authorName: c.authorName,
+      authorType: c.authorType,
       content: stripHtml(c.content),
       createdAt: isoString(c.createdAt) as string,
     }));
@@ -138,7 +144,7 @@ export function assembleTicketContext(args: {
 
   function totalBytes(): number {
     return byteLength(subject) + byteLength(description)
-      + comments.reduce((sum, c) => sum + byteLength(c.content) + byteLength(c.authorName ?? ''), 0);
+      + comments.reduce((sum, c) => sum + byteLength(c.content), 0);
   }
 
   // Oldest comment first (index 0, post-reverse) — the design authority's
@@ -177,9 +183,11 @@ export const TICKET_CONTEXT_MAX_COMMENTS = 10;
  * already runs inside a system DB context (see that module's header) — no
  * context management here.
  *
- * Returns `null` when the ticket is missing or not (or no longer) in `orgId`
- * — same "moved/deleted reads as absent" posture `loadRunContext` already
- * applies to `device`/`alert`.
+ * Returns `null` when the ticket is missing, soft-deleted (`deletedAt IS NOT
+ * NULL` — a ticket removed from every staff/portal surface must not still
+ * reach the model), or not (or no longer) in `orgId` — same "moved/deleted
+ * reads as absent" posture `loadRunContext` already applies to `device`/
+ * `alert`.
  */
 export async function loadTicketContext(ticketId: string, orgId: string): Promise<TicketRunContext | null> {
   const [ticketRow] = await db
@@ -194,14 +202,16 @@ export async function loadTicketContext(ticketId: string, orgId: string): Promis
       dueDate: tickets.dueDate,
     })
     .from(tickets)
-    .where(and(eq(tickets.id, ticketId), eq(tickets.orgId, orgId)))
+    .where(and(eq(tickets.id, ticketId), eq(tickets.orgId, orgId), isNull(tickets.deletedAt)))
     .limit(1);
   if (!ticketRow) return null;
 
   // Human, public, non-deleted comments only — see this module's header.
+  // NOTE: authorType (a role label), never authorName — see
+  // `TicketContextComment`'s docstring for why that column is excluded.
   const commentRows = await db
     .select({
-      authorName: ticketComments.authorName,
+      authorType: ticketComments.authorType,
       content: ticketComments.content,
       createdAt: ticketComments.createdAt,
     })

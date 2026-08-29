@@ -88,10 +88,24 @@ describe('assembleTicketContext — HTML stripping (hostile-input trust boundary
   it('strips tags from comment content and preserves the text', () => {
     const ctx = assembleTicketContext({
       ticket: baseTicket(),
-      comments: [{ authorName: 'Jane', content: 'Still <i>broken</i> after reboot.', createdAt: '2026-08-27T00:00:00Z' }],
+      comments: [{ authorType: 'portal', content: 'Still <i>broken</i> after reboot.', createdAt: '2026-08-27T00:00:00Z' }],
     });
     expect(ctx.comments[0]!.content).toBe('Still broken after reboot.');
     expect(ctx.comments[0]!.content).not.toMatch(/[<>]/);
+  });
+});
+
+describe('assembleTicketContext — PII exclusion (requester identity trust boundary)', () => {
+  it('never carries an author name — only the non-identifying authorType role label', () => {
+    const ctx = assembleTicketContext({
+      ticket: baseTicket(),
+      // A raw row that (incorrectly) also carried authorName must not leak
+      // it through — the assembler's output type has no such field at all.
+      comments: [{ authorType: 'portal', authorName: 'Jane Doe', content: 'Still broken.', createdAt: '2026-08-27T00:00:00Z' } as never],
+    });
+    expect(ctx.comments[0]).toEqual({ authorType: 'portal', content: 'Still broken.', createdAt: '2026-08-27T00:00:00Z' });
+    expect(ctx.comments[0]).not.toHaveProperty('authorName');
+    expect(JSON.stringify(ctx)).not.toContain('Jane Doe');
   });
 });
 
@@ -100,9 +114,9 @@ describe('assembleTicketContext — comment ordering', () => {
     const ctx = assembleTicketContext({
       ticket: baseTicket(),
       comments: [
-        { authorName: 'C', content: 'third', createdAt: '2026-08-27T03:00:00Z' },
-        { authorName: 'B', content: 'second', createdAt: '2026-08-27T02:00:00Z' },
-        { authorName: 'A', content: 'first', createdAt: '2026-08-27T01:00:00Z' },
+        { authorType: 'portal', content: 'third', createdAt: '2026-08-27T03:00:00Z' },
+        { authorType: 'internal', content: 'second', createdAt: '2026-08-27T02:00:00Z' },
+        { authorType: 'portal', content: 'first', createdAt: '2026-08-27T01:00:00Z' },
       ],
     });
     expect(ctx.comments.map((c) => c.content)).toEqual(['first', 'second', 'third']);
@@ -112,7 +126,7 @@ describe('assembleTicketContext — comment ordering', () => {
 describe('assembleTicketContext — size ceiling and truncation', () => {
   it('never exceeds the hard byte ceiling regardless of input size', () => {
     const hugeComments = Array.from({ length: 10 }, (_, i) => ({
-      authorName: `User ${i}`,
+      authorType: 'portal',
       content: 'x'.repeat(5000),
       createdAt: `2026-08-2${i % 8}T00:00:00Z`,
     }));
@@ -133,10 +147,10 @@ describe('assembleTicketContext — size ceiling and truncation', () => {
     // NEWEST-FIRST, matching the `ORDER BY created_at DESC` shape
     // `loadTicketContext` actually queries with (see the function's header).
     const comments = [
-      { authorName: 'D', content: 'd'.repeat(4000), createdAt: '2026-08-27T04:00:00Z' }, // newest
-      { authorName: 'C', content: 'c'.repeat(4000), createdAt: '2026-08-27T03:00:00Z' },
-      { authorName: 'B', content: 'b'.repeat(4000), createdAt: '2026-08-27T02:00:00Z' },
-      { authorName: 'A', content: 'a'.repeat(4000), createdAt: '2026-08-27T01:00:00Z' }, // oldest
+      { authorType: 'internal', content: 'd'.repeat(4000), createdAt: '2026-08-27T04:00:00Z' }, // newest
+      { authorType: 'portal', content: 'c'.repeat(4000), createdAt: '2026-08-27T03:00:00Z' },
+      { authorType: 'internal', content: 'b'.repeat(4000), createdAt: '2026-08-27T02:00:00Z' },
+      { authorType: 'portal', content: 'a'.repeat(4000), createdAt: '2026-08-27T01:00:00Z' }, // oldest
     ];
     const ctx = assembleTicketContext({ ticket: baseTicket({ description: 'short' }), comments });
     expect(ctx.truncated).toBe(true);
@@ -158,7 +172,7 @@ describe('assembleTicketContext — size ceiling and truncation', () => {
   it('does not mark truncated for ordinary small content', () => {
     const ctx: TicketRunContext = assembleTicketContext({
       ticket: baseTicket(),
-      comments: [{ authorName: 'A', content: 'All good now, thanks!', createdAt: '2026-08-27T00:00:00Z' }],
+      comments: [{ authorType: 'portal', content: 'All good now, thanks!', createdAt: '2026-08-27T00:00:00Z' }],
     });
     expect(ctx.truncated).toBe(false);
     expect(ctx.description).not.toMatch(/truncated/);
