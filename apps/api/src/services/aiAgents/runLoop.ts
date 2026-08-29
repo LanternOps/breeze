@@ -91,7 +91,7 @@ import { executeBuiltInPlaybookForRun } from './playbookActExecutor';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
 import { loadTicketContext, type TicketRunContext } from './ticketContext';
 import { loadAnomalyContext, type AnomalyRunContext } from './anomalyContext';
-import { readAiKillState } from '../aiKillState';
+import { getCachedAiKillStateSnapshot, readAiKillState } from '../aiKillState';
 import {
   closeAgentRunSession,
   completeToolExecution,
@@ -721,6 +721,22 @@ export function createAgentRunPreToolUse(args: {
     // either a stale prompt/tool cache or a hostile attempt to call it
     // anyway — denied and recorded either way.
     if (isOutcomeTool(toolName)) {
+      // Review fix (wave P2-1 fix round 1): this branch sits AHEAD of
+      // `checkAgentGuardrails`, which is where the env-flag + DB kill switch
+      // are normally enforced — an outcome tool bypassed both entirely.
+      // Same two checks, same deny reasons, so a kill-switched run cannot
+      // record a verdict either.
+      if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) {
+        const reason = 'Autonomous AI agents are disabled';
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: reason };
+      }
+      const killState = getCachedAiKillStateSnapshot();
+      if (killState.killed) {
+        const reason = `Autonomous AI agents are kill-switched (epoch ${killState.epoch})`;
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: reason };
+      }
       if (!isVerdictProfile(run)) {
         outcome.deniedActions.push({ tool: toolName, reason: 'outcome tool is only available to verdict-profile runs' });
         return { allowed: false, error: 'not available on this run' };
@@ -734,6 +750,23 @@ export function createAgentRunPreToolUse(args: {
     }
 
     const check = checkAgentGuardrails(toolName, input, guardrailPolicy);
+
+    // Review fix (wave P2-1 fix round 1, PLAN CHANGE): a verdict run is
+    // read-only, full stop — ANY disposition other than 'allow' (a 'propose'
+    // or an 'act' the ordinary guardrail would otherwise record or execute)
+    // is denied outright instead. Defense in depth on top of
+    // `guardrailPolicy.toolAllowlist` already being built from the verdict
+    // floor in `driveSdkLoop` (which makes an unlisted mutation deny for the
+    // allowlist reason before this is even reached) — this catches anything
+    // that reasoning missed, e.g. a read-only-looking tool with a mutating
+    // action this list didn't anticipate. `check.disposition === 'deny'`
+    // also matches here (denied either way; the reason below is just more
+    // specific to a verdict run than whatever `checkAgentGuardrails` said).
+    if (isVerdictProfile(run) && check.disposition !== 'allow') {
+      const reason = 'verdict runs are read-only';
+      outcome.deniedActions.push({ tool: toolName, reason });
+      return { allowed: false, error: reason };
+    }
 
     if (check.disposition === 'deny') {
       const reason = check.reason ?? 'Denied by agent guardrails';
@@ -1156,6 +1189,24 @@ interface LoopResult {
 async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<LoopResult> {
   const { run } = ctx;
   const limits = effective.limits;
+  // Phase 2 wave P2-1 (alert verdicts). Computed FIRST — before
+  // `guardrailPolicy` and the execution-ledger session below — so both can
+  // read off it. `verdictLimits`'s output is used ONLY for the SDK `query()`
+  // options further down (`maxTurns`/`maxBudgetUsd`) and the local budget
+  // backstop — never re-validated through `aiAgentLimitsSchema` (its
+  // `maxActionsPerRun: 0` is below that schema's `min(1)`) and never written
+  // back into `run.policySnapshot`. `verdictAllowlist` is `null` for a
+  // `full`-profile run (nothing to narrow); for a verdict run it is
+  // `verdictToolAllowlist`'s pinned floor, reused below for BOTH
+  // `guardrailPolicy.toolAllowlist` (review fix, wave P2-1 fix round 1 —
+  // supersedes the original "intersects the agent's allowlist" design: a
+  // bare `manage_alerts` entry in the agent's OWN allowlist must never let
+  // `acknowledge`/`resolve`/`suppress` reach `checkAgentGuardrails`'s
+  // allowlist gate on a verdict run) and the SDK's `allowedTools` exposure —
+  // one computation, one source of truth for what a verdict run can reach.
+  const verdict = isVerdictProfile(run);
+  const runLimits = verdict ? verdictLimits(limits) : limits;
+  const verdictAllowlist = verdict ? verdictToolAllowlist(effective.toolAllowlist) : null;
   // Computed here (not by the SDK-loop timer below) so the pre-hook's
   // act-mode playbook executor (Task 5, #3826) can enforce the SAME
   // wall-clock ceiling independently of the SDK's `abortController` — a
@@ -1179,7 +1230,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   const guardrailPolicy: AgentGuardrailPolicy = {
     enabled: effective.enabled,
     mode: run.modeAtStart,
-    toolAllowlist: effective.toolAllowlist,
+    toolAllowlist: verdictAllowlist ?? effective.toolAllowlist,
     protectedResources: effective.protectedResources,
     deviceId: run.deviceId,
     deviceSiteId: ctx.device?.siteId ?? null,
@@ -1219,7 +1270,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
       orgId: run.orgId,
       deviceId: run.deviceId,
       model,
-      maxTurns: Math.max(1, limits.maxTurnsPerRun),
+      maxTurns: Math.max(1, runLimits.maxTurnsPerRun),
     });
   } catch (error) {
     console.error('[aiAgentRunLoop] failed to create the execution-ledger session', {
@@ -1251,18 +1302,15 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     agentUserId: agentAuth.user.id,
   });
 
-  // Phase 2 wave P2-1 (alert verdicts). `verdictLimits`'s output is used ONLY
-  // for the SDK `query()` options below (`maxTurns`/`maxBudgetUsd`) — never
-  // re-validated through `aiAgentLimitsSchema` (its `maxActionsPerRun: 0` is
-  // below that schema's `min(1)`) and never written back into
-  // `run.policySnapshot`. `exposedNames` governs SDK-level tool EXPOSURE for
-  // a verdict run, not a second guardrail — `checkAgentGuardrails` above is
-  // still the sole authority for anything the model does manage to call; see
-  // `verdictToolAllowlist`'s own docstring.
-  const verdict = isVerdictProfile(run);
-  const runLimits = verdict ? verdictLimits(limits) : limits;
-  const exposedNames = verdict
-    ? verdictToolAllowlist(effective.toolAllowlist).map((name) => (
+  // `exposedNames` governs SDK-level tool EXPOSURE for a verdict run, not a
+  // second guardrail — `checkAgentGuardrails` (via `guardrailPolicy` above)
+  // is still the sole authority for anything the model does manage to call;
+  // see `verdictToolAllowlist`'s own docstring. Reuses `verdictAllowlist`
+  // computed at the top of this function — the SAME list that narrowed
+  // `guardrailPolicy.toolAllowlist` above, so exposure and authority can
+  // never drift apart.
+  const exposedNames = verdictAllowlist
+    ? verdictAllowlist.map((name) => (
       isOutcomeTool(name) ? OUTCOME_MCP_TOOL_NAMES[name] : `mcp__breeze__${name.split(':')[0]}`
     ))
     : BREEZE_MCP_TOOL_NAMES;
@@ -1371,7 +1419,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
             break;
           }
 
-          if (costCents > limits.maxBudgetCentsPerRun) {
+          if (costCents > runLimits.maxBudgetCentsPerRun) {
             budgetExceeded = true;
             abortController.abort();
             break;
@@ -1515,10 +1563,16 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // A run that hit a ceiling before producing anything a human can act on is
     // a FAILURE, not a quiet success: the reviewer needs to know the agent was
     // cut off, not that it found nothing. A run that was cut off after doing
-    // useful work finishes normally, with the flag in `outcome`.
+    // useful work finishes normally, with the flag in `outcome`. A verdict
+    // run's "useful work" IS `outcome.alertVerdict` (review fix, wave P2-1 fix
+    // round 1) — without this, a verdict run that called `submit_alert_verdict`
+    // and then hit `error_max_turns` with no further prose would finish
+    // `failed('max_turns_exceeded')` despite having done its ONE job, wrongly
+    // counting against the agent's circuit breaker (`recordRunTerminal`).
     const producedSomething =
       outcome.executedActions.length > 0
       || outcome.proposedActions.length > 0
+      || outcome.alertVerdict !== undefined
       || result.summary.trim().length > 0;
 
     const ceiling = outcome.wallClockExceeded
@@ -1614,27 +1668,37 @@ async function finishRun(
   // SAME by-id entry point. A failure here must never redefine the run's
   // terminal status, so it's caught here and durably retried instead of
   // left to just fail silently as the old inline version did.
-  try {
-    await deliverRunFinishedNotifications(ctx.run.id);
-  } catch (error) {
-    console.error('[aiAgentRunLoop] failed to notify run recipients — enqueuing durable retry', {
-      runId: ctx.run.id, error,
-    });
-    await enqueueAgentNotifyRetry(ctx.run.id);
-  }
+  //
+  // Review fix (wave P2-1 fix round 1): a verdict run is skipped entirely —
+  // its "finished" surface is the alert badge/classification, not a run
+  // notification a technician has to act on, and `scheduleFixWatch` just
+  // below is act-lane only (a verdict run never executes anything to watch
+  // for regression). Both are best-effort/failure-tolerant machinery built
+  // for `full`-profile runs; there is nothing here for a verdict run to skip
+  // INTO a gap — this is a deliberate no-op, not a missing feature.
+  if (!isVerdictProfile(ctx.run)) {
+    try {
+      await deliverRunFinishedNotifications(ctx.run.id);
+    } catch (error) {
+      console.error('[aiAgentRunLoop] failed to notify run recipients — enqueuing durable retry', {
+        runId: ctx.run.id, error,
+      });
+      await enqueueAgentNotifyRetry(ctx.run.id);
+    }
 
-  // Fix-held watch scheduling (wave 6 PR 2, Task 3, #3828) — best-effort and
-  // deliberately never affects this run's own status: `scheduleFixWatch`
-  // swallows every failure internally (see its header). Only a clean
-  // `completed` finish is eligible at all (`awaiting_approval`/`failed` never
-  // are — `isFixWatchEligible` would reject them anyway via `modeAtStart`/
-  // `verification`, but gating on `status` here avoids the query entirely on
-  // the common non-completed paths).
-  if (status === 'completed') {
-    await scheduleFixWatch(
-      { id: ctx.run.id, orgId: ctx.run.orgId, agentId: ctx.run.agentId, alertId: ctx.run.alertId, modeAtStart: ctx.run.modeAtStart },
-      result.outcome,
-    );
+    // Fix-held watch scheduling (wave 6 PR 2, Task 3, #3828) — best-effort and
+    // deliberately never affects this run's own status: `scheduleFixWatch`
+    // swallows every failure internally (see its header). Only a clean
+    // `completed` finish is eligible at all (`awaiting_approval`/`failed` never
+    // are — `isFixWatchEligible` would reject them anyway via `modeAtStart`/
+    // `verification`, but gating on `status` here avoids the query entirely on
+    // the common non-completed paths).
+    if (status === 'completed') {
+      await scheduleFixWatch(
+        { id: ctx.run.id, orgId: ctx.run.orgId, agentId: ctx.run.agentId, alertId: ctx.run.alertId, modeAtStart: ctx.run.modeAtStart },
+        result.outcome,
+      );
+    }
   }
 }
 

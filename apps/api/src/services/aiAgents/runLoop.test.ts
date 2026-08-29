@@ -160,15 +160,21 @@ vi.mock('./effectivePolicy', () => ({ resolveEffectiveAgentSystem }));
 // table-queue db mock's coverage of a table it never otherwise touches.
 // Default: not killed, always — this file's own dedicated kill-switch
 // coverage lives in `aiGuardrails.agentPrincipal.contract.test.ts` and
-// `actRevalidation.test.ts`; here it only has to stay inert. Both exports
-// matter: `readAiKillState` is what `isStoppedBeforeStart` calls directly,
+// `actRevalidation.test.ts`; here it only has to stay inert EXCEPT for the
+// dedicated "verdict pre-hook kill-switch" tests below, which override it
+// per-case (review fix, wave P2-1 fix round 1 — the outcome-tool branch of
+// `createAgentRunPreToolUse` now reads this directly). Both exports matter:
+// `readAiKillState` is what `isStoppedBeforeStart` calls directly,
 // `getCachedAiKillStateSnapshot` is what the REAL (unmocked)
-// `checkAgentGuardrails` reads on every dispatch in this file.
+// `checkAgentGuardrails` — and now the outcome-tool branch too — reads on
+// every dispatch in this file.
 const readAiKillState = vi.hoisted(() =>
   vi.fn<() => Promise<{ killed: boolean; epoch: number }>>(async () => ({ killed: false, epoch: 0 })));
+const getCachedAiKillStateSnapshot = vi.hoisted(() =>
+  vi.fn<() => { killed: boolean; epoch: number }>(() => ({ killed: false, epoch: 0 })));
 vi.mock('../aiKillState', () => ({
   readAiKillState,
-  getCachedAiKillStateSnapshot: () => ({ killed: false, epoch: 0 }),
+  getCachedAiKillStateSnapshot,
 }));
 
 // `revalidateActExecution` and `verifyActExecution`/`recordActVerifyFailureAlert`
@@ -302,7 +308,7 @@ import {
 } from './runLoop';
 import type { AgentRunOutcome } from './runLoop';
 import { VERIFY_READ_TIMEOUT_MS } from './actVerify';
-import { POST_TOOL_USE_TIMEOUT_MS } from '../aiAgentSdkTools';
+import { BREEZE_MCP_TOOL_NAMES, POST_TOOL_USE_TIMEOUT_MS } from '../aiAgentSdkTools';
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -535,6 +541,7 @@ beforeEach(() => {
   // under a live `mode: 'act'` guardrail policy — a mismatched default here
   // would only ever surface as "Cannot use 'in' operator on undefined" in a
   // test that forgot to configure it, which is exactly what should happen.
+  getCachedAiKillStateSnapshot.mockReset().mockReturnValue({ killed: false, epoch: 0 });
   revalidateActExecution.mockReset();
   verifyActExecution.mockReset().mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
   recordActVerifyFailureAlert.mockReset().mockResolvedValue(undefined);
@@ -2006,29 +2013,154 @@ describe('verdict profile in the run loop (P2-1)', () => {
     expect(outcome.toolExecutionCount).toBe(0);
   });
 
-  it('a verdict run exposes only the intersected allowlist + outcome tool to the SDK', async () => {
+  // Review fix (fix round 1, IMPORTANT 4): the outcome-tool branch sits AHEAD
+  // of `checkAgentGuardrails`, which is where the env-flag + DB kill switch
+  // are normally enforced — closing that gap so a kill-switched run cannot
+  // record a verdict either.
+  it('outcome tool is denied when the env-level kill switch is off, even on a verdict run', async () => {
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'false');
+    const outcome = emptyOutcome();
+    const pre = createAgentRunPreToolUse({ ...preArgs('verdict'), outcome } as never);
+
+    const result = await pre('submit_alert_verdict', validVerdict);
+
+    expect(result).toEqual({ allowed: false, error: 'Autonomous AI agents are disabled' });
+    expect(outcome.alertVerdict).toBeUndefined();
+  });
+
+  it('outcome tool is denied when the DB kill switch is engaged, even on a verdict run', async () => {
+    getCachedAiKillStateSnapshot.mockReturnValue({ killed: true, epoch: 7 });
+    const outcome = emptyOutcome();
+    const pre = createAgentRunPreToolUse({ ...preArgs('verdict'), outcome } as never);
+
+    const result = await pre('submit_alert_verdict', validVerdict);
+
+    expect(result).toEqual({ allowed: false, error: 'Autonomous AI agents are kill-switched (epoch 7)' });
+    expect(outcome.alertVerdict).toBeUndefined();
+  });
+
+  // Review fix (fix round 1, IMPORTANT 2, PLAN CHANGE): a bare `manage_alerts`
+  // in the guardrail's toolAllowlist (which on a FULL run also grants
+  // acknowledge/resolve/suppress) must never let this mutation reach
+  // 'propose' on a verdict run — denied outright instead, defense-in-depth
+  // on top of `driveSdkLoop` no longer building that allowlist from the
+  // agent's raw `full`-profile list in the first place.
+  it('verdict run denies any non-allow disposition outright (propose/act), even with a broad allowlist', async () => {
+    const outcome = emptyOutcome();
+    const pre = createAgentRunPreToolUse({
+      run: { id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, profile: 'verdict' },
+      agentName: 'Front Desk Triage',
+      agentAuth: {},
+      agentKind: 'triage',
+      guardrailPolicy: {
+        enabled: true,
+        mode: 'shadow',
+        toolAllowlist: ['manage_alerts'],
+        protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
+        deviceId: DEVICE_ID,
+        deviceSiteId: SITE_ID,
+      },
+      outcome,
+      intentIds: [],
+      allowedPending: new Map<string, number>(),
+      sessionId: null,
+      executionIdPending: new Map<string, Array<string | null>>(),
+      actPinPending: new Map<string, Array<unknown>>(),
+      actReservation: { count: 0 },
+      deadlineMs: Date.now() + 60_000,
+    } as never);
+
+    const result = await pre('manage_alerts', { action: 'suppress', alertId: ALERT_ID, suppressDuration: 24 });
+
+    expect(result).toEqual({ allowed: false, error: 'verdict runs are read-only' });
+    expect(outcome.deniedActions).toContainEqual({ tool: 'manage_alerts', reason: 'verdict runs are read-only' });
+    expect(outcome.proposedActions).toEqual([]);
+  });
+
+  // Review fix (fix round 1, IMPORTANT 2 + 5, PLAN CHANGE — supersedes the
+  // original "intersects the agent's allowlist" design): the floor is served
+  // regardless of what the agent's OWN allowlist grants.
+  it('always exposes the pinned floor + outcome tool to the SDK, regardless of the agent allowlist, with the verdict limits', async () => {
     seedRows({
-      effective: policy({ toolAllowlist: ['manage_alerts', 'get_device_details'] }),
+      // Deliberately mismatched agent allowlist — proves the floor is served
+      // regardless, not intersected.
+      effective: policy({ toolAllowlist: ['manage_services'] }),
       profile: 'verdict',
     });
     scriptQuery({ assistantText: 'Verdict recorded.' });
 
     await executeAgentRun(RUN_ID);
 
-    // Only the agent's own allowlist ∩ VERDICT_TOOL_ALLOWLIST, plus the
-    // outcome tool — `analyze_metrics`/`query_monitors` are in
-    // VERDICT_TOOL_ALLOWLIST but excluded here because the agent's OWN
-    // allowlist never granted them, and `manage_alerts:list`/`:get` collapse
-    // to one deduped MCP name.
     expect(lastQueryOptions?.allowedTools).toEqual([
       'mcp__breeze__manage_alerts',
       'mcp__breeze__get_device_details',
+      'mcp__breeze__analyze_metrics',
+      'mcp__breeze__query_monitors',
       'mcp__breeze__submit_alert_verdict',
     ]);
+    expect(lastQueryOptions?.maxTurns).toBe(3);
+    expect(lastQueryOptions?.maxBudgetUsd).toBe(0.02);
 
     const extraTools = createBreezeMcpServer.mock.calls[0]?.[4] as unknown[] | undefined;
     expect(extraTools).toBeDefined();
     expect(extraTools!.length).toBeGreaterThan(0);
   });
-});
 
+  it('a full-profile run gets the unrestricted registry tool set and no extraTools (negative control)', async () => {
+    seedRows({ effective: policy({ toolAllowlist: ['manage_services'] }) }); // profile defaults to 'full'
+    scriptQuery({ assistantText: 'All good.' });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions?.allowedTools).toEqual(BREEZE_MCP_TOOL_NAMES);
+    const extraTools = createBreezeMcpServer.mock.calls[0]?.[4] as unknown[] | undefined;
+    expect(extraTools ?? []).toEqual([]);
+  });
+
+  // Review fix (fix round 1, IMPORTANT 3): a verdict run that submitted its
+  // verdict but then hit `error_max_turns` before any further assistant text
+  // must NOT be marked a ceiling failure — `outcome.alertVerdict` alone is
+  // "produced something", same as an executed action or a proposal.
+  it('a verdict run that submitted its verdict then hit max_turns finishes normally, not failed', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({
+      toolCalls: [{ tool: 'submit_alert_verdict', input: validVerdict }],
+      // No assistantText: `result.summary` stays empty, so alertVerdict is
+      // the ONLY thing that can save this run from `!producedSomething`.
+      results: [resultMessage({ subtype: 'error_max_turns', is_error: true })],
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect(final.patch.errorCode).toBeUndefined();
+    const outcome = final.patch.outcome as AgentRunOutcome;
+    expect(outcome.alertVerdict).toEqual(validVerdict);
+    expect(outcome.maxTurnsExceeded).toBe(true);
+  });
+
+  // Review fix (fix round 1, MINOR 10): the badge is the surface for a
+  // verdict run, and fix-watches are act-lane only — neither applies.
+  it('finishRun skips run-finished notifications and fix-watch scheduling for a verdict-profile run', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({ assistantText: 'Verdict recorded.' });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(finalTransition()?.to).toBe('completed');
+    expect(resolveRecipientUserIds).not.toHaveBeenCalled();
+    expect(scheduleFixWatch).not.toHaveBeenCalled();
+  });
+
+  it('finishRun still notifies and schedules fix-watch for a full-profile run (contrast)', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }) }); // profile defaults to 'full'
+    scriptQuery({ assistantText: 'All good.' });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(finalTransition()?.to).toBe('completed');
+    expect(resolveRecipientUserIds).toHaveBeenCalled();
+    expect(scheduleFixWatch).toHaveBeenCalled();
+  });
+});

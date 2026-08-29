@@ -365,4 +365,15 @@ describe('buildAgentRunTaskPrompt', () => {
     expect(text).toContain('12 alerts');
     expect(text).not.toMatch(/run_script|execute_playbook/);
   });
+
+  // Review fix (fix round 1, MINOR 11) — same leak check the full-profile
+  // "device-less, alert-less manual run" case above runs, applied to the
+  // verdict rubric: a null alert/device/correlationGroup must render as
+  // absent sections, never as the literal string "undefined"/"null".
+  it('verdict prompt has no undefined/null leaks when alert, device, and correlation group are all absent', () => {
+    const text = buildAgentRunTaskPrompt(ctx({
+      profile: 'verdict', alert: null, device: null, correlationGroup: null,
+    }));
+    expect(text).not.toMatch(/undefined|null/);
+  });
 });

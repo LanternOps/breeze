@@ -12,9 +12,27 @@ describe('verdict profile', () => {
     expect(l.maxBudgetCentsPerRun).toBe(2);
     expect(l.maxActionsPerRun).toBe(0);
   });
-  it('intersects, never widens, and always includes the outcome tool', () => {
-    expect(verdictToolAllowlist(['manage_alerts:list', 'run_script'])).toEqual(['manage_alerts:list', 'submit_alert_verdict']);
-    expect(verdictToolAllowlist([])).toEqual(['submit_alert_verdict']);
+  // Review fix (fix round 1): a v1-v4 policy snapshot has no
+  // `verdictBudgetCentsPerRun` field at all (predates the wave-6 bump) — an
+  // in-flight run on one must still get a real (non-NaN) budget ceiling.
+  it('falls back to AI_AGENT_LIMIT_DEFAULTS.verdictBudgetCentsPerRun for a pre-P2-1 (v1-v4) snapshot', () => {
+    const { verdictBudgetCentsPerRun: _omitted, ...preP21Limits } = AI_AGENT_LIMIT_DEFAULTS;
+    const l = verdictLimits(preP21Limits as typeof AI_AGENT_LIMIT_DEFAULTS);
+    expect(l.maxBudgetCentsPerRun).toBe(AI_AGENT_LIMIT_DEFAULTS.verdictBudgetCentsPerRun);
+    expect(l.maxBudgetCentsPerRun).not.toBeNaN();
+  });
+  // Review fix (fix round 1, PLAN CHANGE — supersedes the original
+  // "intersects, never widens" design): the agent's OWN `full`-profile
+  // allowlist must never narrow (or, via a bare multi-action tool name like
+  // `manage_alerts`, effectively widen) a verdict run's exposure — the floor
+  // is served regardless.
+  it('always returns the pinned floor + outcome tool, ignoring the agent allowlist entirely', () => {
+    expect(verdictToolAllowlist(['manage_alerts:list', 'run_script'])).toEqual([...VERDICT_TOOL_ALLOWLIST, 'submit_alert_verdict']);
+    expect(verdictToolAllowlist([])).toEqual([...VERDICT_TOOL_ALLOWLIST, 'submit_alert_verdict']);
+    // A broad agent allowlist (bare `manage_alerts`, which on a FULL run also
+    // grants acknowledge/resolve/suppress) must not change the result either
+    // — this is the exact shape of the bug the plan change closes.
+    expect(verdictToolAllowlist(['manage_alerts', 'run_script', 'manage_services'])).toEqual([...VERDICT_TOOL_ALLOWLIST, 'submit_alert_verdict']);
   });
   it('every allowlisted tool/action is read-only', () => {
     for (const entry of VERDICT_TOOL_ALLOWLIST) {
