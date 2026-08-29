@@ -5,6 +5,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { isInteractiveUserSession, type AuthContext } from '../../middleware/auth';
 import { approvalRequests } from '../../db/schema/approvals';
 import { actionIntents, type ActionIntent } from '../../db/schema/actionIntents';
+import { isAgentIntentDecideAuthorized } from '../actionIntents/intentApprovers';
 import {
   assertApprovalAssurance,
   StepUpRequiredError,
@@ -163,7 +164,30 @@ export async function loadHomogeneousBatch(
       found.approval.status !== 'pending' ||
       !intent ||
       intent.approvalScope !== 'supervised' ||
-      intent.requestingAgentRunId == null
+      intent.requestingAgentRunId == null ||
+      // Live authorization, the SAME rule every other read surface applies
+      // (`isIntentRowLiveAuthorized` in routes/approvals.ts), specialised to
+      // the one shape a batch member can have. Row ownership alone is a
+      // durable bearer capability: the row was fanned out to a user who held
+      // action-and-target authority at creation time, and nothing else
+      // re-checks that they STILL do. Ordered here — before the caller can
+      // reach `POST /batch/assertion-challenge`'s minting or the decide
+      // ceremony — for exactly the reason the single-card challenge route
+      // orders its own check ahead of the challenge: a caller who can no
+      // longer act on a row must never mint (and burn) a challenge against it.
+      //
+      // Two halves, both from that shared rule:
+      //   - the intent must still be `pending_approval` (a settled intent is
+      //     nobody's to decide), and
+      //   - `isAgentIntentDecideAuthorized` must still hold — the decider's
+      //     current RBAC over the tool AND reach over the intent's concrete
+      //     target, re-derived, never `approvals:decide` and never requester
+      //     identity (which is NULL for an agent intent).
+      // The decide core re-runs this per row anyway; doing it here too is the
+      // same defence-in-depth double-check the single-card challenge + decide
+      // pair already performs, and it is what makes the CHALLENGE route safe.
+      intent.status !== 'pending_approval' ||
+      !(await isAgentIntentDecideAuthorized(userId, intent))
     ) {
       offending.push(id);
       continue;
@@ -267,16 +291,32 @@ export async function decideApprovalBatch(
   // the deadlock surface (#1105 / the lock-order fix in the decide core).
   const results: BatchRowResult[] = [];
   for (const row of loaded.rows) {
-    const outcome: DecideApprovalResult = await decideApprovalRequest({
-      auth,
-      id: row.approval.id,
-      status: input.decision,
-      reason: input.reason,
-      // The proof is NOT re-presented per row — its challenge was consumed by
-      // the batch ceremony above, and the decision it produced is what every
-      // row records.
-      preverifiedAssurance: assurance,
-    });
+    // Per-row ERROR BOUNDARY. The decide core only try/catches its own decide
+    // transaction — its pre-fetch, linked-intent load,
+    // `isAgentIntentDecideAuthorized`, `resolveIntentApprovers` and
+    // `resolveTargetDevices` can all throw straight out of it. Bare, one such
+    // throw on row N would propagate out of this function and discard the
+    // response for every row that ALREADY COMMITTED its decision, leaving the
+    // caller unable to tell what landed. Catching here reports that row with
+    // the same `decide_failed` shape the core returns for its own transaction
+    // failures and keeps going — the rows are independent, first-wins
+    // transactions, so one failing does not invalidate the others.
+    let outcome: DecideApprovalResult;
+    try {
+      outcome = await decideApprovalRequest({
+        auth,
+        id: row.approval.id,
+        status: input.decision,
+        reason: input.reason,
+        // The proof is NOT re-presented per row — its challenge was consumed by
+        // the batch ceremony above, and the decision it produced is what every
+        // row records.
+        preverifiedAssurance: assurance,
+      });
+    } catch (err) {
+      console.error(`[approvals] batch decide failed for approval ${row.approval.id}:`, err);
+      outcome = { httpStatus: 500, body: { error: 'decide_failed', retryable: true } };
+    }
     results.push({ id: row.approval.id, httpStatus: outcome.httpStatus, body: outcome.body });
   }
 

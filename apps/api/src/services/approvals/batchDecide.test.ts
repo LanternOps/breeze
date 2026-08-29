@@ -112,6 +112,7 @@ import { db } from '../../db';
 import { approvalRequests } from '../../db/schema/approvals';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { assertApprovalAssurance, StepUpRequiredError } from '../authenticatorAssurance';
+import { isAgentIntentDecideAuthorized } from '../actionIntents/intentApprovers';
 import { BATCH_MAX, batchAssertionKey, decideApprovalBatch } from './batchDecide';
 
 const USER_ID = '00000000-0000-0000-0000-000000000001';
@@ -265,6 +266,9 @@ beforeEach(() => {
     decidedVia: 'webauthn_platform',
     authenticatorDeviceId: 'authdev-1',
   });
+  // Permissive default: the decider still holds action-and-target authority
+  // over every row. The live-authorization test overrides it per row.
+  vi.mocked(isAgentIntentDecideAuthorized).mockResolvedValue(true);
 });
 
 describe('batchAssertionKey', () => {
@@ -530,5 +534,83 @@ describe('decideApprovalBatch', () => {
     expect(vi.mocked(assertApprovalAssurance)).toHaveBeenCalledWith(
       expect.objectContaining({ riskTier: 'high' }),
     );
+  });
+
+  // Review fix round 1, Important 1: one unexpected throw must not discard the
+  // decisions that already committed.
+  it('reports a row that THROWS as 500 decide_failed and keeps going', async () => {
+    const batchRows = [1, 2, 3].map((n) => ({ approval: buildApproval(n), intent: buildIntent(n) }));
+    mockDb({ batchRows });
+    mockDecideTx();
+    // Row 2 blows up somewhere outside the decide core's own try/catch (its
+    // pre-fetch, intent load, authority re-check and target resolution are all
+    // unguarded) — modelled here on the per-row authority call.
+    vi.mocked(isAgentIntentDecideAuthorized)
+      .mockResolvedValueOnce(true) // the batch-load pass, row 1
+      .mockResolvedValueOnce(true) // the batch-load pass, row 2
+      .mockResolvedValueOnce(true) // the batch-load pass, row 3
+      .mockResolvedValueOnce(true) // row 1's own decide
+      .mockRejectedValueOnce(new Error('pool exhausted')) // row 2's own decide
+      .mockResolvedValue(true);
+
+    const res = await decideApprovalBatch(AUTH, {
+      approvalRequestIds: ['appr-1', 'appr-2', 'appr-3'],
+      decision: 'approved',
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // All three rows are accounted for — the loop reached row 3.
+    expect(res.results.map((r) => [r.id, r.httpStatus])).toEqual([
+      ['appr-1', 200],
+      ['appr-2', 500],
+      ['appr-3', 200],
+    ]);
+    expect(res.results[1]!.body).toEqual({ error: 'decide_failed', retryable: true });
+    // The two healthy rows still committed.
+    expect(vi.mocked(db.transaction)).toHaveBeenCalledTimes(2);
+  });
+
+  // Review fix round 1, minor: a demoted approver must not reach the ceremony
+  // (nor, via the same loader, mint a batch challenge).
+  it('422s a row the caller is no longer action-and-target authorized for', async () => {
+    const batchRows = [1, 2].map((n) => ({ approval: buildApproval(n), intent: buildIntent(n) }));
+    mockDb({ batchRows });
+    mockDecideTx();
+    vi.mocked(isAgentIntentDecideAuthorized).mockImplementation(
+      async (_userId: string, intent: any) => intent.id !== 'intent-2',
+    );
+
+    const res = await decideApprovalBatch(AUTH, {
+      approvalRequestIds: ['appr-1', 'appr-2'],
+      decision: 'approved',
+    });
+
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.httpStatus).toBe(422);
+    expect(res.body).toEqual({ error: 'batch_not_homogeneous', offending: ['appr-2'] });
+    expect(vi.mocked(assertApprovalAssurance)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+
+  it('422s a row whose linked intent already settled', async () => {
+    const batchRows = [
+      { approval: buildApproval(1), intent: buildIntent(1) },
+      { approval: buildApproval(2), intent: buildIntent(2, { status: 'approved' }) },
+    ];
+    mockDb({ batchRows });
+    mockDecideTx();
+
+    const res = await decideApprovalBatch(AUTH, {
+      approvalRequestIds: ['appr-1', 'appr-2'],
+      decision: 'approved',
+    });
+
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.httpStatus).toBe(422);
+    expect(res.body).toEqual({ error: 'batch_not_homogeneous', offending: ['appr-2'] });
+    expect(vi.mocked(assertApprovalAssurance)).not.toHaveBeenCalled();
   });
 });

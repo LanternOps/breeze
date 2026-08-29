@@ -260,6 +260,7 @@ vi.mock('../middleware/auth', () => ({
 import { and, eq } from 'drizzle-orm';
 import { approvalRoutes } from './approvals';
 import { approvalRequests } from '../db/schema/approvals';
+import { actionIntents } from '../db/schema/actionIntents';
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
@@ -3564,6 +3565,10 @@ describe('P2-2 batch decide routes', () => {
     const byId = new Map(rows.map((r) => [r.approval.id, r]));
     const order = rows.map((r) => r.approval.id);
     let cursor = 0;
+    // The intent load is a per-row FOLLOW-UP to that row's own pre-fetch, and
+    // a row can return early before ever reaching it, so the intent branch
+    // tracks the row the pre-fetch last handed out rather than keeping an
+    // independent cursor that would drift out of lockstep.
     let currentId: string | undefined;
     vi.mocked(db.select).mockImplementation(
       (proj?: any) =>
@@ -3578,27 +3583,20 @@ describe('P2-2 batch decide routes', () => {
                 },
               };
             }
+            // Table IDENTITY, not a column-shape heuristic: the mocked
+            // approvals/intents schemas share column names, so shape-matching
+            // would silently answer the wrong read if either mock gains a key.
+            if (table === actionIntents) {
+              return { where: async () => [byId.get(currentId!)!.intent] };
+            }
             if (proj && 'customerDisplayName' in proj) {
               return { innerJoin: () => ({ innerJoin: () => ({ where: async () => [] }) }) };
             }
-            return { where: async () => (table === undefined ? [] : devicesRows) };
+            // authenticator-device reads (webauthn_platform, then mobile_hw_key)
+            return { where: async () => devicesRows };
           },
         }) as any,
     );
-    // The intent load and the authenticator-device reads both land on the
-    // generic branch above; distinguish the intent one by its own table.
-    const base = vi.mocked(db.select).getMockImplementation()!;
-    vi.mocked(db.select).mockImplementation((proj?: any) => {
-      const chain = base(proj) as any;
-      const from = chain.from;
-      chain.from = (table: any) => {
-        if (table && table.id === 'id' && table.orgId === 'org_id' && table.status === 'status') {
-          return { where: async () => [byId.get(currentId!)!.intent] };
-        }
-        return from(table);
-      };
-      return chain;
-    });
   }
 
   function mockBatchTx() {
@@ -3667,6 +3665,36 @@ describe('P2-2 batch decide routes', () => {
       offending: ['appr-b2'],
     });
     expect(vi.mocked(generateApprovalAssertionOptions)).not.toHaveBeenCalled();
+  });
+
+  it('POST /batch/assertion-challenge mints NOTHING for a demoted approver', async () => {
+    // Review fix round 1, minor: live authorization runs inside the loader, so
+    // a caller who lost action-and-target authority over even one row cannot
+    // mint (and burn) a batch challenge covering it.
+    mockBatchDb([
+      { approval: batchApproval(1), intent: batchIntent(1) },
+      { approval: batchApproval(2), intent: batchIntent(2) },
+    ]);
+    vi.mocked(isAgentIntentDecideAuthorized).mockImplementation(
+      async (_userId: string, intent: any) => intent.id !== 'intent-b2',
+    );
+
+    const res = await buildApp().request('/approvals/batch/assertion-challenge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        approvalRequestIds: ['appr-b1', 'appr-b2'],
+        decision: 'approved',
+      }),
+    });
+
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({
+      error: 'batch_not_homogeneous',
+      offending: ['appr-b2'],
+    });
+    expect(vi.mocked(generateApprovalAssertionOptions)).not.toHaveBeenCalled();
+    expect(vi.mocked(issueMobileAssertionNonce)).not.toHaveBeenCalled();
   });
 
   it('POST /batch/decide returns per-row results and verifies assurance ONCE', async () => {

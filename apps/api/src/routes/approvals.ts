@@ -495,10 +495,18 @@ const batchDecideSchema = batchTargetSchema.extend({
 
 /**
  * One assertion challenge for a whole homogeneous set of supervised
- * agent-originated cards. Validates the set with the SAME rule the decide below
- * applies, BEFORE minting anything: a caller who cannot batch this set must
- * never consume a challenge for it (same ordering rule the single-card
- * challenge route follows against its live-authorization check).
+ * agent-originated cards.
+ *
+ * `loadHomogeneousBatch` runs the FULL set of rules before anything is minted:
+ * ownership, `pending` status, the supervised + agent-originated shape, LIVE
+ * AUTHORIZATION per row (the intent still `pending_approval` and
+ * `isAgentIntentDecideAuthorized` still true — the same rule `GET /pending`,
+ * `GET /:id` and the single-card challenge route apply), and finally the
+ * one-`(orgId, actionToolName, action)`-group check. Any failure is a 422 for
+ * the whole set with the offending ids, and NO challenge is minted — a caller
+ * who can no longer act on even one of these rows must never consume a
+ * challenge/nonce, exactly as the single-card route orders its own check ahead
+ * of minting.
  */
 approvalRoutes.post(
   '/batch/assertion-challenge',
