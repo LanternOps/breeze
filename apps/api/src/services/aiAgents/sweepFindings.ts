@@ -75,6 +75,7 @@
 
 import { and, eq, inArray } from 'drizzle-orm';
 import {
+  AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS,
   AI_SWEEP_KINDS,
   type AiAgentRunSweepDto,
   type AiAgentRunSweepFindingDto,
@@ -387,6 +388,34 @@ function readSweepKinds(triggerRef: Record<string, unknown> | null | undefined):
 }
 
 /**
+ * Evidence keys that would SHADOW a leak tripwire, lowercased once at module
+ * load (review fix, #4189).
+ *
+ * `evidence` is a model-authored `string -> scalar` map that the schema only
+ * bounds by key count and value length — nothing stops the model from naming
+ * a key `toolOutput` and putting its own raw tool transcript in it. Every
+ * leak assertion in this repo is written as
+ * `expect(JSON.stringify(dto)).not.toContain('"toolOutput"')`, so such a key
+ * is not merely a leak: it DEFEATS the tripwire that exists to catch leaks,
+ * turning a red suite green. Dropped at projection, case-insensitively —
+ * `ARGS` and `toolinput` shadow the tripwire exactly as well as the canonical
+ * spelling does.
+ */
+const SHADOWED_EVIDENCE_KEYS: ReadonlySet<string> = new Set(
+  AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS.map((key) => key.toLowerCase()),
+);
+
+function withoutShadowedEvidenceKeys(
+  evidence: SweepFinding['evidence'] | undefined,
+): SweepFinding['evidence'] {
+  if (!evidence) return {};
+  const entries = Object.entries(evidence).filter(
+    ([key]) => !SHADOWED_EVIDENCE_KEYS.has(key.toLowerCase()),
+  );
+  return Object.fromEntries(entries);
+}
+
+/**
  * Safe projection of a sweep run's outcome for `GET /ai/agents/runs/:runId`.
  *
  * Display fields only, matching this file's siblings: the finding's
@@ -441,7 +470,7 @@ export function projectSweep(
         deviceHostname: deviceId ? hostnames.get(deviceId) ?? null : null,
         title: finding.title,
         detail: finding.detail,
-        evidence: finding.evidence ?? {},
+        evidence: withoutShadowedEvidenceKeys(finding.evidence),
         // A finding whose proposal has no record (nothing was attempted, or a
         // pre-A7 outcome row) projects `null` — never the raw proposedAction.
         proposal: record

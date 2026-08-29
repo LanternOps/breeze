@@ -20,6 +20,7 @@ import type { z } from 'zod';
 import {
   canonicalizeTimezone,
   createAiAgentScheduleSchema,
+  isHourlyFloorCron,
   isStructurallyValidCron,
   updateAiAgentScheduleSchema,
   type AiAgentEffectiveScheduleDto,
@@ -46,6 +47,7 @@ export type ScheduleValidationCode =
   | 'baseline_agent_mismatch'
   | 'baseline_is_override'
   | 'kinds_not_subset'
+  | 'kinds_empty'
   | 'agent_not_partner_wide'
   | 'agent_kind_not_triage'
   | 'invalid_cron'
@@ -89,6 +91,17 @@ export function effectiveSchedule(
 function assertValidCron(cron: string): void {
   if (!isStructurallyValidCron(cron) || cron.trim().split(/\s+/).length !== 5) {
     throw new ScheduleValidationError('invalid_cron', `Not a 5-field cron expression: ${cron}`);
+  }
+  // The cadence floor (review fix, #4189), shared with the zod schema so the
+  // two can never drift: the minute field must be a literal minute or a
+  // comma-separated list of them, so a schedule fires at most once an hour.
+  // One occurrence is one LLM-spending run PER LIVE ORG under the partner, so
+  // a sub-hourly cron is a fleet-wide cost multiplier one PATCH can turn on.
+  if (!isHourlyFloorCron(cron)) {
+    throw new ScheduleValidationError(
+      'invalid_cron',
+      `sweep schedules fire at most hourly; the minute field must be a literal minute or comma-separated list of minutes: ${cron}`,
+    );
   }
 }
 
@@ -392,7 +405,25 @@ export async function updateSchedule(
       patch.cron = input.cron;
     }
     if (input.timezone !== undefined) patch.timezone = canonicalTimezoneOrThrow(input.timezone);
-    if (input.sweepKinds !== undefined) patch.sweepKinds = input.sweepKinds;
+    if (input.sweepKinds !== undefined) {
+      // `updateAiAgentScheduleSchema` is SHARED by both owner shapes and
+      // cannot carry this `.min(1)`: an ORG override's `[]` legitimately
+      // means "disable every kind for this org" (the same convention as its
+      // `enabled: false`), which is exactly why the CREATE schema is a
+      // discriminated union and the UPDATE schema is not. So the baseline's
+      // non-empty invariant — `createPartnerScheduleSchema.sweepKinds` is
+      // `.min(1)` — is enforced here, on the partner branch, or a PATCH would
+      // be a hole straight through it. Its own code, not `kinds_not_subset`:
+      // nothing was widened, and telling a client "not a subset" for an empty
+      // list is a false statement about what it sent (review fix, #4189).
+      if (input.sweepKinds.length === 0) {
+        throw new ScheduleValidationError(
+          'kinds_empty',
+          'A partner baseline must sweep at least one kind; disable the schedule instead',
+        );
+      }
+      patch.sweepKinds = input.sweepKinds;
+    }
   } else {
     // An override has no cadence of its own — cron/timezone on its row are a
     // copy of the baseline's. Accepting them here would persist a lie rather
@@ -438,6 +469,46 @@ export async function updateSchedule(
     .where(and(eq(aiAgentSchedules.id, id), accessibleScheduleCondition(auth)))
     .returning();
   if (!row) throw new AgentAccessDeniedError('Schedule not found');
+
+  // Live-check B1 (#4189): an override row's `cron`/`timezone` are a COPY of
+  // its baseline's — `createSchedule` inherits them because both columns are
+  // NOT NULL and an override has no cadence of its own. Re-cronning the
+  // baseline without propagating leaves every override row still advertising
+  // the OLD cadence, which is precisely what an org sees for its own schedule
+  // (`listSchedules` -> `toEffectiveDto` renders the BASELINE's cron for a
+  // partner caller, but the override row is what an org-scoped read of its
+  // own row returns). The sweeper is unaffected either way — it ticks
+  // baselines only (`loadDueBaselines` filters `org_id IS NULL`) — so this is
+  // a display-consistency fix, not a scheduling one.
+  //
+  // Same transaction as the UPDATE above by construction, NOT by a nested
+  // `db.transaction`: `withDbAccessContext` already holds one open around the
+  // whole request (it has to — the RLS GUCs are SET LOCAL), and the `db`
+  // proxy routes both statements onto it. A nested call would only add a
+  // savepoint.
+  //
+  // Bounded by `baseline_schedule_id` alone: the children of a baseline the
+  // caller was just authorized to write are by construction under the same
+  // partner (the FK is `ON DELETE CASCADE` and `createSchedule` pins the
+  // partner on both sides). RLS still applies on top — a partner admin
+  // restricted to a subset of orgs propagates only into the overrides it can
+  // reach, which is the correct failure direction (stale copy) rather than a
+  // cross-tenant write.
+  const cadenceChanged = patch.cron !== undefined || patch.timezone !== undefined;
+  if (existing.partnerId !== null && cadenceChanged) {
+    await db
+      .update(aiAgentSchedules)
+      .set({
+        // The values that actually landed on the baseline row — the
+        // CANONICALIZED timezone, never the raw client string, or the two
+        // rows would disagree on the same zone.
+        cron: row.cron,
+        timezone: row.timezone,
+        updatedAt: new Date(),
+      })
+      .where(eq(aiAgentSchedules.baselineScheduleId, id));
+  }
+
   return row;
 }
 

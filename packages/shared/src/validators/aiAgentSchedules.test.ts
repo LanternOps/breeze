@@ -22,6 +22,43 @@ describe('createAiAgentScheduleSchema', () => {
     expect(updateAiAgentScheduleSchema.safeParse({ enabled: false }).success).toBe(true);
   });
 });
+
+// Final-review fix (#4189, item 3a) — the CADENCE FLOOR. A sweep occurrence
+// fans out one LLM-spending run per org under the partner, so a sub-hourly
+// cron is a fleet-wide cost/rate multiplier a single PATCH can turn on. The
+// minute field must therefore be a literal integer or a comma-separated list
+// of them: no `*`, no step (`*/15`), no range (`0-5`).
+describe('scheduleCronSchema — hourly cadence floor', () => {
+  const partner = (cron: string) => ({
+    ownerScope: 'partner' as const, agentId: uuid, cron, timezone: 'UTC',
+    sweepKinds: ['disk_pressure'], enabled: true,
+  });
+  const parse = (cron: string) => createAiAgentScheduleSchema.safeParse(partner(cron));
+
+  it('accepts a single literal minute and a comma-separated minute list', () => {
+    expect(parse('0 6 * * 1-5').success).toBe(true);
+    expect(parse('0,30 * * * *').success).toBe(true);
+    expect(parse('59 23 * * *').success).toBe(true);
+  });
+
+  it('rejects a stepped, wildcard, or ranged minute field', () => {
+    expect(parse('*/15 * * * *').success).toBe(false);
+    expect(parse('* * * * *').success).toBe(false);
+    expect(parse('0-5 6 * * *').success).toBe(false);
+    expect(parse('0/2 6 * * *').success).toBe(false);
+  });
+
+  it('names the cadence floor in the rejection message', () => {
+    const result = parse('*/15 * * * *');
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain('sweep schedules fire at most hourly');
+  });
+
+  it('applies the same floor to the update schema', () => {
+    expect(updateAiAgentScheduleSchema.safeParse({ cron: '*/15 * * * *' }).success).toBe(false);
+    expect(updateAiAgentScheduleSchema.safeParse({ cron: '0 6 * * *' }).success).toBe(true);
+  });
+});
 describe('sweepFindingsOutcomeSchema', () => {
   it('accepts a finding with a restart proposal and rejects a disk_cleanup proposal', () => {
     const ok = { summary: 's', findings: [{ kind: 'service_down', severity: 'high', deviceId: uuid, title: 't', detail: 'd', evidence: { service: 'spooler', status: 'stopped' }, proposedAction: { tool: 'manage_services', action: 'restart', deviceId: uuid, serviceName: 'spooler' } }] };

@@ -538,6 +538,38 @@ describe('projectSweep', () => {
     expect(dto!.findings[0]!.deviceHostname).toBeNull();
   });
 
+  // Final-review fix (#4189, item 7). `evidence` is a model-authored
+  // string->scalar map, so the model can NAME a key `toolOutput` and smuggle
+  // its own tool transcript past every leak tripwire in the suite — those
+  // assert on `JSON.stringify(dto)` not containing `"toolOutput"`, which is
+  // exactly the string a legitimate-looking evidence key produces. Dropped at
+  // projection, case-insensitively.
+  it('drops evidence keys that shadow a leak-tripwire key (case-insensitively)', () => {
+    const finding = restartFinding(DEVICE_A);
+    const dto = projectSweep(
+      traceRun,
+      {
+        sweepFindings: outcomeWith({
+          ...finding,
+          evidence: {
+            state: 'stopped',
+            toolOutput: 'raw transcript',
+            ARGS: 'smuggled',
+            arguments: 'also smuggled',
+            toolinput: 'lowercase variant',
+          },
+        }) as SweepFindingsOutcome,
+      },
+      new Map(),
+    );
+
+    expect(dto!.findings[0]!.evidence).toEqual({ state: 'stopped' });
+    const serialized = JSON.stringify(dto);
+    for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+      expect(serialized).not.toContain(`"${forbidden}"`);
+    }
+  });
+
   it('tolerates a run with no schedule and a missing triggerRef', () => {
     const dto = projectSweep(
       { scheduleId: null, triggerRef: {} },

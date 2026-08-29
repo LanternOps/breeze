@@ -85,7 +85,7 @@
  * Do not relitigate the value by reasoning about it — run the tool.
  */
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 
 import type { AiAgentScheduleRunSummary, AiSweepKind } from '@breeze/shared';
 
@@ -95,7 +95,7 @@ import type { AiAgentScheduleRunSummary, AiSweepKind } from '@breeze/shared';
 // `alertVerdictScheduler.ts`.
 import * as dbModule from '../db';
 import { aiAgentSchedules, aiAgents, organizations } from '../db/schema';
-import { AI_AGENTS_ENABLED } from '../config/env';
+import { envFlag } from '../config/env';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
 import { latestCronOccurrence } from '../services/aiAgents/sweepOccurrence';
@@ -237,7 +237,14 @@ async function claimOccurrence(
  */
 export async function processSweepTick(now: Date = new Date()): Promise<{ scanned: number; enqueued: number }> {
   // Producer gate — the worker itself stays registered (see the header).
-  if (!AI_AGENTS_ENABLED) return { scanned: 0, enqueued: 0 };
+  //
+  // Read through `envFlag` at CALL time, never a module-scope
+  // `AI_AGENTS_ENABLED` const: the header's "resumes sweeping without a
+  // process restart" is only true of a per-call read, and a frozen import
+  // would have made that claim quietly false (review fix, #4189). Same
+  // helper, same env var, as `runService.createAndEnqueueAgentRun`'s own
+  // re-check — one switch, read the same way on both sides of the queue.
+  if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) return { scanned: 0, enqueued: 0 };
 
   const baselines = await runWithSystemDbAccess(loadDueBaselines);
 
@@ -348,6 +355,23 @@ async function loadOccurrenceBaseline(scheduleId: string): Promise<OccurrenceBas
 const SWEEPABLE_ORG_STATUSES = ['active', 'trial'] as const;
 
 /**
+ * Hard admission ceiling per occurrence (review fix, #4189).
+ *
+ * One occurrence fans out one LLM-spending run PER LIVE ORG under the
+ * partner, all enqueued in a single loop with no pacing. A partner with a few
+ * thousand orgs is therefore an unbounded burst against the run queue, the
+ * model provider's rate limits, and the billing meter — from ONE cron minute
+ * nobody is watching. 500 is well above every real partner today and low
+ * enough that the burst stays survivable.
+ *
+ * The overflow is COUNTED, not silently dropped: it lands in the summary as
+ * `skipReasons.org_cap` (the same aggregate shape as every other skip) and is
+ * logged once per occurrence with the partner id, so hitting the ceiling is
+ * visible before it becomes a coverage gap nobody noticed.
+ */
+export const MAX_ORGS_PER_OCCURRENCE = 500;
+
+/**
  * Every org a partner-wide schedule fans out to.
  *
  * Starts from `policyEvaluationService.policyDeviceScopeCondition`'s predicate
@@ -360,7 +384,7 @@ const SWEEPABLE_ORG_STATUSES = ['active', 'trial'] as const;
  * mid-offboarding tenant for it, or raising findings a nobody will action, is
  * strictly worse than not running.
  */
-async function loadPartnerOrgIds(partnerId: string): Promise<string[]> {
+async function loadPartnerOrgIds(partnerId: string): Promise<{ orgIds: string[]; capped: number }> {
   const { db } = dbModule;
   const rows = await db
     .select({ id: organizations.id })
@@ -370,8 +394,16 @@ async function loadPartnerOrgIds(partnerId: string): Promise<string[]> {
       ne(organizations.type, 'quick_support'),
       isNull(organizations.deletedAt),
       inArray(organizations.status, [...SWEEPABLE_ORG_STATUSES]),
-    ));
-  return rows.map((row) => row.id);
+    ))
+    // Deterministic: the cap below takes a PREFIX of this list, so without a
+    // stable order a capped partner would sweep an arbitrary — and different
+    // — 500 orgs on every occurrence, which is worse than sweeping a fixed
+    // subset (nobody's coverage is reliable, and nothing is reproducible).
+    .orderBy(asc(organizations.id));
+
+  const all = rows.map((row) => row.id);
+  const orgIds = all.slice(0, MAX_ORGS_PER_OCCURRENCE);
+  return { orgIds, capped: all.length - orgIds.length };
 }
 
 async function writeRunSummary(scheduleId: string, summary: AiAgentScheduleRunSummary): Promise<void> {
@@ -391,6 +423,31 @@ function emptySummary(occurrenceKey: string): AiAgentScheduleRunSummary {
     skipReasons: {},
     enqueuedAt: new Date().toISOString(),
   };
+}
+
+/**
+ * Best-effort `last_run_summary` write for an EARLY return (review fix,
+ * #4189). Both bail-out paths below used to return without touching the
+ * column, which left it showing the PREVIOUS occurrence's counters — so a
+ * schedule that had been disabled, or whose agent was deleted, still read as
+ * "fanned out to N orgs" on exactly the screen an operator consults to find
+ * out why it stopped firing. Logged rather than thrown: failing to record
+ * that nothing happened must not turn a legitimate no-op into a BullMQ
+ * retry.
+ */
+async function writeEmptySummary(
+  scheduleId: string,
+  occurrenceKey: string,
+): Promise<AiAgentScheduleRunSummary> {
+  const summary = emptySummary(occurrenceKey);
+  try {
+    await runWithSystemDbAccess(() => writeRunSummary(scheduleId, summary));
+  } catch (error) {
+    console.error('[AiAgentSweepScheduler] failed to persist last_run_summary', {
+      scheduleId, occurrenceKey, error,
+    });
+  }
+  return summary;
 }
 
 /**
@@ -415,7 +472,7 @@ export async function processSweepOccurrence(
     console.info('[AiAgentSweepScheduler] sweep occurrence skipped — schedule or agent is no longer eligible', {
       scheduleId, occurrenceKey,
     });
-    return emptySummary(occurrenceKey);
+    return writeEmptySummary(scheduleId, occurrenceKey);
   }
 
   // Called with NO ambient DB context — it opens its own system context (and
@@ -426,7 +483,7 @@ export async function processSweepOccurrence(
     console.warn('[AiAgentSweepScheduler] baseline vanished from the partner resolver between reads', {
       scheduleId, occurrenceKey,
     });
-    return emptySummary(occurrenceKey);
+    return writeEmptySummary(scheduleId, occurrenceKey);
   }
   const overridesByOrg: Map<string, ScheduleOverrideSummary> = entry.overridesByOrg;
 
@@ -438,7 +495,9 @@ export async function processSweepOccurrence(
   // much more alarming — statement than "the schedule was turned off".
   const scheduleDisabled = !entry.baseline.enabled;
 
-  const orgIds = await runWithSystemDbAccess(() => loadPartnerOrgIds(baseline.partnerId as string));
+  const { orgIds, capped } = await runWithSystemDbAccess(
+    () => loadPartnerOrgIds(baseline.partnerId as string),
+  );
 
   const skipReasons: Record<string, number> = {};
   let runsAdmitted = 0;
@@ -448,9 +507,31 @@ export async function processSweepOccurrence(
     runsSkipped++;
   };
 
+  if (capped > 0) {
+    // Counted as a bulk skip, not one countSkip() per org: the histogram is
+    // aggregate anyway, and iterating the overflow would only be a way to
+    // spend time proportional to the thing being capped.
+    skipReasons.org_cap = capped;
+    runsSkipped += capped;
+    // console.error, once: a partner outgrowing the ceiling is a coverage gap
+    // for real tenants, not a routine skip. Partner id only — an org id here
+    // would put tenant identifiers in a log line whose whole point is that
+    // the summary column deliberately has none.
+    console.error('[AiAgentSweepScheduler] partner exceeded the per-occurrence org cap — some orgs were not swept', {
+      scheduleId,
+      occurrenceKey,
+      partnerId: baseline.partnerId,
+      admitted: orgIds.length,
+      skipped: capped,
+      cap: MAX_ORGS_PER_OCCURRENCE,
+    });
+  }
+
   const buildSummary = (): AiAgentScheduleRunSummary => ({
     occurrenceKey,
-    orgsTotal: orgIds.length,
+    // The TRUE population, so the counters reconcile: orgsTotal ===
+    // runsAdmitted + runsSkipped even when the cap fired.
+    orgsTotal: orgIds.length + capped,
     runsAdmitted,
     runsSkipped,
     skipReasons,

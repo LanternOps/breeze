@@ -45,6 +45,7 @@ import {
 import { verifyDeviceAccess } from '../services/aiTools';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import { resolveOrgId } from './networkShared';
 
 export const aiAgentsRoutes = new Hono();
@@ -118,9 +119,33 @@ function mapRow(row: AiAgentRow): AiAgentDto {
   };
 }
 
-/** Postgres unique-violation, for the create race the pre-check cannot win. */
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505';
+/**
+ * The two partial unique indexes that enforce "one live agent per kind per
+ * owner" (`2026-09-02-ai-agents.sql`): one per owner axis, because the table
+ * is dual-owned (`ai_agents_one_owner_chk`). Both have to be listed — a
+ * partner-wide create races `ai_agents_partner_kind_uq`, an org-owned one
+ * races `ai_agents_org_kind_uq`, and the handler cannot know which shape it
+ * just lost.
+ */
+const AGENT_KIND_UNIQUE_INDEXES = ['ai_agents_partner_kind_uq', 'ai_agents_org_kind_uq'] as const;
+
+/**
+ * Postgres unique-violation, for the create race the pre-check cannot win.
+ *
+ * `isPgUniqueViolation`, not a top-level `err.code` read (review fix, #4189):
+ * postgres.js raises a PostgresError with `.code === '23505'`, but Drizzle
+ * wraps it in a DrizzleQueryError whose own `.code` is undefined — the real
+ * SQLSTATE is on `.cause`. A top-level check therefore missed EVERY
+ * Drizzle-issued insert, i.e. every real occurrence of the race this mapping
+ * exists for, and returned an unactionable 500 instead of the 409.
+ *
+ * Pinned to the two kind indexes rather than accepting any 23505: an
+ * unrelated unique violation raised anywhere else in the same handler would
+ * otherwise be reported to the client as "an agent of this kind already
+ * exists", which is a false statement about what went wrong.
+ */
+function isAgentKindConflict(err: unknown): boolean {
+  return AGENT_KIND_UNIQUE_INDEXES.some((constraint) => isPgUniqueViolation(err, constraint));
 }
 
 export function mapError(c: Context, err: unknown) {
@@ -158,7 +183,7 @@ export function mapError(c: Context, err: unknown) {
   // The pre-check in createAgent cannot win a concurrent create; the partial
   // unique index settles that race. Answer it the same way rather than letting
   // it become an unactionable 500.
-  if (isUniqueViolation(err)) {
+  if (isAgentKindConflict(err)) {
     return c.json({ error: 'An agent of this kind already exists', code: 'agent_kind_exists' }, 409);
   }
   if (err instanceof PartnerWideWriteDeniedError) {

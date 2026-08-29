@@ -475,3 +475,74 @@ describe('createActionIntent — explicit device scope (P2-2)', () => {
     expect(unscoped?.scopeDeviceId).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Final-review fix (#4189, item 1) — spec §4.2 amendment: a SWEEP-minted
+// proposal is a supervised inbox card this wave. It is never policy-decided,
+// so a sweep can never auto-execute even on a partner that has policy-decide
+// enabled, an act-mode agent, and the operation registered in
+// `actAssets.supervisedActionKeys`. Act-mode sweep auto-execution arrives with
+// P2-5, behind its own review.
+//
+// The scope is the discriminator, not the run's profile: `input.scope` is the
+// only signal `createActionIntent` has that this intent was minted for a
+// device the RUN is not bound to, and it is agent-principal-only, so it
+// cannot be forged by a chat/MCP caller into a decidability change.
+// ---------------------------------------------------------------------------
+describe('createActionIntent — a scoped (sweep) intent is never policy-decided', () => {
+  /** Act mode + the operation registered — the full pre-conditions
+   *  `resolvePolicyDecisionState` needs to return 'unattempted'. */
+  function actModeRun(overrides?: Record<string, unknown>) {
+    const base = makeSweepRunRow(overrides);
+    return {
+      ...base,
+      policySnapshot: {
+        ...base.policySnapshot,
+        effective: {
+          ...base.policySnapshot.effective,
+          mode: 'act',
+          actAssets: { supervisedActionKeys: ['manage_services:restart'] },
+        },
+      },
+    };
+  }
+
+  beforeEach(() => {
+    envMock.policyDecideEnabled.mockReturnValue(true);
+  });
+
+  /** The fire-and-forget trigger resolves a dynamic `import()`; flush the
+   *  microtask queue so "was it called" is a real answer either way. */
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('inserts human_required and never attempts a policy decision', async () => {
+    queueSweepContext({ run: actModeRun() });
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+
+    await createActionIntent(makeAgentAuth(), sweepInput());
+    await flush();
+
+    expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('human_required');
+    expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
+    // Human fan-out is the point: it ran, so the proposal really is an inbox
+    // card and not a silently unrouted row.
+    expect(dbState.insertedApprovalRequestsValues.length).toBeGreaterThan(0);
+  });
+
+  it('CONTROL: the same run without a scope still reaches the policy-decide path', async () => {
+    // Run-device-bound (a scope is what a device-LESS run needs), everything
+    // else identical: same agent, same tool, same act-mode snapshot, same
+    // registered action key.
+    queueSweepContext({ run: actModeRun({ deviceId: SCOPE_DEVICE_ID }) });
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+
+    await createActionIntent(
+      makeAgentAuth(),
+      sweepInput({ scope: undefined }),
+    );
+    await flush();
+
+    expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('unattempted');
+    expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledTimes(1);
+  });
+});

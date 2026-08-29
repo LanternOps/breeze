@@ -1451,6 +1451,62 @@ describe('POST /ai-agents/:id/circuit/reset', () => {
   });
 });
 
+// Final-review fix (#4189, item 8). The 409 mapping used to read `err.code`
+// off the TOP-LEVEL error, which every Drizzle-issued insert defeats:
+// DrizzleQueryError's own `.code` is undefined and the real SQLSTATE lives on
+// `.cause`. The create race therefore surfaced as an unactionable 500 in
+// exactly the situation the mapping exists for. It is also now pinned to the
+// two `ai_agents` kind indexes — an unrelated 23505 from some other statement
+// in the same handler must not be reported as "an agent of this kind already
+// exists".
+describe('mapError — agent-kind unique violation (#4189)', () => {
+  const pgErr = (constraint: string) =>
+    Object.assign(new Error(`duplicate key value violates unique constraint "${constraint}"`), {
+      code: '23505',
+      constraint_name: constraint,
+    });
+  const drizzleWrap = (cause: unknown) =>
+    Object.assign(new Error('Failed query: insert into "ai_agents" ...'), { cause });
+
+  const ctxWith = (jsonMock: ReturnType<typeof vi.fn>) =>
+    ({ json: jsonMock }) as unknown as Parameters<typeof mapError>[0];
+
+  it('maps a DrizzleQueryError-WRAPPED 23505 on either kind index to 409', async () => {
+    for (const constraint of ['ai_agents_partner_kind_uq', 'ai_agents_org_kind_uq']) {
+      const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
+
+      mapError(ctxWith(jsonMock), drizzleWrap(pgErr(constraint)));
+
+      expect(jsonMock).toHaveBeenCalledWith(
+        { error: 'An agent of this kind already exists', code: 'agent_kind_exists' },
+        409,
+      );
+    }
+  });
+
+  it('still maps an UNWRAPPED 23505 (the pre-Drizzle shape) to 409', async () => {
+    const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
+
+    mapError(ctxWith(jsonMock), pgErr('ai_agents_org_kind_uq'));
+
+    expect(jsonMock).toHaveBeenCalledWith(expect.objectContaining({ code: 'agent_kind_exists' }), 409);
+  });
+
+  it('rethrows a 23505 from an UNRELATED constraint rather than claiming a kind conflict', async () => {
+    // Unwrapped on purpose: this is the shape the old top-level `err.code`
+    // check DID catch, and mis-reported as an agent-kind conflict.
+    for (const err of [
+      pgErr('ai_agent_runs_org_dedupe_key_uq'),
+      drizzleWrap(pgErr('ai_agent_runs_org_dedupe_key_uq')),
+    ]) {
+      const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
+
+      expect(() => mapError(ctxWith(jsonMock), err)).toThrow();
+      expect(jsonMock).not.toHaveBeenCalled();
+    }
+  });
+});
+
 describe('mapError — supervisedActionKeys write-time rejection (wave 5 Part B, #3827)', () => {
   it('maps InvalidSupervisedActionKeysError to a 422 naming exactly which keys were rejected and why', async () => {
     const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));

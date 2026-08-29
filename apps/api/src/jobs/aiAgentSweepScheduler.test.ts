@@ -56,8 +56,15 @@ vi.mock('bullmq', () => ({
 
 const shared = vi.hoisted(() => ({ aiAgentsEnabled: true }));
 
+// `envFlag`, not a frozen `AI_AGENTS_ENABLED` const: the module header
+// promises the kill switch resumes sweeping WITHOUT a process restart, which
+// is only true if the producer reads it at call time (review fix, #4189).
+// Mocked as the real function shape so the module cannot go back to a
+// module-scope read without this suite noticing.
 vi.mock('../config/env', () => ({
-  get AI_AGENTS_ENABLED() { return shared.aiAgentsEnabled; },
+  envFlag: vi.fn((name: string, fallback = false) => (
+    name === 'BREEZE_AI_AGENTS_ENABLED' ? shared.aiAgentsEnabled : fallback
+  )),
 }));
 
 vi.mock('../services/redis', () => ({
@@ -90,6 +97,7 @@ import {
   SWEEP_TICK_INTERVAL_MS,
   getSweepOccurrenceJobId,
   initializeAiAgentSweepScheduler,
+  MAX_ORGS_PER_OCCURRENCE,
   processSweepOccurrence,
   processSweepTick,
   shutdownAiAgentSweepScheduler,
@@ -108,9 +116,12 @@ const ORG_QS = '00000000-0000-4000-8000-00000000a0cc';
 
 /** `db.select(...).from(...)[.innerJoin(...)].where(...)` -> rows. */
 function queueSelect(rows: unknown[]) {
+  const orderBy = vi.fn();
   const terminal = Object.assign(Promise.resolve(rows), {
     limit: vi.fn().mockResolvedValue(rows),
+    orderBy,
   });
+  orderBy.mockReturnValue(terminal);
   const where = vi.fn().mockReturnValue(terminal);
   const from = { innerJoin: vi.fn().mockReturnValue({ where }), where };
   vi.mocked(db.select).mockReturnValueOnce({ from: vi.fn().mockReturnValue(from) } as never);
@@ -281,7 +292,7 @@ describe('processSweepTick', () => {
     expect(db.update).toHaveBeenCalledTimes(1);
   });
 
-  it('is a no-op when AI_AGENTS_ENABLED is false — nothing is read and nothing is added', async () => {
+  it('is a no-op when the kill switch is off — nothing is read and nothing is added', async () => {
     shared.aiAgentsEnabled = false;
 
     const result = await processSweepTick(NOW);
@@ -289,6 +300,22 @@ describe('processSweepTick', () => {
     expect(result).toEqual({ scanned: 0, enqueued: 0 });
     expect(db.select).not.toHaveBeenCalled();
     expect(addMock).not.toHaveBeenCalled();
+  });
+
+  // Item 5 (#4189). The module header claims flipping the switch back on
+  // resumes sweeping "without a process restart". A module-scope
+  // `AI_AGENTS_ENABLED` const freezes the value at import, which makes that
+  // claim false; only a per-call read keeps it true. Both directions, in ONE
+  // module instance — no vi.resetModules().
+  it('reads the kill switch at CALL time, so flipping it back on resumes without a restart', async () => {
+    shared.aiAgentsEnabled = false;
+    expect(await processSweepTick(NOW)).toEqual({ scanned: 0, enqueued: 0 });
+
+    shared.aiAgentsEnabled = true;
+    queueSelect([baselineRow()]);
+    queueUpdate([{ id: SCHEDULE_ID }]);
+
+    expect(await processSweepTick(NOW)).toEqual({ scanned: 1, enqueued: 1 });
   });
 });
 
@@ -464,7 +491,9 @@ describe('processSweepOccurrence', () => {
     const baseline = baselineRow();
     queueSelect([baseline]);
     resolveEffectiveSchedulesForPartner.mockResolvedValue([{ baseline, overridesByOrg: new Map() }]);
-    const terminal = Object.assign(Promise.resolve([{ id: ORG_A }]), { limit: vi.fn() });
+    const orderBy = vi.fn();
+    const terminal = Object.assign(Promise.resolve([{ id: ORG_A }]), { limit: vi.fn(), orderBy });
+    orderBy.mockReturnValue(terminal);
     const where = vi.fn().mockImplementation((condition: unknown) => {
       captured.push(condition);
       return terminal;
@@ -491,14 +520,129 @@ describe('processSweepOccurrence', () => {
     expect(compiled.params.filter((p) => p === 'suspended' || p === 'offboarding')).toEqual([]);
   });
 
-  it('returns an empty summary when the baseline is gone, disabled, or its agent is disabled', async () => {
+  // Item 4 (#4189). Both early returns used to leave `last_run_summary`
+  // showing the PREVIOUS occurrence's numbers, so a schedule that stopped
+  // firing looked like it was still fanning out — the exact state an operator
+  // consults this column to detect. The loop's `finally` already wrote it for
+  // every other path; these two returns bypassed it.
+  it('writes an empty summary for THIS occurrence when the baseline is gone, disabled, or its agent is disabled', async () => {
     queueSelect([]); // the joined re-read matched nothing
+    queueUpdate([], 'summary');
 
     const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
 
     expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
-    expect(db.update).not.toHaveBeenCalled();
-    expect(summary).toMatchObject({ orgsTotal: 0, runsAdmitted: 0, runsSkipped: 0, skipReasons: {} });
+    expect(summary).toMatchObject({
+      occurrenceKey: OCCURRENCE_KEY, orgsTotal: 0, runsAdmitted: 0, runsSkipped: 0, skipReasons: {},
+    });
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(callOrder.current).toContain('summary');
+  });
+
+  it('writes an empty summary when the baseline vanished from the partner resolver', async () => {
+    queueSelect([baselineRow()]);
+    resolveEffectiveSchedulesForPartner.mockResolvedValue([]); // no matching entry
+    queueUpdate([], 'summary');
+
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+
+    expect(summary).toMatchObject({ occurrenceKey: OCCURRENCE_KEY, orgsTotal: 0 });
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(callOrder.current).toContain('summary');
+  });
+
+  it('a failed summary write on an early return is logged, never thrown', async () => {
+    queueSelect([]);
+    vi.mocked(db.update).mockImplementationOnce(() => { throw new Error('pool exhausted'); });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY }),
+    ).resolves.toMatchObject({ occurrenceKey: OCCURRENCE_KEY });
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('failed to persist last_run_summary'),
+      expect.objectContaining({ scheduleId: SCHEDULE_ID }),
+    );
+  });
+
+  // Item 3b (#4189). One occurrence fans out one LLM-spending run PER LIVE
+  // ORG, so a very large partner is an unbounded burst against the run queue,
+  // the model provider, and the billing meter. The cap is a hard admission
+  // ceiling with a DETERMINISTIC order, so the same 500 orgs are swept every
+  // occurrence rather than a different arbitrary slice each time.
+  it('admits at most MAX_ORGS_PER_OCCURRENCE orgs and counts the remainder as org_cap', async () => {
+    const orgs = Array.from({ length: MAX_ORGS_PER_OCCURRENCE + 2 }, (_, i) => ({
+      id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    }));
+    seedFanout({ orgs });
+    // `console.error` is already spied in beforeEach and vi.spyOn hands back
+    // the SAME mock, so its calls accumulate across tests — clear it or this
+    // assertion reads another test's log line.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    errorSpy.mockClear();
+
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledTimes(MAX_ORGS_PER_OCCURRENCE);
+    expect(summary).toMatchObject({
+      // orgsTotal is the TRUE population, so the three counters still add up:
+      // 502 = 500 admitted + 2 capped.
+      orgsTotal: MAX_ORGS_PER_OCCURRENCE + 2,
+      runsAdmitted: MAX_ORGS_PER_OCCURRENCE,
+      runsSkipped: 2,
+      skipReasons: { org_cap: 2 },
+    });
+    // ONE log line for the whole overflow, not one per skipped org.
+    const capLogs = errorSpy.mock.calls.filter(([msg]) => String(msg).includes('org cap'));
+    expect(capLogs).toHaveLength(1);
+    expect(capLogs[0]![1]).toMatchObject({
+      partnerId: PARTNER_ID,
+      admitted: MAX_ORGS_PER_OCCURRENCE,
+      skipped: 2,
+    });
+    // The summary stays aggregate-only even under the cap.
+    expect(JSON.stringify(summary)).not.toContain(orgs[0]!.id);
+  });
+
+  it('does not cap, or log, a partner at exactly the ceiling', async () => {
+    const orgs = Array.from({ length: MAX_ORGS_PER_OCCURRENCE }, (_, i) => ({
+      id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    }));
+    seedFanout({ orgs });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    errorSpy.mockClear();
+
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+
+    expect(summary).toMatchObject({
+      orgsTotal: MAX_ORGS_PER_OCCURRENCE,
+      runsAdmitted: MAX_ORGS_PER_OCCURRENCE,
+      skipReasons: {},
+    });
+    expect(errorSpy.mock.calls.filter(([msg]) => String(msg).includes('org cap'))).toHaveLength(0);
+  });
+
+  it('orders the org enumeration deterministically, so the capped slice is stable', async () => {
+    const captured = { orderBy: null as unknown };
+    const baseline = baselineRow();
+    queueSelect([baseline]);
+    resolveEffectiveSchedulesForPartner.mockResolvedValue([{ baseline, overridesByOrg: new Map() }]);
+    const orderBy = vi.fn();
+    const terminal = Object.assign(Promise.resolve([{ id: ORG_A }]), { limit: vi.fn(), orderBy });
+    orderBy.mockImplementation((column: unknown) => { captured.orderBy = column; return terminal; });
+    const where = vi.fn().mockReturnValue(terminal);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where, innerJoin: vi.fn().mockReturnValue({ where }) }),
+    } as never);
+    queueUpdate([], 'summary');
+
+    await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+
+    expect(orderBy).toHaveBeenCalled();
+    // `asc(column)` is an SQL node, not the column — compile it, the same way
+    // the predicate assertions above do.
+    const compiledOrder = new PgDialect().sqlToQuery(captured.orderBy as SQL);
+    expect(compiledOrder.sql).toMatch(/"id"\s+asc/i);
   });
 });
 

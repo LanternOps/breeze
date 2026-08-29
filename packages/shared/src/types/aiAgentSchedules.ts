@@ -72,7 +72,9 @@ export interface AiAgentScheduleRunSummary {
   orgsTotal: number;
   runsAdmitted: number;
   runsSkipped: number;
-  /** Keyed by skip reason (e.g. `circuit_open`, `budget_exceeded`). */
+  /** Keyed by skip reason (e.g. `circuit_open`, `budget_exceeded`, and
+   *  `org_cap` — the orgs beyond `MAX_ORGS_PER_OCCURRENCE` that this
+   *  occurrence did not reach). Aggregate counters only: never an org id. */
   skipReasons: Record<string, number>;
   enqueuedAt: string;
 }

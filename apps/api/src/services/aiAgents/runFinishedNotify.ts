@@ -248,6 +248,29 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
     return;
   }
 
+  // Task A7 / review fix (#4189): a CLEAN sweep is silent. A sweep is a
+  // recurring, unattended job — a daily baseline across a 40-org partner that
+  // finds nothing would otherwise manufacture 40 notifications every morning,
+  // per recipient, and that steady noise is exactly what makes the ONE
+  // morning with a critical finding invisible. Suppressed BEFORE recipient
+  // resolution: nothing downstream of here is needed to decide it, and the
+  // resolution is a DB round trip per run.
+  //
+  // Narrow on purpose — `readSweepDigest` returns null when the outcome
+  // carries no `sweepFindings` at all, and that case (a sweep that failed, or
+  // a pre-A7 row) keeps its generic run-finished notification. Only a sweep
+  // that actually ran and produced an EMPTY finding list is silent. The run
+  // row itself is untouched and still readable on the run-detail page.
+  if (run.profile === 'sweep') {
+    const digest = readSweepDigest(run.outcome ?? {});
+    if (digest && digest.findings === 0) {
+      console.info('[runFinishedNotify] sweep found nothing — no digest notification', {
+        runId, orgId: run.orgId, status: run.status,
+      });
+      return;
+    }
+  }
+
   // The run's immutable snapshot, NOT the agent row's raw `recipients`
   // column — see `mergeAgentPolicies`/`resolveRecipientUserIds` for why the
   // merged, RUN-org-derived set is the correct input (the agent row loaded

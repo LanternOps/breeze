@@ -3,14 +3,50 @@ import { AI_SWEEP_KINDS, AI_SWEEP_SEVERITIES, type SweepFinding, type SweepFindi
 import { isStructurallyValidCron } from '../utils/cron';
 import { canonicalizeTimezone } from '../utils/timezone';
 
+/**
+ * The CADENCE FLOOR (review fix, #4189). A sweep occurrence fans out one
+ * LLM-spending run per LIVE org under the partner, so cadence is a fleet-wide
+ * cost and rate multiplier that a single PATCH can turn on — a star-slash-15
+ * minute on a 400-org partner is 1,600 runs an hour. The minute field is
+ * restricted to a literal integer or a comma-separated list of integers: no
+ * `*`, no step (`/`), no range (`-`). That makes "fires at most once per
+ * hour" a property of the STORED value rather than something the tick has to
+ * rate-limit after the fact.
+ *
+ * Only the minute field is constrained. Every other field stays fully
+ * expressive (`0 6 * * 1-5` — weekdays at 06:00 — is the canonical schedule),
+ * because a coarser field can only ever REDUCE the firing rate.
+ *
+ * `isStructurallyValidCron` already range-checks each token (0-59 here), so
+ * this pattern only has to exclude the operators.
+ */
+const LITERAL_MINUTE_LIST = /^\d{1,2}(,\d{1,2})*$/;
+
+/** Exported so `services/aiAgents/scheduleService.ts` — which validates
+ *  independently of this schema, being reachable from non-HTTP callers —
+ *  enforces the SAME floor rather than a second hand-rolled copy of it. */
+export function isHourlyFloorCron(pattern: string): boolean {
+  const fields = pattern.trim().split(/\s+/);
+  // 5-field only; a 6-field pattern is already rejected by the refine below
+  // (its leading field is SECONDS, so reading fields[0] as the minute would
+  // be wrong — return false rather than judge an expression this schema does
+  // not accept in the first place).
+  if (fields.length !== 5) return false;
+  return LITERAL_MINUTE_LIST.test(fields[0]!);
+}
+
 // The sweeper evaluates crons with a strictly 5-field evaluator, so a
 // 6-field cron (the optional leading-seconds field `isStructurallyValidCron`
 // otherwise tolerates for BullMQ's benefit — see cron.ts) is rejected HERE,
 // at the schema, even though the structural validator alone would accept it.
-const scheduleCronSchema = z.string().refine(
-  (v) => isStructurallyValidCron(v) && v.trim().split(/\s+/).length === 5,
-  { message: 'must be a structurally valid 5-field cron expression' },
-);
+const scheduleCronSchema = z.string()
+  .refine(
+    (v) => isStructurallyValidCron(v) && v.trim().split(/\s+/).length === 5,
+    { message: 'must be a structurally valid 5-field cron expression' },
+  )
+  .refine(isHourlyFloorCron, {
+    message: 'the minute field must be a literal minute or comma-separated list of minutes — sweep schedules fire at most hourly',
+  });
 
 const scheduleTimezoneSchema = z
   .string()

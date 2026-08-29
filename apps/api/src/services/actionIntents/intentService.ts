@@ -383,6 +383,12 @@ function resolvePolicyDecisionState(args: {
    * closed to human_required, same as every other branch here.
    */
   agentMode: string | undefined;
+  /**
+   * P2-2 (#4189): true when the caller pinned an explicit target device
+   * (`CreateActionIntentInput.scope`) — i.e. this is a SWEEP-minted proposal
+   * from a device-less run. See the `hasScope` branch below.
+   */
+  hasScope: boolean;
 }): ActionIntentPolicyDecisionState {
   void args.toolName;
   void args.input;
@@ -395,6 +401,22 @@ function resolvePolicyDecisionState(args: {
   // principal is filing it as a supervised intent for a human to see — that
   // human step is the point, not a gap to skip.
   if (args.guardrail.tier < 3) return 'human_required';
+  // P2-2 (#4189) — spec §4.2 AMENDMENT: a sweep-minted proposal is a
+  // supervised inbox card THIS WAVE, never a policy-decided auto-execution.
+  // An explicit `scope` is the only signal creation has that this intent was
+  // minted for a device the run itself is not bound to, and it is
+  // agent-principal-only (rejected above for every other principal), so it
+  // cannot be forged into a decidability change from the outside.
+  //
+  // Why the scope and not the run's profile: a sweep proposal is fanned out
+  // per DEVICE from one device-less run, so the human reviewing it is being
+  // shown a target the run never established for itself. Policy-decide's
+  // pre-authorization was written against the run-bound target — extending
+  // it to a target the operator's per-agent authorization never saw is a
+  // wider grant than it was reviewed as. Act-mode auto-execution for sweeps
+  // arrives with P2-5, behind its own review, and is expected to REPLACE
+  // this line rather than route around it.
+  if (args.hasScope) return 'human_required';
   if (!args.agentRun) return 'human_required';
   if (args.approvalScope !== 'supervised') return 'human_required';
   if (args.agentMode !== 'act') return 'human_required';
@@ -1085,6 +1107,7 @@ export async function createActionIntent(
         toolName: input.toolName,
         input: input.input,
         agentMode: agentRunMode,
+        hasScope: input.scope !== undefined,
       });
 
       const [inserted] = await db
@@ -1304,7 +1327,13 @@ export async function createActionIntent(
   // `pending_approval` snapshot exactly as it always did; the attempt's
   // outcome surfaces later via the intent's own state, not this call's return
   // value.
-  if (creation.isNew && creation.intent.policyDecisionState === 'unattempted') {
+  // `!input.scope` is belt-and-braces, not redundancy with taste: a scoped
+  // intent cannot BE 'unattempted' (resolvePolicyDecisionState forces
+  // human_required for it — spec §4.2 amendment, #4189), so this second
+  // condition only fires if that invariant is ever broken upstream. It is
+  // cheap, and the failure it guards against is a sweep proposal
+  // auto-executing.
+  if (creation.isNew && !input.scope && creation.intent.policyDecisionState === 'unattempted') {
     triggerPolicyDecisionAttempt(creation.intent.id);
   }
 

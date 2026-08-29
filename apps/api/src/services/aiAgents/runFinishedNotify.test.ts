@@ -269,8 +269,53 @@ describe('deliverRunFinishedNotifications — sweep digest (P2-2)', () => {
     });
   });
 
-  it('still reports a zero-finding sweep rather than falling back to the generic title', async () => {
+  // Final-review fix (#4189, item 2). A sweep is a RECURRING, unattended job:
+  // a daily 06:00 baseline on a 40-org partner that finds nothing still
+  // manufactures 40 notifications every morning, per recipient. Notification
+  // fatigue is the failure mode that makes the ONE morning with a critical
+  // finding invisible, so a clean sweep is silent by design. The run itself
+  // still exists and is still readable on the run-detail page — the digest is
+  // suppressed, not the record.
+  it('writes NO notification for a zero-finding sweep', async () => {
     queueRows('ai_agent_runs', [sweepRun({
+      outcome: { toolExecutionCount: 0, sweepFindings: { summary: 'Nothing found.', findings: [] } },
+    })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('sweep found nothing'),
+      expect.objectContaining({ runId: RUN_ID }),
+    );
+    infoSpy.mockRestore();
+  });
+
+  it('CONTROL: a ONE-finding sweep still notifies', async () => {
+    queueRows('ai_agent_runs', [sweepRun({
+      outcome: {
+        toolExecutionCount: 0,
+        sweepFindings: { summary: 'One machine needs attention.', findings: [sweepFinding('low')] },
+      },
+    })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).toHaveBeenCalledTimes(1);
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.title).toBe('Sweep finished: 1 finding(s) — Front Desk Triage');
+  });
+
+  it('a NON-sweep run with an empty sweepFindings outcome still notifies', async () => {
+    // The suppression is keyed on the run's own profile, never on the shape
+    // of a jsonb column another profile could carry.
+    queueRows('ai_agent_runs', [sweepRun({
+      profile: 'full',
       outcome: { toolExecutionCount: 0, sweepFindings: { summary: 'Nothing found.', findings: [] } },
     })]);
     queueRows('ai_agents', [baseAgent]);
@@ -278,9 +323,7 @@ describe('deliverRunFinishedNotifications — sweep digest (P2-2)', () => {
 
     await deliverRunFinishedNotifications(RUN_ID);
 
-    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
-    expect(input.title).toBe('Sweep finished: 0 finding(s) — Front Desk Triage');
-    expect(input.message).toBe('Nothing found.');
+    expect(createNotification).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to the generic title for a sweep run that never produced findings', async () => {

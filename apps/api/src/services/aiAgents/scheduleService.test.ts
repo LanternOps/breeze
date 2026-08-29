@@ -19,6 +19,11 @@ const dbState = vi.hoisted(() => ({
   insertReturning: null as Record<string, unknown> | null,
   updatedValues: null as Record<string, unknown> | null,
   updateWhere: undefined as unknown,
+  // EVERY issued UPDATE, in order. `updatedValues`/`updateWhere` above keep
+  // naming the FIRST one (every pre-existing assertion is written against the
+  // row's own patch), so the override-propagation UPDATE that follows it is
+  // read from here instead of silently overwriting them.
+  updates: [] as Array<{ values: Record<string, unknown>; where: unknown }>,
   updateReturning: null as Record<string, unknown> | null,
   deleteCount: 0,
   ambientScope: undefined as string | undefined,
@@ -82,13 +87,19 @@ vi.mock('../../db', () => ({
     })),
     update: vi.fn(() => ({
       set: vi.fn((values: Record<string, unknown>) => {
-        dbState.updatedValues = values;
+        if (dbState.updatedValues === null) dbState.updatedValues = values;
         return {
           where: vi.fn((condition: unknown) => {
-            dbState.updateWhere = condition;
-            return {
+            if (dbState.updateWhere === undefined) dbState.updateWhere = condition;
+            dbState.updates.push({ values, where: condition });
+            const terminal = {
               returning: vi.fn(async () => (dbState.updateReturning ? [dbState.updateReturning] : [])),
+              // Thenable too: the override-propagation UPDATE is awaited
+              // directly, with no RETURNING.
+              then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+                Promise.resolve([]).then(resolve, reject),
             };
+            return terminal;
           }),
         };
       }),
@@ -253,6 +264,7 @@ beforeEach(() => {
   dbState.updatedValues = null;
   dbState.updateWhere = undefined;
   dbState.updateReturning = null;
+  dbState.updates = [];
   dbState.deleteCount = 0;
   dbState.deleteWhere = undefined;
   dbState.deleteReturning = [{ id: BASELINE_ID }];
@@ -623,6 +635,98 @@ describe('updateSchedule', () => {
     await expect(
       updateSchedule(partnerAuth(), BASELINE_ID, { enabled: false }),
     ).rejects.toBeInstanceOf(AgentAccessDeniedError);
+  });
+
+  // -------------------------------------------------------------------------
+  // Final-review fixes (#4189)
+  // -------------------------------------------------------------------------
+
+  // Item 3a — the service validates independently of the zod schema (it is
+  // reachable from non-HTTP callers), so the cadence floor has to hold HERE
+  // too or the shared schema is the only thing enforcing it.
+  it('rejects a sub-hourly partner cron (cadence floor)', async () => {
+    for (const cron of ['*/15 * * * *', '* * * * *', '0-5 6 * * *']) {
+      dbState.scheduleRows = [[baselineRow()]];
+      await expect(
+        updateSchedule(partnerAuth(), BASELINE_ID, { cron }),
+      ).rejects.toMatchObject({ code: 'invalid_cron' });
+    }
+  });
+
+  // Item 6 — the update schema is SHARED by both owner shapes, and an org
+  // override's `[]` legitimately means "disable every kind for this org". A
+  // partner baseline that sweeps nothing is just a disabled schedule wearing
+  // an enabled flag, and `kinds_not_subset` would be the wrong story to tell
+  // the client, so this gets its own code.
+  it('refuses an empty sweepKinds list on a PARTNER baseline (kinds_empty)', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+
+    await expect(
+      updateSchedule(partnerAuth(), BASELINE_ID, { sweepKinds: [] }),
+    ).rejects.toMatchObject({ code: 'kinds_empty' });
+    expect(dbState.updatedValues).toBeNull();
+  });
+
+  it('still accepts an empty sweepKinds list on an ORG override (opt out of every kind)', async () => {
+    dbState.scheduleRows = [[overrideRow()], [baselineRow()]];
+    dbState.updateReturning = overrideRow({ sweepKinds: [] });
+
+    const row = await updateSchedule(orgAuth(), OVERRIDE_ID, { sweepKinds: [] });
+
+    expect(row.sweepKinds).toEqual([]);
+    expect(dbState.updatedValues).toMatchObject({ sweepKinds: [] });
+  });
+
+  // Item 9 (live-check B1) — an override row's cron/timezone are a COPY of its
+  // baseline's (createSchedule inherits them, and the table is NOT NULL on
+  // both). Re-cronning the baseline without propagating leaves every override
+  // row advertising the OLD cadence to `listSchedules`, which is what the org
+  // sees on its own schedule page.
+  it('propagates a changed cron to the baseline\'s override rows in the same transaction', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+    dbState.updateReturning = baselineRow({ cron: '30 7 * * *' });
+
+    await updateSchedule(partnerAuth(), BASELINE_ID, { cron: '30 7 * * *' });
+
+    expect(dbState.updates).toHaveLength(2);
+    const propagation = dbState.updates[1]!;
+    expect(propagation.values).toMatchObject({ cron: '30 7 * * *' });
+    expect(propagation.values.updatedAt).toBeInstanceOf(Date);
+    const where = dialect.sqlToQuery(propagation.where as SQL);
+    expect(where.sql).toContain('"baseline_schedule_id"');
+    expect(where.params).toEqual(expect.arrayContaining([BASELINE_ID]));
+  });
+
+  it('propagates the timezone that was PERSISTED on the baseline, not the raw input', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+    // The RETURNING row is the source of truth for what the baseline now
+    // stores; the propagation copies that, so the two rows can never end up
+    // describing the same zone with two different strings.
+    dbState.updateReturning = baselineRow({ timezone: 'America/New_York' });
+
+    await updateSchedule(partnerAuth(), BASELINE_ID, { timezone: 'America/New_York' });
+
+    expect(dbState.updates).toHaveLength(2);
+    expect(dbState.updatedValues).toMatchObject({ timezone: 'America/New_York' });
+    expect(dbState.updates[1]!.values).toMatchObject({ timezone: 'America/New_York' });
+  });
+
+  it('issues NO propagation UPDATE when neither cron nor timezone changed', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+    dbState.updateReturning = baselineRow({ enabled: false });
+
+    await updateSchedule(partnerAuth(), BASELINE_ID, { enabled: false });
+
+    expect(dbState.updates).toHaveLength(1);
+  });
+
+  it('issues NO propagation UPDATE for an ORG override (it has no dependants)', async () => {
+    dbState.scheduleRows = [[overrideRow()]];
+    dbState.updateReturning = overrideRow({ enabled: false });
+
+    await updateSchedule(orgAuth(), OVERRIDE_ID, { enabled: false });
+
+    expect(dbState.updates).toHaveLength(1);
   });
 });
 
