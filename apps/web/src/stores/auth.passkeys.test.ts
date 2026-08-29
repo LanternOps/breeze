@@ -63,11 +63,20 @@ describe('auth store passkey MFA helpers', () => {
     expect(result).toEqual({
       success: true,
       mfaRequired: true,
+      challenge: {
+        tempToken: 'temp-passkey',
+        primary: 'passkey',
+        methods: ['passkey'],
+        allowedMethods: { totp: false, sms: false, passkey: true },
+        recoveryAvailable: false,
+        phoneLast4: null,
+      },
       tempToken: 'temp-passkey',
       mfaMethod: 'passkey',
-      // #2153: normalized to false when the login body omits the flag.
-      passkeyAvailable: false,
-      phoneLast4: undefined,
+      // A passkey primary is itself proof that the legacy response authorizes
+      // the dedicated WebAuthn continuation.
+      passkeyAvailable: true,
+      phoneLast4: null,
     });
   });
 
