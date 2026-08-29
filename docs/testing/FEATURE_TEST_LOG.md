@@ -5119,7 +5119,7 @@ Implemented the approved #2489 / #3853 / #3854 client-completion slices on
 - API and web TypeScript checks, mobile typecheck, API/web lint, and API/web production builds: **PASS**.
 - Independent security review: no critical findings; all three important findings were fixed and
   covered by regressions. The passkey compatibility alias was also aligned with the policy-filtered
-  method set.
+  method set, and invalid SSO-link recovery attempts now preserve the original retry window.
 - Real-Postgres atomicity suite: **NOT RUN (environment unavailable)** — the integration runner could
   not connect to PostgreSQL at `localhost:5433` (`ECONNREFUSED`). The suite contains rollback,
   concurrent single-winner enrollment, and concurrent `auth_epoch` cutoff coverage and must run in CI
