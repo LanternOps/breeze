@@ -180,10 +180,28 @@ export const actionIntents = pgTable(
      */
     requestingAgentRunId: uuid('requesting_agent_run_id'),
     // P2-2 typed target scope. `scopeKind` is immutable; `scopeDeviceId` may
-    // only tombstone (FK ON DELETE SET NULL). Column is NOT named device_id on
-    // purpose: cascadeDelete.test.ts keys on `device_id`, and this column's
-    // device-delete contract is the FK + the tombstone rule in
-    // services/actionIntents/intentTargetScope.ts, not a cascade list.
+    // only tombstone (non-null -> NULL), never retarget — enforced by
+    // action_intents_block_content_update() (migrations/2026-09-23-ai-agents-
+    // scheduled-sweeps.sql). Column is NOT named device_id on purpose:
+    // cascadeDelete.test.ts keys on `device_id`, and this column's
+    // device-delete contract is the two events below, not a cascade list.
+    //
+    // Two device-lifecycle events produce the tombstone, both landing on the
+    // SAME non-null -> NULL transition the trigger permits:
+    //   - device DELETE: the FK's `ON DELETE SET NULL` fires automatically.
+    //   - device moveOrg: `routes/devices/moveOrg.ts`'s transaction runs an
+    //     explicit `UPDATE action_intents SET scope_device_id = NULL WHERE
+    //     scope_device_id = <movedDeviceId> AND status IN
+    //     ('pending_approval','approved','executing')` — scoped to LIVE
+    //     statuses only, since a terminal-status intent is a historical
+    //     record of an already-decided action, not something a future
+    //     release re-validates (same reasoning as ai_agent_runs' org_id
+    //     being left un-restamped by that same transaction).
+    // The release path (Task A3, `services/actionIntents/intentTargetScope.ts`)
+    // fails closed on either a tombstoned (NULL) scope_device_id or a device
+    // whose CURRENT org_id no longer matches the intent's org_id — the second
+    // case is what a moveOrg landing between decide and release, or a bug in
+    // the detach step above, would otherwise produce.
     scopeKind: text('scope_kind').$type<'device'>(),
     scopeDeviceId: uuid('scope_device_id').references(() => devices.id, { onDelete: 'set null' }),
     source: text('source').notNull().$type<ActionIntentSource>(),

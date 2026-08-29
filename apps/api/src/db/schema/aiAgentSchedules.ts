@@ -1,5 +1,5 @@
 // apps/api/src/db/schema/aiAgentSchedules.ts
-import { boolean, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { boolean, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import type { AiSweepKind, AiAgentScheduleRunSummary } from '@breeze/shared';
 import { organizations, partners } from './orgs';
@@ -14,8 +14,19 @@ export const aiAgentSchedules = pgTable('ai_agent_schedules', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'cascade' }),
   partnerId: uuid('partner_id').references(() => partners.id, { onDelete: 'cascade' }),
+  // INVARIANT (review round 1, Important 3, #4189) — enforced in the WRITE
+  // PATH, not by a DB constraint (no composite FK: both parents are
+  // dual-owner, so a NULL-bearing composite FK is unenforced for org rows):
+  //   - an org override's baseline must be a partner row belonging to the
+  //     org's OWN partner, with the SAME agentId as the override;
+  //   - a partner row's agent must itself be a partner-wide triage agent
+  //     under that SAME partnerId.
+  // Enforced by services/aiAgents/scheduleService.ts (Task A8) under a
+  // SELECT ... FOR SHARE on the baseline row at write time, with an
+  // integration test there. See the migration's matching comment.
   agentId: uuid('agent_id').notNull().references(() => aiAgents.id, { onDelete: 'cascade' }),
-  baselineScheduleId: uuid('baseline_schedule_id').references((): any => aiAgentSchedules.id, { onDelete: 'cascade' }),
+  // Same cross-tenant-pointer invariant as agentId above — see that comment.
+  baselineScheduleId: uuid('baseline_schedule_id').references((): AnyPgColumn => aiAgentSchedules.id, { onDelete: 'cascade' }),
   cron: text('cron').notNull(),
   timezone: text('timezone').notNull().default('UTC'),
   sweepKinds: text('sweep_kinds').array().$type<AiSweepKind[]>().notNull().default(sql`'{}'::text[]`),

@@ -15,15 +15,16 @@ import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { eq, inArray, sql } from 'drizzle-orm';
-import { AI_SWEEP_KINDS, type AiSweepKind } from '@breeze/shared';
+import { AI_AGENT_RUN_PROFILES, AI_SWEEP_KINDS, type AiSweepKind } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import { aiAgents, aiAgentSchedules, actionIntents, devices } from '../../db/schema';
+import { aiAgentRuns, aiAgents, aiAgentSchedules, actionIntents, devices } from '../../db/schema';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 
 const createdSchedules: string[] = [];
 const createdAgents: string[] = [];
 const createdDevices: string[] = [];
 const createdIntents: string[] = [];
+const createdRuns: string[] = [];
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
@@ -38,6 +39,9 @@ afterEach(async () => {
     if (createdIntents.length > 0) {
       await db.delete(actionIntents).where(inArray(actionIntents.id, createdIntents));
     }
+    if (createdRuns.length > 0) {
+      await db.delete(aiAgentRuns).where(inArray(aiAgentRuns.id, createdRuns));
+    }
     if (createdSchedules.length > 0) {
       await db.delete(aiAgentSchedules).where(inArray(aiAgentSchedules.id, createdSchedules));
     }
@@ -49,6 +53,7 @@ afterEach(async () => {
     }
   });
   createdIntents.length = 0;
+  createdRuns.length = 0;
   createdSchedules.length = 0;
   createdAgents.length = 0;
   createdDevices.length = 0;
@@ -307,8 +312,12 @@ describe('ai_agent_schedules RLS — dual-axis (2026-09-23 migration)', () => {
       db.select().from(aiAgentSchedules).where(inArray(aiAgentSchedules.id, [baseline!.id, override!.id])),
     );
     expect(remaining).toHaveLength(0);
-    // Both already gone — nothing left for afterEach to clean up, but keep
-    // the ids out of the cleanup list defensively in case of a partial fail.
+    // Push both ids into the cleanup list defensively, in case the
+    // assertion above is what fails (e.g. the cascade regresses and one row
+    // survives) — afterEach's DELETE ... WHERE id IN (...) is a no-op for
+    // any id that's already gone, so this is safe whether or not the
+    // cascade actually removed them.
+    createdSchedules.push(baseline!.id, override!.id);
   });
 
   it('action_intents: UPDATE scope_device_id to a different device raises; UPDATE to NULL succeeds (tombstone)', async () => {
@@ -377,6 +386,10 @@ describe('ai_agent_schedules RLS — dual-axis (2026-09-23 migration)', () => {
     const cause = (caught as { cause?: unknown })?.cause;
     const causeMessage = cause instanceof Error ? cause.message : undefined;
     const topMessage = caught instanceof Error ? caught.message : String(caught);
+    // Message-text match only (no `.code`/ERRCODE assertion): the shipped
+    // RAISE EXCEPTION carries no `USING ERRCODE = ...` clause, so Postgres
+    // reports the default PL/pgSQL `raise_exception` SQLSTATE (P0001) rather
+    // than a dedicated code this test could key on instead.
     expect(causeMessage ?? topMessage).toMatch(/action_intents content is immutable/);
 
     // Tombstone — value -> NULL succeeds (the FK's ON DELETE SET NULL path).
@@ -420,5 +433,62 @@ describe('ai_agent_schedules_kinds_chk — DB constraint matches AI_SWEEP_KINDS'
     for (const kind of sharedKinds) {
       expect(constraintKinds.has(kind), `AI_SWEEP_KINDS has '${kind}' but the DB constraint rejects it`).toBe(true);
     }
+  });
+});
+
+// Review round 1, Important 1 (#4189): the 'sweep' profile CHECK widening
+// (this migration's `ai_agent_runs_profile_chk` DROP/ADD) was untested —
+// mirrors the kinds-equality contract above and
+// aiAgentRuns.integration.test.ts's ai_agent_runs_trigger_kind_chk contract,
+// which caught trigger_kind='anomaly' shipping to a CHECK-less DB in
+// production (#3828 blocker 1). AI_AGENT_RUN_PROFILES and the DB CHECK are
+// two independently hand-maintained lists with nothing structurally tying
+// them together — a source-scan unit test cannot see this.
+describe("ai_agent_runs_profile_chk — DB constraint matches AI_AGENT_RUN_PROFILES", () => {
+  it('the constraint value set equals AI_AGENT_RUN_PROFILES exactly', async () => {
+    const rows = (await db.execute(sql`
+      SELECT pg_get_constraintdef(oid) AS def
+      FROM pg_constraint
+      WHERE conrelid = 'ai_agent_runs'::regclass
+        AND conname = 'ai_agent_runs_profile_chk';
+    `)) as unknown as Array<{ def: string }>;
+
+    expect(rows).toHaveLength(1);
+    const def = rows[0]?.def ?? '';
+    // e.g. CHECK (profile = ANY (ARRAY['full'::text, 'verdict'::text, 'sweep'::text]))
+    const matches = [...def.matchAll(/'([^']+)'::text/g)].map((m) => m[1]!);
+    expect(matches.length).toBeGreaterThan(0);
+    const constraintProfiles = new Set(matches);
+    const sharedProfiles = new Set<string>(AI_AGENT_RUN_PROFILES);
+
+    for (const profile of constraintProfiles) {
+      expect(sharedProfiles.has(profile), `DB constraint allows '${profile}' but AI_AGENT_RUN_PROFILES does not`).toBe(true);
+    }
+    for (const profile of sharedProfiles) {
+      expect(constraintProfiles.has(profile), `AI_AGENT_RUN_PROFILES has '${profile}' but the DB constraint rejects it`).toBe(true);
+    }
+  });
+
+  it("accepts an insert with profile='sweep' (this migration's CHECK widening)", async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const by = await creator(partner.id);
+    const agentId = await createAgent(partner.id, by);
+    const [row] = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db
+        .insert(aiAgentRuns)
+        .values({
+          agentId,
+          orgId: org.id,
+          triggerKind: 'alert',
+          dedupeKey: `sweep-chk-${randomUUID()}`,
+          modeAtStart: 'shadow',
+          policySnapshot: { schemaVersion: 1 } as never,
+          profile: 'sweep',
+        })
+        .returning(),
+    );
+    createdRuns.push(row!.id);
+    expect(row!.profile).toBe('sweep');
   });
 });

@@ -10,8 +10,23 @@ CREATE TABLE IF NOT EXISTS ai_agent_schedules (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id uuid NULL REFERENCES organizations(id) ON DELETE CASCADE,
   partner_id uuid NULL REFERENCES partners(id) ON DELETE CASCADE,
+  -- INVARIANT (review round 1, Important 3, #4189) — enforced in the WRITE
+  -- PATH, not by a DB constraint: both parents (ai_agents, ai_agent_schedules
+  -- itself) are dual-owner, so a composite FK that must tolerate a NULL leg
+  -- for one shape cannot also express "same owner" for the other — a
+  -- NULL-bearing composite FK is simply unenforced for org rows. The
+  -- invariant is:
+  --   - an org override's baseline must be a partner row belonging to the
+  --     org's OWN partner, with the SAME agent_id as the override;
+  --   - a partner row's agent must itself be a partner-wide triage agent
+  --     under that SAME partner_id.
+  -- Enforced by services/aiAgents/scheduleService.ts (Task A8) under a
+  -- SELECT ... FOR SHARE on the baseline row at write time, with an
+  -- integration test there covering the forge cases a DB constraint can't
+  -- express here.
   agent_id uuid NOT NULL REFERENCES ai_agents(id) ON DELETE CASCADE,
   -- Org override → the partner baseline it tightens. NULL iff partner row.
+  -- Same cross-tenant-pointer invariant as agent_id above — see that comment.
   baseline_schedule_id uuid NULL REFERENCES ai_agent_schedules(id) ON DELETE CASCADE,
   cron text NOT NULL,
   timezone text NOT NULL DEFAULT 'UTC',
