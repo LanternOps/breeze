@@ -62,7 +62,10 @@ const createPartnerScheduleSchema = z.object({
   agentId: z.string().uuid(),
   cron: scheduleCronSchema,
   timezone: scheduleTimezoneSchema,
-  sweepKinds: z.array(sweepKindEnum).min(1),
+  // .max(6): AI_SWEEP_KINDS has exactly 6 members, so a list longer than
+  // that can only be a duplicate — the sweeper still no-ops on dupes, but
+  // there is no legitimate 7th value to accept.
+  sweepKinds: z.array(sweepKindEnum).min(1).max(6),
   enabled: z.boolean(),
 }).strict();
 
@@ -71,7 +74,7 @@ const createOrgScheduleSchema = z.object({
   orgId: z.string().uuid(),
   baselineScheduleId: z.string().uuid(),
   enabled: z.boolean(),
-  sweepKinds: z.array(sweepKindEnum),
+  sweepKinds: z.array(sweepKindEnum).max(6),
 }).strict();
 
 export const createAiAgentScheduleSchema = z.discriminatedUnion('ownerScope', [
@@ -85,6 +88,6 @@ export const createAiAgentScheduleSchema = z.discriminatedUnion('ownerScope', [
 export const updateAiAgentScheduleSchema = z.object({
   cron: scheduleCronSchema.optional(),
   timezone: scheduleTimezoneSchema.optional(),
-  sweepKinds: z.array(sweepKindEnum).optional(),
+  sweepKinds: z.array(sweepKindEnum).max(6).optional(),
   enabled: z.boolean().optional(),
 }).strict();
