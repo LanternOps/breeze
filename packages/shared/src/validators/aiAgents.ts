@@ -80,11 +80,20 @@ const triggersFields = z.object({
   // modeled bound: every detector formula in metricAnomalies.ts produces
   // scores well under this today.
   minAnomalyScore: z.number().finite().min(0).max(1000),
+  // Wave 6 PR 4 follow-up (#3828) — conservative per-agent opt-in for
+  // `triggerKind: 'anomaly'` admission. Unlike every narrowing filter above
+  // (undefined = unrestricted), this is a binary safety gate, so its
+  // default below is `false` (closed), not omitted. See
+  // `AiAgentTriggers.anomalyEnabled`'s docstring (packages/shared/src/types
+  // /aiAgents.ts) for the merge semantics — the org's own triggers must set
+  // this; a partner-wide baseline can never silently opt an org in.
+  anomalyEnabled: z.boolean(),
 });
 export const aiAgentTriggersPatchSchema = triggersFields.partial();
 export const aiAgentTriggersSchema = aiAgentTriggersPatchSchema.transform((v) => ({
   alertSeverities: ['critical', 'high'] as Array<(typeof ALERT_SEVERITIES)[number]>,
   respectMaintenanceWindows: true,
+  anomalyEnabled: false,
   ...v,
 }));
 

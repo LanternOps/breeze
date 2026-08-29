@@ -630,6 +630,21 @@ export async function createAndEnqueueAgentRun(
   // for an (org, agent) pair a human has not yet reset with MFA.
   if (await isCircuitOpen(orgId, resolved.agentId)) return skip('circuit_open');
 
+  // 2c. Anomaly opt-in gate (wave-6-4 follow-up, #3828) — conservative pilot
+  // default: an org must never start receiving anomaly-triggered shadow runs
+  // "for free" just because `ml.anomalies.enabled` is on and it happens to
+  // have an enabled `triage` agent. Gated on `triggerKind` alone — NOT on
+  // `input.anomalyContext` being supplied, unlike the narrowing filters in
+  // step 3c below — so there is no path (context supplied or not) that
+  // reaches admission for an anomaly trigger without this agent's effective
+  // triggers explicitly carrying `anomalyEnabled: true`. See
+  // `AiAgentTriggers.anomalyEnabled`'s docstring (packages/shared) for the
+  // merge semantics: only the org's OWN trigger override can set this — a
+  // partner-wide baseline can never silently opt an org in by itself.
+  if (triggerKind === 'anomaly' && effective.triggers.anomalyEnabled !== true) {
+    return skip('trigger_filter_mismatch');
+  }
+
   // 3. Trigger filters. Only an event-shaped trigger carries a context; a human
   //    pressing "run now" has already made the selection the filters encode.
   if (input.alertContext

@@ -256,8 +256,18 @@ export async function loadAnomalyContext(incidentId: string, orgId: string): Pro
       eq(metricAnomalies.bucketSeconds, incident.bucketSeconds),
       eq(metricAnomalies.windowStart, incident.windowStart),
     ))
+    // +1: the query intentionally requests ONE MORE row than the assembler's
+    // cap. If this fetched exactly ANOMALY_CONTEXT_MAX_SIBLINGS, the
+    // assembler's `sorted.length > ANOMALY_CONTEXT_MAX_SIBLINGS` check
+    // (assembleAnomalyContext, above) could never fire — the DB LIMIT would
+    // have already silently discarded every row past the cap before the
+    // assembler ever saw them, so `truncated` would never reflect a
+    // genuinely oversized sibling set (bug fixed here, wave-6-4 follow-up,
+    // #3828). Fetching MAX+1 lets the assembler observe "more than MAX
+    // exist" and correctly flag `truncated: true` while still only ever
+    // rendering MAX rows (it slices back down to MAX itself).
     .orderBy(desc(metricAnomalies.score))
-    .limit(ANOMALY_CONTEXT_MAX_SIBLINGS);
+    .limit(ANOMALY_CONTEXT_MAX_SIBLINGS + 1);
 
   return assembleAnomalyContext({ incident: incident as RawAnomalyIncidentRow, siblings: siblingRows as RawAnomalySiblingRow[] });
 }

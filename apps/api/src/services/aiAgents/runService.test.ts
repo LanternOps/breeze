@@ -1193,8 +1193,17 @@ describe('createAndEnqueueAgentRun — anomaly-triggered admission (#3828 wave-6
     });
   }
 
+  // Wave-6-4 follow-up (#3828): the opt-in gate (2c) is dedicated coverage
+  // in its own describe block below — every OTHER test in this suite is
+  // about admission mechanics that assume the gate has already passed, so
+  // opt in by default here rather than repeating `anomalyEnabled: true` at
+  // every call site.
+  function anomalyTriggers(over: Partial<AiAgentTriggers> = {}): AiAgentTriggers {
+    return triggers({ anomalyEnabled: true, ...over });
+  }
+
   it('forces modeAtStart to shadow even when the effective policy mode is act', async () => {
-    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'act' }));
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'act', triggers: anomalyTriggers() }));
     seedAdmissionReads();
     const result = await createAndEnqueueAgentRun(anomalyInput());
 
@@ -1209,7 +1218,7 @@ describe('createAndEnqueueAgentRun — anomaly-triggered admission (#3828 wave-6
   });
 
   it('persists shadow modeAtStart when the effective policy mode is already shadow', async () => {
-    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'shadow' }));
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'shadow', triggers: anomalyTriggers() }));
     seedAdmissionReads();
     await createAndEnqueueAgentRun(anomalyInput());
 
@@ -1221,7 +1230,7 @@ describe('createAndEnqueueAgentRun — anomaly-triggered admission (#3828 wave-6
   // — the opposite assertion of the ticket suite's equivalent test.
   it('DOES consult maintenance windows for an anomaly-triggered (device-bound) run', async () => {
     resolveEffectiveAgentSystem.mockResolvedValue(
-      snapshot({ mode: 'act', triggers: triggers({ respectMaintenanceWindows: true }) }),
+      snapshot({ mode: 'act', triggers: anomalyTriggers({ respectMaintenanceWindows: true }) }),
     );
     seedAdmissionReads();
     await createAndEnqueueAgentRun(anomalyInput());
@@ -1230,7 +1239,7 @@ describe('createAndEnqueueAgentRun — anomaly-triggered admission (#3828 wave-6
 
   it('skips with maintenance_window when the device is in one and the agent respects them', async () => {
     resolveEffectiveAgentSystem.mockResolvedValue(
-      snapshot({ mode: 'act', triggers: triggers({ respectMaintenanceWindows: true }) }),
+      snapshot({ mode: 'act', triggers: anomalyTriggers({ respectMaintenanceWindows: true }) }),
     );
     seedAdmissionReads();
     isDeviceInMaintenanceWindow.mockResolvedValue(true);
@@ -1254,7 +1263,7 @@ describe('createAndEnqueueAgentRun — anomaly-triggered admission (#3828 wave-6
   });
 
   it('a duplicate anomaly.incident_opened delivery collapses onto the same dedupe key (no second row)', async () => {
-    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'act' }));
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'act', triggers: anomalyTriggers() }));
     seedAdmissionReads();
     dbMockState.insertRows = []; // ON CONFLICT DO NOTHING — the row already exists
     dbMockState.updateRows = []; // not an enqueue_failed reclaim either — genuinely a repeat
@@ -1296,7 +1305,7 @@ describe('createAndEnqueueAgentRun — anomaly-triggered admission (#3828 wave-6
 
     it('admits when no anomalyContext is supplied at all (no filter to fail)', async () => {
       resolveEffectiveAgentSystem.mockResolvedValue(
-        snapshot({ triggers: triggers({ anomalyTypes: ['disk_full'] }) }),
+        snapshot({ triggers: anomalyTriggers({ anomalyTypes: ['disk_full'] }) }),
       );
       seedAdmissionReads();
       const result = await createAndEnqueueAgentRun(anomalyInput());
@@ -1305,7 +1314,7 @@ describe('createAndEnqueueAgentRun — anomaly-triggered admission (#3828 wave-6
 
     it('trigger_filter_mismatch when anomalyTypes is configured and the incident type does not match', async () => {
       resolveEffectiveAgentSystem.mockResolvedValue(
-        snapshot({ triggers: triggers({ anomalyTypes: ['disk_full'] }) }),
+        snapshot({ triggers: anomalyTriggers({ anomalyTypes: ['disk_full'] }) }),
       );
       const result = await createAndEnqueueAgentRun(
         anomalyInput({ anomalyContext: anomalyCtx() }),
@@ -1315,7 +1324,7 @@ describe('createAndEnqueueAgentRun — anomaly-triggered admission (#3828 wave-6
 
     it('admits when anomalyTypes matches the incident type', async () => {
       resolveEffectiveAgentSystem.mockResolvedValue(
-        snapshot({ triggers: triggers({ anomalyTypes: ['cpu_spike'] }) }),
+        snapshot({ triggers: anomalyTriggers({ anomalyTypes: ['cpu_spike'] }) }),
       );
       seedAdmissionReads();
       const result = await createAndEnqueueAgentRun(
@@ -1326,7 +1335,7 @@ describe('createAndEnqueueAgentRun — anomaly-triggered admission (#3828 wave-6
 
     it('trigger_filter_mismatch when minAnomalyScore is configured above the incident peakScore', async () => {
       resolveEffectiveAgentSystem.mockResolvedValue(
-        snapshot({ triggers: triggers({ minAnomalyScore: 9 }) }),
+        snapshot({ triggers: anomalyTriggers({ minAnomalyScore: 9 }) }),
       );
       const result = await createAndEnqueueAgentRun(
         anomalyInput({ anomalyContext: anomalyCtx({ peakScore: 5 }) }),
@@ -1336,11 +1345,58 @@ describe('createAndEnqueueAgentRun — anomaly-triggered admission (#3828 wave-6
 
     it('admits when minAnomalyScore is at or below the incident peakScore', async () => {
       resolveEffectiveAgentSystem.mockResolvedValue(
-        snapshot({ triggers: triggers({ minAnomalyScore: 5 }) }),
+        snapshot({ triggers: anomalyTriggers({ minAnomalyScore: 5 }) }),
       );
       seedAdmissionReads();
       const result = await createAndEnqueueAgentRun(
         anomalyInput({ anomalyContext: anomalyCtx({ peakScore: 5 }) }),
+      );
+      expect(result.created).toBe(true);
+    });
+  });
+
+  // Wave-6-4 follow-up (#3828) — the conservative per-agent opt-in gate
+  // itself (admission step 2c). Distinct from the "anomaly trigger filters"
+  // suite above: this gate fires on `triggerKind === 'anomaly'` alone,
+  // BEFORE (and regardless of) whether an `anomalyContext` is even supplied
+  // — see runService.ts's step-2c comment.
+  describe('anomaly trigger opt-in gate (wave-6-4 follow-up, #3828)', () => {
+    it('skips trigger_filter_mismatch when anomalyEnabled is absent (conservative default)', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers() }));
+      const result = await createAndEnqueueAgentRun(anomalyInput());
+      expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
+      expect(dbMockState.insertValues).toHaveLength(0);
+    });
+
+    it('skips trigger_filter_mismatch when anomalyEnabled is explicitly false', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(
+        snapshot({ triggers: triggers({ anomalyEnabled: false }) }),
+      );
+      const result = await createAndEnqueueAgentRun(anomalyInput());
+      expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
+    });
+
+    it('proceeds past the gate (and into narrowing filters) when anomalyEnabled is true', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: anomalyTriggers() }));
+      seedAdmissionReads();
+      const result = await createAndEnqueueAgentRun(anomalyInput());
+      expect(result.created).toBe(true);
+    });
+
+    it('fires even when no anomalyContext is supplied — NOT conditioned on the narrowing-filter context', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers() }));
+      // No anomalyContext on this input — the narrowing-filter branch (step
+      // 3c) would never even call evaluateAnomalyTriggerFilters, so this
+      // proves the opt-in gate does not depend on that branch running.
+      const result = await createAndEnqueueAgentRun(anomalyInput());
+      expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
+    });
+
+    it('does not gate a non-anomaly trigger kind (alert admission unaffected by anomalyEnabled being unset)', async () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers() }));
+      seedAdmissionReads();
+      const result = await createAndEnqueueAgentRun(
+        input({ triggerKind: 'alert', alertId: ALERT_ID, dedupeKey: `alert:${ALERT_ID}` }),
       );
       expect(result.created).toBe(true);
     });
@@ -1361,6 +1417,10 @@ describe('createAndEnqueueAgentRun — anomaly-triggered admission (#3828 wave-6
 // of attempting (and failing) the mutation.
 describe('createAndEnqueueAgentRun — cross-kind enqueue_failed reclaim guard (#3828 branch-review blocker 3)', () => {
   it('an anomaly admission colliding with an alert-kind enqueue_failed row at the same key reports duplicate, not a reclaim', async () => {
+    // Wave-6-4 follow-up (#3828): this admission must clear the anomaly
+    // opt-in gate to reach the insert/dedupe step this test is actually
+    // about — the suite's default snapshot() (beforeEach) does not opt in.
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers({ anomalyEnabled: true }) }));
     seedAdmissionReads();
     const dedupeKey = `alert:${ALERT_ID}`;
     // The insert loses the unique race: an alert-triggered row already holds

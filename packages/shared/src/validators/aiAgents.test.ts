@@ -3,6 +3,7 @@ import {
   aiAgentActAssetsSchema,
   aiAgentLimitsSchema,
   aiAgentPolicyFieldsSchema,
+  aiAgentTriggersPatchSchema,
   createAiAgentSchema,
   updateAiAgentSchema,
 } from './aiAgents';
@@ -163,6 +164,29 @@ describe('aiAgents validators', () => {
     it('accepts free-text anomaly types beyond the current spike/drop/trend set — not a fixed enum', () => {
       const result = aiAgentPolicyFieldsSchema.safeParse({ triggers: { anomalyTypes: ['future_type'] } });
       expect(result.success).toBe(true);
+    });
+  });
+
+  describe('triggers.anomalyEnabled — conservative per-agent opt-in (wave 6 PR 4 follow-up, #3828)', () => {
+    it('defaults to false — NOT the "absent = unrestricted" convention every other narrowing filter uses', () => {
+      const created = createAiAgentSchema.parse({ kind: 'triage', name: 'Triage' });
+      expect(created.triggers.anomalyEnabled).toBe(false);
+    });
+
+    it('a patch omitting anomalyEnabled leaves it unset (no invented default on the patch variant)', () => {
+      const parsed = aiAgentTriggersPatchSchema.parse({});
+      expect(parsed.anomalyEnabled).toBeUndefined();
+    });
+
+    it('accepts an explicit true/false', () => {
+      expect(aiAgentPolicyFieldsSchema.parse({ triggers: { anomalyEnabled: true } }).triggers.anomalyEnabled)
+        .toBe(true);
+      expect(aiAgentPolicyFieldsSchema.parse({ triggers: { anomalyEnabled: false } }).triggers.anomalyEnabled)
+        .toBe(false);
+    });
+
+    it('rejects a non-boolean value', () => {
+      expect(aiAgentPolicyFieldsSchema.safeParse({ triggers: { anomalyEnabled: 'true' } }).success).toBe(false);
     });
   });
 

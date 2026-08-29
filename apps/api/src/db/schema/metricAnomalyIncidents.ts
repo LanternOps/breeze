@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   index,
   integer,
@@ -73,8 +74,19 @@ export const metricAnomalyIncidents = pgTable('metric_anomaly_incidents', {
     table.bucketSeconds,
     table.windowStart,
   ),
+  // Partial index, matching the migration's `WHERE dispatched_at IS NULL`
+  // (2026-09-20-ai-agents-anomaly-pilot.sql) — Task 2's publisher claim
+  // query (`dispatched_at IS NULL ... FOR UPDATE SKIP LOCKED`) is exactly
+  // what this index is for, and the migration's DDL is the source of truth
+  // (never edit it — this declaration exists so `db:check-drift` sees the
+  // full index shape, not just the columns). Drizzle's index DSL DOES model
+  // partial indexes via `.where(sql\`...\`)` — see the same pattern on
+  // `invoices.ts`'s `invoices_due_overdue_idx`, `patches.ts`'s
+  // `idx_device_patches_pending`, and `vulnerabilityManagement.ts`'s
+  // `device_vuln_ticket_id_idx`.
   undispatchedIdx: index('metric_anomaly_incidents_undispatched_idx')
-    .on(table.orgId, table.id),
+    .on(table.orgId, table.id)
+    .where(sql`${table.dispatchedAt} IS NULL`),
   orgLastSeenIdx: index('metric_anomaly_incidents_org_last_seen_idx')
     .on(table.orgId, table.lastSeenAt.desc()),
   deviceIdx: index('metric_anomaly_incidents_device_id_idx').on(table.deviceId),
