@@ -125,6 +125,7 @@ import {
   validateOutcomeToolInput,
 } from './outcomeTools';
 import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdictProfile';
+import { persistAlertVerdict } from './alertVerdicts';
 
 /** `ai_agent_runs.summary` is `text`, but a reviewer reads the first screen. */
 const RUN_SUMMARY_MAX_CHARS = 2000;
@@ -1178,6 +1179,20 @@ interface LoopResult {
   outcome: AgentRunOutcome;
   intentIds: string[];
   /**
+   * The run's `ai_agent` principal context (built once, near the top of
+   * `driveSdkLoop`, via `buildAgentAuthContext`) — carried out on `result`
+   * rather than recomputed, since `finishRun` (Task 8, P2-1) needs it to call
+   * `persistAlertVerdict`/`createActionIntent` for a verdict run and has no
+   * other way to reach it: `driveSdkLoop` has exactly one return statement,
+   * reached only after `buildAgentAuthContext` has already succeeded (a
+   * throw there returns straight to `executeAgentRun`'s catch block, never
+   * through here — see that call site's own comment), so this is always
+   * populated whenever `finishRun` reads it. Smaller diff than widening
+   * `RunContext` with a second mutated-after-construction field alongside
+   * `sessionId`.
+   */
+  agentAuth: AuthContext;
+  /**
    * Set when the SDK loop itself threw. Carried back rather than rethrown so
    * the tokens already burned still land on the run row — a crashed run that
    * recorded `cost_cents: 0` would make the agent's daily budget cap
@@ -1489,6 +1504,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     turnCount,
     outcome,
     intentIds,
+    agentAuth,
     ...(failure ? { failure } : {}),
   };
 }
@@ -1630,6 +1646,47 @@ async function finishRun(
   errorCode: string | null,
   result: LoopResult,
 ): Promise<void> {
+  // Phase 2 wave P2-1 (alert verdicts), Task 8 — runs BEFORE the terminal
+  // transition below so a created intent id lands in `result.intentIds`
+  // (and therefore the persisted row) together with everything else.
+  //
+  // The "no verdict produced" branch is scoped to `errorCode === null` on
+  // purpose: that is true only at the normal-finish call site (the ceiling
+  // and `result.failure` call sites always pass an already-specific code),
+  // so a genuine runner failure (`llm_unavailable`, `max_turns_exceeded`, …)
+  // is never clobbered with the generic `verdict_missing` — and
+  // `classifyTerminal` (agentCircuit.ts) still needs that real code to
+  // classify the failure correctly; `failed` status is unaffected by
+  // profile there.
+  if (isVerdictProfile(ctx.run)) {
+    if (result.outcome.alertVerdict) {
+      try {
+        const { intentId } = await persistAlertVerdict(
+          {
+            id: ctx.run.id,
+            orgId: ctx.run.orgId,
+            agentId: ctx.run.agentId,
+            alertId: ctx.run.alertId,
+            correlationGroupId: ctx.run.correlationGroupId,
+            deviceId: ctx.run.deviceId,
+          },
+          result.outcome.alertVerdict,
+          result.agentAuth,
+        );
+        if (intentId) result.intentIds.push(intentId);
+      } catch (error) {
+        console.error('[aiAgentRunLoop] failed to persist alert verdict', { runId: ctx.run.id, error });
+        errorCode ??= 'verdict_persist_failed';
+      }
+    } else if (errorCode === null) {
+      // A verdict run that reached a normal finish without ever calling
+      // `submit_alert_verdict` is a runner failure a human needs to see —
+      // never a silent `completed` with nothing to show for it.
+      result.outcome.runVerdict = 'needs_attention';
+      errorCode = 'verdict_missing';
+    }
+  }
+
   const moved = await transitionRunStatus(ctx.run.id, 'running', status, {
     summary: result.summary || null,
     outcome: result.outcome as unknown as Record<string, unknown>,

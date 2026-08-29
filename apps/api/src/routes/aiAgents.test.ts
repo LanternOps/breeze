@@ -15,6 +15,7 @@ const {
   writeRouteAuditMock,
   getCircuitStateMock,
   resetCircuitMock,
+  recordVerdictFeedbackMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   // Explicit generic: vitest infers a zero-arg tuple from a bare `() => true`
@@ -29,6 +30,7 @@ const {
   writeRouteAuditMock: vi.fn(),
   getCircuitStateMock: vi.fn(),
   resetCircuitMock: vi.fn(),
+  recordVerdictFeedbackMock: vi.fn<(auth: unknown, verdictId: string, feedback: string) => Promise<boolean>>(),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -86,6 +88,22 @@ vi.mock('../services/aiAgents/agentCircuit', () => ({
   getCircuitState: getCircuitStateMock,
   resetCircuit: resetCircuitMock,
 }));
+
+// Phase 2 wave P2-1 (alert verdicts), Task 8: `recordVerdictFeedback` has its
+// own full unit coverage in alertVerdicts.test.ts — mocked here so this
+// route test exercises only routing/auth/validation, matching how
+// agentCircuit/runService above are mocked rather than re-driven through db.
+// `projectAlertVerdict` is passed through to the REAL implementation
+// (importOriginal) — `buildRunTrace` (runTrace.ts) calls it unconditionally
+// on every `GET /runs/:runId`, and it has no db/service dependency of its
+// own to mock away, so it stays the real safe-projection function here too.
+vi.mock('../services/aiAgents/alertVerdicts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/aiAgents/alertVerdicts')>();
+  return {
+    ...actual,
+    recordVerdictFeedback: recordVerdictFeedbackMock,
+  };
+});
 
 vi.mock('../services/aiTools', () => ({
   verifyDeviceAccess: verifyDeviceAccessMock,
@@ -177,6 +195,7 @@ beforeEach(() => {
     run: { id: RUN_ID, status: 'queued' },
   });
   envMock.policyDecideEnabled.mockReturnValue(true);
+  recordVerdictFeedbackMock.mockResolvedValue(true);
 });
 
 describe('POST /ai-agents/:id/runs', () => {
@@ -801,6 +820,68 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(parsed.data.id).toBe(RUN_ID);
     expect(parsed.data.agentName).toBeNull();
     expect(parsed.data.agentKind).toBeNull();
+  });
+});
+
+// Phase 2 wave P2-1 (alert verdicts), Task 8.
+describe('POST /ai-agents/verdicts/:verdictId/feedback', () => {
+  const VERDICT_ID = '88888888-8888-4888-8888-888888888888';
+
+  it('records feedback and returns { ok: true }', async () => {
+    const res = await buildApp().request(`/ai-agents/verdicts/${VERDICT_ID}/feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ feedback: 'up' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(recordVerdictFeedbackMock).toHaveBeenCalledWith(
+      expect.objectContaining({ user: expect.objectContaining({ id: USER_ID }) }),
+      VERDICT_ID,
+      'up',
+    );
+  });
+
+  it('is gated on ai_agents:read (not ai_agents:write)', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request(`/ai-agents/verdicts/${VERDICT_ID}/feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ feedback: 'up' }),
+    });
+    expect(res.status).toBe(403);
+    expect(recordVerdictFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-uuid verdict id without touching the service', async () => {
+    const res = await buildApp().request('/ai-agents/verdicts/not-a-uuid/feedback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ feedback: 'up' }),
+    });
+    expect(res.status).toBe(404);
+    expect(recordVerdictFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid feedback value', async () => {
+    const res = await buildApp().request(`/ai-agents/verdicts/${VERDICT_ID}/feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ feedback: 'sideways' }),
+    });
+    expect(res.status).toBe(400);
+    expect(recordVerdictFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when no verdict row matched (not found, or RLS-denied cross-org)', async () => {
+    recordVerdictFeedbackMock.mockResolvedValue(false);
+    const res = await buildApp().request(`/ai-agents/verdicts/${VERDICT_ID}/feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ feedback: 'down' }),
+    });
+    expect(res.status).toBe(404);
   });
 });
 

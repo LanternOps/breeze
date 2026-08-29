@@ -23,6 +23,7 @@ import type {
   OutcomeProposedAction,
   TicketProposalOutcome,
 } from './runLoop';
+import { projectAlertVerdict } from './alertVerdicts';
 import {
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
   type AiAgentKind,
@@ -233,10 +234,10 @@ export function buildRunTrace(
     ledger: ledgerRows.map(mapLedgerRow),
     intents: intents.map(mapIntentRow),
     ticketProposal: outcome.ticketProposal ? mapTicketProposal(outcome.ticketProposal) : null,
-    // Phase 2 wave P2-1 (alert verdicts): the real `ai_alert_verdicts`
-    // projection is Task 8's job. Every caller before that lands sees `null`
-    // unconditionally so the DTO type-checks and no route breaks in the
-    // meantime.
-    alertVerdict: null,
+    // Phase 2 wave P2-1 (alert verdicts), Task 8: null for every full-profile
+    // run and for a verdict-profile run that has not (yet, or ever)
+    // produced one — see `projectAlertVerdict`'s own safe-projection
+    // contract.
+    alertVerdict: projectAlertVerdict(outcome.alertVerdict),
   };
 }
