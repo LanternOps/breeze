@@ -347,6 +347,7 @@ import {
   clearRefreshTokenCookie,
   revokeCurrentRefreshTokenJti,
   auditUserLoginFailure,
+  userHasUsablePasskey,
 } from './helpers';
 
 function selectChain(rows: unknown[]) {
@@ -826,6 +827,7 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
       mfaEnabled: true,
       mfaSecret: 'secret',
       mfaMethod: 'totp',
+      mfaRecoveryCodes: ['scrypt$v1$hash-1'],
       phoneNumber: null,
       avatarUrl: null,
     }]) as any);
@@ -846,7 +848,7 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
     enable2faState.value = false;
   });
 
-  it('writes the live epochs, status, and effective allowed methods onto the pending record', async () => {
+  it('writes the enrolled-and-policy intersection plus recovery availability onto the pending record and response', async () => {
     const setexMock = vi.fn(async (_key: string, _ttlSeconds: number, _value: string) => 'OK');
     vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
 
@@ -869,10 +871,96 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
       authEpoch: 3,
       mfaEpoch: 5,
       statusExpectation: 'active',
-      allowedMethods: { totp: true, sms: false, passkey: true },
+      allowedMethods: { totp: true, sms: false, passkey: false },
+      recoveryAvailable: true,
     });
     expect(typeof written.expiresAt).toBe('number');
     expect(written.expiresAt as number).toBeGreaterThan(Date.now());
+    expect(body).toMatchObject({
+      mfaRequired: true,
+      mfaMethod: 'totp',
+      allowedMethods: { totp: true, sms: false, passkey: false },
+      recoveryAvailable: true,
+      passkeyAvailable: false,
+      user: null,
+      tokens: null,
+    });
+  });
+
+  it('offers a registered passkey as an allowed alternate only when live policy permits it', async () => {
+    vi.mocked(userHasUsablePasskey).mockResolvedValue(true);
+    const setexMock = vi.fn(async () => 'OK');
+    vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      allowedMethods: { totp: true, sms: false, passkey: true },
+      passkeyAvailable: true,
+    });
+
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: true, sms: false, passkey: false },
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+    });
+    const denied = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+    expect(await denied.json()).toMatchObject({
+      allowedMethods: { totp: true, sms: false, passkey: false },
+      // Compatibility alias mirrors the authoritative policy intersection so
+      // strict legacy adapters cannot disagree with allowedMethods.
+      passkeyAvailable: false,
+    });
+  });
+
+  it('issues a recovery-only challenge for a new client when the primary is disallowed', async () => {
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: false, sms: false, passkey: false },
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+    });
+    vi.mocked(getRedis).mockReturnValue({ setex: vi.fn(async () => 'OK') } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      mfaRequired: true,
+      mfaMethod: 'totp',
+      allowedMethods: { totp: false, sms: false, passkey: false },
+      recoveryAvailable: true,
+    });
+  });
+
+  it('fails closed without writing a pending record when no challenge method is usable', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      name: 'Admin User',
+      passwordHash: 'password-hash',
+      status: 'active',
+      mfaEnabled: true,
+      mfaSecret: 'secret',
+      mfaMethod: 'totp',
+      mfaRecoveryCodes: [],
+      phoneNumber: null,
+      avatarUrl: null,
+    }]) as any);
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: false, sms: false, passkey: false },
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+    });
+    const setexMock = vi.fn(async () => 'OK');
+    vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Invalid email or password' });
+    expect(setexMock).not.toHaveBeenCalled();
+    expect(createTokenPair).not.toHaveBeenCalled();
   });
 
   it('fails closed with a generic 401 and mints nothing when the epoch read returns null', async () => {

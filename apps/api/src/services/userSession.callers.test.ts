@@ -21,6 +21,7 @@ const expectedGuardedIssuerFiles = new Map([
   ['routes/auth/cfAccessRedirectLogin.ts', 1],
   ['routes/auth/ssoLinkCompletion.ts', 1],
   ['routes/sso.ts', 1],
+  ['services/mfaEnrollmentSession.ts', 1],
 ]);
 
 const expectedSingleBoundaryFiles = new Map([
@@ -35,8 +36,9 @@ const expectedSingleBoundaryFiles = new Map([
 const expectedLegacyIssuerFiles = new Map(expectedSingleBoundaryFiles);
 const expectedGuardedCookieInstallerFiles = new Map([
   ...expectedSingleBoundaryFiles,
-  ['routes/auth/mfa.ts', 2],
-  ['routes/auth/passkeys.ts', 2],
+  ['routes/auth/mfa.ts', 4],
+  ['routes/auth/passkeys.ts', 3],
+  ['routes/auth/phone.ts', 1],
   ['routes/sso.ts', 1],
 ]);
 const expectedLegacyCookieInstallerFiles = new Map(expectedSingleBoundaryFiles);

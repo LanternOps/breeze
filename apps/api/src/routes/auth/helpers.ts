@@ -1121,6 +1121,7 @@ export interface PendingMfaRecord {
   userId: string;
   mfaMethod: 'totp' | 'sms' | 'passkey';
   passkeyAvailable: boolean;
+  recoveryAvailable: boolean;
   authEpoch: number;
   mfaEpoch: number;
   transitionId: string;
@@ -1152,16 +1153,25 @@ export function parsePendingMfa(raw: string): PendingMfaRecord | null {
   }
   const method = parsed.mfaMethod;
   const am = parsed.allowedMethods as Record<string, unknown> | undefined;
+  const isNonNegativeInteger = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isInteger(value) && value >= 0;
   if (
     typeof parsed.userId !== 'string' ||
     (method !== 'totp' && method !== 'sms' && method !== 'passkey') ||
-    typeof parsed.authEpoch !== 'number' ||
-    typeof parsed.mfaEpoch !== 'number' ||
+    typeof parsed.passkeyAvailable !== 'boolean' ||
+    typeof parsed.recoveryAvailable !== 'boolean' ||
+    !isNonNegativeInteger(parsed.authEpoch) ||
+    !isNonNegativeInteger(parsed.mfaEpoch) ||
     typeof parsed.transitionId !== 'string' ||
-    typeof parsed.browserGeneration !== 'number' ||
+    !isNonNegativeInteger(parsed.browserGeneration) ||
     typeof parsed.statusExpectation !== 'string' ||
     typeof parsed.expiresAt !== 'number' ||
-    !am || typeof am !== 'object'
+    !Number.isFinite(parsed.expiresAt) ||
+    parsed.expiresAt <= Date.now() ||
+    !am || typeof am !== 'object' ||
+    typeof am.totp !== 'boolean' ||
+    typeof am.sms !== 'boolean' ||
+    typeof am.passkey !== 'boolean'
   ) {
     return null;
   }
@@ -1176,16 +1186,17 @@ export function parsePendingMfa(raw: string): PendingMfaRecord | null {
   return {
     userId: parsed.userId,
     mfaMethod: method,
-    passkeyAvailable: parsed.passkeyAvailable === true,
+    passkeyAvailable: parsed.passkeyAvailable,
+    recoveryAvailable: parsed.recoveryAvailable,
     authEpoch: parsed.authEpoch,
     mfaEpoch: parsed.mfaEpoch,
     transitionId: parsed.transitionId,
     browserGeneration: parsed.browserGeneration,
     statusExpectation: parsed.statusExpectation,
     allowedMethods: {
-      totp: am.totp !== false,
-      sms: am.sms !== false,
-      passkey: am.passkey !== false,
+      totp: am.totp,
+      sms: am.sms,
+      passkey: am.passkey,
     },
     expiresAt: parsed.expiresAt,
     ...(typeof parsed.ssoLinkTokenHash === 'string' && parsed.ssoLinkTokenHash.length > 0
@@ -1211,6 +1222,56 @@ export function evaluatePendingMfa(
   if (live.status !== 'active' || record.statusExpectation !== live.status) {
     return { ok: false, reason: 'status_changed' };
   }
+  return { ok: true };
+}
+
+export type PendingMfaVerificationMethod = 'totp' | 'sms' | 'recovery';
+
+export type PendingMfaMethodVerdict =
+  | { ok: true }
+  | {
+      ok: false;
+      reason:
+        | 'pending_method_not_allowed'
+        | 'factor_not_enrolled'
+        | 'recovery_not_available'
+        | 'live_policy_disallowed';
+      terminal: boolean;
+    };
+
+/**
+ * Authorize a client-selected MFA continuation against both the immutable
+ * challenge snapshot and live account policy/enrollment. Only live-policy
+ * drift is terminal; an unavailable selection reveals no authority and may
+ * be retried with another method from the same challenge.
+ */
+export function evaluatePendingMfaMethod(
+  pending: PendingMfaRecord,
+  method: PendingMfaVerificationMethod,
+  liveUser: { mfaSecret: string | null; mfaMethod: string | null; phoneNumber: string | null },
+  liveAllowedMethods: PendingMfaRecord['allowedMethods'],
+): PendingMfaMethodVerdict {
+  if (method === 'recovery') {
+    return pending.recoveryAvailable
+      ? { ok: true }
+      : { ok: false, reason: 'recovery_not_available', terminal: false };
+  }
+
+  if (!pending.allowedMethods[method]) {
+    return { ok: false, reason: 'pending_method_not_allowed', terminal: false };
+  }
+
+  const enrolled = method === 'totp'
+    ? Boolean(liveUser.mfaSecret)
+    : liveUser.mfaMethod === 'sms' && Boolean(liveUser.phoneNumber);
+  if (!enrolled) {
+    return { ok: false, reason: 'factor_not_enrolled', terminal: false };
+  }
+
+  if (!liveAllowedMethods[method]) {
+    return { ok: false, reason: 'live_policy_disallowed', terminal: true };
+  }
+
   return { ok: true };
 }
 

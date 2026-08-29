@@ -22,6 +22,7 @@ import {
   AuthIssuanceConflictError,
   AuthIssuanceCapabilityError,
   issueUserSession,
+  completeInitialMfaEnrollment,
   issueUserSessionLegacyDuringTransition,
   bindIssuedUserSession,
   authBrowserTransitionsEnforced,
@@ -34,7 +35,7 @@ import {
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
-import { authMiddleware } from '../../middleware/auth';
+import { authMiddleware, type AuthContext } from '../../middleware/auth';
 import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema } from './schemas';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
@@ -62,6 +63,7 @@ import {
   enforceExistingFactorStepUp,
   parsePendingMfa,
   evaluatePendingMfa,
+  evaluatePendingMfaMethod,
   mintLoginRegisterGrant,
   isAuthTransitionV1Request,
   authClientUpgradeRequiredResponse,
@@ -87,6 +89,19 @@ function authIssuanceAdmissionError(c: Context, error: unknown): Response | null
     || error instanceof AuthIssuanceCapabilityError
   ) {
     return c.json({ error: 'Authentication issuance unavailable' }, 409);
+  }
+  return null;
+}
+
+async function enforceTotpEnrollmentPolicy(c: Context, auth: AuthContext): Promise<Response | null> {
+  const policy = await getEffectiveMfaPolicy({
+    scope: auth.scope,
+    userId: auth.user.id,
+    orgId: auth.orgId ?? null,
+    partnerId: auth.partnerId ?? null,
+  }, { failClosed: true });
+  if (!policy.allowedMethods.totp) {
+    return c.json({ error: 'Your organization does not allow authenticator-app MFA' }, 403);
   }
   return null;
 }
@@ -122,6 +137,32 @@ const mfaDisableSchema = mfaVerifySchema.extend({
 
 export const mfaRoutes = new Hono();
 
+// Forced-enrollment discovery. This path is intentionally under /auth/mfa/*,
+// which authMiddleware exempts from the normal 428 enrollment gate.
+mfaRoutes.get('/mfa/enrollment-options', authMiddleware, async (c) => {
+  if (!ENABLE_2FA) return mfaDisabledResponse(c);
+
+  const auth = c.get('auth');
+  const [user] = await db
+    .select({ phoneNumber: users.phoneNumber, phoneVerified: users.phoneVerified })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+  if (!user) return c.json({ error: 'User not found' }, 404);
+
+  const policy = await getEffectiveMfaPolicy({
+    scope: auth.scope,
+    userId: auth.user.id,
+    orgId: auth.orgId ?? null,
+    partnerId: auth.partnerId ?? null,
+  }, { failClosed: true });
+
+  return c.json({
+    allowedMethods: policy.allowedMethods,
+    phoneConfigured: user.phoneVerified === true && Boolean(user.phoneNumber),
+  });
+});
+
 // MFA setup (requires auth + current-password re-prompt)
 mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', enrollmentStepUpSchema), async (c) => {
   if (!ENABLE_2FA) {
@@ -130,6 +171,8 @@ mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', enrollmentStepUp
 
   const auth = c.get('auth');
   const { currentPassword, ssoReauthGrantId } = c.req.valid('json');
+  const policyError = await enforceTotpEnrollmentPolicy(c, auth);
+  if (policyError) return policyError;
 
   // Re-verify identity before allowing MFA factor installation. A stolen
   // access token is not sufficient — the user must prove possession of the
@@ -163,8 +206,6 @@ mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', enrollmentStepUp
   const secret = generateMFASecret();
   const otpAuthUrl = generateOTPAuthURL(secret, auth.user.email);
   const qrCodeDataUrl = await generateQRCode(otpAuthUrl);
-  const recoveryCodes = generateRecoveryCodes();
-
   // Store secret temporarily (not enabled yet until verified)
   const redis = getRedis();
   if (!redis) {
@@ -173,14 +214,13 @@ mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', enrollmentStepUp
   await redis.setex(
     `mfa:setup:${auth.user.id}`,
     600, // 10 min expiry
-    JSON.stringify({ secret, recoveryCodes })
+    JSON.stringify({ secret })
   );
 
   return c.json({
     secret,
     otpAuthUrl,
-    qrCodeDataUrl,
-    recoveryCodes
+    qrCodeDataUrl
   });
 });
 
@@ -261,33 +301,39 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     // no longer re-resolves it further down).
     const mfaContext = await resolveCurrentUserTokenContext(user.id);
 
-    // Method must still be allowed by current policy (a factor could have been
-    // disallowed since login). Passkey is handled by its own route; here we gate
-    // totp/sms. Use the real scope/org/partner from the resolved context so
-    // org- and partner-scoped policy resolves correctly.
+    // Resolve live policy for the client-selected method. Passkey remains on
+    // its dedicated WebAuthn continuation; this route handles TOTP, SMS, and
+    // recovery only.
     const livePolicy = await getEffectiveMfaPolicy({
       scope: mfaContext.scope,
       userId: user.id,
       orgId: mfaContext.orgId,
       partnerId: mfaContext.partnerId,
     });
-    if ((pendingMfaMethod === 'sms' && !livePolicy.allowedMethods.sms) ||
-        (pendingMfaMethod === 'totp' && !livePolicy.allowedMethods.totp)) {
-      await redis.del(`mfa:pending:${tempToken}`);
-      void auditUserLoginFailure(c, {
-        userId: user.id, email: user.email, name: user.name,
-        reason: 'mfa_method_not_allowed', details: { method: pendingMfaMethod },
-      });
-      return c.json({ error: 'This MFA method is no longer permitted. Please sign in again.' }, 401);
-    }
-
-    // Use the server-stored method only — never allow the client to override
-    const effectiveMethod = pendingMfaMethod;
+    const effectiveMethod = method ?? pendingMfaMethod;
 
     let valid = false;
     let migratedMfaSecret: string | null = null;
     if (effectiveMethod === 'passkey') {
       return c.json({ error: 'Use passkey verification for this MFA session' }, 400);
+    }
+
+    const methodVerdict = evaluatePendingMfaMethod(
+      pending,
+      effectiveMethod,
+      user,
+      livePolicy.allowedMethods,
+    );
+    if (!methodVerdict.ok) {
+      if (methodVerdict.terminal) await redis.del(`mfa:pending:${tempToken}`);
+      void auditUserLoginFailure(c, {
+        userId: user.id,
+        email: user.email,
+        name: user.name,
+        reason: 'mfa_method_not_allowed',
+        details: { method: effectiveMethod, phase: methodVerdict.reason },
+      });
+      return c.json({ error: 'Invalid MFA code' }, 401);
     }
 
     let capability: AuthIssuanceCapability | null = null;
@@ -323,7 +369,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     //     guard fails against the winner's committed value → rowCount 0 → 401.
     // Single-winner AND no-resurrection are proven against real Postgres (Task 9).
     try {
-      if (method === 'recovery') {
+      if (effectiveMethod === 'recovery') {
         // The authoritative hash check and relative delete occur only inside the
         // guarded finalization below. A logout-pending transition can therefore
         // never burn a recovery code.
@@ -388,7 +434,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         breezeMfaVerified: true,
         expectedUserId: user.id,
         capability: linkCapability,
-        ...(method === 'recovery' ? { recoveryCode: code } : {}),
+        ...(effectiveMethod === 'recovery' ? { recoveryCode: code } : {}),
       });
       if (!outcome.ok) {
         if (outcome.error === 'invalid_mfa_code') {
@@ -463,7 +509,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       let issued: AuthorizedUserSession;
       try {
         issued = await finishAuthIssuance(guardedCapability, async (tx) => {
-          if (method === 'recovery') await consumeRecoveryCode(tx, user.id, code);
+          if (effectiveMethod === 'recovery') await consumeRecoveryCode(tx, user.id, code);
           const session = await issueUserSession(identity, {
             tx,
             capability: guardedCapability,
@@ -496,8 +542,8 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       mfaFamilyId = issued.familyId;
       installSessionCookies = () => installAuthorizedUserSessionCookies(c, issued);
     } else {
-      const issuer = method === 'recovery' ? 'recovery' : effectiveMethod;
-      if (method === 'recovery') {
+      const issuer = effectiveMethod;
+      if (effectiveMethod === 'recovery') {
         try {
           await runOutsideDbContext(() => withSystemDbAccessContext(() =>
             db.transaction((tx) => consumeRecoveryCode(tx, user.id, code))
@@ -530,7 +576,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     // Consume the pending bearer only after the guarded authority commits.
     await redis.del(`mfa:pending:${tempToken}`);
 
-    if (method === 'recovery') {
+    if (effectiveMethod === 'recovery') {
       const stored = Array.isArray(user.mfaRecoveryCodes) ? user.mfaRecoveryCodes : [];
       writeAuthAudit(c, {
         orgId: undefined,
@@ -580,14 +626,15 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
   }
 
   let secret: string;
-  let recoveryCodes: string[];
   try {
     const parsed = JSON.parse(setupData);
     secret = parsed.secret;
-    recoveryCodes = parsed.recoveryCodes;
+    if (typeof secret !== 'string') throw new Error('Invalid setup data');
   } catch {
     return c.json({ error: 'Invalid MFA setup data' }, 500);
   }
+  const policyError = await enforceTotpEnrollmentPolicy(c, auth);
+  if (policyError) return policyError;
   // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
   // requires a fresh existing-factor proof (no-op for initial enrollment).
   //
@@ -654,22 +701,60 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
   // establish a real system context here; without it the invalidation
   // transaction runs on the bare pool, forced RLS matches 0 rows, and
   // advanceUserEpochs throws → hard 500 with the factor never enabled.
-  const result = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'mfa-setup-confirm', async (tx) => {
-        await tx
+  const recoveryCodes = generateRecoveryCodes();
+  const recoveryCodeHashes = hashRecoveryCodes(recoveryCodes);
+  let capability: AuthIssuanceCapability;
+  try {
+    capability = await beginAuthIssuance(requestAuthBinding(c));
+  } catch (error) {
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+  let result;
+  try {
+    result = await completeInitialMfaEnrollment({
+      userId: auth.user.id,
+      identity: {
+        userId: auth.user.id,
+        email: auth.user.email,
+        roleId: auth.token?.roleId ?? null,
+        orgId: auth.orgId ?? null,
+        partnerId: auth.partnerId ?? null,
+        scope: auth.scope,
+        mfa: true,
+        mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+      },
+      capability,
+      expectedAuthEpoch: auth.token?.aep as number,
+      expectedMfaEpoch: auth.token?.mep as number,
+      revokeReason: 'mfa-setup-confirm',
+      recoveryCodes,
+      recoveryCodeHashes,
+      persistFactor: async (tx, hashes) => {
+        const rows = await tx
           .update(users)
           .set({
             mfaSecret: encryptMfaSecret(secret),
             mfaEnabled: true,
             mfaMethod: 'totp',
-            mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
+            mfaRecoveryCodes: [...hashes],
             updatedAt: new Date()
           })
-          .where(eq(users.id, auth.user.id));
-      })
-    )
-  );
+          .where(eq(users.id, auth.user.id))
+          .returning({ id: users.id });
+        if (rows.length !== 1) throw new Error('MFA enrollment user disappeared');
+        return undefined;
+      },
+    });
+  } catch (error) {
+    await cancelAuthIssuance(capability).catch(() => undefined);
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+  await bindIssuedUserSession(result.issued);
+  installAuthorizedUserSessionCookies(c, result.issued);
 
   const setupOrgId = await resolveUserAuditOrgId(auth.user.id);
   writeAuthAudit(c, {
@@ -678,12 +763,17 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { method: 'totp', mfaEpoch: result.mfaEpoch, teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED }
+    details: { method: 'totp', mfaEpoch: result.mfaEpoch, teardownFailed: result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED }
   });
 
   await redis.del(`mfa:setup:${auth.user.id}`);
 
-  return c.json({ success: true, message: 'MFA enabled successfully' });
+  return c.json({
+    success: true,
+    message: 'MFA enabled successfully',
+    recoveryCodes: result.recoveryCodes,
+    tokens: toPublicTokens(result.issued),
+  });
 });
 
 // MFA disable (requires auth + current MFA code + current password)
@@ -857,18 +947,18 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
   }
 
   let secret: string;
-  let recoveryCodes: string[];
   try {
-    const parsed = JSON.parse(setupData) as { secret?: unknown; recoveryCodes?: unknown };
-    if (typeof parsed.secret !== 'string' || !Array.isArray(parsed.recoveryCodes) || parsed.recoveryCodes.some(code => typeof code !== 'string')) {
+    const parsed = JSON.parse(setupData) as { secret?: unknown };
+    if (typeof parsed.secret !== 'string') {
       throw new Error('Invalid setup data');
     }
     secret = parsed.secret;
-    recoveryCodes = parsed.recoveryCodes;
   } catch {
     const message = 'Invalid MFA setup data';
     return c.json({ error: message, message }, 500);
   }
+  const policyError = await enforceTotpEnrollmentPolicy(c, auth);
+  if (policyError) return policyError;
 
   // Consuming verifier: record the accepted time step so it cannot be replayed
   // at login within its ~90s validity window (SR2-24). Fails closed if Redis is
@@ -917,18 +1007,60 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
   );
   if (enrollmentConsumeError) return enrollmentConsumeError;
 
-  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'mfa-enable', async (tx) => {
-    await tx
-      .update(users)
-      .set({
-        mfaSecret: encryptMfaSecret(secret),
-        mfaEnabled: true,
-        mfaMethod: 'totp',
-        mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, auth.user.id));
-  });
+  const recoveryCodes = generateRecoveryCodes();
+  const recoveryCodeHashes = hashRecoveryCodes(recoveryCodes);
+  let capability: AuthIssuanceCapability;
+  try {
+    capability = await beginAuthIssuance(requestAuthBinding(c));
+  } catch (error) {
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+  let result;
+  try {
+    result = await completeInitialMfaEnrollment({
+      userId: auth.user.id,
+      identity: {
+        userId: auth.user.id,
+        email: auth.user.email,
+        roleId: auth.token?.roleId ?? null,
+        orgId: auth.orgId ?? null,
+        partnerId: auth.partnerId ?? null,
+        scope: auth.scope,
+        mfa: true,
+        mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+      },
+      capability,
+      expectedAuthEpoch: auth.token?.aep as number,
+      expectedMfaEpoch: auth.token?.mep as number,
+      revokeReason: 'mfa-enable',
+      recoveryCodes,
+      recoveryCodeHashes,
+      persistFactor: async (tx, hashes) => {
+        const rows = await tx
+          .update(users)
+          .set({
+            mfaSecret: encryptMfaSecret(secret),
+            mfaEnabled: true,
+            mfaMethod: 'totp',
+            mfaRecoveryCodes: [...hashes],
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, auth.user.id))
+          .returning({ id: users.id });
+        if (rows.length !== 1) throw new Error('MFA enrollment user disappeared');
+        return undefined;
+      },
+    });
+  } catch (error) {
+    await cancelAuthIssuance(capability).catch(() => undefined);
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+  await bindIssuedUserSession(result.issued);
+  installAuthorizedUserSessionCookies(c, result.issued);
 
   await redis.del(`mfa:setup:${auth.user.id}`);
 
@@ -939,10 +1071,15 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { method: 'totp', mfaEpoch: result.mfaEpoch, teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED }
+    details: { method: 'totp', mfaEpoch: result.mfaEpoch, teardownFailed: result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED }
   });
 
-  return c.json({ success: true, recoveryCodes, message: 'MFA enabled successfully' });
+  return c.json({
+    success: true,
+    recoveryCodes: result.recoveryCodes,
+    message: 'MFA enabled successfully',
+    tokens: toPublicTokens(result.issued),
+  });
 });
 
 // SR2-20: existing-factor step-up. Proves an EXISTING MFA factor (TOTP, SMS,

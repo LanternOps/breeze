@@ -75,11 +75,36 @@ vi.mock('../../services', () => ({
   generateRecoveryCodes: vi.fn(() => ['CODE-1', 'CODE-2']),
   rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60_000) })),
   getRedis: vi.fn(() => ({})),
+  getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
   smsPhoneVerifyLimiter: { limit: 5, windowSeconds: 300 },
   smsPhoneVerifyUserLimiter: { limit: 5, windowSeconds: 300 },
   smsLoginSendLimiter: { limit: 5, windowSeconds: 300 },
   smsLoginGlobalLimiter: { limit: 100, windowSeconds: 300 },
   phoneConfirmLimiter: { limit: 5, windowSeconds: 300 },
+  beginAuthIssuance: vi.fn(async () => ({ transitionId: 'transition-1', generation: 1 })),
+  cancelAuthIssuance: vi.fn(async () => undefined),
+  bindIssuedUserSession: vi.fn(async () => undefined),
+  completeInitialMfaEnrollment: vi.fn(async (input: any) => ({
+    value: undefined,
+    recoveryCodes: [...input.recoveryCodes],
+    issued: {
+      accessToken: 'replacement-access-token',
+      refreshToken: 'replacement-refresh-token',
+      refreshJti: 'replacement-jti',
+      expiresInSeconds: 900,
+      familyId: 'replacement-family',
+      transitionId: 'transition-1',
+      generation: 1,
+    },
+    mfaEpoch: 2,
+    cleanup: { redisOk: true, permissionCacheOk: true, oauthOk: true, remoteSessionsTerminated: 0 },
+  })),
+  AuthBindingRotationRequiredError: class AuthBindingRotationRequiredError extends Error {
+    constructor(readonly replacement: unknown) { super('rotation required'); }
+  },
+  AuthBindingUnavailableError: class AuthBindingUnavailableError extends Error {},
+  AuthIssuanceConflictError: class AuthIssuanceConflictError extends Error {},
+  AuthIssuanceCapabilityError: class AuthIssuanceCapabilityError extends Error {},
 }));
 
 vi.mock('../../services/twilio', () => ({
@@ -109,7 +134,8 @@ vi.mock('../../middleware/auth', () => ({
   }),
 }));
 
-vi.mock('./helpers', () => ({
+vi.mock('./helpers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./helpers')>()),
   mfaDisabledResponse: vi.fn((c: any) => c.json({ error: 'Not Found' }, 404)),
   hashRecoveryCodes: vi.fn((codes: string[]) => codes.map((code) => `hashed-${code}`)),
   resolveUserAuditOrgId: vi.fn(async () => 'org-1'),
@@ -119,6 +145,10 @@ vi.mock('./helpers', () => ({
   // this suite's default account state. Individual tests override via
   // mockResolvedValueOnce to exercise the already-protected gate.
   enforceExistingFactorStepUp: vi.fn(async () => null),
+  resolveCurrentUserTokenContext: vi.fn(async () => ({
+    scope: 'organization', roleId: 'role-1', orgId: 'org-1', partnerId: null,
+  })),
+  auditUserLoginFailure: vi.fn(async () => undefined),
 }));
 
 import { phoneRoutes } from './phone';
@@ -126,6 +156,7 @@ import { db } from '../../db';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { getTwilioService } from '../../services/twilio';
 import { writeAuthAudit, enforceExistingFactorStepUp } from './helpers';
+import { completeInitialMfaEnrollment, getRedis, getUserEpochs, rateLimiter } from '../../services';
 
 function selectChain(rows: unknown[]) {
   return {
@@ -196,7 +227,7 @@ describe('phone routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
-      expect(db.update).toHaveBeenCalled();
+      expect(completeInitialMfaEnrollment).toHaveBeenCalledOnce();
     });
 
     // SR2-20: adding SMS as a NEW factor on an ALREADY-PROTECTED account
@@ -308,6 +339,124 @@ describe('phone routes', () => {
         { consume: false }
       );
       expect(db.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /auth/mfa/sms/send', () => {
+    const pending = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+      userId: 'user-1',
+      mfaMethod: 'totp',
+      passkeyAvailable: false,
+      recoveryAvailable: true,
+      authEpoch: 1,
+      mfaEpoch: 1,
+      transitionId: 'transition-1',
+      browserGeneration: 1,
+      statusExpectation: 'active',
+      allowedMethods: { totp: true, sms: true, passkey: false },
+      expiresAt: Date.now() + 300_000,
+      ...overrides,
+    });
+
+    const user = {
+      id: 'user-1',
+      email: 'user@example.test',
+      name: 'Sample User',
+      status: 'active',
+      mfaEnabled: true,
+      mfaMethod: 'sms',
+      phoneNumber: '+15555550100',
+    };
+
+    function arrange(raw: string | null, liveUser: Record<string, unknown> = user) {
+      const redis = {
+        get: vi.fn().mockResolvedValue(raw),
+        del: vi.fn().mockResolvedValue(1),
+      };
+      const sendVerificationCode = vi.fn().mockResolvedValue({ success: true });
+      vi.mocked(getRedis).mockReturnValue(redis as any);
+      vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
+      vi.mocked(rateLimiter).mockResolvedValue({
+        allowed: true,
+        remaining: 4,
+        resetAt: new Date(Date.now() + 60_000),
+      } as any);
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+        required: false,
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+      });
+      vi.mocked(db.select).mockReturnValue(selectChain([liveUser]) as any);
+      vi.mocked(getTwilioService).mockReturnValue({
+        sendVerificationCode,
+        checkVerificationCode: vi.fn(),
+      } as any);
+      return { redis, sendVerificationCode };
+    }
+
+    async function send() {
+      return app.request('/auth/mfa/sms/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tempToken: 'temp-token' }),
+      });
+    }
+
+    it('sends for an SMS-enrolled account when a TOTP-primary challenge authorizes switching to SMS', async () => {
+      const { sendVerificationCode } = arrange(pending());
+
+      const res = await send();
+
+      expect(res.status).toBe(200);
+      expect(sendVerificationCode).toHaveBeenCalledWith('+15555550100');
+    });
+
+    it('rejects malformed pending data before looking up or sending to a phone', async () => {
+      const { sendVerificationCode } = arrange(JSON.stringify({ userId: 'user-1' }));
+
+      const res = await send();
+
+      expect(res.status).toBe(401);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(sendVerificationCode).not.toHaveBeenCalled();
+    });
+
+    it('rejects an SMS method the pending challenge did not authorize without consuming the challenge', async () => {
+      const { redis, sendVerificationCode } = arrange(pending({
+        allowedMethods: { totp: true, sms: false, passkey: false },
+      }));
+
+      const res = await send();
+
+      expect(res.status).toBe(401);
+      expect(redis.del).not.toHaveBeenCalled();
+      expect(sendVerificationCode).not.toHaveBeenCalled();
+    });
+
+    it('consumes an epoch-drifted pending challenge before any SMS is sent', async () => {
+      const { redis, sendVerificationCode } = arrange(pending());
+      vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 2 });
+
+      const res = await send();
+
+      expect(res.status).toBe(401);
+      expect(redis.del).toHaveBeenCalledWith('mfa:pending:temp-token');
+      expect(sendVerificationCode).not.toHaveBeenCalled();
+    });
+
+    it('consumes the challenge when live policy no longer permits SMS', async () => {
+      const { redis, sendVerificationCode } = arrange(pending());
+      vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+        required: false,
+        allowedMethods: { totp: true, sms: false, passkey: true },
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+      });
+
+      const res = await send();
+
+      expect(res.status).toBe(401);
+      expect(redis.del).toHaveBeenCalledWith('mfa:pending:temp-token');
+      expect(sendVerificationCode).not.toHaveBeenCalled();
     });
   });
 
