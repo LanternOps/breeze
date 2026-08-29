@@ -38,7 +38,7 @@ const requireAiRead = requirePermission(PERMISSIONS.AI_AGENTS_READ.resource, PER
 const requireAiWrite = requirePermission(PERMISSIONS.AI_AGENTS_WRITE.resource, PERMISSIONS.AI_AGENTS_WRITE.action);
 const scopes = requireScope('organization', 'partner', 'system');
 
-const UUID = z.string().uuid();
+const UUID = z.string().guid();
 
 /** A non-uuid path id must never reach a query: 22P02 poisons the request transaction. */
 function uuidParam(c: Context, name: string): string | null {
@@ -75,6 +75,19 @@ function mapScheduleRow(row: AiAgentScheduleRow): AiAgentScheduleDto {
 }
 
 /**
+ * `ai_agent_schedules_org_baseline_uq` is a partial unique index on
+ * `(org_id, baseline_schedule_id) WHERE org_id IS NOT NULL`: an org may hold at
+ * most ONE override per baseline. The service does not pre-check it (a
+ * pre-check cannot win the race anyway), so the violation has to be answered
+ * here rather than becoming an unactionable 500. Deliberately NOT a
+ * `ScheduleValidationError` code: this is a conflict with an existing row, not
+ * a statement about the submitted values, and it maps to 409, not 422.
+ */
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505';
+}
+
+/**
  * 403 for every access denial, including "not found" — a schedule id that
  * resolves to another tenant's row and one that does not exist must be
  * indistinguishable, so there is deliberately no 404 branch here.
@@ -88,6 +101,9 @@ function mapScheduleError(c: Context, err: unknown) {
   }
   if (err instanceof AgentAccessDeniedError) {
     return c.json({ error: err.message }, 403);
+  }
+  if (isUniqueViolation(err)) {
+    return c.json({ error: 'override_exists' }, 409);
   }
   throw err;
 }

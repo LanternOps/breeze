@@ -256,6 +256,23 @@ describe('POST /ai/agents/schedules', () => {
     expect(res.status).toBe(403);
   });
 
+  it('maps the duplicate-override unique violation to 409, not a 500', async () => {
+    // ai_agent_schedules_org_baseline_uq: one override per (org, baseline).
+    createScheduleMock.mockRejectedValue(Object.assign(new Error('duplicate key'), { code: '23505' }));
+
+    const res = await post({
+      ownerScope: 'organization',
+      orgId: ORG_ID,
+      baselineScheduleId: BASELINE_ID,
+      enabled: true,
+      sweepKinds: ['disk_pressure'],
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'override_exists' });
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
   it('requires ai_agents:write and MFA', async () => {
     hasPermMock.mockImplementation((resource, action) => !(resource === 'ai_agents' && action === 'write'));
     expect((await post(PARTNER_BODY)).status).toBe(403);
@@ -317,6 +334,15 @@ describe('DELETE /ai/agents/schedules/:id', () => {
     expect(res.status).toBe(204);
     expect(deleteScheduleMock).toHaveBeenCalledWith(expect.anything(), SCHEDULE_ID);
     expect(writeRouteAuditMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not answer 204 or audit success when the delete removed nothing', async () => {
+    deleteScheduleMock.mockRejectedValue(new AgentAccessDeniedError('Schedule not found'));
+
+    const res = await buildApp().request(`/ai/agents/schedules/${SCHEDULE_ID}`, { method: 'DELETE' });
+
+    expect(res.status).toBe(403);
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
   });
 
   it('maps a partner-wide delete denial to 403', async () => {

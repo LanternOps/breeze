@@ -295,11 +295,20 @@ function accessibleScheduleCondition(auth: AuthContext) {
 }
 
 async function loadScheduleForWrite(auth: AuthContext, id: string): Promise<AiAgentScheduleRow> {
-  const [row] = await readWithPartnerAxisVisibility(() => db
+  const read = () => db
     .select()
     .from(aiAgentSchedules)
     .where(and(eq(aiAgentSchedules.id, id), accessibleScheduleCondition(auth)))
-    .limit(1));
+    .limit(1);
+
+  // The escape is taken ONLY when it is actually needed (partnerAxisRead.ts,
+  // AVAILABILITY): a partner-scoped caller already passes
+  // breeze_has_partner_access for its own partner and sees BOTH axes natively,
+  // so escaping would open a second pooled connection while the request's own
+  // transaction is still held, for zero visibility gain.
+  const [row] = auth.scope === 'partner'
+    ? await read()
+    : await readWithPartnerAxisVisibility(read);
   if (!row) throw new AgentAccessDeniedError('Schedule not found');
   return row;
 }
@@ -437,7 +446,18 @@ export async function deleteSchedule(auth: AuthContext, id: string): Promise<voi
   assertAgentWriteAllowed(auth, { orgId: existing.orgId, partnerId: existing.partnerId });
   // Deleting a baseline cascades its org overrides in the DB
   // (baseline_schedule_id ... ON DELETE CASCADE) — no fan-out needed here.
-  await db.delete(aiAgentSchedules).where(and(eq(aiAgentSchedules.id, id), accessibleScheduleCondition(auth)));
+  //
+  // RETURNING is load-bearing, not decoration: `loadScheduleForWrite` above may
+  // have read the row through the partner-axis SYSTEM escape, while this DELETE
+  // runs under the CALLER's own RLS. The two are not equivalent by
+  // construction, so "I could see it" does not imply "I could delete it".
+  // Without this check the route would answer 204 and audit `success` for a
+  // delete that removed nothing.
+  const deleted = await db
+    .delete(aiAgentSchedules)
+    .where(and(eq(aiAgentSchedules.id, id), accessibleScheduleCondition(auth)))
+    .returning({ id: aiAgentSchedules.id });
+  if (deleted.length === 0) throw new AgentAccessDeniedError('Schedule not found');
 }
 
 async function overridesFor(orgId: string, baselineIds: string[]): Promise<AiAgentScheduleRow[]> {
@@ -498,6 +518,9 @@ export async function listSchedules(
         isNull(aiAgents.orgId),
         eq(aiAgents.partnerId, orgPartnerId),
         eq(aiAgents.kind, 'triage'),
+        // Same predicate as assertPartnerWideTriageAgent: a soft-deleted agent
+        // can no longer be scheduled, so its baselines are not offered either.
+        isNull(aiAgents.disabledAt),
       ));
     if (agentIds.length === 0) return [];
     return db

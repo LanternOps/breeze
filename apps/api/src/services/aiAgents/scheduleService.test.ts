@@ -23,15 +23,23 @@ const dbState = vi.hoisted(() => ({
   deleteCount: 0,
   ambientScope: undefined as string | undefined,
   systemActive: false,
+  deleteWhere: undefined as unknown,
+  deleteReturning: [] as unknown[],
   // Every completed read, in order: which table, whether it ran inside the
-  // partner-axis system escape, and which row-lock mode it asked for.
-  reads: [] as Array<{ table: string; system: boolean; lock: string | null }>,
+  // partner-axis system escape, which row-lock mode it asked for, and — the
+  // point of Important 1 — the WHERE condition it was actually issued with, so
+  // a dropped tenancy pin fails a test instead of passing silently.
+  reads: [] as Array<{ table: string; system: boolean; lock: string | null; where: unknown }>,
 }));
 
 function makeQuery(table: string, rows: () => unknown[]) {
   let lock: string | null = null;
+  let where: unknown;
   const query = {
-    where: () => query,
+    where: (condition: unknown) => {
+      where = condition;
+      return query;
+    },
     limit: () => query,
     orderBy: () => query,
     for: (mode: string) => {
@@ -48,7 +56,7 @@ function makeQuery(table: string, rows: () => unknown[]) {
       } catch (err) {
         return Promise.reject(err).then(resolve, reject);
       }
-      dbState.reads.push({ table, system: dbState.systemActive, lock });
+      dbState.reads.push({ table, system: dbState.systemActive, lock, where });
       return Promise.resolve(resolved).then(resolve, reject);
     },
   };
@@ -86,8 +94,10 @@ vi.mock('../../db', () => ({
       }),
     })),
     delete: vi.fn(() => ({
-      where: vi.fn(async () => {
+      where: vi.fn((condition: unknown) => {
+        dbState.deleteWhere = condition;
         dbState.deleteCount += 1;
+        return { returning: vi.fn(async () => dbState.deleteReturning) };
       }),
     })),
   },
@@ -175,6 +185,19 @@ function compiled(condition: unknown): string {
   return dialect.sqlToQuery(condition as SQL).sql;
 }
 
+/**
+ * The nth completed read of `table`, compiled to real SQL + bound params.
+ * Asserting the COMPILED predicate is what makes a tenancy pin testable: the
+ * mocked db cannot enforce a WHERE, so a dropped `partner_id` filter is
+ * invisible to any assertion made on returned rows alone.
+ */
+function compiledRead(table: string, index = 0): { sql: string; params: unknown[] } {
+  const read = dbState.reads.filter((r) => r.table === table)[index];
+  if (!read) throw new Error(`No read #${index} of ${table}; got ${JSON.stringify(dbState.reads.map((r) => r.table))}`);
+  const query = dialect.sqlToQuery(read.where as SQL);
+  return { sql: query.sql, params: query.params };
+}
+
 function baselineRow(overrides: Record<string, unknown> = {}) {
   return {
     id: BASELINE_ID,
@@ -231,6 +254,8 @@ beforeEach(() => {
   dbState.updateWhere = undefined;
   dbState.updateReturning = null;
   dbState.deleteCount = 0;
+  dbState.deleteWhere = undefined;
+  dbState.deleteReturning = [{ id: BASELINE_ID }];
   dbState.ambientScope = undefined;
   dbState.systemActive = false;
   dbState.reads = [];
@@ -610,6 +635,27 @@ describe('deleteSchedule', () => {
     expect(dbState.deleteCount).toBe(1);
   });
 
+  it('fails closed when the DELETE removes no row', async () => {
+    // loadScheduleForWrite may read through the SYSTEM escape while the DELETE
+    // runs under the caller's own RLS, so "visible" does not imply "deletable".
+    // Without RETURNING the route would answer 204 and audit success for a
+    // delete that removed nothing.
+    dbState.scheduleRows = [[baselineRow()]];
+    dbState.deleteReturning = [];
+
+    await expect(deleteSchedule(partnerAuth(), BASELINE_ID)).rejects.toBeInstanceOf(AgentAccessDeniedError);
+  });
+
+  it('bounds the DELETE by the access predicate, not by the primary key alone', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+
+    await deleteSchedule(partnerAuth(), BASELINE_ID);
+
+    const sql = compiled(dbState.deleteWhere);
+    expect(sql).toContain('"org_id"');
+    expect(sql).toContain('"partner_id"');
+  });
+
   it('refuses an org token deleting a partner baseline', async () => {
     dbState.scheduleRows = [[baselineRow()]];
 
@@ -682,6 +728,135 @@ describe('listSchedules', () => {
     dbState.scheduleRows = [];
 
     expect(await listSchedules(orgAuth(), {})).toEqual([]);
+  });
+});
+
+/**
+ * Important 1 (review round 1): the mocked db cannot enforce a WHERE, so every
+ * assertion made only on RETURNED ROWS passes whether or not the tenancy pin is
+ * present. These compile the predicate the service actually issued and assert
+ * both the columns and the BOUND VALUES — deleting any pin below fails here and
+ * nowhere else.
+ */
+describe('tenancy pins (compiled SQL)', () => {
+  const orgCreateInput = {
+    ownerScope: 'organization' as const,
+    orgId: ORG_ID,
+    baselineScheduleId: BASELINE_ID,
+    enabled: true,
+    sweepKinds: ['disk_pressure'] as AiSweepKind[],
+  };
+
+  it("pins the baseline lookup to the org's OWN partner or the org itself", async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+    dbState.insertReturning = overrideRow();
+
+    await createSchedule(orgAuth(), orgCreateInput);
+
+    const { sql, params } = compiledRead('ai_agent_schedules');
+    expect(sql).toContain('"partner_id"');
+    expect(sql).toContain('"org_id"');
+    // Without the pin this read would be `id = $1` alone — an arbitrary
+    // client-supplied id reaching a NO-RLS system escape, i.e. a cross-tenant
+    // read AND an existence oracle.
+    expect(params).toEqual([BASELINE_ID, PARTNER_ID, ORG_ID]);
+  });
+
+  it("pins an org caller's baseline read to its partner's partner-wide, live triage agents", async () => {
+    dbState.agentRows = [[agentRow()]];
+    dbState.scheduleRows = [[baselineRow()], [overrideRow()]];
+
+    await listSchedules(orgAuth(), {});
+
+    const agents = compiledRead('ai_agents');
+    expect(agents.sql).toContain('"org_id" is null');
+    expect(agents.sql).toContain('"partner_id"');
+    expect(agents.sql).toContain('"kind"');
+    expect(agents.sql).toContain('"disabled_at" is null');
+    expect(agents.params).toEqual([PARTNER_ID, 'triage']);
+
+    // Inside the escape the app predicate is the ONLY filter, so it must carry
+    // the partner AND the agent allowlist, not just `org_id IS NULL`.
+    const baselines = compiledRead('ai_agent_schedules', 0);
+    expect(baselines.sql).toContain('"org_id" is null');
+    expect(baselines.sql).toContain('"partner_id"');
+    expect(baselines.sql).toContain('"agent_id" in');
+    expect(baselines.params).toEqual([PARTNER_ID, AGENT_ID]);
+  });
+
+  it('pins the override read to the requesting org and its own baselines', async () => {
+    dbState.agentRows = [[agentRow()]];
+    dbState.scheduleRows = [[baselineRow()], [overrideRow()]];
+
+    await listSchedules(orgAuth(), {});
+
+    const overrides = compiledRead('ai_agent_schedules', 1);
+    expect(overrides.sql).toContain('"org_id"');
+    expect(overrides.sql).toContain('"baseline_schedule_id" in');
+    expect(overrides.params).toEqual([ORG_ID, BASELINE_ID]);
+  });
+
+  it("pins a partner caller's baseline read to its own partner", async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+
+    await listSchedules(partnerAuth(), {});
+
+    const { sql, params } = compiledRead('ai_agent_schedules');
+    expect(sql).toContain('"org_id" is null');
+    expect(sql).toContain('"partner_id"');
+    expect(params).toEqual([PARTNER_ID]);
+  });
+
+  it('pins the sweeper resolver — which runs with NO RLS backstop', async () => {
+    dbState.scheduleRows = [[baselineRow()], [overrideRow()]];
+
+    await resolveEffectiveSchedulesForPartner(PARTNER_ID);
+
+    // This whole resolver runs in a SYSTEM context for Task 9's fan-out: RLS
+    // passes unconditionally, so these two predicates are the ONLY thing
+    // keeping one partner's schedules out of another partner's sweep.
+    const baselines = compiledRead('ai_agent_schedules', 0);
+    expect(baselines.sql).toContain('"org_id" is null');
+    expect(baselines.sql).toContain('"partner_id"');
+    expect(baselines.params).toEqual([PARTNER_ID]);
+
+    const overrides = compiledRead('ai_agent_schedules', 1);
+    expect(overrides.sql).toContain('"baseline_schedule_id" in');
+    expect(overrides.params).toEqual([BASELINE_ID]);
+  });
+
+  it('pins the write-path row load to both of the caller\'s axes', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+    dbState.updateReturning = baselineRow({ enabled: false });
+
+    await updateSchedule(partnerAuth(), BASELINE_ID, { enabled: false });
+
+    const { sql, params } = compiledRead('ai_agent_schedules');
+    expect(sql).toContain('"org_id"');
+    expect(sql).toContain('"partner_id"');
+    expect(params).toEqual([BASELINE_ID, ORG_ID, PARTNER_ID]);
+  });
+
+  it('does not take the partner-axis escape for a partner-scoped caller', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+    dbState.updateReturning = baselineRow({ enabled: false });
+
+    await updateSchedule(partnerAuth(), BASELINE_ID, { enabled: false });
+
+    // A partner token already passes breeze_has_partner_access for its own
+    // partner; escaping would hold a second pooled connection for nothing.
+    expect(compiledRead('ai_agent_schedules')).toBeDefined();
+    expect(dbState.reads[0]?.system).toBe(false);
+  });
+
+  it('does take the escape for an org-scoped caller, which cannot see partner rows', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+
+    await expect(updateSchedule(orgAuth(), BASELINE_ID, { enabled: false })).rejects.toBeInstanceOf(
+      PartnerWideWriteDeniedError,
+    );
+
+    expect(dbState.reads[0]?.system).toBe(true);
   });
 });
 
