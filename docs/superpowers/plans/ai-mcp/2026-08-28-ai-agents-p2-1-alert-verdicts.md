@@ -1200,6 +1200,8 @@ git commit -m "test(api): P2-1 — contract: verdict profile cannot bypass guard
 
 ## PR B — Triggers + UI
 
+> **Carried in from the PR-A whole-branch review (2026-08-29):** (1) Task 12's group verdict runs MUST bind `deviceId` to the root alert's device (suggestion intents are gated on `alert.device_id === run.device_id` at creation, mirroring `checkAgentReleaseAuthority`); (2) Task 14 adds a migration `2026-09-22-ai-alert-verdicts-live-unique.sql` with `CREATE UNIQUE INDEX IF NOT EXISTS ai_alert_verdicts_live_alert_uq ON ai_alert_verdicts (alert_id) WHERE superseded_by IS NULL AND alert_id IS NOT NULL` and the group twin, and `persistAlertVerdict` treats a 23505 on insert as "another run won" (return its row, no supersede); (3) Task 14's feedback route writes an audit line and refuses to overwrite another user's feedback (409); (4) Task 11 adds `runOutsideDbContext` + `withToolTimeout` parity to `wrapExtraToolWithHooks` (docstring promised it; PR B is where a second outcome tool would otherwise be tempted).
+
 ### Task 11 (B1): `alert.correlation_group.created` event, emitted after commit
 
 **Files:**
