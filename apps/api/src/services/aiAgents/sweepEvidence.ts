@@ -96,10 +96,13 @@ export interface SweepEvidenceRow {
 export interface SweepKindEvidence {
   rows: SweepEvidenceRow[];
   /**
-   * How many rows the loader OBSERVED — bounded by `MAX_ROWS_PER_KIND + 1`,
-   * because that is all the query asked for. Deliberately not a full
-   * `COUNT(*)`: a second counting statement per kind per run is not worth it,
-   * and `truncated` already tells the model "there are more than these".
+   * The REAL number of matching rows, not `rows.length`. Every loader carries
+   * a `COUNT(*) OVER ()` window (free — same round trip, evaluated before
+   * `LIMIT`), so an org with 500 stale agents reports `total: 500` while
+   * emitting 25 rows. Reporting the capped figure here would have the model
+   * narrate "26 devices are stale" in a customer-facing finding, which is
+   * simply false — `total` is a count the model may quote, `rows` is the
+   * sample it may name.
    */
   total: number;
   /** True when this kind's rows were capped or byte-trimmed. */
@@ -217,6 +220,16 @@ function evidenceRow(row: BaseSweepRow, fields: SweepEvidenceRow['fields']): Swe
 /** Read `MAX + 1` — see this module's header on observable truncation. */
 const FETCH_LIMIT = SWEEP_EVIDENCE_MAX_ROWS_PER_KIND + 1;
 
+/** What every per-kind loader returns: the (capped) sample plus the REAL
+ *  match count from its `COUNT(*) OVER ()` window. */
+type LoadedKind = { rows: SweepEvidenceRow[]; total: number };
+
+/** Every row of a windowed result carries the same `total_count`; an empty
+ *  result carries none, which is a genuine zero. */
+function totalFrom(rows: ReadonlyArray<{ total_count?: number | string | null }>): number {
+  return rows.length === 0 ? 0 : numberOrNull(rows[0]!.total_count) ?? 0;
+}
+
 // ---------------------------------------------------------------------------
 // Per-kind loaders. Raw SQL (not the Drizzle builder) for two reasons: three
 // of the six need `DISTINCT ON` / `array_agg(...)[1:5]`, which the builder
@@ -224,13 +237,15 @@ const FETCH_LIMIT = SWEEP_EVIDENCE_MAX_ROWS_PER_KIND + 1;
 // predicate a unit test can actually READ back (see sweepEvidence.test.ts).
 // ---------------------------------------------------------------------------
 
-async function loadDiskPressure(orgId: string): Promise<SweepEvidenceRow[]> {
+async function loadDiskPressure(orgId: string): Promise<LoadedKind> {
   const rows = await dbModule.db.execute<BaseSweepRow & {
     mount_point: string | null; used_percent: number | string | null;
     free_gb: number | string | null; total_gb: number | string | null;
+    total_count: number | string | null;
   }>(sql`
     SELECT dd.device_id AS device_id, d.hostname AS hostname,
-           dd.mount_point, dd.used_percent, dd.free_gb, dd.total_gb
+           dd.mount_point, dd.used_percent, dd.free_gb, dd.total_gb,
+           COUNT(*) OVER () AS total_count
     FROM device_disks dd
     JOIN devices d ON d.id = dd.device_id
     WHERE dd.org_id = ${orgId}
@@ -240,42 +255,64 @@ async function loadDiskPressure(orgId: string): Promise<SweepEvidenceRow[]> {
     ORDER BY dd.used_percent DESC
     LIMIT ${FETCH_LIMIT}
   `);
-  return [...rows].map((row) => evidenceRow(row, {
-    mountPoint: textOrNull(row.mount_point),
-    usedPercent: roundedOrNull(row.used_percent),
-    freeGb: roundedOrNull(row.free_gb),
-    totalGb: roundedOrNull(row.total_gb),
-  }));
+  const list = [...rows];
+  return {
+    rows: list.map((row) => evidenceRow(row, {
+      mountPoint: textOrNull(row.mount_point),
+      usedPercent: roundedOrNull(row.used_percent),
+      freeGb: roundedOrNull(row.free_gb),
+      totalGb: roundedOrNull(row.total_gb),
+    })),
+    total: totalFrom(list),
+  };
 }
 
-async function loadStaleAgents(orgId: string): Promise<SweepEvidenceRow[]> {
+async function loadStaleAgents(orgId: string): Promise<LoadedKind> {
+  // A device that has NEVER checked in is the stalest of all, but
+  // `last_seen_at < now() - 7d` is UNKNOWN for it and would silently drop it
+  // (`[[sql_not_over_nullable_drops_rows]]`). The NULL branch is gated on
+  // `created_at` so a machine enrolled this morning is not reported as stale
+  // before its first heartbeat has had a chance to land. Those rows sort
+  // FIRST (`NULLS FIRST`) and emit `lastSeenAt: null`, which the prompt reads
+  // as "never seen" rather than as a missing field.
   const rows = await dbModule.db.execute<BaseSweepRow & {
     last_seen_at: Date | string | null; agent_version: string | null;
     os_type: string | null; status: string | null;
+    total_count: number | string | null;
   }>(sql`
     SELECT d.id AS device_id, d.hostname AS hostname,
-           d.last_seen_at, d.agent_version, d.os_type, d.status
+           d.last_seen_at, d.agent_version, d.os_type, d.status,
+           COUNT(*) OVER () AS total_count
     FROM devices d
     WHERE d.org_id = ${orgId}
       AND d.is_ephemeral = false
       AND d.status <> 'decommissioned'
-      AND d.last_seen_at < now() - interval '7 days'
-    ORDER BY d.last_seen_at ASC
+      AND (
+        (d.last_seen_at IS NULL AND d.created_at < now() - interval '7 days')
+        OR d.last_seen_at < now() - interval '7 days'
+      )
+    ORDER BY d.last_seen_at ASC NULLS FIRST
     LIMIT ${FETCH_LIMIT}
   `);
-  return [...rows].map((row) => evidenceRow(row, {
-    lastSeenAt: isoOrNull(row.last_seen_at),
-    agentVersion: textOrNull(row.agent_version),
-    osType: textOrNull(row.os_type),
-    status: textOrNull(row.status),
-  }));
+  const list = [...rows];
+  return {
+    rows: list.map((row) => evidenceRow(row, {
+      lastSeenAt: isoOrNull(row.last_seen_at),
+      agentVersion: textOrNull(row.agent_version),
+      osType: textOrNull(row.os_type),
+      status: textOrNull(row.status),
+    })),
+    total: totalFrom(list),
+  };
 }
 
-async function loadPendingReboots(orgId: string): Promise<SweepEvidenceRow[]> {
+async function loadPendingReboots(orgId: string): Promise<LoadedKind> {
   const rows = await dbModule.db.execute<BaseSweepRow & {
     last_seen_at: Date | string | null; os_type: string | null;
+    total_count: number | string | null;
   }>(sql`
-    SELECT d.id AS device_id, d.hostname AS hostname, d.last_seen_at, d.os_type
+    SELECT d.id AS device_id, d.hostname AS hostname, d.last_seen_at, d.os_type,
+           COUNT(*) OVER () AS total_count
     FROM devices d
     WHERE d.org_id = ${orgId}
       AND d.is_ephemeral = false
@@ -283,21 +320,26 @@ async function loadPendingReboots(orgId: string): Promise<SweepEvidenceRow[]> {
     ORDER BY d.last_seen_at DESC NULLS LAST
     LIMIT ${FETCH_LIMIT}
   `);
-  return [...rows].map((row) => evidenceRow(row, {
-    lastSeenAt: isoOrNull(row.last_seen_at),
-    osType: textOrNull(row.os_type),
-  }));
+  const list = [...rows];
+  return {
+    rows: list.map((row) => evidenceRow(row, {
+      lastSeenAt: isoOrNull(row.last_seen_at),
+      osType: textOrNull(row.os_type),
+    })),
+    total: totalFrom(list),
+  };
 }
 
-async function loadFailedBackups(orgId: string): Promise<SweepEvidenceRow[]> {
+async function loadFailedBackups(orgId: string): Promise<LoadedKind> {
   // One row per (device, config): a config that has failed nightly for a week
   // is ONE finding, not seven. `DISTINCT ON` must lead its ORDER BY with the
   // distinct keys, so the presentation order (newest failure first) is applied
   // by the wrapping SELECT.
   const rows = await dbModule.db.execute<BaseSweepRow & {
     config_name: string | null; started_at: Date | string | null; error_count: number | string | null;
+    total_count: number | string | null;
   }>(sql`
-    SELECT * FROM (
+    SELECT latest.*, COUNT(*) OVER () AS total_count FROM (
       SELECT DISTINCT ON (bj.device_id, bj.config_id)
              bj.device_id AS device_id, d.hostname AS hostname,
              bc.name AS config_name, bj.started_at, bj.error_count
@@ -315,14 +357,18 @@ async function loadFailedBackups(orgId: string): Promise<SweepEvidenceRow[]> {
     ORDER BY latest.started_at DESC
     LIMIT ${FETCH_LIMIT}
   `);
-  return [...rows].map((row) => evidenceRow(row, {
-    configName: textOrNull(row.config_name),
-    startedAt: isoOrNull(row.started_at),
-    errorCount: numberOrNull(row.error_count),
-  }));
+  const list = [...rows];
+  return {
+    rows: list.map((row) => evidenceRow(row, {
+      configName: textOrNull(row.config_name),
+      startedAt: isoOrNull(row.started_at),
+      errorCount: numberOrNull(row.error_count),
+    })),
+    total: totalFrom(list),
+  };
 }
 
-async function loadServiceDown(orgId: string): Promise<SweepEvidenceRow[]> {
+async function loadServiceDown(orgId: string): Promise<LoadedKind> {
   // Take the LATEST result per watch first, THEN keep only the bad ones. The
   // other order — filter to bad, then take the latest bad — would report a
   // service that has since come back up, which is precisely the false finding
@@ -334,8 +380,9 @@ async function loadServiceDown(orgId: string): Promise<SweepEvidenceRow[]> {
     name: string | null; watch_type: string | null; status: string | null;
     auto_restart_attempted: boolean | null; auto_restart_succeeded: boolean | null;
     checked_at: Date | string | null;
+    total_count: number | string | null;
   }>(sql`
-    SELECT * FROM (
+    SELECT latest.*, COUNT(*) OVER () AS total_count FROM (
       SELECT DISTINCT ON (r.device_id, r.watch_type, r.name)
              r.device_id AS device_id, d.hostname AS hostname,
              r.name, r.watch_type, r.status,
@@ -353,17 +400,21 @@ async function loadServiceDown(orgId: string): Promise<SweepEvidenceRow[]> {
     ORDER BY latest.checked_at DESC
     LIMIT ${FETCH_LIMIT}
   `);
-  return [...rows].map((row) => evidenceRow(row, {
-    name: textOrNull(row.name),
-    watchType: textOrNull(row.watch_type),
-    status: textOrNull(row.status),
-    autoRestartAttempted: boolOrNull(row.auto_restart_attempted),
-    autoRestartSucceeded: boolOrNull(row.auto_restart_succeeded),
-    checkedAt: isoOrNull(row.checked_at),
-  }));
+  const list = [...rows];
+  return {
+    rows: list.map((row) => evidenceRow(row, {
+      name: textOrNull(row.name),
+      watchType: textOrNull(row.watch_type),
+      status: textOrNull(row.status),
+      autoRestartAttempted: boolOrNull(row.auto_restart_attempted),
+      autoRestartSucceeded: boolOrNull(row.auto_restart_succeeded),
+      checkedAt: isoOrNull(row.checked_at),
+    })),
+    total: totalFrom(list),
+  };
 }
 
-async function loadUnpatchedCritical(orgId: string): Promise<SweepEvidenceRow[]> {
+async function loadUnpatchedCritical(orgId: string): Promise<LoadedKind> {
   // Grouped per device, not per finding: a machine with 60 open criticals is
   // ONE row carrying a count, not 60 rows that would blow the cap on their
   // own. The two `[1:5]` lists are the sample the model may build a
@@ -374,6 +425,7 @@ async function loadUnpatchedCritical(orgId: string): Promise<SweepEvidenceRow[]>
   const rows = await dbModule.db.execute<BaseSweepRow & {
     open_critical_count: number | string | null; cve_ids: string | null;
     device_vulnerability_ids: string | null; known_exploited: boolean | null;
+    total_count: number | string | null;
   }>(sql`
     SELECT dv.device_id AS device_id, d.hostname AS hostname,
            COUNT(*)::int AS open_critical_count,
@@ -383,7 +435,8 @@ async function loadUnpatchedCritical(orgId: string): Promise<SweepEvidenceRow[]>
            array_to_string(
              (array_agg(dv.id::text ORDER BY v.cvss_score DESC NULLS LAST, v.cve_id))[1:5], ','
            ) AS device_vulnerability_ids,
-           bool_or(COALESCE(v.known_exploited, false)) AS known_exploited
+           bool_or(COALESCE(v.known_exploited, false)) AS known_exploited,
+           COUNT(*) OVER () AS total_count
     FROM device_vulnerabilities dv
     JOIN vulnerabilities v ON v.id = dv.vulnerability_id
     JOIN devices d ON d.id = dv.device_id
@@ -396,15 +449,22 @@ async function loadUnpatchedCritical(orgId: string): Promise<SweepEvidenceRow[]>
     ORDER BY COUNT(*) DESC, d.hostname ASC
     LIMIT ${FETCH_LIMIT}
   `);
-  return [...rows].map((row) => evidenceRow(row, {
-    openCriticalCount: numberOrNull(row.open_critical_count),
-    cveIds: textOrNull(row.cve_ids),
-    deviceVulnerabilityIds: textOrNull(row.device_vulnerability_ids),
-    knownExploited: boolOrNull(row.known_exploited),
-  }));
+  const list = [...rows];
+  return {
+    // `COUNT(*) OVER ()` is evaluated AFTER `GROUP BY`, so it counts GROUPS —
+    // i.e. affected devices, matching what each row represents. It is not the
+    // number of findings (that is the per-row `openCriticalCount`).
+    rows: list.map((row) => evidenceRow(row, {
+      openCriticalCount: numberOrNull(row.open_critical_count),
+      cveIds: textOrNull(row.cve_ids),
+      deviceVulnerabilityIds: textOrNull(row.device_vulnerability_ids),
+      knownExploited: boolOrNull(row.known_exploited),
+    })),
+    total: totalFrom(list),
+  };
 }
 
-const LOADERS: Record<AiSweepKind, (orgId: string) => Promise<SweepEvidenceRow[]>> = {
+const LOADERS: Record<AiSweepKind, (orgId: string) => Promise<LoadedKind>> = {
   disk_pressure: loadDiskPressure,
   stale_agents: loadStaleAgents,
   pending_reboots: loadPendingReboots,
@@ -430,8 +490,9 @@ export async function loadSweepEvidence(orgId: string, kinds: AiSweepKind[]): Pr
   const raw: RawSweepEvidence = {};
   for (const kind of AI_SWEEP_KINDS) {
     if (!requested.has(kind)) continue;
-    const rows = await LOADERS[kind](orgId);
-    raw[kind] = { rows, total: rows.length };
+    // `total` is the loader's real COUNT(*) OVER (), never `rows.length` —
+    // see `SweepKindEvidence.total`.
+    raw[kind] = await LOADERS[kind](orgId);
   }
   return assembleSweepEvidence(raw);
 }

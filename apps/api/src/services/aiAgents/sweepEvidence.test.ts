@@ -113,6 +113,24 @@ describe('assembleSweepEvidence', () => {
     expect(e.truncated).toBe(true);
   });
 
+  // `total` is what the model quotes in a customer-facing finding; `rows` is
+  // only the sample it may name. Capping the sample must never cap the count,
+  // or an org with 500 stale agents gets narrated as "26 devices are stale".
+  it('preserves the REAL total when the sample is capped', () => {
+    const rows = Array.from({ length: SWEEP_EVIDENCE_MAX_ROWS_PER_KIND + 1 }, (_, i) => row(i));
+    const e = assembleSweepEvidence({ stale_agents: { rows, total: 500 } });
+    expect(e.kinds.stale_agents?.rows).toHaveLength(SWEEP_EVIDENCE_MAX_ROWS_PER_KIND);
+    expect(e.kinds.stale_agents?.total).toBe(500);
+    expect(e.kinds.stale_agents?.truncated).toBe(true);
+  });
+
+  it('preserves the REAL total when the byte ceiling trims further', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => row(i, 900));
+    const e = assembleSweepEvidence({ disk_pressure: { rows, total: 137 } });
+    expect(e.kinds.disk_pressure!.rows.length).toBeLessThan(20);
+    expect(e.kinds.disk_pressure?.total).toBe(137);
+  });
+
   it('keeps a kind the loader ran but found nothing for (a clean check is evidence too)', () => {
     const e = assembleSweepEvidence({ service_down: { rows: [], total: 0 } });
     expect(e.kinds.service_down).toEqual({ rows: [], total: 0, truncated: false });
@@ -148,25 +166,36 @@ describe('loadSweepEvidence', () => {
   // The tenancy invariant. loadSweepEvidence runs under a SYSTEM DB context
   // (full RLS bypass), so the org pin in the WHERE clause is the ONLY thing
   // keeping one tenant's sweep out of another's data.
+  // `orgPins` is the number of `org_id = $` predicates the statement must
+  // carry — ONE PER TABLE it reads, device rows included. A bare "contains
+  // org_id" assertion passes just as happily when the pin sits only on the
+  // child table and `AND d.org_id = ...` has been deleted, which is exactly
+  // the cross-tenant hole worth failing on: this runs under a SYSTEM context,
+  // so a join to an unpinned `devices` can surface another tenant's hostname.
   it.each([
-    ['disk_pressure', 'devices'],
-    ['stale_agents', 'devices'],
-    ['pending_reboots', 'devices'],
-    ['failed_backups', 'devices'],
-    ['service_down', 'devices'],
-    ['unpatched_critical', 'devices'],
-  ] as const)('%s is org-pinned, excludes ephemeral devices, and fetches MAX+1', async (kind, joined) => {
+    ['disk_pressure', 2],
+    ['stale_agents', 1],
+    ['pending_reboots', 1],
+    ['failed_backups', 3],
+    ['service_down', 2],
+    ['unpatched_critical', 2],
+  ] as const)('%s pins org_id on every table it reads, excludes ephemeral devices, counts and fetches MAX+1', async (kind, orgPins) => {
     await loadSweepEvidence('org-9', [kind]);
     const sql = text(0);
-    expect(sql).toContain(joined);
+    expect(sql).toContain('devices');
     expect(sql).toContain('is_ephemeral = false');
     expect(sql).toContain('LIMIT');
+    expect(sql.match(/org_id = /g) ?? []).toHaveLength(orgPins);
+    // The real match count rides along in the SAME round trip, so `total` can
+    // be honest while the sample stays capped.
+    expect(sql).toContain('COUNT(*) OVER () AS total_count');
     const params = boundParams(executed[0]);
     // +1 so the assembler can OBSERVE that more than MAX exist; a bare
     // LIMIT MAX would have the DB silently discard the overflow first and
     // `truncated` could never be true.
     expect(params).toContain(SWEEP_EVIDENCE_MAX_ROWS_PER_KIND + 1);
-    expect(params).toContain('org-9');
+    // One bound orgId per pin — every predicate binds the SAME org.
+    expect(params.filter((v) => v === 'org-9')).toHaveLength(orgPins);
   });
 
   it('disk_pressure reads device_disks at/over 85% used, worst first', async () => {
@@ -177,12 +206,18 @@ describe('loadSweepEvidence', () => {
     expect(sql).toContain('ORDER BY dd.used_percent DESC');
   });
 
-  it('stale_agents reads devices unseen for 7 days, oldest first, skipping decommissioned', async () => {
+  // A never-checked-in device is the stalest of all, but `last_seen_at < X`
+  // is UNKNOWN for it and would silently drop the row
+  // (`[[sql_not_over_nullable_drops_rows]]`). The NULL branch is gated on
+  // `created_at` so a machine enrolled this morning is not reported before its
+  // first heartbeat could land.
+  it('stale_agents covers never-seen devices as well as ones unseen for 7 days', async () => {
     await loadSweepEvidence('org-1', ['stale_agents']);
     const sql = text(0);
     expect(sql).toContain("d.status <> 'decommissioned'");
-    expect(sql).toContain("interval '7 days'");
-    expect(sql).toContain('ORDER BY d.last_seen_at ASC');
+    expect(sql).toContain("d.last_seen_at IS NULL AND d.created_at < now() - interval '7 days'");
+    expect(sql).toContain("OR d.last_seen_at < now() - interval '7 days'");
+    expect(sql).toContain('ORDER BY d.last_seen_at ASC NULLS FIRST');
   });
 
   it('pending_reboots reads the OS pending-reboot flag, most recently seen first', async () => {
@@ -227,16 +262,25 @@ describe('loadSweepEvidence', () => {
     expect(sql).toContain('ORDER BY COUNT(*) DESC');
   });
 
-  it('maps a disk row to display scalars only (no raw columns, no jsonb)', async () => {
-    results = [[{ device_id: 'dev-1', hostname: 'HOST-1', mount_point: '/', used_percent: 92.4567, free_gb: 3.21, total_gb: 250 }]];
+  it('maps a disk row to display scalars only (no raw columns, no jsonb, no total_count leak)', async () => {
+    results = [[{ device_id: 'dev-1', hostname: 'HOST-1', mount_point: '/', used_percent: 92.4567, free_gb: 3.21, total_gb: 250, total_count: 41 }]];
     const evidence = await loadSweepEvidence('org-1', ['disk_pressure']);
     expect(evidence.kinds.disk_pressure?.rows).toEqual([
       { deviceId: 'dev-1', hostname: 'HOST-1', fields: { mountPoint: '/', usedPercent: 92.5, freeGb: 3.2, totalGb: 250 } },
     ]);
+    // The window column is plumbing, not evidence: it becomes `total` and
+    // never appears as a field the model could mistake for a per-row value.
+    expect(evidence.kinds.disk_pressure?.total).toBe(41);
+  });
+
+  it('reports total 0 — not undefined — for a kind that matched nothing', async () => {
+    results = [[]];
+    const evidence = await loadSweepEvidence('org-1', ['disk_pressure']);
+    expect(evidence.kinds.disk_pressure).toEqual({ rows: [], total: 0, truncated: false });
   });
 
   it('renders timestamps as ISO strings, never Date objects', async () => {
-    results = [[{ device_id: 'dev-1', hostname: 'h1', last_seen_at: new Date('2026-08-01T10:00:00.000Z'), agent_version: '0.108.0', os_type: 'windows', status: 'offline' }]];
+    results = [[{ device_id: 'dev-1', hostname: 'h1', last_seen_at: new Date('2026-08-01T10:00:00.000Z'), agent_version: '0.108.0', os_type: 'windows', status: 'offline', total_count: 1 }]];
     const evidence = await loadSweepEvidence('org-1', ['stale_agents']);
     expect(evidence.kinds.stale_agents?.rows[0]!.fields).toEqual({
       lastSeenAt: '2026-08-01T10:00:00.000Z',
@@ -246,10 +290,18 @@ describe('loadSweepEvidence', () => {
     });
   });
 
+  it('emits lastSeenAt: null for a never-seen device rather than dropping the field', async () => {
+    results = [[{ device_id: 'dev-1', hostname: 'h1', last_seen_at: null, agent_version: '0.108.0', os_type: 'linux', status: 'offline', total_count: 1 }]];
+    const evidence = await loadSweepEvidence('org-1', ['stale_agents']);
+    expect(evidence.kinds.stale_agents?.rows[0]!.fields.lastSeenAt).toBeNull();
+    expect(evidence.kinds.stale_agents?.rows[0]!.fields).toHaveProperty('lastSeenAt');
+  });
+
   it('comma-joins the opaque finding/CVE ids the model needs for a remediation proposal', async () => {
     results = [[{
       device_id: 'dev-1', hostname: 'h1', open_critical_count: 7,
       cve_ids: 'CVE-2026-1,CVE-2026-2', device_vulnerability_ids: 'dv-1,dv-2', known_exploited: true,
+      total_count: 3,
     }]];
     const evidence = await loadSweepEvidence('org-1', ['unpatched_critical']);
     expect(evidence.kinds.unpatched_critical?.rows[0]!.fields).toEqual({
@@ -260,13 +312,16 @@ describe('loadSweepEvidence', () => {
     });
   });
 
-  it('flags truncation when a loader came back with MAX+1 rows', async () => {
+  it('flags truncation when a loader came back with MAX+1 rows, and still reports the real total', async () => {
     results = [Array.from({ length: SWEEP_EVIDENCE_MAX_ROWS_PER_KIND + 1 }, (_, i) => ({
       device_id: `dev-${i}`, hostname: `h-${i}`, last_seen_at: new Date('2026-08-01T10:00:00.000Z'), os_type: 'linux',
+      total_count: 500,
     }))];
     const evidence = await loadSweepEvidence('org-1', ['pending_reboots']);
     expect(evidence.kinds.pending_reboots?.rows).toHaveLength(SWEEP_EVIDENCE_MAX_ROWS_PER_KIND);
     expect(evidence.kinds.pending_reboots?.truncated).toBe(true);
+    // The whole point of the window: 500 devices, 25 named.
+    expect(evidence.kinds.pending_reboots?.total).toBe(500);
     expect(evidence.truncated).toBe(true);
   });
 });
