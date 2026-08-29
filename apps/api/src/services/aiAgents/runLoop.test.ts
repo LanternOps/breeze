@@ -6,6 +6,7 @@ import {
   type AiAgentLimits,
   type AiAgentPolicy,
   type AiAgentPolicySnapshot,
+  type AiAgentTriggerKind,
 } from '@breeze/shared';
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000c1';
@@ -336,10 +337,18 @@ function seedRows(options: {
    * 'act') so the guardrail check actually sees it.
    */
   modeAtStart?: AiAgentPolicy['mode'];
+  /** Wave 6 PR 3 (#3828, Task 4) — undefined (default) means no ticket, i.e.
+   *  every existing test is unaffected. Pass a ticket id AND `ticket`/
+   *  `ticketComments` to exercise a ticket-triggered run's bounded context. */
+  triggerKind?: AiAgentTriggerKind;
+  ticketId?: string | null;
+  ticket?: Record<string, unknown>;
+  ticketComments?: Array<Record<string, unknown>>;
 } = {}) {
   const effective = options.effective ?? policy();
   const deviceId = options.deviceId === undefined ? DEVICE_ID : options.deviceId;
   const alertId = options.alertId === undefined ? ALERT_ID : options.alertId;
+  const ticketId = options.ticketId === undefined ? null : options.ticketId;
 
   dbMockState.rowQueues.ai_agent_runs = [[{
     id: RUN_ID,
@@ -347,9 +356,10 @@ function seedRows(options: {
     orgId: ORG_ID,
     deviceId,
     alertId,
+    ticketId,
     status: 'queued',
     modeAtStart: options.modeAtStart ?? 'shadow',
-    triggerKind: 'alert',
+    triggerKind: options.triggerKind ?? 'alert',
     policySnapshot: snapshot(effective),
   }]];
   dbMockState.rowQueues.ai_agents = [[{
@@ -366,6 +376,13 @@ function seedRows(options: {
   }
   if (alertId) {
     dbMockState.rowQueues.alerts = [[{ id: alertId, title: 'Disk almost full', severity: 'high', message: 'C: at 96%' }]];
+  }
+  if (ticketId) {
+    dbMockState.rowQueues.tickets = [[options.ticket ?? {
+      id: ticketId, subject: 'Printer not working', description: 'The printer will not print.',
+      status: 'open', priority: 'high', category: 'hardware', tags: ['printer'], dueDate: null,
+    }]];
+    dbMockState.rowQueues.ticket_comments = [options.ticketComments ?? []];
   }
   resolveEffectiveAgentSystem.mockResolvedValue(snapshot(effective));
   return effective;
@@ -1315,6 +1332,69 @@ describe('executeAgentRun', () => {
     expect(auth.allowedSiteIds).toEqual([]);
     const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
     expect(prompt).not.toContain('WS-ACCT-04');
+  });
+
+  describe('ticket context (wave 6 PR 3, #3828, Task 4)', () => {
+    const TICKET_ID = '00000000-0000-4000-8000-0000000000e1';
+
+    it('loads bounded ticket context and feeds it into the task prompt, HTML-stripped', async () => {
+      seedRows({
+        triggerKind: 'ticket',
+        deviceId: null,
+        alertId: null,
+        ticketId: TICKET_ID,
+        ticket: {
+          id: TICKET_ID,
+          subject: '<b>Printer</b> not working',
+          description: 'The <i>printer</i> shows an error light.',
+          status: 'open',
+          priority: 'high',
+          category: 'hardware',
+          tags: ['printer'],
+          dueDate: null,
+        },
+        ticketComments: [
+          { authorName: 'Jane Doe', content: 'Still <b>broken</b> after reboot.', createdAt: '2026-08-27T12:00:00Z' },
+        ],
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).toContain('Printer not working');
+      expect(prompt).toContain('The printer shows an error light.');
+      expect(prompt).toContain('Jane Doe');
+      expect(prompt).toContain('Still broken after reboot.');
+      // The trust boundary held: no raw markup reached the model.
+      expect(prompt).not.toMatch(/<[a-z/][^>]*>/i);
+
+      const systemPrompt = String(lastQueryOptions!.systemPrompt);
+      expect(systemPrompt).toContain('NEVER posts a reply or note to the ticket automatically');
+    });
+
+    it('a non-ticket run carries no ticket section at all', async () => {
+      seedRows();
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).not.toContain('Ticket:');
+      const systemPrompt = String(lastQueryOptions!.systemPrompt);
+      expect(systemPrompt).not.toContain('NEVER posts a reply or note to the ticket automatically');
+    });
+
+    it('a missing/deleted ticket is not fed into the prompt (same "moved reads as absent" posture as device/alert)', async () => {
+      seedRows({ triggerKind: 'ticket', deviceId: null, alertId: null, ticketId: TICKET_ID });
+      dbMockState.rowQueues.tickets = [[]];
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).not.toContain('Ticket:');
+      // The run still completes rather than crashing on a vanished ticket.
+      const final = finalTransition()!;
+      expect(final.to).toBe('completed');
+    });
   });
 
   it('notifies the MERGED recipient set from the run snapshot, not the baseline row', async () => {

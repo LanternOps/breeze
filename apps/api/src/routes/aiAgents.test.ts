@@ -625,6 +625,15 @@ const runDetailResponseSchema = z.object({
       approvalScope: z.string(),
       decidedVia: z.string().nullable(),
     }).strict()),
+    // Wave 6 PR 3 (#3828, Task 4) — text-only; no args/toolInput/toolOutput
+    // field exists on this shape either (see AiAgentRunTicketProposalDto).
+    ticketProposal: z.object({
+      summary: z.string(),
+      proposedReply: z.string().optional(),
+      proposedStatus: z.string().optional(),
+      proposedPriority: z.string().optional(),
+      notes: z.array(z.string()),
+    }).strict().nullable(),
   }).strict(),
 }).strict();
 

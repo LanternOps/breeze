@@ -283,6 +283,40 @@ describe('mergeAgentPolicies — tighten only', () => {
     }
   });
 
+  it('narrows ticketCategories/ticketPriorities by intersection, same convention as siteIds/deviceGroupIds (wave 6 PR 3, #3828)', () => {
+    const partner = policy({
+      triggers: {
+        alertSeverities: ['critical', 'high'],
+        ticketCategories: ['hardware', 'network', 'software'],
+        ticketPriorities: ['high', 'urgent'],
+        respectMaintenanceWindows: false,
+      },
+    });
+    const org = policy({
+      triggers: {
+        alertSeverities: ['critical', 'high'],
+        ticketCategories: ['network', 'software', 'billing'],
+        ticketPriorities: ['high', 'normal'],
+        respectMaintenanceWindows: false,
+      },
+    });
+
+    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+
+    expect(effective.triggers.ticketCategories).toEqual(['network', 'software']);
+    expect(effective.triggers.ticketPriorities).toEqual(['high']);
+  });
+
+  it('ticketCategories/ticketPriorities stay undefined (unrestricted) when neither side sets them', () => {
+    const partner = policy();
+    const org = policy();
+
+    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+
+    expect(effective.triggers.ticketCategories).toBeUndefined();
+    expect(effective.triggers.ticketPriorities).toBeUndefined();
+  });
+
   it('uses the org model only when the org budget allows it', () => {
     const partner = policy({ model: 'partner-model' });
     const org = policy({ model: 'org-model' });

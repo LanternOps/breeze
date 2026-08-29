@@ -3,6 +3,7 @@ import {
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
   AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS,
   type AiAgentRunDetailDto,
+  type AiAgentRunTicketProposalDto,
   type AiAgentRunTraceEntryDto,
 } from './aiAgentRuns';
 
@@ -73,6 +74,36 @@ describe('AiAgentRunTraceEntryDto (leak-impossible union, #3828)', () => {
         expect(json).not.toContain(`"${forbidden}"`);
       }
     }
+  });
+});
+
+describe('AiAgentRunTicketProposalDto (wave 6 PR 3, #3828) — safe projection, no autonomous notes', () => {
+  it('accepts the minimal shape (summary + empty notes) and the full shape', () => {
+    const minimal: AiAgentRunTicketProposalDto = { summary: 'Investigated printer spooler crash.', notes: [] };
+    const full: AiAgentRunTicketProposalDto = {
+      summary: 'Spooler service was stuck; a restart resolved it in shadow-mode analysis.',
+      proposedReply: 'Hi — this looks like a stuck print spooler. We recommend a restart.',
+      proposedStatus: 'pending',
+      proposedPriority: 'normal',
+      notes: ['Spooler.exe was consuming 100% CPU', 'No related alerts in the last 24h'],
+    };
+    expect(minimal.notes).toEqual([]);
+    expect(full.proposedReply).toContain('spooler');
+  });
+
+  it('has no field literally named args/toolInput/toolOutput/arguments on the DTO — it is text-only, never a tool payload', () => {
+    const sample: AiAgentRunTicketProposalDto = {
+      summary: 'x', proposedReply: 'y', proposedStatus: 'z', proposedPriority: 'normal', notes: ['n'],
+    };
+    const keys = Object.keys(sample);
+    for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+      expect(keys).not.toContain(forbidden);
+    }
+  });
+
+  it('AiAgentRunDetailDto carries ticketProposal as nullable (absent for a non-ticket run)', () => {
+    const detail: Pick<AiAgentRunDetailDto, 'ticketProposal'> = { ticketProposal: null };
+    expect(detail.ticketProposal).toBeNull();
   });
 });
 

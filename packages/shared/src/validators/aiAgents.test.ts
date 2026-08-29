@@ -101,6 +101,32 @@ describe('aiAgents validators', () => {
     expect(aiAgentPolicyFieldsSchema.safeParse({ triggers: { siteIds: [] } }).success).toBe(false);
   });
 
+  describe('triggers.ticketCategories / triggers.ticketPriorities (wave 6 PR 3, #3828)', () => {
+    it('are absent (unrestricted) by default — no default value is invented', () => {
+      const created = createAiAgentSchema.parse({ kind: 'helpdesk', name: 'Helpdesk' });
+      expect(created.triggers.ticketCategories).toBeUndefined();
+      expect(created.triggers.ticketPriorities).toBeUndefined();
+    });
+
+    it('accepts a narrowing list of categories/priorities', () => {
+      const parsed = aiAgentPolicyFieldsSchema.parse({
+        triggers: { ticketCategories: ['hardware', 'network'], ticketPriorities: ['high', 'urgent'] },
+      });
+      expect(parsed.triggers.ticketCategories).toEqual(['hardware', 'network']);
+      expect(parsed.triggers.ticketPriorities).toEqual(['high', 'urgent']);
+    });
+
+    it('rejects the empty array for both — [] would read as "matches nothing"', () => {
+      expect(aiAgentPolicyFieldsSchema.safeParse({ triggers: { ticketCategories: [] } }).success).toBe(false);
+      expect(aiAgentPolicyFieldsSchema.safeParse({ triggers: { ticketPriorities: [] } }).success).toBe(false);
+    });
+
+    it('rejects a priority value outside the ticket_priority enum', () => {
+      const result = aiAgentPolicyFieldsSchema.safeParse({ triggers: { ticketPriorities: ['critical'] } });
+      expect(result.success).toBe(false);
+    });
+  });
+
   it('minAgentMode picks the stricter mode', () => {
     expect(minAgentMode('act', 'shadow')).toBe('shadow');
     expect(minAgentMode('off', 'act')).toBe('off');

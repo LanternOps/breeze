@@ -70,6 +70,7 @@ wave: W07 (#3828) — PR 3 of 4 (Ticket helpdesk shadow)
 - `runLoop.ts`: `RunContext.ticket` (mirror the `alert` fetch at :361) + `runnerPrompt.ts` ticket section; `AgentRunOutcome.ticketProposal` typed shape `{ summary, proposedReply?, proposedStatus?, proposedPriority?, notes[] }` + safe projection in `packages/shared/src/types/aiAgentRuns.ts`; runs UI renders it read-only with "Post as private note" affordance deferred to the UI follow-up (flag in PR body).
 - Shared: `AiAgentTriggers` ticket fields (`ticketCategories?`, `ticketPriorities?` — `.min(1)`-or-undefined convention) + validator + defaults.
 - Full battery (api + shared suites, typecheck, lint both, drift, contract suites via CI). **Open the PR**: branch `feature/3821-ai-agents/wave-3828-3` → main, title `feat(api): wave 6.3 — ticket helpdesk shadow: transactional outbox, forced-shadow runs, ticketProposal outcomes`, body: "PR 3 of 4 for #3828 — do NOT close", the no-autonomous-notes rule, the automations-never-subscribed dossier correction, deferred items (autonomous private-note lane, ticket UI surfacing, commented/status-driven admissions). **Stop after opening the PR.**
+- [x] TDD → commit: `feat(api): bounded ticket context + ticketProposal outcomes + trigger config (#3828)`
 
 ## Self-Review Notes
 
