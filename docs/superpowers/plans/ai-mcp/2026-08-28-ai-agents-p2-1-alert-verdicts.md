@@ -696,6 +696,8 @@ git commit -m "feat(api): P2-1 — outcome-tool mechanism and submit_alert_verdi
 
 > **Amended during execution (Task 7 review, 2026-08-28):** `VERDICT_TOOL_ALLOWLIST` is a **floor**, not an intersection — `verdictToolAllowlist()` always returns the pinned read-only set plus the outcome tool, regardless of the agent allowlist (every entry already bypasses the allowlist on full runs, so nothing widens; intersecting against the empty default allowlist produced evidence-free verdicts). The intersection test below is superseded.
 
+> **Amended during execution (Task 16 live check, 2026-08-28/29):** `VERDICT_MAX_TURNS` is **4**, not 3, and `AI_AGENT_LIMIT_DEFAULTS.verdictBudgetCentsPerRun` is **5**, not 2 — 3 of 4 real `claude-sonnet-4-6` verdict runs against a live stack hit the 3-turn/2¢ caps (`verdict_missing`) without ever reaching `submit_alert_verdict`. `verdictLimits()` and its tests below, and the `runnerPrompt.ts` verdict task prompt, were updated to match; the code snippets below are historical and left as originally planned.
+
 **Files:**
 - Create: `apps/api/src/services/aiAgents/verdictProfile.ts`
 - Modify: `apps/api/src/services/aiAgents/agentCircuit.ts:128-141` (`classifyTerminal`), `:310-315` (`recordRunTerminal`)

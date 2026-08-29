@@ -22,7 +22,12 @@ import { OUTCOME_TOOL_NAMES } from './outcomeTools';
 export const VERDICT_TOOL_ALLOWLIST = [
   'manage_alerts:list', 'manage_alerts:get', 'get_device_details', 'analyze_metrics', 'query_monitors',
 ] as const;
-export const VERDICT_MAX_TURNS = 3;
+// Tuned from 3 to 4 (with a matching 2¢ -> 5¢ verdictBudgetCentsPerRun default
+// bump in packages/shared/src/types/aiAgents.ts) after the P2-1 live check
+// (task 16): 3 of 4 real claude-sonnet-4-6 verdict runs hit the 3-turn cap
+// (2 read-only tool calls, then no turn left to call submit_alert_verdict)
+// before ever reaching a classification.
+export const VERDICT_MAX_TURNS = 4;
 
 export function isVerdictProfile(run: { profile: AiAgentRunProfile }): boolean {
   return run.profile === 'verdict';

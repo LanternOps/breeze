@@ -268,6 +268,16 @@ function buildVerdictTaskPrompt(ctx: AgentRunPromptContext): string {
     `You are judging ${group ? `a correlation group of ${group.memberCount} alerts` : 'ONE alert'}. `
     + 'Use only the read tools available to you.',
   );
+  // P2-1 live check (task 16): 3 of 4 real claude-sonnet-4-6 runs spent every
+  // available turn on read tools and never reached submit_alert_verdict.
+  // Push toward submitting fast when the facts already suffice, rather than
+  // investigating exhaustively before deciding.
+  lines.push(
+    'If the alert, device and group facts below already let you decide with '
+    + '≥ 0.6 confidence, call submit_alert_verdict on your FIRST turn. You '
+    + 'have at most 3 read-tool calls before you must submit; a run that ends '
+    + 'without submit_alert_verdict is a failure.',
+  );
   lines.push('Decide: actionable | transient_self_healed | recurring_pattern | duplicate_of_group | needs_human.');
   lines.push('- transient_self_healed: the alert has already resolved on its own and the metric is normal now.');
   lines.push(
