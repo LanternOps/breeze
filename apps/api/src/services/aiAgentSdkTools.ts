@@ -19,6 +19,7 @@ import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import type { ActiveSession } from './streamingSessionManager';
+import type { SdkTool } from './aiAgents/outcomeTools';
 import { waitForPlanApproval } from './aiAgent';
 import {
   aiActionPlans,
@@ -963,6 +964,7 @@ export function createBreezeMcpServer(
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
   getActiveSession?: () => ActiveSession,
+  extraTools: SdkTool[] = [],
 ) {
   const uuid = z.string().guid();
   const backupEntityId = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
@@ -2530,9 +2532,19 @@ export function createBreezeMcpServer(
     ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
   ];
 
+  // extraTools (e.g. headless-run outcome tools like submit_alert_verdict) are
+  // never in the TOOL_TIERS registry — that's what keeps them off the chat/MCP
+  // surface (see outcomeTools.ts). A name collision here would mean an outcome
+  // tool shadowing a real registered tool, which must never happen silently.
+  for (const extra of extraTools) {
+    if (Object.prototype.hasOwnProperty.call(TOOL_TIERS, extra.name)) {
+      throw new Error(`[createBreezeMcpServer] extra tool collides with registry: ${extra.name}`);
+    }
+  }
+
   return createSdkMcpServer({
     name: 'breeze',
     version: '1.0.0',
-    tools,
+    tools: [...tools, ...extraTools],
   });
 }
