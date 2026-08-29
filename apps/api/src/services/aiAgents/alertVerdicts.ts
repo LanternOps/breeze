@@ -35,27 +35,79 @@
  * NOT wrapped in a system context — they run inside the caller's own
  * `withDbAccessContext`, same as every other read in `routes/aiAgents.ts`.
  *
- * Write ordering (review round 2, Minor 4): the verdict row is INSERTed
+ * Write ordering (review round 2, Minor 4): the verdict row is written
  * (with `suggestedIntentId: null`) and superseded BEFORE `createActionIntent`
  * is ever called; the intent id is linked back with a separate `UPDATE`
  * afterward, only when one was actually created. A crash/throw between the
- * insert and that final `UPDATE` leaves a verdict row with no linked intent
+ * write and that final `UPDATE` leaves a verdict row with no linked intent
  * (a `NULL` suggestedIntentId is a valid, already-handled state — see
  * `projectAlertVerdict`) rather than a live, human-approvable intent nobody
  * can find because the verdict row it belongs to was never written.
+ *
+ * Write ordering, part 2 (carry-in C, P2-1 Task 14 — live-verdict partial
+ * unique): `ai_alert_verdicts_live_{alert,group}_uq` (migrations/
+ * 2026-09-22-ai-alert-verdicts-live-unique.sql) allows at most one LIVE
+ * (`superseded_by IS NULL`) row per target. The original INSERT-then-
+ * supersede ordering above would ALWAYS violate that index for the instant
+ * both rows are live at once, so the id is generated CLIENT-SIDE
+ * (`randomUUID()`) and the two statements are flipped: supersede the
+ * existing live row(s) to point `superseded_by` at the not-yet-inserted id
+ * FIRST, then INSERT the new row with that id. The self-referencing
+ * `superseded_by` FK is `DEFERRABLE INITIALLY DEFERRED` (same migration)
+ * specifically so the UPDATE naming a not-yet-existent id does not fail
+ * immediately — it is checked once, at COMMIT. Both statements already run
+ * inside ONE transaction: `inSystemDbContext` / `withSystemDbAccessContext`
+ * wraps its callback in `baseDb.transaction(...)` (db/index.ts) — no
+ * additional `db.transaction` call is needed here.
+ *
+ * A concurrent second run targeting the same alert/group either has its own
+ * UPDATE match zero rows (this transaction's commit already flipped
+ * `superseded_by` away from `NULL`) and then 23505s on its own INSERT, or
+ * commits first and makes THIS transaction's INSERT the one that 23505s.
+ * Either way one of the two racing writers loses; `persistAlertVerdict`
+ * catches that 23505 (via `isPgUniqueViolation`, scoped to the specific
+ * partial-unique constraint for the target kind — never a bare `error.code`
+ * check, which would also swallow an unrelated conflict), re-reads the
+ * winner's live row, and returns `suggestionReason: 'superseded_concurrently'`
+ * — the loser's verdict is dropped, not retried, and no intent is attempted.
+ * If that re-read finds no live row, it throws rather than fabricating an
+ * id (MINOR 3, fix round 1) — with the partial unique in place a 23505 on
+ * this constraint guarantees a live row exists, so a missing one means the
+ * invariant broke and an honest failure beats a silently wrong verdictId.
+ *
+ * MINOR 4 (fix round 1) — this recovery mechanism REQUIRES
+ * `persistAlertVerdict` to never be called from inside an ambient DB
+ * context; see the precondition on the function's own docstring below for
+ * why (a shared ambient transaction would abort on the 23505 and the
+ * recovery SELECT would then fail with 25P02 instead of finding the row).
  */
 
-import { and, desc, eq, inArray, isNull, ne } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
 import type {
-  AlertVerdictOutcome, AlertVerdictSuggestionDisposition, AlertVerdictSuggestionReason,
-  AiAgentRunAlertVerdictDto,
+  AlertAiVerdictSummaryDto, AlertVerdictOutcome, AlertVerdictSuggestionDisposition,
+  AlertVerdictSuggestionReason, AiAgentRunAlertVerdictDto,
 } from '@breeze/shared';
 import {
   db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext,
 } from '../../db';
 import { aiAlertVerdicts, alertCorrelationMembers, alerts, type AiAlertVerdictRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { createActionIntent } from '../actionIntents/intentService';
+
+/**
+ * `ai_alert_verdicts_live_{alert,group}_uq` (migrations/2026-09-22-ai-alert-
+ * verdicts-live-unique.sql) — the partial-unique constraint name the write
+ * ordering in `persistAlertVerdict` races against, keyed by target kind.
+ * Passed to `isPgUniqueViolation` so a 23505 on some UNRELATED constraint
+ * (there is no other unique index on this table today, but this stays
+ * precise rather than a bare `error.code === '23505'` check) is never
+ * mistaken for the concurrent-supersede race this handles.
+ */
+function liveVerdictUniqueConstraintName(correlationGroupId: string | null): string {
+  return correlationGroupId ? 'ai_alert_verdicts_live_group_uq' : 'ai_alert_verdicts_live_alert_uq';
+}
 
 /**
  * Same skip-if-already-system shape as every other file in this directory
@@ -153,6 +205,25 @@ export interface PersistAlertVerdictResult {
   suggestionReason?: AlertVerdictSuggestionReason;
 }
 
+/**
+ * MINOR 4 (fix round 1) — PRECONDITION: must NOT be called from inside an
+ * ambient DB context (i.e. from inside an already-open `withDbAccessContext`
+ * / `withSystemDbAccessContext` transaction). `finalizeVerdict` (runLoop.ts)
+ * satisfies this today — it runs from the background run loop, which holds
+ * no ambient context of its own.
+ *
+ * Why this matters: the 23505 concurrent-supersede recovery (see the file
+ * header's "Write ordering, part 2") relies on `inSystemDbContext` opening
+ * its OWN fresh transaction on each call. If a caller already held an
+ * ambient system-scope context, `inSystemDbContext` would skip opening a new
+ * transaction (it detects the existing one and just runs `fn()` directly —
+ * see its own docstring) and the failed INSERT's 23505 would abort THAT
+ * shared transaction. Every subsequent statement in it — including the
+ * recovery SELECT, which itself calls `inSystemDbContext` again and would
+ * reuse the SAME now-aborted transaction — would then fail with `25P02`
+ * ("current transaction is aborted") instead of returning the winning row,
+ * turning a handled race into an unhandled one.
+ */
 export async function persistAlertVerdict(
   run: {
     id: string; orgId: string; alertId: string | null;
@@ -257,36 +328,76 @@ export async function persistAlertVerdict(
     ? eq(aiAlertVerdicts.correlationGroupId, run.correlationGroupId)
     : eq(aiAlertVerdicts.alertId, run.alertId!);
 
-  // Minor 4: the verdict row is written (and superseded) BEFORE any intent
-  // is attempted, always with `suggestedIntentId: null` — see the file
-  // header's "Write ordering" note for why. `intentId` (below) is linked
-  // back with a separate UPDATE afterward, only if one was actually created.
-  const verdictId = await inSystemDbContext(async () => {
-    const [row] = await db.insert(aiAlertVerdicts).values({
-      orgId: run.orgId,
-      runId: run.id,
-      alertId: run.correlationGroupId ? null : run.alertId,
-      correlationGroupId: run.correlationGroupId,
-      classification: verdict.classification,
-      confidence: verdict.confidence.toFixed(2),
-      rationale: verdict.rationale,
-      pattern: verdict.pattern ?? null,
-      suggestedIntentId: null,
-    }).returning({ id: aiAlertVerdicts.id });
+  // See the file header's "Write ordering, part 2" note: supersede the
+  // existing live row(s) FIRST (pointing at a client-generated id that does
+  // not exist yet — safe only because the self-FK is DEFERRABLE INITIALLY
+  // DEFERRED), then INSERT the new row with that id. Both statements run in
+  // the ONE transaction `inSystemDbContext` already opens.
+  const newId = randomUUID();
+  let verdictId: string;
+  let supersededConcurrently = false;
+  try {
+    verdictId = await inSystemDbContext(async () => {
+      await db.update(aiAlertVerdicts).set({ supersededBy: newId })
+        .where(and(
+          eq(aiAlertVerdicts.orgId, run.orgId),
+          targetWhere,
+          isNull(aiAlertVerdicts.supersededBy),
+        ));
 
-    // Supersede every earlier LIVE verdict for the same target, excluding
-    // the row just written — a single UPDATE, not a ternary-with-undefined
-    // WHERE clause.
-    await db.update(aiAlertVerdicts).set({ supersededBy: row!.id })
-      .where(and(
-        eq(aiAlertVerdicts.orgId, run.orgId),
-        targetWhere,
-        isNull(aiAlertVerdicts.supersededBy),
-        ne(aiAlertVerdicts.id, row!.id),
-      ));
+      await db.insert(aiAlertVerdicts).values({
+        id: newId,
+        orgId: run.orgId,
+        runId: run.id,
+        alertId: run.correlationGroupId ? null : run.alertId,
+        correlationGroupId: run.correlationGroupId,
+        classification: verdict.classification,
+        confidence: verdict.confidence.toFixed(2),
+        rationale: verdict.rationale,
+        pattern: verdict.pattern ?? null,
+        suggestedIntentId: null,
+      });
 
-    return row!.id;
-  });
+      return newId;
+    });
+  } catch (error) {
+    if (!isPgUniqueViolation(error, liveVerdictUniqueConstraintName(run.correlationGroupId))) throw error;
+    supersededConcurrently = true;
+    console.warn('[alertVerdicts] verdict superseded concurrently — another run\'s write won the race', {
+      runId: run.id, alertId: run.alertId, correlationGroupId: run.correlationGroupId,
+    });
+    // The 23505 itself proves a live row exists for this target right now.
+    // Re-reading it (rather than assuming `newId`, which never landed) gives
+    // the caller a real, dereferenceable verdict id — the winning run's, not
+    // this one's.
+    const winner = await inSystemDbContext(async () => {
+      const [row] = await db.select({ id: aiAlertVerdicts.id }).from(aiAlertVerdicts)
+        .where(and(eq(aiAlertVerdicts.orgId, run.orgId), targetWhere, isNull(aiAlertVerdicts.supersededBy)))
+        .limit(1);
+      return row;
+    });
+    // MINOR 3 (fix round 1): do NOT fabricate an id. `newId` never landed —
+    // that INSERT is exactly what just 23505'd — so falling back to it would
+    // hand the caller a verdictId that dereferences nothing. With the
+    // partial unique index in place, a 23505 on this constraint MUST mean a
+    // live row exists for this target; a missing `winner` here means that
+    // invariant broke (e.g. it was superseded again between the failed
+    // INSERT and this SELECT, which nothing in this codepath does), and an
+    // honest throw is far better than a silently wrong id.
+    if (!winner) {
+      throw new Error('ai_alert_verdicts: unique violation but no live row found');
+    }
+    verdictId = winner.id;
+  }
+
+  if (supersededConcurrently) {
+    return {
+      verdictId,
+      intentId: null,
+      suggestionDisposition: 'not_created',
+      suggestionReason: 'superseded_concurrently',
+    };
+  }
 
   let intentId: string | null = null;
   if (canAttemptIntent && suggestion) {
@@ -342,14 +453,63 @@ export async function persistAlertVerdict(
   return { verdictId, intentId, suggestionDisposition, suggestionReason };
 }
 
+/**
+ * Phase 2 wave P2-1 (alert verdicts), Task 14 — the safe projection of one
+ * LIVE `ai_alert_verdicts` row for the alerts API (`GET /alerts`, `GET
+ * /alerts/:id`, and a correlation group's `GET /correlations/:groupId`).
+ * See `AlertAiVerdictSummaryDto`'s own docstring (@breeze/shared) for why
+ * this is a DIFFERENT (smaller) projection than `AiAgentRunAlertVerdictDto`:
+ * this call site only ever has the persisted row, never the run.
+ */
+export function projectAlertAiVerdictSummary(row: AiAlertVerdictRow): AlertAiVerdictSummaryDto {
+  return {
+    id: row.id,
+    classification: row.classification,
+    confidence: Number(row.confidence),
+    rationale: row.rationale,
+    patternKind: row.pattern?.kind ?? null,
+    feedback: row.feedback,
+    suggestedIntentId: row.suggestedIntentId,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+/**
+ * `orgId` accepts a single org (the common case — an org-scoped or a
+ * single-org partner-scoped caller) or an array (Task 14 — a partner/system
+ * caller's `GET /alerts` list can legitimately span multiple orgs in one
+ * page). An `inArray` widening was chosen over the alternative of the
+ * caller grouping alert ids by org and issuing one call per org: the alerts
+ * this function is ever asked about already came from a single prior
+ * `alerts` query the caller ran under its own tenancy scoping (RLS plus, for
+ * partner scope, an explicit `accessibleOrgIds` filter) — this is a second,
+ * narrower read of the SAME already-authorized id set, not a new access
+ * decision, so one widened query is both the smaller change and the cheaper
+ * one (a single round trip instead of up to N).
+ *
+ * I3 fix (P2-1 wave B task 16d): `persistAlertVerdict` writes a group
+ * verdict with `alert_id IS NULL` / `correlation_group_id` set — a
+ * `duplicate_of_group` classification on the GROUP was otherwise invisible
+ * to every member alert (neither this map nor `hideAiNoiseCondition` ever
+ * matched it). Ruling: a group verdict applies to every member alert. Two
+ * queries, not N:
+ *   1. ALERT-level live verdicts for the requested ids — these WIN when an
+ *      alert has both an alert-level and (via its group) a group-level
+ *      verdict.
+ *   2. For the ids still unmapped after (1), the latest live GROUP-level
+ *      verdict of any correlation group the alert is a member of
+ *      (`alert_correlation_members`, org-scoped on the join row — same
+ *      tenancy axis `alert_correlation_members` already carries).
+ */
 export async function latestVerdictsForAlerts(
-  orgId: string,
+  orgId: string | string[],
   alertIds: string[],
 ): Promise<Map<string, AiAlertVerdictRow>> {
   if (alertIds.length === 0) return new Map();
+  const orgCondition = Array.isArray(orgId) ? inArray(aiAlertVerdicts.orgId, orgId) : eq(aiAlertVerdicts.orgId, orgId);
   const rows = await db.select().from(aiAlertVerdicts)
     .where(and(
-      eq(aiAlertVerdicts.orgId, orgId),
+      orgCondition,
       inArray(aiAlertVerdicts.alertId, alertIds),
       isNull(aiAlertVerdicts.supersededBy),
     ))
@@ -361,6 +521,36 @@ export async function latestVerdictsForAlerts(
   for (const row of rows) {
     if (row.alertId && !map.has(row.alertId)) map.set(row.alertId, row);
   }
+
+  const remaining = alertIds.filter((id) => !map.has(id));
+  if (remaining.length > 0) {
+    const memberOrgCondition = Array.isArray(orgId)
+      ? inArray(alertCorrelationMembers.orgId, orgId)
+      : eq(alertCorrelationMembers.orgId, orgId);
+    const groupRows = await db.select({
+      alertId: alertCorrelationMembers.alertId,
+      verdict: aiAlertVerdicts,
+    })
+      .from(alertCorrelationMembers)
+      .innerJoin(aiAlertVerdicts, eq(aiAlertVerdicts.correlationGroupId, alertCorrelationMembers.groupId))
+      .where(and(
+        memberOrgCondition,
+        // Task 16e fix: the alert-level query above pins `orgCondition` on
+        // `aiAlertVerdicts` directly — this join only pinned it on the
+        // `alertCorrelationMembers` side. Both rows share the same tenancy
+        // axis today, but the joined `aiAlertVerdicts` row had no org
+        // predicate of its own, so this defense-in-depth matches the
+        // alert-level query above rather than trusting the join alone.
+        orgCondition,
+        inArray(alertCorrelationMembers.alertId, remaining),
+        isNull(aiAlertVerdicts.supersededBy),
+      ))
+      .orderBy(desc(aiAlertVerdicts.createdAt));
+    for (const row of groupRows) {
+      if (!map.has(row.alertId)) map.set(row.alertId, row.verdict);
+    }
+  }
+
   return map;
 }
 
@@ -377,6 +567,19 @@ export async function latestVerdictForGroup(orgId: string, groupId: string): Pro
 }
 
 /**
+ * `recordVerdictFeedback`'s outcome — `'ok'` when the caller's feedback was
+ * (re)written, `'not_found'` when the id doesn't exist or isn't RLS-visible,
+ * `'conflict'` (carry-in B, PR-A review) when the row already carries
+ * ANOTHER user's feedback. `orgId` rides along on `'ok'`/`'conflict'` so the
+ * route can write the audit line (`writeRouteAudit` requires one) without a
+ * second query.
+ */
+export type RecordVerdictFeedbackResult =
+  | { status: 'ok'; orgId: string }
+  | { status: 'not_found' }
+  | { status: 'conflict'; orgId: string };
+
+/**
  * Feedback is not a mutation of customer data (it never touches `alerts` or
  * anything an org admin would consider "their" data) — the route gates this
  * on the read permission, not write. The request already runs inside
@@ -384,15 +587,37 @@ export async function latestVerdictForGroup(orgId: string, groupId: string): Pro
  * `id` alone (no app-layer org predicate) is intentional, matching the
  * `GET /runs/:runId` route's own "RLS is the boundary, the app predicate is
  * defence-in-depth" precedent.
+ *
+ * Carry-in B (PR-A review) — a caller must not silently overwrite ANOTHER
+ * user's already-recorded feedback (the SAME user changing their own mind is
+ * fine). The UPDATE itself carries that check as a `WHERE feedback_by IS
+ * NULL OR feedback_by = <this user>` CAS, so the write is race-safe: two
+ * different users racing to be first can never both "win" a lost update.
+ * When the CAS matches zero rows, a follow-up SELECT (not itself atomic with
+ * the UPDATE, but the stakes here are display-only feedback, not customer
+ * data — see the paragraph above) distinguishes "id doesn't exist" from
+ * "exists, but someone else already recorded feedback" for the 404-vs-409
+ * the route answers.
  */
 export async function recordVerdictFeedback(
   auth: AuthContext,
   verdictId: string,
   feedback: 'up' | 'down',
-): Promise<boolean> {
-  const rows = await db.update(aiAlertVerdicts)
+): Promise<RecordVerdictFeedbackResult> {
+  const [updated] = await db.update(aiAlertVerdicts)
     .set({ feedback, feedbackBy: auth.user.id, feedbackAt: new Date() })
+    .where(and(
+      eq(aiAlertVerdicts.id, verdictId),
+      or(isNull(aiAlertVerdicts.feedbackBy), eq(aiAlertVerdicts.feedbackBy, auth.user.id)),
+    ))
+    .returning({ id: aiAlertVerdicts.id, orgId: aiAlertVerdicts.orgId });
+
+  if (updated) return { status: 'ok', orgId: updated.orgId };
+
+  const [existing] = await db.select({ orgId: aiAlertVerdicts.orgId })
+    .from(aiAlertVerdicts)
     .where(eq(aiAlertVerdicts.id, verdictId))
-    .returning({ id: aiAlertVerdicts.id });
-  return rows.length > 0;
+    .limit(1);
+  if (!existing) return { status: 'not_found' };
+  return { status: 'conflict', orgId: existing.orgId };
 }

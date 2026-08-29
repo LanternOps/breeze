@@ -6,10 +6,10 @@ import { TIER2_ACTIONS, TIER2_READONLY_TOOLS, TIER3_ACTIONS } from '../aiGuardra
 import { TOOL_TIERS } from '../aiAgentSdkTools';
 
 describe('verdict profile', () => {
-  it('pins turns to 3 and budget to verdictBudgetCentsPerRun', () => {
-    const l = verdictLimits({ ...AI_AGENT_LIMIT_DEFAULTS, verdictBudgetCentsPerRun: 2 });
-    expect(l.maxTurnsPerRun).toBe(3);
-    expect(l.maxBudgetCentsPerRun).toBe(2);
+  it('pins turns to 4 and budget to verdictBudgetCentsPerRun', () => {
+    const l = verdictLimits({ ...AI_AGENT_LIMIT_DEFAULTS, verdictBudgetCentsPerRun: 5 });
+    expect(l.maxTurnsPerRun).toBe(4);
+    expect(l.maxBudgetCentsPerRun).toBe(5);
     expect(l.maxActionsPerRun).toBe(0);
   });
   // Review fix (fix round 1): a v1-v4 policy snapshot has no

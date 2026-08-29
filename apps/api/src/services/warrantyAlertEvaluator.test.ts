@@ -223,7 +223,7 @@ describe('evaluateWarrantyAlerts gating', () => {
     selectMock.mockReturnValueOnce(queueSelect([]));
     // 6: autoResolveWarrantyAlerts open-alert select → an existing open (active) alert
     selectMock.mockReturnValueOnce(
-      queueSelect([{ id: 'alert-stranded-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active' }])
+      queueSelect([{ id: 'alert-stranded-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', triggeredAt: new Date('2026-01-01T00:00:00.000Z') }])
     );
 
     const result = await evaluateWarrantyAlerts(DEVICE_ID);
@@ -289,7 +289,7 @@ describe('evaluateWarrantyAlerts gating', () => {
     // this query — that carve-out is verified in the integration test since the
     // mock here ignores the WHERE predicate.
     selectMock.mockReturnValueOnce(
-      queueSelect([{ id: 'alert-suppressed-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'suppressed', suppressedUntil: new Date(Date.now() + 86_400_000) }])
+      queueSelect([{ id: 'alert-suppressed-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'suppressed', suppressedUntil: new Date(Date.now() + 86_400_000), triggeredAt: new Date('2026-01-01T00:00:00.000Z') }])
     );
 
     const result = await evaluateWarrantyAlerts(DEVICE_ID);

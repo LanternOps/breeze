@@ -1046,7 +1046,9 @@ mobileRoutes.post(
           ruleId: alert.ruleId,
           deviceId: alert.deviceId,
           resolvedBy: auth.user.id,
-          resolutionNote: data.note
+          resolutionNote: data.note,
+          resolvedAt: resolvedAt.toISOString(),
+          triggeredAt: alert.triggeredAt.toISOString(),
         },
         'mobile-routes',
         { userId: auth.user.id }

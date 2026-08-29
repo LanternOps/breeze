@@ -62,7 +62,7 @@ describe('aiAgents validators', () => {
     const parsed = aiAgentLimitsSchema.parse({});
     expect(parsed.maxVerdictRunsPerHour).toBe(200);
     expect(parsed.maxConcurrentVerdictRuns).toBe(4);
-    expect(parsed.verdictBudgetCentsPerRun).toBe(2);
+    expect(parsed.verdictBudgetCentsPerRun).toBe(5);
   });
 
   it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 5 (phase 2 P2-1 bump)', () => {
@@ -304,7 +304,7 @@ describe('limits v5', () => {
   it('has verdict defaults and bounds', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxVerdictRunsPerHour).toBe(200);
     expect(AI_AGENT_LIMIT_DEFAULTS.maxConcurrentVerdictRuns).toBe(4);
-    expect(AI_AGENT_LIMIT_DEFAULTS.verdictBudgetCentsPerRun).toBe(2);
+    expect(AI_AGENT_LIMIT_DEFAULTS.verdictBudgetCentsPerRun).toBe(5);
     expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(5);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxVerdictRunsPerHour: 2001 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentVerdictRuns: 0 }).success).toBe(false);

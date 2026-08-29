@@ -5,6 +5,8 @@ import {
   type AiAgentRunDetailDto,
   type AiAgentRunTicketProposalDto,
   type AiAgentRunTraceEntryDto,
+  type AlertAiVerdictSummaryDto,
+  type AlertVerdictSuggestionReason,
 } from './aiAgentRuns';
 
 /**
@@ -111,6 +113,34 @@ describe('AiAgentRunTicketProposalDto (wave 6 PR 3, #3828) — safe projection, 
     expect(detail.anomalyIncidentId).toBeNull();
     const withIncident: Pick<AiAgentRunDetailDto, 'anomalyIncidentId'> = { anomalyIncidentId: 'incident-1' };
     expect(withIncident.anomalyIncidentId).toBe('incident-1');
+  });
+});
+
+describe('AlertAiVerdictSummaryDto (P2-1 Task 14 — alert list/detail aiVerdict)', () => {
+  it('is a nullable-field-friendly, leak-impossible display projection', () => {
+    const populated: AlertAiVerdictSummaryDto = {
+      id: 'verdict-1',
+      classification: 'actionable',
+      confidence: 0.87,
+      rationale: 'Disk usage climbing steadily with no recovery.',
+      patternKind: 'daily',
+      feedback: 'up',
+      suggestedIntentId: 'intent-1',
+      createdAt: '2026-09-22T10:00:00.000Z',
+    };
+    const absent: AlertAiVerdictSummaryDto | null = null;
+
+    expect(populated.confidence).toBe(0.87);
+    expect(absent).toBeNull();
+    const keys = Object.keys(populated);
+    for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+      expect(keys).not.toContain(forbidden);
+    }
+  });
+
+  it('carries the new superseded_concurrently reason (carry-in C, live-verdict partial unique)', () => {
+    const reason: AlertVerdictSuggestionReason = 'superseded_concurrently';
+    expect(reason).toBe('superseded_concurrently');
   });
 });
 

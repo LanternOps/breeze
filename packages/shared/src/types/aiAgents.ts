@@ -84,7 +84,12 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   maxConsecutiveFailures: 3,
   maxVerdictRunsPerHour: 200,
   maxConcurrentVerdictRuns: 4,
-  verdictBudgetCentsPerRun: 2,
+  // Tuned from 3/2¢ to 4/5¢ after the P2-1 live check (task 16): 3 of 4
+  // Sonnet verdict runs hit the 3-turn cap without ever calling
+  // submit_alert_verdict, spending 9-10 cost-cents against the 2-cent budget
+  // before reaching a submittable turn. See maxTurnsPerRun's sibling bump in
+  // apps/api/src/services/aiAgents/verdictProfile.ts (VERDICT_MAX_TURNS).
+  verdictBudgetCentsPerRun: 5,
 });
 
 export interface AiAgentTriggers {
@@ -282,7 +287,11 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * v5 (this bump, phase 2 P2-1): `effective.limits` gained
  * `maxVerdictRunsPerHour`, `maxConcurrentVerdictRuns`,
  * `verdictBudgetCentsPerRun`; read sites fall back to
- * `AI_AGENT_LIMIT_DEFAULTS` for a v1–v4 snapshot.
+ * `AI_AGENT_LIMIT_DEFAULTS` for a v1–v4 snapshot. `verdictBudgetCentsPerRun`'s
+ * default (and `VERDICT_MAX_TURNS` in verdictProfile.ts) were tuned from
+ * 2¢/3 turns to 5¢/4 turns shortly after this bump, after the P2-1 live
+ * check (task 16) found 3 of 4 Sonnet verdict runs ran out before submitting
+ * — the schema shape didn't change again, so this is still a v5 snapshot.
  */
 export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 5 as const;
 

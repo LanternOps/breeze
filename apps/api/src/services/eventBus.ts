@@ -19,9 +19,47 @@ export type EventType =
   // Alert events
   | 'alert.triggered'
   | 'alert.acknowledged'
+  // C2 fix (P2-1 wave B, task 16d): every publisher SHOULD include
+  // `resolvedAt` (ISO string), `resolvedBy` (uuid | null — null means a
+  // system/auto resolve), and `triggeredAt` (ISO string) on the payload,
+  // sourced from the row the publisher's own UPDATE just wrote/returned —
+  // never from a second read. This lets a subscriber (see
+  // `alertVerdictSubscriber.ts`'s contract comment) gate on the PUBLISHED
+  // payload instead of re-reading the alert row, which can be stale when
+  // the publisher runs inside a still-open transaction (the auto-resolve
+  // sweep in `jobs/alertWorker.ts` / `jobs/monitorWorker.ts` publishes
+  // before its wrapping `withSystemDbAccessContext` commits). A publisher
+  // that omits these fields falls back to the pre-existing re-read
+  // behavior — not every one currently sets them, but new ones should.
   | 'alert.resolved'
   | 'alert.suppressed'
   | 'alert.escalated'
+  // Alert correlation group events (P2-1 wave B task 11). Published by
+  // jobs/alertCorrelation.ts after persistAlertCorrelationGroupsForAlerts
+  // returns — once per NEWLY created alert_correlation_groups row (never on
+  // re-upsert of an existing group; xmax = 0 on the RETURNING row is what
+  // distinguishes the two). Task 16e fix: the worker DOES run inside an
+  // enclosing transaction (`withSystemDbAccessContext`, via `db/index.ts`'s
+  // `withDbAccessContext` -> `baseDb.transaction`) — the premise this
+  // comment used to state ("no enclosing transaction") was disproved by two
+  // FK-violation reproductions (see `jobs/alertCorrelation.ts`'s F1-fix
+  // comment). `processAlertCorrelationJob` publishes this event only AFTER
+  // that `withSystemDbAccessContext` promise has resolved, i.e. once the
+  // transaction has committed and the row is durably visible.
+  //
+  // General contract for every publisher in this file: publish OUTSIDE the
+  // DB context that wrote the row (after commit, never from inside an
+  // open transaction), and a subscriber must never re-read that row on its
+  // own connection and trust it over the published payload — a re-read can
+  // still race a DIFFERENT publisher's still-open transaction (the
+  // auto-resolve sweep in `jobs/alertWorker.ts` / `jobs/monitorWorker.ts`
+  // publishes `alert.resolved` before its own `withSystemDbAccessContext`
+  // commits — see the `alert.resolved` comment above and
+  // `alertVerdictSubscriber.ts`'s payload-gating contract). Payload is
+  // { groupId, rootAlertId, memberCount, deviceId } — rootAlertId/deviceId
+  // are both null when the root alert has since been hard-deleted
+  // (alert_correlation_groups.root_alert_id is ON DELETE SET NULL).
+  | 'alert.correlation_group.created'
   // Incident events
   | 'incident.created'
   | 'incident.contained'
@@ -516,6 +554,8 @@ export const EVENT_TYPES = {
   ALERT_RESOLVED: 'alert.resolved' as const,
   ALERT_SUPPRESSED: 'alert.suppressed' as const,
   ALERT_ESCALATED: 'alert.escalated' as const,
+  // Alert correlation group (P2-1 wave B task 11)
+  ALERT_CORRELATION_GROUP_CREATED: 'alert.correlation_group.created' as const,
   // Incident
   INCIDENT_CREATED: 'incident.created' as const,
   INCIDENT_CONTAINED: 'incident.contained' as const,

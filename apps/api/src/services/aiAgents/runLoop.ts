@@ -1343,13 +1343,31 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     ))
     : BREEZE_MCP_TOOL_NAMES;
 
+  // F2 fix (P2-1 second live check): `allowedTools` above only gates
+  // PERMISSION to call a tool — the MCP server still sends every REGISTERED
+  // tool's full schema to the model on every turn regardless of
+  // `allowedTools`. `onlyTools` (createBreezeMcpServer's 6th param) narrows
+  // what gets registered in the first place. Reuses `verdictAllowlist` again
+  // — same source of truth as `exposedNames`/`guardrailPolicy.toolAllowlist`
+  // above — collapsed to bare tool names (`manage_alerts:list` and
+  // `manage_alerts:get` both collapse to `manage_alerts`) with the outcome
+  // tool excluded: `submit_alert_verdict` is never in the registry `tools`
+  // array to begin with (see outcomeTools.ts) — it rides on `extraTools`
+  // below instead, which `createBreezeMcpServer` always includes regardless
+  // of `onlyTools`. Full runs pass no `onlyTools` and keep registering the
+  // whole registry, unchanged.
+  const onlyTools = verdictAllowlist
+    ? new Set(verdictAllowlist.map((name) => name.split(':')[0]!).filter((name) => !isOutcomeTool(name)))
+    : undefined;
+
   // No getActiveSession: a headless run has no ActiveSession, and the
   // session-aware tools (M365/Google) correctly refuse without one. The
   // outcome tool (`submit_alert_verdict`) is passed as `extraTools` ONLY for
   // a verdict-profile run — a `full`-profile run never even registers it on
   // the MCP server, let alone exposes it via `allowedTools`.
   const mcpServer = createBreezeMcpServer(() => agentAuth, preToolUse, postToolUse, undefined,
-    verdict ? buildOutcomeSdkTools(['submit_alert_verdict']) : []);
+    verdict ? buildOutcomeSdkTools(['submit_alert_verdict']) : [],
+    onlyTools ? { onlyTools } : undefined);
 
   const prompt = promptContext(ctx, effective);
   const abortController = new AbortController();
@@ -1610,6 +1628,14 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // and then hit `error_max_turns` with no further prose would finish
     // `failed('max_turns_exceeded')` despite having done its ONE job, wrongly
     // counting against the agent's circuit breaker (`recordRunTerminal`).
+    //
+    // `outcome.budgetExceeded` itself is relative to THIS run's effective
+    // budget (`runLimits.maxBudgetCentsPerRun` above) — for a verdict-profile
+    // run that's `verdictBudgetCentsPerRun` (5 cents by default, see
+    // `verdictProfile.ts`'s `verdictLimits`), not the agent's top-level
+    // `maxBudgetCentsPerRun` (50 cents by default). Don't read a verdict run's
+    // `budgetExceeded: true` as "spent close to 50 cents" — it means the run
+    // crossed its own, much smaller, profile ceiling.
     const producedSomething =
       outcome.executedActions.length > 0
       || outcome.proposedActions.length > 0

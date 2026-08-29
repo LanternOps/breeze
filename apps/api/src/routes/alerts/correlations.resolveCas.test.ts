@@ -66,6 +66,7 @@ const {
     status: 'active',
     severity: 'high',
     title: 'Disk almost full',
+    triggeredAt: new Date('2026-08-20T00:00:00Z'),
   };
   const alertLose = {
     id: '44444444-4444-4444-8444-444444444444',
@@ -76,6 +77,7 @@ const {
     status: 'active',
     severity: 'high',
     title: 'CPU pegged',
+    triggeredAt: new Date('2026-08-20T00:00:00Z'),
   };
 
   // Same table-keyed queue as alertService.autoResolveOutcome.test.ts: seeds are
@@ -170,6 +172,17 @@ vi.mock('../../services/mlFeedbackEmitters', () => ({
   emitRcaFeedback: (...a: unknown[]) => emitRcaFeedback(...a),
 }));
 vi.mock('../../services/mlFeatureFlags', () => ({ shouldProduceMlOutput: () => Promise.resolve(false) }));
+// Phase 2 wave P2-1 (alert verdicts), Task 14 — `correlations.ts` now
+// imports `latestVerdictForGroup`/`projectAlertAiVerdictSummary`. Unmocked,
+// the real module drags in `createActionIntent` (services/actionIntents/
+// intentService.ts) and its own transitive graph (aiTools/aiToolSchemas,
+// commandQueue, …), which this file's other partial mocks were never built
+// to cover. Mocked here purely to sever that transitive chain — this suite
+// doesn't exercise aiVerdict at all.
+vi.mock('../../services/aiAgents/alertVerdicts', () => ({
+  latestVerdictForGroup: vi.fn(async () => null),
+  projectAlertAiVerdictSummary: vi.fn(),
+}));
 
 import { alertCorrelationRoutes } from './correlations';
 

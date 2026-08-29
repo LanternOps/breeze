@@ -245,6 +245,7 @@ const createBreezeMcpServer = vi.hoisted(() =>
     post?: Hooks['post'],
     getActiveSession?: () => unknown,
     extraTools?: unknown[],
+    options?: { onlyTools?: ReadonlySet<string> },
   ) => unknown>());
 vi.mock('../aiAgentSdkTools', () => ({
   createBreezeMcpServer,
@@ -2163,12 +2164,49 @@ describe('verdict profile in the run loop (P2-1)', () => {
       'mcp__breeze__query_monitors',
       'mcp__breeze__submit_alert_verdict',
     ]);
-    expect(lastQueryOptions?.maxTurns).toBe(3);
-    expect(lastQueryOptions?.maxBudgetUsd).toBe(0.02);
+    expect(lastQueryOptions?.maxTurns).toBe(4);
+    expect(lastQueryOptions?.maxBudgetUsd).toBe(0.05);
 
     const extraTools = createBreezeMcpServer.mock.calls[0]?.[4] as unknown[] | undefined;
     expect(extraTools).toBeDefined();
     expect(extraTools!.length).toBeGreaterThan(0);
+
+    // F2 fix (Task 16c): createBreezeMcpServer's 6th param (options.onlyTools)
+    // must narrow the REGISTRY, not just allowedTools — same four bare names
+    // as the allowedTools assertion above, minus the mcp__breeze__ prefix and
+    // the outcome tool (which is never in the registry — it rides on
+    // extraTools instead, asserted separately above).
+    const mcpServerOptions = createBreezeMcpServer.mock.calls[0]?.[5] as
+      | { onlyTools?: ReadonlySet<string> }
+      | undefined;
+    expect(mcpServerOptions?.onlyTools).toEqual(
+      new Set(['manage_alerts', 'get_device_details', 'analyze_metrics', 'query_monitors']),
+    );
+  });
+
+  // Task 16e — live-check follow-up. `outcome.budgetExceeded` must reflect
+  // THIS run's effective budget (`runLimits.maxBudgetCentsPerRun`, 5 cents
+  // for the default verdict profile — asserted via `maxBudgetUsd` above),
+  // not the agent's top-level `limits.maxBudgetCentsPerRun` (50 cents by
+  // default). A run costing 3 cents against a 5-cent verdict budget is
+  // under both the SDK's own `maxBudgetUsd` ceiling and the local
+  // `costCents > runLimits.maxBudgetCentsPerRun` backstop, so neither one
+  // should ever flip `budgetExceeded` true.
+  it('a verdict run costing 3 cents against the 5-cent verdict budget does NOT flag budgetExceeded', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({
+      assistantText: 'Verdict recorded.',
+      results: [resultMessage({ total_cost_usd: 0.03 })],
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions?.maxBudgetUsd).toBe(0.05);
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect(final.patch.costCents).toBe(3);
+    const outcome = final.patch.outcome as AgentRunOutcome;
+    expect(outcome.budgetExceeded).toBeFalsy();
   });
 
   it('a full-profile run gets the unrestricted registry tool set and no extraTools (negative control)', async () => {
@@ -2180,6 +2218,12 @@ describe('verdict profile in the run loop (P2-1)', () => {
     expect(lastQueryOptions?.allowedTools).toEqual(BREEZE_MCP_TOOL_NAMES);
     const extraTools = createBreezeMcpServer.mock.calls[0]?.[4] as unknown[] | undefined;
     expect(extraTools ?? []).toEqual([]);
+
+    // F2 fix (Task 16c) negative control: a full-profile run must pass NO
+    // onlyTools — it keeps registering (and therefore exposing) the whole
+    // tool registry, unchanged.
+    const mcpServerOptions = createBreezeMcpServer.mock.calls[0]?.[5];
+    expect(mcpServerOptions).toBeUndefined();
   });
 
   // Review fix (fix round 1, IMPORTANT 3): a verdict run that submitted its

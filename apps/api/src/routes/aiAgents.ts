@@ -545,6 +545,14 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
  * by `verdictId` alone and relies on the request's ambient RLS context (see
  * its own docstring) — a verdict outside the caller's org 404s the same way
  * an out-of-org run id does on the routes above.
+ *
+ * Task 14 carry-in B (PR-A review): a caller must not silently overwrite
+ * ANOTHER user's already-recorded feedback (their own changed mind is fine)
+ * — `recordVerdictFeedback`'s `'conflict'` result answers 409 here. A
+ * successful write is audited (`ai_agent.verdict_feedback`), same as the
+ * other two write paths that answer through this file directly (manual
+ * trigger, circuit reset) — see the file-level NOTE for why the AGENT
+ * mutation handlers above are the exception, not this one.
  */
 aiAgentsRoutes.post(
   '/verdicts/:verdictId/feedback',
@@ -557,8 +565,20 @@ aiAgentsRoutes.post(
     if (!verdictId) return c.json({ error: 'Verdict not found' }, 404);
 
     const { feedback } = c.req.valid('json');
-    const ok = await recordVerdictFeedback(auth, verdictId, feedback);
-    if (!ok) return c.json({ error: 'Verdict not found' }, 404);
+    const result = await recordVerdictFeedback(auth, verdictId, feedback);
+    if (result.status === 'not_found') return c.json({ error: 'Verdict not found' }, 404);
+    if (result.status === 'conflict') {
+      return c.json({ error: 'Feedback already recorded by another user' }, 409);
+    }
+
+    writeRouteAudit(c, {
+      orgId: result.orgId,
+      action: 'ai_agent.verdict_feedback',
+      resourceType: 'ai_alert_verdict',
+      resourceId: verdictId,
+      details: { feedback },
+      result: 'success',
+    });
     return c.json({ ok: true });
   },
 );

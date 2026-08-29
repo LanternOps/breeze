@@ -14,13 +14,14 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBreezeMcpServer, wrapExtraToolWithHooks } from './aiAgentSdkTools';
-import { buildOutcomeSdkTools } from './aiAgents/outcomeTools';
+import { buildOutcomeSdkTools, type SdkTool } from './aiAgents/outcomeTools';
 import {
   createAgentRunPostToolUse,
   createAgentRunPreToolUse,
   type AgentRunOutcome,
 } from './aiAgents/runLoop';
 import type { AiAgentRunProfile } from '@breeze/shared';
+import { hasDbAccessContext, __runInDbContextForTests } from '../db';
 
 const RUN_ID = '00000000-0000-4000-8000-0000000000e1';
 const ORG_ID = '00000000-0000-4000-8000-0000000000e2';
@@ -97,6 +98,13 @@ function registeredHandler(
   const entry = instance._registeredTools[name];
   if (!entry) throw new Error(`[test] tool "${name}" was not registered on the constructed MCP server`);
   return entry.handler;
+}
+
+/** Same reach-in as `registeredHandler`, but returns every registered tool
+ *  name — used by the F2 `onlyTools` coverage tests below. */
+function registeredToolNames(server: ReturnType<typeof createBreezeMcpServer>): string[] {
+  const instance = server.instance as unknown as { _registeredTools: Record<string, unknown> };
+  return Object.keys(instance._registeredTools);
 }
 
 describe('createBreezeMcpServer wraps extraTools with the run hooks (P2-1 fix round 1, CRITICAL)', () => {
@@ -180,6 +188,123 @@ describe('createBreezeMcpServer wraps extraTools with the run hooks (P2-1 fix ro
 
       expect(result.isError).toBeFalsy();
       expect(JSON.stringify(result)).toContain('recorded');
+    });
+  });
+
+  // Task 16a: `wrapExtraToolWithHooks` gained the same `runOutsideDbContext`
+  // + `withToolTimeout` protection `makeHandler` gives every registry tool
+  // (PR-A whole-branch review carry-in). These two tests cover the parts the
+  // suite above didn't: that the wrapped call actually escapes an inherited
+  // AsyncLocalStorage DB context, and that a hung handler is cut off rather
+  // than left to run forever.
+  describe('wrapExtraToolWithHooks — runOutsideDbContext + timeout parity with makeHandler (Task 16a)', () => {
+    it('runs preToolUse, the handler, and postToolUse outside an inherited AsyncLocalStorage DB context', async () => {
+      const [outcomeTool] = buildOutcomeSdkTools(['submit_alert_verdict']);
+      const sawContext: { preToolUse?: boolean; handler?: boolean; postToolUse?: boolean } = {};
+
+      const probeTool: SdkTool = {
+        ...outcomeTool!,
+        handler: async (args: Record<string, unknown>, extra: unknown) => {
+          sawContext.handler = hasDbAccessContext();
+          return outcomeTool!.handler(args, extra);
+        },
+      };
+      const preToolUse = vi.fn(async () => {
+        sawContext.preToolUse = hasDbAccessContext();
+        return { allowed: true as const };
+      });
+      const postToolUse = vi.fn(async () => {
+        sawContext.postToolUse = hasDbAccessContext();
+      });
+      const wrapped = wrapExtraToolWithHooks(probeTool, preToolUse, postToolUse);
+
+      // Simulate the stale/committed AsyncLocalStorage DB context inherited
+      // from the SDK's MCP callback chain that `makeHandler`'s
+      // `runOutsideDbContext` wrapping exists to escape (see that function's
+      // docstring) — same production shape as auth.ts's
+      // `runOutsideDbContext(() => withDbAccessContext(...))`.
+      const result = await __runInDbContextForTests(() => wrapped.handler(validVerdict, {}));
+
+      expect((result as { isError?: boolean }).isError).toBeFalsy();
+      expect(sawContext).toEqual({ preToolUse: false, handler: false, postToolUse: false });
+    });
+
+    it('a handler that never resolves is cut off by the tool timeout and surfaces as isError, with the post-hook seeing isError: true', async () => {
+      vi.useFakeTimers();
+      try {
+        const [outcomeTool] = buildOutcomeSdkTools(['submit_alert_verdict']);
+        // submit_alert_verdict has no per-tool override in toolTimeouts.ts, so
+        // it uses the 60s default (TOOL_EXECUTION_TIMEOUT_MS).
+        const hungTool: SdkTool = {
+          ...outcomeTool!,
+          handler: () => new Promise(() => { /* never resolves */ }),
+        };
+        const postToolUse = vi.fn(async () => {});
+        const wrapped = wrapExtraToolWithHooks(hungTool, undefined, postToolUse);
+
+        const resultPromise = wrapped.handler(validVerdict, {});
+        await vi.advanceTimersByTimeAsync(60_000);
+        const result = await resultPromise as { isError?: boolean };
+
+        expect(result.isError).toBe(true);
+        expect(postToolUse).toHaveBeenCalledTimes(1);
+        expect(postToolUse).toHaveBeenCalledWith(
+          'submit_alert_verdict',
+          validVerdict,
+          expect.stringContaining('timed out'),
+          true,
+          expect.any(Number),
+          undefined,
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  // F2 fix (P2-1 second live check): `allowedTools` only gates PERMISSION to
+  // call a tool — the SDK still sends every REGISTERED tool's full schema to
+  // the model every turn, which is what made a single verdict turn cost 9¢
+  // (run 59fb933c-…, turn_count=1, cost_cents=9). `options.onlyTools` filters
+  // the registry down to the pinned subset BEFORE createSdkMcpServer.
+  describe('createBreezeMcpServer options.onlyTools (Task 16c F2)', () => {
+    it('with onlyTools set, the registered tool names equal exactly the set plus extraTools', () => {
+      const [outcomeTool] = buildOutcomeSdkTools(['submit_alert_verdict']);
+      const onlyTools = new Set(['manage_alerts', 'get_device_details', 'analyze_metrics', 'query_monitors']);
+
+      const server = createBreezeMcpServer(
+        () => ({}) as never,
+        undefined,
+        undefined,
+        undefined,
+        [outcomeTool!],
+        { onlyTools },
+      );
+
+      expect(new Set(registeredToolNames(server))).toEqual(
+        new Set(['manage_alerts', 'get_device_details', 'analyze_metrics', 'query_monitors', 'submit_alert_verdict']),
+      );
+    });
+
+    it('without onlyTools, a full call still registers the whole registry (unchanged)', () => {
+      const server = createBreezeMcpServer(() => ({}) as never);
+
+      const names = registeredToolNames(server);
+
+      // Representative sample rather than an exact count — the full registry
+      // is ~200 tools and its exact size is covered elsewhere
+      // (mcpCoverage.test.ts). What matters here is that omitting `onlyTools`
+      // did not narrow it: a broad cross-section of unrelated tools is still
+      // present alongside the four the onlyTools test above pins to.
+      expect(names).toEqual(expect.arrayContaining([
+        'query_devices',
+        'manage_alerts',
+        'get_device_details',
+        'analyze_metrics',
+        'query_monitors',
+        'execute_command',
+      ]));
+      expect(names.length).toBeGreaterThan(50);
     });
   });
 });

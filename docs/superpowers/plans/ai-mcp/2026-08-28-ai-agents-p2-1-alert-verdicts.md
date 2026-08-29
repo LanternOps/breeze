@@ -696,6 +696,8 @@ git commit -m "feat(api): P2-1 — outcome-tool mechanism and submit_alert_verdi
 
 > **Amended during execution (Task 7 review, 2026-08-28):** `VERDICT_TOOL_ALLOWLIST` is a **floor**, not an intersection — `verdictToolAllowlist()` always returns the pinned read-only set plus the outcome tool, regardless of the agent allowlist (every entry already bypasses the allowlist on full runs, so nothing widens; intersecting against the empty default allowlist produced evidence-free verdicts). The intersection test below is superseded.
 
+> **Amended during execution (Task 16 live check, 2026-08-28/29):** `VERDICT_MAX_TURNS` is **4**, not 3, and `AI_AGENT_LIMIT_DEFAULTS.verdictBudgetCentsPerRun` is **5**, not 2 — 3 of 4 real `claude-sonnet-4-6` verdict runs against a live stack hit the 3-turn/2¢ caps (`verdict_missing`) without ever reaching `submit_alert_verdict`. `verdictLimits()` and its tests below, and the `runnerPrompt.ts` verdict task prompt, were updated to match; the code snippets below are historical and left as originally planned.
+
 **Files:**
 - Create: `apps/api/src/services/aiAgents/verdictProfile.ts`
 - Modify: `apps/api/src/services/aiAgents/agentCircuit.ts:128-141` (`classifyTerminal`), `:310-315` (`recordRunTerminal`)
@@ -1203,6 +1205,8 @@ git commit -m "test(api): P2-1 — contract: verdict profile cannot bypass guard
 > **Carried in from the PR-A whole-branch review (2026-08-29):** (1) Task 12's group verdict runs MUST bind `deviceId` to the root alert's device (suggestion intents are gated on `alert.device_id === run.device_id` at creation, mirroring `checkAgentReleaseAuthority`); (2) Task 14 adds a migration `2026-09-22-ai-alert-verdicts-live-unique.sql` with `CREATE UNIQUE INDEX IF NOT EXISTS ai_alert_verdicts_live_alert_uq ON ai_alert_verdicts (alert_id) WHERE superseded_by IS NULL AND alert_id IS NOT NULL` and the group twin, and `persistAlertVerdict` treats a 23505 on insert as "another run won" (return its row, no supersede); (3) Task 14's feedback route writes an audit line and refuses to overwrite another user's feedback (409); (4) Task 11 adds `runOutsideDbContext` + `withToolTimeout` parity to `wrapExtraToolWithHooks` (docstring promised it; PR B is where a second outcome tool would otherwise be tempted).
 
 ### Task 11 (B1): `alert.correlation_group.created` event, emitted after commit
+
+> **Corrected during execution (live check, 2026-08-29):** the premise "the job runs under `withSystemDbAccessContext` with no enclosing transaction — each statement autocommits" was wrong: `withSystemDbAccessContext` opens a transaction, so publishing inside `runAlertCorrelationForDevice` delivered the event before the group row was committed (FK violation on the run insert). The function now returns `createdGroups`; the worker processor publishes after the context resolves.
 
 **Files:**
 - Modify: `apps/api/src/services/eventBus.ts:11-124` (add `| 'alert.correlation_group.created'` under "Alert events")
