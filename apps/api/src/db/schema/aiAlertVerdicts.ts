@@ -1,5 +1,6 @@
 // apps/api/src/db/schema/aiAlertVerdicts.ts
-import { index, jsonb, numeric, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { index, jsonb, numeric, pgTable, text, timestamp, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { AiAlertVerdictClassification, AiAlertVerdictPattern } from '@breeze/shared';
 import { organizations } from './orgs';
 import { users } from './users';
@@ -34,11 +35,15 @@ export const aiAlertVerdicts = pgTable('ai_alert_verdicts', {
   feedback: text('feedback').$type<'up' | 'down' | null>(),
   feedbackBy: uuid('feedback_by').references(() => users.id, { onDelete: 'set null' }),
   feedbackAt: timestamp('feedback_at', { withTimezone: true }),
-  supersededBy: uuid('superseded_by'),
+  // Self-FK: lazy reference (repo pattern — see ticketCategories.parentId,
+  // scriptCategories.parentId) since aiAlertVerdicts isn't defined yet at
+  // this point in the object literal.
+  supersededBy: uuid('superseded_by').references((): AnyPgColumn => aiAlertVerdicts.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
-  index('ai_alert_verdicts_org_alert_idx').on(t.orgId, t.alertId),
-  index('ai_alert_verdicts_org_group_idx').on(t.orgId, t.correlationGroupId),
+  index('ai_alert_verdicts_org_alert_idx').on(t.orgId, t.alertId).where(sql`${t.alertId} IS NOT NULL`),
+  index('ai_alert_verdicts_org_group_idx').on(t.orgId, t.correlationGroupId).where(sql`${t.correlationGroupId} IS NOT NULL`),
+  index('ai_alert_verdicts_latest_idx').on(t.orgId, t.createdAt.desc()).where(sql`${t.supersededBy} IS NULL`),
   index('ai_alert_verdicts_run_idx').on(t.runId),
 ]);
 

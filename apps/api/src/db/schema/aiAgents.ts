@@ -150,6 +150,8 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // ai_agent_runs_agent_profile_queued_idx.
   agentProfileQueuedIdx: index('ai_agent_runs_agent_profile_queued_idx')
     .on(table.agentId, table.orgId, table.profile, table.queuedAt.desc()),
+  correlationGroupIdx: index('ai_agent_runs_correlation_group_idx')
+    .on(table.correlationGroupId).where(sql`${table.correlationGroupId} IS NOT NULL`),
 }));
 
 export type AiAgentRow = typeof aiAgents.$inferSelect;
