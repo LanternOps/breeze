@@ -209,19 +209,25 @@ func (m *lifecycleManager) apply(ctx context.Context, cmd ApplyCommand, handoff 
 	if err := m.store.BindProcess(cmd.ActuationID, cmd.Generation, process.Identity); err != nil {
 		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "persist_process_failed")
 	}
-	if err := m.windows.Resume(ctx, process); err != nil {
-		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "resume_failed")
-	}
-	m.windows.ClosePrimaryThread(process)
+	// The `received` observation is anchored while the target is still
+	// suspended. BindProcess has already bound every field the observation
+	// carries (PID, creation time, job name), so nothing here needs the process
+	// to be running; and a handoff the server refuses is then contained by never
+	// resuming at all, instead of by terminating a process that has already
+	// exercised privilege. See docs/superpowers/specs/2026-08-28-s0-track-e-pam-rc3-design.md.
 	received := m.result(cmd.ActuationID, cmd.Generation, ResultReceived, evidenceFromProcess(process.Identity, nil))
 	if handoff != nil {
 		if err := handoff(received); err != nil {
 			m.markUnresolved(cmd.ActuationID, cmd.Generation)
-			return m.failed(cmd.ActuationID, cmd.Generation, bootID, "received_observation_handoff_failed")
+			return m.failed(cmd.ActuationID, cmd.Generation, bootID, receivedHandoffFailureCode(err))
 		}
 	} else {
 		m.emit(received)
 	}
+	if err := m.windows.Resume(ctx, process); err != nil {
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "resume_failed")
+	}
+	m.windows.ClosePrimaryThread(process)
 	members, err := m.windows.VerifyActive(ctx, process, job)
 	if err != nil || members < 1 {
 		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "active_verification_failed")
@@ -611,6 +617,17 @@ func storeFailureCode(err error) string {
 	default:
 		return "invalid_command"
 	}
+}
+
+// receivedHandoffFailureCode keeps a server that refused this envelope
+// distinguishable on the wire from an agent that could not deliver the
+// observation at all. Both contain identically - the target is never resumed -
+// but they point an operator at different things.
+func receivedHandoffFailureCode(err error) string {
+	if errors.Is(err, ErrReceivedObservationRejected) {
+		return "received_observation_rejected"
+	}
+	return "received_observation_handoff_failed"
 }
 
 func (m *lifecycleManager) failed(actuationID string, generation uint64, bootID, code string) Result {

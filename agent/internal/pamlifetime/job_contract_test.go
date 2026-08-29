@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -69,6 +70,7 @@ type fakeWindowsPrimitives struct {
 	setJobErr           error
 	assignErr           error
 	resumeErr           error
+	resumeCalls         int
 	verifyActiveErr     error
 	verifyActiveCalls   int
 	reopenJob           jobOwnership
@@ -176,6 +178,7 @@ func (f *fakeWindowsPrimitives) AssignProcess(_ context.Context, _ jobOwnership,
 }
 
 func (f *fakeWindowsPrimitives) Resume(_ context.Context, _ suspendedProcessOwnership) error {
+	f.resumeCalls++
 	*f.order = append(*f.order, "ResumeThread")
 	return f.resumeErr
 }
@@ -305,9 +308,9 @@ func TestApplyOwnsSuspendedProcessInNonEscapableJobBeforeResume(t *testing.T) {
 		"SetInformationJobObject(KILL_ON_JOB_CLOSE)",
 		"AssignProcessToJobObject",
 		"persist process identity",
+		"emit received",
 		"ResumeThread",
 		"close primary thread",
-		"emit received",
 		"verify active process and job",
 		"emit verified_active",
 	}
@@ -331,7 +334,13 @@ func TestApplyOwnsSuspendedProcessInNonEscapableJobBeforeResume(t *testing.T) {
 	}
 }
 
-func TestApplyWithReceivedObservationOrdersResumeHandoffVerify(t *testing.T) {
+// TestApplyWithReceivedObservationAcknowledgesReceivedBeforeResume pins the
+// rc.3 ordering decision: the `received` observation is handed off while the
+// target is still suspended, so a handoff the server refuses can be contained by
+// never resuming the process at all. The durable identity the observation
+// carries (PID, creation time, job name) is fully bound by BindProcess, so
+// nothing in the evidence needs the process to be running.
+func TestApplyWithReceivedObservationAcknowledgesReceivedBeforeResume(t *testing.T) {
 	var order []string
 	store := &recordingLifetimeStore{Store: NewStore(filepath.Join(t.TempDir(), "ledger.json")), order: &order}
 	win := &fakeWindowsPrimitives{order: &order}
@@ -357,9 +366,9 @@ func TestApplyWithReceivedObservationOrdersResumeHandoffVerify(t *testing.T) {
 		"SetInformationJobObject(KILL_ON_JOB_CLOSE)",
 		"AssignProcessToJobObject",
 		"persist process identity",
+		"handoff received",
 		"ResumeThread",
 		"close primary thread",
-		"handoff received",
 		"verify active process and job",
 	}
 	if !reflect.DeepEqual(order, wantOrder) {
@@ -383,6 +392,9 @@ func TestApplyWithReceivedObservationFailureClosesOwnershipAndMarksUnresolved(t 
 	if result.State != ResultFailed || result.FailureCode != "received_observation_handoff_failed" {
 		t.Fatalf("result = %+v, want stable handoff failure", result)
 	}
+	if win.resumeCalls != 0 {
+		t.Fatalf("Resume calls = %d, want 0: a refused handoff must leave the target suspended", win.resumeCalls)
+	}
 	if win.verifyActiveCalls != 0 {
 		t.Fatalf("VerifyActive calls = %d, want 0", win.verifyActiveCalls)
 	}
@@ -395,6 +407,42 @@ func TestApplyWithReceivedObservationFailureClosesOwnershipAndMarksUnresolved(t 
 	}
 	if manager.Available() || manager.unresolved[testActuationID] != 1 {
 		t.Fatalf("failure did not close availability for generation: available=%v unresolved=%v",
+			manager.Available(), manager.unresolved)
+	}
+}
+
+// TestApplyWithReceivedObservationRejectedAcknowledgementUsesDistinctFailureCode
+// keeps one failure code from meaning two things. A transport or enqueue outage
+// (the agent could not hand the observation over) stays
+// received_observation_handoff_failed; a server that answered and refused this
+// envelope (stale or rejected) is received_observation_rejected. Containment is
+// identical - the process is never resumed - but the operator-facing cause is
+// not.
+func TestApplyWithReceivedObservationRejectedAcknowledgementUsesDistinctFailureCode(t *testing.T) {
+	var order []string
+	win := &fakeWindowsPrimitives{order: &order}
+	account := &fakeAccountLifecycle{order: &order}
+	manager := newLifecycleManager(NewStore(filepath.Join(t.TempDir(), "ledger.json")), win, account, nil)
+
+	result := manager.ApplyWithReceivedObservation(context.Background(), validApply(1), func(Result) error {
+		return fmt.Errorf("%w: server classified the received observation as %q", ErrReceivedObservationRejected, "stale")
+	})
+
+	if result.State != ResultFailed || result.FailureCode != "received_observation_rejected" {
+		t.Fatalf("result = %+v, want failed/received_observation_rejected", result)
+	}
+	if win.resumeCalls != 0 || win.verifyActiveCalls != 0 {
+		t.Fatalf("resume/verify calls = %d/%d, want 0/0", win.resumeCalls, win.verifyActiveCalls)
+	}
+	if win.closeProcessCount != 1 || win.closeJobCount != 1 || win.invalidCloseCount != 0 {
+		t.Fatalf("close counts process/job/invalid = %d/%d/%d, want 1/1/0",
+			win.closeProcessCount, win.closeJobCount, win.invalidCloseCount)
+	}
+	if account.deprovisionCount != 1 {
+		t.Fatalf("deprovision calls = %d, want 1", account.deprovisionCount)
+	}
+	if manager.Available() || manager.unresolved[testActuationID] != 1 {
+		t.Fatalf("rejected handoff did not close availability for generation: available=%v unresolved=%v",
 			manager.Available(), manager.unresolved)
 	}
 }
