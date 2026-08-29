@@ -105,6 +105,30 @@ export interface CreateAgentRunInput {
     categoryId: string | null;
     priority: 'low' | 'normal' | 'high' | 'urgent';
   };
+  /**
+   * The triggering canonical incident for `triggerKind: 'anomaly'` runs
+   * (wave 6 PR 4, #3828 Task 3). Unlike ticket runs, anomaly runs ARE
+   * device-bound — `deviceId` above is the incident's device, so the run
+   * still passes device pinning / site-scope / maintenance-window checks.
+   */
+  anomalyIncidentId?: string | null;
+  /**
+   * Evaluated against `policy.triggers.anomalyTypes`/`metricNames`/
+   * `minAnomalyScore` (`evaluateAnomalyTriggerFilters` below) plus the same
+   * device-bound narrowing filters `evaluateAgentTriggerFilters` applies to
+   * an alert trigger (siteIds/deviceGroupIds/deviceTags) — same shape as
+   * `alertContext`/`ticketContext` above: the CALLER
+   * (`metricAnomalySubscriber.ts`) loads the incident + device row and
+   * passes the narrowing-relevant fields in, rather than this module
+   * re-reading them itself.
+   */
+  anomalyContext?: {
+    anomalyType: string;
+    metricNames: string[];
+    peakScore: number;
+    siteId: string | null;
+    deviceTags: string[];
+  };
   /** e.g. `alert:${alertId}`, `manual:${randomUUID()}`. Unique per org. */
   dedupeKey: string;
 }
@@ -279,6 +303,51 @@ export function evaluateTicketTriggerFilters(
 
   const priorities = triggers.ticketPriorities ?? [];
   if (priorities.length > 0 && !priorities.includes(ctx.priority)) return false;
+
+  return true;
+}
+
+/**
+ * Wave 6 PR 4 (#3828 Task 3) — anomaly-trigger narrowing filters.
+ *
+ * `anomalyTypes`/`metricNames`/`minAnomalyScore` follow the same
+ * narrowing (empty/absent = unrestricted) convention as every OTHER filter
+ * here — NOT `alertSeverities`' opt-in-list asymmetry — matching the
+ * validator's `.min(1)`-or-undefined declaration for these fields
+ * (`packages/shared/src/validators/aiAgents.ts`). `minAnomalyScore` is a
+ * floor: the incident's `peakScore` must be `>=` it.
+ *
+ * The device-bound filters (`siteIds`/`deviceTags`/`deviceGroupIds`) are
+ * evaluated with the EXACT same semantics `evaluateAgentTriggerFilters`
+ * uses for an alert trigger — anomaly runs are device-bound too (unlike
+ * ticket runs), so `deviceGroupIds` reuses `deviceMatchesAnyGroup` directly
+ * rather than re-implementing the membership lookup.
+ */
+export async function evaluateAnomalyTriggerFilters(
+  triggers: AiAgentTriggers,
+  ctx: NonNullable<CreateAgentRunInput['anomalyContext']>,
+  deviceId: string | null,
+  orgId: string,
+): Promise<boolean> {
+  const anomalyTypes = triggers.anomalyTypes ?? [];
+  if (anomalyTypes.length > 0 && !anomalyTypes.includes(ctx.anomalyType)) return false;
+
+  const metricNames = triggers.metricNames ?? [];
+  if (metricNames.length > 0 && !metricNames.some((name) => ctx.metricNames.includes(name))) return false;
+
+  if (triggers.minAnomalyScore !== undefined && ctx.peakScore < triggers.minAnomalyScore) return false;
+
+  const siteIds = triggers.siteIds ?? [];
+  if (siteIds.length > 0 && (ctx.siteId === null || !siteIds.includes(ctx.siteId))) return false;
+
+  const deviceTags = triggers.deviceTags ?? [];
+  if (deviceTags.length > 0 && !deviceTags.some((tag) => ctx.deviceTags.includes(tag))) return false;
+
+  const groupIds = triggers.deviceGroupIds ?? [];
+  if (groupIds.length > 0) {
+    if (deviceId === null) return false;
+    if (!(await deviceMatchesAnyGroup(deviceId, orgId, groupIds))) return false;
+  }
 
   return true;
 }
@@ -473,6 +542,20 @@ export async function createAndEnqueueAgentRun(
     );
   }
 
+  // Wave 6 PR 4 (#3828 Task 3) — same posture as the ticketId guard above,
+  // for the same reason: `runLoop.loadRunContext`'s anomaly-context branch
+  // (Task 4) is gated on `run.anomalyIncidentId` alone, and the forced-shadow
+  // override two lines below is keyed on the same condition. A caller that
+  // set `anomalyIncidentId` on a non-'anomaly' triggerKind would therefore
+  // decouple "hostile anomaly evidence reaches the prompt" from "the run is
+  // forced shadow" — a caller bug, rejected outright rather than silently
+  // admitted.
+  if (input.anomalyIncidentId && triggerKind !== 'anomaly') {
+    throw new Error(
+      `createAndEnqueueAgentRun: anomalyIncidentId is only valid with triggerKind 'anomaly' (got '${triggerKind}')`,
+    );
+  }
+
   let snapshot: AiAgentPolicySnapshot | null = null;
   const skip = (reason: AgentRunSkipReason): CreateAgentRunResult => {
     // A dropped trigger must never be invisible (spec §7's silent-drop finding).
@@ -529,7 +612,16 @@ export async function createAndEnqueueAgentRun(
   // check structurally tied to the thing it protects (hostile ticket content
   // reaching an act-mode run) rather than to a value that would silently
   // stop matching if the guard above were ever loosened.
-  const modeAtStart = (triggerKind === 'ticket' || input.ticketId) ? 'shadow' : effective.mode;
+  //
+  // Wave 6 PR 4 (#3828 Task 3) — anomaly runs are ALSO always forced shadow
+  // (design authority: an unproven detector must never drive act mode).
+  // Unlike ticket runs, anomaly runs ARE device-bound, so this downgrade is
+  // narrower in effect: it changes only `modeAtStart` (and therefore the
+  // guardrail tool gate's shadow branch) — device pinning, site scope, and
+  // maintenance-window checks below still apply normally, exactly as they
+  // would for any other device-bound trigger.
+  const modeAtStart = (triggerKind === 'ticket' || input.ticketId
+    || triggerKind === 'anomaly' || input.anomalyIncidentId) ? 'shadow' : effective.mode;
 
   // 2b. Circuit breaker (wave 6 PR 2, #3828). Placed as early as possible
   // after the kill switch — this is the first point `resolved.agentId` is
@@ -548,6 +640,14 @@ export async function createAndEnqueueAgentRun(
   // "only an event-shaped trigger carries a context" gating as alertContext
   // above. `ticketContext` is populated by `ticketHelpdeskSubscriber.ts`.
   if (input.ticketContext && !evaluateTicketTriggerFilters(effective.triggers, input.ticketContext)) {
+    return skip('trigger_filter_mismatch');
+  }
+  // 3c. Anomaly trigger filters (wave 6 PR 4, #3828 Task 3) — same
+  // "only an event-shaped trigger carries a context" gating as alertContext/
+  // ticketContext above. `anomalyContext` is populated by
+  // `metricAnomalySubscriber.ts`.
+  if (input.anomalyContext
+    && !(await evaluateAnomalyTriggerFilters(effective.triggers, input.anomalyContext, deviceId, orgId))) {
     return skip('trigger_filter_mismatch');
   }
 
@@ -727,6 +827,7 @@ export async function createAndEnqueueAgentRun(
         deviceId,
         alertId: input.alertId ?? null,
         ticketId: input.ticketId ?? null,
+        anomalyIncidentId: input.anomalyIncidentId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
         triggerRef: input.triggerRef ?? {},
@@ -763,6 +864,7 @@ export async function createAndEnqueueAgentRun(
         deviceId,
         alertId: input.alertId ?? null,
         ticketId: input.ticketId ?? null,
+        anomalyIncidentId: input.anomalyIncidentId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
         triggerRef: input.triggerRef ?? {},

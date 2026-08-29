@@ -1,6 +1,7 @@
 // Registers the durable production event subscribers onto the registry
 // (wave 3.5c, #4085; joined by the ticket-helpdesk subscriber, wave 6 PR 3,
-// #3828). This is the ONLY call site that should ever call
+// and the anomaly-triggered admission subscriber, wave 6 PR 4, #3828). This
+// is the ONLY call site that should ever call
 // `registerEventSubscriber` for these ids — a subscriber that is both
 // `subscribe()`d on the legacy bus AND registered here would fire twice (see
 // eventSubscribers.contract.test.ts, which statically asserts none of the
@@ -40,6 +41,27 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
   registered = true;
 
   configureWebhookFanout(deps);
+
+  registerEventSubscriber({
+    id: 'ai-agent-anomaly',
+    // v1 scope: admission is triggered on anomaly.incident_opened only —
+    // Task 2's metricAnomalyIncidentPublisher.ts is the only publisher of
+    // this event type.
+    //
+    // Lazy, same reason and same pattern as ai-agent-ticket-helpdesk below:
+    // metricAnomalySubscriber.ts -> runService.ts's transitive closure
+    // reaches routes/auth/schemas.ts (workerEntrypointClosure.contract.test.ts
+    // caught this the first time a static import was tried here for the
+    // ticket-helpdesk subscriber) — a dynamic import defers that cost to the
+    // first anomaly.incident_opened delivery instead of paying it at
+    // eventSubscribers.ts's module-eval time.
+    eventTypes: ['anomaly.incident_opened'],
+    handler: async (event: BreezeEvent) => {
+      const { handleAnomalyIncidentOpenedEvent } = await import('./aiAgents/metricAnomalySubscriber');
+      return handleAnomalyIncidentOpenedEvent(event);
+    },
+    retry: { attempts: 5, backoffMs: 10_000 },
+  });
 
   registerEventSubscriber({
     id: 'webhook-delivery',
