@@ -180,6 +180,7 @@ describe('handleAnomalyIncidentOpenedEvent', () => {
 
   it('runs all three reads under a system DB context and admits with no system context active', async () => {
     mockCleanIncident();
+    vi.mocked(withSystemDbAccessContext).mockClear();
     let systemContextDepth = 0;
     vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: () => Promise<unknown>) => {
       systemContextDepth += 1;
@@ -190,13 +191,25 @@ describe('handleAnomalyIncidentOpenedEvent', () => {
       }
     });
     let depthDuringAdmission: number | null = null;
+    // Snapshotting call count here (rather than only at the end of the test,
+    // after the handler has also run its post-admission stamp under a system
+    // context) is what makes this discriminate: it pins that exactly the
+    // three reads (loadIncident, loadDeviceFilterContext, findLinkedAlertId)
+    // ran under a system context BEFORE admission was ever called. A
+    // mutation that drops the system-context wrapping from those three reads
+    // entirely (leaving admission's own depth-0 property vacuously true,
+    // since an unwrapped call is trivially not nested) leaves this at 0,
+    // failing the assertion below.
+    let systemContextCallsBeforeAdmission = -1;
     createAndEnqueueAgentRun.mockImplementation(async () => {
       depthDuringAdmission = systemContextDepth;
+      systemContextCallsBeforeAdmission = vi.mocked(withSystemDbAccessContext).mock.calls.length;
       return { created: true, run: { id: 'run-1' } };
     });
 
     await handleAnomalyIncidentOpenedEvent(anomalyIncidentOpenedEvent());
 
+    expect(systemContextCallsBeforeAdmission).toBe(3);
     expect(depthDuringAdmission).toBe(0);
   });
 
