@@ -634,6 +634,19 @@ const runDetailResponseSchema = z.object({
       proposedPriority: z.string().optional(),
       notes: z.array(z.string()),
     }).strict().nullable(),
+    // Phase 2 wave P2-1 (alert verdicts): `null` until Task 8 wires the real
+    // `ai_alert_verdicts` projection into `buildRunTrace`.
+    alertVerdict: z.object({
+      classification: z.string(),
+      confidence: z.number(),
+      rationale: z.string(),
+      patternKind: z.string().nullable(),
+      evidenceAlertIds: z.array(z.string()),
+      suggestedAction: z.object({
+        tool: z.literal('manage_alerts'),
+        action: z.enum(['suppress', 'resolve']),
+      }).strict().nullable(),
+    }).strict().nullable(),
   }).strict(),
 }).strict();
 

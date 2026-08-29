@@ -7,6 +7,8 @@ import type {
   AiAgentMode,
   AiAgentRunStatus,
   AiAgentTriggerKind,
+  AiAlertVerdictClassification,
+  AiAlertVerdictPattern,
 } from './aiAgents';
 
 /**
@@ -231,6 +233,22 @@ export interface AiAgentRunTicketProposalDto {
   notes: string[];
 }
 
+/**
+ * Phase 2 wave P2-1 (alert verdicts) — the safe projection of one
+ * `ai_alert_verdicts` row for `GET /ai/agents/runs/:runId`'s detail DTO.
+ * Display fields only, mirroring the rest of this file's leak-impossible
+ * convention: no raw tool `args`, just the classification, confidence,
+ * rationale, and a flattened summary of `pattern`/`suggestedAction`.
+ */
+export interface AiAgentRunAlertVerdictDto {
+  classification: AiAlertVerdictClassification;
+  confidence: number;
+  rationale: string;
+  patternKind: AiAlertVerdictPattern['kind'] | null;
+  evidenceAlertIds: string[];
+  suggestedAction: { tool: 'manage_alerts'; action: 'suppress' | 'resolve' } | null;
+}
+
 export interface AiAgentRunDetailDto {
   schemaVersion: 1;
   id: string;
@@ -271,4 +289,12 @@ export interface AiAgentRunDetailDto {
    * simply lacks the key). See `AiAgentRunTicketProposalDto`'s docstring.
    */
   ticketProposal: AiAgentRunTicketProposalDto | null;
+  /**
+   * Phase 2 wave P2-1 (alert verdicts) — the verdict this run produced, for a
+   * `verdict`-profile run that reached a `submit_alert_verdict` outcome. Null
+   * for every `full`-profile run and for a `verdict`-profile run that has not
+   * (yet, or ever) produced one. Populated by Task 8's projection; every
+   * caller before that lands sees `null` unconditionally.
+   */
+  alertVerdict: AiAgentRunAlertVerdictDto | null;
 }

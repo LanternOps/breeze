@@ -56,6 +56,18 @@ export interface AiAgentLimits {
    * runService.ts's limits-coverage inventory.
    */
   maxConsecutiveFailures: number;
+  /**
+   * Phase 2 wave P2-1 (alert verdicts) — the verdict-profile admission caps,
+   * kept separate from the `full`-profile `maxRunsPerHour`/`maxConcurrentRuns`
+   * so a burst of cheap `verdict`-profile runs (per-alert classification)
+   * never starves the full triage/patch/helpdesk run budget, and vice versa.
+   * `maxRunsPerHour`/`maxConcurrentRuns` above apply ONLY to the `full`
+   * profile; admission for `verdict`-profile runs is counted against these
+   * three fields instead (see runService step 6b).
+   */
+  maxVerdictRunsPerHour: number;
+  maxConcurrentVerdictRuns: number;
+  verdictBudgetCentsPerRun: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -70,6 +82,9 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   maxActionsPerRun: 3,
   maxPolicyDecisionsPerDay: 10,
   maxConsecutiveFailures: 3,
+  maxVerdictRunsPerHour: 200,
+  maxConcurrentVerdictRuns: 4,
+  verdictBudgetCentsPerRun: 2,
 });
 
 export interface AiAgentTriggers {
@@ -255,7 +270,7 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * this PR), but every site that switches on `schemaVersion` must tolerate
  * 1, 2, AND 3.
  *
- * v4 (this bump, wave 6 PR 2 #3828): `effective.limits` gained
+ * v4 (wave 6 PR 2 #3828): `effective.limits` gained
  * `maxConsecutiveFailures` (the circuit breaker's threshold). Same rule
  * again: a v1/v2/v3 in-flight run's snapshot lacks the field and MUST still
  * execute — `recordRunTerminal` (agentCircuit.ts) resolves the effective
@@ -263,12 +278,17 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * the stored run snapshot, so a pre-v4 run's missing field never blocks
  * circuit accounting. Every site that switches on `schemaVersion` must
  * tolerate 1, 2, 3, AND 4. Write side always stamps the current version.
+ *
+ * v5 (this bump, phase 2 P2-1): `effective.limits` gained
+ * `maxVerdictRunsPerHour`, `maxConcurrentVerdictRuns`,
+ * `verdictBudgetCentsPerRun`; read sites fall back to
+ * `AI_AGENT_LIMIT_DEFAULTS` for a v1–v4 snapshot.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 4 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 5 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), or 4 (current). Read sites must tolerate all four. */
-  schemaVersion: 1 | 2 | 3 | 4;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), or 5 (current). Read sites must tolerate all five. */
+  schemaVersion: 1 | 2 | 3 | 4 | 5;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;
@@ -397,4 +417,29 @@ export type AiAlertVerdictClassification = (typeof AI_ALERT_VERDICT_CLASSIFICATI
 export interface AiAlertVerdictPattern {
   kind: 'daily' | 'weekly' | 'after_event';
   evidenceAlertIds: string[];
+}
+
+/**
+ * Phase 2 wave P2-1 (alert verdicts). The one mutation an `AlertVerdictOutcome`
+ * may propose — always `manage_alerts`, since a verdict-profile run only ever
+ * classifies and optionally acts on the alert(s) it evaluated, never any
+ * other tool. `suppress` carries how long (hours); `resolve` does not.
+ */
+export type AlertVerdictSuggestedAction =
+  | { tool: 'manage_alerts'; action: 'suppress'; alertId: string; suppressDuration: number }
+  | { tool: 'manage_alerts'; action: 'resolve'; alertId: string };
+
+/**
+ * Phase 2 wave P2-1 (alert verdicts). Produced by the `submit_alert_verdict`
+ * outcome tool (spec §4.1) and stored on `ai_alert_verdicts`. `pattern` is
+ * present only for `recurring_pattern`/`duplicate_of_group` classifications
+ * that found supporting evidence; `suggestedAction` is present only when the
+ * model chose to propose a `manage_alerts` mutation alongside the verdict.
+ */
+export interface AlertVerdictOutcome {
+  classification: AiAlertVerdictClassification;
+  confidence: number;
+  rationale: string;
+  pattern?: AiAlertVerdictPattern;
+  suggestedAction?: AlertVerdictSuggestedAction;
 }
