@@ -535,6 +535,28 @@ describe('persistAlertVerdict', () => {
     expect(state.updateCount).toBe(1);
   });
 
+  // MINOR 3 (fix round 1) — the re-read after a 23505 must never fall back
+  // to fabricating an id (`newId`, which never landed). A missing winner
+  // row here means the "23505 on this constraint implies a live row exists"
+  // invariant broke; an honest throw beats handing the caller a verdictId
+  // that dereferences nothing.
+  it('throws (does not fabricate a verdictId) when the post-23505 re-read finds no live row', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    state.insertThrow = {
+      code: '23505',
+      constraint_name: 'ai_alert_verdicts_live_alert_uq',
+      message: 'duplicate key value violates unique constraint "ai_alert_verdicts_live_alert_uq"',
+    };
+    // The re-read after the 23505 finds NOTHING — the invariant broke.
+    state.selectQueue.push([]);
+
+    await expect(persistAlertVerdict(runInput, baseVerdict, agentAuth)).rejects.toThrow(
+      'ai_alert_verdicts: unique violation but no live row found',
+    );
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
   it('does not mistake an UNRELATED 23505 for the concurrent-supersede race — propagates it', async () => {
     state.insertThrow = {
       code: '23505',

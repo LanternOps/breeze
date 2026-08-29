@@ -70,6 +70,16 @@
  * check, which would also swallow an unrelated conflict), re-reads the
  * winner's live row, and returns `suggestionReason: 'superseded_concurrently'`
  * — the loser's verdict is dropped, not retried, and no intent is attempted.
+ * If that re-read finds no live row, it throws rather than fabricating an
+ * id (MINOR 3, fix round 1) — with the partial unique in place a 23505 on
+ * this constraint guarantees a live row exists, so a missing one means the
+ * invariant broke and an honest failure beats a silently wrong verdictId.
+ *
+ * MINOR 4 (fix round 1) — this recovery mechanism REQUIRES
+ * `persistAlertVerdict` to never be called from inside an ambient DB
+ * context; see the precondition on the function's own docstring below for
+ * why (a shared ambient transaction would abort on the 23505 and the
+ * recovery SELECT would then fail with 25P02 instead of finding the row).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -195,6 +205,25 @@ export interface PersistAlertVerdictResult {
   suggestionReason?: AlertVerdictSuggestionReason;
 }
 
+/**
+ * MINOR 4 (fix round 1) — PRECONDITION: must NOT be called from inside an
+ * ambient DB context (i.e. from inside an already-open `withDbAccessContext`
+ * / `withSystemDbAccessContext` transaction). `finalizeVerdict` (runLoop.ts)
+ * satisfies this today — it runs from the background run loop, which holds
+ * no ambient context of its own.
+ *
+ * Why this matters: the 23505 concurrent-supersede recovery (see the file
+ * header's "Write ordering, part 2") relies on `inSystemDbContext` opening
+ * its OWN fresh transaction on each call. If a caller already held an
+ * ambient system-scope context, `inSystemDbContext` would skip opening a new
+ * transaction (it detects the existing one and just runs `fn()` directly —
+ * see its own docstring) and the failed INSERT's 23505 would abort THAT
+ * shared transaction. Every subsequent statement in it — including the
+ * recovery SELECT, which itself calls `inSystemDbContext` again and would
+ * reuse the SAME now-aborted transaction — would then fail with `25P02`
+ * ("current transaction is aborted") instead of returning the winning row,
+ * turning a handled race into an unhandled one.
+ */
 export async function persistAlertVerdict(
   run: {
     id: string; orgId: string; alertId: string | null;
@@ -347,7 +376,18 @@ export async function persistAlertVerdict(
         .limit(1);
       return row;
     });
-    verdictId = winner?.id ?? newId;
+    // MINOR 3 (fix round 1): do NOT fabricate an id. `newId` never landed —
+    // that INSERT is exactly what just 23505'd — so falling back to it would
+    // hand the caller a verdictId that dereferences nothing. With the
+    // partial unique index in place, a 23505 on this constraint MUST mean a
+    // live row exists for this target; a missing `winner` here means that
+    // invariant broke (e.g. it was superseded again between the failed
+    // INSERT and this SELECT, which nothing in this codepath does), and an
+    // honest throw is far better than a silently wrong id.
+    if (!winner) {
+      throw new Error('ai_alert_verdicts: unique violation but no live row found');
+    }
+    verdictId = winner.id;
   }
 
   if (supersededConcurrently) {

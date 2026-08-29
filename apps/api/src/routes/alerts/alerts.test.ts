@@ -12,17 +12,31 @@ import { Hono } from 'hono';
  * the ROUTE calls it with the right arguments and places the result under
  * `aiVerdict`, not re-prove its own internal query correctness.
  *
- * `hideAiNoise`'s WHERE-clause correctness (the actual point of requirement
- * A.2) is proven separately, via compiled SQL against the REAL drizzle-orm +
- * schema, in `alerts.hideAiNoise.sql.test.ts` — that needs `notExists(...)`
- * to build a genuine `SQLWrapper`, which the hand-rolled predicate mock in
- * THIS file (below) cannot produce. Tests here therefore never pass
- * `hideAiNoise=true`; they only assert the query-schema field parses.
+ * `hideAiNoise`'s WHERE-clause CORRECTNESS (the actual NOT EXISTS/superseded_by/
+ * classification-list SQL, requirement A.2) is proven separately, via compiled
+ * SQL against the REAL drizzle-orm + schema, in `alerts.hideAiNoise.sql.test.ts`
+ * — that needs `notExists(...)` to build a genuine `SQLWrapper`, which the
+ * hand-rolled predicate mock in THIS file (below) cannot produce.
+ *
+ * What THIS file proves about `hideAiNoise` is narrower but load-bearing on
+ * its own: that the ROUTE actually calls `hideAiNoiseCondition()` and folds
+ * it into the WHERE clause when the param is `true`, and does NOT when it
+ * is absent — i.e. the wiring, not the SQL shape. `notExists` is mocked
+ * (below) as `(subq) => ({ op: 'notExists', subq })`, and every `.where(...)`
+ * call on the fake db is captured into `dbState.whereCalls`, so a test can
+ * assert an `op: 'notExists'` node is (or is not) present in the captured
+ * predicate tree without needing the real SQL compiler.
  */
 
 const { authRef, dbState, latestVerdictsForAlertsMock, projectAlertAiVerdictSummaryMock, getAlertWithOrgCheckMock } = vi.hoisted(() => {
   const dbState = {
     selectQueue: [] as unknown[][],
+    // Every predicate passed to `.where(...)` on the fake db, in call
+    // order — MINOR 2 (fix round 1): lets a test assert an `op: 'notExists'`
+    // node is (or is not) present, proving the ROUTE actually wires
+    // `hideAiNoiseCondition()` into the query rather than just accepting
+    // the query param and doing nothing with it.
+    whereCalls: [] as unknown[],
   };
   return {
     authRef: {
@@ -48,7 +62,10 @@ function selectBuilder() {
     from: vi.fn(() => builder),
     leftJoin: vi.fn(() => builder),
     innerJoin: vi.fn(() => builder),
-    where: vi.fn(() => builder),
+    where: vi.fn((predicate: unknown) => {
+      dbState.whereCalls.push(predicate);
+      return builder;
+    }),
     orderBy: vi.fn(() => builder),
     limit: vi.fn(() => builder),
     offset: vi.fn(() => builder),
@@ -128,6 +145,24 @@ function makeApp() {
   return app;
 }
 
+/**
+ * Walks the mocked drizzle-orm predicate tree (`{op:'and'|'or', args:[...]}`
+ * nodes wrapping leaf nodes like `{op:'notExists', subq}`) looking for a
+ * `notExists` node. MINOR 2 (fix round 1) — the whole point of this helper
+ * is to make "was hideAiNoiseCondition() actually wired into the WHERE
+ * clause" a real, checkable question in this file's tests, instead of just
+ * asserting the request didn't 400.
+ */
+function containsNotExists(predicate: unknown): boolean {
+  if (!predicate || typeof predicate !== 'object') return false;
+  const node = predicate as { op?: string; args?: unknown[] };
+  if (node.op === 'notExists') return true;
+  if ((node.op === 'and' || node.op === 'or') && Array.isArray(node.args)) {
+    return node.args.some(containsNotExists);
+  }
+  return false;
+}
+
 const ALERT_1 = '11111111-1111-4111-8111-111111111111';
 const ALERT_2 = '22222222-2222-4222-8222-222222222222';
 const ORG_1 = 'org-1';
@@ -171,6 +206,7 @@ function baseAlertRow(id: string, overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   dbState.selectQueue = [];
+  dbState.whereCalls = [];
   authRef.current = {
     scope: 'organization',
     user: { id: 'u-1', name: 'Reed Only', email: 'reed@org.example' },
@@ -232,12 +268,31 @@ describe('GET /alerts — aiVerdict (Task 14)', () => {
     );
   });
 
-  it('accepts the hideAiNoise query param without rejecting the request (WHERE-clause correctness is proven in alerts.hideAiNoise.sql.test.ts)', async () => {
+  // MINOR 2 (fix round 1) — the previous version of this test only
+  // asserted `status === 200`, which stays green even if
+  // `conditions.push(hideAiNoiseCondition())` were deleted entirely. This
+  // asserts the WIRING itself: an `op: 'notExists'` node is present in the
+  // captured WHERE predicate tree when (and only when) `hideAiNoise=true`.
+  // SQL-shape correctness of that node is proven separately in
+  // `alerts.hideAiNoise.sql.test.ts`.
+  it('wires hideAiNoiseCondition() into the WHERE clause when hideAiNoise=true', async () => {
     dbState.selectQueue.push([{ count: 0 }]);
     dbState.selectQueue.push([]);
 
     const res = await makeApp().request('/alerts?hideAiNoise=true');
     expect(res.status).toBe(200);
+    expect(dbState.whereCalls.some(containsNotExists)).toBe(true);
+  });
+
+  it('does NOT add a notExists condition when hideAiNoise is absent', async () => {
+    dbState.selectQueue.push([{ count: 1 }]);
+    dbState.selectQueue.push([baseAlertRow(ALERT_1)]);
+    dbState.selectQueue.push([]);
+
+    const res = await makeApp().request('/alerts');
+    expect(res.status).toBe(200);
+    expect(dbState.whereCalls.length).toBeGreaterThan(0);
+    expect(dbState.whereCalls.some(containsNotExists)).toBe(false);
   });
 
   it('rejects an invalid hideAiNoise value (zod schema)', async () => {
