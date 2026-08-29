@@ -95,6 +95,13 @@ import { checkAutoResolve, checkAutoResolveFromConfigPolicy } from './alertServi
 
 const seed = (table: string, ...batches: unknown[][]) => selectQueues.set(table, batches);
 
+const TRIGGERED_AT = new Date('2026-08-29T10:00:00.000Z');
+const RESOLVED_AT = new Date('2026-08-29T10:05:00.000Z');
+// `alert.resolved` carries triggeredAt/resolvedAt off the RETURNING row (C2 fix in
+// resolveAlert) — `triggeredAt` is NOT NULL and the same UPDATE sets `resolvedAt`, so
+// a fixture row must model both or the publish path throws on `.toISOString()`.
+const resolved = <T extends object>(row: T) => ({ ...row, status: 'resolved', resolvedAt: RESOLVED_AT });
+
 const cpAlert = (id: string) => ({
   id,
   orgId: 'org-1',
@@ -102,6 +109,8 @@ const cpAlert = (id: string) => ({
   ruleId: null,
   configPolicyId: 'cp-rule-1',
   status: 'active',
+  triggeredAt: TRIGGERED_AT,
+  resolvedAt: null as Date | null,
 });
 
 /**
@@ -159,7 +168,7 @@ describe.each(bothRuleShapes)(
       seed('alerts', [cpAlert('a-win'), cpAlert('a-lose')]);
       // resolveAlert re-reads the policy rule on the winning path only.
       seed('config_policy_alert_rules', [rule], [rule]);
-      updateReturns.push([cpAlert('a-win')]); // CAS matched: this sweep won
+      updateReturns.push([resolved(cpAlert('a-win'))]); // CAS matched: this sweep won
       updateReturns.push([]);                 // CAS matched nothing: someone else won
 
       await expect(checkAutoResolveFromConfigPolicy('device-1')).resolves.toBe(1);
@@ -172,7 +181,7 @@ describe.each(bothRuleShapes)(
     it('publishes alert.resolved once per real transition, not once per attempt', async () => {
       seed('alerts', [cpAlert('a-win'), cpAlert('a-lose')]);
       seed('config_policy_alert_rules', [rule], [rule]);
-      updateReturns.push([cpAlert('a-win')]);
+      updateReturns.push([resolved(cpAlert('a-win'))]);
       updateReturns.push([]);
 
       await checkAutoResolveFromConfigPolicy('device-1');
@@ -184,7 +193,7 @@ describe.each(bothRuleShapes)(
     it('writes the config-policy cooldown exactly once for the winner and never for the loser', async () => {
       seed('alerts', [cpAlert('a-win'), cpAlert('a-lose')]);
       seed('config_policy_alert_rules', [rule], [rule]);
-      updateReturns.push([cpAlert('a-win')]);
+      updateReturns.push([resolved(cpAlert('a-win'))]);
       updateReturns.push([]);
 
       await checkAutoResolveFromConfigPolicy('device-1');
@@ -200,8 +209,8 @@ describe.each(bothRuleShapes)(
     it('counts every winner when nobody races the sweep', async () => {
       seed('alerts', [cpAlert('a-1'), cpAlert('a-2')]);
       seed('config_policy_alert_rules', [rule], [rule], [rule]);
-      updateReturns.push([cpAlert('a-1')]);
-      updateReturns.push([cpAlert('a-2')]);
+      updateReturns.push([resolved(cpAlert('a-1'))]);
+      updateReturns.push([resolved(cpAlert('a-2'))]);
 
       await expect(checkAutoResolveFromConfigPolicy('device-1')).resolves.toBe(2);
       expect(publishEvent).toHaveBeenCalledTimes(2);
@@ -215,7 +224,7 @@ describe('checkAutoResolveFromConfigPolicy takes the branch the fixture selects'
   it('evaluates the trigger conditions when autoResolveConditions is null', async () => {
     seed('alerts', [cpAlert('a-1')]);
     seed('config_policy_alert_rules', [cpRuleInverseTrigger], [cpRuleInverseTrigger]);
-    updateReturns.push([cpAlert('a-1')]);
+    updateReturns.push([resolved(cpAlert('a-1'))]);
 
     await checkAutoResolveFromConfigPolicy('device-1');
 
@@ -226,7 +235,7 @@ describe('checkAutoResolveFromConfigPolicy takes the branch the fixture selects'
   it('evaluates the explicit auto-resolve conditions when they are set', async () => {
     seed('alerts', [cpAlert('a-1')]);
     seed('config_policy_alert_rules', [cpRuleExplicitConditions], [cpRuleExplicitConditions]);
-    updateReturns.push([cpAlert('a-1')]);
+    updateReturns.push([resolved(cpAlert('a-1'))]);
 
     await checkAutoResolveFromConfigPolicy('device-1');
 
@@ -250,6 +259,8 @@ const legacyAlert = {
   ruleId: 'rule-1',
   configPolicyId: null,
   status: 'active',
+  triggeredAt: TRIGGERED_AT,
+  resolvedAt: null as Date | null,
 };
 const legacyRule = { id: 'rule-1', templateId: 'tpl-1', overrideSettings: null };
 
@@ -296,7 +307,7 @@ describe.each(bothTemplateShapes)(
       seed('alerts', [legacyAlert]);
       seed('alert_rules', [legacyRule], [legacyRule]);
       seed('alert_templates', [template], [template]);
-      updateReturns.push([legacyAlert]);
+      updateReturns.push([resolved(legacyAlert)]);
 
       await expect(checkAutoResolve('a-legacy')).resolves.toBe(true);
       expect(publishEvent).toHaveBeenCalledTimes(1);
@@ -312,7 +323,7 @@ describe('checkAutoResolve takes the branch the fixture selects', () => {
     seed('alerts', [legacyAlert]);
     seed('alert_rules', [legacyRule], [legacyRule]);
     seed('alert_templates', [legacyTemplateInverseTrigger], [legacyTemplateInverseTrigger]);
-    updateReturns.push([legacyAlert]);
+    updateReturns.push([resolved(legacyAlert)]);
 
     await checkAutoResolve('a-legacy');
 
@@ -324,7 +335,7 @@ describe('checkAutoResolve takes the branch the fixture selects', () => {
     seed('alerts', [legacyAlert]);
     seed('alert_rules', [legacyRule], [legacyRule]);
     seed('alert_templates', [legacyTemplateExplicitConditions], [legacyTemplateExplicitConditions]);
-    updateReturns.push([legacyAlert]);
+    updateReturns.push([resolved(legacyAlert)]);
 
     await checkAutoResolve('a-legacy');
 
