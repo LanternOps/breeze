@@ -8,6 +8,7 @@ import {
   TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER,
   buildAgentRunSystemPrompt,
   buildAgentRunTaskPrompt,
+  buildSweepTaskPrompt,
   sanitizeOperatorInstructions,
   type AgentRunPromptContext,
 } from './runnerPrompt';
@@ -23,8 +24,61 @@ function ctx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunPromptCont
     instructions: null,
     profile: 'full',
     correlationGroup: null,
+    sweep: null,
     ...overrides,
   };
+}
+
+/**
+ * Phase 2 wave P2-2 (scheduled sweeps) — a two-kind evidence fixture, shaped
+ * exactly like `sweepEvidence.ts`'s output (display scalars only, per-kind
+ * `total`/`truncated`, rows most-important-first).
+ */
+function sweepCtx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunPromptContext {
+  return ctx({
+    run: { id: 'run-5', mode: 'shadow', triggerKind: 'schedule' },
+    device: null,
+    alert: null,
+    profile: 'sweep',
+    sweep: {
+      scheduleId: '00000000-0000-4000-8000-0000000000e1',
+      occurrenceKey: '2026-08-29T06:00:00Z',
+      kinds: ['disk_pressure', 'service_down'],
+      evidence: {
+        kinds: {
+          disk_pressure: {
+            rows: [
+              {
+                deviceId: '00000000-0000-4000-8000-0000000000f1',
+                hostname: 'WS-ACCT-04',
+                fields: { mountPoint: 'C:', usedPercent: 96.4, freeGb: 4.1, totalGb: 118.2 },
+              },
+              {
+                deviceId: '00000000-0000-4000-8000-0000000000f2',
+                hostname: 'SRV-FILE-01',
+                fields: { mountPoint: 'D:', usedPercent: 91, freeGb: 40.5, totalGb: 480 },
+              },
+            ],
+            total: 7,
+            truncated: false,
+          },
+          service_down: {
+            rows: [
+              {
+                deviceId: '00000000-0000-4000-8000-0000000000f1',
+                hostname: null,
+                fields: { name: 'Spooler', watchType: 'service', status: 'stopped', autoRestartSucceeded: false },
+              },
+            ],
+            total: 1,
+            truncated: false,
+          },
+        },
+        truncated: false,
+      },
+    },
+    ...overrides,
+  });
 }
 
 function ticketCtx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunPromptContext {
@@ -185,6 +239,16 @@ describe('buildAgentRunSystemPrompt', () => {
   it('states there are no act permissions on a verdict-profile run', () => {
     const prompt = buildAgentRunSystemPrompt(ctx({ profile: 'verdict' }));
     expect(prompt.toLowerCase()).toContain('no act permissions');
+  });
+
+  // Phase 2 wave P2-2 (scheduled sweeps), task 6 — the sweep mode section
+  // must REPLACE the shadow/act section, like verdict does, not layer on it.
+  it('a sweep-profile run gets its own read-only mode section instead of the shadow/act one', () => {
+    const prompt = buildAgentRunSystemPrompt(sweepCtx());
+    expect(prompt).toContain('## Mode: sweep');
+    expect(prompt).not.toContain('## Mode: shadow');
+    expect(prompt).not.toContain('## Mode: act');
+    expect(prompt).toContain('submit_sweep_findings');
   });
 });
 
@@ -375,5 +439,90 @@ describe('buildAgentRunTaskPrompt', () => {
       profile: 'verdict', alert: null, device: null, correlationGroup: null,
     }));
     expect(text).not.toMatch(/undefined|null/);
+  });
+});
+
+// Phase 2 wave P2-2 (scheduled sweeps), task 6 — the sweep task turn.
+// Display fields only: the evidence object is never JSON-dumped into the
+// prompt (case (e)), because a raw dump both wastes the byte budget the
+// assembler just spent bounding and re-introduces key names the model has no
+// use for.
+describe('buildSweepTaskPrompt', () => {
+  it('(a) names each kind with its real total and renders every row as hostname — field: value', () => {
+    const text = buildSweepTaskPrompt(sweepCtx());
+
+    expect(text).toContain('Trigger: schedule (2026-08-29T06:00:00Z)');
+    // `rows.length of total` — `total` is the REAL match count, not the sample size.
+    expect(text).toContain('## disk_pressure (2 of 7)');
+    expect(text).toContain('## service_down (1 of 1)');
+    expect(text).toContain(
+      '- WS-ACCT-04 [00000000-0000-4000-8000-0000000000f1] — mountPoint: C:, usedPercent: 96.4, freeGb: 4.1, totalGb: 118.2',
+    );
+    expect(text).toContain('- SRV-FILE-01 [00000000-0000-4000-8000-0000000000f2] — mountPoint: D:, usedPercent: 91');
+    // A row with no hostname still renders — the device id is what a
+    // proposal has to name, so the row must never be dropped.
+    expect(text).toContain('- unknown host [00000000-0000-4000-8000-0000000000f1] — name: Spooler');
+  });
+
+  it('(b) tells the model to call submit_sweep_findings exactly once', () => {
+    const text = buildSweepTaskPrompt(sweepCtx());
+    expect(text).toContain('Call submit_sweep_findings exactly once');
+  });
+
+  it('(c) lists the two proposable action shapes and pins them to a device in the evidence', () => {
+    const text = buildSweepTaskPrompt(sweepCtx());
+
+    expect(text).toContain('{"tool":"manage_services","action":"restart","deviceId":"<device id>","serviceName":"<service name>"}');
+    expect(text).toContain('{"tool":"remediate_vulnerability","deviceId":"<device id>","deviceVulnerabilityIds":["<id>"]}');
+    expect(text).toContain('only for a device that appears in the evidence');
+    // No third shape may be implied — the union is closed.
+    expect(text).not.toMatch(/run_script|execute_playbook|manage_alerts/);
+  });
+
+  it('(d) renders the truncation marker when the evidence was capped or byte-trimmed', () => {
+    const base = sweepCtx();
+    const truncated = sweepCtx({
+      sweep: {
+        ...base.sweep!,
+        evidence: {
+          kinds: {
+            ...base.sweep!.evidence.kinds,
+            disk_pressure: { ...base.sweep!.evidence.kinds.disk_pressure!, truncated: true },
+          },
+          truncated: true,
+        },
+      },
+    });
+
+    expect(buildSweepTaskPrompt(base)).not.toContain('(evidence truncated)');
+    const text = buildSweepTaskPrompt(truncated);
+    expect(text).toContain('(evidence truncated)');
+    // The per-kind header says so too, so the model can tell WHICH kind is a sample.
+    expect(text).toContain('## disk_pressure (2 of 7, truncated)');
+  });
+
+  it('(e) contains no raw JSON dump of the evidence object', () => {
+    const text = buildSweepTaskPrompt(sweepCtx());
+    expect(text).not.toContain('"fields"');
+    expect(text).not.toContain('"rows"');
+    expect(text).not.toContain('"hostname"');
+  });
+
+  it('buildAgentRunTaskPrompt dispatches a sweep-profile run to the sweep turn', () => {
+    expect(buildAgentRunTaskPrompt(sweepCtx())).toBe(buildSweepTaskPrompt(sweepCtx()));
+  });
+
+  it('a sweep run with no kinds and no evidence still produces a well-formed turn', () => {
+    const text = buildAgentRunTaskPrompt(sweepCtx({
+      sweep: {
+        scheduleId: '00000000-0000-4000-8000-0000000000e1',
+        occurrenceKey: '',
+        kinds: [],
+        evidence: { kinds: {}, truncated: false },
+      },
+    }));
+
+    expect(text).toContain('Call submit_sweep_findings exactly once');
+    expect(text).not.toMatch(/undefined/);
   });
 });

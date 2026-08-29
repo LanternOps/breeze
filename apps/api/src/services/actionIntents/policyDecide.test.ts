@@ -239,6 +239,13 @@ const POLICY_SNAPSHOT: AiAgentPolicySnapshot = {
       maxVerdictRunsPerHour: 200,
       maxConcurrentVerdictRuns: 4,
       verdictBudgetCentsPerRun: 2,
+      // v6 (phase 2 wave P2-2) sweep-profile caps — `AiAgentLimits` requires
+      // them, so this fixture has to carry them even though nothing on the
+      // policy-decision path reads a sweep limit.
+      maxConcurrentSweepRuns: 2,
+      maxSweepRunsPerHour: 20,
+      sweepBudgetCentsPerRun: 30,
+      sweepMaxTurns: 8,
     },
     triggers: { alertSeverities: [], respectMaintenanceWindows: false },
     recipients: { userIds: ['recipient-1'], roleIds: [] },
