@@ -38,9 +38,25 @@ export type EventType =
   // jobs/alertCorrelation.ts after persistAlertCorrelationGroupsForAlerts
   // returns — once per NEWLY created alert_correlation_groups row (never on
   // re-upsert of an existing group; xmax = 0 on the RETURNING row is what
-  // distinguishes the two). No enclosing transaction wraps the worker, so
-  // the insert has already autocommitted by the time this publishes. Payload
-  // is { groupId, rootAlertId, memberCount, deviceId } — rootAlertId/deviceId
+  // distinguishes the two). Task 16e fix: the worker DOES run inside an
+  // enclosing transaction (`withSystemDbAccessContext`, via `db/index.ts`'s
+  // `withDbAccessContext` -> `baseDb.transaction`) — the premise this
+  // comment used to state ("no enclosing transaction") was disproved by two
+  // FK-violation reproductions (see `jobs/alertCorrelation.ts`'s F1-fix
+  // comment). `processAlertCorrelationJob` publishes this event only AFTER
+  // that `withSystemDbAccessContext` promise has resolved, i.e. once the
+  // transaction has committed and the row is durably visible.
+  //
+  // General contract for every publisher in this file: publish OUTSIDE the
+  // DB context that wrote the row (after commit, never from inside an
+  // open transaction), and a subscriber must never re-read that row on its
+  // own connection and trust it over the published payload — a re-read can
+  // still race a DIFFERENT publisher's still-open transaction (the
+  // auto-resolve sweep in `jobs/alertWorker.ts` / `jobs/monitorWorker.ts`
+  // publishes `alert.resolved` before its own `withSystemDbAccessContext`
+  // commits — see the `alert.resolved` comment above and
+  // `alertVerdictSubscriber.ts`'s payload-gating contract). Payload is
+  // { groupId, rootAlertId, memberCount, deviceId } — rootAlertId/deviceId
   // are both null when the root alert has since been hard-deleted
   // (alert_correlation_groups.root_alert_id is ON DELETE SET NULL).
   | 'alert.correlation_group.created'

@@ -535,6 +535,13 @@ export async function latestVerdictsForAlerts(
       .innerJoin(aiAlertVerdicts, eq(aiAlertVerdicts.correlationGroupId, alertCorrelationMembers.groupId))
       .where(and(
         memberOrgCondition,
+        // Task 16e fix: the alert-level query above pins `orgCondition` on
+        // `aiAlertVerdicts` directly — this join only pinned it on the
+        // `alertCorrelationMembers` side. Both rows share the same tenancy
+        // axis today, but the joined `aiAlertVerdicts` row had no org
+        // predicate of its own, so this defense-in-depth matches the
+        // alert-level query above rather than trusting the join alone.
+        orgCondition,
         inArray(alertCorrelationMembers.alertId, remaining),
         isNull(aiAlertVerdicts.supersededBy),
       ))

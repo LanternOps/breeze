@@ -2184,6 +2184,31 @@ describe('verdict profile in the run loop (P2-1)', () => {
     );
   });
 
+  // Task 16e — live-check follow-up. `outcome.budgetExceeded` must reflect
+  // THIS run's effective budget (`runLimits.maxBudgetCentsPerRun`, 5 cents
+  // for the default verdict profile — asserted via `maxBudgetUsd` above),
+  // not the agent's top-level `limits.maxBudgetCentsPerRun` (50 cents by
+  // default). A run costing 3 cents against a 5-cent verdict budget is
+  // under both the SDK's own `maxBudgetUsd` ceiling and the local
+  // `costCents > runLimits.maxBudgetCentsPerRun` backstop, so neither one
+  // should ever flip `budgetExceeded` true.
+  it('a verdict run costing 3 cents against the 5-cent verdict budget does NOT flag budgetExceeded', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({
+      assistantText: 'Verdict recorded.',
+      results: [resultMessage({ total_cost_usd: 0.03 })],
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions?.maxBudgetUsd).toBe(0.05);
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect(final.patch.costCents).toBe(3);
+    const outcome = final.patch.outcome as AgentRunOutcome;
+    expect(outcome.budgetExceeded).toBeFalsy();
+  });
+
   it('a full-profile run gets the unrestricted registry tool set and no extraTools (negative control)', async () => {
     seedRows({ effective: policy({ toolAllowlist: ['manage_services'] }) }); // profile defaults to 'full'
     scriptQuery({ assistantText: 'All good.' });

@@ -371,6 +371,20 @@ export async function handleAlertVerdictEvent(event: BreezeEvent): Promise<void>
         triggeredAtMs = alert.triggeredAt.getTime();
       }
 
+      // Task 16e fix: a malformed ISO string in the PAYLOAD (payloadGated
+      // branch) parses to `Invalid Date`, whose `.getTime()` is `NaN`.
+      // `NaN > AUTO_RESOLVE_VERDICT_WINDOW_MINUTES` is `false`, so without
+      // this guard the elapsed-time check below silently falls through and
+      // admits the run — exactly the failure mode this gate exists to
+      // prevent. Fail closed: an unparseable timestamp is treated the same
+      // as "outside the window", not "inside" it.
+      if (Number.isNaN(resolvedAtMs) || Number.isNaN(triggeredAtMs)) {
+        console.warn('[alertVerdictSubscriber] skipping resolve verdict — unparseable resolvedAt/triggeredAt', {
+          alertId, orgId, payloadGated, resolvedAtMs, triggeredAtMs,
+        });
+        return;
+      }
+
       // Human resolves never trigger a verdict run — only a system/auto
       // resolve (resolvedBy null) does.
       if (resolvedBy !== null) {
