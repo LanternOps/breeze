@@ -102,6 +102,7 @@ export * from './ticketResponseTemplates';
 export * from './ticketForms';
 export * from './ticketFormOrgLinks';
 export * from './ticketMailbox';
+export * from './ticketOutbox';
 export * from './catalog';
 export * from './timeTracking';
 export * from './invoices';

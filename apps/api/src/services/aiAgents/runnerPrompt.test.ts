@@ -4,6 +4,7 @@ import {
   MAX_OPERATOR_INSTRUCTION_CHARS,
   OPERATOR_GUIDANCE_CLOSE_TAG,
   OPERATOR_GUIDANCE_OPEN_TAG,
+  TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER,
   buildAgentRunSystemPrompt,
   buildAgentRunTaskPrompt,
   sanitizeOperatorInstructions,
@@ -16,9 +17,33 @@ function ctx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunPromptCont
     run: { id: 'run-1', mode: 'shadow', triggerKind: 'alert' },
     device: { id: 'device-1', hostname: 'WS-ACCT-04', osType: 'windows' },
     alert: { title: 'Disk almost full', severity: 'high', message: 'C: at 96%' },
+    ticket: null,
     instructions: null,
     ...overrides,
   };
+}
+
+function ticketCtx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunPromptContext {
+  return ctx({
+    agent: { name: 'Helpdesk Bot', kind: 'helpdesk' },
+    device: null,
+    alert: null,
+    run: { id: 'run-3', mode: 'shadow', triggerKind: 'ticket' },
+    ticket: {
+      subject: 'Printer not working',
+      description: 'The office printer shows an error light.',
+      status: 'open',
+      priority: 'high',
+      category: 'hardware',
+      tags: ['printer', 'hardware'],
+      dueDate: '2026-09-01T00:00:00.000Z',
+      comments: [
+        { authorType: 'portal', content: 'Still broken after reboot.', createdAt: '2026-08-27T12:00:00.000Z' },
+      ],
+      truncated: false,
+    },
+    ...overrides,
+  });
 }
 
 function countOccurrences(haystack: string, needle: string): number {
@@ -99,6 +124,16 @@ describe('buildAgentRunSystemPrompt', () => {
     const prompt = buildAgentRunSystemPrompt(ctx({ instructions: 'anything' }));
     expect(prompt).toContain('enforced outside this conversation');
   });
+
+  it('omits the ticket no-autonomous-notes disclaimer for a non-ticket run', () => {
+    const prompt = buildAgentRunSystemPrompt(ctx());
+    expect(prompt).not.toContain(TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER);
+  });
+
+  it('a ticket run carries the exact no-autonomous-notes disclaimer (design authority: no autonomous notes, not even private)', () => {
+    const prompt = buildAgentRunSystemPrompt(ticketCtx());
+    expect(prompt).toContain(TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER);
+  });
 });
 
 describe('buildAgentRunTaskPrompt', () => {
@@ -128,5 +163,68 @@ describe('buildAgentRunTaskPrompt', () => {
     // into the user turn would give them a second, undelimited voice.
     const prompt = buildAgentRunTaskPrompt(ctx({ instructions: 'SECRET-MARKER' }));
     expect(prompt).not.toContain('SECRET-MARKER');
+  });
+
+  it('carries the bounded ticket context: structured fields, description, and comments', () => {
+    const prompt = buildAgentRunTaskPrompt(ticketCtx());
+
+    expect(prompt).toContain('Printer not working');
+    expect(prompt).toContain('open');
+    expect(prompt).toContain('high');
+    expect(prompt).toContain('hardware');
+    expect(prompt).toContain('printer');
+    expect(prompt).toContain('The office printer shows an error light.');
+    // A portal-origin comment renders as a role label, never the requester's
+    // own name — see `commentAuthorLabel` / `TicketContextComment`'s header.
+    expect(prompt).toContain('Requester');
+    expect(prompt).toContain('Still broken after reboot.');
+  });
+
+  it('never renders a comment author\'s identity — only the non-identifying authorType role label', () => {
+    // Even if a raw author name somehow reached this layer, the prompt
+    // context type carries only `authorType` — there is no name field to
+    // render. Prove the requester-identifying fixture value never surfaces.
+    const prompt = buildAgentRunTaskPrompt(ticketCtx());
+    expect(prompt).not.toContain('Jane Doe');
+  });
+
+  it('renders "Technician" for an internal-staff comment', () => {
+    const prompt = buildAgentRunTaskPrompt(ticketCtx({
+      ticket: {
+        subject: 'Printer not working', description: null, status: 'open', priority: 'high',
+        category: 'hardware', tags: [], dueDate: null,
+        comments: [{ authorType: 'internal', content: 'Dispatched a tech.', createdAt: '2026-08-27T12:00:00.000Z' }],
+        truncated: false,
+      },
+    }));
+    expect(prompt).toContain('Technician');
+    expect(prompt).not.toContain('Requester');
+  });
+
+  it('handles a ticket with no comments and no due date without emitting "undefined"/"null"', () => {
+    const prompt = buildAgentRunTaskPrompt(ticketCtx({
+      ticket: {
+        subject: 'Cannot log in', description: null, status: 'new', priority: 'normal',
+        category: null, tags: [], dueDate: null, comments: [], truncated: false,
+      },
+    }));
+    expect(prompt).toContain('Cannot log in');
+    expect(prompt).not.toContain('undefined');
+    expect(prompt).not.toContain('null');
+  });
+
+  it('surfaces the truncation flag so the model knows context was cut', () => {
+    const prompt = buildAgentRunTaskPrompt(ticketCtx({
+      ticket: {
+        subject: 'x', description: 'y', status: 'open', priority: 'low', category: null,
+        tags: [], dueDate: null, comments: [], truncated: true,
+      },
+    }));
+    expect(prompt.toLowerCase()).toContain('truncat');
+  });
+
+  it('omits the ticket section entirely for a non-ticket run', () => {
+    const prompt = buildAgentRunTaskPrompt(ctx());
+    expect(prompt.toLowerCase()).not.toContain('ticket:');
   });
 });

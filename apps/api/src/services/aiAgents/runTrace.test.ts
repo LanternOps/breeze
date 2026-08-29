@@ -175,6 +175,75 @@ describe('buildRunTrace — safe projection (#3828)', () => {
     const detail = buildRunTrace(baseRun({ outcome: {} }), AGENT, null, [], []);
     expect(detail.trace).toEqual([]);
     expect(detail.runVerdict).toBeNull();
+    expect(detail.ticketProposal).toBeNull();
+  });
+
+  describe('ticketProposal (wave 6 PR 3, #3828, Task 4)', () => {
+    it('projects a ticket run\'s ticketProposal verbatim (it is already text-only)', () => {
+      const detail = buildRunTrace(
+        baseRun({
+          triggerKind: 'ticket',
+          deviceId: null,
+          outcome: {
+            findings: [],
+            executedActions: [],
+            proposedActions: [],
+            deniedActions: [],
+            toolExecutionCount: 0,
+            ticketProposal: {
+              summary: 'The print spooler was stuck; a restart would likely fix it.',
+              proposedReply: 'Hi — please try restarting your computer; this often clears it.',
+              proposedStatus: 'pending',
+              proposedPriority: 'normal',
+              notes: ['Spooler.exe pegged at 100% CPU'],
+            },
+          },
+        }),
+        AGENT,
+        null,
+        [],
+        [],
+      );
+
+      expect(detail.ticketProposal).toEqual({
+        summary: 'The print spooler was stuck; a restart would likely fix it.',
+        proposedReply: 'Hi — please try restarting your computer; this often clears it.',
+        proposedStatus: 'pending',
+        proposedPriority: 'normal',
+        notes: ['Spooler.exe pegged at 100% CPU'],
+      });
+    });
+
+    it('is null for a non-ticket run (no ticketProposal on the outcome at all)', () => {
+      const detail = buildRunTrace(baseRun({ outcome: { findings: [] } }), AGENT, DEVICE, [], []);
+      expect(detail.ticketProposal).toBeNull();
+    });
+
+    it('never carries an args/toolInput/toolOutput/arguments key even if a malformed outcome tried to smuggle one in', () => {
+      const detail = buildRunTrace(
+        baseRun({
+          outcome: {
+            ticketProposal: {
+              summary: 'x',
+              notes: [],
+              // Deliberately malformed input (not a real `TicketProposalOutcome`
+              // field) — proves the mapper picks named fields rather than
+              // spreading the source object onto the DTO.
+              args: { secret: 'leak-marker' },
+            },
+          },
+        }),
+        AGENT,
+        null,
+        [],
+        [],
+      );
+      const json = JSON.stringify(detail.ticketProposal);
+      for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+        expect(json).not.toContain(`"${forbidden}"`);
+      }
+      expect(json).not.toContain('leak-marker');
+    });
   });
 
   it('defends against a corrupted non-array outcome field by treating it as empty', () => {

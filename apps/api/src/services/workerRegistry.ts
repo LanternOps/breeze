@@ -944,6 +944,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #3828 wave-6-3 task 2. Same shape/precedent as intentOutboxPublisher —
+    // drains ticket_outbox onto the generic eventBus. No agent-socket-local
+    // dispatch dependency (unlike e.g. intentReleaseWorker), so 'global'.
+    name: 'ticketOutboxPublisher',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/ticketOutboxPublisher');
+      return { init: m.initializeTicketOutboxPublisher, shutdown: m.shutdownTicketOutboxPublisher };
+    },
+  },
+  {
     name: 'ticketSlaWorker',
     placement: 'global',
     load: async () => {

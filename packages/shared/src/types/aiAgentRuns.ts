@@ -209,6 +209,28 @@ export interface ExposureBudgetDto {
   accountingMode: 'partial' | 'full';
 }
 
+/**
+ * Wave 6 PR 3 (#3828 Task 4) — safe projection of `TicketProposalOutcome`
+ * (services/aiAgents/runLoop.ts). Every field is model-authored TEXT — never
+ * a tool call, an `args`/`input`/`output` blob, or anything that could carry
+ * a raw payload — so this is a 1:1 mirror of the source shape rather than a
+ * narrowing of it, kept as its own declared type (not a shared import from an
+ * API-only module) for the same reason every other DTO in this file is
+ * declared here: the wire contract must not drift with an internal-only type.
+ *
+ * `notes` are PROPOSED talking points for a human reviewer to read and
+ * optionally act on — this DTO is display-only and is never the input to any
+ * write. No autonomous note is ever posted by a ticket-triggered run (design
+ * authority, wave-6 quorum 2026-08-28; see `ticketShadowGuardrail.contract.test.ts`).
+ */
+export interface AiAgentRunTicketProposalDto {
+  summary: string;
+  proposedReply?: string;
+  proposedStatus?: string;
+  proposedPriority?: string;
+  notes: string[];
+}
+
 export interface AiAgentRunDetailDto {
   schemaVersion: 1;
   id: string;
@@ -239,4 +261,11 @@ export interface AiAgentRunDetailDto {
   trace: AiAgentRunTraceEntryDto[];
   ledger: AiAgentRunLedgerEntryDto[];
   intents: AiAgentRunIntentSummaryDto[];
+  /**
+   * Non-null only for a ticket-triggered run whose outcome carries a
+   * `ticketProposal` (runLoop.ts) — null for every other run, and for a
+   * ticket run from before this field existed (a v-prior outcome jsonb row
+   * simply lacks the key). See `AiAgentRunTicketProposalDto`'s docstring.
+   */
+  ticketProposal: AiAgentRunTicketProposalDto | null;
 }

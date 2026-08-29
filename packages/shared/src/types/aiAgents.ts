@@ -79,6 +79,20 @@ export interface AiAgentTriggers {
   deviceGroupIds?: string[];
   deviceTags?: string[];
   respectMaintenanceWindows: boolean;
+  /**
+   * Wave 6 PR 3 (#3828) — narrowing filters for `triggerKind: 'ticket'`
+   * admission. Same `undefined`-means-unrestricted convention as
+   * `siteIds`/`deviceGroupIds` above (never `[]` — see the validator).
+   * Enforced by `runService.ts`'s `evaluateTicketTriggerFilters`, fed by
+   * `ticketHelpdeskSubscriber.ts`'s `ticketContext` (wave 6 PR 3 review
+   * follow-up, #3828). Entries may be either the ticket's free-text
+   * `category` name or its `categoryId` (matched per-value — see
+   * `evaluateTicketTriggerFilters`'s docstring for the id-vs-name rule).
+   */
+  ticketCategories?: string[];
+  /** `ticket_priority` enum values (`db/schema/portal.ts`). Enforced by
+   *  `runService.ts`'s `evaluateTicketTriggerFilters`. */
+  ticketPriorities?: Array<'low' | 'normal' | 'high' | 'urgent'>;
 }
 
 export interface AiAgentRecipients {

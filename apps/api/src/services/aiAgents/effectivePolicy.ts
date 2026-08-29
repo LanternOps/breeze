@@ -184,6 +184,16 @@ export function mergeAgentPolicies(
       siteIds: intersectOptional(partner.triggers.siteIds, org.triggers.siteIds),
       deviceGroupIds: intersectOptional(partner.triggers.deviceGroupIds, org.triggers.deviceGroupIds),
       deviceTags: intersectOptional(partner.triggers.deviceTags, org.triggers.deviceTags),
+      // Wave 6 PR 3 (#3828, Task 4) — same tighten-only intersection as the
+      // other narrowing lists above. Unenforced by the admission subscriber
+      // this PR (`AiAgentTriggers.ticketCategories`'s docstring), but merged
+      // here anyway so the effective policy never silently drops a value an
+      // operator configured, ahead of whichever task wires evaluation in.
+      ticketCategories: intersectOptional(partner.triggers.ticketCategories, org.triggers.ticketCategories),
+      ticketPriorities: intersectOptional(
+        partner.triggers.ticketPriorities,
+        org.triggers.ticketPriorities,
+      ) as AiAgentPolicy['triggers']['ticketPriorities'],
       respectMaintenanceWindows:
         partner.triggers.respectMaintenanceWindows || org.triggers.respectMaintenanceWindows,
     }, 'merged'),

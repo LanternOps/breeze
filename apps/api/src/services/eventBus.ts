@@ -62,6 +62,17 @@ export type EventType =
   | 'backup.sla_resolved'
   // Ticket SLA events (Phase 2, ticketSlaWorker)
   | 'ticket.sla_breached'
+  // Ticket lifecycle events (#3828 wave-6-3 task 2). Published by
+  // ticketOutboxPublisher.ts from the ticket_outbox transactional outbox —
+  // id-only payloads (never subject/description/resolutionNote/comment
+  // content), same posture as ticket.sla_breached's `assigneeId`-only shape
+  // but stricter (that event predates the id-only design authority). Consumed
+  // by the Task 3 durable ticket-helpdesk subscriber (ticket.created only, v1)
+  // — ticket.commented/ticket.status_changed are published for future
+  // admission scope (deferred; see the wave-6-3 plan's Self-Review Notes).
+  | 'ticket.created'
+  | 'ticket.commented'
+  | 'ticket.status_changed'
   // Security events
   | 'security.score_changed'
   // CIS compliance events
@@ -535,6 +546,10 @@ export const EVENT_TYPES = {
   BACKUP_SLA_BREACH: 'backup.sla_breach' as const,
   BACKUP_SLA_RESOLVED: 'backup.sla_resolved' as const,
   TICKET_SLA_BREACHED: 'ticket.sla_breached' as const,
+  // Ticket lifecycle (#3828 wave-6-3 task 2) — id-only payloads.
+  TICKET_CREATED: 'ticket.created' as const,
+  TICKET_COMMENTED: 'ticket.commented' as const,
+  TICKET_STATUS_CHANGED: 'ticket.status_changed' as const,
   // Security
   SECURITY_SCORE_CHANGED: 'security.score_changed' as const,
   CIS_DEVIATION: 'compliance.cis_deviation' as const,

@@ -87,6 +87,7 @@ import {
 import { actTargetSummary, recordActVerifyFailureAlert, verifyActExecution } from './actVerify';
 import { executeBuiltInPlaybookForRun } from './playbookActExecutor';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
+import { loadTicketContext, type TicketRunContext } from './ticketContext';
 import { readAiKillState } from '../aiKillState';
 import {
   closeAgentRunSession,
@@ -111,6 +112,7 @@ import {
   buildAgentRunSystemPrompt,
   buildAgentRunTaskPrompt,
   type AgentRunPromptContext,
+  type AgentRunTicketPromptContext,
 } from './runnerPrompt';
 
 /** `ai_agent_runs.summary` is `text`, but a reviewer reads the first screen. */
@@ -187,6 +189,29 @@ export interface OutcomeExecutedAction {
   actTargetName?: string;
 }
 
+/**
+ * Wave 6 PR 3 (#3828, Task 4) — the model's structured proposal for a
+ * ticket-triggered run. Reserved, exactly like `findings` above: nothing in
+ * this PR populates it (there is no SDK structured-output wiring yet — the
+ * model's only output channel is still the free-text summary `driveSdkLoop`
+ * already extracts). The field exists now so the outcome shape, the
+ * `ai_agent_runs.outcome` jsonb, and `AiAgentRunTicketProposalDto`
+ * (`@breeze/shared`) do not change again when a later task wires it up.
+ *
+ * `notes` are PROPOSED talking points for a human reviewer — see the plan's
+ * "no autonomous notes, not even private" design authority. Nothing here is
+ * ever the input to a write: shadow mode + the device-less mutation gate
+ * together guarantee `manage_tickets` cannot execute for a ticket run
+ * regardless of what this field ever holds (`ticketShadowGuardrail.contract.test.ts`).
+ */
+export interface TicketProposalOutcome {
+  summary: string;
+  proposedReply?: string;
+  proposedStatus?: string;
+  proposedPriority?: string;
+  notes: string[];
+}
+
 export interface AgentRunOutcome {
   /**
    * Reserved for structured findings. Nothing populates it in wave 3 — the
@@ -195,6 +220,9 @@ export interface AgentRunOutcome {
    * jsonb does not change under reviewers when it lands.
    */
   findings: unknown[];
+  /** Reserved — see `TicketProposalOutcome`'s own docstring for why it is
+   *  unpopulated in this PR. Absent for every non-ticket run. */
+  ticketProposal?: TicketProposalOutcome;
   proposedActions: OutcomeProposedAction[];
   executedActions: OutcomeExecutedAction[];
   deniedActions: Array<{ tool: string; reason: string }>;
@@ -231,6 +259,9 @@ interface RunRow {
   orgId: string;
   deviceId: string | null;
   alertId: string | null;
+  /** Wave 6 PR 3 (#3828, Task 1/4) — the triggering ticket for `triggerKind:
+   *  'ticket'` runs; always `null` for every other trigger kind. */
+  ticketId: string | null;
   status: string;
   modeAtStart: Exclude<AiAgentMode, 'off'>;
   triggerKind: AiAgentTriggerKind;
@@ -252,6 +283,10 @@ interface RunContext {
   orgPartnerId: string;
   device: { id: string; siteId: string; hostname: string; osType: string } | null;
   alert: { title: string; severity: string; message: string | null } | null;
+  /** Bounded, sanitized ticket context (Task 4) — `null` for every non-ticket
+   *  run, and for a ticket run whose ticket has vanished/moved org (same
+   *  "moved/deleted reads as absent" posture `device`/`alert` already use). */
+  ticket: TicketRunContext | null;
   /**
    * The execution-ledger `ai_sessions` row for this run (Task 1/2). Set once,
    * inside `driveSdkLoop`, right after the model is resolved — `null` until
@@ -295,6 +330,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         orgId: aiAgentRuns.orgId,
         deviceId: aiAgentRuns.deviceId,
         alertId: aiAgentRuns.alertId,
+        ticketId: aiAgentRuns.ticketId,
         status: aiAgentRuns.status,
         modeAtStart: aiAgentRuns.modeAtStart,
         triggerKind: aiAgentRuns.triggerKind,
@@ -373,12 +409,33 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       }
     }
 
+    // Same "moved/deleted reads as absent" posture as device/alert above —
+    // this read is ALSO org-pinned inside `loadTicketContext` itself (it
+    // runs under this same system context), for the identical reason: a
+    // ticket can move org between admission and delivery.
+    let ticket: RunContext['ticket'] = null;
+    if (run.ticketId) {
+      try {
+        ticket = await loadTicketContext(run.ticketId, run.orgId);
+      } catch (error) {
+        console.error('[aiAgentRunLoop] failed to load ticket context', {
+          runId, orgId: run.orgId, ticketId: run.ticketId, error,
+        });
+      }
+      if (!ticket) {
+        console.warn('[aiAgentRunLoop] run ticket is not (or no longer) in the run org', {
+          runId, orgId: run.orgId, ticketId: run.ticketId,
+        });
+      }
+    }
+
     return {
       run: run as RunRow,
       agent: agent as AgentRow,
       orgPartnerId: org.partnerId,
       device,
       alert,
+      ticket,
       sessionId: null,
     };
   });
@@ -901,6 +958,20 @@ function extractAssistantText(message: unknown): string {
     .trim();
 }
 
+function ticketPromptContext(ticket: TicketRunContext): AgentRunTicketPromptContext {
+  return {
+    subject: ticket.subject,
+    description: ticket.description,
+    status: ticket.status,
+    priority: ticket.priority,
+    category: ticket.category,
+    tags: ticket.tags,
+    dueDate: ticket.dueDate,
+    comments: ticket.comments,
+    truncated: ticket.truncated,
+  };
+}
+
 function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromptContext {
   return {
     agent: { name: ctx.agent.name, kind: ctx.agent.kind },
@@ -909,6 +980,7 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
       ? { id: ctx.device.id, hostname: ctx.device.hostname, osType: ctx.device.osType }
       : null,
     alert: ctx.alert,
+    ticket: ctx.ticket ? ticketPromptContext(ctx.ticket) : null,
     instructions: effective.instructions,
   };
 }

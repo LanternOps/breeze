@@ -21,6 +21,7 @@ import type {
   AgentRunOutcome,
   OutcomeExecutedAction,
   OutcomeProposedAction,
+  TicketProposalOutcome,
 } from './runLoop';
 import {
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
@@ -30,6 +31,7 @@ import {
   type AiAgentRunIntentSummaryDto,
   type AiAgentRunLedgerEntryDto,
   type AiAgentRunStatus,
+  type AiAgentRunTicketProposalDto,
   type AiAgentRunTraceEntryDto,
   type AiAgentTriggerKind,
   type AiToolStatus,
@@ -133,6 +135,24 @@ function mapDenied(action: { tool: string; reason: string }): AiAgentRunTraceEnt
 }
 
 /**
+ * Named-field projection, not a spread: `TicketProposalOutcome` is already
+ * text-only (no `args`/tool-payload field exists on the source type), but
+ * picking fields by name here — rather than `{ ...outcome.ticketProposal }`
+ * — means a future field added to the OUTCOME side does not silently reach
+ * the wire until someone deliberately adds it here too, matching every other
+ * mapper in this file.
+ */
+function mapTicketProposal(proposal: TicketProposalOutcome): AiAgentRunTicketProposalDto {
+  return {
+    summary: proposal.summary,
+    proposedReply: proposal.proposedReply,
+    proposedStatus: proposal.proposedStatus,
+    proposedPriority: proposal.proposedPriority,
+    notes: proposal.notes,
+  };
+}
+
+/**
  * Concatenation order: executed, then proposed, then denied. `AgentRunOutcome`
  * stores these as three separate arrays (runLoop.ts pushes into whichever one
  * applies as a turn resolves) with no shared timestamp to interleave by, so
@@ -209,5 +229,6 @@ export function buildRunTrace(
     trace: buildTraceEntries(outcome),
     ledger: ledgerRows.map(mapLedgerRow),
     intents: intents.map(mapIntentRow),
+    ticketProposal: outcome.ticketProposal ? mapTicketProposal(outcome.ticketProposal) : null,
   };
 }

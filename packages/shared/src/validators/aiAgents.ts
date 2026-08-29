@@ -59,6 +59,13 @@ const triggersFields = z.object({
   deviceGroupIds: z.array(z.string().guid()).min(1).max(500),
   deviceTags: z.array(z.string().trim().min(1).max(64)).min(1).max(100),
   respectMaintenanceWindows: z.boolean(),
+  // Wave 6 PR 3 (#3828) — ticket-trigger narrowing filters. Same
+  // undefined-means-unrestricted / `.min(1)` convention as siteIds/
+  // deviceGroupIds above; enforced by runService.ts's
+  // evaluateTicketTriggerFilters (see AiAgentTriggers.ticketCategories's
+  // docstring for the id-vs-name matching rule).
+  ticketCategories: z.array(z.string().trim().min(1).max(100)).min(1).max(100),
+  ticketPriorities: z.array(z.enum(['low', 'normal', 'high', 'urgent'])).min(1).max(4),
 });
 export const aiAgentTriggersPatchSchema = triggersFields.partial();
 export const aiAgentTriggersSchema = aiAgentTriggersPatchSchema.transform((v) => ({

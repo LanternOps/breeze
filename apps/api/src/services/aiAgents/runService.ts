@@ -10,6 +10,7 @@ import type {
   AiAgentTriggers,
 } from '@breeze/shared';
 import { envFlag } from '../../config/env';
+import { PG_UUID_REGEX } from '../../utils/uuid';
 import {
   db,
   getCurrentDbAccessContext,
@@ -84,6 +85,25 @@ export interface CreateAgentRunInput {
     ruleId: string | null;
     siteId: string | null;
     deviceTags: string[];
+  };
+  /**
+   * The triggering ticket for `triggerKind: 'ticket'` runs (wave 6 PR 3,
+   * #3828). Ticket runs carry no device — `deviceId` is always null for
+   * them — so this is the run's only trigger-target identity.
+   */
+  ticketId?: string | null;
+  /**
+   * Wave 6 PR 3 review follow-up (#3828) — the triggering ticket's category/
+   * priority, evaluated against `policy.triggers.ticketCategories`/
+   * `ticketPriorities` (`evaluateTicketTriggerFilters` below), same shape as
+   * `alertContext` above: the CALLER (`ticketHelpdeskSubscriber.ts`) loads
+   * the ticket row and passes its narrowing-relevant fields in, rather than
+   * this module re-reading the ticket itself.
+   */
+  ticketContext?: {
+    category: string | null;
+    categoryId: string | null;
+    priority: 'low' | 'normal' | 'high' | 'urgent';
   };
   /** e.g. `alert:${alertId}`, `manual:${randomUUID()}`. Unique per org. */
   dedupeKey: string;
@@ -165,6 +185,51 @@ export function evaluateAgentTriggerFilters(
 
   const deviceTags = triggers.deviceTags ?? [];
   if (deviceTags.length > 0 && !deviceTags.some((tag) => ctx.deviceTags.includes(tag))) return false;
+
+  return true;
+}
+
+/**
+ * Wave 6 PR 3 review follow-up (#3828) — ticket-trigger narrowing filters.
+ * `ticketCategories`/`ticketPriorities` were validated and merged by
+ * `effectivePolicy` since the original PR but never evaluated anywhere,
+ * so a helpdesk agent fired on EVERY ticket created in the org regardless
+ * of its configured filters. This mirrors `evaluateAgentTriggerFilters`
+ * above: same narrowing (empty/absent = unrestricted) convention as
+ * `siteIds`/`deviceTags`, NOT `alertSeverities`' opt-in-list asymmetry —
+ * `AiAgentTriggers.ticketCategories`/`ticketPriorities` are both declared
+ * `undefined`-means-unrestricted in the validator (`.min(1)`-or-undefined).
+ *
+ * `ticketCategories` id-vs-name semantics: the validator does NOT constrain
+ * entries to guid format (`z.array(z.string().trim().min(1).max(100))`),
+ * unlike `alertRuleIds`/`siteIds`/`deviceGroupIds` (all `.string().guid()`)
+ * — a deliberate signal that this field holds the ticket's free-text
+ * `category` NAME (`tickets.category`, varchar(100)), not its `categoryId`
+ * FK. Matching is per-value rather than picking one column ahead of time: a
+ * configured value that parses as a UUID (`PG_UUID_REGEX` — same "would this
+ * cast cleanly" pattern the FK-typed columns use elsewhere) is matched
+ * against `ctx.categoryId`; every other value is matched against
+ * `ctx.category` by exact string equality. This lets an operator configure
+ * the filter with either category names or ids (the categories admin UI
+ * exposes both) without the filter silently going inert for one or the
+ * other.
+ */
+export function evaluateTicketTriggerFilters(
+  triggers: AiAgentTriggers,
+  ctx: NonNullable<CreateAgentRunInput['ticketContext']>,
+): boolean {
+  const categories = triggers.ticketCategories ?? [];
+  if (categories.length > 0) {
+    const matchesCategory = categories.some((value) => (
+      PG_UUID_REGEX.test(value)
+        ? ctx.categoryId !== null && value.toLowerCase() === ctx.categoryId.toLowerCase()
+        : ctx.category !== null && value === ctx.category
+    ));
+    if (!matchesCategory) return false;
+  }
+
+  const priorities = triggers.ticketPriorities ?? [];
+  if (priorities.length > 0 && !priorities.includes(ctx.priority)) return false;
 
   return true;
 }
@@ -342,6 +407,23 @@ export async function createAndEnqueueAgentRun(
 ): Promise<CreateAgentRunResult> {
   const { orgId, kind, triggerKind, deviceId, dedupeKey } = input;
 
+  // Branch-review fix (wave 6 PR 3, #3828): `ticketId` must only ever
+  // accompany `triggerKind: 'ticket'`. `runLoop.loadRunContext` loads
+  // hostile ticket content into the prompt whenever `run.ticketId` is set
+  // (runLoop.ts's ticket-context block), gated on ticketId ALONE — not on
+  // triggerKind. If a caller ever set `ticketId` on a non-'ticket' trigger
+  // (e.g. 'alert'), the forced-shadow override below would need to key on
+  // the same condition as that context load, or an 'act'-mode agent could
+  // receive hostile ticket content in a non-shadow run. No legitimate
+  // caller sends this combination, so it is rejected outright rather than
+  // silently admitted — a caller bug, not a skip, same posture as the
+  // "org missing" 404 case below.
+  if (input.ticketId && triggerKind !== 'ticket') {
+    throw new Error(
+      `createAndEnqueueAgentRun: ticketId is only valid with triggerKind 'ticket' (got '${triggerKind}')`,
+    );
+  }
+
   let snapshot: AiAgentPolicySnapshot | null = null;
   const skip = (reason: AgentRunSkipReason): CreateAgentRunResult => {
     // A dropped trigger must never be invisible (spec §7's silent-drop finding).
@@ -380,7 +462,25 @@ export async function createAndEnqueueAgentRun(
   const effective = resolved.effective;
   if (!effective.enabled) return skip('agent_disabled');
   if (effective.mode === 'off') return skip('mode_off');
-  const modeAtStart = effective.mode;
+  // Wave 6 PR 3 (#3828) — design authority: a ticket-triggered run is ALWAYS
+  // shadow, regardless of the agent's configured effective mode. This is a
+  // downgrade only ('off' already skipped above at mode_off — a ticket
+  // trigger can never turn a disabled agent on). Placed here (immediately
+  // after the mode_off check, before the circuit breaker / trigger filter /
+  // maintenance-window / admission-counter gates below) so every earlier and
+  // later admission rule sees the SAME modeAtStart a real 'act'-mode agent
+  // would have produced for any other trigger kind — forcing shadow changes
+  // only what the run records and how the guardrail tool gate treats it
+  // (aiGuardrails.ts's shadow branch + the device-less-mutation deny, since
+  // ticket runs are also always device-less), never admission precedence.
+  //
+  // Keyed on the SAME condition as `runLoop.loadRunContext`'s ticket-context
+  // load (`run.ticketId`, not `triggerKind`) — the guard above already makes
+  // `input.ticketId` imply `triggerKind === 'ticket'`, but the OR keeps this
+  // check structurally tied to the thing it protects (hostile ticket content
+  // reaching an act-mode run) rather than to a value that would silently
+  // stop matching if the guard above were ever loosened.
+  const modeAtStart = (triggerKind === 'ticket' || input.ticketId) ? 'shadow' : effective.mode;
 
   // 2b. Circuit breaker (wave 6 PR 2, #3828). Placed as early as possible
   // after the kill switch — this is the first point `resolved.agentId` is
@@ -394,6 +494,12 @@ export async function createAndEnqueueAgentRun(
   if (input.alertContext && !evaluateAgentTriggerFilters(effective.triggers, input.alertContext)) {
     return skip('trigger_filter_mismatch');
   }
+  // 3b. Ticket trigger filters (wave 6 PR 3 review follow-up, #3828) — same
+  // "only an event-shaped trigger carries a context" gating as alertContext
+  // above. `ticketContext` is populated by `ticketHelpdeskSubscriber.ts`.
+  if (input.ticketContext && !evaluateTicketTriggerFilters(effective.triggers, input.ticketContext)) {
+    return skip('trigger_filter_mismatch');
+  }
 
   // 4. Maintenance windows. Reads partner-wide (org_id NULL) windows, so it has
   //    to run inside the system context below — an org-scoped RLS context sees
@@ -405,6 +511,13 @@ export async function createAndEnqueueAgentRun(
   // connection `idle in transaction` across Redis is what exhausted the pool on
   // 2026-05-21 (see the same note on eventBus.publish).
   const admission: CreateAgentRunResult = await inSystemDbContext(async () => {
+    // Ticket-triggered runs are always deviceId: null (no device axis for
+    // tickets in v1 — wave 6 PR 3, #3828), so this already skips for them
+    // with no ticket-specific branch needed: there is no device to be inside
+    // a maintenance window of. Same reasoning covers siteIds — ticket runs
+    // have no device to resolve a site from, so the siteIds trigger filter
+    // (evaluated only when an alertContext is supplied, which ticket
+    // admissions never are) is likewise inert for this trigger kind in v1.
     if (effective.triggers.respectMaintenanceWindows && deviceId) {
       if (await isDeviceInMaintenanceWindow(deviceId)) return skip('maintenance_window');
     }
@@ -563,6 +676,7 @@ export async function createAndEnqueueAgentRun(
         orgId,
         deviceId,
         alertId: input.alertId ?? null,
+        ticketId: input.ticketId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
         triggerRef: input.triggerRef ?? {},
@@ -598,6 +712,7 @@ export async function createAndEnqueueAgentRun(
         agentId: resolved.agentId,
         deviceId,
         alertId: input.alertId ?? null,
+        ticketId: input.ticketId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
         triggerRef: input.triggerRef ?? {},

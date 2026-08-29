@@ -1,9 +1,13 @@
-// Registers the five production event subscribers onto the durable registry
-// (wave 3.5c, #4085). This is the ONLY call site that should ever call
-// `registerEventSubscriber` for these five ids — a subscriber that is both
+// Registers the durable production event subscribers onto the registry
+// (wave 3.5c, #4085; joined by the ticket-helpdesk subscriber, wave 6 PR 3,
+// #3828). This is the ONLY call site that should ever call
+// `registerEventSubscriber` for these ids — a subscriber that is both
 // `subscribe()`d on the legacy bus AND registered here would fire twice (see
 // eventSubscribers.contract.test.ts, which statically asserts none of the
-// five production modules still calls `.subscribe(` on the global bus).
+// five original production modules still calls `.subscribe(` on the global
+// bus — `ticketHelpdeskSubscriber.ts` never existed on the legacy bus, so it
+// is outside that particular assertion's scope, but is covered by the
+// registration-count checks below it in the same file).
 //
 // `registerAllEventSubscribers` is synchronous and idempotence-guarded, and
 // must be called from index.ts BEFORE `initializeWorkers()` — the queue-mode
@@ -24,7 +28,7 @@ import type { BreezeEvent } from './eventBus';
 let registered = false;
 
 /**
- * Register all five durable event subscribers. Synchronous and idempotent —
+ * Register all durable event subscribers. Synchronous and idempotent —
  * a second call is a no-op (registerEventSubscriber itself throws on a
  * duplicate id, so this guard is what lets a hot-reload or a second import
  * of index.ts's bootstrap path not crash the process).
@@ -41,6 +45,27 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
     id: 'webhook-delivery',
     eventTypes: '*',
     handler: handleWebhookFanoutEvent,
+    retry: { attempts: 5, backoffMs: 10_000 },
+  });
+
+  registerEventSubscriber({
+    id: 'ai-agent-ticket-helpdesk',
+    // v1 scope: admission is triggered on ticket.created only —
+    // ticket.commented/ticket.status_changed are on the bus for future
+    // context/admission use but not read here yet (see the plan's deferred
+    // items).
+    //
+    // Lazy, same reason and same pattern as automation-worker below:
+    // ticketHelpdeskSubscriber.ts -> runService.ts's transitive closure
+    // reaches routes/auth/schemas.ts (workerEntrypointClosure.contract.test.ts
+    // caught this on the first attempt at a static import here) — a dynamic
+    // import defers that cost to the first ticket.created delivery instead
+    // of paying it at eventSubscribers.ts's module-eval time.
+    eventTypes: ['ticket.created'],
+    handler: async (event: BreezeEvent) => {
+      const { handleTicketCreatedEvent } = await import('./aiAgents/ticketHelpdeskSubscriber');
+      return handleTicketCreatedEvent(event);
+    },
     retry: { attempts: 5, backoffMs: 10_000 },
   });
 

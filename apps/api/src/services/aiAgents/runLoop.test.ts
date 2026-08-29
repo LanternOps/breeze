@@ -6,6 +6,7 @@ import {
   type AiAgentLimits,
   type AiAgentPolicy,
   type AiAgentPolicySnapshot,
+  type AiAgentTriggerKind,
 } from '@breeze/shared';
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000c1';
@@ -336,10 +337,18 @@ function seedRows(options: {
    * 'act') so the guardrail check actually sees it.
    */
   modeAtStart?: AiAgentPolicy['mode'];
+  /** Wave 6 PR 3 (#3828, Task 4) — undefined (default) means no ticket, i.e.
+   *  every existing test is unaffected. Pass a ticket id AND `ticket`/
+   *  `ticketComments` to exercise a ticket-triggered run's bounded context. */
+  triggerKind?: AiAgentTriggerKind;
+  ticketId?: string | null;
+  ticket?: Record<string, unknown>;
+  ticketComments?: Array<Record<string, unknown>>;
 } = {}) {
   const effective = options.effective ?? policy();
   const deviceId = options.deviceId === undefined ? DEVICE_ID : options.deviceId;
   const alertId = options.alertId === undefined ? ALERT_ID : options.alertId;
+  const ticketId = options.ticketId === undefined ? null : options.ticketId;
 
   dbMockState.rowQueues.ai_agent_runs = [[{
     id: RUN_ID,
@@ -347,9 +356,10 @@ function seedRows(options: {
     orgId: ORG_ID,
     deviceId,
     alertId,
+    ticketId,
     status: 'queued',
     modeAtStart: options.modeAtStart ?? 'shadow',
-    triggerKind: 'alert',
+    triggerKind: options.triggerKind ?? 'alert',
     policySnapshot: snapshot(effective),
   }]];
   dbMockState.rowQueues.ai_agents = [[{
@@ -367,6 +377,13 @@ function seedRows(options: {
   if (alertId) {
     dbMockState.rowQueues.alerts = [[{ id: alertId, title: 'Disk almost full', severity: 'high', message: 'C: at 96%' }]];
   }
+  if (ticketId) {
+    dbMockState.rowQueues.tickets = [[options.ticket ?? {
+      id: ticketId, subject: 'Printer not working', description: 'The printer will not print.',
+      status: 'open', priority: 'high', category: 'hardware', tags: ['printer'], dueDate: null,
+    }]];
+    dbMockState.rowQueues.ticket_comments = [options.ticketComments ?? []];
+  }
   resolveEffectiveAgentSystem.mockResolvedValue(snapshot(effective));
   return effective;
 }
@@ -383,6 +400,9 @@ interface QueryScript {
 const dialect = new PgDialect();
 function compiled(cond: SQL | undefined): string {
   return cond ? dialect.sqlToQuery(cond).sql : '';
+}
+function compiledParams(cond: SQL | undefined): unknown[] {
+  return cond ? dialect.sqlToQuery(cond).params : [];
 }
 
 const yielded: unknown[] = [];
@@ -1315,6 +1335,153 @@ describe('executeAgentRun', () => {
     expect(auth.allowedSiteIds).toEqual([]);
     const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
     expect(prompt).not.toContain('WS-ACCT-04');
+  });
+
+  describe('ticket context (wave 6 PR 3, #3828, Task 4)', () => {
+    const TICKET_ID = '00000000-0000-4000-8000-0000000000e1';
+
+    it('loads bounded ticket context and feeds it into the task prompt, HTML-stripped', async () => {
+      seedRows({
+        triggerKind: 'ticket',
+        deviceId: null,
+        alertId: null,
+        ticketId: TICKET_ID,
+        ticket: {
+          id: TICKET_ID,
+          subject: '<b>Printer</b> not working',
+          description: 'The <i>printer</i> shows an error light.',
+          status: 'open',
+          priority: 'high',
+          category: 'hardware',
+          tags: ['printer'],
+          dueDate: null,
+        },
+        ticketComments: [
+          { authorType: 'portal', content: 'Still <b>broken</b> after reboot.', createdAt: '2026-08-27T12:00:00Z' },
+        ],
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).toContain('Printer not working');
+      expect(prompt).toContain('The printer shows an error light.');
+      // Role label, never the requester's own name (PII exclusion).
+      expect(prompt).toContain('Requester');
+      expect(prompt).toContain('Still broken after reboot.');
+      // The trust boundary held: no raw markup reached the model.
+      expect(prompt).not.toMatch(/<[a-z/][^>]*>/i);
+
+      const systemPrompt = String(lastQueryOptions!.systemPrompt);
+      expect(systemPrompt).toContain('NEVER posts a reply or note to the ticket automatically');
+    });
+
+    it('never leaks a comment author\'s name or ticket submitter PII into the prompt', async () => {
+      seedRows({
+        triggerKind: 'ticket',
+        deviceId: null,
+        alertId: null,
+        ticketId: TICKET_ID,
+        ticket: {
+          id: TICKET_ID,
+          subject: 'Printer not working',
+          description: 'The printer shows an error light.',
+          status: 'open',
+          priority: 'high',
+          category: 'hardware',
+          tags: ['printer'],
+          dueDate: null,
+          // Named projection, not a spread — these must never reach the
+          // prompt even though the mock row carries them.
+          submitterName: 'Jane Doe',
+          submitterEmail: 'jane.doe@example.com',
+          customFields: { secretNote: 'internal-only-value' },
+        },
+        ticketComments: [
+          { authorType: 'portal', authorName: 'Jane Doe', content: 'Still broken after reboot.', createdAt: '2026-08-27T12:00:00Z' },
+        ],
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).not.toContain('Jane Doe');
+      expect(prompt).not.toContain('jane.doe@example.com');
+      expect(prompt).not.toContain('internal-only-value');
+    });
+
+    it('org-pins the RLS-bypassing ticket/comment reads and applies the design-authority filters', async () => {
+      seedRows({
+        triggerKind: 'ticket',
+        deviceId: null,
+        alertId: null,
+        ticketId: TICKET_ID,
+        ticketComments: [
+          { authorType: 'portal', content: 'Still broken.', createdAt: '2026-08-27T12:00:00Z' },
+        ],
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      const ticketSelect = dbMockState.selects.find((s) => s.table === 'tickets');
+      const commentSelect = dbMockState.selects.find((s) => s.table === 'ticket_comments');
+      const ticketWhere = compiled(ticketSelect?.where);
+      const commentWhere = compiled(commentSelect?.where);
+      const ticketParams = compiledParams(ticketSelect?.where);
+      const commentParams = compiledParams(commentSelect?.where);
+      // Both reads run inside a system context (full RLS bypass), so the
+      // tenant predicate and the design-authority content filters all have
+      // to be in the WHERE clause by hand.
+      expect(ticketWhere).toContain('"org_id"');
+      expect(ticketWhere).toContain('"deleted_at"');
+      // Value-level, not just column-presence: the org pin must be bound to
+      // THIS run's org (`ORG_ID`), not merely reference the org_id column —
+      // a column-name-only check would pass even for `org_id = <other org>`.
+      expect(ticketParams).toContain(ORG_ID);
+      expect(commentWhere).toContain('"origin_principal_kind"');
+      expect(commentWhere).toContain('"is_public"');
+      expect(commentWhere).toContain('"deleted_at"');
+      // Loop-guard parity (#3828 wave-6-3 branch-review fix): a comment with
+      // `agent_run_id` set but `origin_principal_kind` left at its default
+      // 'user' must be excluded too — filtering on originPrincipalKind alone
+      // would feed an agent-authored comment back into the model prompt,
+      // violating the locked "never feed agent notes back" rule. This must
+      // match ticketHelpdeskSubscriber.ts's loop guard, which treats a
+      // comment as agent-originated on EITHER signal.
+      expect(commentWhere).toContain('"agent_run_id"');
+      // Value-level for the two equality predicates too: is_public compares
+      // to `true` and origin_principal_kind compares to the human-family
+      // literal `'user'` — not merely present as a column reference. Both
+      // `isNull(...)` arms (deleted_at, agent_run_id) compile to a bare `IS
+      // NULL`/`IS NOT NULL` with no bound parameter, so they are asserted by
+      // the column-presence checks above only.
+      expect(commentParams).toContain(true);
+      expect(commentParams).toContain('user');
+    });
+
+    it('a non-ticket run carries no ticket section at all', async () => {
+      seedRows();
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).not.toContain('Ticket:');
+      const systemPrompt = String(lastQueryOptions!.systemPrompt);
+      expect(systemPrompt).not.toContain('NEVER posts a reply or note to the ticket automatically');
+    });
+
+    it('a missing/deleted ticket is not fed into the prompt (same "moved reads as absent" posture as device/alert)', async () => {
+      seedRows({ triggerKind: 'ticket', deviceId: null, alertId: null, ticketId: TICKET_ID });
+      dbMockState.rowQueues.tickets = [[]];
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).not.toContain('Ticket:');
+      // The run still completes rather than crashing on a vanished ticket.
+      const final = finalTransition()!;
+      expect(final.to).toBe('completed');
+    });
   });
 
   it('notifies the MERGED recipient set from the run snapshot, not the baseline row', async () => {

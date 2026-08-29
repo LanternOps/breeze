@@ -518,6 +518,7 @@ const REPOINT_TABLES: readonly string[] = [
   "ticket_alert_links",
   "ticket_email_links",
   "ticket_forms",
+  "ticket_outbox",
   "ticket_parts",
   "tickets",
   "time_entries",
