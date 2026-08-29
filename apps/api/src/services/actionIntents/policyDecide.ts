@@ -666,6 +666,17 @@ export async function attemptPolicyDecision(intentId: string): Promise<void> {
       // Someone else's attempt already won — silent no-op, not a failure.
       return;
     }
+    // Review fix (round 1): a lost device scope is DETERMINISTIC, not
+    // transient. `runAuthorizeTransaction` throws `IntentScopeLostError` for
+    // the structurally-unreachable tombstone (the load above already degraded
+    // every reachable one), and a tombstone is permanent — the device is not
+    // coming back, so retrying the whole attempt via
+    // `PolicyDecisionTransientError` would have BullMQ redeliver forever.
+    // Degrade to the human path, exactly like the reachable branch does.
+    if (err instanceof IntentScopeLostError) {
+      await degradeToHumanRequired(intentId, 'agent_scope_lost', { reason: err.message });
+      return;
+    }
     // Everything else reaching here is TRANSIENT (a DB/Redis error from any
     // of the awaited reads/writes above): the intent is left `unattempted`
     // (nothing here writes it any other state) — never degrade to

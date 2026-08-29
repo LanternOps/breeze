@@ -367,6 +367,33 @@ describe('createActionIntent — explicit device scope (P2-2)', () => {
     );
   });
 
+  it('never lets the RUN device\'s site stand in for a site-less SCOPED device', async () => {
+    // Review fix (round 1). `devices.site_id` is nullable. With the original
+    // `loaded.scopedDevice?.siteId ?? loaded.deviceSiteId`, a scoped device
+    // with no site fell through `??` to the RUN device's site — handing
+    // checkAgentGuardrails `deviceId = <scope device>` paired with
+    // `deviceSiteId = <a DIFFERENT device's site>`, which is precisely the
+    // pair siteScopeDenial evaluates. All three release-time readers use
+    // `device.siteId ?? null` with no run fallback, so that form made
+    // creation and release disagree. The default fixture seeds every scoped
+    // device with SITE_ID, which is what hid the branch.
+    queueSweepContext({
+      // A run that DOES have a device, and that device DOES have a site
+      // (queueSweepContext seeds it as SITE_ID) — the value that must not leak.
+      run: { deviceId: OTHER_DEVICE_ID },
+      scopedDevice: [{ id: SCOPE_DEVICE_ID, orgId: ORG_ID, siteId: null }],
+    });
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+
+    await createActionIntent(makeAgentAuth(), sweepInput());
+
+    expect(guardrailMock.checkAgentGuardrails).toHaveBeenCalledWith(
+      'manage_services',
+      expect.anything(),
+      expect.objectContaining({ deviceId: SCOPE_DEVICE_ID, deviceSiteId: null }),
+    );
+  });
+
   it('refuses a scope from a non-agent principal (scope_not_allowed)', async () => {
     await expect(
       createActionIntent(makeUserAuth(), {

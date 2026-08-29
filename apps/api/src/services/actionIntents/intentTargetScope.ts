@@ -135,6 +135,25 @@ export class IntentScopeArgumentMismatchError extends Error {
  * that is not an array of exactly the scope device, throws rather than being
  * waved through as "malformed, so harmless". Null/undefined values count as
  * absent (the tool schema, not this gate, decides whether that is legal).
+ *
+ * BOUNDARY — read this before assuming a scoped intent cannot name another
+ * device. This gate knows exactly TWO argument names, `deviceId` and
+ * `deviceIds`. A tool whose device argument is named anything else PASSES it
+ * unexamined, including every tool whose targets are indirect (a group, a
+ * filter, a saved deployment) or expressed through an id that only RESOLVES
+ * to a device via a DB read. The registry's own per-tool `deviceArgs`
+ * declaration (`services/aiTools*.ts`, consumed by
+ * `intentApprovers.DEVICE_COMPLETE_TARGET_TOOLS`) is the authority on which
+ * argument names a given tool actually targets devices through, and it is
+ * deliberately NOT consulted here: this function is pure and synchronous,
+ * while a complete check for those tools needs I/O.
+ *
+ * Tool-specific containment is therefore a per-tool obligation layered on top
+ * of this one, not a substitute for it. `remediate_vulnerability` is the
+ * worked example and the pattern to copy: it carries only
+ * `deviceVulnerabilityIds`, so it passes this gate, and its per-finding
+ * "every cited finding belongs to the scope device" assertion — which must
+ * read the findings to know — ships in Task 5.
  */
 export function assertArgsMatchScope(
   toolName: string,

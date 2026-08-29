@@ -893,7 +893,15 @@ export async function createActionIntent(
       toolAllowlist: effective?.toolAllowlist,
       protectedResources: effective?.protectedResources,
       deviceId: effectiveTargetDeviceId(creationTarget),
-      deviceSiteId: loaded.scopedDevice?.siteId ?? loaded.deviceSiteId,
+      // Review fix (round 1): branch on WHICH device is the target, never
+      // `scopedDevice?.siteId ?? deviceSiteId`. `devices.site_id` is nullable,
+      // so a scoped device with no site would fall through `??` to the RUN
+      // device's site — pairing `deviceId = <scope device>` with
+      // `deviceSiteId = <a different device's site>`, which is exactly the
+      // input `siteScopeDenial` evaluates. All three release-time readers use
+      // `device.siteId ?? null` with NO run fallback, so the `??` form made
+      // creation and release disagree for a site-less scoped device.
+      deviceSiteId: loaded.scopedDevice ? (loaded.scopedDevice.siteId ?? null) : loaded.deviceSiteId,
     } as AgentGuardrailPolicy);
     if (verdict.disposition === 'deny') {
       throw new ActionIntentError(

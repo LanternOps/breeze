@@ -218,7 +218,7 @@ function makeAgentDecideAuthorizer(
 /** Target-scope projection for `resolveTargetDevices` — null when there is no
  *  intent. Kept alongside `toIntentAttribution` so both projections are
  *  derived from the same loaded row, never re-read. */
-function toIntentTargetRef(intent: IntentTargetRef | null): IntentTargetRef | null {
+function toIntentTargetRef(intent: ActionIntent | null): IntentTargetRef | null {
   if (!intent) return null;
   return {
     orgId: intent.orgId,
