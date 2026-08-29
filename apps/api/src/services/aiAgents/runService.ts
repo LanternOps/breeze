@@ -21,7 +21,7 @@ import {
 // admission gate every trigger path calls, and pulling the barrel would force
 // every partial-mock unit test of those paths to stub the whole schema surface.
 import { aiAgents, aiAgentRuns, type AiAgentRunRow } from '../../db/schema/aiAgents';
-import { devices } from '../../db/schema/devices';
+import { deviceGroupMemberships, devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
 import { checkBudget } from '../aiCostTracker';
 import { isDeviceInMaintenanceWindow } from '../deploymentEngine';
@@ -157,6 +157,35 @@ function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * Org-pinned device-group membership lookup shared by every trigger-filter
+ * evaluator below (`evaluateAgentTriggerFilters` today; the anomaly path,
+ * Task 3, reuses it too). Mirrors `alertService.ts`'s
+ * `getApplicableRules` group-membership query, with an explicit `org_id`
+ * pin added: this runs inside a SYSTEM db context (see call sites), which
+ * bypasses RLS, so the org scoping that RLS would otherwise provide has to
+ * be asserted in the WHERE clause itself rather than assumed from context.
+ *
+ * Skipped entirely (no query) when `groupIds` is empty — the common case,
+ * and consistent with every other narrowing filter's
+ * undefined/empty-means-unrestricted convention costing nothing extra.
+ */
+async function deviceMatchesAnyGroup(
+  deviceId: string,
+  orgId: string,
+  groupIds: readonly string[],
+): Promise<boolean> {
+  if (groupIds.length === 0) return true;
+  const memberships = await inSystemDbContext(() => db
+    .select({ groupId: deviceGroupMemberships.groupId })
+    .from(deviceGroupMemberships)
+    .where(and(
+      eq(deviceGroupMemberships.deviceId, deviceId),
+      eq(deviceGroupMemberships.orgId, orgId),
+    )));
+  return memberships.some((m) => groupIds.includes(m.groupId));
+}
+
+/**
  * Spec §5.3 trigger filters.
  *
  * Asymmetry is deliberate and load-bearing: `alertSeverities` is an explicit
@@ -164,16 +193,30 @@ function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
  * must not fire on everything), while every other filter is a narrowing one
  * where empty/absent means "all".
  *
- * `deviceGroupIds` is deliberately NOT evaluated here: resolving group
- * membership costs a query per trigger, and the caller has no group ids on the
- * alert context. Deferred to wave 6 — until then a group filter is inert and
- * WIDER than the operator asked for, which is why it is called out in the PR
- * body rather than silently ignored.
+ * `deviceGroupIds` (wave 6 PR 4, #3828 Task 1 — previously "deliberately NOT
+ * evaluated", see git history for the old docstring): resolves group
+ * membership via an org-pinned `device_group_memberships` lookup
+ * (`deviceMatchesAnyGroup` above), so this function is now ASYNC. Blast-
+ * radius decision recorded here rather than threading `deviceGroupIds`
+ * through every caller-supplied context: at the time of this change there
+ * was exactly one production call site (`createAndEnqueueAgentRun` below)
+ * and one context-building caller (`automationRuntime.ts`, which does not
+ * need to change at all) — awaiting here is strictly smaller than adding a
+ * membership query to every current AND future caller that builds an
+ * `alertContext`, and centralizes the lookup for Task 3's anomaly path to
+ * reuse via `deviceMatchesAnyGroup` rather than re-implementing it.
+ *
+ * A non-empty `deviceGroupIds` passes iff `deviceId` is a member of ANY
+ * listed group; `deviceId === null` (no device to check) fails the filter
+ * whenever the list is non-empty, same treatment as `ctx.siteId === null`
+ * above it.
  */
-export function evaluateAgentTriggerFilters(
+export async function evaluateAgentTriggerFilters(
   triggers: AiAgentTriggers,
   ctx: NonNullable<CreateAgentRunInput['alertContext']>,
-): boolean {
+  deviceId: string | null,
+  orgId: string,
+): Promise<boolean> {
   const severities = triggers.alertSeverities ?? [];
   if (!severities.includes(ctx.severity)) return false;
 
@@ -185,6 +228,12 @@ export function evaluateAgentTriggerFilters(
 
   const deviceTags = triggers.deviceTags ?? [];
   if (deviceTags.length > 0 && !deviceTags.some((tag) => ctx.deviceTags.includes(tag))) return false;
+
+  const groupIds = triggers.deviceGroupIds ?? [];
+  if (groupIds.length > 0) {
+    if (deviceId === null) return false;
+    if (!(await deviceMatchesAnyGroup(deviceId, orgId, groupIds))) return false;
+  }
 
   return true;
 }
@@ -491,7 +540,8 @@ export async function createAndEnqueueAgentRun(
 
   // 3. Trigger filters. Only an event-shaped trigger carries a context; a human
   //    pressing "run now" has already made the selection the filters encode.
-  if (input.alertContext && !evaluateAgentTriggerFilters(effective.triggers, input.alertContext)) {
+  if (input.alertContext
+    && !(await evaluateAgentTriggerFilters(effective.triggers, input.alertContext, deviceId, orgId))) {
     return skip('trigger_filter_mismatch');
   }
   // 3b. Ticket trigger filters (wave 6 PR 3 review follow-up, #3828) — same

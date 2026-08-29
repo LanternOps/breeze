@@ -15,6 +15,7 @@ function baseRun(overrides: Partial<RunTraceRunInput> = {}): RunTraceRunInput {
     orgId: ORG_ID,
     deviceId: DEVICE_ID,
     alertId: null,
+    anomalyIncidentId: null,
     triggerKind: 'manual',
     modeAtStart: 'shadow',
     status: 'completed',
@@ -243,6 +244,21 @@ describe('buildRunTrace — safe projection (#3828)', () => {
         expect(json).not.toContain(`"${forbidden}"`);
       }
       expect(json).not.toContain('leak-marker');
+    });
+  });
+
+  describe('anomalyIncidentId (wave 6 PR 4, #3828 Task 1)', () => {
+    it('projects the triggering incident id for an anomaly-triggered run', () => {
+      const detail = buildRunTrace(
+        baseRun({ triggerKind: 'anomaly', anomalyIncidentId: 'incident-1' }),
+        AGENT, DEVICE, [], [],
+      );
+      expect(detail.anomalyIncidentId).toBe('incident-1');
+    });
+
+    it('is null for every other trigger kind', () => {
+      const detail = buildRunTrace(baseRun(), AGENT, DEVICE, [], []);
+      expect(detail.anomalyIncidentId).toBeNull();
     });
   });
 

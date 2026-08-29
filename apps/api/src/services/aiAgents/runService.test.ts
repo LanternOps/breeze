@@ -21,6 +21,8 @@ const RULE_B = '00000000-0000-4000-8000-0000000000b1';
 const OTHER_ORG_ID = '00000000-0000-4000-8000-0000000000b2';
 const OTHER_PARTNER_ID = '00000000-0000-4000-8000-0000000000b3';
 const TICKET_ID = '00000000-0000-4000-8000-0000000000b4';
+const GROUP_A = '00000000-0000-4000-8000-0000000000b5';
+const GROUP_B = '00000000-0000-4000-8000-0000000000b6';
 
 interface CapturedSelect {
   table: string;
@@ -374,14 +376,70 @@ describe('evaluateAgentTriggerFilters', () => {
     ],
   ];
 
-  it.each(cases)('%s', (_name, trig, context, expected) => {
-    expect(evaluateAgentTriggerFilters(trig, context)).toBe(expected);
+  it.each(cases)('%s', async (_name, trig, context, expected) => {
+    expect(await evaluateAgentTriggerFilters(trig, context, DEVICE_ID, ORG_ID)).toBe(expected);
   });
 
-  it('ignores deviceGroupIds (deferred to wave 6)', () => {
-    expect(
-      evaluateAgentTriggerFilters(triggers({ deviceGroupIds: ['group-that-does-not-match'] }), ctx),
-    ).toBe(true);
+  // Wave 6 PR 4 (#3828 Task 1) — deviceGroupIds is no longer inert. The
+  // member/non-member/unrestricted matrix below pins the new async
+  // membership-lookup behavior; the org-pin test asserts the query is
+  // scoped by BOTH device_id AND org_id (deviceMatchesAnyGroup runs inside
+  // a system db context, which bypasses RLS, so the org scoping has to be
+  // in the WHERE clause itself).
+  describe('deviceGroupIds', () => {
+    it('absent deviceGroupIds = unrestricted (no membership query)', async () => {
+      expect(await evaluateAgentTriggerFilters(triggers(), ctx, DEVICE_ID, ORG_ID)).toBe(true);
+      expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
+    });
+
+    it('empty deviceGroupIds = unrestricted (no membership query)', async () => {
+      expect(
+        await evaluateAgentTriggerFilters(triggers({ deviceGroupIds: [] }), ctx, DEVICE_ID, ORG_ID),
+      ).toBe(true);
+      expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
+    });
+
+    it('device is a member of a listed group', async () => {
+      dbMockState.rowQueues.device_group_memberships = [[{ groupId: GROUP_A }]];
+      expect(
+        await evaluateAgentTriggerFilters(
+          triggers({ deviceGroupIds: [GROUP_A, GROUP_B] }), ctx, DEVICE_ID, ORG_ID,
+        ),
+      ).toBe(true);
+    });
+
+    it('device is not a member of any listed group', async () => {
+      dbMockState.rowQueues.device_group_memberships = [[{ groupId: GROUP_B }]];
+      expect(
+        await evaluateAgentTriggerFilters(triggers({ deviceGroupIds: [GROUP_A] }), ctx, DEVICE_ID, ORG_ID),
+      ).toBe(false);
+    });
+
+    it('device has no group memberships at all', async () => {
+      dbMockState.rowQueues.device_group_memberships = [[]];
+      expect(
+        await evaluateAgentTriggerFilters(triggers({ deviceGroupIds: [GROUP_A] }), ctx, DEVICE_ID, ORG_ID),
+      ).toBe(false);
+    });
+
+    it('deviceId null fails a non-empty deviceGroupIds filter without querying', async () => {
+      expect(
+        await evaluateAgentTriggerFilters(triggers({ deviceGroupIds: [GROUP_A] }), ctx, null, ORG_ID),
+      ).toBe(false);
+      expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
+    });
+
+    it('is org-pinned: the membership query filters by device_id AND org_id', async () => {
+      dbMockState.rowQueues.device_group_memberships = [[{ groupId: GROUP_A }]];
+      await evaluateAgentTriggerFilters(triggers({ deviceGroupIds: [GROUP_A] }), ctx, DEVICE_ID, ORG_ID);
+
+      const call = dbMockState.selects.find((s) => s.table === 'device_group_memberships');
+      expect(call).toBeDefined();
+      const sql = compiled(call?.where);
+      expect(sql).toContain('device_id');
+      expect(sql).toContain('org_id');
+      expect(sql).toMatch(/\band\b/i);
+    });
   });
 });
 

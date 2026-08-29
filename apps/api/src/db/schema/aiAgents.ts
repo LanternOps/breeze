@@ -27,6 +27,7 @@ import type {
 import { alerts } from './alerts';
 import { aiSessions } from './ai';
 import { devices } from './devices';
+import { metricAnomalyIncidents } from './metricAnomalyIncidents';
 import { organizations, partners } from './orgs';
 import { tickets } from './portal';
 import { users } from './users';
@@ -87,6 +88,19 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // ON DELETE RESTRICT composite FK, which exists for a different reason:
   // preserving requesting_agent_run_id attribution on an approval record).
   ticketId: uuid('ticket_id').references(() => tickets.id, { onDelete: 'set null' }),
+  // Wave 6 PR 4 (#3828): the triggering incident for a `triggerKind==='anomaly'`
+  // run. ON DELETE SET NULL — run history survives incident deletion, same
+  // treatment as alertId/deviceId/ticketId above. This is the ONE direction
+  // of the ai_agent_runs <-> metric_anomaly_incidents relationship that gets
+  // a real FK constraint (Drizzle AND SQL) — the reverse column,
+  // metricAnomalyIncidents.agentRunId, deliberately has none, because both
+  // tables are org-cascade members and a real mutual FK pair would be a
+  // 2-node cycle tenantCascade.ts's topologicalCascadeOrder() cannot resolve
+  // (see metricAnomalyIncidents.ts's docstring and the migration header for
+  // the full account). No import-cycle concern either way:
+  // metricAnomalyIncidents.ts imports neither this file nor `tickets`.
+  anomalyIncidentId: uuid('anomaly_incident_id')
+    .references(() => metricAnomalyIncidents.id, { onDelete: 'set null' }),
   triggerKind: text('trigger_kind').$type<AiAgentTriggerKind>().notNull(),
   triggerEventId: varchar('trigger_event_id', { length: 64 }),
   triggerRef: jsonb('trigger_ref').$type<Record<string, unknown>>().notNull().default({}),
@@ -121,6 +135,7 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   orgQueuedIdIdx: index('ai_agent_runs_org_queued_id_idx').on(table.orgId, table.queuedAt.desc(), table.id.desc()),
   deviceIdx: index('ai_agent_runs_device_id_idx').on(table.deviceId),
   ticketIdx: index('ai_agent_runs_ticket_id_idx').on(table.ticketId),
+  anomalyIncidentIdx: index('ai_agent_runs_anomaly_incident_id_idx').on(table.anomalyIncidentId),
 }));
 
 export type AiAgentRow = typeof aiAgents.$inferSelect;

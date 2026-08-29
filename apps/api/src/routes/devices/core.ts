@@ -173,7 +173,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'fleet_finding_devices',
   'group_membership_log',
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
-  'metric_anomaly_candidates', 'metric_anomalies', 'metric_rollups',
+  'metric_anomaly_candidates', 'metric_anomalies', 'metric_anomaly_incidents', 'metric_rollups',
   'onedrive_device_state',
   'peripheral_events', 'playbook_executions', 'provision_credential_handles',
   'recovery_key_access_events',
@@ -306,7 +306,7 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_reliability_history', 'device_reliability',
   'playbook_executions', 'time_series_metrics', 'capacity_predictions',
   'device_process_samples', 'remediation_suggestions',
-  'metric_anomaly_candidates', 'metric_anomalies', 'metric_rollups',
+  'metric_anomaly_candidates', 'metric_anomalies', 'metric_anomaly_incidents', 'metric_rollups',
   // Portal & integrations (tickets are detached, not deleted —
   // see DEVICE_DETACH_DEVICE_ID_TABLES)
   'psa_ticket_mappings', 'asset_checkouts',

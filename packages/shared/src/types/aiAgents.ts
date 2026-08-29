@@ -16,7 +16,7 @@ export const AI_AGENT_RUN_STATUSES = [
 ] as const;
 export type AiAgentRunStatus = (typeof AI_AGENT_RUN_STATUSES)[number];
 
-export const AI_AGENT_TRIGGER_KINDS = ['alert', 'manual', 'schedule', 'ticket'] as const;
+export const AI_AGENT_TRIGGER_KINDS = ['alert', 'manual', 'schedule', 'ticket', 'anomaly'] as const;
 export type AiAgentTriggerKind = (typeof AI_AGENT_TRIGGER_KINDS)[number];
 
 export interface AiAgentLimits {
@@ -93,6 +93,33 @@ export interface AiAgentTriggers {
   /** `ticket_priority` enum values (`db/schema/portal.ts`). Enforced by
    *  `runService.ts`'s `evaluateTicketTriggerFilters`. */
   ticketPriorities?: Array<'low' | 'normal' | 'high' | 'urgent'>;
+  /**
+   * Wave 6 PR 4 (#3828) — narrowing filters for `triggerKind: 'anomaly'`
+   * admission (`evaluateAnomalyTriggerFilters`, Task 3). Same
+   * undefined-means-unrestricted / `.min(1)` convention as `ticketCategories`
+   * above, NOT `alertSeverities`' opt-in-list asymmetry.
+   *
+   * `anomalyTypes` matches `metric_anomaly_incidents.anomaly_type` /
+   * `metric_anomalies.anomaly_type` — free text (`'spike'`/`'drop'`/`'trend'`
+   * today, `apps/api/src/services/metricAnomalies.ts`), NOT a fixed pg enum,
+   * so this is `string[]`, not a literal union — the detector can grow new
+   * anomaly types without a shared-package release.
+   */
+  anomalyTypes?: string[];
+  /** Matches `metric_anomalies.metric_name` (free text, e.g. `cpu_percent`). */
+  metricNames?: string[];
+  /**
+   * Minimum `metric_anomaly_incidents.peak_score` (the detector's raw,
+   * UNBOUNDED `score` magnitude — see `metric_anomalies.score`, a
+   * `doublePrecision`) an incident's peak must reach to admit a run.
+   * Deliberately NOT constrained to 0-1: unlike `confidence` (a derived,
+   * bounded 0.5-0.99 value the detector computes FROM score), `score` itself
+   * has no fixed ceiling across the spike/drop/trend detectors — see the
+   * `peakScore` column comment on `metricAnomalyIncidents.ts`. `undefined`
+   * means unrestricted (no floor), same convention as every other
+   * trigger-filter field on this interface.
+   */
+  minAnomalyScore?: number;
 }
 
 export interface AiAgentRecipients {

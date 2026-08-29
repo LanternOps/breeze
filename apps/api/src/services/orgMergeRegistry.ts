@@ -428,6 +428,7 @@ const REPOINT_TABLES: readonly string[] = [
   "maintenance_windows",
   "metric_anomalies",
   "metric_anomaly_candidates",
+  "metric_anomaly_incidents",
   "metric_rollups",
   "metric_rollups_default",
   "network_baselines",

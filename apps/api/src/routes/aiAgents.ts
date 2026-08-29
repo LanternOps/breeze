@@ -453,6 +453,7 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       orgId: aiAgentRuns.orgId,
       deviceId: aiAgentRuns.deviceId,
       alertId: aiAgentRuns.alertId,
+      anomalyIncidentId: aiAgentRuns.anomalyIncidentId,
       sessionId: aiAgentRuns.sessionId,
       triggerKind: aiAgentRuns.triggerKind,
       modeAtStart: aiAgentRuns.modeAtStart,
