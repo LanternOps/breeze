@@ -18,6 +18,7 @@ import { runAction, ActionError } from '../../lib/runAction';
 import { normalizeMetricAnomalyContext } from './alertMlContext';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import { asList } from '@/lib/asList';
+import { useHashState } from '@/lib/useHashState';
 
 type Device = { id: string; name: string };
 
@@ -29,6 +30,16 @@ const BULK_PAST_TENSE_KEY: Record<string, string> = {
   suppress: 'suppressed',
   dismiss: 'dismissed',
 };
+
+// Hash layout (hash-based UI state per CLAUDE.md): the bare token
+// `#hideAiNoise` when the AI-noise filter is on, empty otherwise. Pure: takes
+// the raw hash (leading `#` already stripped by useHashState, #2421).
+// Anything else (including empty) falls back to useHashState's `false`
+// default, so this page currently owns the whole hash — a future second
+// hash-state consumer on this page would need to combine into one segment.
+function hideAiNoiseFromHash(hash: string): boolean | undefined {
+  return hash === 'hideAiNoise' ? true : undefined;
+}
 
 function normalizeAlertRows(rows: Record<string, unknown>[], unknownDevice: string): Alert[] {
   return rows.map((row) => {
@@ -75,6 +86,10 @@ export default function AlertsPage() {
   // Bulk suppress needs a duration picker (the endpoint requires `until`), so it
   // can't go through the simple Confirm bar like bulk ack/resolve.
   const [bulkSuppressTarget, setBulkSuppressTarget] = useState<Alert[] | null>(null);
+  // Phase 2 wave P2-1 (alert verdicts), Task 15. SSR-safe hash adoption +
+  // hashchange subscription live in the hook (#2421); the write happens in
+  // handleHideAiNoiseChange below, per CLAUDE.md's URL-state rule.
+  const [hideAiNoise, setHideAiNoiseState] = useHashState<boolean>(false, hideAiNoiseFromHash);
 
   // Honor the global Current/All-orgs scope toggle: when it flips (or the
   // current org changes), re-run the fetches so the list reflects the new
@@ -107,7 +122,17 @@ export default function AlertsPage() {
       // dismissed alerts, but this page's status dropdown includes a "Dismissed"
       // option — filtering happens client-side in AlertList, whose "All Status"
       // view excludes dismissed so they only show when explicitly selected.
-      const response = await fetchWithAuth('/alerts?status=active,acknowledged,resolved,suppressed,dismissed');
+      // hideAiNoise, unlike every other filter on this page, is NOT applied
+      // client-side — "AI noise" is a server-side classification judgment
+      // (Task 14) this component has no basis to reproduce. Appended as a
+      // literal query segment rather than via URLSearchParams so the existing
+      // comma-separated `status` value keeps going out unencoded (URLSearchParams
+      // would %2C-escape the commas — harmless server-side, but an unrelated
+      // wire-shape change this task has no reason to make).
+      const hideAiNoiseParam = hideAiNoise ? '&hideAiNoise=true' : '';
+      const response = await fetchWithAuth(
+        `/alerts?status=active,acknowledged,resolved,suppressed,dismissed${hideAiNoiseParam}`
+      );
       if (fetchId !== alertsFetchId.current) return; // superseded by a newer fetch; drop
       if (!response.ok) {
         if (response.status === 401) {
@@ -126,7 +151,7 @@ export default function AlertsPage() {
     } finally {
       if (fetchId === alertsFetchId.current) setLoading(false);
     }
-  }, [currentOrgId, t]);
+  }, [currentOrgId, hideAiNoise, t]);
 
   const fetchDevices = useCallback(async () => {
     const fetchId = ++devicesFetchId.current;
@@ -213,6 +238,15 @@ export default function AlertsPage() {
       return deviceId ? deviceFilterIds.has(deviceId) : true;
     });
   }, [alerts, deviceFilterIds]);
+
+  // Phase 2 wave P2-1 (alert verdicts), Task 15. Writing the hash stays with
+  // the caller per CLAUDE.md's URL-state rule — useHashState only owns the
+  // read. fetchAlerts depends on hideAiNoise, so the effect below re-fires
+  // and refetches with hideAiNoise=true/omitted as soon as this state lands.
+  const handleHideAiNoiseChange = (value: boolean) => {
+    window.location.hash = value ? 'hideAiNoise' : '';
+    setHideAiNoiseState(value);
+  };
 
   const handleSelect = async (alert: Alert) => {
     setSelectedAlert(alert);
@@ -624,6 +658,8 @@ export default function AlertsPage() {
           submittingId={submittingId}
           alertCorrelationDisabled={alertCorrelationDisabled}
           showOrgColumn={isFleetView}
+          hideAiNoise={hideAiNoise}
+          onHideAiNoiseChange={handleHideAiNoiseChange}
         />
       )}
 

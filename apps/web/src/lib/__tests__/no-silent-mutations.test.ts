@@ -31,6 +31,10 @@ const TARGET_GLOBS = [
   'src/components/alerts/NotificationChannelsPage.tsx',
   'src/components/alerts/AlertsPage.tsx',
   'src/components/alerts/AlertDetailPage.tsx',
+  // Alert verdict feedback (P2-1 Task 15): submitVerdictFeedback is the one
+  // runAction-wrapped POST both the list row and the detail page call — a
+  // future bare mutation added here would ship unguarded to both.
+  'src/components/alerts/AlertVerdictBadge.tsx',
   'src/components/settings/PartnerSettingsPage.tsx',
   'src/components/settings/PartnerAiProviderTab.tsx',
   'src/components/settings/OrgSettingsPage.tsx',
@@ -376,10 +380,11 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    // 101: 99 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
+    // 102: 99 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
     // (org-lifecycle Wave 3), plus ArchiveOrgModal.tsx (org-lifecycle Wave 5),
-    // plus SsoProvidersPage.tsx and ReportBuilder.tsx (2026-08-28 pre-release sweep).
-    expect(absoluteFiles.length).toBe(101);
+    // plus SsoProvidersPage.tsx and ReportBuilder.tsx (2026-08-28 pre-release sweep),
+    // plus AlertVerdictBadge.tsx (P2-1 Task 15).
+    expect(absoluteFiles.length).toBe(102);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
