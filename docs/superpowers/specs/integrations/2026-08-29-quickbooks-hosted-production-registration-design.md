@@ -1,11 +1,13 @@
 # Hosted QuickBooks Production Registration Design
 
 **Date:** 2026-08-29  
-**Status:** Approved for Intuit-side configuration
+**Status:** Approved as the production-launch phase of the full QuickBooks sync program
 
 ## Goal
 
-Enable the existing Intuit Developer app named **Breeze** for private production use by Breeze Cloud customers in both hosted regions. This is production OAuth enablement, not a QuickBooks App Marketplace launch.
+Deliver the full QuickBooks accounting loop and then enable the existing Intuit Developer app named **Breeze** for private production use by Breeze Cloud customers in both hosted regions. This is production OAuth enablement, not a QuickBooks App Marketplace launch.
+
+The detailed accounting data model and provider architecture remain governed by `docs/superpowers/specs/billing/2026-06-23-quickbooks-accounting-integration-design.md`. This document fixes the delivery order and the hosted Intuit registration contract.
 
 ## Chosen approach
 
@@ -15,6 +17,17 @@ Alternatives considered:
 
 - Separate US and EU Intuit apps: stronger administrative separation, but duplicates credentials, compliance work, monitoring, and support.
 - US-only initial registration: simpler, but prevents EU-hosted customers from connecting QuickBooks and creates avoidable follow-up work.
+
+## Delivery sequence
+
+Production registration is the final phase, not the first:
+
+1. **Customer and item mapping:** preserve the existing QuickBooks customer import; add confirmed external mappings and QuickBooks customer/item upsert behavior.
+2. **Invoice push:** push issued invoices through an idempotent, retryable queue; support manual/automatic modes and invoice voiding.
+3. **Payment reconciliation:** verify Intuit webhooks, fetch authoritative payment/invoice state, record payments idempotently, and run scheduled CDC reconciliation as a missed-event backstop.
+4. **Production launch:** complete an end-to-end sandbox test, submit the Intuit assessment using verified capabilities, register both hosted callbacks, and deploy production credentials securely.
+
+Each implementation phase gets its own plan and verification gate. Do not describe a later phase to Intuit as live until its sandbox verification passes.
 
 ## Intuit app configuration
 
@@ -45,21 +58,28 @@ Production OAuth redirect URIs:
 
 The `/api/v1` prefix is required. Both deployed endpoints were verified to reach the API and return validation responses when called without OAuth parameters. The older documentation example without `/api/v1` resolves to the web application and returns 404.
 
-## Current product behavior represented to Intuit
+## Required product behavior before production submission
 
 Breeze lets an authenticated partner administrator connect one QuickBooks Online company to the partner account using OAuth. Breeze stores encrypted OAuth tokens, refreshes rotated tokens, reads QuickBooks customer records, and lets the administrator import selected customers as Breeze organizations and default sites. Connection changes and customer imports require Breeze authorization controls, including MFA for privileged mutations.
 
-Invoice/item push, payment reconciliation, and QuickBooks webhooks are not represented as live production capabilities because their provider methods remain unimplemented.
+Before production submission, Breeze must additionally:
+
+- Reconcile and confirm Breeze organization/catalog mappings to QuickBooks Customers and Items.
+- Push issued Breeze invoices to QuickBooks idempotently, with dependency ordering, retry visibility, configurable manual/automatic mode, and void support.
+- Verify Intuit webhook signatures and reconcile authoritative QuickBooks Payment/Invoice changes back into Breeze.
+- Run scheduled CDC reconciliation to catch dropped or delayed webhook events.
+- Preserve external IDs and QuickBooks sync tokens in dedicated partner-scoped mapping records rather than core billing tables.
 
 ## Compliance questionnaire principles
 
-- Answer only for capabilities currently implemented and deployed.
+- Answer only for capabilities implemented and verified in the QuickBooks sandbox.
 - Describe Breeze as a business-to-business RMM/PSA platform used by MSPs and internal IT teams.
 - State that QuickBooks access is initiated by an authenticated partner administrator and is limited to the accounting scope.
 - State that OAuth credentials and tokens are encrypted at rest and excluded from logs and user-facing status responses.
 - State that customer data is tenant-isolated and access is authorization-controlled.
 - Do not claim a certification that Breeze does not hold.
-- Do not claim marketplace availability, payment processing, lending, insurance, or investment services.
+- Distinguish payment reconciliation from payment processing: Breeze reflects QuickBooks payment state but does not use the QuickBooks Payments API or move money.
+- Do not claim marketplace availability, lending, insurance, or investment services.
 
 ## Credential handling
 
@@ -73,19 +93,28 @@ Credential creation/reveal and any final compliance submission require an explic
 
 ## Validation
 
+Before Intuit production submission:
+
+1. Connect a QuickBooks sandbox company.
+2. Confirm or create a controlled Customer and Item mapping.
+3. Push an issued test invoice and verify amounts, tax, line detail, remote ID, and sync token.
+4. Retry the same push and verify no duplicate QuickBooks invoice is created.
+5. Void the test invoice and verify QuickBooks reflects the void.
+6. Create partial and final payments in QuickBooks and verify webhook-driven reconciliation updates Breeze idempotently.
+7. Replay a webhook and run the CDC sweep to verify neither path duplicates payments.
+
 After Intuit configuration and hosted secret deployment:
 
 1. Confirm both redirect URIs appear exactly in Intuit production settings.
 2. Start OAuth from the Accounting integration page in each hosted region.
 3. Verify the Intuit consent screen requests only QuickBooks accounting access.
-4. Complete a sandbox or controlled production connection in each region.
+4. Complete a controlled production connection in each region.
 5. Verify Breeze reports the connection without exposing tokens.
-6. Load QuickBooks customers and import one controlled test customer.
+6. Run a controlled customer/item/invoice/payment round trip.
 7. Disconnect and confirm the Breeze connection record is removed.
 
 ## Out of scope
 
 - Public QuickBooks App Marketplace listing.
-- Implementing invoice/item push, payment pull-back, or webhooks.
 - Changing production infrastructure outside the four QuickBooks environment variables.
 - Creating separate regional Intuit apps.
