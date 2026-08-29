@@ -3,7 +3,7 @@
 **Date:** 2026-08-28  
 **Issues:** #2489, #3853, #3854  
 **Scope:** API challenge negotiation, web MFA completion, and mobile MFA completion  
-**Out of scope:** deployment, production flag changes, W07 Phase 2 compatibility removal, and unrelated W03-W06 follow-ups
+**Out of scope:** deployment, production flag changes, W07 Phase 2 compatibility removal, unrelated W03-W06 follow-ups, and the #3854 items that belong to W07 native transport — native-binding bootstrap/retry (`x-breeze-native-auth-binding`) and the mobile v1 transition header. Those are deferred to a W07-native follow-up and are not claimed by this spec; #3854 stays open after slice 4 until they land.
 
 ## Objective
 
@@ -11,7 +11,7 @@ Complete the MFA client contract so the API, web client, and mobile client agree
 
 ## Constraints
 
-- `AUTH_BROWSER_TRANSITIONS_ENABLED` and `AUTH_BROWSER_TRANSITIONS_ENFORCED` remain unchanged and disabled by default.
+- `AUTH_BROWSER_TRANSITIONS_ENFORCED` (`apps/api/src/config/env.ts`) remains unchanged and disabled by default. There is no `AUTH_BROWSER_TRANSITIONS_ENABLED` flag: client opt-in is the per-request `x-breeze-auth-transition: v1` header (`routes/auth/helpers.ts`, `isAuthTransitionV1Request`), which the web client already sends.
 - The server is authoritative for method availability. Clients never infer that a method is permitted merely because they can render it.
 - Existing clients that only understand `mfaMethod`, `passkeyAvailable`, and `phoneLast4` continue to work.
 - Recovery codes remain a fallback credential, not an organization policy enrollment method.
@@ -49,7 +49,7 @@ interface MfaAllowedMethods {
 interface MfaRequiredResponse {
   mfaRequired: true;
   tempToken: string;
-  mfaMethod: 'totp' | 'sms';
+  mfaMethod: 'totp' | 'sms' | 'passkey'; // today: user.mfaMethod || 'totp'
   allowedMethods: MfaAllowedMethods;
   recoveryAvailable: boolean;
   passkeyAvailable: boolean;
@@ -65,12 +65,27 @@ interface MfaRequiredResponse {
 - `sms` is true only when the account's enrolled SMS method is allowed and a phone number is present.
 - `passkey` is true only when a registered passkey exists and passkey MFA is permitted.
 - `recoveryAvailable` is true only when at least one stored recovery-code hash exists. It is separate because recovery is not a policy enrollment method.
+- `mfaMethod` keeps its current derivation (`user.mfaMethod || 'totp'`, `routes/auth/login.ts`) and may be `'passkey'` for a passkey-only account — legacy clients already handle that value. Legacy behavior is therefore deterministic: a legacy client sees exactly what it sees today (`mfaMethod` + `passkeyAvailable`), and a recovery-only challenge (primary factor disallowed, passkey absent, recovery codes present) is completable only by a new client. `mfaMethod` must always itself be an allowed option or, when the primary factor is disallowed by live policy, the response must still carry a usable `passkey`/`recovery` option — never a `mfaMethod` the record would reject.
 
 The response must expose at least one usable option. If policy and enrollment drift leave no usable primary, passkey, or recovery method, login fails closed with the existing generic authentication-error shape rather than issuing a challenge that cannot complete.
 
-The pending MFA record stores the authoritative `allowedMethods` and `recoveryAvailable` snapshot. `/auth/mfa/verify` accepts `method: 'recovery'` only when the record permits recovery, and continues to consume exactly one valid code atomically. Passkey verification continues through its dedicated WebAuthn endpoints and must satisfy the pending record's passkey flag.
+The pending MFA record (`PendingMfaRecord`, `routes/auth/helpers.ts`, Redis `mfa:pending:<tempToken>`) already stores `allowedMethods: {totp, sms, passkey}`; this change adds `recoveryAvailable`. `parsePendingMfa` stays strict: a record missing or mistyping any `allowedMethods` boolean or `recoveryAvailable` is rejected (401), never defaulted permissively. Records written before deploy lack `recoveryAvailable` and are rejected for at most the 300 s pending TTL; that is accepted.
 
-At verification time, the server re-checks live policy, factor ownership, epochs, and W07 transition authority. A method disabled after password verification fails without consuming the pending challenge or a recovery code unless the current security contract already requires terminal invalidation for that failure class.
+**Method-switch algorithm (normative).** Today `/auth/mfa/verify` ignores the client's `method` for TOTP/SMS and uses only `pending.mfaMethod` ("never allow the client to override"). This change replaces that with server-authorized selection:
+
+1. Parse `method` strictly (`'totp' | 'sms' | 'recovery'`; unknown → 400). Default when absent: `pending.mfaMethod` (legacy clients).
+2. `totp`/`sms`: require `pending.allowedMethods[method] === true` **and** that the account is actually enrolled in that factor (`mfaSecret` present for TOTP; `mfaMethod === 'sms'` with a phone number for SMS) **and** live `getEffectiveMfaPolicy(...).allowedMethods[method]`. Any failure → 401 with the existing generic error; audit `mfa_method_not_allowed`.
+3. `recovery`: require `pending.recoveryAvailable === true`; the hash check and relative jsonb delete stay inside the guarded finalization exactly as today (`consumeRecoveryCode`).
+4. Passkey verification stays on its dedicated WebAuthn routes (`routes/auth/passkeys.ts`) and must additionally require `pending.allowedMethods.passkey === true`.
+
+`POST /auth/mfa/send-sms` (and any other pending-token continuation, including passkey challenge issuance) must independently authorize the pending token, the selected method against the pending record and live policy, epochs/status expectation, and the existing challenge-keyed rate limit. Selecting a method mints no authority.
+
+At verification time, the server re-checks live policy, factor ownership, epochs, and W07 transition authority. Current behavior is normative and unchanged by this spec:
+
+- A method disallowed by live policy after password verification is **terminal**: the pending record is deleted (`redis.del`, `routes/auth/mfa.ts`) and the user must sign in again. It is not a soft failure that returns to method selection, because a client could otherwise probe policy state against a live challenge.
+- Under the W07 v1 header path, a recovery code is consumed only inside `finishAuthIssuance`, so a logout-pending transition never burns a code.
+- On the legacy (non-v1) path the recovery code is consumed in its own transaction **before** session issuance, as today. This spec does not change that; it is retired with the legacy path in W07 Phase 2.
+- Wrong code, unavailable method, and stale-record failures do not delete the pending record beyond what the existing rate limiter and epoch checks already do.
 
 ## Web Client
 
@@ -86,12 +101,15 @@ Changing to SMS sends a code once for the selected challenge and retains the exi
 
 Forced enrollment becomes policy-driven:
 
-- The forced-enrollment page calls `GET /auth/mfa/enrollment-options` with its limited authenticated session. The response is `{ allowedMethods: { totp: boolean; sms: boolean; passkey: boolean }, phoneConfigured: boolean }`; it never includes recovery because recovery depends on a primary factor.
+- Forced enrollment is not a limited session: login mints a full session and `middleware/auth.ts` returns `428 mfa_enrollment_required` on every route outside `isMfaEnrollmentExemptPath`. The forced-enrollment page calls the new `GET /auth/mfa/enrollment-options` (authenticated). Because `/auth/mfa/*`, `/auth/phone/*`, and `/auth/passkeys/*` are already exempt, no middleware change is needed — the implementation must add a test asserting the new route is reachable in the 428-gated state. The response is `{ allowedMethods: { totp: boolean; sms: boolean; passkey: boolean }, phoneConfigured: boolean }`, derived from `getEffectiveMfaPolicy` for the caller's resolved scope/org/partner; it never includes recovery because recovery depends on a primary factor.
+- `getEffectiveMfaPolicy` currently hardcodes `passkey: true` (`services/mfaPolicy.ts`, phishing-resistant factor is always permitted), so the "no method available" server case is unreachable today. The fail-closed rule stays as defense in depth for a future policy that can restrict passkeys.
 - TOTP reuses the current setup/enable flow.
 - SMS reuses the existing phone verification/enrollment flow.
 - Passkey reuses the current registration-grant/WebAuthn flow.
 - Recovery is never offered as enrollment because it depends on a primary factor.
 - If no enrollment method is available, the page fails closed and directs the user to an administrator instead of defaulting to TOTP.
+
+Enrolling **any one** permitted method satisfies the policy requirement. Completion is atomic per factor: the existing enable/verify endpoint for that factor (TOTP enable, SMS phone verify, passkey registration finish) sets the account enrolled, generates recovery codes once, and clears the enrollment-required state in the same transaction it uses today; the client then re-issues MFA-assured credentials through the existing refresh path so the pre-enrollment `mfa=false` assurance is not reused. A partial or abandoned enrollment (setup started, never enabled) leaves the user in the 428-gated state with no factor recorded; no half-enrolled factor is ever persisted as enabled.
 
 Successful enrollment updates the authenticated user, preserves W07 generation-safe session handling, displays any newly generated recovery codes exactly once, and returns to the intended destination.
 
@@ -109,7 +127,9 @@ The MFA screen:
 
 All successful completions continue through `commitIfCurrent`. Logout, account switch, or a newer login generation prevents stale MFA responses from installing credentials, CSRF state, or native binding state.
 
-Mobile forced enrollment is not added in this change because #3854 scopes login/session completion, while the existing API does not yet expose a native forced-enrollment navigation contract. A mobile login response that requires enrollment must remain fail-closed with an actionable web/admin handoff rather than silently granting normal app access.
+Mobile forced enrollment UI is not added in this change because #3854 scopes login/session completion, while the existing API does not yet expose a native forced-enrollment navigation contract. **Today mobile ignores `mfaEnrollmentRequired` entirely** and installs a session that then 428s on every gated route. Slice 4 must add explicit handling: when the login response carries `mfaEnrollmentRequired: true`, mobile does not install the credentials as a normal session and instead shows a fail-closed screen with an actionable web/admin handoff. This is new behavior, not preservation of existing behavior.
+
+`commitIfCurrent` semantics are normative: logout and account switch advance the session generation **before** clearing local state, and installation of tokens, CSRF state, account identity, and the native binding is a single current-generation commit — never partial.
 
 ## Error Handling and Security Properties
 
@@ -129,7 +149,9 @@ Mobile forced enrollment is not added in this change because #3854 scopes login/
 - Allowed-method derivation for TOTP, SMS, passkey, recovery, mixed methods, and no-usable-method failure.
 - Auth/authz and policy tests for `GET /auth/mfa/enrollment-options`, including limited forced-enrollment sessions and cross-tenant policy inheritance.
 - Malformed/stale pending-record rejection.
-- Live-policy disablement between password and verification.
+- Live-policy disablement between password and verification (terminal: pending record deleted).
+- Method-switch matrix: requested method not in pending `allowedMethods`, allowed-but-not-enrolled, allowed-and-enrolled; strict rejection of records missing `recoveryAvailable`.
+- `send-sms` with SMS not in pending `allowedMethods`.
 - Recovery unavailable, invalid, identical-code race, distinct-code race, and no-consumption on failed W07 admission.
 - Cross-user and cross-tenant pending-token rejection.
 
@@ -150,6 +172,7 @@ Mobile forced enrollment is not added in this change because #3854 scopes login/
 - Unsupported-method and empty-method handling.
 - SMS selection/resend lifecycle.
 - Stale MFA completion after logout, account switch, or newer login generation.
+- `mfaEnrollmentRequired` login response does not install a normal session.
 - Credential and native-binding installation only for the current generation.
 
 ## Delivery Slices
