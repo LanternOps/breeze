@@ -6,7 +6,6 @@ import { AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS, type AlertVerdictOutcome } from '@bree
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000e1';
 const RUN_ID = '00000000-0000-4000-8000-0000000000e2';
-const AGENT_ID = '00000000-0000-4000-8000-0000000000e3';
 const ALERT_ID = '00000000-0000-4000-8000-0000000000e4';
 const OTHER_ALERT_ID = '00000000-0000-4000-8000-0000000000e5';
 const DEVICE_ID = '00000000-0000-4000-8000-0000000000e6';
@@ -53,6 +52,7 @@ vi.mock('../../db', () => {
         state.selectWheres.push(w);
         return builder;
       }),
+      orderBy: vi.fn(() => builder),
       limit: vi.fn(() => builder),
       then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
         Promise.resolve()
@@ -144,10 +144,11 @@ const agentAuth = {
   scope: 'organization',
 } as never;
 
+// Note: `agentId` was dropped from `persistAlertVerdict`'s `run` param
+// (review round 1 minor fix — it was never used in the function body).
 const runInput = {
   id: RUN_ID,
   orgId: ORG_ID,
-  agentId: AGENT_ID,
   alertId: ALERT_ID,
   correlationGroupId: null,
   deviceId: DEVICE_ID,
@@ -174,7 +175,9 @@ describe('persistAlertVerdict', () => {
 
     const result = await persistAlertVerdict(runInput, baseVerdict, agentAuth);
 
-    expect(result).toEqual({ verdictId: VERDICT_ROW_ID, intentId: null });
+    expect(result).toEqual({
+      verdictId: VERDICT_ROW_ID, intentId: null, suggestionDisposition: 'not_created', suggestionReason: undefined,
+    });
     expect(createActionIntent).not.toHaveBeenCalled();
 
     expect(state.insertValues[0]).toMatchObject({
@@ -188,19 +191,25 @@ describe('persistAlertVerdict', () => {
     });
 
     // The supersede update sets superseded_by to the row just written, and
-    // its WHERE excludes that same row while requiring the prior row to
-    // still be live (superseded_by IS NULL) — not a vacuous where-clause.
+    // its WHERE pins org_id, excludes that same row while requiring the
+    // prior row to still be live (superseded_by IS NULL) — not a vacuous
+    // where-clause.
     expect(state.updateSets[0]).toEqual({ supersededBy: VERDICT_ROW_ID });
     const where = sqlText(state.updateWheres[0]);
+    expect(where).toContain('org_id');
     expect(where).toContain('superseded_by');
     expect(where.toLowerCase()).toContain('is null');
     expect(where).toContain('<>');
   });
 
-  it('creates a Tier-2 supervised manage_alerts intent for a suggestion and links it', async () => {
+  it('creates a Tier-2 supervised manage_alerts intent for a pending-approval suggestion, links it, and uses the run\'s own deviceId without an extra query', async () => {
     createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
-    state.selectQueue.push([{ deviceId: DEVICE_ID }]); // alerts.deviceId lookup
     state.insertReturningQueue.push([{ id: VERDICT_ROW_ID }]);
+    // No `state.selectQueue` entries pushed: `suggestion.alertId ===
+    // run.alertId` short-circuits BOTH the correlation-membership check and
+    // the alerts.deviceId lookup (review round 1 minor fix) — an
+    // unexpected select would throw "no queued select rows" and fail this
+    // test, so the absence of a queued row IS the assertion.
 
     const verdict: AlertVerdictOutcome = {
       ...baseVerdict,
@@ -222,13 +231,19 @@ describe('persistAlertVerdict', () => {
       idempotencyKey: `verdict:${RUN_ID}`,
     });
     expect(result.intentId).toBe(INTENT_ID);
+    expect(result.suggestionDisposition).toBe('intent_created');
+    expect(result.suggestionReason).toBeUndefined();
     expect(state.insertValues[0]).toMatchObject({ suggestedIntentId: INTENT_ID });
   });
 
-  it('records intentError on the outcome (not a throw) when intent creation fails', async () => {
+  // CRITICAL fix (review round 1): createActionIntent does NOT throw on
+  // no_eligible_approvers — it commits the intent then immediately cancels
+  // it, returning that snapshot. Linking a cancelled intent's id would
+  // advertise a dead intent and break the "intent_ids are pending-only"
+  // invariant. Mocked with a resolved cancelled snapshot, NOT a rejection.
+  it('does not link a cancelled (no_eligible_approvers) intent', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    createActionIntent.mockRejectedValue(new Error('no_eligible_approvers'));
-    state.selectQueue.push([{ deviceId: DEVICE_ID }]);
+    createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'cancelled', errorCode: 'no_eligible_approvers' });
     state.insertReturningQueue.push([{ id: VERDICT_ROW_ID }]);
 
     const verdict: AlertVerdictOutcome = {
@@ -240,11 +255,32 @@ describe('persistAlertVerdict', () => {
     const result = await persistAlertVerdict(runInput, verdict, agentAuth);
 
     expect(result.intentId).toBeNull();
+    expect(result.suggestionDisposition).toBe('not_created');
+    expect(result.suggestionReason).toBe('no_eligible_approvers');
     expect(warnSpy).toHaveBeenCalled();
     expect(state.insertValues[0]).toMatchObject({ suggestedIntentId: null });
   });
 
-  it('refuses a suggestion whose alertId is not the run alert / not a member of the run group', async () => {
+  it('treats a genuine createActionIntent throw as intent_error (not a propagated exception)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    createActionIntent.mockRejectedValue(new Error('org_resolution_failed'));
+    state.insertReturningQueue.push([{ id: VERDICT_ROW_ID }]);
+
+    const verdict: AlertVerdictOutcome = {
+      ...baseVerdict,
+      classification: 'actionable',
+      suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: ALERT_ID },
+    };
+
+    const result = await persistAlertVerdict(runInput, verdict, agentAuth);
+
+    expect(result.intentId).toBeNull();
+    expect(result.suggestionDisposition).toBe('not_created');
+    expect(result.suggestionReason).toBe('intent_error');
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it('refuses a suggestion whose alertId is not the run alert / not a member of the run group (target_mismatch)', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     state.insertReturningQueue.push([{ id: VERDICT_ROW_ID }]);
 
@@ -259,6 +295,51 @@ describe('persistAlertVerdict', () => {
     const result = await persistAlertVerdict(runInput, verdict, agentAuth);
 
     expect(result.intentId).toBeNull();
+    expect(result.suggestionDisposition).toBe('not_created');
+    expect(result.suggestionReason).toBe('target_mismatch');
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it('refuses a low-confidence suggestion without creating an intent (low_confidence)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    state.insertReturningQueue.push([{ id: VERDICT_ROW_ID }]);
+
+    const verdict: AlertVerdictOutcome = {
+      ...baseVerdict,
+      confidence: 0.6,
+      classification: 'actionable',
+      suggestedAction: { tool: 'manage_alerts', action: 'suppress', alertId: ALERT_ID, suppressDuration: 24 },
+    };
+
+    const result = await persistAlertVerdict(runInput, verdict, agentAuth);
+
+    expect(result.suggestionDisposition).toBe('not_created');
+    expect(result.suggestionReason).toBe('low_confidence');
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it('refuses (alert_not_found) a group-member suggestion targeting an alert no longer in the org', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // First select: suggestionTargetsRun's alertCorrelationMembers lookup —
+    // the suggestion IS a member of the group. Second select: the
+    // org-scoped alerts.deviceId lookup — comes back empty (deleted since).
+    state.selectQueue.push([{ id: 'member-1' }]);
+    state.selectQueue.push([]);
+    state.insertReturningQueue.push([{ id: VERDICT_ROW_ID }]);
+
+    const groupRun = { ...runInput, alertId: null, correlationGroupId: GROUP_ID };
+    const verdict: AlertVerdictOutcome = {
+      ...baseVerdict,
+      classification: 'duplicate_of_group',
+      suggestedAction: { tool: 'manage_alerts', action: 'suppress', alertId: OTHER_ALERT_ID, suppressDuration: 24 },
+    };
+
+    const result = await persistAlertVerdict(groupRun, verdict, agentAuth);
+
+    expect(result.suggestionDisposition).toBe('not_created');
+    expect(result.suggestionReason).toBe('alert_not_found');
     expect(createActionIntent).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalled();
   });
@@ -281,7 +362,7 @@ describe('projectAlertVerdict', () => {
     expect(projectAlertVerdict(undefined)).toBeNull();
   });
 
-  it('never emits args/evidence beyond ids', () => {
+  it('defaults suggestedAction.disposition to not_created / reason to null when no intentInfo is given', () => {
     const dto = projectAlertVerdict({
       classification: 'recurring_pattern',
       confidence: 0.8,
@@ -295,12 +376,40 @@ describe('projectAlertVerdict', () => {
       rationale: 'r',
       patternKind: 'daily',
       evidenceAlertIds: ['a'],
-      suggestedAction: { tool: 'manage_alerts', action: 'suppress' },
+      suggestedAction: { tool: 'manage_alerts', action: 'suppress', disposition: 'not_created', reason: null },
     });
     for (const k of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) expect(JSON.stringify(dto)).not.toContain(`"${k}"`);
     // alertId / suppressDuration are on the raw suggestedAction but must not
     // survive the projection either.
     expect(JSON.stringify(dto)).not.toContain('suppressDuration');
+  });
+
+  it('projects the given intentInfo disposition/reason', () => {
+    const dto = projectAlertVerdict(
+      {
+        classification: 'actionable',
+        confidence: 0.9,
+        rationale: 'r',
+        suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: 'a' },
+      },
+      { disposition: 'intent_created' },
+    );
+    expect(dto?.suggestedAction).toEqual({
+      tool: 'manage_alerts', action: 'resolve', disposition: 'intent_created', reason: null,
+    });
+
+    const dtoRefused = projectAlertVerdict(
+      {
+        classification: 'actionable',
+        confidence: 0.9,
+        rationale: 'r',
+        suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: 'a' },
+      },
+      { disposition: 'not_created', reason: 'no_eligible_approvers' },
+    );
+    expect(dtoRefused?.suggestedAction).toEqual({
+      tool: 'manage_alerts', action: 'resolve', disposition: 'not_created', reason: 'no_eligible_approvers',
+    });
   });
 
   it('projects null patternKind/evidenceAlertIds/suggestedAction when absent', () => {
@@ -317,7 +426,7 @@ describe('projectAlertVerdict', () => {
 });
 
 describe('latestVerdictsForAlerts', () => {
-  it('maps rows by alertId, scoped to live (non-superseded) verdicts', async () => {
+  it('maps rows by alertId, scoped to live (non-superseded) verdicts, ordered newest first', async () => {
     state.selectQueue.push([
       { id: VERDICT_ROW_ID, alertId: ALERT_ID, orgId: ORG_ID },
       { id: PRIOR_VERDICT_ID, alertId: OTHER_ALERT_ID, orgId: ORG_ID },

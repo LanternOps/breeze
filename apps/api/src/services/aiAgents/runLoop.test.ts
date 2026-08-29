@@ -260,17 +260,30 @@ const createActionIntent = vi.hoisted(() =>
     Promise<{ id: string; status: string; errorCode?: string | null }>>());
 vi.mock('../actionIntents/intentService', () => ({ createActionIntent }));
 
-// Phase 2 wave P2-1 (alert verdicts), Task 8: `finishRun`'s own wiring into
-// `persistAlertVerdict` — the persistence logic itself has full unit
+// Phase 2 wave P2-1 (alert verdicts), Task 8: `finalizeVerdict`'s own wiring
+// into `persistAlertVerdict` — the persistence logic itself has full unit
 // coverage in `alertVerdicts.test.ts` (real db mock, real `createActionIntent`
 // interplay). Mocked here so THIS suite exercises only the run-loop-level
-// call/errorCode/intentIds wiring, not persistence internals — same
+// call/errorCode/intentIds/status wiring, not persistence internals — same
 // division of labor as `agentCircuit`/`recipients`/`fixWatchWorker` above.
+// `importOriginal` (review round 1 minor fix) keeps every OTHER export of
+// `./alertVerdicts` (`projectAlertVerdict`, `AlertVerdictIntentInfo`'s
+// runtime shape, …) real, so this mock can't silently drift out of sync
+// with the module's actual export surface the way a hand-written object
+// literal would.
 const persistAlertVerdict = vi.hoisted(() =>
   vi.fn<(
     run: unknown, verdict: unknown, agentAuth: unknown,
-  ) => Promise<{ verdictId: string; intentId: string | null }>>());
-vi.mock('./alertVerdicts', () => ({ persistAlertVerdict }));
+  ) => Promise<{
+    verdictId: string;
+    intentId: string | null;
+    suggestionDisposition: 'intent_created' | 'not_created';
+    suggestionReason?: string;
+  }>>());
+vi.mock('./alertVerdicts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./alertVerdicts')>();
+  return { ...actual, persistAlertVerdict };
+});
 
 const resolveRecipientUserIds = vi.hoisted(() =>
   vi.fn<(agent: unknown, orgId: string) => Promise<string[]>>(async () => []));
@@ -549,7 +562,7 @@ beforeEach(() => {
   resolveRecipientUserIds.mockResolvedValue([]);
   enqueueAgentNotifyRetry.mockResolvedValue(undefined);
   createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
-  persistAlertVerdict.mockResolvedValue({ verdictId: 'verdict-1', intentId: null });
+  persistAlertVerdict.mockResolvedValue({ verdictId: 'verdict-1', intentId: null, suggestionDisposition: 'not_created' });
   // Never reached unless a test's script drives a manifest-matched call
   // under a live `mode: 'act'` guardrail policy — a mismatched default here
   // would only ever surface as "Cannot use 'in' operator on undefined" in a
@@ -2178,38 +2191,84 @@ describe('verdict profile in the run loop (P2-1)', () => {
   });
 });
 
-// Phase 2 wave P2-1 (alert verdicts), Task 8: finishRun's wiring into
-// `persistAlertVerdict` — call args, intentId propagation, and the
-// verdict_missing / verdict_persist_failed error codes. Persistence
-// internals (insert/supersede/createActionIntent) are covered in
-// alertVerdicts.test.ts; `persistAlertVerdict` is mocked here (see its
-// `vi.mock` above) so these tests exercise only finishRun's own wiring.
-describe('finishRun → persistAlertVerdict wiring (P2-1, Task 8)', () => {
+// Phase 2 wave P2-1 (alert verdicts), Task 8, review round 1: `finalizeVerdict`'s
+// wiring into `persistAlertVerdict` — call args, intentId propagation
+// (BEFORE the awaiting_approval/completed decision, IMPORTANT 3), the
+// IMPORTANT-4 stale-status skip, and the verdict_missing /
+// verdict_persist_failed error codes. Persistence internals (insert/
+// supersede/createActionIntent) are covered in alertVerdicts.test.ts;
+// `persistAlertVerdict` is mocked here (see its `vi.mock` above) so these
+// tests exercise only the run-loop-level wiring.
+describe('finalizeVerdict → persistAlertVerdict wiring (P2-1, Task 8, review round 1)', () => {
   const validVerdict = {
     classification: 'transient_self_healed' as const,
     confidence: 0.9,
     rationale: 'Disk usage returned to normal on its own; no action needed.',
   };
 
-  it('calls persistAlertVerdict with the run + the loop\'s agentAuth, and pushes a returned intentId onto intentIds', async () => {
+  const verdictWithSuggestion = {
+    classification: 'actionable' as const,
+    confidence: 0.9,
+    rationale: 'Disk at 96%; safe to suppress while capacity is added.',
+    suggestedAction: {
+      tool: 'manage_alerts' as const, action: 'suppress' as const, alertId: ALERT_ID, suppressDuration: 24,
+    },
+  };
+
+  it('calls persistAlertVerdict with the run (no agentId field) + the loop\'s agentAuth, pushes a returned intentId onto intentIds BEFORE the status decision, and records alertVerdictIntent', async () => {
     seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
-    scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: validVerdict }] });
-    persistAlertVerdict.mockResolvedValue({ verdictId: 'verdict-99', intentId: 'intent-xyz' });
+    scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: verdictWithSuggestion }] });
+    persistAlertVerdict.mockResolvedValue({
+      verdictId: 'verdict-99', intentId: 'intent-xyz', suggestionDisposition: 'intent_created',
+    });
 
     await executeAgentRun(RUN_ID);
 
     expect(persistAlertVerdict).toHaveBeenCalledTimes(1);
     const [runArg, verdictArg, agentAuthArg] = persistAlertVerdict.mock.calls[0]!;
+    // `agentId` was dropped (review round 1 minor fix — unused).
     expect(runArg).toEqual({
-      id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, alertId: ALERT_ID, correlationGroupId: null, deviceId: DEVICE_ID,
+      id: RUN_ID, orgId: ORG_ID, alertId: ALERT_ID, correlationGroupId: null, deviceId: DEVICE_ID,
     });
-    expect(verdictArg).toEqual(validVerdict);
+    expect(verdictArg).toEqual(verdictWithSuggestion);
     expect(agentAuthArg).toBeTruthy();
 
     const final = finalTransition()!;
-    expect(final.to).toBe('completed');
+    // IMPORTANT 3: a pending intent linked by persistAlertVerdict must be
+    // counted BEFORE the awaiting_approval/completed decision — this run
+    // must NOT finish `completed` despite creating a live approval.
+    expect(final.to).toBe('awaiting_approval');
     expect(final.patch.errorCode).toBeUndefined();
     expect(final.patch.intentIds).toContain('intent-xyz');
+    const outcome = final.patch.outcome as AgentRunOutcome;
+    expect(outcome.alertVerdictIntent).toEqual({ disposition: 'intent_created' });
+  });
+
+  it('records alertVerdictIntent with a reason when the suggestion was not turned into an intent', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: verdictWithSuggestion }] });
+    persistAlertVerdict.mockResolvedValue({
+      verdictId: 'verdict-99', intentId: null, suggestionDisposition: 'not_created', suggestionReason: 'no_eligible_approvers',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed'); // no intent id was linked — stays completed
+    const outcome = final.patch.outcome as AgentRunOutcome;
+    expect(outcome.alertVerdictIntent).toEqual({ disposition: 'not_created', reason: 'no_eligible_approvers' });
+  });
+
+  it('does not record alertVerdictIntent when the verdict carried no suggestedAction at all', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: validVerdict }] });
+    // Default beforeEach mock: intentId null, suggestionDisposition 'not_created'.
+
+    await executeAgentRun(RUN_ID);
+
+    const final = finalTransition()!;
+    const outcome = final.patch.outcome as AgentRunOutcome;
+    expect(outcome.alertVerdictIntent).toBeUndefined();
   });
 
   it('sets errorCode verdict_missing and runVerdict needs_attention when a verdict run finishes without ever calling submit_alert_verdict', async () => {
@@ -2237,6 +2296,29 @@ describe('finishRun → persistAlertVerdict wiring (P2-1, Task 8)', () => {
     const final = finalTransition()!;
     expect(final.to).toBe('completed');
     expect(final.patch.errorCode).toBe('verdict_persist_failed');
+  });
+
+  // IMPORTANT 4: the stall reaper (or a second executor) may have already
+  // moved this run out of `running` while the SDK loop was in flight —
+  // persistence must be skipped rather than orphan a live verdict row + a
+  // live approval request under a run nobody owns anymore.
+  it('skips persistAlertVerdict and warns when the run has left `running` before persistence could run', async () => {
+    seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
+    scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: validVerdict }] });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // `finalizeVerdict`'s IMPORTANT-4 re-read of `ai_agent_runs.status` is
+    // the SECOND read of that table (the first is `loadRunContext`'s seeded
+    // one) — queue it explicitly rather than let the default synthesis
+    // (which would report 'running') answer it.
+    dbMockState.rowQueues.ai_agent_runs!.push([{ status: 'cancelled' }]);
+
+    await executeAgentRun(RUN_ID);
+
+    expect(persistAlertVerdict).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect(final.patch.errorCode).toBeUndefined(); // not verdict_missing — the verdict WAS produced, just not persisted
   });
 
   it('does not touch persistAlertVerdict or the errorCode for a full-profile run (negative control)', async () => {

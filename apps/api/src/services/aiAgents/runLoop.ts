@@ -125,7 +125,7 @@ import {
   validateOutcomeToolInput,
 } from './outcomeTools';
 import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdictProfile';
-import { persistAlertVerdict } from './alertVerdicts';
+import { persistAlertVerdict, type AlertVerdictIntentInfo } from './alertVerdicts';
 
 /** `ai_agent_runs.summary` is `text`, but a reviewer reads the first screen. */
 const RUN_SUMMARY_MAX_CHARS = 2000;
@@ -250,11 +250,21 @@ export interface AgentRunOutcome {
    * input, captured by the post-tool-use hook on a verdict-profile run. Set
    * at most once (the outcome tool's own description tells the model to call
    * it exactly once); absent for a `full`-profile run, which never has the
-   * outcome tool exposed at all. The real `ai_alert_verdicts` projection
-   * (`runTrace.ts`) is Task 8's job — this field only carries the value
-   * across from the run loop to `finishRun`'s persisted `outcome` jsonb.
+   * outcome tool exposed at all. Persisted to `ai_alert_verdicts` by
+   * `finalizeVerdict` (below), which also carries this value into
+   * `finishRun`'s persisted `outcome` jsonb.
    */
   alertVerdict?: AlertVerdictOutcome;
+  /**
+   * Phase 2 wave P2-1 (alert verdicts), review round 1 (IMPORTANT 2) — the
+   * disposition of `alertVerdict.suggestedAction`'s Tier-2 intent attempt,
+   * set by `finalizeVerdict` alongside `alertVerdict` itself. Absent when
+   * there was no `suggestedAction` to act on in the first place (nothing to
+   * report) OR for a `full`-profile run. Display strings only — NEVER the
+   * raw `Error.message` from `createActionIntent` (that could carry
+   * tool-input detail); see `AlertVerdictIntentInfo`'s own docstring.
+   */
+  alertVerdictIntent?: AlertVerdictIntentInfo;
 }
 
 /** Error carrying the short code that lands in `ai_agent_runs.error_code` (varchar(64)). */
@@ -1568,6 +1578,18 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // `result.outcome` verbatim into the DB row.
     outcome.runVerdict = computeRunVerdict(outcome);
 
+    // Phase 2 wave P2-1 (alert verdicts), Task 8 — review round 1
+    // (IMPORTANT 3): verdict persistence + suggestion→intent linking runs
+    // HERE, before the awaiting_approval/completed decision further down,
+    // so a newly created pending intent is counted by
+    // `intentIds.length > 0` — a verdict run whose suggestion produced a
+    // pending approval must itself finish `awaiting_approval`, like any
+    // other run with a pending intent. `verdictErrorCode` is applied ONLY
+    // at the normal-finish `finishRun` call below (not to the `failure`/
+    // `ceiling` branches, which already carry a real, more specific code —
+    // see `finalizeVerdict`'s own docstring for why).
+    const verdictErrorCode = await finalizeVerdict(ctx, result);
+
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
     // status, which the bare `failed` transition in the catch below cannot.
@@ -1607,7 +1629,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // done thinking and a human now owns the decision. Release of an approved
     // intent is 3b's machinery, not a continuation of this run.
     ledgerOutcome = 'completed';
-    await finishRun(ctx, intentIds.length > 0 ? 'awaiting_approval' : 'completed', null, result);
+    await finishRun(ctx, intentIds.length > 0 ? 'awaiting_approval' : 'completed', verdictErrorCode, result);
   } catch (error) {
     const errorCode = error instanceof AgentRunError
       ? error.errorCode
@@ -1640,53 +1662,102 @@ const TERMINAL_EVENT = {
   failed: 'ai.agent.run.failed',
 } as const;
 
+/**
+ * Phase 2 wave P2-1 (alert verdicts), Task 8 — review round 1 fixes
+ * (IMPORTANT 3 + 4). Runs from `executeAgentRun`, BEFORE the
+ * awaiting_approval/completed decision and before any of the three
+ * `finishRun` call sites — not inside `finishRun` itself (moved there in
+ * the original Task 8 pass; the ordering was the bug IMPORTANT 3 found: the
+ * status ternary read `intentIds.length` before this ran, so a verdict run
+ * that created a pending intent still finished `completed`).
+ *
+ * Returns an errorCode override. The caller applies it ONLY to the
+ * normal-finish `finishRun` call — the `result.failure`/ceiling branches
+ * already carry a real, more specific code (`llm_unavailable`,
+ * `max_turns_exceeded`, …) that must not be clobbered with the generic
+ * `verdict_missing`/`verdict_persist_failed`, and `classifyTerminal`
+ * (agentCircuit.ts) still needs that real code to classify a genuine
+ * runner failure correctly for the circuit breaker regardless of profile.
+ * Returning `null` and letting those two branches ignore it entirely keeps
+ * that scoping intact without this function needing to know which branch
+ * the caller is about to take.
+ */
+async function finalizeVerdict(ctx: RunContext, result: LoopResult): Promise<string | null> {
+  if (!isVerdictProfile(ctx.run)) return null;
+  const { outcome } = result;
+
+  if (!outcome.alertVerdict) {
+    // A verdict run that reached a normal finish without ever calling
+    // `submit_alert_verdict` is a runner failure a human needs to see —
+    // never a silent `completed` with nothing to show for it. (On the
+    // failure/ceiling branches this return value is discarded by the
+    // caller, so this only actually takes effect on the normal-finish path
+    // — see this function's own docstring.)
+    outcome.runVerdict = 'needs_attention';
+    return 'verdict_missing';
+  }
+
+  // IMPORTANT 4: re-read the run's live status right before writing — the
+  // stall reaper (`reapStalledAgentRuns`, runService.ts) or a second
+  // executor may have already moved this run out of `running` while the
+  // SDK loop was in flight. Skip persistence rather than orphan a live
+  // verdict row + a live approval request under a run nobody owns anymore.
+  // A tiny window remains between this read and the writes inside
+  // `persistAlertVerdict` below — accepted per review ruling.
+  const stillRunning = await isRunStillRunning(ctx.run.id, ctx.run.orgId);
+  if (!stillRunning) {
+    console.warn('[aiAgentRunLoop] skipped verdict persistence — run left `running` before it could be persisted', {
+      runId: ctx.run.id,
+    });
+    return null;
+  }
+
+  try {
+    const { intentId, suggestionDisposition, suggestionReason } = await persistAlertVerdict(
+      {
+        id: ctx.run.id,
+        orgId: ctx.run.orgId,
+        alertId: ctx.run.alertId,
+        correlationGroupId: ctx.run.correlationGroupId,
+        deviceId: ctx.run.deviceId,
+      },
+      outcome.alertVerdict,
+      result.agentAuth,
+    );
+    if (intentId) result.intentIds.push(intentId);
+    // Review round 1 (IMPORTANT 2): only recorded when there was a
+    // `suggestedAction` to report on at all — see `AlertVerdictIntentInfo`'s
+    // own docstring for why this is absent rather than a vacuous
+    // `not_created` on every verdict.
+    if (outcome.alertVerdict.suggestedAction) {
+      const intentInfo: AlertVerdictIntentInfo = { disposition: suggestionDisposition };
+      if (suggestionReason) intentInfo.reason = suggestionReason;
+      outcome.alertVerdictIntent = intentInfo;
+    }
+    return null;
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to persist alert verdict', { runId: ctx.run.id, error });
+    return 'verdict_persist_failed';
+  }
+}
+
+/** IMPORTANT 4 helper — see `finalizeVerdict`. System-scoped: this runs from
+ *  the background run loop, with no ambient request context. */
+async function isRunStillRunning(runId: string, orgId: string): Promise<boolean> {
+  return inSystemDbContext(async () => {
+    const [row] = await db.select({ status: aiAgentRuns.status }).from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, orgId)))
+      .limit(1);
+    return row?.status === 'running';
+  });
+}
+
 async function finishRun(
   ctx: RunContext,
   status: keyof typeof TERMINAL_EVENT,
   errorCode: string | null,
   result: LoopResult,
 ): Promise<void> {
-  // Phase 2 wave P2-1 (alert verdicts), Task 8 — runs BEFORE the terminal
-  // transition below so a created intent id lands in `result.intentIds`
-  // (and therefore the persisted row) together with everything else.
-  //
-  // The "no verdict produced" branch is scoped to `errorCode === null` on
-  // purpose: that is true only at the normal-finish call site (the ceiling
-  // and `result.failure` call sites always pass an already-specific code),
-  // so a genuine runner failure (`llm_unavailable`, `max_turns_exceeded`, …)
-  // is never clobbered with the generic `verdict_missing` — and
-  // `classifyTerminal` (agentCircuit.ts) still needs that real code to
-  // classify the failure correctly; `failed` status is unaffected by
-  // profile there.
-  if (isVerdictProfile(ctx.run)) {
-    if (result.outcome.alertVerdict) {
-      try {
-        const { intentId } = await persistAlertVerdict(
-          {
-            id: ctx.run.id,
-            orgId: ctx.run.orgId,
-            agentId: ctx.run.agentId,
-            alertId: ctx.run.alertId,
-            correlationGroupId: ctx.run.correlationGroupId,
-            deviceId: ctx.run.deviceId,
-          },
-          result.outcome.alertVerdict,
-          result.agentAuth,
-        );
-        if (intentId) result.intentIds.push(intentId);
-      } catch (error) {
-        console.error('[aiAgentRunLoop] failed to persist alert verdict', { runId: ctx.run.id, error });
-        errorCode ??= 'verdict_persist_failed';
-      }
-    } else if (errorCode === null) {
-      // A verdict run that reached a normal finish without ever calling
-      // `submit_alert_verdict` is a runner failure a human needs to see —
-      // never a silent `completed` with nothing to show for it.
-      result.outcome.runVerdict = 'needs_attention';
-      errorCode = 'verdict_missing';
-    }
-  }
-
   const moved = await transitionRunStatus(ctx.run.id, 'running', status, {
     summary: result.summary || null,
     outcome: result.outcome as unknown as Record<string, unknown>,

@@ -237,7 +237,8 @@ export function buildRunTrace(
     // Phase 2 wave P2-1 (alert verdicts), Task 8: null for every full-profile
     // run and for a verdict-profile run that has not (yet, or ever)
     // produced one — see `projectAlertVerdict`'s own safe-projection
-    // contract.
-    alertVerdict: projectAlertVerdict(outcome.alertVerdict),
+    // contract. `outcome.alertVerdictIntent` (review round 1, IMPORTANT 2)
+    // carries the suggestion's intent-creation disposition alongside it.
+    alertVerdict: projectAlertVerdict(outcome.alertVerdict, outcome.alertVerdictIntent),
   };
 }

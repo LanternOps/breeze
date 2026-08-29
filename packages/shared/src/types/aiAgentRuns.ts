@@ -250,6 +250,21 @@ export interface AiAgentRunTicketProposalDto {
 }
 
 /**
+ * Phase 2 wave P2-1 (alert verdicts), review round 1 (IMPORTANT 2) — the
+ * disposition of `suggestedAction`'s Tier-2 `manage_alerts` intent attempt.
+ * `'intent_created'` means a genuinely PENDING approval was created (see
+ * `createActionIntent`'s `pending_approval`-only linking contract in
+ * `alertVerdicts.ts`); every other outcome (refused before an attempt,
+ * cancelled for lack of an approver, a thrown error) is `'not_created'`,
+ * discriminated by `reason`. Shared between the API's internal
+ * `AgentRunOutcome.alertVerdictIntent` (services/aiAgents/alertVerdicts.ts)
+ * and this DTO so the two can never drift apart.
+ */
+export type AlertVerdictSuggestionDisposition = 'intent_created' | 'not_created';
+export type AlertVerdictSuggestionReason =
+  | 'low_confidence' | 'target_mismatch' | 'alert_not_found' | 'no_eligible_approvers' | 'intent_error';
+
+/**
  * Phase 2 wave P2-1 (alert verdicts) — the safe projection of one
  * `ai_alert_verdicts` row for `GET /ai/agents/runs/:runId`'s detail DTO.
  * Display fields only, mirroring the rest of this file's leak-impossible
@@ -262,7 +277,16 @@ export interface AiAgentRunAlertVerdictDto {
   rationale: string;
   patternKind: AiAlertVerdictPattern['kind'] | null;
   evidenceAlertIds: string[];
-  suggestedAction: { tool: 'manage_alerts'; action: 'suppress' | 'resolve' } | null;
+  suggestedAction: {
+    tool: 'manage_alerts';
+    action: 'suppress' | 'resolve';
+    /** Review round 1, IMPORTANT 2: was a suggested mutation actually
+     *  turned into a live, pending-approval intent? */
+    disposition: AlertVerdictSuggestionDisposition;
+    /** Display string only — never the raw `Error.message` from
+     *  `createActionIntent`. `null` when `disposition === 'intent_created'`. */
+    reason: AlertVerdictSuggestionReason | null;
+  } | null;
 }
 
 export interface AiAgentRunDetailDto {

@@ -353,7 +353,7 @@ describe('buildRunTrace — safe projection (#3828)', () => {
       expect(detail.alertVerdict).toBeNull();
     });
 
-    it('projects a verdict run\'s outcome, and the whole detail DTO leaks no tripwire key', () => {
+    it('projects a verdict run\'s outcome (with no intent attempt recorded — disposition defaults not_created), and the whole detail DTO leaks no tripwire key', () => {
       const detail = buildRunTrace(
         baseRun({
           alertId: null,
@@ -372,6 +372,9 @@ describe('buildRunTrace — safe projection (#3828)', () => {
                 alertId: 'aaaa1111-1111-4111-8111-111111111111', suppressDuration: 24,
               },
             },
+            // No `alertVerdictIntent` on this outcome — projectAlertVerdict
+            // must still produce a full `suggestedAction` sub-object rather
+            // than throwing on the missing second argument.
           },
         }),
         AGENT,
@@ -386,7 +389,7 @@ describe('buildRunTrace — safe projection (#3828)', () => {
         rationale: 'Same disk alert fires nightly at 02:00; self-heals within the hour.',
         patternKind: 'daily',
         evidenceAlertIds: ['aaaa1111-1111-4111-8111-111111111111'],
-        suggestedAction: { tool: 'manage_alerts', action: 'suppress' },
+        suggestedAction: { tool: 'manage_alerts', action: 'suppress', disposition: 'not_created', reason: null },
       });
 
       // Leak-tripwire over the WHOLE detail DTO, not just the alertVerdict
@@ -398,6 +401,40 @@ describe('buildRunTrace — safe projection (#3828)', () => {
         expect(json).not.toContain(`"${forbidden}"`);
       }
       expect(json).not.toContain('suppressDuration');
+    });
+
+    // Review round 1 (IMPORTANT 2): the disposition/reason of a suggestion's
+    // Tier-2 intent attempt must reach the wire alongside the verdict.
+    it('projects outcome.alertVerdictIntent onto suggestedAction.disposition/reason', () => {
+      const detail = buildRunTrace(
+        baseRun({
+          alertId: null,
+          outcome: {
+            executedActions: [],
+            proposedActions: [],
+            deniedActions: [],
+            toolExecutionCount: 0,
+            alertVerdict: {
+              classification: 'actionable',
+              confidence: 0.9,
+              rationale: 'Disk at 96% and climbing; safe to suppress while capacity is added.',
+              suggestedAction: {
+                tool: 'manage_alerts', action: 'suppress',
+                alertId: 'aaaa1111-1111-4111-8111-111111111111', suppressDuration: 24,
+              },
+            },
+            alertVerdictIntent: { disposition: 'not_created', reason: 'no_eligible_approvers' },
+          },
+        }),
+        AGENT,
+        DEVICE,
+        [],
+        [],
+      );
+
+      expect(detail.alertVerdict?.suggestedAction).toEqual({
+        tool: 'manage_alerts', action: 'suppress', disposition: 'not_created', reason: 'no_eligible_approvers',
+      });
     });
   });
 });

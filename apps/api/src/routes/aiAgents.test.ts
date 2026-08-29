@@ -653,8 +653,10 @@ const runDetailResponseSchema = z.object({
       proposedPriority: z.string().optional(),
       notes: z.array(z.string()),
     }).strict().nullable(),
-    // Phase 2 wave P2-1 (alert verdicts): `null` until Task 8 wires the real
-    // `ai_alert_verdicts` projection into `buildRunTrace`.
+    // Phase 2 wave P2-1 (alert verdicts): `null` for a full-profile run and
+    // for a verdict run that hasn't produced one. `suggestedAction`'s
+    // `disposition`/`reason` (review round 1, IMPORTANT 2) are the Tier-2
+    // intent attempt's outcome, never the raw tool args/error message.
     alertVerdict: z.object({
       classification: z.string(),
       confidence: z.number(),
@@ -664,6 +666,10 @@ const runDetailResponseSchema = z.object({
       suggestedAction: z.object({
         tool: z.literal('manage_alerts'),
         action: z.enum(['suppress', 'resolve']),
+        disposition: z.enum(['intent_created', 'not_created']),
+        reason: z.enum([
+          'low_confidence', 'target_mismatch', 'alert_not_found', 'no_eligible_approvers', 'intent_error',
+        ]).nullable(),
       }).strict().nullable(),
     }).strict().nullable(),
   }).strict(),
