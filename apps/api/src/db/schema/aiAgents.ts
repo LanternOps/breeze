@@ -20,11 +20,12 @@ import type {
   AiAgentPolicySnapshot,
   AiAgentProtectedResources,
   AiAgentRecipients,
+  AiAgentRunProfile,
   AiAgentRunStatus,
   AiAgentTriggerKind,
   AiAgentTriggers,
 } from '@breeze/shared';
-import { alerts } from './alerts';
+import { alertCorrelationGroups, alerts } from './alerts';
 import { aiSessions } from './ai';
 import { devices } from './devices';
 import { metricAnomalyIncidents } from './metricAnomalyIncidents';
@@ -81,6 +82,14 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
   alertId: uuid('alert_id').references(() => alerts.id, { onDelete: 'set null' }),
+  // Phase 2 wave P2-1 (alert verdicts, migrations/2026-09-20-ai-agents-alert-verdicts.sql):
+  // 'full' is the pre-existing run shape; 'verdict' scopes the run to
+  // producing one ai_alert_verdicts row instead of a full triage/patch/
+  // helpdesk turn. correlationGroupId is set only for a verdict run
+  // evaluating a correlation group rather than a single alert.
+  profile: text('profile').$type<AiAgentRunProfile>().notNull().default('full'),
+  correlationGroupId: uuid('correlation_group_id')
+    .references(() => alertCorrelationGroups.id, { onDelete: 'set null' }),
   sessionId: uuid('session_id').references(() => aiSessions.id, { onDelete: 'set null' }),
   // Wave 6 PR 3 (#3828): the triggering ticket for a `triggerKind==='ticket'`
   // run. ON DELETE SET NULL (run history survives ticket deletion — mirrors
@@ -136,6 +145,11 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   deviceIdx: index('ai_agent_runs_device_id_idx').on(table.deviceId),
   ticketIdx: index('ai_agent_runs_ticket_id_idx').on(table.ticketId),
   anomalyIncidentIdx: index('ai_agent_runs_anomaly_incident_id_idx').on(table.anomalyIncidentId),
+  // Phase 2 wave P2-1: verdict admission counts only verdict-profile rows
+  // (runService step 6b) — mirrors migrations/2026-09-21-ai-agents-alert-verdicts.sql's
+  // ai_agent_runs_agent_profile_queued_idx.
+  agentProfileQueuedIdx: index('ai_agent_runs_agent_profile_queued_idx')
+    .on(table.agentId, table.orgId, table.profile, table.queuedAt.desc()),
 }));
 
 export type AiAgentRow = typeof aiAgents.$inferSelect;

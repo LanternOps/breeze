@@ -373,3 +373,28 @@ export type ActVerificationVerdict = 'passed' | 'failed' | 'inconclusive' | 'ski
  * executions at all (shadow/propose-only turns, or a read-only run).
  */
 export type AgentRunVerdict = 'remediated' | 'needs_attention' | 'partial' | 'no_action';
+
+/**
+ * Phase 2 wave P2-1 (alert verdicts). `full` is the existing (default) agent
+ * run shape; `verdict` is a lighter-weight run profile scoped to producing
+ * an `AiAlertVerdict` for one alert or correlation group instead of a full
+ * triage/patch/helpdesk turn. See runService step 6b for how admission is
+ * counted per-profile.
+ */
+export const AI_AGENT_RUN_PROFILES = ['full', 'verdict'] as const;
+export type AiAgentRunProfile = (typeof AI_AGENT_RUN_PROFILES)[number];
+
+/**
+ * Phase 2 wave P2-1 (alert verdicts). Classification an `ai_alert_verdicts`
+ * row assigns to the alert (or correlation group) it evaluated.
+ */
+export const AI_ALERT_VERDICT_CLASSIFICATIONS = [
+  'actionable', 'transient_self_healed', 'recurring_pattern', 'duplicate_of_group', 'needs_human',
+] as const;
+export type AiAlertVerdictClassification = (typeof AI_ALERT_VERDICT_CLASSIFICATIONS)[number];
+
+/** Phase 2 wave P2-1 (alert verdicts). Stored in `ai_alert_verdicts.pattern`. */
+export interface AiAlertVerdictPattern {
+  kind: 'daily' | 'weekly' | 'after_event';
+  evidenceAlertIds: string[];
+}
