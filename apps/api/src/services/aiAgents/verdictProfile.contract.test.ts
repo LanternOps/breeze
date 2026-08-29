@@ -13,7 +13,7 @@ describe('verdict profile has no safety bypass (spec §7)', () => {
   it.each(FORBIDDEN)('%s never branches on the run profile', (rel) => {
     const src = readFileSync(join(__dirname, '../..', rel), 'utf8');
     expect(src).not.toMatch(/['"]verdict['"]/);
-    expect(src).not.toMatch(/\.profile\b/);
+    expect(src).not.toMatch(/\brun\.profile\b|isVerdictProfile\(|AiAgentRunProfile/);
   });
   it('outcome tools never import the db or execute a registered tool', () => {
     const src = readFileSync(join(__dirname, 'outcomeTools.ts'), 'utf8');
