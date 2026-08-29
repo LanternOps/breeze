@@ -1471,7 +1471,8 @@
         "alert": "Warnung",
         "manual": "Manuell",
         "schedule": "Zeitplan",
-        "ticket": "Ticket"
+        "ticket": "Ticket",
+        "anomaly": "Anomalie"
       },
       "noAgent": "Unbekannter Agent",
       "loading": "Läufe werden geladen…",
@@ -1554,6 +1555,7 @@
           "empty": "Keine verknüpften Genehmigungen.",
           "viewAll": "In Genehmigungen prüfen"
         },
+        "anomalyLink": "Offene Geräteanomalien",
         "budget": {
           "title": "Nutzungsbudget",
           "caption": "Erfasste Nutzung — letzte {{hours}} Std.",

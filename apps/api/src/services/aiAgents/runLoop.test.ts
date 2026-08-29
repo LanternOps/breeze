@@ -344,11 +344,19 @@ function seedRows(options: {
   ticketId?: string | null;
   ticket?: Record<string, unknown>;
   ticketComments?: Array<Record<string, unknown>>;
+  /** Wave 6 PR 4 (#3828, Task 4) — undefined (default) means no anomaly, i.e.
+   *  every existing test is unaffected. Pass an incident id AND
+   *  `anomalyIncident`/`anomalySiblings` to exercise an anomaly-triggered
+   *  run's bounded context. */
+  anomalyIncidentId?: string | null;
+  anomalyIncident?: Record<string, unknown>;
+  anomalySiblings?: Array<Record<string, unknown>>;
 } = {}) {
   const effective = options.effective ?? policy();
   const deviceId = options.deviceId === undefined ? DEVICE_ID : options.deviceId;
   const alertId = options.alertId === undefined ? ALERT_ID : options.alertId;
   const ticketId = options.ticketId === undefined ? null : options.ticketId;
+  const anomalyIncidentId = options.anomalyIncidentId === undefined ? null : options.anomalyIncidentId;
 
   dbMockState.rowQueues.ai_agent_runs = [[{
     id: RUN_ID,
@@ -357,6 +365,7 @@ function seedRows(options: {
     deviceId,
     alertId,
     ticketId,
+    anomalyIncidentId,
     status: 'queued',
     modeAtStart: options.modeAtStart ?? 'shadow',
     triggerKind: options.triggerKind ?? 'alert',
@@ -383,6 +392,20 @@ function seedRows(options: {
       status: 'open', priority: 'high', category: 'hardware', tags: ['printer'], dueDate: null,
     }]];
     dbMockState.rowQueues.ticket_comments = [options.ticketComments ?? []];
+  }
+  if (anomalyIncidentId) {
+    dbMockState.rowQueues.metric_anomaly_incidents = [[options.anomalyIncident ?? {
+      id: anomalyIncidentId, deviceId: deviceId ?? DEVICE_ID, anomalyType: 'sustained_high',
+      bucketSeconds: 300, windowStart: new Date('2026-08-28T10:00:00Z'),
+      firstSeenAt: new Date('2026-08-28T10:00:00Z'), lastSeenAt: new Date('2026-08-28T10:20:00Z'),
+      peakScore: 7.5, rowCount: 1, metricNames: ['cpu_percent'],
+    }]];
+    dbMockState.rowQueues.metric_anomalies = [options.anomalySiblings ?? [{
+      metricName: 'cpu_percent', score: 7.5, observedValue: 98.2, baselineValue: 41.0,
+      baselineMin: 30.0, baselineMax: 55.0,
+      evidence: { kind: 'baseline_deviation', observedValue: 98.2, baselineValue: 41.0 },
+      baselineSummary: { baselineStddev: 4.2, baselineBuckets: 120 },
+    }]];
   }
   resolveEffectiveAgentSystem.mockResolvedValue(snapshot(effective));
   return effective;
@@ -1479,6 +1502,107 @@ describe('executeAgentRun', () => {
       const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
       expect(prompt).not.toContain('Ticket:');
       // The run still completes rather than crashing on a vanished ticket.
+      const final = finalTransition()!;
+      expect(final.to).toBe('completed');
+    });
+  });
+
+  describe('anomaly context (wave 6 PR 4, #3828, Task 4)', () => {
+    const INCIDENT_ID = '00000000-0000-4000-8000-0000000000f1';
+
+    it('loads bounded anomaly context and feeds it into the task prompt', async () => {
+      seedRows({
+        triggerKind: 'anomaly',
+        alertId: null,
+        anomalyIncidentId: INCIDENT_ID,
+        anomalyIncident: {
+          id: INCIDENT_ID, deviceId: DEVICE_ID, anomalyType: 'sustained_high',
+          bucketSeconds: 300, windowStart: new Date('2026-08-28T10:00:00Z'),
+          firstSeenAt: new Date('2026-08-28T10:00:00Z'), lastSeenAt: new Date('2026-08-28T10:20:00Z'),
+          peakScore: 7.5, rowCount: 1, metricNames: ['cpu_percent'],
+        },
+        anomalySiblings: [{
+          metricName: 'cpu_percent', score: 7.5, observedValue: 98.2, baselineValue: 41.0,
+          baselineMin: 30.0, baselineMax: 55.0,
+          evidence: { kind: 'baseline_deviation', observedValue: 98.2, baselineValue: 41.0 },
+          baselineSummary: { baselineStddev: 4.2, baselineBuckets: 120 },
+        }],
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).toContain('sustained_high');
+      expect(prompt).toContain('cpu_percent');
+      expect(prompt).toContain('7.5');
+
+      const systemPrompt = String(lastQueryOptions!.systemPrompt);
+      expect(systemPrompt).toContain('metric-anomaly detector');
+    });
+
+    it('never dumps raw evidence/baselineSummary jsonb keys into the prompt', async () => {
+      seedRows({
+        triggerKind: 'anomaly',
+        alertId: null,
+        anomalyIncidentId: INCIDENT_ID,
+        anomalySiblings: [{
+          metricName: 'cpu_percent', score: 7.5, observedValue: 98.2, baselineValue: 41.0,
+          baselineMin: 30.0, baselineMax: 55.0,
+          evidence: { kind: 'baseline_deviation', secretApiKey: 'sk-should-never-appear' },
+          baselineSummary: { baselineStddev: 4.2, internalDebugPayload: 'x'.repeat(5000) },
+        }],
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).not.toContain('secretApiKey');
+      expect(prompt).not.toContain('sk-should-never-appear');
+      expect(prompt).not.toContain('internalDebugPayload');
+    });
+
+    it('org-pins the RLS-bypassing incident/sibling reads and matches the collapsing key', async () => {
+      seedRows({ triggerKind: 'anomaly', anomalyIncidentId: INCIDENT_ID });
+
+      await executeAgentRun(RUN_ID);
+
+      const incidentSelect = dbMockState.selects.find((s) => s.table === 'metric_anomaly_incidents');
+      const siblingSelect = dbMockState.selects.find((s) => s.table === 'metric_anomalies');
+      const incidentWhere = compiled(incidentSelect?.where);
+      const siblingWhere = compiled(siblingSelect?.where);
+      const incidentParams = compiledParams(incidentSelect?.where);
+      const siblingParams = compiledParams(siblingSelect?.where);
+      // Both reads run inside a system context (full RLS bypass), so the
+      // tenant predicate has to be in the WHERE clause by hand.
+      expect(incidentWhere).toContain('"org_id"');
+      expect(incidentParams).toContain(ORG_ID);
+      expect(siblingWhere).toContain('"org_id"');
+      expect(siblingWhere).toContain('"device_id"');
+      expect(siblingWhere).toContain('"anomaly_type"');
+      expect(siblingWhere).toContain('"bucket_seconds"');
+      expect(siblingWhere).toContain('"window_start"');
+      expect(siblingParams).toContain(ORG_ID);
+    });
+
+    it('a non-anomaly run carries no anomaly section at all', async () => {
+      seedRows();
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).not.toContain('Anomaly:');
+      const systemPrompt = String(lastQueryOptions!.systemPrompt);
+      expect(systemPrompt).not.toContain('metric-anomaly detector');
+    });
+
+    it('a missing/deleted incident is not fed into the prompt (same "moved reads as absent" posture as device/alert/ticket)', async () => {
+      seedRows({ triggerKind: 'anomaly', anomalyIncidentId: INCIDENT_ID });
+      dbMockState.rowQueues.metric_anomaly_incidents = [[]];
+
+      await executeAgentRun(RUN_ID);
+
+      const prompt = String((queryMock.mock.calls[0]![0] as { prompt: unknown }).prompt);
+      expect(prompt).not.toContain('Anomaly:');
       const final = finalTransition()!;
       expect(final.to).toBe('completed');
     });

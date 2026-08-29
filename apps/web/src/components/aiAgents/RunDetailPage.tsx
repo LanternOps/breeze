@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { ArrowLeft, Bot } from 'lucide-react';
+import { ArrowLeft, Bot, ExternalLink } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
@@ -99,6 +99,8 @@ function triggerLabel(t: (key: string) => string, value: string): string {
       return t('aiAgentsPage.runs.triggers.schedule');
     case 'ticket':
       return t('aiAgentsPage.runs.triggers.ticket');
+    case 'anomaly':
+      return t('aiAgentsPage.runs.triggers.anomaly');
     default:
       return value;
   }
@@ -452,6 +454,21 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           <p className="mt-3 text-sm text-muted-foreground" data-testid="run-detail-summary">
             {run.summary}
           </p>
+        )}
+
+        {/* Wave 6 PR 4 (#3828, Task 4) — anomaly-triggered runs are
+            device-bound (unlike ticket runs), so `deviceId` is always set
+            alongside `anomalyIncidentId` in practice; the guard covers the
+            same "moved/deleted reads as absent" edge case the API applies. */}
+        {run.anomalyIncidentId && run.deviceId && (
+          <a
+            href={`/devices/${run.deviceId}#anomalies`}
+            data-testid="run-detail-anomaly-link"
+            className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-sky-700 hover:underline"
+          >
+            {t('aiAgentsPage.runs.detail.anomalyLink')}
+            <ExternalLink className="h-3 w-3" />
+          </a>
         )}
 
         {(run.budgetExceeded || run.wallClockExceeded || run.maxTurnsExceeded) && (

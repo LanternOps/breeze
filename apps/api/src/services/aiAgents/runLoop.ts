@@ -88,6 +88,7 @@ import { actTargetSummary, recordActVerifyFailureAlert, verifyActExecution } fro
 import { executeBuiltInPlaybookForRun } from './playbookActExecutor';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
 import { loadTicketContext, type TicketRunContext } from './ticketContext';
+import { loadAnomalyContext, type AnomalyRunContext } from './anomalyContext';
 import { readAiKillState } from '../aiKillState';
 import {
   closeAgentRunSession,
@@ -111,6 +112,7 @@ import { scheduleFixWatch } from '../../jobs/fixWatchWorker';
 import {
   buildAgentRunSystemPrompt,
   buildAgentRunTaskPrompt,
+  type AgentRunAnomalyPromptContext,
   type AgentRunPromptContext,
   type AgentRunTicketPromptContext,
 } from './runnerPrompt';
@@ -262,6 +264,9 @@ interface RunRow {
   /** Wave 6 PR 3 (#3828, Task 1/4) — the triggering ticket for `triggerKind:
    *  'ticket'` runs; always `null` for every other trigger kind. */
   ticketId: string | null;
+  /** Wave 6 PR 4 (#3828, Task 1/4) — the triggering canonical incident for
+   *  `triggerKind: 'anomaly'` runs; always `null` for every other trigger kind. */
+  anomalyIncidentId: string | null;
   status: string;
   modeAtStart: Exclude<AiAgentMode, 'off'>;
   triggerKind: AiAgentTriggerKind;
@@ -287,6 +292,11 @@ interface RunContext {
    *  run, and for a ticket run whose ticket has vanished/moved org (same
    *  "moved/deleted reads as absent" posture `device`/`alert` already use). */
   ticket: TicketRunContext | null;
+  /** Bounded anomaly context (wave 6 PR 4, #3828, Task 4) — `null` for every
+   *  non-anomaly run, and for an anomaly run whose incident has vanished/
+   *  moved org (same "moved/deleted reads as absent" posture as `ticket`
+   *  above). */
+  anomaly: AnomalyRunContext | null;
   /**
    * The execution-ledger `ai_sessions` row for this run (Task 1/2). Set once,
    * inside `driveSdkLoop`, right after the model is resolved — `null` until
@@ -331,6 +341,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         deviceId: aiAgentRuns.deviceId,
         alertId: aiAgentRuns.alertId,
         ticketId: aiAgentRuns.ticketId,
+        anomalyIncidentId: aiAgentRuns.anomalyIncidentId,
         status: aiAgentRuns.status,
         modeAtStart: aiAgentRuns.modeAtStart,
         triggerKind: aiAgentRuns.triggerKind,
@@ -429,6 +440,26 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       }
     }
 
+    // Same "moved/deleted reads as absent" posture as device/alert/ticket
+    // above — this read is ALSO org-pinned inside `loadAnomalyContext` itself
+    // (it runs under this same system context), for the identical reason: an
+    // incident can move org between admission and delivery.
+    let anomaly: RunContext['anomaly'] = null;
+    if (run.anomalyIncidentId) {
+      try {
+        anomaly = await loadAnomalyContext(run.anomalyIncidentId, run.orgId);
+      } catch (error) {
+        console.error('[aiAgentRunLoop] failed to load anomaly context', {
+          runId, orgId: run.orgId, anomalyIncidentId: run.anomalyIncidentId, error,
+        });
+      }
+      if (!anomaly) {
+        console.warn('[aiAgentRunLoop] run anomaly incident is not (or no longer) in the run org', {
+          runId, orgId: run.orgId, anomalyIncidentId: run.anomalyIncidentId,
+        });
+      }
+    }
+
     return {
       run: run as RunRow,
       agent: agent as AgentRow,
@@ -436,6 +467,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       device,
       alert,
       ticket,
+      anomaly,
       sessionId: null,
     };
   });
@@ -972,6 +1004,21 @@ function ticketPromptContext(ticket: TicketRunContext): AgentRunTicketPromptCont
   };
 }
 
+function anomalyPromptContext(anomaly: AnomalyRunContext): AgentRunAnomalyPromptContext {
+  return {
+    anomalyType: anomaly.anomalyType,
+    bucketSeconds: anomaly.bucketSeconds,
+    windowStart: anomaly.windowStart,
+    firstSeenAt: anomaly.firstSeenAt,
+    lastSeenAt: anomaly.lastSeenAt,
+    peakScore: anomaly.peakScore,
+    rowCount: anomaly.rowCount,
+    metricNames: anomaly.metricNames,
+    siblings: anomaly.siblings,
+    truncated: anomaly.truncated,
+  };
+}
+
 function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromptContext {
   return {
     agent: { name: ctx.agent.name, kind: ctx.agent.kind },
@@ -981,6 +1028,7 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
       : null,
     alert: ctx.alert,
     ticket: ctx.ticket ? ticketPromptContext(ctx.ticket) : null,
+    anomaly: ctx.anomaly ? anomalyPromptContext(ctx.anomaly) : null,
     instructions: effective.instructions,
   };
 }

@@ -66,6 +66,7 @@ wave: W07 (#3828) — PR 4 of 4 (Metric-anomaly pilot)
 - `anomalyContext.ts`: incident summary (type, window, peak score, row count, metric names) + per-sibling bounded excerpts of `evidence`/`baseline` jsonb (whitelist known numeric keys; never dump raw jsonb; 8 KiB ceiling) + device summary already available via the device-bound run context; `RunContext.anomaly` (mirror the ticket branch at `runLoop.ts:262`), `runnerPrompt.ts` anomaly section; DTO projection.
 - Web: `case 'anomaly'` in both `triggerLabel()` copies; i18n key in EVERY locale file; `RunDetailPage` renders the incident link (device anomalies tab) when `anomalyIncidentId` is set.
 - Full battery (api + shared suites, typecheck, lint api/shared/web, drift, locale parity, contract suites via CI). **Open the PR**: branch `feature/3821-ai-agents/wave-3828-4` → main, title `feat(api,web): wave 6.4 — metric-anomaly pilot: first-class anomaly trigger, canonical incidents, deviceGroupIds filter`, body: "PR 4 of 4 for #3828 — do NOT close" (wave close is a separate step), the marker-on-row vs separate-outbox decision, the reverse-direction dedupe deferral, forced-shadow pilot note, the 4 dossier corrections. **Stop after opening the PR.**
+- [x] TDD → commit: `feat(api,web,shared): bounded anomaly context + prompt + run DTO + web trigger labels (#3828)`
 
 ## Self-Review Notes
 

@@ -1471,7 +1471,8 @@
         "alert": "Alert",
         "manual": "Manual",
         "schedule": "Schedule",
-        "ticket": "Ticket"
+        "ticket": "Ticket",
+        "anomaly": "Anomaly"
       },
       "noAgent": "Unknown agent",
       "loading": "Loading runs…",
@@ -1554,6 +1555,7 @@
           "empty": "No linked approvals.",
           "viewAll": "Review in Approvals"
         },
+        "anomalyLink": "Open device anomalies",
         "budget": {
           "title": "Exposure budget",
           "caption": "Recorded exposure — trailing {{hours}}h",
