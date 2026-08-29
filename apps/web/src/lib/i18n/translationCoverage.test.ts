@@ -126,7 +126,9 @@ const namespaceDuplicateBaselines = {
     // +1: longTail.fleet.FindingsFeed.severities.error — "Error" is the correct
     // es-419 severity label and spells identically to English.
     // +1: nav.variables — "Variables" is the same word in Spanish.
-    'common.json': 86,
+    // +1: nav.software (left-nav reorg, #4202) — "Software" is the same word
+    // in Spanish.
+    'common.json': 87,
     'devices.json': 115,
     'discovery.json': 17,
     'integrations.json': 31,
@@ -202,7 +204,9 @@ const namespaceDuplicateBaselines = {
     // +1: PsaConnectionForm.fields.secret — "Secret" is the identical French
     // term for this credential field (fr already uses "Secret client").
     // +1: nav.variables — "Variables" is identical in French.
-    'common.json': 104,
+    // +1: nav.sectionAdministration (left-nav reorg, #4202) —
+    // "Administration" is identical in French.
+    'common.json': 105,
     'devices.json': 136,
     'discovery.json': 15,
     'integrations.json': 38,
@@ -278,7 +282,9 @@ const namespaceDuplicateBaselines = {
     // +1: PsaConnectionForm.fields.secret — "Secret" is the identical French
     // term for this credential field (fr already uses "Secret client").
     // +1: nav.variables — "Variables" is identical in French.
-    'common.json': 106,
+    // +1: nav.sectionAdministration (left-nav reorg, #4202) —
+    // "Administration" is identical in French.
+    'common.json': 107,
     'devices.json': 136,
     'discovery.json': 15,
     'integrations.json': 40,
@@ -355,7 +361,9 @@ const namespaceDuplicateBaselines = {
     // (api-key, company-id, personal-access-token, …) and the example address
     // are input-shape hints, not wording, so they are intentionally identical
     // in every catalog.
-    'common.json': 102,
+    // +2: nav.software + nav.sectionAdministration (left-nav reorg, #4202) —
+    // "Software" and "Administration" are the German words too.
+    'common.json': 104,
     'devices.json': 146,
     'discovery.json': 26,
     'integrations.json': 43,
