@@ -48,16 +48,16 @@ describe('metric anomalies service', () => {
     expect(executeMock).not.toHaveBeenCalled();
   });
 
-  it('upserts baseline deviations, growth trends, and process sample runaways idempotently', async () => {
+  it('upserts baseline deviations, growth trends, process sample runaways, and the collapsed incident row idempotently', async () => {
     const result = await detectMetricAnomaliesRange({
       orgId: '11111111-1111-1111-1111-111111111111',
       from: new Date('2026-06-18T12:00:00.000Z'),
       to: new Date('2026-06-18T12:30:00.000Z'),
     });
 
-    expect(result).toMatchObject({ statements: 3, skipped: false });
+    expect(result).toMatchObject({ statements: 4, skipped: false });
     expect(result).toMatchObject({ v1ShadowStatements: 0, v1ShadowSkipped: true });
-    expect(executeMock).toHaveBeenCalledTimes(3);
+    expect(executeMock).toHaveBeenCalledTimes(4);
     const executedSql = JSON.stringify(executeMock.mock.calls);
     expect(executedSql).toContain('INSERT INTO metric_anomalies');
     expect(executedSql).toContain('ON CONFLICT');
@@ -90,14 +90,15 @@ describe('metric anomalies service', () => {
     });
 
     expect(result).toMatchObject({
-      statements: 3,
+      statements: 4,
       v1ShadowStatements: 1,
       v1ShadowSkipped: false,
       skipped: false,
     });
-    expect(executeMock).toHaveBeenCalledTimes(4);
+    // 3 detectors + the incident upsert (always) + the v1 shadow statement.
+    expect(executeMock).toHaveBeenCalledTimes(5);
 
-    const v1StatementSql = JSON.stringify(executeMock.mock.calls[3]);
+    const v1StatementSql = JSON.stringify(executeMock.mock.calls[4]);
     expect(v1StatementSql).toContain('INSERT INTO metric_anomaly_candidates');
     expect(v1StatementSql).toContain(METRIC_ANOMALY_V1_SHADOW_VERSION);
     expect(v1StatementSql).toContain('percentile_cont');
@@ -119,6 +120,104 @@ describe('metric anomalies service', () => {
         to: new Date('2026-06-18T12:00:00.000Z'),
       }),
     ).rejects.toThrow('from < to');
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+});
+
+// Wave 6 PR 4 (#3828) Task 2: the fourth statement collapses sibling
+// metric_anomalies rows into metric_anomaly_incidents. The DO UPDATE SET-list
+// assertion here is the load-bearing re-publish guard the plan calls for —
+// dispatched_at/dispatch_attempts/agent_run_id are the transactional dispatch
+// marker (metricAnomalyIncidents.ts), and this statement must NEVER assign
+// any of them, or a bulk detector re-upsert (the 10-min/30-min-lookback
+// schedule revisits every row ~3x) would silently re-publish an
+// already-dispatched incident.
+describe('metric anomaly incidents upsert (#3828 wave-6-4 task 2)', () => {
+  beforeEach(() => {
+    executeMock.mockReset();
+    executeMock.mockResolvedValue([]);
+    shouldProduceMlOutputMock.mockReset();
+    shouldProduceMlOutputMock.mockImplementation(async (_orgId: string, flag: string) => flag === 'ml.anomalies.enabled');
+  });
+
+  it('upserts metric_anomaly_incidents from the org/range just detected, collapsed on (org_id, device_id, anomaly_type, bucket_seconds, window_start)', async () => {
+    await detectMetricAnomaliesRange({
+      orgId: '11111111-1111-1111-1111-111111111111',
+      from: new Date('2026-06-18T12:00:00.000Z'),
+      to: new Date('2026-06-18T12:30:00.000Z'),
+    });
+
+    expect(executeMock).toHaveBeenCalledTimes(4);
+    const incidentSql = JSON.stringify(executeMock.mock.calls[3]);
+
+    expect(incidentSql).toContain('INSERT INTO metric_anomaly_incidents');
+    expect(incidentSql).toContain('FROM metric_anomalies');
+    expect(incidentSql).toContain("ma.status = 'open'");
+    // Collapsing key matches the table's unique index exactly, metric_name
+    // deliberately excluded (mirrors metricAnomalyPromotion.ts's
+    // findDedupeSiblings) — pinned as the literal clause, not just a
+    // substring search, so a stray extra/missing column is caught.
+    expect(incidentSql).toContain(
+      'GROUP BY ma.org_id, ma.device_id, ma.anomaly_type, ma.bucket_seconds, ma.window_start',
+    );
+    expect(incidentSql).toContain(
+      'ON CONFLICT (org_id, device_id, anomaly_type, bucket_seconds, window_start)',
+    );
+    // metric_name still appears, but only folded into the array_agg — never
+    // as a grouping/conflict column.
+    expect(incidentSql).toContain('array_agg(DISTINCT ma.metric_name');
+  });
+
+  it('re-publish guard: the DO UPDATE SET list never assigns dispatched_at, dispatch_attempts, or agent_run_id', async () => {
+    await detectMetricAnomaliesRange({
+      orgId: '11111111-1111-1111-1111-111111111111',
+      from: new Date('2026-06-18T12:00:00.000Z'),
+      to: new Date('2026-06-18T12:30:00.000Z'),
+    });
+
+    const incidentSql = JSON.stringify(executeMock.mock.calls[3]);
+    // The statement never references these columns at all (not in the
+    // INSERT column list, not in SELECT, not in SET) — so a future edit that
+    // starts refreshing the dispatch marker on every re-detect (the exact
+    // re-publish bug this design exists to prevent) fails here first.
+    expect(incidentSql).not.toContain('dispatched_at');
+    expect(incidentSql).not.toContain('dispatch_attempts');
+    expect(incidentSql).not.toContain('agent_run_id');
+    // The columns it DOES refresh on conflict.
+    expect(incidentSql).toContain('last_seen_at = EXCLUDED.last_seen_at');
+    expect(incidentSql).toContain('GREATEST(metric_anomaly_incidents.peak_score, EXCLUDED.peak_score)');
+    expect(incidentSql).toContain('row_count = EXCLUDED.row_count');
+    expect(incidentSql).toContain('metric_names = EXCLUDED.metric_names');
+    // first_seen_at is likewise never refreshed on conflict — it should
+    // stay pinned to the incident's original first-detected timestamp.
+    expect(incidentSql).not.toContain('first_seen_at = EXCLUDED.first_seen_at');
+  });
+
+  it('binds the range lower bound (no upper bound) so a growth-trend row whose window_start predates `from` still collapses in on a later pass', async () => {
+    await detectMetricAnomaliesRange({
+      orgId: '22222222-2222-2222-2222-222222222222',
+      from: new Date('2026-06-18T12:00:00.000Z'),
+      to: new Date('2026-06-18T12:30:00.000Z'),
+    });
+
+    const incidentCall = executeMock.mock.calls[3];
+    const incidentSql = JSON.stringify(incidentCall);
+    expect(incidentSql).toContain('ma.window_start >=');
+    expect(incidentSql).toContain('2026-06-18T12:00:00.000Z');
+    // No upper-bound comparison against `to` for metric_anomalies.window_start.
+    expect(incidentSql).not.toContain('ma.window_start <');
+  });
+
+  it('is gated by the same ml.anomalies.enabled flag as the rest of the detect job', async () => {
+    shouldProduceMlOutputMock.mockResolvedValue(false);
+
+    const result = await detectMetricAnomaliesRange({
+      orgId: '11111111-1111-1111-1111-111111111111',
+      from: new Date('2026-06-18T12:00:00.000Z'),
+      to: new Date('2026-06-18T12:30:00.000Z'),
+    });
+
+    expect(result).toMatchObject({ statements: 0, skipped: true });
     expect(executeMock).not.toHaveBeenCalled();
   });
 });
