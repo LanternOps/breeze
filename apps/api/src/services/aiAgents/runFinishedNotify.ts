@@ -156,10 +156,11 @@ interface FinishedRunRow {
   id: string;
   orgId: string;
   agentId: string;
-  /** Phase 2 wave P2-2, Task A7 — gates the sweep digest below. Absent on a
-   *  row read back through an older mock/fixture, which simply never matches
-   *  `'sweep'` and keeps the generic copy. */
-  profile: string;
+  /** Phase 2 wave P2-2, Task A7 — gates the sweep digest below. Optional
+   *  because it can be absent on a row read back through an older
+   *  mock/fixture; an absent value simply never matches `'sweep'` and keeps
+   *  the generic copy. */
+  profile?: string;
   status: string;
   summary: string | null;
   outcome: Record<string, unknown>;

@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { AI_AGENT_LIMIT_DEFAULTS, AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
 
 const {
@@ -560,12 +562,16 @@ describe('GET /ai-agents/exposure-budget (recorded exposure readout, #3828)', ()
  * runsListCursor.ts/runTrace.ts's own suites and by the RLS/integration
  * contract tests.
  */
-function selectChain<T>(rows: T) {
+function selectChain<T>(rows: T, onWhere?: (predicate: unknown) => void) {
   const chain = {
     from: () => chain,
     innerJoin: () => chain,
     leftJoin: () => chain,
-    where: () => chain,
+    // `onWhere` (P2-2 Task A7, review round 1) lets a test compile the
+    // predicate a route actually built and assert on its BOUND PARAMS — the
+    // only way to prove a tenancy pin binds the right org id rather than
+    // merely naming the `org_id` column.
+    where: (predicate: unknown) => { onWhere?.(predicate); return chain; },
     orderBy: () => chain,
     limit: () => chain,
     offset: () => chain,
@@ -573,6 +579,12 @@ function selectChain<T>(rows: T) {
       Promise.resolve(rows).then(resolve, reject),
   };
   return chain;
+}
+
+const dialect = new PgDialect();
+/** Bound parameters of a compiled predicate — see `selectChain`'s `onWhere`. */
+function sqlParams(predicate: unknown): unknown[] {
+  return dialect.sqlToQuery(predicate as SQL).params;
 }
 
 // Strict response-shape schemas (DTO rule, Global Constraints): a route that
@@ -837,6 +849,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
   // Phase 2 wave P2-2 (scheduled sweeps), Task A7.
   it('resolves sweep finding hostnames with ONE batched org-pinned read and leaks no raw proposal args', async () => {
     const OTHER_DEVICE_ID = '99999999-9999-4999-8999-999999999999';
+    let hostnameWhere: unknown;
     selectMock
       .mockReturnValueOnce(selectChain([runRow({
         sessionId: null,
@@ -881,7 +894,10 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
       })]))
       // The ONE batched hostname read (no session, no intent ids, so this is
       // the only other query the route makes).
-      .mockReturnValueOnce(selectChain([{ id: DEVICE_ID, hostname: 'WKS-042' }]));
+      .mockReturnValueOnce(selectChain(
+        [{ id: DEVICE_ID, hostname: 'WKS-042' }],
+        (predicate) => { hostnameWhere = predicate; },
+      ));
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);
@@ -891,6 +907,17 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     // Two selects total: the run row and ONE batched device read for BOTH
     // findings — never a lookup per finding.
     expect(selectMock).toHaveBeenCalledTimes(2);
+    // Review round 1, IMPORTANT 1: the hostname read is pinned to the RUN's
+    // own org, not just the caller's accessible set — `sweepDeviceIds` come
+    // out of MODEL-AUTHORED outcome jsonb, so a partner-scoped caller must
+    // not be able to have a sibling org's hostname rendered inside this run.
+    // Asserting the bound params (not the `org_id` column name) is what makes
+    // this non-vacuous: binding some OTHER org's id would still print
+    // `org_id` in the SQL text.
+    const hostnameParams = sqlParams(hostnameWhere);
+    expect(hostnameParams).toContain(ORG_ID);
+    expect(hostnameParams).toContain(DEVICE_ID);
+    expect(hostnameParams).toContain(OTHER_DEVICE_ID);
     expect(parsed.data.sweep).toEqual({
       scheduleId: '88888888-8888-4888-8888-888888888888',
       occurrenceKey: '2026-08-29T06:00:00Z',

@@ -533,17 +533,30 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
 
   // Phase 2 wave P2-2 (scheduled sweeps), Task A7 — a sweep run is
   // device-less but its findings each name one device, so the detail needs
-  // hostnames for ids that are NOT `run.device_id`. ONE batched, org-pinned
-  // read for the whole findings list (never a lookup per finding); empty for
-  // every non-sweep run, which skips the query entirely. The org predicate is
-  // defence-in-depth beside RLS, matching the two reads above — a device the
-  // caller cannot see simply projects a null hostname.
+  // hostnames for ids that are NOT `run.device_id`. ONE batched read for the
+  // whole findings list (never a lookup per finding); empty for every
+  // non-sweep run, which skips the query entirely.
+  //
+  // TWO org predicates, and both are load-bearing (review round 1,
+  // IMPORTANT 1). `sweepDeviceIds` are read out of `outcome.sweepFindings`,
+  // which is MODEL-AUTHORED text: nothing in the jsonb guarantees those ids
+  // belong to this run's org. `auth.orgCondition` alone only bounds them to
+  // the CALLER's accessible set — which, for a partner-scoped caller, spans
+  // every sibling org — so a finding naming a device in org B would render
+  // org B's hostname inside org A's run detail. `eq(devices.orgId,
+  // run.orgId)` pins the read to the run's OWN org, and the auth condition
+  // stays as defence-in-depth beside RLS (matching the two reads above). A
+  // device that fails either simply projects a null hostname.
   const sweepDeviceIds = sweepFindingDeviceIds(run.outcome);
   const hostnameRows = sweepDeviceIds.length > 0
     ? await db
       .select({ id: devices.id, hostname: devices.hostname })
       .from(devices)
-      .where(and(inArray(devices.id, sweepDeviceIds), auth.orgCondition(devices.orgId)))
+      .where(and(
+        inArray(devices.id, sweepDeviceIds),
+        eq(devices.orgId, run.orgId),
+        auth.orgCondition(devices.orgId),
+      ))
     : [];
   const deviceHostnames = new Map(hostnameRows.map((row) => [row.id, row.hostname]));
 

@@ -90,6 +90,7 @@ import {
 import { devices } from '../../db/schema/devices';
 import type { AuthContext } from '../../middleware/auth';
 import { createActionIntent } from '../actionIntents/intentService';
+import { isToolAllowlisted } from './toolAllowlist';
 
 /**
  * Same skip-if-already-system shape as every other file in this directory
@@ -196,13 +197,6 @@ function proposalToolInput(proposal: SweepProposedAction): Record<string, unknow
     : { deviceId: proposal.deviceId, deviceVulnerabilityIds: proposal.deviceVulnerabilityIds };
 }
 
-/** Same matching rule as `checkAgentGuardrails` (aiGuardrails.ts) and
- *  `persistAlertVerdict`: a bare tool entry OR the specific `tool:action`
- *  entry admits the call. */
-function isAllowlisted(allowlist: string[], tool: string, action: string | null): boolean {
-  return allowlist.includes(tool) || (action !== null && allowlist.includes(`${tool}:${action}`));
-}
-
 /**
  * PRECONDITION (inherited from `createActionIntent`, same as
  * `persistAlertVerdict`): must NOT be called from inside an ambient DB
@@ -298,7 +292,7 @@ export async function persistSweepFindings(
       continue;
     }
 
-    if (!isAllowlisted(run.toolAllowlist, proposal.tool, action)) {
+    if (!isToolAllowlisted(run.toolAllowlist, proposal.tool, action)) {
       console.warn('[sweepFindings] proposal refused — tool is not in the agent\'s effective allowlist', {
         runId: run.id, agentId: run.agentId, findingIndex: index, tool: proposal.tool, action,
       });

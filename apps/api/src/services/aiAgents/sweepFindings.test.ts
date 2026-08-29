@@ -94,6 +94,13 @@ const dialect = new PgDialect();
 function sqlText(value: unknown): string {
   return dialect.sqlToQuery(value as SQL).sql;
 }
+/** The BOUND PARAMETERS of a compiled predicate. Asserting on these — rather
+ *  than on the `org_id` column name appearing in the SQL text — is what makes
+ *  the tenancy assertion non-vacuous: a predicate that mentions `org_id` but
+ *  binds some OTHER org's id would pass a text check and fail this one. */
+function sqlParams(value: unknown): unknown[] {
+  return dialect.sqlToQuery(value as SQL).params;
+}
 
 const agentAuth = {
   principal: { kind: 'ai_agent' },
@@ -187,6 +194,13 @@ describe('persistSweepFindings', () => {
     expect(where).toContain('org_id');
     expect(where).toContain('is_ephemeral');
     expect(where).toContain('in (');
+    // The RUN's org id and the non-ephemeral flag are the values actually
+    // BOUND — the column names alone would pass even if some other org's id
+    // (or no id) were substituted.
+    const params = sqlParams(state.selectWheres[0]);
+    expect(params).toContain(ORG_ID);
+    expect(params).toContain(false);
+    expect(params).toContain(DEVICE_A);
   });
 
   it('builds remediate_vulnerability args from the finding and scopes the intent to its device', async () => {
