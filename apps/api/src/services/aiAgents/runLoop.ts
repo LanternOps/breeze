@@ -1610,6 +1610,14 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // and then hit `error_max_turns` with no further prose would finish
     // `failed('max_turns_exceeded')` despite having done its ONE job, wrongly
     // counting against the agent's circuit breaker (`recordRunTerminal`).
+    //
+    // `outcome.budgetExceeded` itself is relative to THIS run's effective
+    // budget (`runLimits.maxBudgetCentsPerRun` above) — for a verdict-profile
+    // run that's `verdictBudgetCentsPerRun` (5 cents by default, see
+    // `verdictProfile.ts`'s `verdictLimits`), not the agent's top-level
+    // `maxBudgetCentsPerRun` (50 cents by default). Don't read a verdict run's
+    // `budgetExceeded: true` as "spent close to 50 cents" — it means the run
+    // crossed its own, much smaller, profile ceiling.
     const producedSomething =
       outcome.executedActions.length > 0
       || outcome.proposedActions.length > 0

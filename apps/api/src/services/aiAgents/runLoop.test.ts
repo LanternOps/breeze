@@ -2163,8 +2163,8 @@ describe('verdict profile in the run loop (P2-1)', () => {
       'mcp__breeze__query_monitors',
       'mcp__breeze__submit_alert_verdict',
     ]);
-    expect(lastQueryOptions?.maxTurns).toBe(3);
-    expect(lastQueryOptions?.maxBudgetUsd).toBe(0.02);
+    expect(lastQueryOptions?.maxTurns).toBe(4);
+    expect(lastQueryOptions?.maxBudgetUsd).toBe(0.05);
 
     const extraTools = createBreezeMcpServer.mock.calls[0]?.[4] as unknown[] | undefined;
     expect(extraTools).toBeDefined();
