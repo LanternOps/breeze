@@ -19,7 +19,7 @@ wave: W01 (#4188) — P2-1 Alert verdicts (PR A foundations + PR B triggers/UI)
 
 - Tests: `cd apps/api && npx vitest run <path>` (never `pnpm … test -- --run`). Shared: `cd packages/shared && npx vitest run <path>`. Web: `cd apps/web && npx vitest run <path>` plus `src/lib/i18n/localeParity.test.ts`. Typecheck: `cd apps/api && NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit -p tsconfig.json`.
 - Run `pnpm lint` in every touched package before finishing a PR — an `eslint-disable` naming an unregistered rule is itself a lint error (use `as never`, real deps arrays).
-- ONE migration in PR A, idempotent, named to sort after the newest committed file. At plan time the newest committed is `2026-09-18-ai-agents-safety-controls.sql` and wave 6.3 (in flight) claims `2026-09-19-ai-agents-ticket-shadow.sql`; use **`2026-09-20-ai-agents-alert-verdicts.sql`** and re-check `ls apps/api/migrations/*.sql | sort | tail -1` at implementation time. No inner `BEGIN;`/`COMMIT;`. Explicit `ON DELETE` on every FK.
+- ONE migration in PR A, idempotent, named to sort after the newest committed file. At plan time the newest committed was `2026-09-18-ai-agents-safety-controls.sql` and wave 6.3 (in flight) claimed `2026-09-19-ai-agents-ticket-shadow.sql`. Both 6.3 and 6.4 have since merged, and 6.4 claimed `2026-09-20-ai-agents-anomaly-pilot.sql`, so this migration was renamed to **`2026-09-21-ai-agents-alert-verdicts.sql`** during the rebase onto them (it was still unmerged, so renaming was allowed). Re-check `ls apps/api/migrations/*.sql | sort | tail -1` at implementation time. No inner `BEGIN;`/`COMMIT;`. Explicit `ON DELETE` on every FK.
 - New org-scoped table `ai_alert_verdicts` → RLS (shape 1, auto-discovered) + `CORE_ORG_CASCADE_DELETE_ORDER` (alphabetical, `localeCompare`) + `CORE_TENANT_EXPORT_POLICY` + `orgMergeRegistry`. Column adds on `ai_agent_runs` (`profile`, `correlation_group_id`) fire the export-policy contract — classify both `included`.
 - Policy snapshot `AI_AGENT_POLICY_SNAPSHOT_VERSION` 4 → 5 (`maxVerdictRunsPerHour`, `maxConcurrentVerdictRuns`, `verdictBudgetCentsPerRun`); every read site tolerates 1–5.
 - DTO rule (wave 6.1): every field enumerated by hand; `AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS` (`args`, `toolInput`, `toolOutput`, `arguments`) must never appear in a projected verdict; Zod-validate response shapes in tests.
@@ -36,7 +36,7 @@ wave: W01 (#4188) — P2-1 Alert verdicts (PR A foundations + PR B triggers/UI)
 
 | File | Responsibility |
 |---|---|
-| `apps/api/migrations/2026-09-20-ai-agents-alert-verdicts.sql` (new) | `ai_agent_runs.profile` + `correlation_group_id`; `ai_alert_verdicts` table + RLS + indexes; `alert_correlation_groups`-adjacent nothing (no schema change there). |
+| `apps/api/migrations/2026-09-21-ai-agents-alert-verdicts.sql` (new) | `ai_agent_runs.profile` + `correlation_group_id`; `ai_alert_verdicts` table + RLS + indexes; `alert_correlation_groups`-adjacent nothing (no schema change there). |
 | `apps/api/src/db/schema/aiAlertVerdicts.ts` (new) + `db/schema/index.ts` + `db/schema/aiAgents.ts` (modify) | Drizzle table; two new run columns. |
 | `apps/api/src/services/tenantCascade.ts`, `tenantExportPolicyRegistry.ts`, `orgMergeRegistry.ts` (modify) | Ceremony. |
 | `packages/shared/src/types/aiAgents.ts`, `packages/shared/src/validators/aiAgents.ts` (modify) | `AI_AGENT_RUN_PROFILES`, limits v5, `AlertVerdictOutcome` type + `alertVerdictOutcomeSchema`, `AI_ALERT_VERDICT_CLASSIFICATIONS`. |
@@ -70,10 +70,10 @@ wave: W01 (#4188) — P2-1 Alert verdicts (PR A foundations + PR B triggers/UI)
 
 ## PR A — Foundations
 
-### Task A1: Migration + Drizzle schema + ceremonies
+### Task 1 (A1): Migration + Drizzle schema + ceremonies
 
 **Files:**
-- Create: `apps/api/migrations/2026-09-20-ai-agents-alert-verdicts.sql`
+- Create: `apps/api/migrations/2026-09-21-ai-agents-alert-verdicts.sql`
 - Create: `apps/api/src/db/schema/aiAlertVerdicts.ts`
 - Modify: `apps/api/src/db/schema/aiAgents.ts` (the `aiAgentRuns` table, after `alertId` at ~line 82)
 - Modify: `apps/api/src/db/schema/index.ts:55-58` (add `export * from './aiAlertVerdicts';`)
@@ -130,7 +130,7 @@ Expected: FAIL — `Cannot find module './aiAlertVerdicts'`.
 - [ ] **Step 3: Write the migration**
 
 ```sql
--- apps/api/migrations/2026-09-20-ai-agents-alert-verdicts.sql
+-- apps/api/migrations/2026-09-21-ai-agents-alert-verdicts.sql
 -- Phase 2 wave P2-1 (alert verdicts). Spec:
 -- docs/superpowers/specs/ai-mcp/2026-08-28-ai-agents-phase2-intelligence-layer-design.md §4.1, §5.
 -- Idempotent; no inner BEGIN/COMMIT (autoMigrate wraps the file).
@@ -266,13 +266,13 @@ Expected: PASS. Then `export DATABASE_URL=postgresql://breeze:breeze@localhost:5
 - [ ] **Step 7: Commit**
 
 ```bash
-git add apps/api/migrations/2026-09-20-ai-agents-alert-verdicts.sql apps/api/src/db/schema apps/api/src/services/tenantCascade.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/orgMergeRegistry.ts
+git add apps/api/migrations/2026-09-21-ai-agents-alert-verdicts.sql apps/api/src/db/schema apps/api/src/services/tenantCascade.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/orgMergeRegistry.ts
 git commit -m "feat(api): P2-1 — ai_alert_verdicts table, run profile + correlation group columns, ceremonies"
 ```
 
 ---
 
-### Task A2: Shared types — run profile, limits v5, verdict outcome schema
+### Task 2 (A2): Shared types — run profile, limits v5, verdict outcome schema
 
 **Files:**
 - Modify: `packages/shared/src/types/aiAgents.ts` (limits at :22-73, snapshot version at :153-183, `AgentRunVerdict` at :288)
@@ -439,7 +439,7 @@ git commit -m "feat(shared): P2-1 — run profiles, alert verdict outcome schema
 
 ---
 
-### Task A3: Tier-2 `supervised` intents for the `ai_agent` principal
+### Task 3 (A3): Tier-2 `supervised` intents for the `ai_agent` principal
 
 **Files:**
 - Modify: `apps/api/src/services/actionIntents/intentService.ts:660-676` (tier gate), `:355-363` (`resolvePolicyDecisionState`), `:687` (approvalScope)
@@ -549,7 +549,7 @@ git commit -m "feat(api): P2-1 — Tier-2 supervised action intents for the ai_a
 
 ---
 
-### Task A4: Outcome-tool mechanism + `submit_alert_verdict`
+### Task 4 (A4): Outcome-tool mechanism + `submit_alert_verdict`
 
 **Files:**
 - Create: `apps/api/src/services/aiAgents/outcomeTools.ts`
@@ -692,7 +692,9 @@ git commit -m "feat(api): P2-1 — outcome-tool mechanism and submit_alert_verdi
 
 ---
 
-### Task A5: Verdict profile — allowlist, limits, circuit classification
+### Task 5 (A5): Verdict profile — allowlist, limits, circuit classification
+
+> **Amended during execution (Task 7 review, 2026-08-28):** `VERDICT_TOOL_ALLOWLIST` is a **floor**, not an intersection — `verdictToolAllowlist()` always returns the pinned read-only set plus the outcome tool, regardless of the agent allowlist (every entry already bypasses the allowlist on full runs, so nothing widens; intersecting against the empty default allowlist produced evidence-free verdicts). The intersection test below is superseded.
 
 **Files:**
 - Create: `apps/api/src/services/aiAgents/verdictProfile.ts`
@@ -808,7 +810,7 @@ git commit -m "feat(api): P2-1 — verdict profile allowlist/limits; circuit tre
 
 ---
 
-### Task A6: Verdict admission in `createAndEnqueueAgentRun`
+### Task 6 (A6): Verdict admission in `createAndEnqueueAgentRun`
 
 **Files:**
 - Modify: `apps/api/src/services/aiAgents/runService.ts:73-102` (input + skip reasons), `:445-480` (cooldown/concurrency/rate), the insert (~`:560-610`) to write `profile`/`correlationGroupId`
@@ -868,7 +870,9 @@ git commit -m "feat(api): P2-1 — verdict-profile admission on its own concurre
 
 ---
 
-### Task A7: Run loop — verdict tool exposure, capture, prompt
+### Task 7 (A7): Run loop — verdict tool exposure, capture, prompt
+
+> **Amended during execution (review, 2026-08-28):** SDK `extraTools` handlers never reach `onPreToolUse`/`onPostToolUse` (only registry tools do, via `makeHandler`). `createBreezeMcpServer` therefore wraps each extra tool's handler in the same pre/post-hook contract; the kill switch is checked inside the pre-hook's outcome-tool branch; `producedSomething` counts `alertVerdict`; the guardrail allowlist for a verdict run is the pinned floor; `finishRun` skips notifications and fix-watches for verdict runs; the local budget backstop reads `runLimits`.
 
 **Files:**
 - Modify: `apps/api/src/services/aiAgents/runLoop.ts` (`RunContext` :249-263, context loader :361-380, `createAgentRunPreToolUse` :399-438, `createAgentRunPostToolUse` :709-717, SDK options :1059-1077, `AgentRunOutcome` :190-215)
@@ -976,7 +980,7 @@ git commit -m "feat(api): P2-1 — verdict runs: outcome-tool exposure, capture,
 
 ---
 
-### Task A8: Persist verdicts + convert suggestions to Tier-2 intents; feedback route; trace projection
+### Task 8 (A8): Persist verdicts + convert suggestions to Tier-2 intents; feedback route; trace projection
 
 **Files:**
 - Create: `apps/api/src/services/aiAgents/alertVerdicts.ts`
@@ -1141,7 +1145,7 @@ git commit -m "feat(api): P2-1 — persist alert verdicts, suggestion → Tier-2
 
 ---
 
-### Task A9: Contract test — no profile bypass, outcome tools inert
+### Task 9 (A9): Contract test — no profile bypass, outcome tools inert
 
 **Files:**
 - Create: `apps/api/src/services/aiAgents/verdictProfile.contract.test.ts`
@@ -1185,7 +1189,7 @@ git commit -m "test(api): P2-1 — contract: verdict profile cannot bypass guard
 
 ---
 
-### Task A10: PR A wrap — typecheck, lint, integration suites, PR
+### Task 10 (A10): PR A wrap — typecheck, lint, integration suites, PR
 
 - [ ] **Step 1:** `cd apps/api && NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit -p tsconfig.json` → clean. `pnpm --filter @breeze/api lint && pnpm --filter @breeze/shared lint` → clean.
 - [ ] **Step 2:** Integration (real DB): `cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/rls-coverage.integration.test.ts src/services/tenantCascade.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts` → PASS (verify the files RAN — non-zero test counts).
@@ -1196,7 +1200,9 @@ git commit -m "test(api): P2-1 — contract: verdict profile cannot bypass guard
 
 ## PR B — Triggers + UI
 
-### Task B1: `alert.correlation_group.created` event, emitted after commit
+> **Carried in from the PR-A whole-branch review (2026-08-29):** (1) Task 12's group verdict runs MUST bind `deviceId` to the root alert's device (suggestion intents are gated on `alert.device_id === run.device_id` at creation, mirroring `checkAgentReleaseAuthority`); (2) Task 14 adds a migration `2026-09-22-ai-alert-verdicts-live-unique.sql` with `CREATE UNIQUE INDEX IF NOT EXISTS ai_alert_verdicts_live_alert_uq ON ai_alert_verdicts (alert_id) WHERE superseded_by IS NULL AND alert_id IS NOT NULL` and the group twin, and `persistAlertVerdict` treats a 23505 on insert as "another run won" (return its row, no supersede); (3) Task 14's feedback route writes an audit line and refuses to overwrite another user's feedback (409); (4) Task 11 adds `runOutsideDbContext` + `withToolTimeout` parity to `wrapExtraToolWithHooks` (docstring promised it; PR B is where a second outcome tool would otherwise be tempted).
+
+### Task 11 (B1): `alert.correlation_group.created` event, emitted after commit
 
 **Files:**
 - Modify: `apps/api/src/services/eventBus.ts:11-124` (add `| 'alert.correlation_group.created'` under "Alert events")
@@ -1235,7 +1241,7 @@ it('publishes alert.correlation_group.created once per created group after persi
 
 ---
 
-### Task B2: Durable subscriber `ai-agent-alert-verdict`
+### Task 12 (B2): Durable subscriber `ai-agent-alert-verdict`
 
 **Files:**
 - Create: `apps/api/src/services/aiAgents/alertVerdictSubscriber.ts`
@@ -1278,7 +1284,7 @@ and append `'ai-agent-alert-verdict'` to `EVENT_SUBSCRIBER_IDS`. The handler is 
 
 ---
 
-### Task B3: Ungrouped-alert delayed verdict job
+### Task 13 (B3): Ungrouped-alert delayed verdict job
 
 **Files:**
 - Create: `apps/api/src/jobs/alertVerdictScheduler.ts`
@@ -1295,7 +1301,7 @@ and append `'ai-agent-alert-verdict'` to `EVENT_SUBSCRIBER_IDS`. The handler is 
 
 ---
 
-### Task B4: Alerts API carries the latest verdict
+### Task 14 (B4): Alerts API carries the latest verdict
 
 **Files:**
 - Modify: `apps/api/src/routes/alerts/alerts.ts:134` (list) and `:305` (detail) — after loading rows, call `latestVerdictsForAlerts(orgId, ids)` and attach `aiVerdict: { id, classification, confidence, rationale, patternKind, feedback, suggestedIntentId, createdAt } | null`. Add an optional query param `hideAiNoise=true` on the list that excludes alerts whose latest verdict is `transient_self_healed | recurring_pattern | duplicate_of_group` (applied after the page is loaded is wrong — apply as a `NOT EXISTS` subquery on `ai_alert_verdicts` so pagination stays correct).
@@ -1306,7 +1312,7 @@ and append `'ai-agent-alert-verdict'` to `EVENT_SUBSCRIBER_IDS`. The handler is 
 
 ---
 
-### Task B5: Web — verdict badge, rationale, feedback, noise filter
+### Task 15 (B5): Web — verdict badge, rationale, feedback, noise filter
 
 **Files:**
 - Create: `apps/web/src/components/alerts/AlertVerdictBadge.tsx`
@@ -1324,7 +1330,7 @@ and append `'ai-agent-alert-verdict'` to `EVENT_SUBSCRIBER_IDS`. The handler is 
 
 ---
 
-### Task B6: PR B wrap
+### Task 16 (B6): PR B wrap
 
 - [ ] Typecheck API + web; lint all touched packages; `npx vitest run src/services/aiAgents src/services/alertCorrelationGroups.test.ts src/jobs/alertCorrelation.test.ts src/routes/alerts` (API) and the web files above.
 - [ ] Manual check on a wt-stack: enable `BREEZE_AI_AGENTS_ENABLED=true`, set a triage agent to `shadow`, fire three alerts on one device within 30 minutes → the correlator groups them → one verdict run appears in `/ai-agents/runs` with `profile: verdict`, the alert rows show the badge, 👍 persists, and a `suppress` suggestion shows in `/approvals` as a single-approver card whose approve executes the suppression.

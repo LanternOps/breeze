@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { and, count, eq, gte, inArray, isNotNull, isNull, lt, or, sql, sum } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
+import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import type {
   AgentRunVerdict,
   AiAgentKind,
   AiAgentPolicySnapshot,
+  AiAgentRunProfile,
   AiAgentRunStatus,
   AiAgentTriggerKind,
   AiAgentTriggers,
@@ -69,6 +71,14 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *                            breaker itself (recordRunTerminal, the
  *                            terminalization chokepoint) is a later task in
  *                            this same PR.
+ *  - maxVerdictRunsPerHour — HERE (admission rule 6b), verdict-profile runs
+ *                            only — counted separately from maxRunsPerHour so
+ *                            verdict volume can never starve full-profile runs.
+ *  - maxConcurrentVerdictRuns — HERE (admission rule 6b), verdict-profile runs
+ *                            only — counted separately from maxConcurrentRuns.
+ *  - verdictBudgetCentsPerRun — run loop (verdictLimits(), verdictProfile.ts):
+ *                            substitutes for maxBudgetCentsPerRun on a
+ *                            verdict-profile run; not enforced here.
  */
 
 export interface CreateAgentRunInput {
@@ -131,6 +141,20 @@ export interface CreateAgentRunInput {
   };
   /** e.g. `alert:${alertId}`, `manual:${randomUUID()}`. Unique per org. */
   dedupeKey: string;
+  /**
+   * Phase 2 wave P2-1 (alert verdicts). `'full'` (the default when omitted)
+   * is the pre-existing run shape; `'verdict'` is a lighter-weight run scoped
+   * to producing one `ai_alert_verdicts` row instead of a full triage/patch/
+   * helpdesk turn. Admission counts a verdict run against its OWN
+   * concurrency/rate caps (`maxConcurrentVerdictRuns`/`maxVerdictRunsPerHour`)
+   * and skips the cooldown step entirely — see step 5/6b below.
+   */
+  profile?: AiAgentRunProfile;
+  /**
+   * Set only for a verdict run evaluating a correlation group rather than a
+   * single alert. `null`/omitted for every other run.
+   */
+  correlationGroupId?: string | null;
 }
 
 export type AgentRunSkipReason =
@@ -139,7 +163,14 @@ export type AgentRunSkipReason =
   | 'trigger_filter_mismatch' | 'maintenance_window' | 'cooldown'
   | 'max_concurrent_runs' | 'max_runs_per_hour' | 'org_budget_exceeded'
   | 'agent_daily_budget_exceeded' | 'duplicate' | 'ownership_mismatch'
-  | 'device_not_in_org';
+  | 'device_not_in_org'
+  // Phase 2 wave P2-1 (alert verdicts) — the verdict-profile equivalents of
+  // max_concurrent_runs/max_runs_per_hour, counted against
+  // maxConcurrentVerdictRuns/maxVerdictRunsPerHour instead (admission rule
+  // 6b). Deliberately NOT added to PUBLISHED_SKIP_REASONS below: these are
+  // volume guards on a high-frequency, cheap run shape, not a policy event
+  // worth a bus publish.
+  | 'max_concurrent_verdict_runs' | 'verdict_rate';
 
 export type CreateAgentRunResult =
   | { created: true; run: AiAgentRunRow }
@@ -360,6 +391,10 @@ export async function evaluateAnomalyTriggerFilters(
  * publishing there would put one Redis stream write on the hot alert path for a
  * non-event. Once a live agent has genuinely declined a trigger, the skip IS
  * the news, so it goes on the bus.
+ *
+ * `max_concurrent_verdict_runs`/`verdict_rate` (phase 2 P2-1) are
+ * deliberately absent: they are volume guards on a high-frequency, cheap
+ * run shape, not a policy event — see `AgentRunSkipReason`'s docstring.
  */
 const PUBLISHED_SKIP_REASONS: ReadonlySet<AgentRunSkipReason> = new Set([
   'circuit_open',
@@ -716,12 +751,26 @@ export async function createAndEnqueueAgentRun(
     // and org A's traffic must not consume org B's caps or cooldown.
     const agentOrgScope = and(eq(aiAgentRuns.agentId, resolved.agentId), eq(aiAgentRuns.orgId, orgId));
 
+    // Phase 2 wave P2-1 (alert verdicts). `profileScope` narrows the
+    // concurrency/rate counts below (step 6b) to this run's OWN profile, so a
+    // burst of cheap verdict-profile runs can never starve — or be starved
+    // by — the full triage/patch/helpdesk budget. Ordered agentOrgScope,
+    // profileScope, status/queuedAt to match
+    // ai_agent_runs_agent_profile_queued_idx (agent_id, org_id, profile,
+    // queued_at DESC), the index Task 1 added for exactly these counts.
+    const profile: AiAgentRunProfile = input.profile ?? 'full';
+    const profileScope = eq(aiAgentRuns.profile, profile);
+
     // 4c. Release runs a worker can no longer be executing before counting
     //     them, or one SIGKILLed replica wedges this (agent, org) forever.
     await reapStalledAgentRuns({ agentId: resolved.agentId, orgId });
 
-    // 5. Cooldown for this exact target.
-    if (effective.cooldownSeconds > 0) {
+    // 5. Cooldown for this exact target. Verdict-profile runs skip this
+    //    entirely — they dedupe on `dedupeKey` (`alert-verdict:<id>` /
+    //    `group-verdict:<id>`), not cooldown, and a cheap verdict run must
+    //    never wait out a full-profile agent's cooldown window (or vice
+    //    versa).
+    if (profile === 'full' && effective.cooldownSeconds > 0) {
       const deviceScope: SQL | undefined = deviceId
         ? eq(aiAgentRuns.deviceId, deviceId)
         : isNull(aiAgentRuns.deviceId);
@@ -737,23 +786,35 @@ export async function createAndEnqueueAgentRun(
       if (recent) return skip('cooldown');
     }
 
-    // 6. Concurrency and rate. Plain counts are sufficient BECAUSE step 4b
-    //    serialises every concurrent admission for this (agent, org) — they
-    //    were not before, and the caps were bypassable by an unbounded factor.
+    // 6b. Concurrency and rate — counted PER PROFILE (phase 2 P2-1), against
+    //    that profile's own cap: maxConcurrentVerdictRuns/maxVerdictRunsPerHour
+    //    for a verdict run, maxConcurrentRuns/maxRunsPerHour (unchanged) for a
+    //    full run. Plain counts are sufficient BECAUSE step 4b serialises
+    //    every concurrent admission for this (agent, org) — they were not
+    //    before, and the caps were bypassable by an unbounded factor.
+    //    The v5 limits fields (`?? AI_AGENT_LIMIT_DEFAULTS...`) may be absent
+    //    on a v1-v4 policy snapshot — same tolerant-read pattern the file uses
+    //    elsewhere for a limits field added in a later schema version.
     const [concurrent] = await db
       .select({ value: count() })
       .from(aiAgentRuns)
-      .where(and(agentOrgScope, inArray(aiAgentRuns.status, ['queued', 'running'])));
-    if ((concurrent?.value ?? 0) >= effective.limits.maxConcurrentRuns) {
-      return skip('max_concurrent_runs');
+      .where(and(agentOrgScope, profileScope, inArray(aiAgentRuns.status, ['queued', 'running'])));
+    const maxConcurrentForProfile = profile === 'verdict'
+      ? (effective.limits.maxConcurrentVerdictRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentVerdictRuns)
+      : effective.limits.maxConcurrentRuns;
+    if ((concurrent?.value ?? 0) >= maxConcurrentForProfile) {
+      return skip(profile === 'verdict' ? 'max_concurrent_verdict_runs' : 'max_concurrent_runs');
     }
 
     const [lastHour] = await db
       .select({ value: count() })
       .from(aiAgentRuns)
-      .where(and(agentOrgScope, gte(aiAgentRuns.queuedAt, new Date(now - 3_600_000))));
-    if ((lastHour?.value ?? 0) >= effective.limits.maxRunsPerHour) {
-      return skip('max_runs_per_hour');
+      .where(and(agentOrgScope, profileScope, gte(aiAgentRuns.queuedAt, new Date(now - 3_600_000))));
+    const maxPerHourForProfile = profile === 'verdict'
+      ? (effective.limits.maxVerdictRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxVerdictRunsPerHour)
+      : effective.limits.maxRunsPerHour;
+    if ((lastHour?.value ?? 0) >= maxPerHourForProfile) {
+      return skip(profile === 'verdict' ? 'verdict_rate' : 'max_runs_per_hour');
     }
 
     // 7. Budgets: the org's AI budget first, then the agent's own daily cap
@@ -843,6 +904,8 @@ export async function createAndEnqueueAgentRun(
         alertId: input.alertId ?? null,
         ticketId: input.ticketId ?? null,
         anomalyIncidentId: input.anomalyIncidentId ?? null,
+        profile,
+        correlationGroupId: input.correlationGroupId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
         triggerRef: input.triggerRef ?? {},
@@ -880,6 +943,8 @@ export async function createAndEnqueueAgentRun(
         alertId: input.alertId ?? null,
         ticketId: input.ticketId ?? null,
         anomalyIncidentId: input.anomalyIncidentId ?? null,
+        profile,
+        correlationGroupId: input.correlationGroupId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
         triggerRef: input.triggerRef ?? {},
@@ -1008,6 +1073,7 @@ export async function transitionRunStatus(
         agentId: aiAgentRuns.agentId,
         errorCode: aiAgentRuns.errorCode,
         outcome: aiAgentRuns.outcome,
+        profile: aiAgentRuns.profile,
       });
     return rows[0] ?? null;
   });
@@ -1041,7 +1107,7 @@ export async function transitionRunStatus(
       const runVerdict: AgentRunVerdict | null =
         moved.outcome.runVerdict === 'needs_attention' ? 'needs_attention' : null;
       await recordRunTerminal(
-        { id: moved.id, orgId: moved.orgId, agentId: moved.agentId },
+        { id: moved.id, orgId: moved.orgId, agentId: moved.agentId, profile: moved.profile },
         to,
         moved.errorCode,
         runVerdict,

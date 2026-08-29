@@ -118,6 +118,10 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // are erased together (tenantCascade deletes action_intents first —
   // alphabetical order happens to be the correct child-before-parent order).
   ai_agent_runs: { kind: 'leave-for-erasure', note: 'org_id is trigger-immutable (ai_agent_runs_immutable_guard); run history stays with the source org per the 2026-08-23 owner decision' },
+  // ai_alert_verdicts (Phase 2 wave P2-1, #4187): hangs off a run that
+  // itself stays with the source org (ai_agent_runs disposition above) —
+  // same reasoning, not a separate immutability trigger.
+  ai_alert_verdicts: { kind: 'leave-for-erasure', note: 'verdicts hang off ai_agent_runs (leave-for-erasure) and cascade with them; alert/group FKs cascade too' },
   // ai_agent_fix_watches (Wave 6 PR 2, #3828): a fix-held watch is per-run
   // HISTORY tied to a specific ai_agent_runs row that itself never follows
   // an org merge (see ai_agent_runs above) — repointing the watch while its

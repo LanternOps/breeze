@@ -21,7 +21,7 @@
  * only `resetCircuit` does that.
  */
 import { and, eq, sql } from 'drizzle-orm';
-import type { AgentRunVerdict, AiAgentRecipients, AiAgentRunStatus } from '@breeze/shared';
+import type { AgentRunVerdict, AiAgentRecipients, AiAgentRunProfile, AiAgentRunStatus } from '@breeze/shared';
 import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import {
   db,
@@ -124,16 +124,28 @@ export type TerminalClassification = 'increment' | 'reset' | 'neutral';
  *   code is not on the increment allowlist (`stalled`, `enqueue_failed`, or
  *   anything unrecognized). Also the safe default for a non-terminal status
  *   (`queued`/`running`), which callers must never actually pass here.
+ *
+ * `profile` (phase 2 wave P2-1, default `'full'` so every pre-existing
+ * 3-arg call site keeps its old behavior unchanged): a `verdict`-profile run
+ * never touches the org's failure streak either way — `completed` and
+ * `awaiting_approval` both classify `neutral` regardless of `runVerdict`
+ * (a verdict run never actually reaches `awaiting_approval`, but the
+ * classification stays honest rather than assuming that). `failed` is
+ * unaffected by profile — the runner/ceiling increment allowlist still
+ * applies, since a verdict run can genuinely error out the same way a full
+ * run can.
  */
 export function classifyTerminal(
   to: AiAgentRunStatus,
   errorCode: string | null,
   runVerdict: AgentRunVerdict | null,
+  profile: AiAgentRunProfile = 'full',
 ): TerminalClassification {
   if (to === 'completed') {
+    if (profile === 'verdict') return 'neutral';
     return runVerdict === 'needs_attention' ? 'increment' : 'reset';
   }
-  if (to === 'awaiting_approval') return 'reset';
+  if (to === 'awaiting_approval') return profile === 'verdict' ? 'neutral' : 'reset';
   if (to === 'failed') {
     return errorCode !== null && INCREMENT_FAILURE_ERROR_CODES.has(errorCode) ? 'increment' : 'neutral';
   }
@@ -149,6 +161,9 @@ export interface TerminalRunContext {
   id: string;
   orgId: string;
   agentId: string;
+  /** Phase 2 wave P2-1 — threaded into `classifyTerminal` so a verdict run's
+   *  clean completion never resets (or increments) the circuit's streak. */
+  profile: AiAgentRunProfile;
 }
 
 /**
@@ -313,7 +328,7 @@ export async function recordRunTerminal(
   errorCode: string | null,
   runVerdict: AgentRunVerdict | null,
 ): Promise<void> {
-  const classification = classifyTerminal(to, errorCode, runVerdict);
+  const classification = classifyTerminal(to, errorCode, runVerdict, run.profile);
   if (classification === 'neutral') return;
 
   const justOpened = await inSystemDbContext(async (): Promise<JustOpened | null> => {

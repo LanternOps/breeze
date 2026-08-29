@@ -164,7 +164,6 @@ function allowlistFor(toolName: string, action: string | undefined): string[] {
 
 function emptyOutcome(): AgentRunOutcome {
   return {
-    findings: [],
     proposedActions: [],
     executedActions: [],
     deniedActions: [],
@@ -212,6 +211,8 @@ function hostilePromptContext(): AgentRunPromptContext {
     ticket: null,
     anomaly: null,
     instructions: HOSTILE,
+    profile: 'full',
+    correlationGroup: null,
   };
 }
 
@@ -571,7 +572,7 @@ describe('F. a device-less run never proposes', () => {
         }),
       });
       const preToolUse = createAgentRunPreToolUse({
-        run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id },
+        run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id, profile: 'full' },
         agentName: AGENT.name,
         agentAuth,
         agentKind: AGENT.kind,
@@ -729,7 +730,7 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
       return allowlistFor(toolName, action);
     });
     const sweepHook = createAgentRunPreToolUse({
-      run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id },
+      run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id, profile: 'full' },
       agentName: AGENT.name,
       agentAuth,
       agentKind: AGENT.kind,
@@ -751,7 +752,7 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
     }
 
     const deniedHook = createAgentRunPreToolUse({
-      run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id },
+      run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id, profile: 'full' },
       agentName: AGENT.name,
       agentAuth,
       agentKind: AGENT.kind,
@@ -775,7 +776,7 @@ describe('I. the runner pre-hook never touches user RBAC', () => {
     });
 
     const proposeHook = createAgentRunPreToolUse({
-      run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id },
+      run: { id: 'run-1', orgId: 'org-1', agentId: AGENT.id, profile: 'full' },
       agentName: AGENT.name,
       agentAuth,
       agentKind: AGENT.kind,

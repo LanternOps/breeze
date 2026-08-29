@@ -21,6 +21,8 @@ function ctx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunPromptCont
     ticket: null,
     anomaly: null,
     instructions: null,
+    profile: 'full',
+    correlationGroup: null,
     ...overrides,
   };
 }
@@ -178,6 +180,11 @@ describe('buildAgentRunSystemPrompt', () => {
   it('an anomaly run carries the exact unproven-detector disclaimer (wave 6 PR 4, #3828 — pilot design authority)', () => {
     const prompt = buildAgentRunSystemPrompt(anomalyCtx());
     expect(prompt).toContain(ANOMALY_UNPROVEN_DETECTOR_DISCLAIMER);
+  });
+
+  it('states there are no act permissions on a verdict-profile run', () => {
+    const prompt = buildAgentRunSystemPrompt(ctx({ profile: 'verdict' }));
+    expect(prompt.toLowerCase()).toContain('no act permissions');
   });
 });
 
@@ -345,5 +352,28 @@ describe('buildAgentRunTaskPrompt', () => {
   it('omits the anomaly section entirely for a non-anomaly run', () => {
     const prompt = buildAgentRunTaskPrompt(ctx());
     expect(prompt).not.toContain('Anomaly:');
+  });
+
+  it('verdict profile task prompt names the rubric and requires submit_alert_verdict', () => {
+    const text = buildAgentRunTaskPrompt(ctx({
+      profile: 'verdict',
+      correlationGroup: {
+        id: 'g1', memberCount: 12, noiseReductionPercent: 91, rootAlertId: 'a1', correlationTypes: ['same_rule'],
+      },
+    }));
+    expect(text).toContain('submit_alert_verdict');
+    expect(text).toContain('12 alerts');
+    expect(text).not.toMatch(/run_script|execute_playbook/);
+  });
+
+  // Review fix (fix round 1, MINOR 11) — same leak check the full-profile
+  // "device-less, alert-less manual run" case above runs, applied to the
+  // verdict rubric: a null alert/device/correlationGroup must render as
+  // absent sections, never as the literal string "undefined"/"null".
+  it('verdict prompt has no undefined/null leaks when alert, device, and correlation group are all absent', () => {
+    const text = buildAgentRunTaskPrompt(ctx({
+      profile: 'verdict', alert: null, device: null, correlationGroup: null,
+    }));
+    expect(text).not.toMatch(/undefined|null/);
   });
 });

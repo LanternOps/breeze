@@ -51,6 +51,8 @@ const EXPECTED_SUCCESS: Record<AgentRunSkipReason, boolean> = {
   duplicate: true,
   ownership_mismatch: false,
   device_not_in_org: false,
+  max_concurrent_verdict_runs: true,
+  verdict_rate: true,
 };
 
 const DEFAULT_TRIGGER: AutomationTriggerContext = {

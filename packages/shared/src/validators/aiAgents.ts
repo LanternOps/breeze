@@ -4,6 +4,8 @@ import {
   AI_AGENT_KINDS,
   AI_AGENT_LIMIT_DEFAULTS,
   AI_AGENT_MODES,
+  AI_ALERT_VERDICT_CLASSIFICATIONS,
+  type AlertVerdictOutcome,
 } from '../types/aiAgents';
 
 const TOOL_REF = /^[a-z0-9_]+(:[a-z0-9_]+)?$/;
@@ -42,6 +44,11 @@ const limitsFields = z.object({
   // Circuit-breaker threshold (wave 6 PR 2, #3828). Bounded 1-10 with NO
   // 0-disables value — see AiAgentLimits.maxConsecutiveFailures's docstring.
   maxConsecutiveFailures: z.number().int().min(1).max(10),
+  // Verdict-profile admission caps (phase 2 P2-1) — see
+  // AiAgentLimits.maxVerdictRunsPerHour's docstring.
+  maxVerdictRunsPerHour: z.number().int().min(1).max(2000),
+  maxConcurrentVerdictRuns: z.number().int().min(1).max(20),
+  verdictBudgetCentsPerRun: z.number().int().min(1).max(50),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({
@@ -201,3 +208,42 @@ export const triggerAgentRunSchema = z.object({
 export type CreateAiAgentInput = z.infer<typeof createAiAgentSchema>;
 export type UpdateAiAgentInput = z.infer<typeof updateAiAgentSchema>;
 export type TriggerAgentRunInput = z.infer<typeof triggerAgentRunSchema>;
+
+/**
+ * Phase 2 wave P2-1 (alert verdicts) — validates the `submit_alert_verdict`
+ * outcome tool's payload before it is persisted to `ai_alert_verdicts`.
+ * `alertVerdictOutcomeSchema` below is `.strict()` so a model-produced
+ * payload cannot smuggle an extra top-level key past validation into
+ * storage; the discriminant (`action`) already pins each suggestedAction
+ * variant to exactly its own field set.
+ */
+const alertVerdictSuggestedActionSchema = z.discriminatedUnion('action', [
+  z.object({
+    tool: z.literal('manage_alerts'),
+    action: z.literal('suppress'),
+    alertId: z.string().uuid(),
+    // Review round 2 (IMPORTANT 2): a MODEL-suggested suppression may never
+    // be indefinite (`0` = forever on the real `manage_alerts` tool schema,
+    // aiToolSchemas.ts — that one stays `min(0)` deliberately, since a human
+    // approver can choose "forever"). Keep this bound in sync with
+    // `outcomeTools.ts`'s `SUBMIT_ALERT_VERDICT_SHAPE` — the two schemas
+    // validate the same field at two different points in the same pipeline.
+    suppressDuration: z.number().int().min(1).max(720),
+  }),
+  z.object({
+    tool: z.literal('manage_alerts'),
+    action: z.literal('resolve'),
+    alertId: z.string().uuid(),
+  }),
+]);
+
+export const alertVerdictOutcomeSchema: z.ZodType<AlertVerdictOutcome> = z.object({
+  classification: z.enum(AI_ALERT_VERDICT_CLASSIFICATIONS),
+  confidence: z.number().min(0).max(1),
+  rationale: z.string().min(1).max(400),
+  pattern: z.object({
+    kind: z.enum(['daily', 'weekly', 'after_event']),
+    evidenceAlertIds: z.array(z.string().uuid()).max(50),
+  }).optional(),
+  suggestedAction: alertVerdictSuggestedActionSchema.optional(),
+}).strict();

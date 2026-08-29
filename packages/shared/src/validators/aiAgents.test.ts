@@ -4,6 +4,7 @@ import {
   aiAgentLimitsSchema,
   aiAgentPolicyFieldsSchema,
   aiAgentTriggersPatchSchema,
+  alertVerdictOutcomeSchema,
   createAiAgentSchema,
   updateAiAgentSchema,
 } from './aiAgents';
@@ -57,8 +58,15 @@ describe('aiAgents validators', () => {
     expect(aiAgentLimitsSchema.safeParse({ maxConsecutiveFailures: 2.5 }).success).toBe(false);
   });
 
-  it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 4 (wave 6 PR 2 bump, #3828)', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(4);
+  it('maxVerdictRunsPerHour/maxConcurrentVerdictRuns/verdictBudgetCentsPerRun default-fill on an empty parse (phase 2 P2-1)', () => {
+    const parsed = aiAgentLimitsSchema.parse({});
+    expect(parsed.maxVerdictRunsPerHour).toBe(200);
+    expect(parsed.maxConcurrentVerdictRuns).toBe(4);
+    expect(parsed.verdictBudgetCentsPerRun).toBe(2);
+  });
+
+  it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 5 (phase 2 P2-1 bump)', () => {
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(5);
   });
 
   it('rejects instructions over 2000 chars and unknown allowlist shapes', () => {
@@ -257,5 +265,49 @@ describe('aiAgents validators', () => {
       expect(aiAgentActAssetsSchema.safeParse({ supervisedActionKeys: ['not_a_real_tool:whatever'] }).success)
         .toBe(true);
     });
+  });
+});
+
+describe('alertVerdictOutcomeSchema', () => {
+  it('accepts a minimal verdict and caps rationale at 400 chars', () => {
+    expect(alertVerdictOutcomeSchema.safeParse({
+      classification: 'transient_self_healed', confidence: 0.9, rationale: 'cleared in 40s',
+    }).success).toBe(true);
+    expect(alertVerdictOutcomeSchema.safeParse({
+      classification: 'actionable', confidence: 0.5, rationale: 'x'.repeat(401),
+    }).success).toBe(false);
+  });
+  it('rejects unknown classifications, out-of-range confidence, and suggestions for other tools', () => {
+    expect(alertVerdictOutcomeSchema.safeParse({ classification: 'bogus', confidence: 0.5, rationale: 'r' }).success).toBe(false);
+    expect(alertVerdictOutcomeSchema.safeParse({ classification: 'actionable', confidence: 1.5, rationale: 'r' }).success).toBe(false);
+    expect(alertVerdictOutcomeSchema.safeParse({
+      classification: 'actionable', confidence: 0.5, rationale: 'r',
+      suggestedAction: { tool: 'run_script', action: 'run', alertId: '0f2e2c7e-0c7d-4f7e-9c1c-1f4f2c1a9b10' },
+    }).success).toBe(false);
+  });
+  // Review round 2 (IMPORTANT 2): bounds tightened to 1..720 — a
+  // MODEL-suggested suppression may never be indefinite (`0` = forever is a
+  // human-only choice on the real `manage_alerts` tool schema,
+  // aiToolSchemas.ts, which stays `min(0)` deliberately). Keep this bound in
+  // sync with `outcomeTools.ts`'s `SUBMIT_ALERT_VERDICT_SHAPE`.
+  it('bounds suppressDuration to 1..720 hours (0 rejects — no indefinite suppression from a model)', () => {
+    const base = { classification: 'recurring_pattern', confidence: 0.8, rationale: 'nightly' };
+    const id = '0f2e2c7e-0c7d-4f7e-9c1c-1f4f2c1a9b10';
+    expect(alertVerdictOutcomeSchema.safeParse({ ...base, suggestedAction: { tool: 'manage_alerts', action: 'suppress', alertId: id, suppressDuration: 1 } }).success).toBe(true);
+    expect(alertVerdictOutcomeSchema.safeParse({ ...base, suggestedAction: { tool: 'manage_alerts', action: 'suppress', alertId: id, suppressDuration: 24 } }).success).toBe(true);
+    expect(alertVerdictOutcomeSchema.safeParse({ ...base, suggestedAction: { tool: 'manage_alerts', action: 'suppress', alertId: id, suppressDuration: 0 } }).success).toBe(false);
+    expect(alertVerdictOutcomeSchema.safeParse({ ...base, suggestedAction: { tool: 'manage_alerts', action: 'suppress', alertId: id, suppressDuration: 721 } }).success).toBe(false);
+  });
+});
+
+describe('limits v5', () => {
+  it('has verdict defaults and bounds', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxVerdictRunsPerHour).toBe(200);
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxConcurrentVerdictRuns).toBe(4);
+    expect(AI_AGENT_LIMIT_DEFAULTS.verdictBudgetCentsPerRun).toBe(2);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(5);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxVerdictRunsPerHour: 2001 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentVerdictRuns: 0 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, verdictBudgetCentsPerRun: 51 }).success).toBe(false);
   });
 });

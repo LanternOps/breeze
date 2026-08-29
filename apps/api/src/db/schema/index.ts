@@ -56,6 +56,7 @@ export * from './aiAgents';
 export * from './aiAgentFixWatches';
 export * from './aiAgentCircuitState';
 export * from './aiUnattendedExposure';
+export * from './aiAlertVerdicts';
 export * from './aiKillState';
 export * from './monitors';
 export * from './filesystem';
