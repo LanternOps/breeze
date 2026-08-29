@@ -877,6 +877,28 @@ describe('createAndEnqueueAgentRun — ticket-triggered admission (#3828 wave-6-
     const result = await createAndEnqueueAgentRun(ticketInput());
     expect(result).toEqual({ created: false, skipped: 'duplicate' });
   });
+
+  // Branch-review fix: `runLoop.loadRunContext` loads hostile ticket content
+  // into the prompt whenever `run.ticketId` is set (runLoop.ts), gated on
+  // ticketId alone — NOT on triggerKind. A caller that set `ticketId` on a
+  // non-'ticket' triggerKind (e.g. 'alert') would therefore have hostile
+  // ticket content fed into an 'act'-mode run whose forced-shadow override
+  // was keyed on triggerKind === 'ticket' only, and so never fired. No
+  // legitimate caller sends this combination, so it must be rejected
+  // outright rather than silently admitted.
+  it('rejects a request that carries ticketId with a non-ticket triggerKind, even for an act-mode agent', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'act' }));
+
+    await expect(
+      createAndEnqueueAgentRun(
+        input({ triggerKind: 'alert', alertId: ALERT_ID, ticketId: TICKET_ID, dedupeKey: `alert:${ALERT_ID}` }),
+      ),
+    ).rejects.toThrow(/ticketId/i);
+
+    // Must fail before ever consulting policy or writing a row.
+    expect(resolveEffectiveAgentSystem).not.toHaveBeenCalled();
+    expect(dbMockState.insertValues).toHaveLength(0);
+  });
 });
 
 describe('transitionRunStatus', () => {

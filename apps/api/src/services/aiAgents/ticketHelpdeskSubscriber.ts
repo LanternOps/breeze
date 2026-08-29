@@ -13,7 +13,13 @@
  * Admission itself is delegated entirely to `createAndEnqueueAgentRun`
  * (runService.ts) — kill switch, circuit breaker, dedupe, concurrency/rate/
  * budget caps, and the forced `modeAtStart: 'shadow'` for `triggerKind:
- * 'ticket'` all live there. This module's own job is narrow:
+ * 'ticket'` all live there. `createAndEnqueueAgentRun` manages its own DB
+ * access and deliberately performs its announce+enqueue step OUTSIDE any
+ * system DB context (#1105 pool-hold-across-Redis) — this module MUST call
+ * it with no system context active, or that protection is silently defeated
+ * by non-re-entrant nesting (see `runWithSystemDbAccess`'s own comment
+ * below). Only the origin-guard probe runs inside a system context. This
+ * module's own job is narrow:
  *
  *  1. Extract the triggering ticket id from the id-only event payload.
  *  2. Origin-based loop guard (design authority: never `source`-string
@@ -43,10 +49,23 @@ import { createAndEnqueueAgentRun } from './runService';
 // publish() (eventBus.ts) invokes durable-registry handlers via
 // runOutsideDbContext, i.e. ambient scope 'none' — under forced RLS that is
 // a 42501 the moment this handler's `db.select` runs without an explicit
-// access context. `createAndEnqueueAgentRun` guards its own DB access
-// internally regardless of ambient context, so wrapping the WHOLE handler
-// here (rather than just the origin-guard probe) is a no-op for it and
-// simplest for the probe.
+// access context. Only the origin-guard probe (`ticketHasAgentOriginatedActivity`)
+// is wrapped in this — NOT `createAndEnqueueAgentRun`.
+//
+// #1105 pool-hold seam: `withSystemDbAccessContext` opens a real Postgres
+// transaction for the duration of `fn` (`db/index.ts`'s `withDbAccessContext`
+// wraps the callback in `baseDb.transaction(...)`). `createAndEnqueueAgentRun`
+// manages its own DB access internally and deliberately calls `publishEvent`
+// + the BullMQ enqueuer OUTSIDE its own system context (runService.ts step
+// 10) specifically to avoid holding a pooled connection across a Redis
+// round-trip. If this module wrapped the WHOLE handler body (including the
+// admission call) in a system context, that protection would be silently
+// defeated: `runService.ts`'s `inSystemDbContext` skips re-entry when the
+// ambient scope is ALREADY 'system' (no second nested transaction), so step
+// 10's enqueue would run INSIDE the transaction this handler opened instead
+// of after it — the exact pool-hold-across-Redis pattern #1105 exists to
+// prevent. `createAndEnqueueAgentRun` must therefore be called with NO
+// system context active at all.
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
@@ -107,33 +126,38 @@ export async function handleTicketCreatedEvent(event: BreezeEvent): Promise<void
   }
 
   try {
-    await runWithSystemDbAccess(async () => {
-      if (await ticketHasAgentOriginatedActivity(ticketId)) {
-        console.info(
-          '[ticketHelpdeskSubscriber] skipping admission — ticket has agent-originated activity (loop guard)',
-          { ticketId, orgId },
-        );
-        return;
-      }
+    // Only the origin-guard probe runs under a system context — see
+    // `runWithSystemDbAccess`'s header comment (#1105 pool-hold seam).
+    const hasAgentActivity = await runWithSystemDbAccess(() =>
+      ticketHasAgentOriginatedActivity(ticketId),
+    );
+    if (hasAgentActivity) {
+      console.info(
+        '[ticketHelpdeskSubscriber] skipping admission — ticket has agent-originated activity (loop guard)',
+        { ticketId, orgId },
+      );
+      return;
+    }
 
-      const result = await createAndEnqueueAgentRun({
-        orgId,
-        kind: 'helpdesk',
-        triggerKind: 'ticket',
-        deviceId: null,
-        ticketId,
-        triggerRef: { ticketId },
-        dedupeKey: `ticket-created:${ticketId}`,
-      });
-
-      if (!result.created) {
-        console.info('[ticketHelpdeskSubscriber] admission skipped', {
-          ticketId,
-          orgId,
-          reason: result.skipped,
-        });
-      }
+    // Called with NO system DB context active — `createAndEnqueueAgentRun`
+    // manages its own (see the header comment on `runWithSystemDbAccess`).
+    const result = await createAndEnqueueAgentRun({
+      orgId,
+      kind: 'helpdesk',
+      triggerKind: 'ticket',
+      deviceId: null,
+      ticketId,
+      triggerRef: { ticketId },
+      dedupeKey: `ticket-created:${ticketId}`,
     });
+
+    if (!result.created) {
+      console.info('[ticketHelpdeskSubscriber] admission skipped', {
+        ticketId,
+        orgId,
+        reason: result.skipped,
+      });
+    }
   } catch (err) {
     console.error('[ticketHelpdeskSubscriber] handler failed', {
       ticketId,

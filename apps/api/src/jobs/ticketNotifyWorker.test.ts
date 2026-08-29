@@ -488,9 +488,31 @@ describe('handleTicketEvent', () => {
     await expect(handleTicketEvent({
       type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
       actorUserId: 'u-1', payload: { from: 'open', to: 'resolved' }
-    })).rejects.toThrow(/not yet visible as resolved/i);
+    })).rejects.toThrow(/not yet visible/i);
 
     expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('ticket.status_changed to resolved does NOT throw when the row has already advanced past resolved (resolve→closed race within the retry window) — composes email from the committed resolutionNote', async () => {
+    // The transition described by THIS event (open -> resolved) already committed —
+    // the row has simply moved on again (resolved -> closed) by the time this job
+    // runs. That is a committed, not a stale, read: status !== payload.from proves
+    // the resolve happened, so the guard must not conflate this with the
+    // not-yet-committed case (previous test) and must send using the
+    // resolutionNote written by that committed resolve.
+    selectMock.mockResolvedValueOnce([{
+      id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0099', subject: 'Slow VPN',
+      submitterEmail: 'user@acme.example', resolutionNote: 'Fixed and closed', status: 'closed'
+    }]);
+
+    await expect(handleTicketEvent({
+      type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', payload: { from: 'open', to: 'resolved' }
+    })).resolves.toBeUndefined();
+
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const call = sendEmailMock.mock.calls[0]![0] as { html: string };
+    expect(call.html).toContain('Fixed and closed');
   });
 
   it('ticket.created with assigneeId fans out in-app row and email (same as ticket.assigned)', async () => {

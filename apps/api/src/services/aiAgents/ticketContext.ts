@@ -21,10 +21,14 @@
  *    portal/email comment, the REQUESTER's own display name) is never
  *    selected either — only `authorType`, a non-identifying role label, is.
  *  - **Agent-note-excluded.** Only comments with `originPrincipalKind =
- *    'user'` are read (see `ticketHelpdeskSubscriber.ts`'s
- *    `HUMAN_ORIGIN_KIND`) — an agent's own prior proposal (were one ever
- *    written back, which this PR does not do) must never feed the next run's
- *    context, which would be a prompt-injection self-loop.
+ *    'user'` AND `agentRunId IS NULL` are read (see
+ *    `ticketHelpdeskSubscriber.ts`'s `HUMAN_ORIGIN_KIND` and its loop guard,
+ *    which treats a comment as agent-originated on EITHER signal) — an
+ *    agent's own prior proposal (were one ever written back, which this PR
+ *    does not do) must never feed the next run's context, which would be a
+ *    prompt-injection self-loop. Filtering on `originPrincipalKind` alone
+ *    would miss a comment that has `agentRunId` set but whose kind was left
+ *    at its 'user' default.
  *  - **Size-bounded.** 8KiB soft target / 12KiB hard ceiling — see
  *    `TICKET_CONTEXT_SOFT_LIMIT_BYTES`/`TICKET_CONTEXT_HARD_LIMIT_BYTES`.
  *
@@ -220,6 +224,7 @@ export async function loadTicketContext(ticketId: string, orgId: string): Promis
       eq(ticketComments.ticketId, ticketId),
       eq(ticketComments.isPublic, true),
       eq(ticketComments.originPrincipalKind, HUMAN_ORIGIN_KIND),
+      isNull(ticketComments.agentRunId),
       isNull(ticketComments.deletedAt),
     ))
     .orderBy(desc(ticketComments.createdAt))

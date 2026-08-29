@@ -385,18 +385,23 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
               // here can be STALE relative to the status_changed event that queued
               // this job — emitTicketEvent fires while the request transaction is
               // still open (ticketService.ts), and this queue's jobs carry no
-              // delay. A stale row is not just a missing row (the retry-on-missing
-              // contract above doesn't cover it): the ticket already existed before
-              // this transition, so `resolutionNote` here can be null (first
-              // resolve, column not yet committed) or — worse — a PREVIOUS
-              // resolution's note (reopen does not clear resolution_note; see
-              // changeTicketStatus's reopen branch), which would email stale
-              // resolution text to the requester on a re-resolve. Throw to retry
-              // (same BullMQ attempts/backoff as the missing-row case) until the
-              // committing transaction is visible.
-              if (ticket.status !== 'resolved') {
+              // delay. Retry ONLY while the row still reads the event's PRE-
+              // transition status (`event.payload.from`) — that is the one case
+              // that actually means "not yet committed" (`resolutionNote` here
+              // can be null, or a previous resolution's stale text). The moment
+              // the row reads anything else — including a status the ticket has
+              // moved on to SINCE this resolve (e.g. resolve->closed, or a fast
+              // reopen) — the transition described by THIS event committed, and
+              // conflating that with "not yet visible" was the bug: with the
+              // queue's `attempts: 3` / exponential backoff (~6s window), any
+              // resolve->closed or resolve->reopen inside that window failed
+              // every attempt and the requester never got the resolved email.
+              // Once committed, compose from the row's current `resolutionNote`
+              // — reopen does not clear it (changeTicketStatus's reopen branch),
+              // so it still reflects the resolution this event is reporting.
+              if (ticket.status === event.payload.from) {
                 throw new Error(
-                  `Ticket not yet visible as resolved (likely uncommitted): ${ticket.id}`
+                  `Ticket transition not yet visible (likely uncommitted): ${ticket.id}`
                 );
               }
               const note = ticket.resolutionNote ?? '';

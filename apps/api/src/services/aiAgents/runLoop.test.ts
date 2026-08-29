@@ -1432,6 +1432,14 @@ describe('executeAgentRun', () => {
       expect(commentWhere).toContain('"origin_principal_kind"');
       expect(commentWhere).toContain('"is_public"');
       expect(commentWhere).toContain('"deleted_at"');
+      // Loop-guard parity (#3828 wave-6-3 branch-review fix): a comment with
+      // `agent_run_id` set but `origin_principal_kind` left at its default
+      // 'user' must be excluded too — filtering on originPrincipalKind alone
+      // would feed an agent-authored comment back into the model prompt,
+      // violating the locked "never feed agent notes back" rule. This must
+      // match ticketHelpdeskSubscriber.ts's loop guard, which treats a
+      // comment as agent-originated on EITHER signal.
+      expect(commentWhere).toContain('"agent_run_id"');
     });
 
     it('a non-ticket run carries no ticket section at all', async () => {

@@ -173,4 +173,38 @@ describe('handleTicketCreatedEvent', () => {
     await expect(handleTicketCreatedEvent(ticketCreatedEvent())).rejects.toThrow('boom');
     expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
   });
+
+  // #1105 pool-hold seam contract: `withSystemDbAccessContext` opens a real
+  // Postgres transaction (`db/index.ts`'s `withDbAccessContext` wraps `fn` in
+  // `baseDb.transaction(...)`). `createAndEnqueueAgentRun` manages its own DB
+  // access internally and deliberately calls `publishEvent` + the BullMQ
+  // enqueuer OUTSIDE its own system context (runService.ts step 10) to avoid
+  // holding a pooled connection across a Redis round-trip. Wrapping the WHOLE
+  // handler body — including this call — in a system context here would
+  // silently defeat that: `runService.ts`'s `inSystemDbContext` skips
+  // re-entry when the ambient scope is already 'system', so step 10 would run
+  // INSIDE the still-open transaction this handler opened. Only the
+  // origin-guard probe may run under a system context; the admission call
+  // must run with no system context active at all.
+  it('calls createAndEnqueueAgentRun OUTSIDE any withSystemDbAccessContext scope (pool-hold seam contract, #1105)', async () => {
+    mockOriginProbe([]);
+    let systemContextDepth = 0;
+    vi.mocked(withSystemDbAccessContext).mockImplementation(async (fn: () => Promise<unknown>) => {
+      systemContextDepth += 1;
+      try {
+        return await fn();
+      } finally {
+        systemContextDepth -= 1;
+      }
+    });
+    let depthDuringAdmission: number | null = null;
+    createAndEnqueueAgentRun.mockImplementation(async () => {
+      depthDuringAdmission = systemContextDepth;
+      return { created: true, run: { id: 'run-1' } };
+    });
+
+    await handleTicketCreatedEvent(ticketCreatedEvent());
+
+    expect(depthDuringAdmission).toBe(0);
+  });
 });

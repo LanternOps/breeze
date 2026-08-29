@@ -348,6 +348,23 @@ export async function createAndEnqueueAgentRun(
 ): Promise<CreateAgentRunResult> {
   const { orgId, kind, triggerKind, deviceId, dedupeKey } = input;
 
+  // Branch-review fix (wave 6 PR 3, #3828): `ticketId` must only ever
+  // accompany `triggerKind: 'ticket'`. `runLoop.loadRunContext` loads
+  // hostile ticket content into the prompt whenever `run.ticketId` is set
+  // (runLoop.ts's ticket-context block), gated on ticketId ALONE — not on
+  // triggerKind. If a caller ever set `ticketId` on a non-'ticket' trigger
+  // (e.g. 'alert'), the forced-shadow override below would need to key on
+  // the same condition as that context load, or an 'act'-mode agent could
+  // receive hostile ticket content in a non-shadow run. No legitimate
+  // caller sends this combination, so it is rejected outright rather than
+  // silently admitted — a caller bug, not a skip, same posture as the
+  // "org missing" 404 case below.
+  if (input.ticketId && triggerKind !== 'ticket') {
+    throw new Error(
+      `createAndEnqueueAgentRun: ticketId is only valid with triggerKind 'ticket' (got '${triggerKind}')`,
+    );
+  }
+
   let snapshot: AiAgentPolicySnapshot | null = null;
   const skip = (reason: AgentRunSkipReason): CreateAgentRunResult => {
     // A dropped trigger must never be invisible (spec §7's silent-drop finding).
@@ -397,7 +414,14 @@ export async function createAndEnqueueAgentRun(
   // only what the run records and how the guardrail tool gate treats it
   // (aiGuardrails.ts's shadow branch + the device-less-mutation deny, since
   // ticket runs are also always device-less), never admission precedence.
-  const modeAtStart = triggerKind === 'ticket' ? 'shadow' : effective.mode;
+  //
+  // Keyed on the SAME condition as `runLoop.loadRunContext`'s ticket-context
+  // load (`run.ticketId`, not `triggerKind`) — the guard above already makes
+  // `input.ticketId` imply `triggerKind === 'ticket'`, but the OR keeps this
+  // check structurally tied to the thing it protects (hostile ticket content
+  // reaching an act-mode run) rather than to a value that would silently
+  // stop matching if the guard above were ever loosened.
+  const modeAtStart = (triggerKind === 'ticket' || input.ticketId) ? 'shadow' : effective.mode;
 
   // 2b. Circuit breaker (wave 6 PR 2, #3828). Placed as early as possible
   // after the kill switch — this is the first point `resolved.agentId` is
