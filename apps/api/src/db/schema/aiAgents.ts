@@ -11,6 +11,7 @@ import {
   uniqueIndex,
   uuid,
   varchar,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import type {
   AiAgentActAssets,
@@ -27,6 +28,7 @@ import type {
 } from '@breeze/shared';
 import { alertCorrelationGroups, alerts } from './alerts';
 import { aiSessions } from './ai';
+import { aiAgentSchedules } from './aiAgentSchedules';
 import { devices } from './devices';
 import { metricAnomalyIncidents } from './metricAnomalyIncidents';
 import { organizations, partners } from './orgs';
@@ -90,6 +92,14 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   profile: text('profile').$type<AiAgentRunProfile>().notNull().default('full'),
   correlationGroupId: uuid('correlation_group_id')
     .references(() => alertCorrelationGroups.id, { onDelete: 'set null' }),
+  // P2-2: the partner schedule whose occurrence admitted this sweep run.
+  // ON DELETE SET NULL — a deleted schedule keeps its historical runs.
+  // Lazy `(): AnyPgColumn =>` reference (not a plain `() =>` typed one):
+  // aiAgentSchedules.ts imports `aiAgents` from this file for its own
+  // agentId FK, so this is a genuine cross-file cycle, not merely a
+  // same-file self-reference like `aiAlertVerdicts.supersededBy` — same
+  // workaround, applied across the module boundary this time.
+  scheduleId: uuid('schedule_id').references((): AnyPgColumn => aiAgentSchedules.id, { onDelete: 'set null' }),
   sessionId: uuid('session_id').references(() => aiSessions.id, { onDelete: 'set null' }),
   // Wave 6 PR 3 (#3828): the triggering ticket for a `triggerKind==='ticket'`
   // run. ON DELETE SET NULL (run history survives ticket deletion — mirrors
@@ -152,6 +162,10 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
     .on(table.agentId, table.orgId, table.profile, table.queuedAt.desc()),
   correlationGroupIdx: index('ai_agent_runs_correlation_group_idx')
     .on(table.correlationGroupId).where(sql`${table.correlationGroupId} IS NOT NULL`),
+  // P2-2: mirrors migrations/2026-09-23-ai-agents-scheduled-sweeps.sql's
+  // ai_agent_runs_schedule_idx.
+  scheduleIdx: index('ai_agent_runs_schedule_idx')
+    .on(table.scheduleId).where(sql`${table.scheduleId} IS NOT NULL`),
 }));
 
 export type AiAgentRow = typeof aiAgents.$inferSelect;

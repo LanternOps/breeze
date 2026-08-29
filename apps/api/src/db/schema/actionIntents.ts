@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   bigint,
   bigserial,
@@ -18,6 +19,7 @@ import { organizations, partners } from './orgs';
 import { users } from './users';
 import { apiKeys } from './apiKeys';
 import { aiAgentRuns } from './aiAgents';
+import { devices } from './devices';
 
 // Action intents & durable approval layer (spec
 // docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md).
@@ -177,6 +179,13 @@ export const actionIntents = pgTable(
      * Immutable, covered by action_intents_immutable_trg.
      */
     requestingAgentRunId: uuid('requesting_agent_run_id'),
+    // P2-2 typed target scope. `scopeKind` is immutable; `scopeDeviceId` may
+    // only tombstone (FK ON DELETE SET NULL). Column is NOT named device_id on
+    // purpose: cascadeDelete.test.ts keys on `device_id`, and this column's
+    // device-delete contract is the FK + the tombstone rule in
+    // services/actionIntents/intentTargetScope.ts, not a cascade list.
+    scopeKind: text('scope_kind').$type<'device'>(),
+    scopeDeviceId: uuid('scope_device_id').references(() => devices.id, { onDelete: 'set null' }),
     source: text('source').notNull().$type<ActionIntentSource>(),
     /**
      * The KIND of principal that created this intent, recorded as a durable
@@ -334,6 +343,10 @@ export const actionIntents = pgTable(
       foreignColumns: [aiAgentRuns.id, aiAgentRuns.orgId],
       name: 'action_intents_requesting_agent_run_id_org_id_fkey',
     }).onDelete('restrict'),
+    // P2-2: mirrors migrations/2026-09-23-ai-agents-scheduled-sweeps.sql's
+    // action_intents_scope_device_idx.
+    scopeDeviceIdx: index('action_intents_scope_device_idx')
+      .on(table.scopeDeviceId).where(sql`${table.scopeDeviceId} IS NOT NULL`),
   }),
 );
 
