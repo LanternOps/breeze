@@ -245,6 +245,7 @@ const createBreezeMcpServer = vi.hoisted(() =>
     post?: Hooks['post'],
     getActiveSession?: () => unknown,
     extraTools?: unknown[],
+    options?: { onlyTools?: ReadonlySet<string> },
   ) => unknown>());
 vi.mock('../aiAgentSdkTools', () => ({
   createBreezeMcpServer,
@@ -2169,6 +2170,18 @@ describe('verdict profile in the run loop (P2-1)', () => {
     const extraTools = createBreezeMcpServer.mock.calls[0]?.[4] as unknown[] | undefined;
     expect(extraTools).toBeDefined();
     expect(extraTools!.length).toBeGreaterThan(0);
+
+    // F2 fix (Task 16c): createBreezeMcpServer's 6th param (options.onlyTools)
+    // must narrow the REGISTRY, not just allowedTools — same four bare names
+    // as the allowedTools assertion above, minus the mcp__breeze__ prefix and
+    // the outcome tool (which is never in the registry — it rides on
+    // extraTools instead, asserted separately above).
+    const mcpServerOptions = createBreezeMcpServer.mock.calls[0]?.[5] as
+      | { onlyTools?: ReadonlySet<string> }
+      | undefined;
+    expect(mcpServerOptions?.onlyTools).toEqual(
+      new Set(['manage_alerts', 'get_device_details', 'analyze_metrics', 'query_monitors']),
+    );
   });
 
   it('a full-profile run gets the unrestricted registry tool set and no extraTools (negative control)', async () => {
@@ -2180,6 +2193,12 @@ describe('verdict profile in the run loop (P2-1)', () => {
     expect(lastQueryOptions?.allowedTools).toEqual(BREEZE_MCP_TOOL_NAMES);
     const extraTools = createBreezeMcpServer.mock.calls[0]?.[4] as unknown[] | undefined;
     expect(extraTools ?? []).toEqual([]);
+
+    // F2 fix (Task 16c) negative control: a full-profile run must pass NO
+    // onlyTools — it keeps registering (and therefore exposing) the whole
+    // tool registry, unchanged.
+    const mcpServerOptions = createBreezeMcpServer.mock.calls[0]?.[5];
+    expect(mcpServerOptions).toBeUndefined();
   });
 
   // Review fix (fix round 1, IMPORTANT 3): a verdict run that submitted its

@@ -1053,6 +1053,23 @@ function extraToolResultText(result: SdkToolResult): string {
  * Auth context is fetched lazily via the getAuth thunk so all tool handlers
  * see the latest org-scoped access even when the session is reused.
  * Optional postToolUse callback fires after every tool execution for persistence/audit.
+ *
+ * `options.onlyTools` (F2 fix, P2-1 second live check): the SDK's
+ * `allowedTools` (set by the caller on `query()`) only gates PERMISSION to
+ * call a tool — it does not stop that tool's full JSON schema from being
+ * sent to the model every turn. Registering the whole ~200-tool registry
+ * unconditionally, as this function used to do, meant every turn of every
+ * run (verdict runs included, despite being restricted to 4-5 tools by
+ * `allowedTools`) paid the token cost of every tool definition — a single
+ * verdict turn cost 9¢ (run `59fb933c-…`, `turn_count=1`). When
+ * `onlyTools` is set, the registry `tools` array is filtered down to just
+ * those bare names BEFORE `createSdkMcpServer` is called, so the SERVER
+ * itself only advertises the pinned subset. `extraTools` are always
+ * included regardless of `onlyTools` — they're never part of the registry
+ * `tools` array (outcome tools in particular are deliberately absent from
+ * `TOOL_TIERS`, see `outcomeTools.ts`), so there's nothing in `onlyTools` for
+ * them to be filtered against. The name-collision guard below is unchanged:
+ * it still runs against the full, unfiltered registry.
  */
 export function createBreezeMcpServer(
   getAuth: () => AuthContext,
@@ -1060,6 +1077,7 @@ export function createBreezeMcpServer(
   onPostToolUse?: PostToolUseCallback,
   getActiveSession?: () => ActiveSession,
   extraTools: SdkTool[] = [],
+  options?: { onlyTools?: ReadonlySet<string> },
 ) {
   const uuid = z.string().guid();
   const backupEntityId = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
@@ -2643,9 +2661,18 @@ export function createBreezeMcpServer(
   // optional plumbing.
   const wrappedExtraTools = extraTools.map((extra) => wrapExtraToolWithHooks(extra, onPreToolUse, onPostToolUse));
 
+  // F2 fix: filter the registry down to the pinned subset BEFORE
+  // createSdkMcpServer, so those ~200 definitions never ride along on a
+  // verdict run's turns. See this function's docstring for the full
+  // rationale. Applied AFTER the collision guard above, which must still
+  // see the full, unfiltered registry.
+  const registeredTools = options?.onlyTools
+    ? tools.filter((t) => options.onlyTools!.has(t.name))
+    : tools;
+
   return createSdkMcpServer({
     name: 'breeze',
     version: '1.0.0',
-    tools: [...tools, ...wrappedExtraTools],
+    tools: [...registeredTools, ...wrappedExtraTools],
   });
 }
