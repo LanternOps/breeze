@@ -31,6 +31,8 @@ import {
   formatAnomalyType,
   type MetricAnomalyAlertContext,
 } from './alertMlContext';
+import type { AlertAiVerdictSummaryDto } from '@breeze/shared';
+import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
 
 export type { AlertSeverity, AlertStatus };
 
@@ -65,6 +67,11 @@ export type Alert = {
   noiseReductionPercent?: number | null;
   orgId?: string | null;
   orgName?: string | null;
+  // Phase 2 wave P2-1 (alert verdicts), Task 15. Null when the alert has no
+  // verdict yet (or the org has AI agents disabled); undefined for callers
+  // that never populate it (rule/template preview lists) — both render the
+  // same em-dash cell.
+  aiVerdict?: AlertAiVerdictSummaryDto | null;
 };
 
 type AlertListProps = {
@@ -81,6 +88,16 @@ type AlertListProps = {
   alertCorrelationDisabled?: boolean;
   /** Fleet (All-organizations) view: show which org each alert belongs to. */
   showOrgColumn?: boolean;
+  /**
+   * Phase 2 wave P2-1 (alert verdicts), Task 15. Controlled — the actual
+   * `GET /alerts?hideAiNoise=true` refetch is owned by the caller (AlertsPage
+   * fetches ALL alerts once and every other filter here is client-side, but
+   * "AI noise" classification is a server-side judgment call this component
+   * has no basis to reproduce). Both optional so every other AlertList caller
+   * (rule/template preview, correlated groups) is unaffected.
+   */
+  hideAiNoise?: boolean;
+  onHideAiNoiseChange?: (value: boolean) => void;
 };
 
 export default function AlertList({
@@ -95,7 +112,9 @@ export default function AlertList({
   submittingId,
   pageSize = 25,
   alertCorrelationDisabled = false,
-  showOrgColumn = false
+  showOrgColumn = false,
+  hideAiNoise = false,
+  onHideAiNoiseChange
 }: AlertListProps) {
   const { t } = useTranslation('alerts');
   const [query, setQuery] = useState('');
@@ -312,6 +331,18 @@ export default function AlertList({
             <option value="7d">{t('alertList.last7Days')}</option>
             <option value="30d">{t('alertList.last30Days')}</option>
           </select>
+          {onHideAiNoiseChange && (
+            <label className="flex h-8 items-center gap-1.5 rounded-md border bg-background px-2 text-sm">
+              <input
+                type="checkbox"
+                data-testid="alert-hide-ai-noise-toggle"
+                checked={hideAiNoise}
+                onChange={event => onHideAiNoiseChange(event.target.checked)}
+                className="h-3.5 w-3.5 rounded border-border"
+              />
+              {t('alertVerdict.hideNoise')}
+            </label>
+          )}
           {hasActiveFilters && (
             <button
               type="button"
@@ -413,6 +444,7 @@ export default function AlertList({
               <th className="px-4 py-3">{t('alertList.title')}</th>
               <th className="px-4 py-3">{t('alertList.severity')}</th>
               <th className="px-4 py-3">{t('alertList.status')}</th>
+              <th className="px-4 py-3">{t('alertList.aiVerdict')}</th>
               <th className="px-4 py-3">{t('alertList.triggered')}</th>
               <th className="px-4 py-3 text-right">{t('alertList.actions')}</th>
             </tr>
@@ -420,7 +452,7 @@ export default function AlertList({
           <tbody className="divide-y">
             {paginatedAlerts.length === 0 ? (
               <tr>
-                <td colSpan={showOrgColumn ? 8 : 7} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                <td colSpan={showOrgColumn ? 9 : 8} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   {t('alertList.noAlertsMatchYourFilters')}
                   {hasActiveFilters && (
                     <button
@@ -548,6 +580,17 @@ export default function AlertList({
                       >
                         {t(/* i18n-dynamic */ `alertList.statusLabel.${alert.status}`)}
                       </span>
+                    </td>
+                    <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                      {alert.aiVerdict ? (
+                        <AlertVerdictBadge
+                          compact
+                          verdict={alert.aiVerdict}
+                          onFeedback={value => submitVerdictFeedback(alert.aiVerdict!.id, value)}
+                        />
+                      ) : (
+                        <span title={t('alertVerdict.none')}>—</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
                       <div className="flex items-center gap-1">
