@@ -22,6 +22,16 @@ export type EventType =
   | 'alert.resolved'
   | 'alert.suppressed'
   | 'alert.escalated'
+  // Alert correlation group events (P2-1 wave B task 11). Published by
+  // jobs/alertCorrelation.ts after persistAlertCorrelationGroupsForAlerts
+  // returns — once per NEWLY created alert_correlation_groups row (never on
+  // re-upsert of an existing group; xmax = 0 on the RETURNING row is what
+  // distinguishes the two). No enclosing transaction wraps the worker, so
+  // the insert has already autocommitted by the time this publishes. Payload
+  // is { groupId, rootAlertId, memberCount, deviceId } — rootAlertId/deviceId
+  // are both null when the root alert has since been hard-deleted
+  // (alert_correlation_groups.root_alert_id is ON DELETE SET NULL).
+  | 'alert.correlation_group.created'
   // Incident events
   | 'incident.created'
   | 'incident.contained'
@@ -516,6 +526,8 @@ export const EVENT_TYPES = {
   ALERT_RESOLVED: 'alert.resolved' as const,
   ALERT_SUPPRESSED: 'alert.suppressed' as const,
   ALERT_ESCALATED: 'alert.escalated' as const,
+  // Alert correlation group (P2-1 wave B task 11)
+  ALERT_CORRELATION_GROUP_CREATED: 'alert.correlation_group.created' as const,
   // Incident
   INCIDENT_CREATED: 'incident.created' as const,
   INCIDENT_CONTAINED: 'incident.contained' as const,

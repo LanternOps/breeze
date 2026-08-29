@@ -3,6 +3,7 @@ import { and, desc, eq, gte, inArray, lte } from 'drizzle-orm';
 
 import { db, withSystemDbAccessContext } from '../db';
 import {
+  alertCorrelationGroups,
   alertCorrelations,
   alertRules,
   alerts,
@@ -15,6 +16,7 @@ import {
 import { persistAlertCorrelationGroupsForAlerts } from '../services/alertCorrelationGroups';
 import { isFlapping } from '../services/alertCooldown';
 import { isReusableState } from '../services/bullmqUtils';
+import { publishEvent } from '../services/eventBus';
 import { shouldProduceMlOutput } from '../services/mlFeatureFlags';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
@@ -524,10 +526,58 @@ export async function runAlertCorrelationForDevice(options: {
     }
   }
 
-  await persistAlertCorrelationGroupsForAlerts({
+  const persisted = await persistAlertCorrelationGroupsForAlerts({
     orgId: options.orgId,
     alertIds,
   });
+
+  // Publish AFTER persistence returns — persistAlertCorrelationGroupsForAlerts stays
+  // event-free; this job owns publication. There is no enclosing transaction around
+  // this worker (createAlertCorrelationWorker runs bare inside
+  // withSystemDbAccessContext), so each upsert above has already autocommitted by the
+  // time we publish here, which is what makes "after commit" hold without an outbox.
+  for (const groupId of persisted.createdGroupIds) {
+    const [groupRow] = await db
+      .select({
+        rootAlertId: alertCorrelationGroups.rootAlertId,
+        memberCount: alertCorrelationGroups.memberCount,
+      })
+      .from(alertCorrelationGroups)
+      .where(and(eq(alertCorrelationGroups.id, groupId), eq(alertCorrelationGroups.orgId, options.orgId)))
+      .limit(1);
+
+    if (!groupRow) {
+      // Should not happen (autocommitted just above, org-scoped by construction) —
+      // don't let a race/anomaly here throw and drop the alerts.length/created result.
+      console.warn(`[AlertCorrelationWorker] correlation group ${groupId} not found after persist — skipping alert.correlation_group.created`);
+      continue;
+    }
+
+    // rootAlertId is ON DELETE SET NULL: a null here means the root alert has since
+    // been hard-deleted, which is a valid (not exceptional) state — publish with
+    // deviceId/rootAlertId both null rather than warning; Task 12's subscriber skips.
+    let deviceId: string | null = null;
+    if (groupRow.rootAlertId) {
+      const [rootAlert] = await db
+        .select({ deviceId: alerts.deviceId })
+        .from(alerts)
+        .where(and(eq(alerts.id, groupRow.rootAlertId), eq(alerts.orgId, options.orgId)))
+        .limit(1);
+      deviceId = rootAlert?.deviceId ?? null;
+    }
+
+    await publishEvent(
+      'alert.correlation_group.created',
+      options.orgId,
+      {
+        groupId,
+        rootAlertId: groupRow.rootAlertId,
+        memberCount: groupRow.memberCount,
+        deviceId,
+      },
+      'alert-correlation'
+    );
+  }
 
   return { scanned: recentAlerts.length, created };
 }

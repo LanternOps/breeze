@@ -8,6 +8,7 @@ const {
   persistGroupsMock,
   attachWorkerObservabilityMock,
   isFlappingMock,
+  publishEventMock,
   dbState,
   dbMock,
 } = vi.hoisted(() => {
@@ -19,24 +20,44 @@ const {
     recentAlerts: [] as Array<Record<string, any>>,
     existingLinks: [] as Array<Record<string, any>>,
     recentLogCorrelations: [] as Array<Record<string, any>>,
+    // Task 11 (B1): consumed in FIFO order by the post-persist lookups —
+    // group row (rootAlertId, memberCount) then that root alert's deviceId,
+    // once per entry in persisted.createdGroupIds. Each test pushes exactly
+    // the rows it expects those lookups to consume, in call order.
+    groupRowQueue: [] as Array<Record<string, any> | undefined>,
+    alertDeviceQueue: [] as Array<Record<string, any> | undefined>,
     insertReturnsEmpty: false,
     insertCalls: 0,
     selectCall: 0,
   };
 
   const dbMock = {
-    select: vi.fn(() => {
+    select: vi.fn((selection?: Record<string, unknown>) => {
       const index = dbState.selectCall;
       dbState.selectCall += 1;
+      // Task 11's two post-persist lookups run conditionally (0..N times per created
+      // group) after the four fixed pre-scan selects above, so they're distinguished
+      // by their `.select({...})` projection shape rather than call-index.
+      const keys = selection ? Object.keys(selection) : [];
+      const isGroupRowLookup = keys.includes('rootAlertId') && keys.includes('memberCount');
+      const isAlertDeviceLookup = keys.length === 1 && keys[0] === 'deviceId';
       const chain: any = {
         from: () => chain,
         leftJoin: () => chain,
         innerJoin: () => chain,
         where: () => chain,
         orderBy: () => chain,
-        limit: () =>
-          // Query order: 0=targetDevice, 1=recentAlerts, 3=recentLogCorrelations (all .limit()).
-          Promise.resolve(
+        limit: () => {
+          if (isGroupRowLookup) {
+            const row = dbState.groupRowQueue.shift();
+            return Promise.resolve(row ? [row] : []);
+          }
+          if (isAlertDeviceLookup) {
+            const row = dbState.alertDeviceQueue.shift();
+            return Promise.resolve(row ? [row] : []);
+          }
+          // Query order: 0=targetDevice, 1=recentAlerts, 3=recentLogCorrelations.
+          return Promise.resolve(
             index === 0
               ? dbState.targetDevice
               : index === 1
@@ -44,7 +65,8 @@ const {
                 : index === 3
                   ? dbState.recentLogCorrelations
                   : []
-          ),
+          );
+        },
         then: (resolve: (value: unknown[]) => void, reject?: (reason: unknown) => void) =>
           // Query order: index 2 = existingLinks (no .limit(); awaited directly).
           Promise.resolve(dbState.existingLinks).then(resolve, reject),
@@ -69,6 +91,7 @@ const {
     persistGroupsMock: vi.fn(),
     attachWorkerObservabilityMock: vi.fn(),
     isFlappingMock: vi.fn(),
+    publishEventMock: vi.fn(),
     dbState,
     dbMock,
   };
@@ -103,6 +126,10 @@ vi.mock('../services/alertCorrelationGroups', () => ({
   persistAlertCorrelationGroupsForAlerts: persistGroupsMock,
 }));
 
+vi.mock('../services/eventBus', () => ({
+  publishEvent: publishEventMock,
+}));
+
 vi.mock('../services/alertCooldown', () => ({
   isFlapping: isFlappingMock,
 }));
@@ -118,6 +145,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   alerts: {},
+  alertCorrelationGroups: {},
   alertCorrelations: { id: 'alert_correlations.id', parentAlertId: 'alert_correlations.parentAlertId', childAlertId: 'alert_correlations.childAlertId' },
   alertRules: {},
   devices: {},
@@ -159,15 +187,19 @@ describe('alert correlation queue helpers', () => {
     persistGroupsMock.mockReset();
     attachWorkerObservabilityMock.mockReset();
     isFlappingMock.mockReset();
+    publishEventMock.mockReset();
     isFlappingMock.mockResolvedValue(false);
     shouldProduceMlOutputMock.mockResolvedValue(true);
-    persistGroupsMock.mockResolvedValue({ scanned: 0, groupsWritten: 0, membersWritten: 0 });
+    persistGroupsMock.mockResolvedValue({ scanned: 0, groupsWritten: 0, membersWritten: 0, createdGroupIds: [] });
+    publishEventMock.mockResolvedValue('event-id');
     getJobMock.mockResolvedValue(null);
     addMock.mockResolvedValue({ id: 'queued-correlation-job' });
     dbState.targetDevice = [];
     dbState.recentAlerts = [];
     dbState.existingLinks = [];
     dbState.recentLogCorrelations = [];
+    dbState.groupRowQueue = [];
+    dbState.alertDeviceQueue = [];
     dbState.insertReturnsEmpty = false;
     dbState.insertCalls = 0;
     dbState.selectCall = 0;
@@ -239,6 +271,66 @@ describe('alert correlation queue helpers', () => {
     expect(dbState.insertCalls).toBe(1);
     expect(result).toEqual({ scanned: 2, created: 1 });
     expect(persistGroupsMock).toHaveBeenCalledWith({ orgId: 'org-1', alertIds: ['alert-a', 'alert-b'] });
+  });
+
+  it('publishes alert.correlation_group.created once per created group after persistence', async () => {
+    dbState.targetDevice = [{ siteId: 'site-1' }];
+    dbState.recentAlerts = [
+      { id: 'alert-a', deviceId: 'device-1', triggeredAt: new Date('2026-06-18T12:00:00.000Z'), ruleId: 'rule-1', templateId: null, configPolicyId: null, configItemName: null, siteId: 'site-1' },
+      { id: 'alert-b', deviceId: 'device-1', triggeredAt: new Date('2026-06-18T12:01:00.000Z'), ruleId: 'rule-1', templateId: null, configPolicyId: null, configItemName: null, siteId: 'site-1' },
+    ];
+    persistGroupsMock.mockResolvedValue({ scanned: 2, groupsWritten: 1, membersWritten: 3, createdGroupIds: ['g1'] });
+    dbState.groupRowQueue = [{ rootAlertId: 'a1', memberCount: 3 }];
+    dbState.alertDeviceQueue = [{ deviceId: 'd1' }];
+
+    await runAlertCorrelationForDevice({ orgId: 'org-1', deviceId: 'device-1', windowMinutes: 30 });
+
+    expect(publishEventMock).toHaveBeenCalledTimes(1);
+    expect(publishEventMock).toHaveBeenCalledWith(
+      'alert.correlation_group.created',
+      'org-1',
+      { groupId: 'g1', rootAlertId: 'a1', memberCount: 3, deviceId: 'd1' },
+      'alert-correlation'
+    );
+  });
+
+  it('publishes null rootAlertId/deviceId when the root alert has been hard-deleted (SET NULL FK)', async () => {
+    dbState.targetDevice = [{ siteId: 'site-1' }];
+    dbState.recentAlerts = [
+      { id: 'alert-a', deviceId: 'device-1', triggeredAt: new Date('2026-06-18T12:00:00.000Z'), ruleId: 'rule-1', templateId: null, configPolicyId: null, configItemName: null, siteId: 'site-1' },
+      { id: 'alert-b', deviceId: 'device-1', triggeredAt: new Date('2026-06-18T12:01:00.000Z'), ruleId: 'rule-1', templateId: null, configPolicyId: null, configItemName: null, siteId: 'site-1' },
+    ];
+    persistGroupsMock.mockResolvedValue({ scanned: 2, groupsWritten: 1, membersWritten: 3, createdGroupIds: ['g1'] });
+    dbState.groupRowQueue = [{ rootAlertId: null, memberCount: 3 }];
+    // alertDeviceQueue intentionally left empty — the root-alert lookup must be
+    // skipped entirely (not just return an empty row) when rootAlertId is null.
+
+    await runAlertCorrelationForDevice({ orgId: 'org-1', deviceId: 'device-1', windowMinutes: 30 });
+
+    expect(publishEventMock).toHaveBeenCalledWith(
+      'alert.correlation_group.created',
+      'org-1',
+      { groupId: 'g1', rootAlertId: null, memberCount: 3, deviceId: null },
+      'alert-correlation'
+    );
+  });
+
+  it('warns and skips publishing when the just-created group row cannot be found', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    dbState.targetDevice = [{ siteId: 'site-1' }];
+    dbState.recentAlerts = [
+      { id: 'alert-a', deviceId: 'device-1', triggeredAt: new Date('2026-06-18T12:00:00.000Z'), ruleId: 'rule-1', templateId: null, configPolicyId: null, configItemName: null, siteId: 'site-1' },
+      { id: 'alert-b', deviceId: 'device-1', triggeredAt: new Date('2026-06-18T12:01:00.000Z'), ruleId: 'rule-1', templateId: null, configPolicyId: null, configItemName: null, siteId: 'site-1' },
+    ];
+    persistGroupsMock.mockResolvedValue({ scanned: 2, groupsWritten: 1, membersWritten: 3, createdGroupIds: ['g1'] });
+    dbState.groupRowQueue = [];
+
+    const result = await runAlertCorrelationForDevice({ orgId: 'org-1', deviceId: 'device-1', windowMinutes: 30 });
+
+    expect(result).toEqual({ scanned: 2, created: 1 });
+    expect(publishEventMock).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
   });
 
   it('does not increment created when an insert silently matches 0 rows (RLS scope drop)', async () => {

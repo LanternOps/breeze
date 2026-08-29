@@ -20,6 +20,13 @@ export interface PersistAlertCorrelationGroupsResult {
   scanned: number;
   groupsWritten: number;
   membersWritten: number;
+  /**
+   * Ids of `alert_correlation_groups` rows that were newly INSERTed this pass
+   * (not re-upserted). Consumed by jobs/alertCorrelation.ts to publish
+   * `alert.correlation_group.created` exactly once per new group, after this
+   * function returns — this service stays event-free by design.
+   */
+  createdGroupIds: string[];
 }
 
 interface Component {
@@ -96,7 +103,7 @@ function confidenceForAlert(alertId: string, component: Component): number {
   return confidences.length > 0 ? Math.max(...confidences) : 0;
 }
 
-async function upsertGroup(orgId: string, component: Component): Promise<string> {
+async function upsertGroup(orgId: string, component: Component): Promise<{ id: string; created: boolean }> {
   const memberCount = component.alerts.length;
   const score = averageConfidence(component.correlations);
   // Floor (never round up) so the customer-facing noise-reduction claim never overstates
@@ -154,14 +161,20 @@ async function upsertGroup(orgId: string, component: Component): Promise<string>
       last_seen_at = EXCLUDED.last_seen_at,
       metadata = EXCLUDED.metadata,
       updated_at = now()
-    RETURNING id
-  `)) as unknown as Array<{ id: string }>;
+    -- xmax = 0 on the RETURNING row identifies a freshly INSERTed tuple; Postgres
+    -- sets xmax to the updating transaction's id on a row touched by
+    -- ON CONFLICT DO UPDATE, so it is nonzero there. See PersistAlertCorrelationGroupsResult.
+    RETURNING id, (xmax = 0) AS created
+  `)) as unknown as Array<{ id: string; created: unknown }>;
 
-  const groupId = rows[0]?.id;
-  if (!groupId) {
+  const row = rows[0];
+  if (!row?.id) {
     throw new Error('Failed to upsert alert correlation group');
   }
-  return groupId;
+  // Normalise defensively: postgres.js parses `bool` to a JS boolean, but guard
+  // against a driver/config that instead hands back the raw 't'/'f' wire text.
+  const created = row.created === true || row.created === 't';
+  return { id: row.id, created };
 }
 
 async function upsertMembers(orgId: string, groupId: string, component: Component): Promise<number> {
@@ -204,7 +217,7 @@ export async function persistAlertCorrelationGroupsForAlerts(options: {
 }): Promise<PersistAlertCorrelationGroupsResult> {
   const alertIds = [...new Set(options.alertIds)].filter(Boolean);
   if (alertIds.length < 2) {
-    return { scanned: alertIds.length, groupsWritten: 0, membersWritten: 0 };
+    return { scanned: alertIds.length, groupsWritten: 0, membersWritten: 0, createdGroupIds: [] };
   }
 
   const alertRows = await db
@@ -213,7 +226,7 @@ export async function persistAlertCorrelationGroupsForAlerts(options: {
     .where(and(eq(alerts.orgId, options.orgId), inArray(alerts.id, alertIds)));
 
   if (alertRows.length < 2) {
-    return { scanned: alertRows.length, groupsWritten: 0, membersWritten: 0 };
+    return { scanned: alertRows.length, groupsWritten: 0, membersWritten: 0, createdGroupIds: [] };
   }
 
   const scopedAlertIds = alertRows.map((alert) => alert.id);
@@ -229,8 +242,12 @@ export async function persistAlertCorrelationGroupsForAlerts(options: {
 
   const components = buildComponents(alertRows, correlations);
   let membersWritten = 0;
+  const createdGroupIds: string[] = [];
   for (const component of components) {
-    const groupId = await upsertGroup(options.orgId, component);
+    const { id: groupId, created } = await upsertGroup(options.orgId, component);
+    if (created) {
+      createdGroupIds.push(groupId);
+    }
     membersWritten += await upsertMembers(options.orgId, groupId, component);
   }
 
@@ -238,5 +255,6 @@ export async function persistAlertCorrelationGroupsForAlerts(options: {
     scanned: alertRows.length,
     groupsWritten: components.length,
     membersWritten,
+    createdGroupIds,
   };
 }
