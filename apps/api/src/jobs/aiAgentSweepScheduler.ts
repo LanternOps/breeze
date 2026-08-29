@@ -1,0 +1,504 @@
+/**
+ * Fixed-tick sweeper for `ai_agent_schedules` (Phase 2 wave P2-2, task 9).
+ *
+ * Two job shapes on ONE queue (`ai-agent-sweep`):
+ *
+ *  - `tick` — a repeatable job every `SWEEP_TICK_INTERVAL_MS`. Scans every
+ *    ENABLED partner baseline whose agent is enabled, asks
+ *    `latestCronOccurrence` for the most recent minute that baseline's cron
+ *    was due at, and enqueues ONE `occurrence` job per baseline that has a
+ *    new occurrence. Deliberately NOT a per-schedule BullMQ repeatable: a
+ *    partner can create, re-cron and delete schedules at will, and keeping a
+ *    Redis repeatable in sync with a mutable config table is the class of
+ *    problem that produces orphaned repeatables nobody can find. One fixed
+ *    tick over the table is always consistent with the table.
+ *
+ *  - `occurrence` — the fan-out. Re-reads the baseline (it may have been
+ *    disabled or deleted, or its agent soft-deleted, since the tick), merges
+ *    each org's tighten-only override through `effectiveSchedule`, and admits
+ *    one `profile: 'sweep'` run per org through `createAndEnqueueAgentRun`.
+ *
+ * ## Idempotency: jobId first, CAS second
+ *
+ * The tick's order is load-bearing and must not be "tidied" into a single
+ * transaction:
+ *
+ *   1. compute the occurrence key;
+ *   2. skip when it equals `last_occurrence_key` (this tick already ran it);
+ *   3. `queue.add('occurrence', …, { jobId })` — `getSweepOccurrenceJobId` is
+ *      a pure function of (scheduleId, key), and BullMQ SILENTLY NO-OPS an
+ *      add whose jobId is already present. That, not the CAS, is the real
+ *      exactly-once mechanism;
+ *   4. THEN `UPDATE … SET last_occurrence_key = $key WHERE id = $id AND
+ *      last_occurrence_key IS NOT DISTINCT FROM $previous` — a compare-and-set
+ *      so two replicas ticking together do not both claim the occurrence. Zero
+ *      rows updated means the other replica won, which is fine: it added the
+ *      same jobId.
+ *
+ * A crash between (3) and (4) leaves the key unstamped, so the next tick
+ * recomputes the SAME key and re-adds the SAME jobId — BullMQ no-ops, the CAS
+ * lands, and the occurrence ran exactly once. The reverse order (stamp first,
+ * add second) would lose the occurrence entirely on the same crash.
+ *
+ * ## Worker shape — one worker, not two (deviation, deliberate)
+ *
+ * The task brief called for two workers on this queue, "`tick` concurrency 1,
+ * `occurrence` concurrency 2". BullMQ workers cannot filter by job NAME —
+ * every worker on a queue receives every job on it — so two workers would
+ * each have to handle both shapes, and the split would deliver neither a tick
+ * singleton nor an occurrence budget: it would be total concurrency 3 under
+ * two misleading names. One worker with the same total budget (3) and a
+ * name dispatcher is the honest form of the same thing. The tick's
+ * single-flight property comes from the repeatable `jobId` plus the CAS
+ * above, never from worker concurrency.
+ *
+ * ## Gating
+ *
+ * The worker and the repeatable registration are unconditional (the
+ * `alertVerdictScheduler.ts` convention): only the PRODUCER — the tick's
+ * `queue.add` — is gated on `AI_AGENTS_ENABLED`, so flipping the platform
+ * kill switch back on resumes sweeping without a process restart, and an
+ * install with agents off never fills the queue. `createAndEnqueueAgentRun`
+ * re-checks the same switch at call time, so the occurrence path is covered
+ * even for a job that was enqueued before the switch was thrown.
+ *
+ * Registered in `services/workerRegistry.ts` as `global`. That is NOT an
+ * assumption copied from a sibling: `workerEntrypointClosure.contract.test.ts`
+ * (the mechanical authority) was run for BOTH values, and this module's
+ * runtime import closure reaches neither `routes/agentWs.ts` nor
+ * `services/agentCommandAwait.ts`. `alertVerdictScheduler` — same job shape,
+ * `socket-owner` placement — reaches them only through
+ * `alertVerdictSubscriber` -> `aiToolsOrgs` -> `tenantOffboarding` ->
+ * `orgMerge` -> `routes/portal/helpers`, none of which this module imports.
+ * The deepest AI dependency here is `createAndEnqueueAgentRun`, which inserts
+ * a run row and enqueues; socket dispatch happens later, in `aiAgentRunner`.
+ * Do not relitigate the value by reasoning about it — run the tool.
+ */
+import { Job, Queue, Worker } from 'bullmq';
+import { and, eq, isNull, ne, sql } from 'drizzle-orm';
+
+import type { AiAgentScheduleRunSummary, AiSweepKind } from '@breeze/shared';
+
+// Late-bound namespace import (NOT `const { db } = dbModule`): destructuring
+// at module scope freezes the binding at import time, before a test's
+// `vi.mock('../db')` factory can be observed. Same idiom as
+// `alertVerdictScheduler.ts`.
+import * as dbModule from '../db';
+import { aiAgentSchedules, aiAgents, organizations } from '../db/schema';
+import { AI_AGENTS_ENABLED } from '../config/env';
+import { getBullMQConnection } from '../services/redis';
+import { attachWorkerObservability } from './workerObservability';
+import { latestCronOccurrence } from '../services/aiAgents/sweepOccurrence';
+import {
+  effectiveSchedule,
+  resolveEffectiveSchedulesForPartner,
+  type ScheduleOverrideSummary,
+} from '../services/aiAgents/scheduleService';
+import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
+
+export const AI_AGENT_SWEEP_QUEUE = 'ai-agent-sweep';
+
+/** Fixed scan cadence. Sub-hourly, so it is deliberately OUTSIDE
+ *  `scheduleRegistry.JOB_SCHEDULES` (an unused registry slot fails
+ *  `scheduleRegistry.contract.test.ts`); the literal lives here so that
+ *  suite's AST resolver can read the `repeat: { every: … }` statically. */
+export const SWEEP_TICK_INTERVAL_MS = 5 * 60 * 1000;
+
+const TICK_JOB = 'tick';
+const OCCURRENCE_JOB = 'occurrence';
+const TICK_JOB_ID = 'ai-agent-sweep-tick';
+
+/** The tick lane's budget (1) plus the fan-out lane's (2) — see the header on
+ *  why they are not two separate workers. */
+const SWEEP_WORKER_CONCURRENCY = 3;
+
+export interface SweepOccurrenceJobData {
+  scheduleId: string;
+  occurrenceKey: string;
+}
+
+type SweepJobData = SweepOccurrenceJobData | Record<string, never>;
+
+/**
+ * BullMQ rejects `:` in a jobId (it reserves it for the legacy repeatable-job
+ * id form — see `alertVerdictScheduler.ts`), and an occurrence key carries
+ * both `:` and `@`. Everything outside `[A-Za-z0-9]` is stripped rather than
+ * escaped: the schedule id is already a UUID, so the pair stays unique per
+ * (schedule, occurrence) — two DIFFERENT keys for the SAME schedule cannot
+ * collide, because stripping only removes the fixed separators from a
+ * fixed-width `YYYY-MM-DDTHH:mm@<tz>` shape.
+ */
+export function getSweepOccurrenceJobId(scheduleId: string, occurrenceKey: string): string {
+  return `sweep-occ-${scheduleId}-${occurrenceKey.replace(/[^A-Za-z0-9]/g, '')}`;
+}
+
+let sweepQueue: Queue<SweepJobData> | null = null;
+let sweepWorker: Worker<SweepJobData> | null = null;
+
+export function getAiAgentSweepQueue(): Queue<SweepJobData> {
+  if (!sweepQueue) {
+    sweepQueue = new Queue<SweepJobData>(AI_AGENT_SWEEP_QUEUE, { connection: getBullMQConnection() });
+  }
+  return sweepQueue;
+}
+
+/** Late-bound system-context helper — see the `dbModule` note above. */
+const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
+  if (typeof dbModule.withSystemDbAccessContext !== 'function') {
+    throw new Error(
+      '[AiAgentSweepScheduler] withSystemDbAccessContext is not available — DB module may not have loaded correctly',
+    );
+  }
+  return dbModule.withSystemDbAccessContext(fn);
+};
+
+// ---------------------------------------------------------------------------
+// Tick
+// ---------------------------------------------------------------------------
+
+interface DueBaselineRow {
+  id: string;
+  agentId: string;
+  partnerId: string | null;
+  cron: string;
+  timezone: string;
+  sweepKinds: AiSweepKind[];
+  lastOccurrenceKey: string | null;
+}
+
+/**
+ * Every enabled PARTNER baseline (`org_id IS NULL`) whose agent is itself
+ * enabled and not soft-deleted. Org overrides are deliberately absent: they
+ * carry no cadence of their own (their cron/timezone are a copy of the
+ * baseline's — see `scheduleService.updateSchedule`), so ticking them would
+ * fan the same occurrence out twice.
+ */
+async function loadDueBaselines(): Promise<DueBaselineRow[]> {
+  const { db } = dbModule;
+  return db
+    .select({
+      id: aiAgentSchedules.id,
+      agentId: aiAgentSchedules.agentId,
+      partnerId: aiAgentSchedules.partnerId,
+      cron: aiAgentSchedules.cron,
+      timezone: aiAgentSchedules.timezone,
+      sweepKinds: aiAgentSchedules.sweepKinds,
+      lastOccurrenceKey: aiAgentSchedules.lastOccurrenceKey,
+    })
+    .from(aiAgentSchedules)
+    .innerJoin(aiAgents, eq(aiAgents.id, aiAgentSchedules.agentId))
+    .where(and(
+      isNull(aiAgentSchedules.orgId),
+      eq(aiAgentSchedules.enabled, true),
+      eq(aiAgents.enabled, true),
+      isNull(aiAgents.disabledAt),
+    )) as Promise<DueBaselineRow[]>;
+}
+
+/**
+ * Claim the occurrence for this schedule. Returns true when THIS replica won.
+ *
+ * `IS NOT DISTINCT FROM` (not `=`) because the previous key is NULL on a
+ * schedule that has never fired, and `NULL = NULL` is NULL — an `=` form would
+ * never match a first firing and the key would never be stamped.
+ */
+async function claimOccurrence(
+  scheduleId: string,
+  previousKey: string | null,
+  nextKey: string,
+): Promise<boolean> {
+  const { db } = dbModule;
+  const rows = await db
+    .update(aiAgentSchedules)
+    .set({ lastEnqueuedAt: new Date(), lastOccurrenceKey: nextKey, updatedAt: new Date() })
+    .where(and(
+      eq(aiAgentSchedules.id, scheduleId),
+      sql`${aiAgentSchedules.lastOccurrenceKey} IS NOT DISTINCT FROM ${previousKey}::text`,
+    ))
+    .returning({ id: aiAgentSchedules.id });
+  return rows.length > 0;
+}
+
+/**
+ * One scan of every enabled partner baseline. See this module's header for
+ * the add-then-CAS ordering, which is asserted in `aiAgentSweepScheduler.test.ts`.
+ *
+ * `now` is injectable for tests only; production always passes the real clock.
+ */
+export async function processSweepTick(now: Date = new Date()): Promise<{ scanned: number; enqueued: number }> {
+  // Producer gate — the worker itself stays registered (see the header).
+  if (!AI_AGENTS_ENABLED) return { scanned: 0, enqueued: 0 };
+
+  const baselines = await runWithSystemDbAccess(loadDueBaselines);
+
+  let enqueued = 0;
+  for (const baseline of baselines) {
+    const occurrence = latestCronOccurrence(baseline.cron, baseline.timezone, now);
+    if (!occurrence) continue;
+    if (occurrence.key === baseline.lastOccurrenceKey) continue;
+
+    // Enqueue OUTSIDE any DB context: a BullMQ add is a Redis round trip, and
+    // holding a pooled Postgres connection across it is what exhausted the
+    // pool on 2026-05-21 (same note as runService.ts's step 10).
+    await getAiAgentSweepQueue().add(
+      OCCURRENCE_JOB,
+      { scheduleId: baseline.id, occurrenceKey: occurrence.key },
+      {
+        jobId: getSweepOccurrenceJobId(baseline.id, occurrence.key),
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 30_000 },
+        removeOnComplete: true,
+        removeOnFail: 50,
+      },
+    );
+    enqueued++;
+
+    const claimed = await runWithSystemDbAccess(() => claimOccurrence(
+      baseline.id,
+      baseline.lastOccurrenceKey,
+      occurrence.key,
+    ));
+    if (!claimed) {
+      console.debug('[AiAgentSweepScheduler] occurrence already claimed by another replica', {
+        scheduleId: baseline.id, occurrenceKey: occurrence.key,
+      });
+    }
+  }
+
+  return { scanned: baselines.length, enqueued };
+}
+
+// ---------------------------------------------------------------------------
+// Occurrence fan-out
+// ---------------------------------------------------------------------------
+
+interface OccurrenceBaselineRow {
+  id: string;
+  agentId: string;
+  partnerId: string | null;
+  sweepKinds: AiSweepKind[];
+  enabled: boolean;
+}
+
+/**
+ * Re-read of the triggering baseline, with the SAME enabled/agent conditions
+ * the tick applied. Between the tick and this job a partner may have disabled
+ * the schedule, disabled the agent, or deleted either — a sweep must not fan
+ * out on a configuration that no longer exists.
+ */
+async function loadOccurrenceBaseline(scheduleId: string): Promise<OccurrenceBaselineRow | null> {
+  const { db } = dbModule;
+  const rows = await db
+    .select({
+      id: aiAgentSchedules.id,
+      agentId: aiAgentSchedules.agentId,
+      partnerId: aiAgentSchedules.partnerId,
+      sweepKinds: aiAgentSchedules.sweepKinds,
+      enabled: aiAgentSchedules.enabled,
+    })
+    .from(aiAgentSchedules)
+    .innerJoin(aiAgents, eq(aiAgents.id, aiAgentSchedules.agentId))
+    .where(and(
+      eq(aiAgentSchedules.id, scheduleId),
+      isNull(aiAgentSchedules.orgId),
+      eq(aiAgentSchedules.enabled, true),
+      eq(aiAgents.enabled, true),
+      isNull(aiAgents.disabledAt),
+    ))
+    .limit(1);
+  return (rows[0] as OccurrenceBaselineRow | undefined) ?? null;
+}
+
+/**
+ * Every org a partner-wide schedule fans out to — the
+ * `policyEvaluationService.policyDeviceScopeCondition` predicate.
+ * `quick_support` orgs are the partner's hidden holder for ephemeral support
+ * enrolments; a scheduled hygiene sweep must never run against one.
+ */
+async function loadPartnerOrgIds(partnerId: string): Promise<string[]> {
+  const { db } = dbModule;
+  const rows = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(and(
+      eq(organizations.partnerId, partnerId),
+      ne(organizations.type, 'quick_support'),
+    ));
+  return rows.map((row) => row.id);
+}
+
+async function writeRunSummary(scheduleId: string, summary: AiAgentScheduleRunSummary): Promise<void> {
+  const { db } = dbModule;
+  await db
+    .update(aiAgentSchedules)
+    .set({ lastRunSummary: summary, updatedAt: new Date() })
+    .where(eq(aiAgentSchedules.id, scheduleId));
+}
+
+function emptySummary(occurrenceKey: string): AiAgentScheduleRunSummary {
+  return {
+    occurrenceKey,
+    orgsTotal: 0,
+    runsAdmitted: 0,
+    runsSkipped: 0,
+    skipReasons: {},
+    enqueuedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Fan ONE occurrence out across every org under the schedule's partner.
+ *
+ * The returned (and stored) `last_run_summary` is AGGREGATE ONLY — counters
+ * and a skip-reason histogram, never an org id or name. A partner baseline is
+ * legible to each of its orgs through the effective resolver
+ * (`scheduleService.listSchedules` strips the summary for them, but the
+ * column is one migration away from being surfaced), so "org X was skipped
+ * for budget" must not be recoverable from it. Asserted in the unit suite.
+ */
+export async function processSweepOccurrence(
+  data: SweepOccurrenceJobData,
+): Promise<AiAgentScheduleRunSummary> {
+  const { scheduleId, occurrenceKey } = data;
+
+  const baseline = await runWithSystemDbAccess(() => loadOccurrenceBaseline(scheduleId));
+  if (!baseline || !baseline.partnerId) {
+    // Not an error and never retried: the schedule or its agent was disabled
+    // or deleted between the tick and this job, which is a legitimate outcome.
+    console.info('[AiAgentSweepScheduler] sweep occurrence skipped — schedule or agent is no longer eligible', {
+      scheduleId, occurrenceKey,
+    });
+    return emptySummary(occurrenceKey);
+  }
+
+  // Called with NO ambient DB context — it opens its own system context (and
+  // skips re-entering one when already inside).
+  const resolved = await resolveEffectiveSchedulesForPartner(baseline.partnerId);
+  const entry = resolved.find((candidate) => candidate.baseline.id === scheduleId);
+  if (!entry) {
+    console.warn('[AiAgentSweepScheduler] baseline vanished from the partner resolver between reads', {
+      scheduleId, occurrenceKey,
+    });
+    return emptySummary(occurrenceKey);
+  }
+  const overridesByOrg: Map<string, ScheduleOverrideSummary> = entry.overridesByOrg;
+
+  const orgIds = await runWithSystemDbAccess(() => loadPartnerOrgIds(baseline.partnerId as string));
+
+  const skipReasons: Record<string, number> = {};
+  let runsAdmitted = 0;
+  let runsSkipped = 0;
+  const countSkip = (reason: string): void => {
+    skipReasons[reason] = (skipReasons[reason] ?? 0) + 1;
+    runsSkipped++;
+  };
+
+  for (const orgId of orgIds) {
+    const effective = effectiveSchedule(
+      { enabled: entry.baseline.enabled, sweepKinds: entry.baseline.sweepKinds },
+      overridesByOrg.get(orgId) ?? null,
+    );
+    // An override that disables, or that intersects the baseline down to no
+    // kinds at all, is the same outcome: this org has nothing to sweep.
+    if (!effective.enabled || effective.sweepKinds.length === 0) {
+      countSkip('override_disabled');
+      continue;
+    }
+
+    // No ambient DB context here — `createAndEnqueueAgentRun` manages its own
+    // (see `alertVerdictSubscriber.ts`'s header on the #1105 pool-hold seam).
+    const result = await createAndEnqueueAgentRun({
+      orgId,
+      kind: 'triage',
+      triggerKind: 'schedule',
+      deviceId: null,
+      profile: 'sweep',
+      scheduleId: baseline.id,
+      triggerRef: { scheduleId: baseline.id, occurrenceKey, sweepKinds: effective.sweepKinds },
+      dedupeKey: `sweep-${baseline.id}-${orgId}-${occurrenceKey}`,
+    });
+
+    if (result.created) runsAdmitted++;
+    else countSkip(result.skipped);
+  }
+
+  const summary: AiAgentScheduleRunSummary = {
+    occurrenceKey,
+    orgsTotal: orgIds.length,
+    runsAdmitted,
+    runsSkipped,
+    skipReasons,
+    enqueuedAt: new Date().toISOString(),
+  };
+  await runWithSystemDbAccess(() => writeRunSummary(scheduleId, summary));
+
+  console.info('[AiAgentSweepScheduler] sweep occurrence fanned out', { scheduleId, ...summary });
+  return summary;
+}
+
+// ---------------------------------------------------------------------------
+// Worker lifecycle
+// ---------------------------------------------------------------------------
+
+export function createAiAgentSweepWorker(): Worker<SweepJobData> {
+  return new Worker<SweepJobData>(
+    AI_AGENT_SWEEP_QUEUE,
+    async (job: Job<SweepJobData>) => {
+      switch (job.name) {
+        case TICK_JOB:
+          return processSweepTick();
+        case OCCURRENCE_JOB:
+          return processSweepOccurrence(job.data as SweepOccurrenceJobData);
+        default:
+          // Loud, not silent: an unknown name means a producer added a job
+          // this processor cannot honour, and dropping it would lose work.
+          throw new Error(`[AiAgentSweepScheduler] unknown sweep job name: ${job.name}`);
+      }
+    },
+    { connection: getBullMQConnection(), concurrency: SWEEP_WORKER_CONCURRENCY },
+  );
+}
+
+/**
+ * Boot reconcile, mirroring `metricAnomalies.scheduleMetricAnomaliesScan`:
+ * remove any existing `tick` repeatable BEFORE adding, so changing
+ * `SWEEP_TICK_INTERVAL_MS` does not leave the previous interval's repeatable
+ * running alongside the new one forever.
+ */
+export async function initializeAiAgentSweepScheduler(): Promise<void> {
+  sweepWorker = createAiAgentSweepWorker();
+  attachWorkerObservability(sweepWorker, 'aiAgentSweepScheduler');
+  sweepWorker.on('error', (error) => {
+    console.error('[AiAgentSweepScheduler] Worker error:', error);
+  });
+
+  const queue = getAiAgentSweepQueue();
+  const existing = await queue.getRepeatableJobs();
+  for (const job of existing) {
+    if (job.name === TICK_JOB) await queue.removeRepeatableByKey(job.key);
+  }
+
+  await queue.add(
+    TICK_JOB,
+    {},
+    {
+      jobId: TICK_JOB_ID,
+      repeat: { every: SWEEP_TICK_INTERVAL_MS },
+      removeOnComplete: { count: 10 },
+      removeOnFail: { count: 50 },
+    },
+  );
+
+  console.log('[AiAgentSweepScheduler] Initialized');
+}
+
+export async function shutdownAiAgentSweepScheduler(): Promise<void> {
+  if (sweepWorker) {
+    await sweepWorker.close();
+    sweepWorker = null;
+  }
+  if (sweepQueue) {
+    await sweepQueue.close();
+    sweepQueue = null;
+  }
+}
