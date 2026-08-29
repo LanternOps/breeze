@@ -25,6 +25,9 @@ import (
 const (
 	jobObjectQuery     = 0x0004
 	jobObjectTerminate = 0x0008
+	// stillActiveExitCode is STILL_ACTIVE: GetExitCodeProcess reports it for a
+	// process that has not exited. golang.org/x/sys/windows does not export it.
+	stillActiveExitCode uint32 = 259
 )
 
 var (
@@ -275,6 +278,43 @@ func (*nativeWindowsPrimitives) TerminateAndVerifyEmpty(ctx context.Context, nam
 	}
 }
 
+// VerifyProcessIdentityGone implements rule 2 of the #4196 decision. It
+// reports gone=true only on positive evidence that the durable identity no
+// longer denotes a running process: the PID does not exist
+// (ERROR_INVALID_PARAMETER), the PID was reused by a process with a different
+// creation time, or the exact process is held open by another handle but has
+// exited (exit code != STILL_ACTIVE). The exact identity still running returns
+// gone=false with a nil error; anything the kernel would not let us inspect
+// returns an error so the caller stays fail-closed.
+func (*nativeWindowsPrimitives) VerifyProcessIdentityGone(ctx context.Context, process ProcessIdentity) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if process.PID <= 0 || process.ProcessCreationTime.IsZero() {
+		return false, errors.New("durable process identity is incomplete")
+	}
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(process.PID))
+	if err != nil {
+		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+			return true, nil
+		}
+		return false, fmt.Errorf("open process %d while verifying PAM identity absence: %w", process.PID, err)
+	}
+	defer windows.CloseHandle(handle)
+	var created, exited, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(handle, &created, &exited, &kernel, &user); err != nil {
+		return false, fmt.Errorf("query process %d times while verifying PAM identity absence: %w", process.PID, err)
+	}
+	if actual := time.Unix(0, created.Nanoseconds()).UTC(); !actual.Equal(process.ProcessCreationTime.UTC()) {
+		return true, nil
+	}
+	var exitCode uint32
+	if err := windows.GetExitCodeProcess(handle, &exitCode); err != nil {
+		return false, fmt.Errorf("query process %d exit code while verifying PAM identity absence: %w", process.PID, err)
+	}
+	return exitCode != stillActiveExitCode, nil
+}
+
 func (*nativeWindowsPrimitives) VerifyNoPrivilegedToken(ctx context.Context, username string) (bool, error) {
 	targetSID, _, _, err := windows.LookupSID("", username)
 	if err != nil {
@@ -364,6 +404,12 @@ func openOwnedJob(name string, job jobOwnership) (windows.Handle, bool, error) {
 	}
 	handle, _, callErr := procOpenJobObject.Call(jobObjectQuery|jobObjectTerminate, 0, uintptr(unsafe.Pointer(namePtr)))
 	if handle == 0 {
+		if errors.Is(callErr, windows.ERROR_FILE_NOT_FOUND) {
+			// The named object no longer exists at all. Only this code maps to
+			// the sentinel; access denied and every other failure stay opaque
+			// so cleanup keeps treating them as unverifiable.
+			return 0, false, fmt.Errorf("%w: OpenJobObjectW(%s): %w", ErrJobObjectAbsent, name, callErr)
+		}
 		return 0, false, callErr
 	}
 	return windows.Handle(handle), true, nil

@@ -60,8 +60,13 @@ type fakeWindowsPrimitives struct {
 	cleanupProcess      ProcessIdentity
 	cleanupJobName      string
 	cleanupErr          error
+	cleanupMembers      int
 	privilegedToken     bool
 	privilegedTokenErr  error
+	identityGone        bool
+	identityGoneErr     error
+	identityGoneCalls   int
+	identityGoneProcess ProcessIdentity
 	bootID              string
 	validateErr         error
 	createProcessErr    error
@@ -212,7 +217,14 @@ func (f *fakeWindowsPrimitives) TerminateAndVerifyEmpty(_ context.Context, name 
 	if name == "" && process.PID == 0 && f.cleanupErr == nil {
 		return 0, errors.New("no durable job or process")
 	}
-	return 0, f.cleanupErr
+	return f.cleanupMembers, f.cleanupErr
+}
+
+func (f *fakeWindowsPrimitives) VerifyProcessIdentityGone(_ context.Context, process ProcessIdentity) (bool, error) {
+	f.identityGoneCalls++
+	f.identityGoneProcess = process
+	*f.order = append(*f.order, "verify durable process identity gone")
+	return f.identityGone, f.identityGoneErr
 }
 
 func (f *fakeWindowsPrimitives) VerifyNoPrivilegedToken(_ context.Context, _ string) (bool, error) {

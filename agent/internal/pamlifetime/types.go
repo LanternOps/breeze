@@ -56,8 +56,13 @@ type ResultEvidence struct {
 	AccountEnabled          *bool      `json:"accountEnabled,omitempty"`
 	AccountInAdministrators *bool      `json:"accountInAdministrators,omitempty"`
 	PrivilegedTokenPresent  *bool      `json:"privilegedTokenPresent,omitempty"`
-	TargetHash              string     `json:"targetHash,omitempty"`
-	BootID                  string     `json:"bootId,omitempty"`
+	// JobObjectAbsent is set only on a cleaned result that was proven by
+	// independent endpoint evidence after the named Job Object had already
+	// disappeared (agent crash during an active grant, #4196). It lets the
+	// audit trail distinguish a crash-recovered cleanup from a normal one.
+	JobObjectAbsent *bool  `json:"jobObjectAbsent,omitempty"`
+	TargetHash      string `json:"targetHash,omitempty"`
+	BootID          string `json:"bootId,omitempty"`
 }
 
 type Result struct {
