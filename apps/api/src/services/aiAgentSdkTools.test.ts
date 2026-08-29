@@ -100,6 +100,13 @@ function registeredHandler(
   return entry.handler;
 }
 
+/** Same reach-in as `registeredHandler`, but returns every registered tool
+ *  name — used by the F2 `onlyTools` coverage tests below. */
+function registeredToolNames(server: ReturnType<typeof createBreezeMcpServer>): string[] {
+  const instance = server.instance as unknown as { _registeredTools: Record<string, unknown> };
+  return Object.keys(instance._registeredTools);
+}
+
 describe('createBreezeMcpServer wraps extraTools with the run hooks (P2-1 fix round 1, CRITICAL)', () => {
   beforeEach(() => {
     vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
@@ -252,6 +259,52 @@ describe('createBreezeMcpServer wraps extraTools with the run hooks (P2-1 fix ro
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  // F2 fix (P2-1 second live check): `allowedTools` only gates PERMISSION to
+  // call a tool — the SDK still sends every REGISTERED tool's full schema to
+  // the model every turn, which is what made a single verdict turn cost 9¢
+  // (run 59fb933c-…, turn_count=1, cost_cents=9). `options.onlyTools` filters
+  // the registry down to the pinned subset BEFORE createSdkMcpServer.
+  describe('createBreezeMcpServer options.onlyTools (Task 16c F2)', () => {
+    it('with onlyTools set, the registered tool names equal exactly the set plus extraTools', () => {
+      const [outcomeTool] = buildOutcomeSdkTools(['submit_alert_verdict']);
+      const onlyTools = new Set(['manage_alerts', 'get_device_details', 'analyze_metrics', 'query_monitors']);
+
+      const server = createBreezeMcpServer(
+        () => ({}) as never,
+        undefined,
+        undefined,
+        undefined,
+        [outcomeTool!],
+        { onlyTools },
+      );
+
+      expect(new Set(registeredToolNames(server))).toEqual(
+        new Set(['manage_alerts', 'get_device_details', 'analyze_metrics', 'query_monitors', 'submit_alert_verdict']),
+      );
+    });
+
+    it('without onlyTools, a full call still registers the whole registry (unchanged)', () => {
+      const server = createBreezeMcpServer(() => ({}) as never);
+
+      const names = registeredToolNames(server);
+
+      // Representative sample rather than an exact count — the full registry
+      // is ~200 tools and its exact size is covered elsewhere
+      // (mcpCoverage.test.ts). What matters here is that omitting `onlyTools`
+      // did not narrow it: a broad cross-section of unrelated tools is still
+      // present alongside the four the onlyTools test above pins to.
+      expect(names).toEqual(expect.arrayContaining([
+        'query_devices',
+        'manage_alerts',
+        'get_device_details',
+        'analyze_metrics',
+        'query_monitors',
+        'execute_command',
+      ]));
+      expect(names.length).toBeGreaterThan(50);
     });
   });
 });
