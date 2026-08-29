@@ -29,6 +29,7 @@ import {
   updateSchedule,
 } from '../services/aiAgents/scheduleService';
 import { writeRouteAudit } from '../services/auditEvents';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import { PERMISSIONS } from '../services/permissions';
 
 export const aiAgentSchedulesRoutes = new Hono();
@@ -75,19 +76,6 @@ function mapScheduleRow(row: AiAgentScheduleRow): AiAgentScheduleDto {
 }
 
 /**
- * `ai_agent_schedules_org_baseline_uq` is a partial unique index on
- * `(org_id, baseline_schedule_id) WHERE org_id IS NOT NULL`: an org may hold at
- * most ONE override per baseline. The service does not pre-check it (a
- * pre-check cannot win the race anyway), so the violation has to be answered
- * here rather than becoming an unactionable 500. Deliberately NOT a
- * `ScheduleValidationError` code: this is a conflict with an existing row, not
- * a statement about the submitted values, and it maps to 409, not 422.
- */
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505';
-}
-
-/**
  * 403 for every access denial, including "not found" — a schedule id that
  * resolves to another tenant's row and one that does not exist must be
  * indistinguishable, so there is deliberately no 404 branch here.
@@ -102,7 +90,21 @@ function mapScheduleError(c: Context, err: unknown) {
   if (err instanceof AgentAccessDeniedError) {
     return c.json({ error: err.message }, 403);
   }
-  if (isUniqueViolation(err)) {
+  // `ai_agent_schedules_org_baseline_uq` is a partial unique index on
+  // `(org_id, baseline_schedule_id) WHERE org_id IS NOT NULL`: an org may hold
+  // at most ONE override per baseline. The service does not pre-check it (a
+  // pre-check cannot win the race anyway), so the violation is answered here
+  // rather than becoming an unactionable 500. Deliberately NOT a
+  // `ScheduleValidationError` code: this is a conflict with an existing row,
+  // not a statement about the submitted values, so 409 rather than 422.
+  //
+  // `isPgUniqueViolation`, NOT a hand-rolled `err.code === '23505'`: drizzle
+  // wraps every driver error in a DrizzleQueryError whose own `.code` is
+  // undefined — the real PostgresError is on `.cause` — so a top-level check
+  // matches NOTHING a drizzle insert can throw and the conflict would 500.
+  // Naming the constraint keeps any other 23505 propagating instead of being
+  // mislabelled as a duplicate override.
+  if (isPgUniqueViolation(err, 'ai_agent_schedules_org_baseline_uq')) {
     return c.json({ error: 'override_exists' }, 409);
   }
   throw err;

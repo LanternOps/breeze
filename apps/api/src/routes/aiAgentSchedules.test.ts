@@ -256,21 +256,55 @@ describe('POST /ai/agents/schedules', () => {
     expect(res.status).toBe(403);
   });
 
-  it('maps the duplicate-override unique violation to 409, not a 500', async () => {
-    // ai_agent_schedules_org_baseline_uq: one override per (org, baseline).
-    createScheduleMock.mockRejectedValue(Object.assign(new Error('duplicate key'), { code: '23505' }));
+  // Error-shape fixtures copied from utils/pgErrors.test.ts. The DRIZZLE shape
+  // is the one production actually throws: drizzle wraps every driver error in
+  // a DrizzleQueryError whose own `.code` is undefined, with the real
+  // PostgresError on `.cause`. A hand-rolled `err.code === '23505'` check
+  // matches none of them and 500s on a duplicate override — which is exactly
+  // the bug this fixture exists to catch.
+  const pgUniqueErr = (constraint: string) => Object.assign(
+    new Error(`duplicate key value violates unique constraint "${constraint}"`),
+    { code: '23505', constraint_name: constraint },
+  );
+  const drizzleWrap = (cause: unknown) => Object.assign(
+    new Error('Failed query: insert into "ai_agent_schedules" ...'),
+    { cause },
+  );
 
-    const res = await post({
-      ownerScope: 'organization',
-      orgId: ORG_ID,
-      baselineScheduleId: BASELINE_ID,
-      enabled: true,
-      sweepKinds: ['disk_pressure'],
-    });
+  const overrideBody = {
+    ownerScope: 'organization',
+    orgId: ORG_ID,
+    baselineScheduleId: BASELINE_ID,
+    enabled: true,
+    sweepKinds: ['disk_pressure'],
+  };
+
+  it.each([
+    ['a DrizzleQueryError-wrapped 23505 (the shape production throws)',
+      () => drizzleWrap(pgUniqueErr('ai_agent_schedules_org_baseline_uq'))],
+    ['a bare PostgresError 23505',
+      () => pgUniqueErr('ai_agent_schedules_org_baseline_uq')],
+  ])('maps %s to 409 override_exists, not a 500', async (_name, makeError) => {
+    createScheduleMock.mockRejectedValue(makeError());
+
+    const res = await post(overrideBody);
 
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'override_exists' });
     expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it("does NOT mislabel another table's unique violation as a duplicate override", async () => {
+    // Naming the constraint is what keeps an unrelated 23505 propagating to the
+    // global error handler instead of being reported as `override_exists`.
+    createScheduleMock.mockRejectedValue(drizzleWrap(pgUniqueErr('ai_agents_partner_kind_uq')));
+
+    const res = await post(overrideBody);
+
+    // Propagated to the global error handler (plain-text 500 body here, since
+    // this harness mounts no onError) rather than answered as a conflict.
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain('override_exists');
   });
 
   it('requires ai_agents:write and MFA', async () => {
