@@ -24,6 +24,7 @@ import {
   mapNetworkChangeRow,
   resolveOrgId
 } from './networkShared';
+import { pgErrorCode } from '../utils/pgErrors';
 
 export const networkBaselineRoutes = new Hono();
 
@@ -539,8 +540,13 @@ networkBaselineRoutes.delete(
           .where(eq(networkBaselines.id, baseline.id));
       }
     } catch (error) {
-      const pgError = error as { code?: string };
-      if (!deleteChanges && pgError.code === '23503') {
+      // Read the SQLSTATE through `pgErrorCode`: drizzle-orm/postgres-js
+      // catches the postgres-js `PostgresError` and rethrows a
+      // `DrizzleQueryError` whose own `.code` is undefined, with the real code
+      // on `.cause`. Reading `error.code` directly (as this did until #4020)
+      // made the branch unreachable for every Drizzle-issued delete, so the
+      // 409 + `hint` below were never actually delivered.
+      if (!deleteChanges && pgErrorCode(error) === '23503') {
         return c.json({
           error: 'Cannot delete baseline without deleting associated change events',
           hint: 'Use ?deleteChanges=true to delete events with the baseline'

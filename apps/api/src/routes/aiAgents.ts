@@ -43,6 +43,7 @@ import {
 } from '../services/aiAgents/runsListCursor';
 import { verifyDeviceAccess } from '../services/aiTools';
 import { writeRouteAudit } from '../services/auditEvents';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import { PERMISSIONS } from '../services/permissions';
 import { resolveOrgId } from './networkShared';
 
@@ -117,11 +118,6 @@ function mapRow(row: AiAgentRow): AiAgentDto {
   };
 }
 
-/** Postgres unique-violation, for the create race the pre-check cannot win. */
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505';
-}
-
 export function mapError(c: Context, err: unknown) {
   if (err instanceof UnsupportedAgentModeError) {
     // err.code, not a repeated literal — the class types it as a literal, so
@@ -157,7 +153,12 @@ export function mapError(c: Context, err: unknown) {
   // The pre-check in createAgent cannot win a concurrent create; the partial
   // unique index settles that race. Answer it the same way rather than letting
   // it become an unactionable 500.
-  if (isUniqueViolation(err)) {
+  // `isPgUniqueViolation`, not a top-level `err.code === '23505'` read: the
+  // insert goes through Drizzle, which rethrows a `DrizzleQueryError` whose own
+  // `.code` is undefined and carries the SQLSTATE on `.cause`. The hand-rolled
+  // top-level check this replaced (#4020) never matched, so the race it exists
+  // for surfaced as a 500 instead of this 409.
+  if (isPgUniqueViolation(err)) {
     return c.json({ error: 'An agent of this kind already exists', code: 'agent_kind_exists' }, 409);
   }
   if (err instanceof PartnerWideWriteDeniedError) {
