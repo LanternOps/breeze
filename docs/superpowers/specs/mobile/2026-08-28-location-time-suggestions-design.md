@@ -43,6 +43,7 @@ source    varchar(24)   not null default 'manual'
           -- 'manual' | 'timer' | 'location' | 'remote_session'
 ```
 
+- **Reconciliation (2026-08-30):** #3206 W06 (#3900) creates this column in migration `2026-09-25-time-entry-source-and-suggestion-decisions.sql` and adds a fifth value `support_session` (a confirmed Quick Support entry with `org_id NULL`). Values are otherwise unchanged; this wave reuses the column. `site_id` is still unbuilt and remains this spec's to add.
 - `time_entries` is partner-axis (RLS shape 3) with a denormalised `org_id`; already registered in the cascade and export lists. **New columns → export-policy classification**: both `included`.
 - `source` is defined here once and shared with #3206 **W06** (auto-suggest from `remote_sessions`), which needs the same column. Whichever wave lands first creates it; the other reuses it. Do not let each wave invent its own.
 - `site_id` is informational (timesheet/report grouping, "which site was this"). It does not participate in RLS or cascade ordering beyond the FK.
