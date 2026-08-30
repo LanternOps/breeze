@@ -557,9 +557,11 @@ export function verifyReleaseArtifactManifestIntegrity(
 }
 
 async function fetchSmallBuffer(url: string, label: string): Promise<Buffer> {
-  // A naive `redirect: "follow"` on verification inputs was an SSRF bypass:
-  // a trusted URL could redirect into private space. The guarded helper
-  // re-validates and pins every hop before it is dialed.
+  // A naive `redirect: "follow"` on verification inputs was an SSRF bypass
+  // (#3649): a trusted URL could redirect into private space. The guarded
+  // helper re-validates and pins every hop before it is dialed. `maxBytes`
+  // makes the manifest ceiling a streaming one — the socket is torn down on
+  // overrun rather than the body being buffered and measured afterwards.
   const resp = await safeFetchFollowingRedirects(url, {
     maxBytes: MAX_MANIFEST_BYTES,
   });

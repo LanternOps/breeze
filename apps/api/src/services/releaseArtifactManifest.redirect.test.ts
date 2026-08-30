@@ -24,7 +24,11 @@ vi.mock('../db', () => ({ db: {}, assertOutsideHeldDbContext: vi.fn() }));
 
 import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
 import { requiredPlatformTrustFor } from './releaseAssetTrust';
-import { SsrfBlockedError, __setLookupForTests } from './urlSafety';
+import {
+  ResponseTooLargeError,
+  SsrfBlockedError,
+  __setLookupForTests,
+} from './urlSafety';
 
 type StubbedResponse =
   | { status: number; headers?: Record<string, string>; body?: Buffer }
@@ -243,15 +247,44 @@ describe('verifyGithubReleaseArtifactBuffer — GitHub manifest redirects', () =
 
     const err = await verifyAsset(asset).catch((error) => error);
     expect(err).toBeInstanceOf(SsrfBlockedError);
+    expect(String(err)).toMatch(/internal\.example|192\.168\.1\.10/);
     expect(stub.requests.map((req) => req.host)).not.toContain('internal.example');
     expect(stub.requests.filter((req) => !req.path.endsWith('.ed25519'))).toHaveLength(1);
+  });
+
+  it('aborts an oversized manifest at the streaming ceiling', async () => {
+    // The maxBytes argument is new with the guard, and it fires DURING the
+    // response stream — so it pre-empts fetchSmallBuffer's own post-hoc length
+    // checks rather than being backed by them. Pin that the overrun surfaces as
+    // a thrown ResponseTooLargeError (never a truncated buffer handed onward to
+    // signature verification, which is the dangerous way to fail here).
+    const asset = Buffer.from('trusted-github-msi');
+    const signed = makeSignedManifest('breeze-agent.msi', asset);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    const oversized = Buffer.alloc(1024 * 1024 + 1, 0x61);
+    const stub = installRequestStub((req) =>
+      pathWithoutQuery(req.path).endsWith('.ed25519')
+        ? { status: 200, body: signed.signature }
+        : { status: 200, body: oversized },
+    );
+    restoreRequests = stub.restore;
+
+    const err = await verifyAsset(asset).catch((error) => error);
+    expect(err).toBeInstanceOf(ResponseTooLargeError);
   });
 
   it('contains no raw fetch call and adopts the redirect-safe helper', () => {
     const servicesDir = dirname(fileURLToPath(import.meta.url));
     const source = readFileSync(join(servicesDir, 'releaseArtifactManifest.ts'), 'utf8');
 
+    // Bare `fetch(` — the exact shape that was reverted-to would look like.
     expect(source).not.toMatch(/(?<![.\w])fetch\s*\(/);
-    expect(source).toMatch(/safeFetchFollowingRedirects/);
+    // …and the qualified spellings the lookbehind above deliberately exempts,
+    // so `globalThis.fetch(url)` cannot reintroduce the hole past this guard.
+    expect(source).not.toMatch(/\b(?:globalThis|window|global)\s*\.\s*fetch\s*\(/);
+    // Positive half: the helper must actually be CALLED, not merely imported —
+    // an orphaned import would satisfy a bare identifier match.
+    expect(source).toMatch(/safeFetchFollowingRedirects\s*\(/);
   });
 });
