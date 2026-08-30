@@ -2,9 +2,22 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const store = new Map<string, string>();
 let getItemFailures = 0;
+/**
+ * Fails the NEXT read of the queue blob only. Counting getItem calls is brittle
+ * (the module reads more than one key), so tests arm this from inside a `send`
+ * callback to target the re-read at the end of a drain specifically.
+ */
+let failNextQueueRead = false;
+/** Keys whose setItem rejects, so a failed quarantine copy can be exercised. */
+const setItemFailKeys = new Set<string>();
 vi.mock('@react-native-async-storage/async-storage', () => ({
   default: {
     getItem: async (k: string) => {
+      // Literal, not the imported const: this factory is hoisted above imports.
+      if (failNextQueueRead && k === 'breeze.timeEntryQueue.v1') {
+        failNextQueueRead = false;
+        throw new Error('SQLite busy');
+      }
       if (getItemFailures > 0) {
         getItemFailures -= 1;
         throw new Error('SQLite busy');
@@ -12,6 +25,7 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
       return store.get(k) ?? null;
     },
     setItem: async (k: string, v: string) => {
+      if (setItemFailKeys.has(k)) throw new Error('SQLITE_FULL');
       store.set(k, v);
     },
     removeItem: async (k: string) => {
@@ -27,14 +41,33 @@ vi.mock('@sentry/react-native', () => ({
 }));
 
 import * as Sentry from '@sentry/react-native';
-import { enqueue, readQueue, drain, QUEUE_KEY, QUEUE_CORRUPT_KEY } from './timeEntryQueue';
+import {
+  enqueue,
+  readQueue,
+  drain,
+  QUEUE_KEY,
+  QUEUE_CORRUPT_KEY,
+} from './timeEntryQueue';
 import type { QueuedWrite } from './timeEntryQueue';
 
 beforeEach(() => {
   store.clear();
   getItemFailures = 0;
+  failNextQueueRead = false;
+  setItemFailKeys.clear();
   vi.clearAllMocks();
 });
+
+/** The `extra` bag of the most recent Sentry event, for payload assertions. */
+function lastSentryExtra(): Record<string, unknown> {
+  const calls = vi.mocked(Sentry.captureException).mock.calls;
+  expect(calls.length).toBeGreaterThan(0);
+  const context = calls[calls.length - 1][1] as
+    | { tags?: Record<string, unknown>; extra?: Record<string, unknown> }
+    | undefined;
+  expect(context?.tags).toEqual({ area: 'time-entry-queue' });
+  return context?.extra ?? {};
+}
 
 describe('timeEntryQueue', () => {
   it('replays writes in the order they were made', async () => {
@@ -376,5 +409,144 @@ describe('timeEntryQueue', () => {
     const [persisted] = await readQueue();
     expect(persisted.kind).toBe('create');
     expect(persisted.payload).toEqual(payload);
+  });
+  // --- Round two: the drop decision has to outlive the pass that made it. ---
+
+  it('never replays an orphaned stop on a LATER drain when its start was dropped', async () => {
+    // The drain stops on the transient `create`, so the stop is never visited
+    // in the pass that dropped its start — the in-pass skip cannot see it.
+    await enqueue({ kind: 'start', payload: { ticketId: 'gone' } });
+    await enqueue({ kind: 'create', payload: { durationMinutes: 30 } });
+    await enqueue({ kind: 'stop', payload: { isBillable: true } });
+
+    const first = await drain(async (w) => {
+      if (w.kind === 'start') throw Object.assign(new Error('gone'), { status: 404 });
+      if (w.kind === 'create') throw new Error('offline');
+    });
+    expect(first.dropped.map((d) => d.kind)).toEqual(['start', 'stop']);
+    // Only the create is left. A stop whose start is gone must not survive the
+    // pass that dropped it — the server stop is a CAS on "whatever this user
+    // has running" and would end an unrelated timer.
+    await expect(readQueue().then((q) => q.map((w) => w.kind))).resolves.toEqual(['create']);
+
+    const sends: string[] = [];
+    const second = await drain(async (w) => {
+      sends.push(w.kind);
+    });
+    expect(sends).toEqual(['create']);
+    expect(second).toMatchObject({ sent: 1, remaining: 0 });
+  });
+
+  it('drops a stop enqueued DURING the drain that dropped its start', async () => {
+    await enqueue({ kind: 'start', payload: { ticketId: 'gone' } });
+    const first = await drain(async (w) => {
+      if (w.kind === 'start') {
+        // The tech taps Stop while the replay is in flight.
+        await enqueue({ kind: 'stop', payload: { isBillable: true } });
+        throw Object.assign(new Error('gone'), { status: 404 });
+      }
+    });
+    expect(first.dropped.map((d) => d.kind)).toEqual(['start', 'stop']);
+    expect(first).toMatchObject({ sent: 0, remaining: 0 });
+    await expect(readQueue()).resolves.toEqual([]);
+
+    const sends: string[] = [];
+    await drain(async (w) => {
+      sends.push(w.kind);
+    });
+    expect(sends).toEqual([]);
+  });
+
+  it('keeps a stop whose EARLIER start landed when a later start was rejected', async () => {
+    // startTimer auto-stops the previous timer, so after both starts replay the
+    // running entry is B. If B is rejected, A is still running and this stop
+    // legitimately closes it — discarding the stop leaves A open forever.
+    await enqueue({ kind: 'start', payload: { ticketId: 'a' } });
+    await enqueue({ kind: 'start', payload: { ticketId: 'b' } });
+    await enqueue({ kind: 'stop', payload: { isBillable: true } });
+
+    const sends: string[] = [];
+    const result = await drain(async (w) => {
+      sends.push(`${w.kind}:${String(w.payload.ticketId ?? '')}`);
+      if (w.payload.ticketId === 'b') throw Object.assign(new Error('gone'), { status: 404 });
+    });
+    expect(sends).toEqual(['start:a', 'start:b', 'stop:']);
+    expect(result.dropped.map((d) => d.payload.ticketId)).toEqual(['b']);
+    expect(result).toMatchObject({ sent: 2, remaining: 0 });
+  });
+
+  it('does not re-send transmitted writes when the drain final re-read fails', async () => {
+    await enqueue({ kind: 'create', payload: { durationMinutes: 30 } });
+    await enqueue({ kind: 'create', payload: { durationMinutes: 45 } });
+
+    const firstSends: number[] = [];
+    const first = await drain(async (w) => {
+      firstSends.push(w.payload.durationMinutes as number);
+      // Storage goes busy exactly when the drain goes to reconcile the queue.
+      if (w.payload.durationMinutes === 45) failNextQueueRead = true;
+    });
+    expect(firstSends).toEqual([30, 45]);
+    expect(first.sent).toBe(2);
+
+    // A duplicate create is a duplicate billable line on the customer invoice.
+    const secondSends: number[] = [];
+    const second = await drain(async (w) => {
+      secondSends.push(w.payload.durationMinutes as number);
+    });
+    expect(secondSends).toEqual([]);
+    expect(second).toMatchObject({ sent: 0, remaining: 0 });
+  });
+
+  it('a write enqueued during a drain whose re-read fails is still replayed', async () => {
+    await enqueue({ kind: 'create', payload: { durationMinutes: 30 } });
+    await drain(async (w) => {
+      if (w.payload.durationMinutes === 30) {
+        await enqueue({ kind: 'create', payload: { durationMinutes: 15 } });
+        failNextQueueRead = true;
+      }
+    });
+    const sends: number[] = [];
+    await drain(async (w) => {
+      sends.push(w.payload.durationMinutes as number);
+    });
+    expect(sends).toEqual([15]);
+  });
+
+  it('refuses to report a quarantine that did not happen, and keeps the bytes', async () => {
+    setItemFailKeys.add(QUEUE_CORRUPT_KEY);
+    store.set(QUEUE_KEY, '[{"id":"a","kind":"sta');
+
+    // Returning [] here would let the very next write destroy the only copy of
+    // the rows while Sentry claims they were parked.
+    await expect(readQueue()).rejects.toThrow(/unreadable/i);
+    expect(lastSentryExtra()).toMatchObject({ reason: 'unparseable-queue', parked: false });
+
+    await expect(enqueue({ kind: 'stop', payload: {} })).rejects.toThrow(/unreadable/i);
+    expect(store.get(QUEUE_KEY)).toBe('[{"id":"a","kind":"sta');
+  });
+
+  it('reports parked:true when the corrupt blob really was copied aside', async () => {
+    store.set(QUEUE_KEY, '[{"id":"a","kind":"sta');
+    await expect(readQueue()).resolves.toEqual([]);
+    expect(lastSentryExtra()).toMatchObject({ reason: 'unparseable-queue', parked: true });
+    expect(store.get(QUEUE_CORRUPT_KEY)).toBe('[{"id":"a","kind":"sta');
+  });
+  it('honours a dependsOn persisted by the first build as a bare string', async () => {
+    // Rows already on a tester's phone were written before dependsOn became a
+    // list; losing the link on upgrade would send those stops as orphans.
+    store.set(
+      QUEUE_KEY,
+      JSON.stringify([
+        { id: 'a', kind: 'start', payload: { ticketId: 'gone' }, queuedAt: '2026-08-29T00:00:00.000Z', attempts: 0 },
+        { id: 'b', kind: 'stop', payload: {}, queuedAt: '2026-08-29T01:00:00.000Z', attempts: 0, dependsOn: 'a' },
+      ])
+    );
+    const sends: string[] = [];
+    const result = await drain(async (w) => {
+      sends.push(w.id);
+      if (w.id === 'a') throw Object.assign(new Error('gone'), { status: 404 });
+    });
+    expect(sends).toEqual(['a']);
+    expect(result.dropped.map((d) => d.id)).toEqual(['a', 'b']);
   });
 });
