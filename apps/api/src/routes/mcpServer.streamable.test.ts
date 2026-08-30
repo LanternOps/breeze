@@ -16,6 +16,8 @@ const envState = vi.hoisted(() => ({
   oauthIssuer: 'https://us.example.com',
 }));
 
+const redisState = vi.hoisted(() => ({ available: true }));
+
 vi.mock('../config/env', () => ({
   get MCP_OAUTH_ENABLED() { return envState.oauthEnabled; },
   get OAUTH_ISSUER() { return envState.oauthIssuer; },
@@ -127,13 +129,15 @@ vi.mock('../services/auditEvents', () => ({
 // requests inside a single test so initialize→subsequent-call flows work.
 const __sessionStore = new Map<string, string>();
 vi.mock('../services/redis', () => ({
-  getRedis: () => ({
-    setex: vi.fn(async (k: string, _ttl: number, v: string) => {
-      __sessionStore.set(k, v);
-      return 'OK';
-    }),
-    get: vi.fn(async (k: string) => __sessionStore.get(k) ?? null),
-  }),
+  getRedis: () => redisState.available
+    ? {
+        setex: vi.fn(async (k: string, _ttl: number, v: string) => {
+          __sessionStore.set(k, v);
+          return 'OK';
+        }),
+        get: vi.fn(async (k: string) => __sessionStore.get(k) ?? null),
+      }
+    : null,
 }));
 vi.mock('../services/rate-limit', () => ({
   rateLimiter: (...args: any[]) => mocks.rateLimiter(...args),
@@ -152,6 +156,7 @@ describe('Streamable HTTP transport (POST /sse)', () => {
   beforeEach(() => {
     envState.oauthEnabled = true;
     envState.oauthIssuer = 'https://us.example.com';
+    redisState.available = true;
     __sessionStore.clear();
     mocks.executeTool.mockReset();
     mocks.getToolDefinitions.mockReset().mockReturnValue([]);
@@ -252,6 +257,191 @@ describe('Streamable HTTP transport (POST /sse)', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.error.code).toBe(-32001);
+  });
+
+  it('returns 404 for an unknown Mcp-Session-Id so the client re-initializes', async () => {
+    const app = appWithMcpRoutes();
+    const res = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': 'k',
+        'Mcp-Session-Id': 'mcp-deadbeefdeadbeefdeadbeefdeadbeef',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error.code).toBe(-32001);
+    expect(body.error.message).toMatch(/not found/i);
+  });
+
+  it('returns 404 when the session expired out of Redis (TTL lapse)', async () => {
+    const app = appWithMcpRoutes();
+    const init = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+    });
+    const sessionId = init.headers.get('mcp-session-id')!;
+    __sessionStore.delete(`mcp-session:${sessionId}`);
+
+    const res = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': 'k',
+        'Mcp-Session-Id': sessionId,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 404 (not 403) when the session belongs to a different principal, with a body identical to the unknown-session response', async () => {
+    const app = appWithMcpRoutes();
+    const unknownSessionId = 'mcp-deadbeefdeadbeefdeadbeefdeadbeef';
+    const mismatchSessionId = 'mcp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const requestWithSession = (sessionId: string) => app.request('/mcp/sse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': 'k',
+        'Mcp-Session-Id': sessionId,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+
+    const unknownResponse = await requestWithSession(unknownSessionId);
+    const unknownBody = await unknownResponse.json();
+    __sessionStore.set(`mcp-session:${mismatchSessionId}`, 'some-other-principal-key');
+    const mismatchResponse = await requestWithSession(mismatchSessionId);
+    const mismatchBody = await mismatchResponse.json();
+
+    expect(unknownResponse.status).toBe(404);
+    expect(mismatchResponse.status).toBe(404);
+    expect(mismatchBody).toEqual(unknownBody);
+    expect(mismatchBody.error.message).not.toMatch(/mismatch/i);
+  });
+
+  it('still returns 403 for a genuine authorization failure (missing ai:read scope), not 404', async () => {
+    const app = appWithMcpRoutes();
+    const init = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+    });
+    const sessionId = init.headers.get('mcp-session-id')!;
+    mocks.apiKeyAuthMiddleware.mockImplementationOnce(async (c: any, next: any) => {
+      setApiKeyContext(c, []);
+      return next();
+    });
+
+    const res = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': 'k',
+        'Mcp-Session-Id': sessionId,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error.code).toBe(-32001);
+  });
+
+  it('still returns 400 when the Mcp-Session-Id header is missing or not server-minted', async () => {
+    const app = appWithMcpRoutes();
+    const requestWithSession = (sessionId?: string) => app.request('/mcp/sse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': 'k',
+        ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}),
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+
+    const missingResponse = await requestWithSession();
+    const missingBody = await missingResponse.json();
+    const clientSuppliedResponse = await requestWithSession('client-supplied-id');
+    const clientSuppliedBody = await clientSuppliedResponse.json();
+
+    expect(missingResponse.status).toBe(400);
+    expect(missingBody.error.code).toBe(-32600);
+    expect(clientSuppliedResponse.status).toBe(400);
+    expect(clientSuppliedBody.error.code).toBe(-32600);
+  });
+
+  it('a 404 is recoverable: the client can re-initialize and the new session works', async () => {
+    const app = appWithMcpRoutes();
+    const firstInit = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+    });
+    const expiredSessionId = firstInit.headers.get('mcp-session-id')!;
+    __sessionStore.delete(`mcp-session:${expiredSessionId}`);
+
+    const expiredResponse = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': 'k',
+        'Mcp-Session-Id': expiredSessionId,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+    });
+    expect(expiredResponse.status).toBe(404);
+
+    const secondInit = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'initialize' }),
+    });
+    const newSessionId = secondInit.headers.get('mcp-session-id')!;
+    expect(newSessionId).not.toBe(expiredSessionId);
+
+    const recoveredResponse = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': 'k',
+        'Mcp-Session-Id': newSessionId,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/list' }),
+    });
+
+    expect(recoveredResponse.status).toBe(200);
+  });
+
+  it('returns 503, not 404, when the session store is unavailable', async () => {
+    const app = appWithMcpRoutes();
+    const init = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+    });
+    const sessionId = init.headers.get('mcp-session-id')!;
+    redisState.available = false;
+
+    const res = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': 'k',
+        'Mcp-Session-Id': sessionId,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+    });
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.error.code).toBe(-32000);
   });
 
   it('returns 400 for malformed JSON-RPC request', async () => {

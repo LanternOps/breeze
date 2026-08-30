@@ -17,7 +17,7 @@
  *   - prompts/get
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { Hono, type Context, type Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
@@ -636,12 +636,32 @@ mcpServerRoutes.post(
 // `(sessionId → principalKey)` in Redis, and return it in the same header.
 // Subsequent calls MUST present that server-minted ID and the stored
 // principalKey must match the caller's principalKey — otherwise the request
-// is rejected. This prevents an attacker from stamping arbitrary
-// `Mcp-Session-Id` values to muddy audit triage or merge their activity
-// into another principal's session (audit finding MCP MED-1).
+// is rejected before dispatch. This prevents an attacker from stamping
+// arbitrary `Mcp-Session-Id` values to muddy audit triage or merge their
+// activity into another principal's session (audit finding MCP MED-1).
+//
+// Rejection status codes (issue #3744):
+//   400 — header absent or not server-minted: the client sent something this
+//         transport can never accept, and re-initializing won't change that.
+//   404 — the header is well-formed but does not resolve to a session this
+//         principal owns: unknown, expired/terminated, OR owned by someone
+//         else. MCP Streamable HTTP (2025-06-18) Session Management rules 3-4
+//         make 404 the signal that tells a client to re-initialize; 403 reads
+//         as "authenticated but forbidden" and has no defined recovery, so a
+//         client that got it stayed broken until the process was restarted.
+//         The TTL below is never refreshed, so this is an ORDINARY event, not
+//         just an attack signal. The owned-by-someone-else case answers
+//         identically on purpose: a distinct status would confirm "this
+//         session id is live" for an id that leaked via logs, telemetry or a
+//         proxy, and that caller's only legitimate recovery is to
+//         re-initialize under its own principal anyway. The mismatch is still
+//         distinguished server-side via a warn log.
+//   503 — the session store is unreachable. Deliberately NOT 404: a Redis
+//         outage must not make every client re-initialize in a loop.
 //
 // The minted-session map is keyed in Redis under MCP_SESSION_PREFIX with a
-// short TTL (matches OAuth access-token lifetime plus a small buffer).
+// short TTL (matches OAuth access-token lifetime plus a small buffer). It is
+// intentionally NOT sliding — see #3744, which proposed no change to lifetime.
 const MCP_SESSION_REDIS_PREFIX = 'mcp-session:';
 const MCP_SERVER_SESSION_PREFIX = 'mcp-';
 const MCP_SESSION_TTL_SECONDS = envInt('MCP_SESSION_TTL_SECONDS', 11 * 60);
@@ -679,8 +699,8 @@ mcpServerRoutes.post(
           );
         } catch (err) {
           // If Redis is unreachable we still mint the id — subsequent calls
-          // will fail closed (no stored principal → 403), which is the
-          // correct safety behavior.
+          // will fail closed with 404 and the client will re-initialize, which
+          // is the correct safety behavior.
           console.warn('[MCP] Failed to persist Mcp-Session-Id mapping:', err);
         }
       }
@@ -722,15 +742,35 @@ mcpServerRoutes.post(
           503,
         );
       }
-      if (!storedPrincipal || storedPrincipal !== principalKey) {
-        return c.json(
+      // #3744: unknown/expired and owned-by-another-principal both answer 404
+      // with THIS EXACT body. Built once rather than twice on purpose — the
+      // "no session-existence oracle" property holds only while the two
+      // responses are indistinguishable, and two copies of a literal are two
+      // things a later edit can drift apart.
+      const sessionNotFound = () =>
+        c.json(
           {
             jsonrpc: '2.0',
             id: pre.body.id ?? null,
-            error: { code: -32001, message: 'Mcp-Session-Id principal mismatch' },
+            error: { code: -32001, message: 'Mcp-Session-Id not found' },
           },
-          403,
+          404,
         );
+      if (!storedPrincipal) {
+        // Unknown, or aged out of Redis via MCP_SESSION_TTL_SECONDS (never
+        // refreshed, so this is routine). 404 tells the client to re-initialize.
+        return sessionNotFound();
+      }
+      if (storedPrincipal !== principalKey) {
+        // Same response to the caller, but keep the operator signal: this is
+        // the MED-1 case and the only one worth alerting on. Log a short hash
+        // rather than the raw id so the log is not itself a session-id leak.
+        console.warn('[MCP] Mcp-Session-Id presented by a principal that does not own it:', {
+          sessionIdHash: createHash('sha256').update(sessionIdFromHeader).digest('hex').slice(0, 12),
+          presentedPrincipal: principalKey,
+          storedPrincipal,
+        });
+        return sessionNotFound();
       }
       trustedSessionId = sessionIdFromHeader;
     }
