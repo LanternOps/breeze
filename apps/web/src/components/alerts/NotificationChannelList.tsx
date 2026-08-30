@@ -201,8 +201,10 @@ export default function NotificationChannelList({
   const hasNoChannelsAtAll =
     channels.length === 0 && query.trim().length === 0 && typeFilter === 'all';
 
-  // Floor of 1: an empty list is still page 1 of 1, never page 1 of 0, and
-  // never a `safePage` of 0 that would slice from a negative index.
+  // Floor of 1 so an empty list reads as page 1 of 1 rather than page 1 of 0,
+  // and `safePage` below cannot land on 0. (The negative `startIndex` that a
+  // page of 0 produces is harmless against an empty array — it is the page
+  // COUNT that would be wrong, and it is what the pager renders.)
   const totalPages = Math.max(1, Math.ceil(filteredChannels.length / pageSize));
 
   // Render from a clamped page rather than trusting the stored one. Search and
@@ -467,11 +469,13 @@ export default function NotificationChannelList({
           </p>
           {/* The pager buttons hold only a lucide icon, and lucide-react
               stamps aria-hidden="true" on an icon with no children and no
-              aria-, role or title prop (the mechanism recorded in #3697). Without
-              a name on the button itself both controls were absent from the
-              accessibility tree — unreachable by name, and announced as an
-              unlabelled button. `common:actions.previousPage`/`nextPage` are
-              pager nouns rather than the navigation verbs in actions.back/next,
+              aria-, role or title prop (the mechanism recorded in #3697). The
+              buttons themselves stay in the accessibility tree — they are
+              native button elements — but the hidden icon was their only
+              naming source, so they had no accessible name at all:
+              unreachable by an accessible-name query, and announced as a bare
+              "button". `common:actions.previousPage`/`nextPage` are pager
+              nouns rather than the navigation verbs in actions.back/next,
               which is what a pager should announce (#4008). */}
           <div className="flex items-center gap-2">
             <button

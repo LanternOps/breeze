@@ -4,11 +4,15 @@ import '../../lib/i18n';
 import { describe, it, expect } from 'vitest';
 import NotificationChannelList, { type NotificationChannel } from './NotificationChannelList';
 
-function channels(count: number): NotificationChannel[] {
+function channels(
+  count: number,
+  type: NotificationChannel['type'] = 'email',
+  prefix = 'Channel'
+): NotificationChannel[] {
   return Array.from({ length: count }, (_, index) => ({
-    id: `ch-${index + 1}`,
-    name: `Channel ${String(index + 1).padStart(2, '0')}`,
-    type: 'email' as const,
+    id: `${prefix}-${index + 1}`,
+    name: `${prefix} ${String(index + 1).padStart(2, '0')}`,
+    type,
     enabled: true,
     config: {},
     createdAt: '2026-08-11T00:00:00Z',
@@ -17,9 +21,11 @@ function channels(count: number): NotificationChannel[] {
 }
 
 // #4008 — the pager buttons hold only a lucide icon, and lucide-react stamps
-// aria-hidden="true" on an icon with no children and no aria-*/role/title prop
-// (same mechanism as #3697). Without a name on the button itself the two
-// controls are absent from the accessibility tree entirely.
+// aria-hidden="true" on an icon with no children and no aria-, role or title
+// prop (same mechanism as #3697). The buttons stay in the accessibility tree —
+// they are native <button> elements — but the hidden icon is their only naming
+// source, so they had no accessible name at all: unreachable by an
+// accessible-name query, and announced as a bare "button".
 describe('NotificationChannelList pager — accessible names', () => {
   it('names the previous/next controls so they are reachable by role', () => {
     render(<NotificationChannelList channels={channels(11)} pageSize={10} />);
@@ -90,5 +96,53 @@ describe('NotificationChannelList — rows shrink underneath the current page (#
 
     expect(screen.getByText('Channel 01')).toBeInTheDocument();
     expect(screen.queryByText('Channel 11')).not.toBeInTheDocument();
+  });
+  it('survives the list emptying completely and refilling', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <NotificationChannelList channels={channels(11)} pageSize={10} onCreate={() => {}} />
+    );
+
+    await user.click(screen.getByRole('button', { name: /next page/i }));
+
+    // The zero-row trough. The empty-state copy alone does not discriminate
+    // here — an unfixed component renders the same thing, because a page-2
+    // slice of [] is empty for the same reason a page-1 slice is. What the
+    // floor of 1 on totalPages buys is the state left behind: without it
+    // `safePage` is min(2, 0) = 0, which the effect then writes back...
+    rerender(<NotificationChannelList channels={[]} pageSize={10} onCreate={() => {}} />);
+
+    expect(screen.getByText(/no notification channels yet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/adjusting your search/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /next page/i })).not.toBeInTheDocument();
+
+    // ...and a page of 0 slices from a negative index, so the list would come
+    // back EMPTY once rows returned. This assertion is what makes the trough
+    // worth testing.
+    rerender(<NotificationChannelList channels={channels(11)} pageSize={10} onCreate={() => {}} />);
+
+    expect(screen.getByText('Channel 01')).toBeInTheDocument();
+    expect(screen.getByText('Channel 10')).toBeInTheDocument();
+    expect(screen.queryByText(/adjusting your search/i)).not.toBeInTheDocument();
+  });
+
+  it('clamps against the FILTERED count, not the raw list length', async () => {
+    const user = userEvent.setup();
+    const slack = channels(5, 'slack', 'Slack');
+    const { rerender } = render(
+      <NotificationChannelList channels={[...channels(11), ...slack]} pageSize={10} />
+    );
+
+    // 11 email rows over two pages; the 5 slack rows are filtered out and must
+    // not prop up `totalPages` once an email row is deleted.
+    await user.selectOptions(screen.getByRole('combobox'), 'email');
+    await user.click(screen.getByRole('button', { name: /next page/i }));
+    expect(screen.getByText('Channel 11')).toBeInTheDocument();
+
+    rerender(<NotificationChannelList channels={[...channels(10), ...slack]} pageSize={10} />);
+
+    expect(screen.getByText('Channel 01')).toBeInTheDocument();
+    expect(screen.getByText('Channel 10')).toBeInTheDocument();
+    expect(screen.queryByText(/adjusting your search/i)).not.toBeInTheDocument();
   });
 });

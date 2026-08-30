@@ -4,11 +4,15 @@ import { describe, expect, it } from 'vitest';
 
 import ConfigPolicyList, { type ConfigPolicy } from './ConfigPolicyList';
 
-function policies(count: number): ConfigPolicy[] {
+function policies(
+  count: number,
+  status: ConfigPolicy['status'] = 'active',
+  prefix = 'Policy'
+): ConfigPolicy[] {
   return Array.from({ length: count }, (_, index) => ({
-    id: `policy-${index + 1}`,
-    name: `Policy ${String(index + 1).padStart(2, '0')}`,
-    status: 'active' as const,
+    id: `${prefix}-${index + 1}`,
+    name: `${prefix} ${String(index + 1).padStart(2, '0')}`,
+    status,
     orgId: '44444444-4444-4444-4444-444444444444',
     orgName: 'OliveTech',
   }));
@@ -81,5 +85,55 @@ describe('ConfigPolicyList — rows shrink underneath the current page (#4008)',
 
     expect(rowNames()).toHaveLength(10);
     expect(rowNames()[0]).toContain('Policy 01');
+  });
+  it('survives the list emptying completely and refilling', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <ConfigPolicyList policies={policies(11)} pageSize={10} />
+    );
+
+    await user.click(screen.getByTestId('config-policy-next-page'));
+
+    // The zero-row trough. The empty-state copy alone does not discriminate
+    // here — an unfixed component renders the same thing, because a page-2
+    // slice of [] is empty for the same reason a page-1 slice is. What the
+    // floor of 1 on totalPages buys is the state left behind: without it
+    // `safePage` is min(2, 0) = 0, which the effect then writes back...
+    rerender(<ConfigPolicyList policies={[]} pageSize={10} />);
+
+    expect(screen.getByText(/no configuration policies yet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/adjusting your search/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('config-policy-next-page')).not.toBeInTheDocument();
+
+    // ...and a page of 0 slices from a negative index, so the list would come
+    // back EMPTY once rows returned. This assertion is what makes the trough
+    // worth testing.
+    rerender(<ConfigPolicyList policies={policies(11)} pageSize={10} />);
+
+    expect(rowNames()).toHaveLength(10);
+    expect(rowNames()[0]).toContain('Policy 01');
+    expect(screen.queryByText(/adjusting your search/i)).not.toBeInTheDocument();
+  });
+
+  it('clamps against the FILTERED count, not the raw list length', async () => {
+    const user = userEvent.setup();
+    const inactive = policies(5, 'inactive', 'Retired');
+    const { rerender } = render(
+      <ConfigPolicyList policies={[...policies(11), ...inactive]} pageSize={10} />
+    );
+
+    // 11 active rows over two pages; the 5 inactive rows are filtered out and
+    // must not prop up `totalPages` once an active row is deleted.
+    await user.selectOptions(screen.getByRole('combobox'), 'active');
+    await user.click(screen.getByTestId('config-policy-next-page'));
+    expect(rowNames()[0]).toContain('Policy 11');
+
+    rerender(
+      <ConfigPolicyList policies={[...policies(10), ...inactive]} pageSize={10} />
+    );
+
+    expect(rowNames()).toHaveLength(10);
+    expect(rowNames()[0]).toContain('Policy 01');
+    expect(screen.queryByText(/adjusting your search/i)).not.toBeInTheDocument();
   });
 });

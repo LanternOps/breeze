@@ -110,8 +110,10 @@ export default function ConfigPolicyList({
   // distinguishes "the list is empty and the filters are untouched".
   const hasNoPoliciesAtAll =
     policies.length === 0 && query.trim().length === 0 && statusFilter === "all";
-  // Floor of 1: an empty list is still page 1 of 1, never page 1 of 0, and
-  // never a `safePage` of 0 that would slice from a negative index.
+  // Floor of 1 so an empty list reads as Page 1 of 1 rather than Page 1 of 0,
+  // and `safePage` below cannot land on 0. (The negative `startIndex` that a
+  // page of 0 produces is harmless against an empty array — it is the page
+  // COUNT that would be wrong, and it is what the pager renders.)
   const totalPages = Math.max(1, Math.ceil(filteredPolicies.length / pageSize));
   // Render from a clamped page rather than trusting the stored one. Search and
   // status changes reset the page, but nothing reconciled it with the row
