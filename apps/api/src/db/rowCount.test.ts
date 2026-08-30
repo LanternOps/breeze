@@ -133,16 +133,24 @@ describe('extractRowCount is the only row-count reader in apps/api', () => {
   /**
    * Why this guard exists
    * ---------------------
-   * This check was hand-rolled privately THIRTEEN times across `jobs/` and
+   * This check was hand-rolled privately FIFTEEN times across `jobs/` and
    * `services/` before #3894 consolidated them. One of those copies read the
    * node-postgres `.rowCount` off a postgres-js result, got 0 on every call,
    * and shipped a lock check that reported the exact opposite of the truth
    * (#3760); #3769 was the same failure mode in the other direction. The
    * canonical helper already carried a comment asking for consolidation and it
-   * was copied past nine more times, so a comment is not the control.
+   * was copied past eleven more times, so a comment is not the control.
    *
-   * The tell is always the same inline cast. Anything that needs a row count
-   * imports `extractRowCount` from `db/rowCount`; nothing re-declares the shape.
+   * The primary pattern matches the DISCRIMINATING TEST (`typeof x.rowCount ===
+   * 'number'`), not the cast that happens to precede it. An earlier draft of
+   * this guard keyed on the inline `as { rowCount?: number }` cast and PR review
+   * caught two copies it missed — `agentLogRetention` and `changeLogRetention`
+   * cast to `Record<string, unknown>` instead and slipped straight through. Any
+   * hand-rolled three-shape reader must perform the typeof test whatever it
+   * casts to, so that is what we key on.
+   *
+   * Anything that needs a row count imports `extractRowCount` from
+   * `db/rowCount`; nothing re-implements the shape check.
    */
   /** Files matching `pattern` under `apps/api/src`, excluding test files. */
   const filesMatching = (pattern: string): string[] => {
@@ -163,13 +171,15 @@ describe('extractRowCount is the only row-count reader in apps/api', () => {
     return stdout.split('\n').filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'));
   };
 
-  // The inline cast every private copy opened with.
-  const CAST_PATTERN = 'as (unknown as )?\\{[^}]*rowCount\\?: number';
+  // The discriminating test every hand-rolled reader must perform, whatever it
+  // casts `result` to first. Cast-style agnostic on purpose (see above).
+  const SHAPE_TEST_PATTERN = "typeof [A-Za-z_$][A-Za-z0-9_$]*\\??\\.rowCount === 'number'";
   // `ipHistoryRetention` used `(result as unknown as { count: number }).count ??
-  // result.length ?? 0`, which skipped the node-postgres shape entirely.
+  // result.length ?? 0` — it never tested `.rowCount`, so it would slip past the
+  // pattern above. Keyed on its cast instead.
   const COUNT_CAST_PATTERN = 'as unknown as \\{ count: number \\}';
 
-  let castMatches: string[];
+  let shapeTestMatches: string[];
   let countCastMatches: string[];
 
   // One `git grep` per pattern, shared by the assertions below. Generous
@@ -177,19 +187,19 @@ describe('extractRowCount is the only row-count reader in apps/api', () => {
   // take tens of seconds of wall time on ~1s of CPU, and a flaky structural
   // guard gets deleted rather than fixed.
   beforeAll(() => {
-    castMatches = filesMatching(CAST_PATTERN);
+    shapeTestMatches = filesMatching(SHAPE_TEST_PATTERN);
     countCastMatches = filesMatching(COUNT_CAST_PATTERN);
   }, 120_000);
 
   it('has a working grep — the canonical helper is found by its own pattern', () => {
     // Positive control. Without it, a typo'd regex or a broken `git grep`
     // invocation would make both guards below pass vacuously forever — which is
-    // the failure mode that let thirteen copies accumulate in the first place.
-    expect(castMatches).toContain('apps/api/src/db/rowCount.ts');
+    // the failure mode that let fifteen copies accumulate in the first place.
+    expect(shapeTestMatches).toContain('apps/api/src/db/rowCount.ts');
   });
 
   it('finds no re-hand-rolled driver row-count reader', () => {
-    expect(castMatches.filter((f) => f !== 'apps/api/src/db/rowCount.ts')).toEqual([]);
+    expect(shapeTestMatches.filter((f) => f !== 'apps/api/src/db/rowCount.ts')).toEqual([]);
   });
 
   it('finds no inline postgres-js `.count` cast', () => {

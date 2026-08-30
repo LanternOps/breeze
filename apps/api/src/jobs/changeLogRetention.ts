@@ -7,6 +7,7 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
+import { extractRowCount } from '../db/rowCount';
 import { deviceChangeLog } from '../db/schema';
 import { lt } from 'drizzle-orm';
 import { captureException } from '../services/sentry';
@@ -52,12 +53,7 @@ export function createChangeLogRetentionWorker(): Worker<RetentionJobData> {
           .delete(deviceChangeLog)
           .where(lt(deviceChangeLog.createdAt, cutoff));
 
-        const raw = result as unknown as Record<string, unknown>;
-        const deletedCount = typeof raw?.rowCount === 'number'
-          ? raw.rowCount
-          : typeof raw?.count === 'number'
-            ? raw.count
-            : Array.isArray(result) ? (result as unknown[]).length : 'unknown';
+        const deletedCount = extractRowCount(result);
 
         const durationMs = Date.now() - startTime;
         console.log(`[ChangeLogRetention] Pruned ${deletedCount} rows older than ${retentionDays} days in ${durationMs}ms`);
