@@ -29,6 +29,7 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
 import { useOrgStore } from '../../stores/orgStore';
+import { useOrgScope } from '../../hooks/useOrgScope';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
@@ -122,6 +123,33 @@ export default function DevicesPage() {
   // org picker); the page header no longer repeats it. orgStoreOrgs is still
   // used to name orgs in the run-script confirm dialog.
   const { organizations: orgStoreOrgs } = useOrgStore();
+
+  // #4147 — the list fetch carries no orgId of its own: fetchWithAuth injects
+  // the org store's selection synchronously at call time. Logout wipes the
+  // persisted `breeze-org` key, so on the FIRST load after a login the store is
+  // empty and only resolves once the shell's OrgSwitcher finishes its async
+  // fetchOrganizations. A fetch fired at mount therefore went out with no
+  // orgId — the API reads that as "every accessible org" — and nothing ever
+  // refetched, so the list stayed fleet-wide while the switcher pill showed a
+  // single org. (Re-picking an org only "fixed" it because applyOrgSwitch does
+  // a full window.location.reload, by which point the org IS persisted and
+  // rehydrates synchronously.)
+  //
+  // So key the fetch on the RESOLVED scope rather than on mount: hold while the
+  // context is still loading, then fetch — and refetch — whenever the scope
+  // changes. Deliberately keyed, not merely gated: a gate alone would still
+  // leave a resolved-later change unobserved.
+  const orgScope = useOrgScope();
+  const orgScopeResolving = orgScope.status === 'loading';
+  // Prefixed so an org id can never collide with a status/fleet sentinel.
+  // 'error'/'empty' are terminal, not transient: no selection is ever coming,
+  // so they must still fetch (unscoped) rather than spin forever.
+  const orgScopeKey =
+    orgScope.status !== 'resolved'
+      ? `status:${orgScope.status}`
+      : orgScope.scope === 'all'
+        ? 'scope:all'
+        : `org:${orgScope.orgId}`;
 
   const [devices, setDevices] = useState<Device[]>([]);
   const [orgs, setOrgs] = useState<Org[]>([]);
@@ -572,10 +600,15 @@ export default function DevicesPage() {
   }, [t]);
 
   useEffect(() => {
+    // Org context not resolved yet (#4147). Issuing the request now would send
+    // it unscoped; `loading` is the sub-second window before the shell's
+    // OrgSwitcher resolves the org list, and the page is already showing its
+    // initial loading state, so nothing is gained by racing it.
+    if (orgScopeResolving) return;
     const controller = new AbortController();
     fetchDevices(controller.signal);
     return () => controller.abort();
-  }, [fetchDevices]);
+  }, [fetchDevices, orgScopeResolving, orgScopeKey]);
 
   const handleGroupCreated = useCallback(async (newGroupId: string) => {
     setShowCreateGroup(false);
