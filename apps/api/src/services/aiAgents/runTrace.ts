@@ -24,6 +24,7 @@ import type {
   TicketProposalOutcome,
 } from './runLoop';
 import { projectAlertVerdict } from './alertVerdicts';
+import { projectNarrative } from './narrativeReport';
 import { projectSweep } from './sweepFindings';
 import {
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
@@ -65,6 +66,14 @@ export interface RunTraceRunInput {
    */
   triggerRef: Record<string, unknown>;
   /**
+   * Phase 2 wave P2-3 (weekly org narrative), Task A7 — the `report_runs`
+   * artifact this run's narrative was materialised into (`ON DELETE SET
+   * NULL`, so it goes back to `null` if the artifact is later deleted).
+   * `null` for every other profile and for a narrative run whose persistence
+   * never committed.
+   */
+  reportRunId: string | null;
+  /**
    * The raw `ai_agent_runs.outcome` jsonb column — typed `Record<string,
    * unknown>` at the schema layer (see aiAgents.ts) because Postgres jsonb
    * carries no compile-time shape. Treated here as a `Partial<AgentRunOutcome>`
@@ -101,6 +110,20 @@ export interface RunTraceLedgerRowInput {
   createdAt: Date;
   completedAt: Date | null;
   errorMessage: string | null;
+}
+
+/**
+ * Phase 2 wave P2-3, Task A7 — the three scalars the narrative DTO needs off
+ * the linked `report_runs` artifact, projected out of its stored jsonb by
+ * Postgres (`narrativeArtifactProjection`, narrativeReport.ts) so the route
+ * never drags the whole result document — markdown included — across the wire
+ * to read them. `null` when the run links no artifact.
+ */
+export interface RunTraceNarrativeArtifactInput {
+  reportId: string | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+  contextTruncated: boolean;
 }
 
 /** The safe-projected subset of one linked `action_intents` row. */
@@ -223,6 +246,10 @@ export function buildRunTrace(
   // so every non-sweep caller is unchanged; a missing id projects a `null`
   // hostname rather than dropping the finding.
   deviceHostnames: ReadonlyMap<string, string> = new Map(),
+  // Phase 2 wave P2-3, Task A7 — the linked narrative artifact's scalars, or
+  // `null` for every run that has none. Defaults null so every existing caller
+  // is unchanged.
+  narrativeArtifact: RunTraceNarrativeArtifactInput | null = null,
 ): AiAgentRunDetailDto {
   const outcome = run.outcome as Partial<AgentRunOutcome>;
   return {
@@ -266,5 +293,17 @@ export function buildRunTrace(
     // `proposedAction` args on each finding are never carried; only the
     // proposal's disposition and, when one exists, its PENDING intent id.
     sweep: projectSweep(run, outcome, deviceHostnames),
+    // Phase 2 wave P2-3 (weekly org narrative), Task A7: null for every
+    // non-narrative run and for a narrative run that produced nothing — see
+    // `projectNarrative`'s own safe-projection contract. The weekly
+    // `NarrativeContext` the run was built from is a whole org's activity and
+    // is never carried here (nor persisted at all); the derived markdown is
+    // deliberately left out too, since the detail view renders the structured
+    // sections itself.
+    narrative: projectNarrative(run, outcome, narrativeArtifact),
+    // Duplicated from `narrative.reportRunId` so a caller that only wants to
+    // know "is there a downloadable artifact" doesn't have to reach through a
+    // nullable sub-object. Read from the typed COLUMN, not the outcome jsonb.
+    reportRunId: run.reportRunId ?? null,
   };
 }

@@ -30,7 +30,8 @@ export type OrgMergePolicy =
   | { kind: 'loser-shell' }; // organizations itself
 
 // device_commands / user_sso_identities / sso_sessions / psa_ticket_mappings /
-// deployment_results / software_versions have no org_id column of their own:
+// deployment_results / software_versions / report_runs have no org_id column
+// of their own:
 // tenancy is inferred by joining to a parent row, so once the parent's
 // org_id is repointed these rows travel along for free — the merge engine
 // does nothing to them directly.
@@ -55,6 +56,7 @@ const FOLLOWS_PARENT_NOTES: Readonly<Record<string, string>> = {
   psa_ticket_mappings: 'connection/alert/device-keyed',
   deployment_results: 'deployment-keyed',
   software_versions: 'parent-keyed (software_catalog)',
+  report_runs: 'parent-keyed (reports)',
 };
 const FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS = new Set(['software_deployments']);
 

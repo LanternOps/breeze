@@ -136,6 +136,7 @@ import { isSweepProfile, sweepLimits, sweepToolAllowlist } from './sweepProfile'
 import { isNarrativeProfile, narrativeLimits, narrativeToolAllowlist } from './narrativeProfile';
 import { loadSweepEvidence, type SweepEvidence } from './sweepEvidence';
 import { loadNarrativeContext, type NarrativeContext } from './narrativeContext';
+import { NarrativePersistConflictError, persistNarrativeReport } from './narrativeReport';
 import { persistAlertVerdict, type AlertVerdictIntentInfo } from './alertVerdicts';
 import { persistSweepFindings, type SweepProposalRecord } from './sweepFindings';
 
@@ -321,6 +322,20 @@ export interface AgentRunOutcome {
    * `ai_agent_runs.report_run_id` — NOTHING here executes.
    */
   narrative?: NarrativeOutcome;
+  /**
+   * Phase 2 wave P2-3, Task A7 — the system-authored report the narrative was
+   * materialised into, written by `finalizeNarrative` once
+   * `persistNarrativeReport`'s transaction committed. Absent for every other
+   * profile, for a narrative run that produced nothing, and for one whose
+   * persistence lost the CAS (in which case the run's `error_code` says so).
+   *
+   * TWO ids and nothing else. `runFinishedNotify` reads exactly this to build
+   * the notification's `metadata.narrative`, and the run-detail route reads
+   * `ai_agent_runs.report_run_id` (the typed column) rather than this jsonb —
+   * so nothing downstream is tempted to grow a copy of the narrative, let
+   * alone of the weekly context, on the run row.
+   */
+  narrativeReport?: { reportId: string; reportRunId: string };
 }
 
 /** Error carrying the short code that lands in `ai_agent_runs.error_code` (varchar(64)). */
@@ -1881,16 +1896,14 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // run or a sweep run, never both, so at most one of these two codes is
     // ever non-null.
     const sweepErrorCode = await finalizeSweep(ctx, result);
-    // Task A7 (wave P2-3) — `finalizeNarrative` goes HERE, third in the same
-    // row and for the same reason: it persists the narrative as a
-    // system-authored report artifact and links `ai_agent_runs.report_run_id`
-    // BEFORE the awaiting_approval/completed decision below, and before
-    // `finishRun` emits the notification that points at that artifact. A run
+    // Task A7 (wave P2-3) — third in the same row and for the same reason: it
+    // persists the narrative as a system-authored report artifact and links
+    // `ai_agent_runs.report_run_id` BEFORE the awaiting_approval/completed
+    // decision below, and — the ordering that actually matters here — before
+    // `finishRun` emits the notification that POINTS AT that artifact. A run
     // is exactly one of verdict / sweep / narrative, so at most one of the
-    // three error codes is ever non-null:
-    //   const narrativeErrorCode = await finalizeNarrative(ctx, result);
-    // …and the `finishRun` call below becomes
-    // `verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode`.
+    // three error codes below is ever non-null.
+    const narrativeErrorCode = await finalizeNarrative(ctx, result);
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
@@ -1954,7 +1967,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
     await finishRun(
       ctx,
       intentIds.length > 0 ? 'awaiting_approval' : 'completed',
-      verdictErrorCode ?? sweepErrorCode,
+      verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode,
       result,
     );
   } catch (error) {
@@ -2153,6 +2166,87 @@ async function finalizeSweep(ctx: RunContext, result: LoopResult): Promise<strin
   } catch (error) {
     console.error('[aiAgentRunLoop] failed to persist sweep findings', { runId: ctx.run.id, error });
     return 'sweep_persist_failed';
+  }
+}
+
+/**
+ * Phase 2 wave P2-3 (weekly org narrative), Task A7 — the narrative sibling of
+ * `finalizeVerdict`/`finalizeSweep` above, called from the SAME place in
+ * `executeAgentRun` and outside any ambient DB context (`persistNarrativeReport`
+ * opens its own system transaction and would take a second pooled connection
+ * from inside one).
+ *
+ * Returns an errorCode override the caller applies ONLY on the normal-finish
+ * path, exactly as it does for the two siblings'.
+ *
+ * A narrative run that produced NOTHING is an error, unlike a sweep that found
+ * nothing: a sweep legitimately reports "all clear", but the narrative IS the
+ * deliverable — an occurrence that yields no document is a silent hole in a
+ * weekly series an MSP forwards to their customer, and `narrative_missing` is
+ * what makes that visible on the run row instead of a clean `completed` with
+ * nothing behind it.
+ *
+ * `narrative_no_schedule` is deliberately separate from a persistence failure:
+ * the definition's identity IS `(org_id, source_ai_agent_schedule_id)`, so
+ * without a schedule there is no row to find-or-create and no idempotency at
+ * all — a manually triggered narrative run would mint a fresh definition every
+ * time. Refusing is the conservative answer; the narrative still lives on the
+ * run's own outcome and renders on the run-detail page.
+ */
+async function finalizeNarrative(ctx: RunContext, result: LoopResult): Promise<string | null> {
+  if (!isNarrativeProfile(ctx.run)) return null;
+  const { outcome } = result;
+
+  if (!outcome.narrative) return 'narrative_missing';
+  if (!ctx.narrative?.scheduleId) {
+    console.warn('[aiAgentRunLoop] narrative run carries no schedule — not persisting a report definition', {
+      runId: ctx.run.id, orgId: ctx.run.orgId,
+    });
+    return 'narrative_no_schedule';
+  }
+
+  // Same IMPORTANT-4 re-read both siblings carry: the stall reaper
+  // (`reapStalledAgentRuns`) or a second executor may have moved this run out
+  // of `running` while the SDK loop was in flight. Skip rather than publish a
+  // customer-facing artifact under a run nobody owns any more. (A tiny window
+  // remains between this read and the transaction below — closed properly
+  // there, by the `FOR UPDATE` lock plus the `report_run_id IS NULL` CAS.)
+  const stillRunning = await isRunStillRunning(ctx.run.id, ctx.run.orgId);
+  if (!stillRunning) {
+    console.warn('[aiAgentRunLoop] skipped narrative persistence — run left `running` before it could be persisted', {
+      runId: ctx.run.id,
+    });
+    return null;
+  }
+
+  try {
+    const { reportId, reportRunId } = await persistNarrativeReport({
+      run: {
+        id: ctx.run.id,
+        orgId: ctx.run.orgId,
+        agentId: ctx.run.agentId,
+        scheduleId: ctx.narrative.scheduleId,
+      },
+      agent: { id: ctx.agent.id, name: ctx.agent.name },
+      occurrenceKey: ctx.narrative.occurrenceKey || null,
+      context: ctx.narrative.context,
+      outcome: outcome.narrative,
+    });
+    // TWO ids, never the narrative or the context — see the field's docstring.
+    outcome.narrativeReport = { reportId, reportRunId };
+    return null;
+  } catch (error) {
+    if (error instanceof NarrativePersistConflictError) {
+      // A race that resolved correctly (another executor linked an artifact,
+      // or the run moved) — logged at warn, not error, and given its own code
+      // so it is distinguishable from a genuine write failure on the run row.
+      console.warn('[aiAgentRunLoop] narrative artifact was not linked to this run', {
+        runId: ctx.run.id, reason: (error as Error).message,
+      });
+      return 'narrative_persist_conflict';
+    }
+    console.error('[aiAgentRunLoop] failed to persist the narrative report', { runId: ctx.run.id, error });
+    return 'narrative_persist_failed';
   }
 }
 

@@ -2707,6 +2707,67 @@ describe('Wave P2-3 · a system-authored report carries no acting user', () => {
     ).toBe(404);
   });
 
+  /**
+   * Task A7 (#4190). `GET /reports/runs` has NO per-row `decodeSiteScope`
+   * pass — unlike the known-ID detail and download routes, which re-decode the
+   * row they fetched. Its SQL predicate is therefore the ONLY gate, and the
+   * widening that lets an org-wide reader see a system-authored artifact must
+   * not spill onto a site-restricted one.
+   */
+  runDb('the run LIST predicate hides a system-authored run from a site-restricted reader', async () => {
+    const f = await buildFixture();
+    const reportId = await seedReport({
+      orgId: f.orgA,
+      name: 'listed narrative',
+      scope: { kind: 'system' },
+      createdBy: null,
+    });
+    const systemRunId = await seedRun({ reportId, orgId: f.orgA, scope: { kind: 'system' } });
+    // A run the site-restricted reader CAN see, so an empty list would not
+    // pass this test by accident.
+    const visibleReportId = await seedReport({
+      orgId: f.orgA,
+      name: 'listed site report',
+      scope: { kind: 'restricted', userId: f.siteAUser.id, siteIds: [f.siteA1] },
+      createdBy: f.siteAUser.id,
+    });
+    const visibleRunId = await seedRun({
+      reportId: visibleReportId,
+      orgId: f.orgA,
+      scope: { kind: 'restricted', userId: f.siteAUser.id, siteIds: [f.siteA1] },
+    });
+    const app = buildApp();
+
+    // Non-vacuity: the pre-wave org-only join reaches BOTH rows.
+    expect(
+      await scalar<number>(sql`
+        SELECT count(*)::int FROM report_runs r
+          JOIN reports p ON p.id = r.report_id
+         WHERE p.org_id = ${f.orgA}::uuid
+      `),
+    ).toBe(2);
+
+    const restricted = await app.request('/reports/runs?limit=50', authed(f.siteAUser.token));
+    expect(restricted.status).toBe(200);
+    const restrictedBody = (await restricted.json()) as {
+      data: Array<{ id: string }>; pagination: { total: number };
+    };
+    const restrictedIds = restrictedBody.data.map((row) => row.id);
+    expect(restrictedIds).toContain(visibleRunId);
+    expect(restrictedIds).not.toContain(systemRunId);
+    // The paging total must agree with the rows — a count query that forgot
+    // the predicate would leak the row's existence even while hiding it.
+    expect(restrictedBody.pagination.total).toBe(1);
+
+    // Control: the org-wide reader DOES get it, so the exclusion above is the
+    // site restriction and not a blanket hide.
+    const unrestricted = await app.request('/reports/runs?limit=50', authed(f.unrestrictedUser.token));
+    expect(unrestricted.status).toBe(200);
+    const unrestrictedIds = ((await unrestricted.json()) as { data: Array<{ id: string }> })
+      .data.map((row) => row.id);
+    expect(unrestrictedIds).toContain(systemRunId);
+  });
+
   runDb('breeze_app cannot forge a system-principal report into another organization', async () => {
     const f = await buildFixture();
     const appDb = getAppDb();

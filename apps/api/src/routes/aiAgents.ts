@@ -18,7 +18,8 @@ import {
 import { zValidator } from '../lib/validation';
 import { db } from '../db';
 import {
-  actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations, type AiAgentRow,
+  actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
+  reportRuns, reports, type AiAgentRow,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { policyDecideEnabled } from '../config/env';
@@ -39,6 +40,7 @@ import { SUPPORTED_AGENT_MODES } from '../services/aiAgents/constants';
 import { buildRunTrace } from '../services/aiAgents/runTrace';
 import { recordVerdictFeedback } from '../services/aiAgents/alertVerdicts';
 import { sweepFindingDeviceIds } from '../services/aiAgents/sweepFindings';
+import { narrativeArtifactProjection } from '../services/aiAgents/narrativeReport';
 import {
   buildRunsKeysetPredicate, decodeRunsCursor, encodeRunsCursor, runsCursorFromRow,
 } from '../services/aiAgents/runsListCursor';
@@ -495,6 +497,12 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       // provenance; `null`/`{}` for every non-sweep run.
       scheduleId: aiAgentRuns.scheduleId,
       triggerRef: aiAgentRuns.triggerRef,
+      // Phase 2 wave P2-3 (weekly org narrative), Task A7 — the report_runs
+      // artifact a narrative run was materialised into. The TYPED column, not
+      // `outcome.narrativeReport`: the FK is `ON DELETE SET NULL`, so this is
+      // the only representation that goes back to null when the artifact is
+      // deleted.
+      reportRunId: aiAgentRuns.reportRunId,
       outcome: aiAgentRuns.outcome,
       intentIds: aiAgentRuns.intentIds,
       turnCount: aiAgentRuns.turnCount,
@@ -585,6 +593,39 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     : [];
   const deviceHostnames = new Map(hostnameRows.map((row) => [row.id, row.hostname]));
 
+  // Phase 2 wave P2-3 (weekly org narrative), Task A7 — the linked narrative
+  // artifact's provenance scalars (period + context-truncation), projected out
+  // of `report_runs.result` BY POSTGRES rather than pulled whole: that jsonb
+  // carries the full rendered markdown, which the run-detail DTO deliberately
+  // does not ship. Skipped entirely for every run that links no artifact.
+  //
+  // The join to `reports` is what carries the tenancy: `report_runs` has no
+  // `org_id` of its own, so the org pin lives on its parent definition. Both
+  // predicates are load-bearing for the same reason the hostname read's two
+  // are — `eq(reports.orgId, run.orgId)` pins the artifact to the RUN's org
+  // (a partner-scoped caller's accessible set spans siblings), and
+  // `auth.orgCondition` stays as defence-in-depth beside RLS.
+  const [narrativeArtifactRow] = run.reportRunId
+    ? await db
+      .select(narrativeArtifactProjection)
+      .from(reportRuns)
+      .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+      .where(and(
+        eq(reportRuns.id, run.reportRunId),
+        eq(reports.orgId, run.orgId),
+        auth.orgCondition(reports.orgId),
+      ))
+      .limit(1)
+    : [];
+  const narrativeArtifact = narrativeArtifactRow
+    ? {
+      reportId: narrativeArtifactRow.reportId ?? null,
+      periodStart: narrativeArtifactRow.periodStart ?? null,
+      periodEnd: narrativeArtifactRow.periodEnd ?? null,
+      contextTruncated: narrativeArtifactRow.contextTruncated === true,
+    }
+    : null;
+
   // Both fields come from the same left-joined ai_agents row, so they are
   // either both present or both null together.
   const agent = run.agentName !== null && run.agentKind !== null
@@ -597,6 +638,7 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     ledgerRows,
     intentRows,
     deviceHostnames,
+    narrativeArtifact,
   );
   return c.json({ data: detail });
 });

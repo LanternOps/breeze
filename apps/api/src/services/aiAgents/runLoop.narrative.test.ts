@@ -33,6 +33,8 @@ const USER_A = '00000000-0000-4000-8000-0000000000c8';
 const ALERT_ID = '00000000-0000-4000-8000-0000000000c9';
 const SCHEDULE_ID = '00000000-0000-4000-8000-0000000000e1';
 const OCCURRENCE_KEY = '2026-08-31T07:00:00+02:00';
+const REPORT_ID = '00000000-0000-4000-8000-0000000000e2';
+const REPORT_RUN_ID = '00000000-0000-4000-8000-0000000000e3';
 
 interface Hooks {
   getAuth?: () => unknown;
@@ -215,6 +217,19 @@ vi.mock('./sweepEvidence', () => ({ loadSweepEvidence }));
 const loadNarrativeContext = vi.hoisted(() => vi.fn<(orgId: string) => Promise<unknown>>());
 vi.mock('./narrativeContext', () => ({ loadNarrativeContext }));
 
+// Task A7 — `persistNarrativeReport` is mocked at the module boundary (its own
+// suite, narrativeReport.test.ts, drives the transaction and every compiled
+// predicate). What THIS file owns is the run loop's contract with it: called
+// only for a narrative run that produced something, called with the run's own
+// ids, its error taxonomy mapped onto the run's errorCode, and — the ordering
+// that matters — the notification emitted only AFTER it resolved.
+const persistNarrativeReport = vi.hoisted(() =>
+  vi.fn<(input: unknown) => Promise<{ reportId: string; reportRunId: string; downloadPath: string }>>());
+vi.mock('./narrativeReport', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./narrativeReport')>();
+  return { ...actual, persistNarrativeReport };
+});
+
 const resolveRecipientUserIds = vi.hoisted(() =>
   vi.fn<(agent: unknown, orgId: string) => Promise<string[]>>(async () => []));
 vi.mock('./recipients', () => ({ resolveRecipientUserIds }));
@@ -243,6 +258,7 @@ vi.mock('../aiCostTracker', () => ({ recordSessionlessSdkUsage, calculateCostCen
 
 import { createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun } from './runLoop';
 import type { AgentRunOutcome } from './runLoop';
+import { NarrativePersistConflictError } from './narrativeReport';
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -479,6 +495,9 @@ beforeEach(() => {
   persistAlertVerdict.mockResolvedValue({ verdictId: 'v-1', intentId: null, suggestionDisposition: 'not_created' });
   getCachedAiKillStateSnapshot.mockReturnValue({ killed: false, epoch: 0 });
   loadSweepEvidence.mockResolvedValue({ kinds: {}, truncated: false });
+  persistNarrativeReport.mockResolvedValue({
+    reportId: REPORT_ID, reportRunId: REPORT_RUN_ID, downloadPath: `/api/reports/runs/${REPORT_RUN_ID}/download`,
+  });
   loadNarrativeContext.mockImplementation(async () => {
     dbMockState.narrativeContextScopes.push(dbMockState.ambientContext?.scope);
     return NARRATIVE_CONTEXT;
@@ -827,5 +846,141 @@ describe('notify / fix-watch split at finish (P2-3)', () => {
     expect(finalTransition()?.to).toBe('completed');
     expect(resolveRecipientUserIds).toHaveBeenCalled();
     expect(scheduleFixWatch).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task A7 — `finalizeNarrative`: persisting the narrative as a system-authored
+// report artifact, linking the run, and the error taxonomy that lands in
+// `ai_agent_runs.error_code`.
+// ---------------------------------------------------------------------------
+describe('finalizeNarrative (P2-3, task A7)', () => {
+  function submittedRun(): void {
+    scriptQuery({
+      toolCalls: [{ tool: 'submit_narrative', input: VALID_SUBMISSION }],
+      assistantText: 'Narrative written.',
+    });
+  }
+
+  it('persists the artifact with the run/agent/schedule identity and records the linkage on the outcome', async () => {
+    seedRows();
+    submittedRun();
+
+    await executeAgentRun(RUN_ID);
+
+    expect(persistNarrativeReport).toHaveBeenCalledTimes(1);
+    const input = persistNarrativeReport.mock.calls[0]![0] as {
+      run: Record<string, unknown>;
+      agent: Record<string, unknown>;
+      occurrenceKey: string | null;
+      context: unknown;
+      outcome: { headline: string };
+    };
+    expect(input.run).toEqual({
+      id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, scheduleId: SCHEDULE_ID,
+    });
+    expect(input.agent).toEqual({ id: AGENT_ID, name: 'Weekly Narrator' });
+    expect(input.occurrenceKey).toBe(OCCURRENCE_KEY);
+    expect(input.context).toBe(NARRATIVE_CONTEXT);
+    expect(input.outcome.headline).toBe(VALID_SUBMISSION.headline);
+
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect(final.patch.errorCode).toBeUndefined();
+    expect((final.patch.outcome as AgentRunOutcome).narrativeReport)
+      .toEqual({ reportId: REPORT_ID, reportRunId: REPORT_RUN_ID });
+  });
+
+  /**
+   * Ordering, not merely "both happened": the notification's whole payload is
+   * a pointer at the stored artifact. Emitting it first would link a report
+   * run that does not exist yet — and, on a persistence failure, would never
+   * exist at all.
+   */
+  it('emits the run-finished notification only AFTER the artifact persisted', async () => {
+    seedRows();
+    submittedRun();
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await executeAgentRun(RUN_ID);
+
+    expect(createNotification).toHaveBeenCalledTimes(1);
+    expect(persistNarrativeReport.mock.invocationCallOrder[0]!)
+      .toBeLessThan(createNotification.mock.invocationCallOrder[0]!);
+  });
+
+  it('reports narrative_missing when the run reached a normal finish with no narrative', async () => {
+    seedRows();
+    scriptQuery({ assistantText: 'I could not write anything useful.' });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(persistNarrativeReport).not.toHaveBeenCalled();
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect(final.patch.errorCode).toBe('narrative_missing');
+  });
+
+  it('reports narrative_no_schedule and persists nothing when the run carries no schedule', async () => {
+    seedRows({ scheduleId: null, triggerRef: { occurrenceKey: OCCURRENCE_KEY } });
+    submittedRun();
+
+    await executeAgentRun(RUN_ID);
+
+    expect(persistNarrativeReport).not.toHaveBeenCalled();
+    expect(finalTransition()!.patch.errorCode).toBe('narrative_no_schedule');
+  });
+
+  it('maps a lost CAS to narrative_persist_conflict, leaving the outcome unlinked', async () => {
+    seedRows();
+    submittedRun();
+    persistNarrativeReport.mockRejectedValue(
+      new NarrativePersistConflictError('run already carries a narrative artifact'),
+    );
+
+    await executeAgentRun(RUN_ID);
+
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect(final.patch.errorCode).toBe('narrative_persist_conflict');
+    expect((final.patch.outcome as AgentRunOutcome).narrativeReport).toBeUndefined();
+  });
+
+  it('maps any other persistence failure to narrative_persist_failed', async () => {
+    seedRows();
+    submittedRun();
+    persistNarrativeReport.mockRejectedValue(new Error('deadlock detected'));
+
+    await executeAgentRun(RUN_ID);
+
+    expect(finalTransition()!.patch.errorCode).toBe('narrative_persist_failed');
+  });
+
+  /**
+   * The stall reaper (`reapStalledAgentRuns`) or a second executor may have
+   * moved the run out of `running` while the SDK loop was in flight. Minting a
+   * customer-facing artifact under a run nobody owns any more is worse than
+   * skipping it — same IMPORTANT-4 re-read both sibling finalizers carry.
+   */
+  it('skips persistence when the run left `running` while the loop was in flight', async () => {
+    seedRows();
+    // The SECOND ai_agent_runs read (finalizeNarrative's live re-read) sees a
+    // run somebody else already terminated.
+    dbMockState.rowQueues.ai_agent_runs!.push([{ id: RUN_ID, status: 'cancelled' }]);
+    submittedRun();
+
+    await executeAgentRun(RUN_ID);
+
+    expect(persistNarrativeReport).not.toHaveBeenCalled();
+    expect(finalTransition()!.patch.errorCode).toBeUndefined();
+  });
+
+  it('never runs for a non-narrative profile (negative control)', async () => {
+    seedRows({ profile: 'full', deviceId: DEVICE_ID });
+    scriptQuery({ assistantText: 'All good.' });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(persistNarrativeReport).not.toHaveBeenCalled();
   });
 });

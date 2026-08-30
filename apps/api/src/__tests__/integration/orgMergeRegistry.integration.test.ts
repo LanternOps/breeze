@@ -20,6 +20,10 @@ const EXTRA_REQUIRED = [
   // follows-parent).
   'device_commands', 'user_sso_identities', 'sso_sessions', 'psa_ticket_mappings',
   'deployment_results', 'software_versions',
+  // P2-3 (#4190): report_runs joined ASSOCIATED_SYSTEM_SCOPED_TABLES when the
+  // org-erasure FK gap on reports.report_id was closed. Parent-keyed, so it
+  // travels with its definition's repointed org_id.
+  'report_runs',
   'partner_export_configuration_org_state', 'partner_export_device_material_state',
   'partner_export_site_material_state',
 ];

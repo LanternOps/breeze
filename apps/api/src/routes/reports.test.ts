@@ -1255,6 +1255,10 @@ describe('report definition scope enforcement', () => {
     expect(Object.keys(metadataProjection)).toEqual([
       'id',
       'orgId',
+      // P2-3 (#4190): `type` rides along so the write routes can refuse a
+      // system-managed definition off this same metadata read. Still a
+      // METADATA projection — `config` (the payload) stays out.
+      'type',
       'executionScopeVersion',
       'executionScopeKind',
       'executionScopeSiteIds',

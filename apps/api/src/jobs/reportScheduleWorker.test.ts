@@ -34,6 +34,8 @@ vi.mock('../db/schema', () => ({
   reports: {
     id: 'reports.id',
     orgId: 'reports.org_id',
+    // P2-3 (#4190) — the column A7's exclusion predicate names.
+    type: 'reports.type',
     createdBy: 'reports.created_by',
     schedule: 'reports.schedule',
     lastGeneratedAt: 'reports.last_generated_at',
@@ -1201,5 +1203,125 @@ describe('scheduled report failure handling', () => {
     // The throwing report must not starve its neighbour.
     expect(generateReportMock).toHaveBeenCalledTimes(2);
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── P2-3 (#4190): the report scheduler never touches a system-managed AI
+//     narrative definition ────────────────────────────────────────────────────
+
+/**
+ * A narrative definition lives in `reports` with `schedule = 'weekly'`, so it
+ * matches this worker's polling predicate on shape alone. It must not: its
+ * occurrences are owned by the AGENT scheduler, it has no acting user to
+ * reauthorize against, and its type has no generator at all.
+ *
+ * Two exclusions, and both are asserted here because they fail differently.
+ * `findDueReports` keeps it out of the polling result AND out of the
+ * "requires scope reauthorization" warning count — that warning is an operator
+ * signal, and a narrative definition (execution_scope_user_id IS NULL by
+ * construction) would inflate it forever with rows nobody can or should
+ * reauthorize. `processRunScheduledReport` refuses it too, for a job already
+ * on the queue when the exclusion shipped.
+ */
+describe('system-managed narrative definitions are outside this worker (P2-3)', () => {
+  const report = {
+    id: REPORT_ID,
+    orgId: ORG_ID,
+    name: 'Weekly AI operations narrative',
+    type: 'device_inventory',
+    format: 'csv',
+    schedule: 'weekly',
+    config: {},
+    lastGeneratedAt: null,
+    executionScopeVersion: 1,
+    executionScopeKind: 'unrestricted',
+    executionScopeSiteIds: null,
+    executionScopeUserId: '44444444-4444-4444-8444-444444444444',
+    executionScopeFingerprint: 'f'.repeat(64),
+    executionScopeCapturedAt: new Date('2026-07-24T12:00:00.000Z'),
+    executionScopePrincipalKind: 'user',
+  };
+
+  /** `selectChain` deliberately drops the condition; this variant keeps it. */
+  function capturingSelectChain(rows: unknown[], sink: unknown[]) {
+    const chain: Record<string, unknown> = {};
+    chain.from = vi.fn(() => chain);
+    chain.innerJoin = vi.fn(() => chain);
+    chain.leftJoin = vi.fn(() => chain);
+    chain.where = vi.fn((condition: unknown) => { sink.push(condition); return chain; });
+    chain.limit = vi.fn(async () => rows);
+    chain.then = (resolve: (v: unknown[]) => unknown) => Promise.resolve(rows).then(resolve);
+    return chain;
+  }
+
+  function mentions(condition: unknown, needle: string): boolean {
+    const seen = new Set<unknown>();
+    const walk = (node: unknown): boolean => {
+      if (node === needle) return true;
+      if (node === null || typeof node !== 'object') return false;
+      if (seen.has(node)) return false;
+      seen.add(node);
+      return Object.values(node as Record<string, unknown>).some(walk);
+    };
+    return walk(condition);
+  }
+
+  it('excludes the narrative type from BOTH the due query and the reauthorization warning count', async () => {
+    const wheres: unknown[] = [];
+    selectMock
+      .mockReturnValueOnce(capturingSelectChain([], wheres))
+      .mockReturnValueOnce(capturingSelectChain([{ count: 0 }], wheres));
+
+    await findDueReports(new Date('2026-07-01T15:00:00Z'));
+
+    expect(wheres).toHaveLength(2);
+    for (const [index, condition] of wheres.entries()) {
+      expect(mentions(condition, 'reports.type'), `query ${index} must name reports.type`).toBe(true);
+      expect(mentions(condition, 'ai_org_narrative'), `query ${index} must exclude the narrative type`)
+        .toBe(true);
+      // Non-vacuity: the pre-existing one_time exclusion is still there, so
+      // this is an ADDED predicate rather than a replaced one.
+      expect(mentions(condition, 'one_time')).toBe(true);
+    }
+  });
+
+  it('refuses a stale queued narrative job WITHOUT writing a failed run row', async () => {
+    // A failed `report_runs` row here would be worse than the no-op: it renders
+    // in the org's report history under the narrative definition, next to the
+    // real weekly artifacts, saying the weekly narrative failed. It did not —
+    // this worker simply is not its owner.
+    selectMock.mockReturnValueOnce(selectChain([{ ...report, type: 'ai_org_narrative' }]));
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await processRunScheduledReport({
+        type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900,
+      });
+
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(generateReportMock).not.toHaveBeenCalled();
+      expect(decodeSiteScopeMock).not.toHaveBeenCalled();
+      expect(resolveLiveReportAuthorityMock).not.toHaveBeenCalled();
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('agent scheduler'),
+        expect.objectContaining({ reportId: REPORT_ID }),
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
+  it('CONTROL: an ordinary weekly definition still runs', async () => {
+    selectMock.mockReturnValueOnce(selectChain([{ ...report, schedule: 'weekly' }]));
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    updateMock.mockReturnValue(updateChain());
+    generateReportMock.mockResolvedValue({ rows: [], rowCount: 0 });
+
+    await processRunScheduledReport({
+      type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900,
+    });
+
+    expect(generateReportMock).toHaveBeenCalled();
   });
 });

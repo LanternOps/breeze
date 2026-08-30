@@ -102,6 +102,11 @@ export async function getReportWithOrgCheck(
 export const reportDefinitionMetadataProjection = {
   id: reports.id,
   orgId: reports.orgId,
+  // P2-3 (#4190): `type` rides along so the write routes can refuse a
+  // system-managed definition from the SAME row they already read for scope
+  // metadata — no extra query, and the refusal happens before any authority
+  // resolution. See `isSystemManagedReportDefinition`.
+  type: reports.type,
   executionScopeVersion: reports.executionScopeVersion,
   executionScopeKind: reports.executionScopeKind,
   executionScopeSiteIds: reports.executionScopeSiteIds,
@@ -110,6 +115,26 @@ export const reportDefinitionMetadataProjection = {
   executionScopeCapturedAt: reports.executionScopeCapturedAt,
   executionScopePrincipalKind: reports.executionScopePrincipalKind,
 };
+
+/**
+ * P2-3 (#4190) — is this definition owned by the platform rather than by a
+ * human?
+ *
+ * TWO independent signals, deliberately OR-ed. `execution_scope_principal_kind
+ * = 'system'` is the provenance the scheduled-report worker also keys on;
+ * `type = 'ai_org_narrative'` is the report's identity. Either alone would
+ * leave a gap: a row whose principal was somehow rewritten to 'user' is still a
+ * narrative nobody can regenerate, and a future system-managed report of an
+ * ordinary type would still have no acting user to mutate on behalf of.
+ *
+ * Reads and downloads never consult this — a system-managed report exists to be
+ * read. Only the four mutation routes do.
+ */
+export function isSystemManagedReportDefinition(
+  row: { type?: string | null; executionScopePrincipalKind?: string | null },
+): boolean {
+  return row.executionScopePrincipalKind === 'system' || row.type === 'ai_org_narrative';
+}
 
 export function tenantAuthorizedReportCondition(
   reportId: string,
