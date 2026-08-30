@@ -298,11 +298,18 @@ describe('DevicesPage — org-context race on first load after login (#4147)', (
     await waitFor(() => expect(requests.length).toBeGreaterThan(0));
     await settle();
 
-    // The AbortController the org-A pass created (fetchDevices threads its
-    // signal into the sibling /orgs + /orgs/sites reads). Switching org must
-    // abort it, or a slow org-A response can land after org-B's and repaint
-    // the list with the previous tenant's data.
-    const orgAsignal = requests.find((r) => r.signal)?.signal ?? null;
+    // The AbortController the org-A pass created. Read it off the sibling
+    // `/orgs` request specifically: fetchAllDevices does NOT thread the signal
+    // into its own `/devices` fetch (it only checks `signal.aborted` between
+    // cursor pages), so that request carries fetchWithAuth's internal timeout
+    // controller instead and would never show the page's abort. The sibling
+    // reads are what make the whole pass bail — Promise.all rejects with their
+    // AbortError — so they are the honest place to assert it.
+    //
+    // Switching org must abort this, or a slow org-A response can land after
+    // org-B's and repaint the list with the previous tenant's data.
+    const orgAsignal =
+      requests.find((r) => /\/orgs(\?|$)/.test(r.url.split('#')[0]))?.signal ?? null;
     expect(orgAsignal).not.toBeNull();
     expect(orgAsignal!.aborted).toBe(false);
 
