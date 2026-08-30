@@ -57,14 +57,23 @@ userRoutes.use('*', async (c, next) => {
     return;
   }
 
-  // Self-service routes (own profile + own/displayed avatar) must stay accessible
-  // to EVERY partner user regardless of org-access level. This gate governs
-  // partner-wide user MANAGEMENT only — without this exemption a 'selected'/'none'
-  // partner admin would be 403'd on GET/PATCH /me and the top-bar avatar
-  // (GET /:id/avatar runs its own scope check in the handler).
+  // Self-service routes (own profile + own/displayed avatar + own notification
+  // preferences) must stay accessible to EVERY partner user regardless of
+  // org-access level. This gate governs partner-wide user MANAGEMENT only —
+  // without this exemption a 'selected'/'none' partner admin would be 403'd on
+  // GET/PATCH /me, the top-bar avatar (GET /:id/avatar runs its own scope check
+  // in the handler), and (W07, #3901) their own ticket push preferences, which
+  // is the field technician this feature exists for.
+  //
+  // A route may be added here ONLY if its subject is derived from auth.user.id
+  // and never from a path param or request body. Both /me/ticket-push-preferences
+  // handlers satisfy that: the id is auth.user.id and the PATCH schema is
+  // .strict(), so a smuggled `userId` is a 400. Do NOT widen this to
+  // /\/me(\/.*)?$/ — that would auto-exempt every future /me/* route,
+  // including ones whose subject is not auth.user.id. The allowlist is the point.
   const path = c.req.path;
   const isSelfServiceRoute =
-    /\/me(\/avatar)?$/.test(path) ||
+    /\/me(\/avatar|\/ticket-push-preferences)?$/.test(path) ||
     (c.req.method === 'GET' && /\/avatar$/.test(path));
   if (isSelfServiceRoute) {
     await next();

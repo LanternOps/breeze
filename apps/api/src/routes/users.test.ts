@@ -2735,6 +2735,59 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
     });
 
+    // W07 (#3901): the ticket push preference routes are self-service — the
+    // subject is always auth.user.id and the body schema is .strict(), so a
+    // smuggled userId is a 400, never an escalation. They must therefore be
+    // exempt from the partner-wide MANAGEMENT gate, exactly as /me is. The
+    // technician this feature targets is a 'selected'-access partner user; if
+    // the gate applies, the whole wave is unreachable for them.
+    it('exempts GET /me/ticket-push-preferences for a non-all partner admin', async () => {
+      seedMembership('selected');
+      authAsPartner();
+      // Only select is the preference lookup (no row) — the gate must NOT run
+      // its partnerUsers membership query on a self-service path.
+      vi.mocked(db.select).mockReset().mockReturnValue({
+        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) })),
+      } as any);
+
+      const res = await app.request('/users/me/ticket-push-preferences', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ settings: { assignedEnabled: true, slaScope: 'owned' } });
+    });
+
+    it('exempts PATCH /me/ticket-push-preferences for a non-all partner admin', async () => {
+      seedMembership('none');
+      authAsPartner();
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn(() => ({
+          onConflictDoUpdate: vi.fn(() => ({
+            returning: vi.fn(() => Promise.resolve([{ assignedEnabled: true, slaScope: 'any' }])),
+          })),
+        })),
+      } as never);
+
+      const res = await app.request('/users/me/ticket-push-preferences', {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slaScope: 'any' }),
+      });
+
+      expect(res.status).toBe(200);
+    });
+
+    // Control: the gate itself must still bite on partner-wide MANAGEMENT.
+    // Without this, widening the regex to something too broad passes silently.
+    it("still denies a 'selected' partner-admin on partner-wide user management", async () => {
+      seedMembership('selected');
+      authAsPartner();
+      const res = await app.request('/users', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(403);
+    });
+
     it('exempts self-service GET /me from the management gate for non-all admins', async () => {
       // A 'selected'/'none' partner admin (accessibleOrgIds IS an array, so the
       // shape early-return does NOT fire) must still reach their own profile —
