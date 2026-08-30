@@ -5120,7 +5120,6 @@ Implemented the approved #2489 / #3853 / #3854 client-completion slices on
 - Independent security review: no critical findings; all three important findings were fixed and
   covered by regressions. The passkey compatibility alias was also aligned with the policy-filtered
   method set, and invalid SSO-link recovery attempts now preserve the original retry window.
-- Real-Postgres atomicity suite: **NOT RUN (environment unavailable)** — the integration runner could
-  not connect to PostgreSQL at `localhost:5433` (`ECONNREFUSED`). The suite contains rollback,
-  concurrent single-winner enrollment, and concurrent `auth_epoch` cutoff coverage and must run in CI
-  or once the integration database is available.
+- Real-Postgres atomicity suite: **PASS** — 3 tests covering rollback, concurrent single-winner
+  enrollment, and concurrent `auth_epoch` cutoff. The concurrency barrier follows PostgreSQL's full
+  transitive lock-wait chain so queued enrollment transactions are counted deterministically.

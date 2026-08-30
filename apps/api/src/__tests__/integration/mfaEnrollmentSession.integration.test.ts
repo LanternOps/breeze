@@ -27,11 +27,21 @@ async function waitForBlockedBackends(blockerPid: number, expected: number): Pro
   const deadline = Date.now() + 10_000;
   for (;;) {
     const rows = await getTestDb().execute<{ waiting: number }>(sql`
-      SELECT count(*)::int AS waiting
-      FROM pg_catalog.pg_stat_activity
-      WHERE datname = current_database()
-        AND state = 'active'
-        AND ${blockerPid} = ANY(pg_catalog.pg_blocking_pids(pid))
+      WITH RECURSIVE wait_chain(pid) AS (
+        SELECT pid
+        FROM pg_catalog.pg_stat_activity
+        WHERE datname = current_database()
+          AND state = 'active'
+          AND ${blockerPid} = ANY(pg_catalog.pg_blocking_pids(pid))
+        UNION
+        SELECT activity.pid
+        FROM pg_catalog.pg_stat_activity activity
+        JOIN wait_chain blocker
+          ON blocker.pid = ANY(pg_catalog.pg_blocking_pids(activity.pid))
+        WHERE activity.datname = current_database()
+          AND activity.state = 'active'
+      )
+      SELECT count(*)::int AS waiting FROM wait_chain
     `);
     if ((rows[0]?.waiting ?? 0) >= expected) return;
     if (Date.now() > deadline) throw new Error('enrollment completions did not reach the user-row barrier');
