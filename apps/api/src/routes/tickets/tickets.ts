@@ -89,7 +89,10 @@ export function actorFrom(c: { get: (k: 'auth') => AuthContext }) {
 
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof TicketServiceError) {
-    return c.json({ error: err.message }, err.status);
+    // `code` is optional on the error; include it when present so callers can
+    // branch on a stable token instead of the message (W08 #3902 relies on
+    // ATTACHMENT_NOT_CLAIMABLE reaching the client).
+    return c.json(err.code ? { error: err.message, code: err.code } : { error: err.message }, err.status);
   }
   throw err;
 }
@@ -809,7 +812,9 @@ ticketsRoutes.post(
 
     try {
       const result = await addTicketComment(id, body, actorFrom(c));
-      return c.json({ data: result.comment }, 201);
+      // W08 #3902: echo the claimed attachment META back so the composer can
+      // render the posted comment without a second round trip.
+      return c.json({ data: { ...result.comment, attachments: result.attachments } }, 201);
     } catch (err) {
       return handleServiceError(c, err);
     }

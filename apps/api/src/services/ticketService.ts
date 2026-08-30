@@ -44,7 +44,10 @@ export type TicketServiceErrorCode =
   | 'CONCURRENT_MODIFICATION'
   | 'STATUS_NOT_FOUND'
   | 'STATUS_INACTIVE'
-  | 'INVALID_INPUT';
+  | 'INVALID_INPUT'
+  // W08 #3902: one or more attachmentIds were not pending, not this user's,
+  // or not on this ticket. The comment transaction is rolled back.
+  | 'ATTACHMENT_NOT_CLAIMABLE';
 
 export class TicketServiceError extends Error {
   constructor(
@@ -991,32 +994,88 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
 export interface AddCommentInput {
   content: string;
   isPublic: boolean;
+  /**
+   * W08 #3902 — pending attachment ids to claim for this comment (spec D2).
+   * They are claimed inside the SAME transaction as the comment insert, so a
+   * foreign/already-claimed id rolls the comment back rather than posting a
+   * comment whose photos silently vanished.
+   */
+  attachmentIds?: string[];
 }
 
 export async function addTicketComment(ticketId: string, input: AddCommentInput, actor: TicketActor) {
   const ticket = await getTicketOrThrow(ticketId);
+  const attachmentIds = input.attachmentIds ?? [];
 
-  const inserted = await db.insert(ticketComments).values({
-    ticketId,
-    userId: actor.userId,
-    authorName: actor.name ?? null,
-    authorType: 'internal',
-    commentType: input.isPublic ? 'comment' : 'internal',
-    content: input.content,
-    isPublic: input.isPublic
-  }).returning();
-  const comment = inserted[0];
-  if (!comment) throw new TicketServiceError('Failed to add comment', 500);
+  // W08 #3902: this used to be four separate writes on the global `db`. The
+  // attachment claim must roll back with the comment, so the comment insert,
+  // the firstResponseAt stamp and the claim now share one transaction.
+  // emitTicketEvent / writeTicketOutbox / createAuditLogAsync stay AFTER the
+  // commit — publishing ticket.commented for a comment that may still roll
+  // back would be worse than a late event.
+  const { comment, firstResponseStamped, attachments } = await db.transaction(async (tx) => {
+    const inserted = await tx.insert(ticketComments).values({
+      ticketId,
+      userId: actor.userId,
+      authorName: actor.name ?? null,
+      authorType: 'internal',
+      commentType: input.isPublic ? 'comment' : 'internal',
+      content: input.content,
+      isPublic: input.isPublic
+    }).returning();
+    const row = inserted[0];
+    if (!row) throw new TicketServiceError('Failed to add comment', 500);
 
-  // First PUBLIC technician response stamps firstResponseAt (spec §2).
-  // Internal notes do NOT stamp it.
-  let firstResponseStamped = false;
-  if (input.isPublic && !ticket.firstResponseAt) {
-    await db.update(tickets)
-      .set({ firstResponseAt: new Date(), updatedAt: new Date() })
-      .where(eq(tickets.id, ticketId));
-    firstResponseStamped = true;
-  }
+    // First PUBLIC technician response stamps firstResponseAt (spec §2).
+    // Internal notes do NOT stamp it.
+    let stamped = false;
+    if (input.isPublic && !ticket.firstResponseAt) {
+      await tx.update(tickets)
+        .set({ firstResponseAt: new Date(), updatedAt: new Date() })
+        .where(eq(tickets.id, ticketId));
+      stamped = true;
+    }
+
+    // The claim. Every predicate is load-bearing:
+    //   ticket_id           — cannot attach another ticket's file
+    //   org_id              — belt with the RLS braces
+    //   comment_id IS NULL  — cannot re-claim an already-attached file
+    //   uploaded_by_user_id — cannot claim someone else's upload
+    // RETURNING lists the META columns only: `data` (up to 10 MiB of bytea)
+    // must never leave the row here (spec D10).
+    let claimed: Array<{
+      id: string; commentId: string | null; contentType: string;
+      byteSize: number; originalFilename: string; createdAt: Date;
+    }> = [];
+    if (attachmentIds.length > 0) {
+      const idList = sql.join(attachmentIds.map((aid) => sql`${aid}::uuid`), sql`, `);
+      const result = await tx.execute(sql`
+        UPDATE ticket_attachments
+           SET comment_id = ${row.id}::uuid, attached_at = now()
+         WHERE id IN (${idList})
+           AND ticket_id = ${ticketId}::uuid
+           AND org_id = ${ticket.orgId}::uuid
+           AND comment_id IS NULL
+           AND uploaded_by_user_id = ${actor.userId}::uuid
+        RETURNING id,
+                  comment_id        AS "commentId",
+                  content_type      AS "contentType",
+                  byte_size         AS "byteSize",
+                  original_filename AS "originalFilename",
+                  created_at        AS "createdAt"
+      `);
+      claimed = (Array.isArray(result) ? result : []) as typeof claimed;
+      if (claimed.length !== attachmentIds.length) {
+        throw new TicketServiceError(
+          'One or more attachments could not be attached to this comment',
+          409,
+          'ATTACHMENT_NOT_CLAIMABLE'
+        );
+      }
+    }
+
+    return { comment: row, firstResponseStamped: stamped, attachments: claimed };
+  });
 
   await emitTicketEvent({
     type: 'ticket.commented',
@@ -1040,7 +1099,7 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
     result: 'success'
   });
 
-  return { comment, firstResponseStamped };
+  return { comment, firstResponseStamped, attachments };
 }
 
 // Task 8 — Alert linking

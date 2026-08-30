@@ -1006,6 +1006,85 @@ describe('addTicketComment', () => {
   });
 });
 
+describe('addTicketComment attachment claim (W08 #3902)', () => {
+  const ATT_1 = 'aaaaaaaa-1111-4222-8333-444455556666';
+  const ATT_2 = 'bbbbbbbb-1111-4222-8333-444455556666';
+
+  // Renders a drizzle SQL template back to text so the claim's PREDICATES can
+  // be asserted. A `where`-object assertion would be vacuous here — the five
+  // predicates are the whole point of the statement.
+  function executedSqlTexts(): string[] {
+    return dbMocks.txExecuteMock.mock.calls.map((call) => {
+      const chunks = (call[0] as { queryChunks: Array<{ value?: unknown }> }).queryChunks;
+      return chunks
+        .map((ch) => (Array.isArray(ch.value) ? ch.value.join('') : '$'))
+        .join('');
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+    dbMocks.selectResult.mockResolvedValue([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', firstResponseAt: null }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', isPublic: true }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1' }]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't-1' }]);
+    dbMocks.txExecuteMock.mockResolvedValue([]);
+  });
+
+  it('runs NO claim statement when there are no attachmentIds', async () => {
+    const result = await addTicketComment('t-1', { content: 'plain', isPublic: true }, actor);
+    expect(dbMocks.txExecuteMock).not.toHaveBeenCalled();
+    expect(result.attachments).toEqual([]);
+  });
+
+  it('claims with all five load-bearing predicates and never returns the bytes column', async () => {
+    dbMocks.txExecuteMock.mockResolvedValue([
+      { id: ATT_1, commentId: 'c-1', contentType: 'image/png', byteSize: 12, originalFilename: 'a.png', createdAt: new Date() },
+    ]);
+    await addTicketComment('t-1', { content: 'see photo', isPublic: true, attachmentIds: [ATT_1] }, actor);
+
+    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(1);
+    const text = executedSqlTexts()[0]!;
+    expect(text).toContain('UPDATE ticket_attachments');
+    expect(text).toContain('ticket_id =');            // can't attach another ticket's file
+    expect(text).toContain('org_id =');               // belt with the RLS braces
+    expect(text).toContain('comment_id IS NULL');     // can't re-claim an attached file
+    expect(text).toContain('uploaded_by_user_id =');  // can't claim someone else's upload
+    expect(text).toContain('id IN (');                // the id set itself
+    expect(text).toContain('RETURNING');
+    expect(text).not.toMatch(/\bdata\b/);             // D10: bytes never selected
+  });
+
+  it('throws 409 ATTACHMENT_NOT_CLAIMABLE and emits nothing when the rowcount does not match', async () => {
+    dbMocks.txExecuteMock.mockResolvedValue([
+      { id: ATT_1, commentId: 'c-1', contentType: 'image/png', byteSize: 12, originalFilename: 'a.png', createdAt: new Date() },
+    ]);
+    await expect(
+      addTicketComment('t-1', { content: 'x', isPublic: true, attachmentIds: [ATT_1, ATT_2] }, actor),
+    ).rejects.toMatchObject({ status: 409, code: 'ATTACHMENT_NOT_CLAIMABLE' });
+    // Post-commit side effects must not have run for a rolled-back comment.
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
+  it('returns claimed attachment META only (no storageKey, sha256 or data)', async () => {
+    dbMocks.txExecuteMock.mockResolvedValue([
+      { id: ATT_1, commentId: 'c-1', contentType: 'image/png', byteSize: 12, originalFilename: 'a.png', createdAt: new Date('2026-08-30T00:00:00Z') },
+    ]);
+    const result = await addTicketComment('t-1', { content: '', isPublic: true, attachmentIds: [ATT_1] }, actor);
+    expect(result.attachments).toHaveLength(1);
+    const keys = Object.keys(result.attachments[0]!);
+    expect(keys.sort()).toEqual(['byteSize', 'commentId', 'contentType', 'createdAt', 'id', 'originalFilename']);
+  });
+
+  it('still stamps firstResponseAt on the first public comment, now inside the transaction', async () => {
+    const result = await addTicketComment('t-1', { content: 'On it', isPublic: true }, actor);
+    expect(result.firstResponseStamped).toBe(true);
+    expect(setMock.mock.calls[0]![0].firstResponseAt).toBeInstanceOf(Date);
+  });
+});
+
 describe('linkAlertToTicket', () => {
   beforeEach(() => {
     vi.clearAllMocks();

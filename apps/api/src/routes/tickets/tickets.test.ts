@@ -1950,3 +1950,34 @@ describe('DELETE /tickets/:id/comments/:commentId', () => {
     expect(res.status).toBe(403);
   });
 });
+
+describe('POST /tickets/:id/comments attachmentIds (W08 #3902)', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('accepts an empty body when attachmentIds are present and passes them to the service', async () => {
+    const attId = 'aaaaaaaa-1111-4222-8333-444455556666';
+    dbSelectMock.mockReturnValue([{ id: '3f2f1d8e-1111-4222-8333-444455556666', orgId: 'org-1', deviceId: null }]);
+    serviceMocks.addTicketComment.mockResolvedValue({ comment: { id: 'c-1' }, firstResponseStamped: false, attachments: [] });
+    const res = await makeApp().request('/tickets/3f2f1d8e-1111-4222-8333-444455556666/comments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '', attachmentIds: [attId] }),
+    });
+    expect(res.status).toBe(201);
+    expect(serviceMocks.addTicketComment).toHaveBeenCalledWith(
+      '3f2f1d8e-1111-4222-8333-444455556666',
+      expect.objectContaining({ attachmentIds: [attId] }),
+      expect.anything(),
+    );
+  });
+
+  it('still 400s an empty comment with no attachments', async () => {
+    dbSelectMock.mockReturnValue([{ id: '3f2f1d8e-1111-4222-8333-444455556666', orgId: 'org-1', deviceId: null }]);
+    const res = await makeApp().request('/tickets/3f2f1d8e-1111-4222-8333-444455556666/comments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '' }),
+    });
+    expect(res.status).toBe(400);
+  });
+});
