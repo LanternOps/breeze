@@ -49,8 +49,12 @@ import type {
   AiAgentRecipients,
   AiAgentRunProfile,
   AiAgentTriggerKind,
+  AiSweepKind,
   AlertVerdictOutcome,
+  NarrativeOutcome,
+  SweepFindingsOutcome,
 } from '@breeze/shared';
+import { AI_AGENT_LIMIT_DEFAULTS, AI_SWEEP_KINDS } from '@breeze/shared';
 import { envFlag } from '../../config/env';
 import {
   db,
@@ -115,17 +119,26 @@ import {
   buildAgentRunSystemPrompt,
   buildAgentRunTaskPrompt,
   type AgentRunAnomalyPromptContext,
+  type AgentRunNarrativePromptContext,
   type AgentRunPromptContext,
+  type AgentRunSweepPromptContext,
   type AgentRunTicketPromptContext,
 } from './runnerPrompt';
 import {
   buildOutcomeSdkTools,
   isOutcomeTool,
   OUTCOME_MCP_TOOL_NAMES,
+  outcomeToolsForProfile,
   validateOutcomeToolInput,
 } from './outcomeTools';
 import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdictProfile';
+import { isSweepProfile, sweepLimits, sweepToolAllowlist } from './sweepProfile';
+import { isNarrativeProfile, narrativeLimits, narrativeToolAllowlist } from './narrativeProfile';
+import { loadSweepEvidence, type SweepEvidence } from './sweepEvidence';
+import { loadNarrativeContext, type NarrativeContext } from './narrativeContext';
+import { NarrativePersistConflictError, persistNarrativeReport } from './narrativeReport';
 import { persistAlertVerdict, type AlertVerdictIntentInfo } from './alertVerdicts';
+import { persistSweepFindings, type SweepProposalRecord } from './sweepFindings';
 
 /** `ai_agent_runs.summary` is `text`, but a reviewer reads the first screen. */
 const RUN_SUMMARY_MAX_CHARS = 2000;
@@ -264,6 +277,65 @@ export interface AgentRunOutcome {
    * tool-input detail); see `AlertVerdictIntentInfo`'s own docstring.
    */
   alertVerdictIntent?: AlertVerdictIntentInfo;
+  /**
+   * Phase 2 wave P2-2 (scheduled sweeps) — the validated
+   * `submit_sweep_findings` input, captured by the post-tool-use hook on a
+   * sweep-profile run. Set at most once (the outcome tool's own description
+   * and the sweep task turn both tell the model to call it exactly once);
+   * absent for every other profile, which never has the sweep outcome tool
+   * exposed at all. Task A7 persists it and turns each accepted
+   * `proposedAction` into a supervised action intent — NOTHING here executes.
+   */
+  sweepFindings?: SweepFindingsOutcome;
+  /**
+   * Phase 2 wave P2-2 (scheduled sweeps), Task A7 — one bookkeeping record
+   * per finding that carried a `proposedAction`, written by `finalizeSweep`
+   * below. Absent when the run proposed nothing at all (nothing to report on)
+   * and for every non-sweep profile. Display strings only — NEVER the raw
+   * `Error.message` from `createActionIntent`; see `SweepProposalRecord`'s own
+   * docstring (sweepFindings.ts).
+   */
+  sweepProposals?: SweepProposalRecord[];
+  /**
+   * Phase 2 wave P2-2, Task A7 — whether the SYSTEM evidence this sweep run
+   * reported on was capped/byte-trimmed (`SweepEvidence.truncated`, Task 5).
+   * Persisted here because the evidence itself is never stored on the run,
+   * and the run-detail projection has to be able to tell a reader "the model
+   * saw a sample, not the whole fleet". Absent for every non-sweep profile.
+   */
+  sweepEvidenceTruncated?: boolean;
+  /**
+   * Phase 2 wave P2-3 (weekly org narrative) — the weekly narrative, captured
+   * by the post-tool-use hook on a narrative-profile run. Set at most once
+   * (the outcome tool's description and the narrative task turn both tell the
+   * model to call it exactly once); absent for every other profile, which
+   * never has the narrative outcome tool exposed at all.
+   *
+   * NOT the raw tool input, unlike its two siblings above: the model submits
+   * `{ headline, sections: [{ key, bullets }] }` and the SERVER attaches the
+   * section titles, imposes the canonical section order and derives the
+   * markdown (`narrativeOutcomeFromSubmission`, reached through
+   * `validateOutcomeToolInput`). See `orgNarrativeReport.ts`'s file docstring
+   * for why the model never authors any of those three.
+   *
+   * Task A7 persists it as a system-authored report artifact and links
+   * `ai_agent_runs.report_run_id` — NOTHING here executes.
+   */
+  narrative?: NarrativeOutcome;
+  /**
+   * Phase 2 wave P2-3, Task A7 — the system-authored report the narrative was
+   * materialised into, written by `finalizeNarrative` once
+   * `persistNarrativeReport`'s transaction committed. Absent for every other
+   * profile, for a narrative run that produced nothing, and for one whose
+   * persistence lost the CAS (in which case the run's `error_code` says so).
+   *
+   * TWO ids and nothing else. `runFinishedNotify` reads exactly this to build
+   * the notification's `metadata.narrative`, and the run-detail route reads
+   * `ai_agent_runs.report_run_id` (the typed column) rather than this jsonb —
+   * so nothing downstream is tempted to grow a copy of the narrative, let
+   * alone of the weekly context, on the run row.
+   */
+  narrativeReport?: { reportId: string; reportRunId: string };
 }
 
 /** Error carrying the short code that lands in `ai_agent_runs.error_code` (varchar(64)). */
@@ -296,6 +368,14 @@ interface RunRow {
   /** Phase 2 wave P2-1 (alert verdicts) — see `verdictProfile.ts`. */
   profile: AiAgentRunProfile;
   correlationGroupId: string | null;
+  /** Phase 2 wave P2-2 (scheduled sweeps) — the `ai_agent_schedules` row a
+   *  `sweep`-profile run was fanned out from; `null` for every other trigger. */
+  scheduleId: string | null;
+  /** Free-form trigger provenance (`jsonb`, defaults `{}`). A sweep run's
+   *  carries `{ scheduleId, occurrenceKey, sweepKinds }`, written by the
+   *  fixed-tick sweeper — read DEFENSIVELY below (any field may be missing or
+   *  the wrong shape; the column has no compile-time schema). */
+  triggerRef: Record<string, unknown>;
 }
 
 interface AgentRow {
@@ -336,6 +416,39 @@ interface RunContext {
     noiseReductionPercent: number;
     rootAlertId: string | null;
     correlationTypes: string[];
+  } | null;
+  /**
+   * Phase 2 wave P2-2 (scheduled sweeps) — the schedule occurrence and the
+   * bounded, system-collected evidence this run reports on. Set only for a
+   * `sweep`-profile run; `null` for every other profile. An empty
+   * `kinds`/`evidence` is a legitimate value (see the loader below), never a
+   * reason to fail the run.
+   */
+  sweep: {
+    scheduleId: string;
+    occurrenceKey: string;
+    kinds: AiSweepKind[];
+    evidence: SweepEvidence;
+  } | null;
+  /**
+   * Phase 2 wave P2-3 (weekly org narrative) — the schedule occurrence and the
+   * bounded, system-assembled week of activity this run writes about. Set only
+   * for a `narrative`-profile run; `null` for every other profile.
+   *
+   * A narrative run loads NO sweep evidence and NO device context: it is
+   * device-less by construction and its tool floor is empty, so this context
+   * is its entire input. An empty/unavailable block inside it is a legitimate
+   * value the prompt renders as "(not measured)", never a reason to fail the
+   * run.
+   *
+   * `scheduleId` is `''` when the run carries none — Task A7's
+   * `finalizeNarrative` reports `narrative_no_schedule` rather than persisting
+   * an artifact it cannot attribute to a schedule.
+   */
+  narrative: {
+    scheduleId: string;
+    occurrenceKey: string;
+    context: NarrativeContext;
   } | null;
   /**
    * The execution-ledger `ai_sessions` row for this run (Task 1/2). Set once,
@@ -388,6 +501,8 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         policySnapshot: aiAgentRuns.policySnapshot,
         profile: aiAgentRuns.profile,
         correlationGroupId: aiAgentRuns.correlationGroupId,
+        scheduleId: aiAgentRuns.scheduleId,
+        triggerRef: aiAgentRuns.triggerRef,
       })
       .from(aiAgentRuns)
       .where(eq(aiAgentRuns.id, runId))
@@ -540,6 +655,62 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       }
     }
 
+    // Phase 2 wave P2-2 (scheduled sweeps). Runs INSIDE this same system
+    // context (`loadSweepEvidence`'s own header states it manages none of its
+    // own) — the `org_id = run.orgId` predicate every one of its statements
+    // carries is therefore the only thing keeping one tenant's sweep out of
+    // another's rows, exactly like the hand-written org pins above.
+    //
+    // Read defensively: `trigger_ref` is an untyped jsonb column, and a run
+    // could reach here hand-enqueued, half-migrated, or written by an older
+    // sweeper. Unknown kinds are DROPPED rather than passed through (a kind
+    // with no loader would throw inside `loadSweepEvidence`); missing kinds
+    // yield empty evidence, which the prompt renders as "these checks found
+    // nothing" — never a failed run.
+    let sweep: RunContext['sweep'] = null;
+    if (isSweepProfile(run as RunRow)) {
+      const ref = (run.triggerRef ?? {}) as { occurrenceKey?: unknown; sweepKinds?: unknown };
+      const rawKinds = Array.isArray(ref.sweepKinds) ? ref.sweepKinds : [];
+      const kinds = rawKinds.filter(
+        (kind): kind is AiSweepKind => (AI_SWEEP_KINDS as readonly unknown[]).includes(kind),
+      );
+      if (kinds.length !== rawKinds.length) {
+        console.warn('[aiAgentRunLoop] dropped unknown sweep kinds from trigger_ref', {
+          runId, orgId: run.orgId, requested: rawKinds.length, kept: kinds.length,
+        });
+      }
+      sweep = {
+        scheduleId: run.scheduleId ?? '',
+        occurrenceKey: typeof ref.occurrenceKey === 'string' ? ref.occurrenceKey : '',
+        kinds,
+        evidence: await loadSweepEvidence(run.orgId, kinds),
+      };
+    }
+
+    // Phase 2 wave P2-3 (weekly org narrative). Runs INSIDE this same system
+    // context, exactly like the sweep evidence above and for the same reason:
+    // `loadNarrativeContext` manages no context of its own, so the `org_id`
+    // predicate every one of its statements carries is the only thing keeping
+    // one tenant's week out of another's report.
+    //
+    // Awaited directly, with no try/catch: `loadNarrativeContext` isolates
+    // every one of its loaders internally (`Promise.allSettled`-style
+    // `settled()` + a `reportLoaderFailure` warning), so a broken table
+    // surfaces as an `unavailable` entry the prompt renders as "(not
+    // measured)" — it does not throw. `trigger_ref` is read DEFENSIVELY for
+    // the same reason the sweep block reads it that way: it is an untyped
+    // jsonb column and a run could reach here hand-enqueued or written by an
+    // older scheduler.
+    let narrative: RunContext['narrative'] = null;
+    if (isNarrativeProfile(run as RunRow)) {
+      const ref = (run.triggerRef ?? {}) as { occurrenceKey?: unknown };
+      narrative = {
+        scheduleId: run.scheduleId ?? '',
+        occurrenceKey: typeof ref.occurrenceKey === 'string' ? ref.occurrenceKey : '',
+        context: await loadNarrativeContext(run.orgId),
+      };
+    }
+
     return {
       run: run as RunRow,
       agent: agent as AgentRow,
@@ -549,6 +720,8 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       ticket,
       anomaly,
       correlationGroup,
+      sweep,
+      narrative,
       sessionId: null,
     };
   });
@@ -747,8 +920,17 @@ export function createAgentRunPreToolUse(args: {
         outcome.deniedActions.push({ tool: toolName, reason });
         return { allowed: false, error: reason };
       }
-      if (!isVerdictProfile(run)) {
-        outcome.deniedActions.push({ tool: toolName, reason: 'outcome tool is only available to verdict-profile runs' });
+      // Generalized in wave P2-2 (task 6) from "verdict runs only" to "the
+      // tool this run's profile owns": `outcomeToolsForProfile` is the SAME
+      // function that decides SDK exposure and post-hook capture below, so a
+      // sweep run can never record a verdict (or vice versa) even if a stale
+      // tool cache offers the wrong name. The deny reason names the profile
+      // because that is the mismatch a reviewer needs to see.
+      if (!outcomeToolsForProfile(run.profile).includes(toolName)) {
+        outcome.deniedActions.push({
+          tool: toolName,
+          reason: `outcome tool ${toolName} is not available to ${run.profile}-profile runs`,
+        });
         return { allowed: false, error: 'not available on this run' };
       }
       try {
@@ -782,8 +964,26 @@ export function createAgentRunPreToolUse(args: {
     // is even reached) — this catches anything that reasoning missed, e.g.
     // a read-only-looking tool with a mutating action this list didn't
     // anticipate.
-    if (isVerdictProfile(run) && check.disposition !== 'allow') {
-      const reason = 'verdict runs are read-only';
+    // Wave P2-2 (task 6): generalized from verdict-only to every READ-ONLY
+    // profile. A sweep run is read-only by the same construction (its floor
+    // is read-only tools, and `sweepLimits` pins `maxActionsPerRun: 0`), so
+    // a 'propose'/'act' disposition on one is the same class of miss this
+    // branch was added to catch. The rendered message is unchanged for a
+    // verdict run (`run.profile` IS 'verdict' there).
+    //
+    // Wave P2-3 (task 6): the narrative profile joins them, and is the
+    // STRONGEST case of the three — its tool floor is EMPTY
+    // (`narrativeProfile.ts`) and `narrativeLimits` pins `maxActionsPerRun:
+    // 0`, so a mutating call reaching here at all already means something
+    // upstream is wrong. Denying it outright rather than recording a proposal
+    // matters because a narrative run has no proposal surface at all: nothing
+    // reads `outcome.proposedActions` for this profile, so a recorded
+    // proposal would be a mutation request nobody would ever see.
+    if (
+      (isVerdictProfile(run) || isSweepProfile(run) || isNarrativeProfile(run))
+      && check.disposition !== 'allow'
+    ) {
+      const reason = `${run.profile} runs are read-only`;
       outcome.deniedActions.push({ tool: toolName, reason });
       return { allowed: false, error: reason };
     }
@@ -951,8 +1151,29 @@ export function createAgentRunPostToolUse(args: {
     // `allowedPending`/the execution ledger/the act pipeline — capture the
     // validated verdict and stop, before any of the ordinary accounting below.
     if (isOutcomeTool(toolName)) {
-      if (!isError && isVerdictProfile(run)) {
-        outcome.alertVerdict = validateOutcomeToolInput(toolName, input);
+      // Stored BY TOOL NAME (wave P2-2, task 6), gated on the same
+      // `outcomeToolsForProfile` the pre-hook denies against — so a name the
+      // pre-hook refused can never still land in the outcome via this path.
+      if (!isError && outcomeToolsForProfile(run.profile).includes(toolName)) {
+        switch (toolName) {
+          case 'submit_alert_verdict':
+            outcome.alertVerdict = validateOutcomeToolInput(toolName, input);
+            break;
+          case 'submit_sweep_findings':
+            outcome.sweepFindings = validateOutcomeToolInput(toolName, input);
+            break;
+          // Wave P2-3: what lands here is the SERVER-BUILT `NarrativeOutcome`
+          // (titles attached, sections re-ordered, markdown derived), not the
+          // model's submission — see `validateOutcomeToolInput`'s narrative
+          // overload.
+          case 'submit_narrative':
+            outcome.narrative = validateOutcomeToolInput(toolName, input);
+            break;
+          default: {
+            const exhaustive: never = toolName;
+            throw new Error(`[aiAgentRunLoop] unhandled outcome tool: ${String(exhaustive)}`);
+          }
+        }
       }
       return;
     }
@@ -1169,6 +1390,33 @@ function anomalyPromptContext(anomaly: AnomalyRunContext): AgentRunAnomalyPrompt
   };
 }
 
+function sweepPromptContext(sweep: NonNullable<RunContext['sweep']>): AgentRunSweepPromptContext {
+  return {
+    scheduleId: sweep.scheduleId,
+    occurrenceKey: sweep.occurrenceKey,
+    kinds: sweep.kinds,
+    evidence: sweep.evidence,
+  };
+}
+
+/**
+ * Named-field projection, like `sweepPromptContext` above: the prompt context
+ * gets exactly what the task turn may render, so a field added to
+ * `RunContext.narrative` cannot reach the model until someone puts it here
+ * too. `context` is passed by reference (it is already bounded and sanitized
+ * by `narrativeContext.ts`) and the renderer reads scalars off it — it is
+ * never serialized. See `buildNarrativeTaskPrompt`.
+ */
+function narrativePromptContext(
+  narrative: NonNullable<RunContext['narrative']>,
+): AgentRunNarrativePromptContext {
+  return {
+    scheduleId: narrative.scheduleId,
+    occurrenceKey: narrative.occurrenceKey,
+    context: narrative.context,
+  };
+}
+
 function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromptContext {
   return {
     agent: { name: ctx.agent.name, kind: ctx.agent.kind },
@@ -1182,6 +1430,8 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
     instructions: effective.instructions,
     profile: ctx.run.profile,
     correlationGroup: ctx.correlationGroup,
+    sweep: ctx.sweep ? sweepPromptContext(ctx.sweep) : null,
+    narrative: ctx.narrative ? narrativePromptContext(ctx.narrative) : null,
   };
 }
 
@@ -1223,7 +1473,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // options further down (`maxTurns`/`maxBudgetUsd`) and the local budget
   // backstop — never re-validated through `aiAgentLimitsSchema` (its
   // `maxActionsPerRun: 0` is below that schema's `min(1)`) and never written
-  // back into `run.policySnapshot`. `verdictAllowlist` is `null` for a
+  // back into `run.policySnapshot`. `profileAllowlist` is `null` for a
   // `full`-profile run (nothing to narrow); for a verdict run it is
   // `verdictToolAllowlist`'s pinned floor, reused below for BOTH
   // `guardrailPolicy.toolAllowlist` (review fix, wave P2-1 fix round 1 —
@@ -1232,9 +1482,36 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // `acknowledge`/`resolve`/`suppress` reach `checkAgentGuardrails`'s
   // allowlist gate on a verdict run) and the SDK's `allowedTools` exposure —
   // one computation, one source of truth for what a verdict run can reach.
+  //
+  // Wave P2-2 (task 6) generalized this from verdict-only to a single
+  // profile branch covering `full | verdict | sweep`: `profileAllowlist` is
+  // `null` for `full` (nothing to narrow) and otherwise the profile's pinned
+  // floor, reused below for BOTH `guardrailPolicy.toolAllowlist` and the
+  // SDK's `allowedTools`/`onlyTools` exposure — one computation, one source
+  // of truth for what this run can reach, whichever profile it is.
+  //
+  // Wave P2-3 (task 6) added the fourth arm. A narrative run's
+  // `profileAllowlist` is the outcome tool ALONE (its drill-down floor is
+  // empty), so the same one computation makes `guardrailPolicy.toolAllowlist`,
+  // `allowedTools` and `onlyTools` all agree that this run can reach nothing
+  // but its own submission channel.
   const verdict = isVerdictProfile(run);
-  const runLimits = verdict ? verdictLimits(limits) : limits;
-  const verdictAllowlist = verdict ? verdictToolAllowlist(effective.toolAllowlist) : null;
+  const sweep = isSweepProfile(run);
+  const narrative = isNarrativeProfile(run);
+  const runLimits = verdict
+    ? verdictLimits(limits)
+    : sweep
+      ? sweepLimits(limits)
+      : narrative
+        ? narrativeLimits(limits)
+        : limits;
+  const profileAllowlist = verdict
+    ? verdictToolAllowlist(effective.toolAllowlist)
+    : sweep
+      ? sweepToolAllowlist(effective.toolAllowlist)
+      : narrative
+        ? narrativeToolAllowlist(effective.toolAllowlist)
+        : null;
   // Computed here (not by the SDK-loop timer below) so the pre-hook's
   // act-mode playbook executor (Task 5, #3826) can enforce the SAME
   // wall-clock ceiling independently of the SDK's `abortController` — a
@@ -1258,7 +1535,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   const guardrailPolicy: AgentGuardrailPolicy = {
     enabled: effective.enabled,
     mode: run.modeAtStart,
-    toolAllowlist: verdictAllowlist ?? effective.toolAllowlist,
+    toolAllowlist: profileAllowlist ?? effective.toolAllowlist,
     protectedResources: effective.protectedResources,
     deviceId: run.deviceId,
     deviceSiteId: ctx.device?.siteId ?? null,
@@ -1333,12 +1610,12 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // `exposedNames` governs SDK-level tool EXPOSURE for a verdict run, not a
   // second guardrail — `checkAgentGuardrails` (via `guardrailPolicy` above)
   // is still the sole authority for anything the model does manage to call;
-  // see `verdictToolAllowlist`'s own docstring. Reuses `verdictAllowlist`
+  // see `verdictToolAllowlist`'s own docstring. Reuses `profileAllowlist`
   // computed at the top of this function — the SAME list that narrowed
   // `guardrailPolicy.toolAllowlist` above, so exposure and authority can
   // never drift apart.
-  const exposedNames = verdictAllowlist
-    ? verdictAllowlist.map((name) => (
+  const exposedNames = profileAllowlist
+    ? profileAllowlist.map((name) => (
       isOutcomeTool(name) ? OUTCOME_MCP_TOOL_NAMES[name] : `mcp__breeze__${name.split(':')[0]}`
     ))
     : BREEZE_MCP_TOOL_NAMES;
@@ -1347,26 +1624,28 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // PERMISSION to call a tool — the MCP server still sends every REGISTERED
   // tool's full schema to the model on every turn regardless of
   // `allowedTools`. `onlyTools` (createBreezeMcpServer's 6th param) narrows
-  // what gets registered in the first place. Reuses `verdictAllowlist` again
+  // what gets registered in the first place. Reuses `profileAllowlist` again
   // — same source of truth as `exposedNames`/`guardrailPolicy.toolAllowlist`
   // above — collapsed to bare tool names (`manage_alerts:list` and
   // `manage_alerts:get` both collapse to `manage_alerts`) with the outcome
-  // tool excluded: `submit_alert_verdict` is never in the registry `tools`
+  // tool excluded: an outcome tool is never in the registry `tools`
   // array to begin with (see outcomeTools.ts) — it rides on `extraTools`
   // below instead, which `createBreezeMcpServer` always includes regardless
   // of `onlyTools`. Full runs pass no `onlyTools` and keep registering the
   // whole registry, unchanged.
-  const onlyTools = verdictAllowlist
-    ? new Set(verdictAllowlist.map((name) => name.split(':')[0]!).filter((name) => !isOutcomeTool(name)))
+  const onlyTools = profileAllowlist
+    ? new Set(profileAllowlist.map((name) => name.split(':')[0]!).filter((name) => !isOutcomeTool(name)))
     : undefined;
 
   // No getActiveSession: a headless run has no ActiveSession, and the
   // session-aware tools (M365/Google) correctly refuse without one. The
-  // outcome tool (`submit_alert_verdict`) is passed as `extraTools` ONLY for
-  // a verdict-profile run — a `full`-profile run never even registers it on
-  // the MCP server, let alone exposes it via `allowedTools`.
+  // profile's outcome tool (`submit_alert_verdict` for verdict,
+  // `submit_sweep_findings` for sweep) is passed as `extraTools`; `full`
+  // gets an EMPTY array from `outcomeToolsForProfile`, so it never even
+  // registers one on the MCP server, let alone exposes it via
+  // `allowedTools`.
   const mcpServer = createBreezeMcpServer(() => agentAuth, preToolUse, postToolUse, undefined,
-    verdict ? buildOutcomeSdkTools(['submit_alert_verdict']) : [],
+    buildOutcomeSdkTools(outcomeToolsForProfile(run.profile)),
     onlyTools ? { onlyTools } : undefined);
 
   const prompt = promptContext(ctx, effective);
@@ -1610,6 +1889,21 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // `ceiling` branches, which already carry a real, more specific code —
     // see `finalizeVerdict`'s own docstring for why).
     const verdictErrorCode = await finalizeVerdict(ctx, result);
+    // Task A7 (wave P2-2) — the sweep sibling, same placement and for the
+    // same reason: proposal→intent conversion must happen BEFORE the
+    // awaiting_approval/completed decision below so a freshly created pending
+    // intent is counted by `intentIds.length > 0`. A run is either a verdict
+    // run or a sweep run, never both, so at most one of these two codes is
+    // ever non-null.
+    const sweepErrorCode = await finalizeSweep(ctx, result);
+    // Task A7 (wave P2-3) — third in the same row and for the same reason: it
+    // persists the narrative as a system-authored report artifact and links
+    // `ai_agent_runs.report_run_id` BEFORE the awaiting_approval/completed
+    // decision below, and — the ordering that actually matters here — before
+    // `finishRun` emits the notification that POINTS AT that artifact. A run
+    // is exactly one of verdict / sweep / narrative, so at most one of the
+    // three error codes below is ever non-null.
+    const narrativeErrorCode = await finalizeNarrative(ctx, result);
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
@@ -1640,6 +1934,18 @@ export async function executeAgentRun(runId: string): Promise<void> {
       outcome.executedActions.length > 0
       || outcome.proposedActions.length > 0
       || outcome.alertVerdict !== undefined
+      // Same rule for a sweep run's ONE job (wave P2-2, task 6): a run that
+      // called `submit_sweep_findings` and only then hit `error_max_turns`
+      // has produced exactly what it was admitted to produce, and must not
+      // be counted a ceiling failure against the agent's circuit breaker.
+      || outcome.sweepFindings !== undefined
+      // Same rule again for a narrative run's ONE job (wave P2-3, task 6),
+      // and it bites harder here than for either sibling: `narrativeMaxTurns`
+      // is 3 by default, so a run that submits on its last turn and then has
+      // no turn left to write a closing sentence is the COMMON case, not an
+      // edge one. Without this it would finish `failed('max_turns_exceeded')`
+      // holding a complete, publishable narrative.
+      || outcome.narrative !== undefined
       || result.summary.trim().length > 0;
 
     const ceiling = outcome.wallClockExceeded
@@ -1658,7 +1964,12 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // done thinking and a human now owns the decision. Release of an approved
     // intent is 3b's machinery, not a continuation of this run.
     ledgerOutcome = 'completed';
-    await finishRun(ctx, intentIds.length > 0 ? 'awaiting_approval' : 'completed', verdictErrorCode, result);
+    await finishRun(
+      ctx,
+      intentIds.length > 0 ? 'awaiting_approval' : 'completed',
+      verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode,
+      result,
+    );
   } catch (error) {
     const errorCode = error instanceof AgentRunError
       ? error.errorCode
@@ -1776,6 +2087,169 @@ async function finalizeVerdict(ctx: RunContext, result: LoopResult): Promise<str
   }
 }
 
+/**
+ * Phase 2 wave P2-2 (scheduled sweeps), Task A7 — the sweep sibling of
+ * `finalizeVerdict` above, called from the SAME place in `executeAgentRun`
+ * (before the awaiting_approval/completed decision, outside any ambient DB
+ * context — `persistSweepFindings` inherits `createActionIntent`'s
+ * no-ambient-context precondition; see `alertVerdicts.ts:208-226`).
+ *
+ * Returns an errorCode override the caller applies ONLY on the normal-finish
+ * path, exactly as it does for `finalizeVerdict`'s. Unlike a verdict run, a
+ * sweep run that produced no findings is NOT an error: task 6 already treats
+ * `outcome.sweepFindings` as this profile's "produced something" signal, and a
+ * sweep that legitimately found nothing to report still completes cleanly.
+ *
+ * `evidenceDeviceIds` is built from `ctx.sweep.evidence` — the rows the
+ * SYSTEM loaded, not anything the model said — and is the control that keeps
+ * a crafted proposal from reaching a device this run never looked at. A run
+ * whose context carries no sweep block at all (defensive: `ctx.sweep` is
+ * populated for every sweep-profile run today) therefore has an EMPTY
+ * evidence set, which refuses every proposal — fail closed, never open.
+ */
+async function finalizeSweep(ctx: RunContext, result: LoopResult): Promise<string | null> {
+  if (!isSweepProfile(ctx.run)) return null;
+  const { outcome } = result;
+
+  // Recorded even when there are no findings: "the model only saw a sample"
+  // is true of the run regardless of what it chose to report.
+  if (ctx.sweep) outcome.sweepEvidenceTruncated = ctx.sweep.evidence.truncated;
+
+  if (!outcome.sweepFindings) return null;
+
+  // Same IMPORTANT-4 re-read as `finalizeVerdict`: the stall reaper
+  // (`reapStalledAgentRuns`) or a second executor may have moved this run out
+  // of `running` while the SDK loop was in flight. Skip persistence rather
+  // than mint live, human-approvable intents under a run nobody owns anymore.
+  const stillRunning = await isRunStillRunning(ctx.run.id, ctx.run.orgId);
+  if (!stillRunning) {
+    console.warn('[aiAgentRunLoop] skipped sweep persistence — run left `running` before it could be persisted', {
+      runId: ctx.run.id,
+    });
+    return null;
+  }
+
+  const evidenceDeviceIds = new Set<string>();
+  for (const kind of Object.values(ctx.sweep?.evidence.kinds ?? {})) {
+    for (const row of kind?.rows ?? []) {
+      if (row.deviceId) evidenceDeviceIds.add(row.deviceId);
+    }
+  }
+
+  try {
+    const { proposals, intentIds } = await persistSweepFindings(
+      {
+        id: ctx.run.id,
+        orgId: ctx.run.orgId,
+        agentId: ctx.run.agentId,
+        // A sweep run is device-less by construction — that is exactly why
+        // every intent it mints carries its own explicit device scope.
+        deviceId: null,
+        scheduleId: ctx.run.scheduleId,
+        // The AGENT's effective allowlist off the already-loaded run row —
+        // the same authority `agentReleaseAuthority.ts` re-checks at release.
+        toolAllowlist: ctx.run.policySnapshot.effective.toolAllowlist,
+        // The AGENT's action cap, NOT `sweepLimits`' hard `0` (which governs
+        // what the run LOOP may execute, and a sweep executes nothing). `??`
+        // tolerates a v1 policy snapshot, which predates the field entirely.
+        maxActionsPerRun:
+          ctx.run.policySnapshot.effective.limits.maxActionsPerRun
+          ?? AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun,
+        evidenceDeviceIds,
+      },
+      outcome.sweepFindings,
+      result.agentAuth,
+    );
+    if (proposals.length > 0) outcome.sweepProposals = proposals;
+    for (const intentId of intentIds) result.intentIds.push(intentId);
+    return null;
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to persist sweep findings', { runId: ctx.run.id, error });
+    return 'sweep_persist_failed';
+  }
+}
+
+/**
+ * Phase 2 wave P2-3 (weekly org narrative), Task A7 — the narrative sibling of
+ * `finalizeVerdict`/`finalizeSweep` above, called from the SAME place in
+ * `executeAgentRun` and outside any ambient DB context (`persistNarrativeReport`
+ * opens its own system transaction and would take a second pooled connection
+ * from inside one).
+ *
+ * Returns an errorCode override the caller applies ONLY on the normal-finish
+ * path, exactly as it does for the two siblings'.
+ *
+ * A narrative run that produced NOTHING is an error, unlike a sweep that found
+ * nothing: a sweep legitimately reports "all clear", but the narrative IS the
+ * deliverable — an occurrence that yields no document is a silent hole in a
+ * weekly series an MSP forwards to their customer, and `narrative_missing` is
+ * what makes that visible on the run row instead of a clean `completed` with
+ * nothing behind it.
+ *
+ * `narrative_no_schedule` is deliberately separate from a persistence failure:
+ * the definition's identity IS `(org_id, source_ai_agent_schedule_id)`, so
+ * without a schedule there is no row to find-or-create and no idempotency at
+ * all — a manually triggered narrative run would mint a fresh definition every
+ * time. Refusing is the conservative answer; the narrative still lives on the
+ * run's own outcome and renders on the run-detail page.
+ */
+async function finalizeNarrative(ctx: RunContext, result: LoopResult): Promise<string | null> {
+  if (!isNarrativeProfile(ctx.run)) return null;
+  const { outcome } = result;
+
+  if (!outcome.narrative) return 'narrative_missing';
+  if (!ctx.narrative?.scheduleId) {
+    console.warn('[aiAgentRunLoop] narrative run carries no schedule — not persisting a report definition', {
+      runId: ctx.run.id, orgId: ctx.run.orgId,
+    });
+    return 'narrative_no_schedule';
+  }
+
+  // Same IMPORTANT-4 re-read both siblings carry: the stall reaper
+  // (`reapStalledAgentRuns`) or a second executor may have moved this run out
+  // of `running` while the SDK loop was in flight. Skip rather than publish a
+  // customer-facing artifact under a run nobody owns any more. (A tiny window
+  // remains between this read and the transaction below — closed properly
+  // there, by the `FOR UPDATE` lock plus the `report_run_id IS NULL` CAS.)
+  const stillRunning = await isRunStillRunning(ctx.run.id, ctx.run.orgId);
+  if (!stillRunning) {
+    console.warn('[aiAgentRunLoop] skipped narrative persistence — run left `running` before it could be persisted', {
+      runId: ctx.run.id,
+    });
+    return null;
+  }
+
+  try {
+    const { reportId, reportRunId } = await persistNarrativeReport({
+      run: {
+        id: ctx.run.id,
+        orgId: ctx.run.orgId,
+        agentId: ctx.run.agentId,
+        scheduleId: ctx.narrative.scheduleId,
+      },
+      agent: { id: ctx.agent.id, name: ctx.agent.name },
+      occurrenceKey: ctx.narrative.occurrenceKey || null,
+      context: ctx.narrative.context,
+      outcome: outcome.narrative,
+    });
+    // TWO ids, never the narrative or the context — see the field's docstring.
+    outcome.narrativeReport = { reportId, reportRunId };
+    return null;
+  } catch (error) {
+    if (error instanceof NarrativePersistConflictError) {
+      // A race that resolved correctly (another executor linked an artifact,
+      // or the run moved) — logged at warn, not error, and given its own code
+      // so it is distinguishable from a genuine write failure on the run row.
+      console.warn('[aiAgentRunLoop] narrative artifact was not linked to this run', {
+        runId: ctx.run.id, reason: (error as Error).message,
+      });
+      return 'narrative_persist_conflict';
+    }
+    console.error('[aiAgentRunLoop] failed to persist the narrative report', { runId: ctx.run.id, error });
+    return 'narrative_persist_failed';
+  }
+}
+
 /** IMPORTANT 4 helper — see `finalizeVerdict`. System-scoped: this runs from
  *  the background run loop, with no ambient request context. */
 async function isRunStillRunning(runId: string, orgId: string): Promise<boolean> {
@@ -1839,7 +2313,24 @@ async function finishRun(
   // for regression). Both are best-effort/failure-tolerant machinery built
   // for `full`-profile runs; there is nothing here for a verdict run to skip
   // INTO a gap — this is a deliberate no-op, not a missing feature.
-  if (!isVerdictProfile(ctx.run)) {
+  //
+  // Wave P2-2 (task 6) SPLIT the two: a SWEEP run does notify. Nobody is
+  // watching a 06:00 cron occurrence, and unlike a verdict it leaves no
+  // badge on an alert row a technician was already looking at — the
+  // run-finished notification IS the surface for it. It still schedules no
+  // fix-watch: a sweep executes nothing, so there is no fix whose
+  // regression could be watched for.
+  //
+  // Wave P2-3 (task 6): a NARRATIVE run lands on the same side of both splits
+  // as a sweep, for the same two reasons — nobody is watching a Monday 07:00
+  // occurrence and it leaves no badge on a row someone was already looking
+  // at (so it notifies), and it executes nothing (so there is no fix to
+  // watch). Task A7 re-points the notification's title/link at the stored
+  // report artifact; the DECISION to notify at all is this line.
+  const notifies = !isVerdictProfile(ctx.run);
+  const watches = !isVerdictProfile(ctx.run) && !isSweepProfile(ctx.run) && !isNarrativeProfile(ctx.run);
+
+  if (notifies) {
     try {
       await deliverRunFinishedNotifications(ctx.run.id);
     } catch (error) {
@@ -1848,20 +2339,20 @@ async function finishRun(
       });
       await enqueueAgentNotifyRetry(ctx.run.id);
     }
+  }
 
-    // Fix-held watch scheduling (wave 6 PR 2, Task 3, #3828) — best-effort and
-    // deliberately never affects this run's own status: `scheduleFixWatch`
-    // swallows every failure internally (see its header). Only a clean
-    // `completed` finish is eligible at all (`awaiting_approval`/`failed` never
-    // are — `isFixWatchEligible` would reject them anyway via `modeAtStart`/
-    // `verification`, but gating on `status` here avoids the query entirely on
-    // the common non-completed paths).
-    if (status === 'completed') {
-      await scheduleFixWatch(
-        { id: ctx.run.id, orgId: ctx.run.orgId, agentId: ctx.run.agentId, alertId: ctx.run.alertId, modeAtStart: ctx.run.modeAtStart },
-        result.outcome,
-      );
-    }
+  // Fix-held watch scheduling (wave 6 PR 2, Task 3, #3828) — best-effort and
+  // deliberately never affects this run's own status: `scheduleFixWatch`
+  // swallows every failure internally (see its header). Only a clean
+  // `completed` finish is eligible at all (`awaiting_approval`/`failed` never
+  // are — `isFixWatchEligible` would reject them anyway via `modeAtStart`/
+  // `verification`, but gating on `status` here avoids the query entirely on
+  // the common non-completed paths).
+  if (watches && status === 'completed') {
+    await scheduleFixWatch(
+      { id: ctx.run.id, orgId: ctx.run.orgId, agentId: ctx.run.agentId, alertId: ctx.run.alertId, modeAtStart: ctx.run.modeAtStart },
+      result.outcome,
+    );
   }
 }
 

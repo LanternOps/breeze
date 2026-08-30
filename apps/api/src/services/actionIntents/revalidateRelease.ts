@@ -7,6 +7,7 @@ import { policyDecideEnabled } from '../../config/env';
 import { validateAuthorizationKeys } from './policyDecidable';
 import { buildAuthContextForIntent } from './actorContext';
 import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
+import { IntentScopeLostError } from './intentTargetScope';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 
 /**
@@ -176,7 +177,26 @@ export async function revalidateApprovedIntentForRelease(
 
   // (c) The actor must still be valid: rebuild the AuthContext from scratch,
   // re-checking the user is active and still has access to intent.orgId.
-  const auth = await buildAuthContextForIntent(intent);
+  //
+  // P2-2 (#4189): the rebuild runs BEFORE the agent-authority check in (e),
+  // so it — not `checkAgentReleaseAuthority` — is what actually observes a
+  // lost device scope first. `IntentScopeLostError` is the one typed
+  // exception it raises (everything else still collapses to `null` ⇒
+  // `actor_invalid`); mapping it here keeps the terminal errorCode
+  // `agent_scope_lost` rather than letting it escape as an unhandled throw
+  // that BullMQ would redeliver forever for a device that is never coming
+  // back. `checkAgentReleaseAuthority` returns the SAME code for the case
+  // where it gets there first (a policy-decided intent, or a future caller
+  // that skips this step).
+  let auth: AuthContext | null;
+  try {
+    auth = await buildAuthContextForIntent(intent);
+  } catch (error) {
+    if (error instanceof IntentScopeLostError) {
+      return { ok: false, errorCode: error.code, details: { reason: error.message } };
+    }
+    throw error;
+  }
   if (!auth) {
     return { ok: false, errorCode: 'actor_invalid' };
   }

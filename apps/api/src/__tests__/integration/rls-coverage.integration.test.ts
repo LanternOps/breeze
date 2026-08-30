@@ -311,6 +311,16 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // ai_agents_one_owner_chk enforces exactly one axis. Functional cross-partner
   // forge proof: aiAgentsPartnerRls.integration.test.ts.
   'ai_agents',
+  // ai_agent_schedules (Phase 2 wave P2-2, #4189): a schedule is org-scoped
+  // (org_id set, an override of a partner baseline) OR partner-wide
+  // (partner_id set, org_id NULL, the baseline). Created dual-axis from day
+  // one in 2026-09-23-ai-agents-scheduled-sweeps. Same blindspot as
+  // ai_agents above: the org_id column means org-tenant auto-discovery
+  // already asserts the breeze_has_org_access branch, so this entry is what
+  // asserts the breeze_has_partner_access (partner-wide) branch. CHECK
+  // ai_agent_schedules_one_owner_chk enforces exactly one axis. Functional
+  // cross-partner forge proof: aiAgentSchedulesPartnerRls.integration.test.ts.
+  'ai_agent_schedules',
   // custom_field_definitions: a field is org-scoped (org_id set) OR
   // partner-wide (partner_id set, org_id NULL). Shipped org-only in the
   // baseline; converted to dual-axis in 2026-06-11-i-custom-fields-dual-axis-rls.
