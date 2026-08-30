@@ -16,7 +16,12 @@
  *  - `occurrence` — the fan-out. Re-reads the baseline (it may have been
  *    disabled or deleted, or its agent soft-deleted, since the tick), merges
  *    each org's tighten-only override through `effectiveSchedule`, and admits
- *    one `profile: 'sweep'` run per org through `createAndEnqueueAgentRun`.
+ *    one run per org through `createAndEnqueueAgentRun` — `profile: 'sweep'`
+ *    for a `kind: 'sweep'` baseline, `profile: 'narrative'` for a
+ *    `kind: 'narrative'` one (P2-3, the weekly org narrative). Everything
+ *    else about the occurrence — the cadence, the CAS, the org enumeration,
+ *    the cap, the skip tally, the aggregate-only `last_run_summary` — is
+ *    identical for both kinds.
  *
  * ## Idempotency: jobId first, CAS second
  *
@@ -87,7 +92,7 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { and, asc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 
-import type { AiAgentScheduleRunSummary, AiSweepKind } from '@breeze/shared';
+import type { AiAgentScheduleKind, AiAgentScheduleRunSummary, AiSweepKind } from '@breeze/shared';
 
 // Late-bound namespace import (NOT `const { db } = dbModule`): destructuring
 // at module scope freezes the binding at import time, before a test's
@@ -312,6 +317,14 @@ interface OccurrenceBaselineRow {
   id: string;
   agentId: string;
   partnerId: string | null;
+  /**
+   * P2-3. What this occurrence PRODUCES: `sweep` fans out one sweep-profile
+   * run per org (findings), `narrative` fans out one narrative-profile run
+   * per org (that org's weekly report). Read from the eligibility row rather
+   * than the resolver's copy because it is immutable — `updateAiAgentScheduleSchema`
+   * never admits it — so the two can only ever agree.
+   */
+  kind: AiAgentScheduleKind;
   sweepKinds: AiSweepKind[];
   enabled: boolean;
 }
@@ -329,6 +342,7 @@ async function loadOccurrenceBaseline(scheduleId: string): Promise<OccurrenceBas
       id: aiAgentSchedules.id,
       agentId: aiAgentSchedules.agentId,
       partnerId: aiAgentSchedules.partnerId,
+      kind: aiAgentSchedules.kind,
       sweepKinds: aiAgentSchedules.sweepKinds,
       enabled: aiAgentSchedules.enabled,
     })
@@ -453,6 +467,10 @@ async function writeEmptySummary(
 /**
  * Fan ONE occurrence out across every org under the schedule's partner.
  *
+ * The schedule's `kind` decides WHAT each org gets (one sweep-profile run, or
+ * one narrative-profile run) and nothing else; the counters still reconcile
+ * the same way for both — `orgsTotal === runsAdmitted + runsSkipped`.
+ *
  * The returned (and stored) `last_run_summary` is AGGREGATE ONLY — counters
  * and a skip-reason histogram, never an org id or name. A partner baseline is
  * legible to each of its orgs through the effective resolver
@@ -538,6 +556,10 @@ export async function processSweepOccurrence(
     enqueuedAt: new Date().toISOString(),
   });
 
+  // P2-3. Hoisted out of the loop: `kind` is immutable for the lifetime of a
+  // schedule row, so this is a property of the OCCURRENCE, not of any one org.
+  const isNarrative = baseline.kind === 'narrative';
+
   let summary: AiAgentScheduleRunSummary;
   try {
     for (const orgId of orgIds) {
@@ -556,7 +578,14 @@ export async function processSweepOccurrence(
       );
       // An override that disables, or that intersects the baseline down to no
       // kinds at all, is the same outcome: this org has nothing to sweep.
-      if (!effective.enabled || effective.sweepKinds.length === 0) {
+      //
+      // The kinds half of that is SWEEP-ONLY. A narrative schedule sweeps
+      // nothing by definition (`ai_agent_schedules_kind_kinds_chk` forbids any
+      // other shape), so applying the guard to it would skip every org on
+      // every occurrence and the feature would never fire. An org override of
+      // a narrative baseline therefore has exactly one lever — `enabled` —
+      // and it still works.
+      if (!effective.enabled || (!isNarrative && effective.sweepKinds.length === 0)) {
         countSkip('override_disabled');
         continue;
       }
@@ -571,16 +600,33 @@ export async function processSweepOccurrence(
         // No ambient DB context here — `createAndEnqueueAgentRun` manages its
         // own (see `alertVerdictSubscriber.ts`'s header on the #1105
         // pool-hold seam).
-        const result = await createAndEnqueueAgentRun({
-          orgId,
-          kind: 'triage',
-          triggerKind: 'schedule',
-          deviceId: null,
-          profile: 'sweep',
-          scheduleId: baseline.id,
-          triggerRef: { scheduleId: baseline.id, occurrenceKey, sweepKinds: effective.sweepKinds },
-          dedupeKey: `sweep-${baseline.id}-${orgId}-${occurrenceKey}`,
-        });
+        //
+        // The two arms differ ONLY in profile, triggerRef and dedupe key. The
+        // dedupe key is namespaced by profile on purpose: `(org_id,
+        // dedupe_key)` is a real unique index, so a shared `sweep-` prefix
+        // would make a narrative and a sweep run for the same (schedule, org,
+        // occurrence) collide and silently drop one of them.
+        const result = isNarrative
+          ? await createAndEnqueueAgentRun({
+            orgId,
+            kind: 'triage',
+            triggerKind: 'schedule',
+            deviceId: null,
+            profile: 'narrative',
+            scheduleId: baseline.id,
+            triggerRef: { scheduleId: baseline.id, occurrenceKey, kind: 'narrative' },
+            dedupeKey: `narrative-${baseline.id}-${orgId}-${occurrenceKey}`,
+          })
+          : await createAndEnqueueAgentRun({
+            orgId,
+            kind: 'triage',
+            triggerKind: 'schedule',
+            deviceId: null,
+            profile: 'sweep',
+            scheduleId: baseline.id,
+            triggerRef: { scheduleId: baseline.id, occurrenceKey, sweepKinds: effective.sweepKinds },
+            dedupeKey: `sweep-${baseline.id}-${orgId}-${occurrenceKey}`,
+          });
 
         if (result.created) runsAdmitted++;
         else countSkip(result.skipped);
@@ -607,7 +653,9 @@ export async function processSweepOccurrence(
     }
   }
 
-  console.info('[AiAgentSweepScheduler] sweep occurrence fanned out', { scheduleId, ...summary });
+  console.info('[AiAgentSweepScheduler] schedule occurrence fanned out', {
+    scheduleId, kind: baseline.kind, ...summary,
+  });
   return summary;
 }
 

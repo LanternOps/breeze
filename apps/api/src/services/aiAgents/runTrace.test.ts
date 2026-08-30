@@ -25,6 +25,9 @@ function baseRun(overrides: Partial<RunTraceRunInput> = {}): RunTraceRunInput {
     // `triggerRef` (see `projectSweep`).
     scheduleId: null,
     triggerRef: {},
+    // Phase 2 wave P2-3 (weekly org narrative), Task A7 — the report_runs
+    // artifact a narrative run was materialised into; `null` everywhere else.
+    reportRunId: null,
     outcome: {},
     turnCount: 3,
     costCents: 12,
@@ -583,6 +586,125 @@ describe('buildRunTrace — safe projection (#3828)', () => {
 
       expect(detail.sweep?.findings[0]?.deviceId).toBe(DEVICE_ID);
       expect(detail.sweep?.findings[0]?.deviceHostname).toBe('WS-ACCT-04');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 2 wave P2-3 (weekly org narrative), task 6 — leak tripwire.
+  //
+  // The weekly `NarrativeContext` is a whole organization's activity,
+  // assembled under a SYSTEM db context that bypasses RLS. It exists to be
+  // rendered into ONE prompt. `buildRunTrace` is a named-field projection, so
+  // the guarantee is structural rather than filtered — this case pins it, and
+  // pins it against the shape a future task is most likely to reach for
+  // (stashing the context on the outcome "so the report can quote it").
+  // -------------------------------------------------------------------------
+  describe('narrative run projection (P2-3)', () => {
+    const SCHEDULE_ID = '77777777-7777-4777-8777-777777777777';
+
+    it('never carries the weekly narrative context onto the trace, even when the outcome holds one', () => {
+      const detail = buildRunTrace(
+        baseRun({
+          deviceId: null,
+          triggerKind: 'schedule',
+          scheduleId: SCHEDULE_ID,
+          triggerRef: { scheduleId: SCHEDULE_ID, occurrenceKey: '2026-08-31T07:00:00Z', kind: 'narrative' },
+          outcome: {
+            executedActions: [],
+            proposedActions: [],
+            deniedActions: [],
+            toolExecutionCount: 0,
+            narrative: {
+              version: 1,
+              headline: 'A quiet week.',
+              sections: [{ key: 'overview', title: 'Overview', bullets: ['Nothing needed a person.'] }],
+              markdown: '# A quiet week.\n\n## Overview\n- Nothing needed a person.',
+            },
+            // Not a field of `AgentRunOutcome` — deliberately forged onto the
+            // stored jsonb, which is exactly how this would reach the DTO if
+            // the projection ever became a spread.
+            narrativeContext: {
+              org: { name: 'Acme Dental', partnerName: 'zzz-leak-marker-zzz' },
+              unavailable: ['alerts.suppressedInWindow'],
+              toolInput: { secret: 'zzz-leak-marker-zzz' },
+            },
+          } as never,
+        }),
+        AGENT,
+        null,
+        [],
+        [],
+      );
+
+      const json = JSON.stringify(detail);
+      for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+        expect(json).not.toContain(`"${forbidden}"`);
+      }
+      for (const forbidden of ['narrativeContext', 'context', 'unavailable', 'partnerName']) {
+        expect(json, `trace must not carry "${forbidden}"`).not.toContain(`"${forbidden}"`);
+      }
+      expect(json).not.toContain('zzz-leak-marker-zzz');
+      // Control: the run itself still projected — a trace that dropped
+      // everything would pass every assertion above vacuously.
+      expect(detail.id).toBe(RUN_ID);
+      expect(detail.status).toBe('completed');
+
+      // The narrative IS projected (a run that produced one must render), and
+      // still leaks nothing — this is the discriminating half of the tripwire
+      // above, which would otherwise pass on a DTO that dropped everything.
+      expect(detail.narrative?.headline).toBe('A quiet week.');
+      expect(detail.narrative?.sections.map((s) => s.key)).toEqual(['overview']);
+    });
+
+    it('projects the artifact linkage a narrative run was materialised into', () => {
+      const REPORT_ID = '88888888-8888-4888-8888-888888888888';
+      const REPORT_RUN_ID = '99999999-9999-4999-8999-999999999999';
+
+      const detail = buildRunTrace(
+        baseRun({
+          deviceId: null,
+          triggerKind: 'schedule',
+          scheduleId: SCHEDULE_ID,
+          reportRunId: REPORT_RUN_ID,
+          outcome: {
+            narrative: {
+              version: 1,
+              headline: 'A quiet week.',
+              sections: [{ key: 'overview', title: 'Overview', bullets: ['Nothing needed a person.'] }],
+              markdown: '# A quiet week.',
+            },
+            narrativeReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+          } as never,
+        }),
+        AGENT,
+        null,
+        [],
+        [],
+        new Map(),
+        {
+          reportId: REPORT_ID,
+          periodStart: '2026-08-24T07:00:00+02:00',
+          periodEnd: '2026-08-31T07:00:00+02:00',
+          contextTruncated: true,
+        },
+      );
+
+      expect(detail.reportRunId).toBe(REPORT_RUN_ID);
+      expect(detail.narrative).toMatchObject({
+        reportRunId: REPORT_RUN_ID,
+        reportId: REPORT_ID,
+        downloadPath: `/api/reports/runs/${REPORT_RUN_ID}/download`,
+        periodStart: '2026-08-24T07:00:00+02:00',
+        periodEnd: '2026-08-31T07:00:00+02:00',
+        contextTruncated: true,
+      });
+    });
+
+    it('projects null narrative/reportRunId for every non-narrative run', () => {
+      const detail = buildRunTrace(baseRun(), AGENT, DEVICE, [], []);
+
+      expect(detail.narrative).toBeNull();
+      expect(detail.reportRunId).toBeNull();
     });
   });
 });

@@ -542,6 +542,32 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
       WHERE catalog_id IN (SELECT id FROM software_catalog WHERE org_id = ${orgId})
     `,
   },
+  // report_runs has NO org_id column of its own — its tenancy is its parent
+  // definition's — so neither the org cascade list nor the partner-axis sweep
+  // reaches it, yet `report_runs_report_id_reports_id_fk` is declared without
+  // an explicit ON DELETE (verified in pg_constraint: confdeltype 'a' =
+  // NO ACTION). The main loop's `DELETE FROM reports WHERE org_id = ...`
+  // therefore aborts with 23503 for ANY org that has ever generated a report
+  // — a PRE-EXISTING latent GDPR erasure bug (found by P2-3's own
+  // narrative-artifact fixture, #4190, but not caused by it: an ordinary
+  // scheduled report has produced these rows since the feature shipped).
+  //
+  // Safe to clear first: the only FK INTO report_runs is
+  // `ai_agent_runs.report_run_id`, which is ON DELETE SET NULL (confdeltype
+  // 'n'), so the run rows survive this statement with a null link and are
+  // then deleted by the main loop on their own org_id.
+  //
+  // No partner-axis twin is needed (unlike the SSO/PSA/software entries):
+  // `reports.org_id` is NOT NULL, so every definition — and therefore every
+  // report_runs row — is reached through the per-child-org cascadeDeleteOrg
+  // calls the partner purge already makes.
+  {
+    table: 'report_runs',
+    clearSql: (orgId) => sql`
+      DELETE FROM report_runs
+      WHERE report_id IN (SELECT id FROM reports WHERE org_id = ${orgId})
+    `,
+  },
 ];
 
 /**

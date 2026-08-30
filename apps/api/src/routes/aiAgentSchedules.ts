@@ -60,6 +60,7 @@ function mapScheduleRow(row: AiAgentScheduleRow): AiAgentScheduleDto {
     partnerId: row.partnerId,
     agentId: row.agentId,
     baselineScheduleId: row.baselineScheduleId,
+    kind: row.kind,
     cron: row.cron,
     timezone: row.timezone,
     sweepKinds: row.sweepKinds,
@@ -151,6 +152,10 @@ aiAgentSchedulesRoutes.post(
           ownerScope: row.partnerId ? 'partner' : 'organization',
           agentId: row.agentId,
           baselineScheduleId: row.baselineScheduleId,
+          // P2-3: what the schedule PRODUCES (sweep findings vs. a weekly org
+          // narrative). Audited on create because it is immutable afterwards
+          // — there is no later event that could record it.
+          kind: row.kind,
           sweepKinds: row.sweepKinds,
         },
       });

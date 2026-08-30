@@ -26,6 +26,28 @@ export const AI_SWEEP_KINDS = [
 ] as const;
 export type AiSweepKind = (typeof AI_SWEEP_KINDS)[number];
 
+/**
+ * Phase 2 wave P2-3 (weekly org narrative) — what a schedule occurrence
+ * PRODUCES. `sweep` is every schedule that existed before P2-3 (hence the
+ * create schema's default, and the migration's column default): the
+ * occurrence fans out one `sweep`-profile run per org. `narrative` fans out
+ * one `narrative`-profile run per org instead, producing that org's weekly
+ * report rather than findings.
+ *
+ * The two kinds carry genuinely different admission rules, so the create
+ * schema branches on this rather than inferring the kind from an empty
+ * `sweepKinds`: a narrative schedule sweeps nothing and must fire exactly
+ * once a week (see `isWeeklyLiteralCron`), where a sweep schedule must
+ * select at least one kind and may fire as often as hourly.
+ *
+ * `kind` lives on the BASELINE only. An org-level override inherits it and
+ * can never change it — an override that could flip a sweep baseline into a
+ * narrative one for a single org would silently produce a run profile the
+ * partner never configured.
+ */
+export const AI_AGENT_SCHEDULE_KINDS = ['sweep', 'narrative'] as const;
+export type AiAgentScheduleKind = (typeof AI_AGENT_SCHEDULE_KINDS)[number];
+
 /** Severity a sweep evaluator assigns to one `SweepFinding`. */
 export const AI_SWEEP_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 export type AiSweepSeverity = (typeof AI_SWEEP_SEVERITIES)[number];
@@ -93,6 +115,10 @@ export interface AiAgentScheduleDto {
   partnerId: string | null;
   agentId: string;
   baselineScheduleId: string | null;
+  /** `sweep` for every schedule created before P2-3 — see
+   *  `AI_AGENT_SCHEDULE_KINDS`. An org override always reports its
+   *  baseline's kind, never one of its own. */
+  kind: AiAgentScheduleKind;
   cron: string;
   timezone: string;
   sweepKinds: AiSweepKind[];

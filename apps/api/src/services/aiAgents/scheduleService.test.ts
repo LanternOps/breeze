@@ -150,6 +150,9 @@ const OVERRIDE_ID = '00000000-0000-4000-8000-000000000008';
 const USER_ID = '00000000-0000-4000-8000-000000000009';
 
 const CRON = '0 6 * * *';
+/** Monday 07:00 — literal minute/hour, `*` day-of-month and month, one
+ *  day-of-week. The only shape `isWeeklyLiteralCron` accepts. */
+const NARRATIVE_CRON = '0 7 * * 1';
 const RUN_ID = '00000000-0000-4000-8000-00000000000a';
 const AI_AGENT_PRINCIPAL = { kind: 'ai_agent', agentId: AGENT_ID, runId: RUN_ID } as const;
 
@@ -216,6 +219,7 @@ function baselineRow(overrides: Record<string, unknown> = {}) {
     partnerId: PARTNER_ID,
     agentId: AGENT_ID,
     baselineScheduleId: null,
+    kind: 'sweep' as const,
     cron: CRON,
     timezone: 'Europe/Berlin',
     sweepKinds: ['disk_pressure', 'stale_agents', 'failed_backups'] as AiSweepKind[],
@@ -324,6 +328,10 @@ describe('effectiveSchedule', () => {
 describe('createSchedule — partner baseline', () => {
   const input = {
     ownerScope: 'partner' as const,
+    // `createPartnerScheduleSchema.kind` defaults to 'sweep', so the service's
+    // input type has it REQUIRED after parsing — every pre-P2-3 body still
+    // arrives here carrying it.
+    kind: 'sweep' as const,
     agentId: AGENT_ID,
     cron: CRON,
     timezone: 'Europe/Berlin',
@@ -423,6 +431,80 @@ describe('createSchedule — partner baseline', () => {
     await expect(
       createSchedule(partnerAuth({ principal: AI_AGENT_PRINCIPAL }), input),
     ).rejects.toBeInstanceOf(AgentAccessDeniedError);
+    expect(dbState.inserted).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // P2-3 — `kind` (sweep | narrative)
+  // -------------------------------------------------------------------------
+
+  it('persists the sweep kind for a pre-P2-3 shaped create', async () => {
+    dbState.agentRows = [[agentRow()]];
+    dbState.insertReturning = baselineRow();
+
+    await createSchedule(partnerAuth(), input);
+
+    // NOT merely "the column defaults to sweep in Postgres": an omitted
+    // `kind` on the INSERT would make the DB default the only thing deciding
+    // it, and a future default change would silently re-point every schedule.
+    expect(dbState.inserted).toMatchObject({ kind: 'sweep' });
+  });
+
+  const narrativeInput = { ...input, kind: 'narrative' as const, cron: NARRATIVE_CRON, sweepKinds: [] as AiSweepKind[] };
+
+  it('inserts a narrative baseline with no sweep kinds on a weekly cron', async () => {
+    dbState.agentRows = [[agentRow()]];
+    dbState.insertReturning = baselineRow({ kind: 'narrative', sweepKinds: [], cron: NARRATIVE_CRON });
+
+    await createSchedule(partnerAuth(), narrativeInput);
+
+    expect(dbState.inserted).toMatchObject({
+      kind: 'narrative',
+      sweepKinds: [],
+      cron: NARRATIVE_CRON,
+      partnerId: PARTNER_ID,
+      orgId: null,
+    });
+  });
+
+  it('rejects a narrative baseline that carries sweep kinds (kinds_not_empty)', async () => {
+    dbState.agentRows = [[agentRow()]];
+
+    await expect(
+      createSchedule(partnerAuth(), { ...narrativeInput, sweepKinds: ['disk_pressure'] as AiSweepKind[] }),
+    ).rejects.toMatchObject({ code: 'kinds_not_empty' });
+    expect(dbState.inserted).toBeNull();
+  });
+
+  // The zod schema enforces this too; the service is reachable from non-HTTP
+  // callers, so it has to hold here or the schema is the only guard. Each of
+  // these clears the HOURLY floor and is still not weekly.
+  it.each(['0 6 * * *', '0 7 * * 1,3', '0 7 1 * *', '0,30 7 * * 1'])(
+    'rejects a narrative baseline on the non-weekly cron %s (invalid_cron_for_kind)',
+    async (cron) => {
+      dbState.agentRows = [[agentRow()]];
+
+      await expect(
+        createSchedule(partnerAuth(), { ...narrativeInput, cron }),
+      ).rejects.toMatchObject({ code: 'invalid_cron_for_kind' });
+      expect(dbState.inserted).toBeNull();
+    },
+  );
+
+  it('still applies the hourly cadence floor to a SWEEP baseline', async () => {
+    dbState.agentRows = [[agentRow()]];
+
+    await expect(
+      createSchedule(partnerAuth(), { ...input, cron: '*/15 * * * *' }),
+    ).rejects.toMatchObject({ code: 'invalid_cron' });
+  });
+
+  it('rejects a SWEEP baseline that sweeps nothing (kinds_empty)', async () => {
+    dbState.agentRows = [[agentRow()]];
+
+    await expect(
+      createSchedule(partnerAuth(), { ...input, sweepKinds: [] as AiSweepKind[] }),
+    ).rejects.toMatchObject({ code: 'kinds_empty' });
     expect(dbState.inserted).toBeNull();
   });
 });
@@ -530,6 +612,48 @@ describe('createSchedule — org override', () => {
     await expect(
       createSchedule(orgAuth({ principal: AI_AGENT_PRINCIPAL }), input),
     ).rejects.toBeInstanceOf(AgentAccessDeniedError);
+  });
+
+  // -------------------------------------------------------------------------
+  // P2-3 — the override COPIES the baseline's kind
+  // -------------------------------------------------------------------------
+
+  it("copies a sweep baseline's kind onto the override row", async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+    dbState.insertReturning = overrideRow();
+
+    await createSchedule(orgAuth(), input);
+
+    expect(dbState.inserted).toMatchObject({ kind: 'sweep' });
+  });
+
+  it("copies a narrative baseline's kind onto the override row", async () => {
+    // `ai_agent_schedules_baseline_kind_fk` is a COMPOSITE self-FK on
+    // (baseline_schedule_id, kind) — an override that omitted this, or wrote
+    // the column's 'sweep' default, is a 23503 at insert time, not a silent
+    // mismatch. Client input never reaches this field.
+    dbState.scheduleRows = [[baselineRow({ kind: 'narrative', sweepKinds: [], cron: NARRATIVE_CRON })]];
+    dbState.insertReturning = overrideRow({ kind: 'narrative', sweepKinds: [] });
+
+    await createSchedule(orgAuth(), { ...input, sweepKinds: [] });
+
+    expect(dbState.inserted).toMatchObject({
+      kind: 'narrative',
+      sweepKinds: [],
+      cron: NARRATIVE_CRON,
+      baselineScheduleId: BASELINE_ID,
+    });
+  });
+
+  it('refuses an override that adds sweep kinds to a narrative baseline', async () => {
+    // A narrative baseline sweeps `[]`, so ANY kind is a widening — the
+    // subset rule already covers it, and the DB CHECK backs it up.
+    dbState.scheduleRows = [[baselineRow({ kind: 'narrative', sweepKinds: [] })]];
+
+    await expect(
+      createSchedule(orgAuth(), { ...input, sweepKinds: ['disk_pressure'] as AiSweepKind[] }),
+    ).rejects.toMatchObject({ code: 'kinds_not_subset' });
+    expect(dbState.inserted).toBeNull();
   });
 });
 
@@ -728,6 +852,58 @@ describe('updateSchedule', () => {
 
     expect(dbState.updates).toHaveLength(1);
   });
+
+  // -------------------------------------------------------------------------
+  // P2-3 — a PATCH cannot walk a narrative baseline out of its own rules
+  // -------------------------------------------------------------------------
+
+  function narrativeBaseline(over: Record<string, unknown> = {}) {
+    return baselineRow({ kind: 'narrative', sweepKinds: [], cron: NARRATIVE_CRON, ...over });
+  }
+
+  it('rejects a non-weekly cron on a NARRATIVE baseline (invalid_cron_for_kind)', async () => {
+    // `kind` is immutable (the update schema never admits it), so the stored
+    // row is what decides which cadence rule applies — a daily cron here
+    // would turn a "weekly report" into seven overlapping ones.
+    dbState.scheduleRows = [[narrativeBaseline()]];
+
+    await expect(
+      updateSchedule(partnerAuth(), BASELINE_ID, { cron: '0 6 * * *' }),
+    ).rejects.toMatchObject({ code: 'invalid_cron_for_kind' });
+    expect(dbState.updatedValues).toBeNull();
+  });
+
+  it('accepts a weekly cron on a narrative baseline', async () => {
+    dbState.scheduleRows = [[narrativeBaseline()]];
+    dbState.updateReturning = narrativeBaseline({ cron: '30 8 * * 5' });
+
+    const row = await updateSchedule(partnerAuth(), BASELINE_ID, { cron: '30 8 * * 5' });
+
+    expect(row.cron).toBe('30 8 * * 5');
+    expect(dbState.updatedValues).toMatchObject({ cron: '30 8 * * 5' });
+  });
+
+  it('refuses a non-empty sweepKinds list on a narrative baseline (kinds_not_empty)', async () => {
+    dbState.scheduleRows = [[narrativeBaseline()]];
+
+    await expect(
+      updateSchedule(partnerAuth(), BASELINE_ID, { sweepKinds: ['disk_pressure'] as AiSweepKind[] }),
+    ).rejects.toMatchObject({ code: 'kinds_not_empty' });
+    expect(dbState.updatedValues).toBeNull();
+  });
+
+  it('does NOT raise kinds_empty for an empty list on a narrative baseline', async () => {
+    // `kinds_empty` is a SWEEP-only rule ("a baseline that sweeps nothing is
+    // just a disabled schedule"). A narrative baseline sweeps nothing BY
+    // DEFINITION, so the same `[]` is the only value it may ever hold.
+    dbState.scheduleRows = [[narrativeBaseline()]];
+    dbState.updateReturning = narrativeBaseline();
+
+    const row = await updateSchedule(partnerAuth(), BASELINE_ID, { sweepKinds: [] });
+
+    expect(row.sweepKinds).toEqual([]);
+    expect(dbState.updatedValues).toMatchObject({ sweepKinds: [] });
+  });
 });
 
 describe('deleteSchedule', () => {
@@ -832,6 +1008,17 @@ describe('listSchedules', () => {
     dbState.scheduleRows = [];
 
     expect(await listSchedules(orgAuth(), {})).toEqual([]);
+  });
+
+  // The DTO is what the web schedule page branches on to decide whether to
+  // render a sweep-kind selector at all; without `kind` a narrative schedule
+  // is indistinguishable from a sweep one that happens to sweep nothing.
+  it.each(['sweep', 'narrative'] as const)('emits kind=%s on the schedule DTO', async (kind) => {
+    dbState.scheduleRows = [[baselineRow({ kind, sweepKinds: kind === 'narrative' ? [] : ['disk_pressure'] })]];
+
+    const rows = await listSchedules(partnerAuth(), {});
+
+    expect(rows[0]?.kind).toBe(kind);
   });
 });
 
@@ -978,6 +1165,16 @@ describe('resolveEffectiveSchedulesForPartner', () => {
       sweepKinds: ['disk_pressure'],
     });
     expect(dbState.reads.every((r) => r.system)).toBe(true);
+  });
+
+  it("carries the baseline's kind through to the sweeper", async () => {
+    // The sweeper branches on this to choose the run profile; a resolver that
+    // dropped it would silently fan a narrative schedule out as a sweep.
+    dbState.scheduleRows = [[baselineRow({ kind: 'narrative', sweepKinds: [] })], []];
+
+    const result = await resolveEffectiveSchedulesForPartner(PARTNER_ID);
+
+    expect(result[0]?.baseline.kind).toBe('narrative');
   });
 
   it('skips the override query when the partner has no baselines', async () => {

@@ -148,6 +148,7 @@ function baselineRow(over: Record<string, unknown> = {}) {
     partnerId: PARTNER_ID,
     cron: '0 6 * * *',
     timezone: 'Europe/Berlin',
+    kind: 'sweep',
     sweepKinds: ['disk_pressure', 'stale_agents'],
     enabled: true,
     lastOccurrenceKey: null,
@@ -620,6 +621,114 @@ describe('processSweepOccurrence', () => {
       skipReasons: {},
     });
     expect(errorSpy.mock.calls.filter(([msg]) => String(msg).includes('org cap'))).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // P2-3 — the narrative branch (one weekly report run per org)
+  // -------------------------------------------------------------------------
+
+  /** A narrative baseline sweeps NOTHING — `ai_agent_schedules_kind_kinds_chk`
+   *  forbids any other shape — and fires on a weekly literal cron. */
+  const narrativeBaselineFields = { kind: 'narrative', sweepKinds: [] as string[], cron: '0 7 * * 1' };
+
+  it('fans out one narrative run per org, device-less, on the narrative profile', async () => {
+    seedFanout({ baseline: narrativeBaselineFields });
+
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledTimes(2);
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledWith({
+      orgId: ORG_A,
+      kind: 'triage',
+      triggerKind: 'schedule',
+      deviceId: null,
+      profile: 'narrative',
+      scheduleId: SCHEDULE_ID,
+      triggerRef: { scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY, kind: 'narrative' },
+      dedupeKey: `narrative-${SCHEDULE_ID}-${ORG_A}-${OCCURRENCE_KEY}`,
+    });
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: ORG_B,
+        profile: 'narrative',
+        dedupeKey: `narrative-${SCHEDULE_ID}-${ORG_B}-${OCCURRENCE_KEY}`,
+      }),
+    );
+    // The dedupe key is namespaced by PROFILE, not just by schedule: a sweep
+    // key here would collide with the sweep fan-out's own run for the same
+    // (schedule, org, occurrence) and silently drop one of the two.
+    for (const [call] of createAndEnqueueAgentRun.mock.calls) {
+      expect((call as { dedupeKey: string }).dedupeKey.startsWith('sweep-')).toBe(false);
+      expect((call as { triggerRef: Record<string, unknown> }).triggerRef).not.toHaveProperty('sweepKinds');
+    }
+    expect(summary).toMatchObject({
+      occurrenceKey: OCCURRENCE_KEY,
+      orgsTotal: 2,
+      runsAdmitted: 2,
+      runsSkipped: 0,
+      skipReasons: {},
+    });
+    expect(summary.orgsTotal).toBe(summary.runsAdmitted + summary.runsSkipped);
+  });
+
+  it('skips the empty-kinds guard for a narrative schedule, but NOT for a sweep one', async () => {
+    // Control first: with `sweepKinds: []` a SWEEP baseline intersects every
+    // org down to nothing and admits no run at all. This is the branch the
+    // narrative path has to step around — asserting only the narrative half
+    // would pass even if the guard had simply been deleted.
+    seedFanout({ baseline: { sweepKinds: [] } });
+    const sweepSummary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+    expect(sweepSummary).toMatchObject({ runsAdmitted: 0, runsSkipped: 2, skipReasons: { override_disabled: 2 } });
+
+    seedFanout({ baseline: narrativeBaselineFields });
+    const narrativeSummary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledTimes(2);
+    expect(narrativeSummary).toMatchObject({ runsAdmitted: 2, runsSkipped: 0, skipReasons: {} });
+  });
+
+  it('an org override that disables still skips a narrative occurrence (override_disabled)', async () => {
+    seedFanout({
+      baseline: narrativeBaselineFields,
+      // An override of a narrative baseline carries `[]` too (the composite FK
+      // pins its kind, and the CHECK pins its kinds), so `enabled` is the only
+      // lever it has — and it must still work.
+      overridesByOrg: new Map([[ORG_B, { id: 'ovr-b', enabled: false, sweepKinds: [] }]]),
+    });
+
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledTimes(1);
+    expect((createAndEnqueueAgentRun.mock.calls[0]![0] as { orgId: string }).orgId).toBe(ORG_A);
+    expect(summary).toMatchObject({
+      orgsTotal: 2, runsAdmitted: 1, runsSkipped: 1, skipReasons: { override_disabled: 1 },
+    });
+    expect(summary.orgsTotal).toBe(summary.runsAdmitted + summary.runsSkipped);
+  });
+
+  it('a narrative baseline disabled between the two reads still reports schedule_disabled', async () => {
+    const eligible = baselineRow(narrativeBaselineFields);
+    queueSelect([eligible]);
+    resolveEffectiveSchedulesForPartner.mockResolvedValue([
+      { baseline: { ...eligible, enabled: false }, overridesByOrg: new Map() },
+    ]);
+    queueSelect([{ id: ORG_A }, { id: ORG_B }]);
+    queueUpdate([], 'summary');
+
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ orgsTotal: 2, runsSkipped: 2, skipReasons: { schedule_disabled: 2 } });
+  });
+
+  it('keeps the narrative summary aggregate-only', async () => {
+    seedFanout({ baseline: narrativeBaselineFields });
+
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+
+    const serialized = JSON.stringify(summary);
+    expect(serialized).not.toContain(ORG_A);
+    expect(serialized).not.toContain(ORG_B);
   });
 
   it('orders the org enumeration deterministically, so the capped slice is stable', async () => {

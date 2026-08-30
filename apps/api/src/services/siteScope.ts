@@ -36,6 +36,8 @@ export type SiteScopeV1 =
 export type LiveSiteScopeV1 = Exclude<SiteScopeV1, { kind: 'legacy_unscoped' }>;
 export type ReportAction = 'read' | 'write' | 'export' | 'delete';
 
+export type ReportPrincipalKind = 'user' | 'system';
+
 export interface PersistedSiteScopeColumns {
   executionScopeVersion: number | null;
   executionScopeKind: 'unrestricted' | 'restricted' | 'legacy_unscoped' | null;
@@ -43,6 +45,20 @@ export interface PersistedSiteScopeColumns {
   executionScopeUserId: string | null;
   executionScopeFingerprint: string | null;
   executionScopeCapturedAt: Date | null;
+  /**
+   * P2-3 (#4190). NULL on every pre-migration row and on rows written by a
+   * projection that predates this column — decoding those keeps the original
+   * user/legacy semantics byte for byte. 'system' is the ONLY value that
+   * licenses a NULL `executionScopeUserId`, and only on an 'unrestricted' row
+   * (mirrors reports_execution_scope_shape_chk).
+   *
+   * Declared required so every hand-written literal must state its principal,
+   * but READ defensively: a Drizzle projection that physically omits the column
+   * hands the decoder `undefined`, which is treated as NULL. That omission is a
+   * real hazard rather than a convenience — see siteScope.projections.test.ts,
+   * which fails any execution-scope projection that leaves it out.
+   */
+  executionScopePrincipalKind: ReportPrincipalKind | null;
 }
 
 export interface ReportExecutionAuthority {
@@ -50,6 +66,21 @@ export interface ReportExecutionAuthority {
   principalUserId: string;
   capturedAt: Date;
   fingerprint: string;
+}
+
+/**
+ * P2-3 (#4190) — provenance for a report the PLATFORM authored (the weekly AI
+ * org narrative). Deliberately a separate type from ReportExecutionAuthority:
+ * widening `principalUserId` to nullable there would let every user-path call
+ * site silently drop the acting user and forge human provenance. A system
+ * authority is always org-wide unrestricted — it has no user whose site grants
+ * could restrict it.
+ */
+export interface SystemReportExecutionAuthority {
+  principalKind: 'system';
+  scope: { version: 1; kind: 'unrestricted'; orgId: string };
+  fingerprint: string;
+  capturedAt: Date;
 }
 
 export type LiveReportAuthorityResult =
@@ -271,6 +302,20 @@ export function isSiteScopeSubset(
   }
 }
 
+/**
+ * The stored principal, with an ABSENT column read as NULL. A projection that
+ * forgot the column must never be mistaken for one that read a 'system' row.
+ */
+function persistedPrincipalKind(
+  row: PersistedSiteScopeColumns,
+): ReportPrincipalKind | null {
+  const value = row.executionScopePrincipalKind ?? null;
+  if (value !== null && value !== 'user' && value !== 'system') {
+    throw new Error('invalid persisted site scope principal kind');
+  }
+  return value;
+}
+
 function allPersistedValuesAreNull(row: PersistedSiteScopeColumns): boolean {
   return (
     row.executionScopeVersion === null &&
@@ -278,7 +323,10 @@ function allPersistedValuesAreNull(row: PersistedSiteScopeColumns): boolean {
     row.executionScopeSiteIds === null &&
     row.executionScopeUserId === null &&
     row.executionScopeFingerprint === null &&
-    row.executionScopeCapturedAt === null
+    row.executionScopeCapturedAt === null &&
+    // The all-NULL arm of the shape CHECK requires a NULL principal too: a
+    // stamped principal with no scope at all is malformed, not legacy.
+    persistedPrincipalKind(row) === null
   );
 }
 
@@ -320,22 +368,34 @@ export function decodeSiteScope(
   }
 
   assertCompletePersistedBase(row);
+  const principalKind = persistedPrincipalKind(row);
 
   switch (row.executionScopeKind) {
     case 'unrestricted':
-      if (
-        row.executionScopeSiteIds !== null ||
-        row.executionScopeUserId === null
-      ) {
+      if (row.executionScopeSiteIds !== null) {
         throw new Error('partial or invalid persisted unrestricted site scope');
       }
-      assertNonEmptyString(row.executionScopeUserId, 'execution scope user ID');
+      if (principalKind === 'system') {
+        // A system-authored row has no acting user by construction; one being
+        // present means the row was written by something that forged it.
+        if (row.executionScopeUserId !== null) {
+          throw new Error('invalid persisted system site scope principal');
+        }
+      } else {
+        if (row.executionScopeUserId === null) {
+          throw new Error('partial or invalid persisted unrestricted site scope');
+        }
+        assertNonEmptyString(row.executionScopeUserId, 'execution scope user ID');
+      }
       return validateDecodedScopeFingerprint(row, {
         version: 1,
         kind: 'unrestricted',
         orgId,
       });
     case 'restricted':
+      if (principalKind === 'system') {
+        throw new Error('invalid persisted system site scope kind');
+      }
       if (
         row.executionScopeSiteIds === null ||
         row.executionScopeUserId === null
@@ -350,6 +410,9 @@ export function decodeSiteScope(
         siteIds: normalizeSiteIds(row.executionScopeSiteIds),
       });
     case 'legacy_unscoped':
+      if (principalKind === 'system') {
+        throw new Error('invalid persisted system site scope kind');
+      }
       if (row.executionScopeSiteIds !== null) {
         throw new Error('partial or invalid persisted legacy site scope');
       }
@@ -388,6 +451,7 @@ export function persistedSiteScopeValues(
         executionScopeUserId: authority.principalUserId,
         executionScopeFingerprint: authority.fingerprint,
         executionScopeCapturedAt: authority.capturedAt,
+        executionScopePrincipalKind: 'user',
       };
     case 'restricted':
       return {
@@ -397,6 +461,7 @@ export function persistedSiteScopeValues(
         executionScopeUserId: authority.principalUserId,
         executionScopeFingerprint: authority.fingerprint,
         executionScopeCapturedAt: authority.capturedAt,
+        executionScopePrincipalKind: 'user',
       };
     case 'legacy_unscoped':
       return {
@@ -406,10 +471,59 @@ export function persistedSiteScopeValues(
         executionScopeUserId: authority.principalUserId,
         executionScopeFingerprint: authority.fingerprint,
         executionScopeCapturedAt: authority.capturedAt,
+        executionScopePrincipalKind: 'user',
       };
     default:
       return assertNever(scope);
   }
+}
+
+/**
+ * P2-3 (#4190). Provenance for a platform-authored report in `orgId`. There is
+ * no acting user anywhere in this path — the scope is org-wide unrestricted and
+ * the principal is recorded as 'system'.
+ */
+export function systemReportAuthority(
+  orgId: string,
+  capturedAt = new Date(),
+): SystemReportExecutionAuthority {
+  assertNonEmptyString(orgId, 'organization ID');
+  assertValidDate(capturedAt);
+
+  const scope = { version: 1, kind: 'unrestricted', orgId } as const;
+  return {
+    principalKind: 'system',
+    scope,
+    fingerprint: siteScopeFingerprint(scope),
+    capturedAt,
+  };
+}
+
+export function persistedSystemSiteScopeValues(
+  authority: SystemReportExecutionAuthority,
+): PersistedSiteScopeColumns {
+  if (authority.principalKind !== 'system') {
+    throw new Error('invalid system execution scope principal kind');
+  }
+  if (authority.scope?.kind !== 'unrestricted') {
+    throw new Error('invalid system execution scope kind');
+  }
+  assertValidDate(authority.capturedAt);
+
+  const scope = normalizeScope(authority.scope);
+  if (authority.fingerprint !== siteScopeFingerprint(scope)) {
+    throw new Error('invalid execution scope fingerprint');
+  }
+
+  return {
+    executionScopeVersion: 1,
+    executionScopeKind: 'unrestricted',
+    executionScopeSiteIds: null,
+    executionScopeUserId: null,
+    executionScopeFingerprint: authority.fingerprint,
+    executionScopeCapturedAt: authority.capturedAt,
+    executionScopePrincipalKind: 'system',
+  };
 }
 
 type ReportScopeColumns = Pick<
@@ -420,6 +534,7 @@ type ReportScopeColumns = Pick<
   | 'executionScopeUserId'
   | 'executionScopeFingerprint'
   | 'executionScopeCapturedAt'
+  | 'executionScopePrincipalKind'
 >;
 
 function sqlFalse(): SQL<unknown> {
@@ -446,6 +561,25 @@ function completeVersionOneBase(
   )!;
 }
 
+/**
+ * P2-3 (#4190) — the system-principal twin of completeVersionOneBase: version 1
+ * and complete, but with NO acting user, which is legal only when the principal
+ * is explicitly 'system'. Without this branch every predicate below would drop
+ * platform-authored rows (they all require execution_scope_user_id NOT NULL),
+ * 404ing an unrestricted reader on a report the platform wrote for them.
+ */
+function completeVersionOneSystemBase(
+  columns: ReportScopeColumns,
+): SQL<unknown> {
+  return and(
+    eq(columns.executionScopeVersion, 1),
+    isNull(columns.executionScopeUserId),
+    eq(columns.executionScopePrincipalKind, 'system'),
+    isNotNull(columns.executionScopeFingerprint),
+    isNotNull(columns.executionScopeCapturedAt),
+  )!;
+}
+
 function unrestrictedDefinitionPredicate(
   columns: ReportScopeColumns,
 ): SQL<unknown> {
@@ -453,6 +587,12 @@ function unrestrictedDefinitionPredicate(
   return or(
     and(
       completeBase,
+      eq(columns.executionScopeKind, 'unrestricted'),
+      isNull(columns.executionScopeSiteIds),
+    ),
+    // Platform-authored: unrestricted, no acting user, principal 'system'.
+    and(
+      completeVersionOneSystemBase(columns),
       eq(columns.executionScopeKind, 'unrestricted'),
       isNull(columns.executionScopeSiteIds),
     ),
@@ -475,6 +615,7 @@ function unrestrictedDefinitionPredicate(
       isNull(columns.executionScopeUserId),
       isNull(columns.executionScopeFingerprint),
       isNull(columns.executionScopeCapturedAt),
+      isNull(columns.executionScopePrincipalKind),
     ),
   )!;
 }

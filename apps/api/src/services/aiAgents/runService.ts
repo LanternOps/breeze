@@ -93,6 +93,23 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *  - sweepMaxTurns         — run loop (sweepLimits(), sweepProfile.ts):
  *                            substitutes for maxTurnsPerRun on a sweep-profile
  *                            run; not enforced here.
+ *  - maxConcurrentNarrativeRuns — HERE (admission rule 6b, via profileCaps()),
+ *                            narrative-profile runs only — counted separately
+ *                            from maxConcurrentRuns/maxConcurrentVerdictRuns/
+ *                            maxConcurrentSweepRuns (phase 2 P2-3).
+ *  - maxNarrativeRunsPerHour — HERE (admission rule 6b, via profileCaps()),
+ *                            narrative-profile runs only — counted separately
+ *                            from every other per-hour cap, so the weekly
+ *                            narrative can never starve sweeps or verdicts
+ *                            (or be starved by them).
+ *  - narrativeBudgetCentsPerRun — run loop (narrativeLimits(),
+ *                            narrativeProfile.ts): substitutes for
+ *                            maxBudgetCentsPerRun on a narrative-profile run;
+ *                            not enforced here.
+ *  - narrativeMaxTurns     — run loop (narrativeLimits(),
+ *                            narrativeProfile.ts): substitutes for
+ *                            maxTurnsPerRun on a narrative-profile run; not
+ *                            enforced here.
  */
 
 export interface CreateAgentRunInput {
@@ -199,7 +216,14 @@ export type AgentRunSkipReason =
   // (admission rule 6b, via profileCaps()). Same posture as the verdict pair
   // above: deliberately NOT added to PUBLISHED_SKIP_REASONS — volume guards,
   // not policy events.
-  | 'max_concurrent_sweep_runs' | 'sweep_rate';
+  | 'max_concurrent_sweep_runs' | 'sweep_rate'
+  // Phase 2 wave P2-3 (weekly org narrative) — the narrative-profile
+  // equivalents, counted against
+  // maxConcurrentNarrativeRuns/maxNarrativeRunsPerHour instead (admission
+  // rule 6b, via profileCaps()). Same posture as the verdict and sweep pairs
+  // above: deliberately NOT added to PUBLISHED_SKIP_REASONS — volume guards
+  // on a scheduled, low-frequency run shape, not policy events.
+  | 'max_concurrent_narrative_runs' | 'narrative_rate';
 
 export type CreateAgentRunResult =
   | { created: true; run: AiAgentRunRow }
@@ -421,10 +445,12 @@ export async function evaluateAnomalyTriggerFilters(
  * non-event. Once a live agent has genuinely declined a trigger, the skip IS
  * the news, so it goes on the bus.
  *
- * `max_concurrent_verdict_runs`/`verdict_rate` (phase 2 P2-1) and
- * `max_concurrent_sweep_runs`/`sweep_rate` (phase 2 P2-2) are deliberately
- * absent: they are volume guards on a high-frequency, cheap run shape, not a
- * policy event — see `AgentRunSkipReason`'s docstring.
+ * `max_concurrent_verdict_runs`/`verdict_rate` (phase 2 P2-1),
+ * `max_concurrent_sweep_runs`/`sweep_rate` (phase 2 P2-2) and
+ * `max_concurrent_narrative_runs`/`narrative_rate` (phase 2 P2-3) are
+ * deliberately absent: they are volume guards on a scheduled or
+ * high-frequency, cheap run shape, not a policy event — see
+ * `AgentRunSkipReason`'s docstring.
  */
 const PUBLISHED_SKIP_REASONS: ReadonlySet<AgentRunSkipReason> = new Set([
   'circuit_open',
@@ -580,7 +606,9 @@ export async function reapStalledAgentRuns(scope: {
 /**
  * Per-profile concurrency/rate caps for admission rule 6b — one exhaustive
  * `switch` replacing what used to be two separate `profile === 'verdict' ?
- * ... : ...` ternaries (phase 2 wave P2-1, then P2-2 added a third arm).
+ * ... : ...` ternaries (phase 2 wave P2-1; P2-2 added a third arm, P2-3 a
+ * fourth). Every profile gets its OWN (agent, org) counters and its own pair
+ * of skip reasons, so no profile's volume can starve another's admission.
  * The `default: never` assertion is deliberate: a FUTURE profile added to
  * `AI_AGENT_RUN_PROFILES` without a matching arm here must fail to compile
  * rather than silently falling through to inherit `full`'s caps (which a
@@ -611,6 +639,14 @@ function profileCaps(
         maxPerHour: limits.maxSweepRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour,
         concurrentSkip: 'max_concurrent_sweep_runs',
         rateSkip: 'sweep_rate',
+      };
+    case 'narrative':
+      return {
+        maxConcurrent:
+          limits.maxConcurrentNarrativeRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentNarrativeRuns,
+        maxPerHour: limits.maxNarrativeRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour,
+        concurrentSkip: 'max_concurrent_narrative_runs',
+        rateSkip: 'narrative_rate',
       };
     default: {
       const exhaustive: never = profile;
@@ -837,11 +873,14 @@ export async function createAndEnqueueAgentRun(
     //     them, or one SIGKILLed replica wedges this (agent, org) forever.
     await reapStalledAgentRuns({ agentId: resolved.agentId, orgId });
 
-    // 5. Cooldown for this exact target. Verdict-profile runs skip this
-    //    entirely — they dedupe on `dedupeKey` (`alert-verdict:<id>` /
-    //    `group-verdict:<id>`), not cooldown, and a cheap verdict run must
-    //    never wait out a full-profile agent's cooldown window (or vice
-    //    versa).
+    // 5. Cooldown for this exact target. EVERY non-full profile skips this
+    //    entirely (the guard is `profile === 'full'`, not a list, so a new
+    //    profile is opted out by default rather than silently inheriting a
+    //    window sized for full runs): verdict runs dedupe on `dedupeKey`
+    //    (`alert-verdict:<id>` / `group-verdict:<id>`), and sweep/narrative
+    //    runs are schedule-driven and already rate-capped by their own
+    //    per-profile counters at 6b. A cheap or scheduled run must never
+    //    wait out a full-profile agent's cooldown window (or vice versa).
     if (profile === 'full' && effective.cooldownSeconds > 0) {
       const deviceScope: SQL | undefined = deviceId
         ? eq(aiAgentRuns.deviceId, deviceId)
@@ -858,10 +897,11 @@ export async function createAndEnqueueAgentRun(
       if (recent) return skip('cooldown');
     }
 
-    // 6b. Concurrency and rate — counted PER PROFILE (phase 2 P2-1, P2-2),
-    //    against that profile's own cap (see `profileCaps` above: verdict's
-    //    maxConcurrentVerdictRuns/maxVerdictRunsPerHour, sweep's
-    //    maxConcurrentSweepRuns/maxSweepRunsPerHour, full's unchanged
+    // 6b. Concurrency and rate — counted PER PROFILE (phase 2 P2-1, P2-2,
+    //    P2-3), against that profile's own cap (see `profileCaps` above:
+    //    verdict's maxConcurrentVerdictRuns/maxVerdictRunsPerHour, sweep's
+    //    maxConcurrentSweepRuns/maxSweepRunsPerHour, narrative's
+    //    maxConcurrentNarrativeRuns/maxNarrativeRunsPerHour, full's unchanged
     //    maxConcurrentRuns/maxRunsPerHour). Plain counts are sufficient
     //    BECAUSE step 4b serialises every concurrent admission for this
     //    (agent, org) — they were not before, and the caps were bypassable by

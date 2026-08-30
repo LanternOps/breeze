@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AI_SWEEP_KINDS, AI_SWEEP_SEVERITIES, type SweepFinding, type SweepFindingsOutcome, type SweepProposedAction } from '../types/aiAgentSchedules';
+import { AI_AGENT_SCHEDULE_KINDS, AI_SWEEP_KINDS, AI_SWEEP_SEVERITIES, type SweepFinding, type SweepFindingsOutcome, type SweepProposedAction } from '../types/aiAgentSchedules';
 import { isStructurallyValidCron } from '../utils/cron';
 import { canonicalizeTimezone } from '../utils/timezone';
 
@@ -33,6 +33,40 @@ export function isHourlyFloorCron(pattern: string): boolean {
   // not accept in the first place).
   if (fields.length !== 5) return false;
   return LITERAL_MINUTE_LIST.test(fields[0]!);
+}
+
+/**
+ * The WEEKLY LITERAL rule (phase 2 P2-3). A `narrative` schedule produces one
+ * customer-facing weekly report per org, so "weekly" has to be a property of
+ * the STORED cron rather than something the report generator asserts after
+ * the fact: a schedule that fired daily would mail an MSP's customer seven
+ * "weekly" reports covering overlapping windows.
+ *
+ * Exactly one firing per week means every field is pinned:
+ *   minute        a literal integer 0-59
+ *   hour          a literal integer 0-23
+ *   day-of-month  `*`  (a literal day would make it monthly, not weekly)
+ *   month         `*`  (a literal month would make it annual)
+ *   day-of-week   a single literal integer 0-6
+ *
+ * No lists, ranges, steps, or three-letter names anywhere — each of those is
+ * a way to fire more than once a week (`0 7 * * 1,3`) or to change the
+ * cadence entirely (`0 7 1 * *`).
+ *
+ * Exported for the same reason as `isHourlyFloorCron`: the schedule service
+ * validates independently of this schema (it is reachable from non-HTTP
+ * callers), and must enforce the identical rule rather than a second
+ * hand-rolled copy of it.
+ */
+const LITERAL_INT = /^\d{1,2}$/;
+export function isWeeklyLiteralCron(pattern: string): boolean {
+  const fields = pattern.trim().split(/\s+/);
+  if (fields.length !== 5) return false;
+  const [minute, hour, dayOfMonth, month, dayOfWeek] = fields as [string, string, string, string, string];
+  if (!LITERAL_INT.test(minute) || Number(minute) > 59) return false;
+  if (!LITERAL_INT.test(hour) || Number(hour) > 23) return false;
+  if (dayOfMonth !== '*' || month !== '*') return false;
+  return /^[0-6]$/.test(dayOfWeek);
 }
 
 // The sweeper evaluates crons with a strictly 5-field evaluator, so a
@@ -95,16 +129,53 @@ export const sweepFindingsOutcomeSchema: z.ZodType<SweepFindingsOutcome> = z.obj
 // override's `enabled: false`).
 const createPartnerScheduleSchema = z.object({
   ownerScope: z.literal('partner'),
+  // Defaults to `sweep` so every pre-P2-3 create body — none of which sends
+  // this field — still parses to exactly what it used to mean.
+  kind: z.enum(AI_AGENT_SCHEDULE_KINDS).default('sweep'),
   agentId: z.string().uuid(),
   cron: scheduleCronSchema,
   timezone: scheduleTimezoneSchema,
   // .max(6): AI_SWEEP_KINDS has exactly 6 members, so a list longer than
   // that can only be a duplicate — the sweeper still no-ops on dupes, but
   // there is no legitimate 7th value to accept.
-  sweepKinds: z.array(sweepKindEnum).min(1).max(6),
+  //
+  // The `.min(1)` that used to live here moved into the superRefine below,
+  // because it is a SWEEP-only rule: a narrative baseline legitimately
+  // sweeps nothing. Defaulting to `[]` keeps "omitted" and "explicitly
+  // empty" the same thing for a narrative create.
+  sweepKinds: z.array(sweepKindEnum).max(6).default([]),
   enabled: z.boolean(),
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  if (value.kind === 'narrative') {
+    if (value.sweepKinds.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['sweepKinds'],
+        message: 'a narrative schedule evaluates no sweep kinds — sweepKinds must be omitted or empty',
+      });
+    }
+    if (!isWeeklyLiteralCron(value.cron)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['cron'],
+        message: 'a narrative schedule must fire exactly once a week — literal minute and hour, `*` day-of-month and month, and a single day-of-week 0-6',
+      });
+    }
+    return;
+  }
+  // kind === 'sweep': every pre-P2-3 rule, unchanged. A baseline that sweeps
+  // nothing is pointless, so at least one kind is still required.
+  if (value.sweepKinds.length < 1) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['sweepKinds'],
+      message: 'a sweep schedule must select at least one sweep kind',
+    });
+  }
+});
 
+// `.strict()` is what keeps `kind` off this branch: an override inherits its
+// baseline's kind and may never set one (see AI_AGENT_SCHEDULE_KINDS).
 const createOrgScheduleSchema = z.object({
   ownerScope: z.literal('organization'),
   orgId: z.string().uuid(),
@@ -118,9 +189,11 @@ export const createAiAgentScheduleSchema = z.discriminatedUnion('ownerScope', [
   createOrgScheduleSchema,
 ]);
 
-// Never admits `ownerScope`, `agentId`, or `baselineScheduleId` — those are
-// immutable for the lifetime of a schedule row (changing which agent or
-// baseline a schedule belongs to is a delete-and-recreate, not a patch).
+// Never admits `ownerScope`, `agentId`, `baselineScheduleId`, or `kind` —
+// those are immutable for the lifetime of a schedule row (changing which
+// agent, baseline, or run profile a schedule belongs to is a
+// delete-and-recreate, not a patch). `.strict()` is the enforcement: a PATCH
+// carrying any of them is rejected, never silently stripped.
 export const updateAiAgentScheduleSchema = z.object({
   cron: scheduleCronSchema.optional(),
   timezone: scheduleTimezoneSchema.optional(),

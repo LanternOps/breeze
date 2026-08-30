@@ -350,3 +350,126 @@ describe('deliverRunFinishedNotifications — sweep digest (P2-2)', () => {
     expect((input.metadata as Record<string, unknown>).sweep).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 2 wave P2-3 (weekly org narrative), Task A7 — the narrative
+// notification. Unlike every other run-finished notification, this one does
+// NOT link to the run: the deliverable is the stored report artifact, and the
+// person receiving it wants the document, not the agent's trace.
+// ---------------------------------------------------------------------------
+describe('deliverRunFinishedNotifications — narrative (P2-3)', () => {
+  const REPORT_ID = '00000000-0000-4000-8000-0000000000f1';
+  const REPORT_RUN_ID = '00000000-0000-4000-8000-0000000000f2';
+
+  function narrativeRun(overrides: Record<string, unknown> = {}) {
+    return {
+      ...baseRun,
+      profile: 'narrative',
+      summary: 'Weekly narrative written.',
+      outcome: {
+        toolExecutionCount: 0,
+        narrative: {
+          version: 1,
+          headline: 'A quiet week: alert volume down, one backup still failing.',
+          sections: [{ key: 'overview', title: 'Overview', bullets: ['zzz-section-marker-zzz'] }],
+          markdown: '# A quiet week.',
+        },
+        narrativeReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+      },
+      ...overrides,
+    };
+  }
+
+  it('titles with the org name, carries the headline as the message, and links to /reports', async () => {
+    queueRows('ai_agent_runs', [narrativeRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('organizations', [{ name: 'Acme Dental' }]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).toHaveBeenCalledTimes(1);
+    const [input] = createNotification.mock.calls[0]!;
+    expect(input).toMatchObject({
+      userId: USER_A,
+      orgId: ORG_ID,
+      type: 'ai',
+      title: 'Weekly narrative ready — Acme Dental',
+      message: 'A quiet week: alert volume down, one backup still failing.',
+      link: '/reports',
+      dedupeKey: `agent-run:${RUN_ID}`,
+    });
+    expect((input as { metadata: Record<string, unknown> }).metadata.narrative)
+      .toEqual({ reportRunId: REPORT_RUN_ID, reportId: REPORT_ID });
+  });
+
+  it('carries NO narrative content in the metadata — two ids and nothing else', async () => {
+    queueRows('ai_agent_runs', [narrativeRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('organizations', [{ name: 'Acme Dental' }]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const serialized = JSON.stringify(createNotification.mock.calls[0]![0]);
+    for (const forbidden of ['sections', 'bullets', 'markdown', 'narrativeContext', 'context']) {
+      expect(serialized, `notification must not carry "${forbidden}"`).not.toContain(`"${forbidden}"`);
+    }
+    expect(serialized).not.toContain('zzz-section-marker-zzz');
+  });
+
+  it('flattens a control-character-bearing org name into the title', async () => {
+    queueRows('ai_agent_runs', [narrativeRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('organizations', [{ name: 'Acme\nDental   ##' }]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect((createNotification.mock.calls[0]![0] as { title: string }).title)
+      .toBe('Weekly narrative ready — Acme Dental ##');
+  });
+
+  it('drops the suffix rather than rendering an empty one when the org row is unreadable', async () => {
+    queueRows('ai_agent_runs', [narrativeRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('organizations', []);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect((createNotification.mock.calls[0]![0] as { title: string }).title)
+      .toBe('Weekly narrative ready');
+  });
+
+  /**
+   * The whole payload is a pointer at the artifact. A narrative run whose
+   * persistence failed (`narrative_persist_failed`/`_conflict`) has nothing to
+   * point at, so it keeps the generic run-finished copy — which DOES link to
+   * the run, where the reviewer can see the error code.
+   */
+  it('falls back to the generic copy when the run produced no artifact', async () => {
+    queueRows('ai_agent_runs', [narrativeRun({
+      outcome: { toolExecutionCount: 0, narrative: { version: 1, headline: 'h', sections: [], markdown: '' } },
+    })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]!;
+    expect(input).toMatchObject({ title: 'Agent run finished', link: `/ai-agents/runs/${RUN_ID}` });
+    expect((input as { metadata: Record<string, unknown> }).metadata.narrative).toBeUndefined();
+  });
+
+  it('never applies the narrative copy to another profile, even with a narrativeReport on the outcome', async () => {
+    queueRows('ai_agent_runs', [narrativeRun({ profile: 'full' })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]!;
+    expect(input).toMatchObject({ title: 'Agent run finished', link: `/ai-agents/runs/${RUN_ID}` });
+  });
+});

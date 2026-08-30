@@ -4,11 +4,17 @@ import {
   OUTCOME_MCP_TOOL_NAMES, OUTCOME_TOOL_NAMES,
   type SdkTool,
 } from './outcomeTools';
-import { AI_AGENT_RUN_PROFILES, type AiAgentRunProfile } from '@breeze/shared';
+import {
+  AI_AGENT_RUN_PROFILES,
+  NARRATIVE_SECTION_KEYS,
+  NARRATIVE_SECTION_TITLES,
+  type AiAgentRunProfile,
+} from '@breeze/shared';
 import { aiTools } from '../aiTools';
 import { TOOL_TIERS, createBreezeMcpServer } from '../aiAgentSdkTools';
 import { verdictToolAllowlist } from './verdictProfile';
 import { sweepToolAllowlist } from './sweepProfile';
+import { narrativeToolAllowlist } from './narrativeProfile';
 
 /** Minimal valid `SweepFindingsOutcome` — one device-bound finding with a
  *  proposal, which is the shape the sweep prompt actually asks for. */
@@ -29,6 +35,25 @@ const VALID_SWEEP_FINDINGS = {
         serviceName: 'Spooler',
       },
     },
+  ],
+};
+
+/**
+ * A minimal valid `NarrativeSubmission` — every one of the eight keys exactly
+ * once, deliberately NOT in canonical order so the builder's re-ordering is
+ * observable rather than accidentally satisfied.
+ */
+const VALID_NARRATIVE: { headline: string; sections: Array<{ key: string; bullets: string[] }> } = {
+  headline: 'A quiet week: alert volume down, one backup still failing.',
+  sections: [
+    { key: 'recommendations', bullets: ['Replace the failing disk on the file server this month.'] },
+    { key: 'alerts', bullets: ['41 alerts fired, 38 cleared on their own.'] },
+    { key: 'overview', bullets: ['The environment was stable and needed one hands-on fix.'] },
+    { key: 'fleet', bullets: ['52 managed machines, 50 checked in this week.'] },
+    { key: 'backups', bullets: ['One server has not completed a backup in six days.'] },
+    { key: 'tickets', bullets: ['11 tickets opened and 12 closed.'] },
+    { key: 'sweeps_and_fixes', bullets: ['Seven scheduled sweeps ran; two disk warnings were found.'] },
+    { key: 'patching_and_security', bullets: ['Patch compliance rose from 88% to 93%.'] },
   ],
 };
 
@@ -130,6 +155,9 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
       // A deliberately broad agent allowlist: the floor must not vary with it.
       verdict: verdictToolAllowlist(['manage_services', 'run_script']),
       sweep: sweepToolAllowlist(['manage_services', 'run_script']),
+      // The narrative floor is the outcome tool ALONE (empty drill-down
+      // tier) — the same broad agent allowlist must not widen it either.
+      narrative: narrativeToolAllowlist(['manage_services', 'run_script']),
     };
 
     for (const profile of AI_AGENT_RUN_PROFILES) {
@@ -143,10 +171,116 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
     expect(outcomeToolsForProfile('full')).toEqual([]);
     expect(outcomeToolsForProfile('verdict')).toEqual(['submit_alert_verdict']);
     expect(outcomeToolsForProfile('sweep')).toEqual(['submit_sweep_findings']);
-    // Every name in the catalog belongs to exactly one profile — a third
-    // outcome tool added without a profile mapping fails here.
-    const mapped = [...outcomeToolsForProfile('full'), ...outcomeToolsForProfile('verdict'), ...outcomeToolsForProfile('sweep')];
+    expect(outcomeToolsForProfile('narrative')).toEqual(['submit_narrative']);
+    // Every name in the catalog belongs to exactly one profile — a fourth
+    // outcome tool added without a profile mapping fails here. Driven off
+    // `AI_AGENT_RUN_PROFILES` rather than a hand-listed set so a fifth
+    // profile cannot be added without its mapping being counted.
+    const mapped = AI_AGENT_RUN_PROFILES.flatMap((profile) => outcomeToolsForProfile(profile));
     expect([...mapped].sort()).toEqual([...OUTCOME_TOOL_NAMES].sort());
+  });
+});
+
+// Phase 2 wave P2-3 (weekly org narrative), task 6 — the third outcome tool.
+describe('submit_narrative outcome tool (P2-3)', () => {
+  it('validates the submission AND builds the server-owned outcome from it', () => {
+    const outcome = validateOutcomeToolInput('submit_narrative', VALID_NARRATIVE);
+
+    expect(outcome.version).toBe(1);
+    expect(outcome.headline).toBe(VALID_NARRATIVE.headline);
+    // Titles and ORDER are the server's, never the model's — the submission
+    // fixture deliberately lists the keys out of canonical order.
+    expect(outcome.sections.map((s) => s.key)).toEqual([...NARRATIVE_SECTION_KEYS]);
+    expect(outcome.sections.map((s) => s.title))
+      .toEqual(NARRATIVE_SECTION_KEYS.map((key) => NARRATIVE_SECTION_TITLES[key]));
+    // Markdown is DERIVED here, never submitted.
+    expect(outcome.markdown).toContain(`# ${VALID_NARRATIVE.headline}`);
+    expect(outcome.markdown).toContain('## Overview');
+  });
+
+  it('rejects a submission missing a section, naming the missing key so the model can fix it', () => {
+    const short = {
+      headline: VALID_NARRATIVE.headline,
+      sections: VALID_NARRATIVE.sections.filter((s) => s.key !== 'backups'),
+    };
+    expect(short.sections).toHaveLength(NARRATIVE_SECTION_KEYS.length - 1);
+    expect(() => validateOutcomeToolInput('submit_narrative', short)).toThrow(/backups/);
+  });
+
+  it('rejects a duplicated section, a control character, and an unknown key', () => {
+    const dup = {
+      headline: VALID_NARRATIVE.headline,
+      sections: [...VALID_NARRATIVE.sections, { key: 'fleet', bullets: ['Again.'] }],
+    };
+    expect(() => validateOutcomeToolInput('submit_narrative', dup)).toThrow(/fleet/);
+
+    const hostile = {
+      headline: VALID_NARRATIVE.headline,
+      sections: VALID_NARRATIVE.sections.map((s) => (
+        s.key === 'fleet' ? { key: s.key, bullets: ['WS-01\n## Forged heading'] } : s
+      )),
+    };
+    expect(() => validateOutcomeToolInput('submit_narrative', hostile)).toThrow();
+
+    // `.strict()` on the shared schema: the model may not author `markdown`.
+    expect(() => validateOutcomeToolInput('submit_narrative', { ...VALID_NARRATIVE, markdown: '# mine' }))
+      .toThrow();
+  });
+
+  it('is not a registered chat/MCP tool (never reachable from routes/ai or the MCP server)', () => {
+    expect(aiTools.has('submit_narrative')).toBe(false);
+    expect((TOOL_TIERS as Record<string, unknown>)['submit_narrative']).toBeUndefined();
+    expect(isOutcomeTool('submit_narrative')).toBe(true);
+    expect(OUTCOME_MCP_TOOL_NAMES.submit_narrative).toBe('mcp__breeze__submit_narrative');
+  });
+
+  it('builds an SDK tool whose handler executes nothing and returns a recorded marker', async () => {
+    const tools = buildOutcomeSdkTools(['submit_narrative']);
+    expect(tools).toHaveLength(1);
+    const tool = tools[0]!;
+    expect(tool.name).toBe('submit_narrative');
+    const result = await tool.handler(VALID_NARRATIVE as never, {});
+    expect(JSON.stringify(result)).toContain('recorded');
+    // A 7-section submission throws out of the handler so the model retries
+    // rather than the run recording a half-written narrative.
+    await expect(tool.handler({
+      headline: VALID_NARRATIVE.headline,
+      sections: VALID_NARRATIVE.sections.slice(0, 7),
+    } as never, {})).rejects.toThrow();
+  });
+
+  it('describes every field of the narrative shape, recursively (the model reads these)', () => {
+    const tool = buildOutcomeSdkTools(['submit_narrative'])[0]!;
+    const shape = tool.inputSchema as Record<string, unknown>;
+    expect(Object.keys(shape).sort()).toEqual(['headline', 'sections']);
+
+    const undescribed = undescribedLeaves(shape);
+    expect(undescribed, `these leaves need a .describe(): ${undescribed.join(', ')}`).toEqual([]);
+    // Control: the walk really does reach the nested leaves it claims to.
+    expect(describedLeafPaths(shape).sort()).toEqual([
+      'headline',
+      'sections[].bullets[]',
+      'sections[].key',
+    ]);
+  });
+
+  it('the section-key enum is CLOSED and its description names the all-eight-exactly-once rule', () => {
+    const tool = buildOutcomeSdkTools(['submit_narrative'])[0]!;
+    const shape = tool.inputSchema as Record<string, { element?: { shape?: Record<string, {
+      description?: string; options?: string[];
+    }> } }>;
+    const key = shape.sections!.element!.shape!.key!;
+    // The closed enum itself, not a bare string: an invented section key can
+    // never reach the schema in the first place.
+    expect([...(key.options ?? [])].sort()).toEqual([...NARRATIVE_SECTION_KEYS].sort());
+    expect(key.description).toContain('exactly once');
+    for (const sectionKey of NARRATIVE_SECTION_KEYS) expect(key.description).toContain(sectionKey);
+
+    // The bullet rule the schema actually enforces has to be stated where the
+    // model reads it, or the first retry is the only place it learns.
+    const bullets = shape.sections!.element!.shape!.bullets!;
+    expect(bullets.description).toMatch(/single/i);
+    expect(bullets.description).toMatch(/newline|line/i);
   });
 });
 

@@ -45,6 +45,7 @@ import {
 } from '../../db';
 // Direct module imports, not the schema barrel — same note as runLoop.ts.
 import { aiAgents, aiAgentRuns } from '../../db/schema/aiAgents';
+import { organizations } from '../../db/schema/orgs';
 import { createNotification } from '../userNotifications';
 import { resolveRecipientUserIds } from './recipients';
 
@@ -137,6 +138,58 @@ function readSweepDigest(outcome: Record<string, unknown>): SweepDigest | null {
   };
 }
 
+/**
+ * Phase 2 wave P2-3 (weekly org narrative), Task A7 — the narrative digest.
+ * `null` unless the run BOTH produced a narrative and had it persisted as a
+ * report artifact (`finalizeNarrative` writes `outcome.narrativeReport` only
+ * after the transaction committed).
+ *
+ * That conjunction is the point: this notification's entire payload is a
+ * pointer at a stored document. A narrative run whose persistence lost the CAS
+ * or failed has nothing to point at, and falls back to the generic
+ * run-finished copy — which links to the RUN, where the reviewer can read the
+ * `narrative_persist_*` error code. Announcing a report that does not exist is
+ * worse than announcing nothing.
+ *
+ * `headline` is the only model-authored string that reaches the notification,
+ * and it arrives already flattened and length-bounded by
+ * `narrativeSubmissionSchema` (160 chars, no control characters). It is
+ * re-flattened here anyway, for the same reason the org name is: this reads
+ * jsonb, which carries no compile-time shape and no guarantee about who wrote
+ * it.
+ */
+interface NarrativeDigest {
+  headline: string;
+  reportId: string;
+  reportRunId: string;
+}
+
+function readNarrativeDigest(outcome: Record<string, unknown>): NarrativeDigest | null {
+  const link = outcome.narrativeReport;
+  if (!link || typeof link !== 'object') return null;
+  const { reportId, reportRunId } = link as Record<string, unknown>;
+  if (typeof reportId !== 'string' || typeof reportRunId !== 'string') return null;
+  const narrative = outcome.narrative;
+  const headline = narrative && typeof narrative === 'object'
+    ? flattenNotificationLine((narrative as Record<string, unknown>).headline)
+    : '';
+  return { headline, reportId, reportRunId };
+}
+
+/**
+ * Collapses a DB- or model-sourced string to one line for display in a
+ * notification title/message: every control/format codepoint (C0, DEL, C1, and
+ * the bidi overrides that can visually reorder a line) becomes a space, runs of
+ * whitespace collapse, and the result is bounded. Same treatment
+ * `flattenNarrativeLine` (validators/orgNarrative.ts) gives a bullet — an org
+ * name is not model-authored, but it is customer-supplied text rendered into a
+ * line-oriented surface.
+ */
+function flattenNotificationLine(value: unknown, maxChars = 200): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/\p{C}/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, maxChars);
+}
+
 /** Only the two verdicts the plan names get a distinct title; `partial` and
  *  `no_action`/null keep the existing generic title (still carry `verdict`
  *  in metadata) — most orgs are not act-mode, and this keeps their
@@ -224,6 +277,29 @@ async function loadFinishedRun(
 }
 
 /**
+ * The run org's display name, for the narrative title. Read ONLY on the
+ * narrative path (one extra round trip per weekly occurrence, never on the
+ * hot full-profile path) and never fatal: an unreadable org row drops the
+ * title's suffix rather than failing a notification whose document is already
+ * stored.
+ */
+async function loadOrgName(orgId: string): Promise<string> {
+  try {
+    const [row] = await inSystemDbContext(() => db
+      .select({ name: organizations.name })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1));
+    return flattenNotificationLine(row?.name);
+  } catch (error) {
+    console.warn('[runFinishedNotify] could not read the org name for a narrative notification', {
+      orgId, error,
+    });
+    return '';
+  }
+}
+
+/**
  * Delivers the "agent run finished" notification to every resolved recipient
  * of the given run, re-reading the run/agent/policy snapshot from the DB.
  *
@@ -298,17 +374,30 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
   // a sweep run that never produced findings) keeps the generic verdict-aware
   // title untouched.
   const sweep = run.profile === 'sweep' ? readSweepDigest(run.outcome ?? {}) : null;
-  const title = sweep
-    ? `Sweep finished: ${sweep.findings} finding(s)`
-      + `${sweep.critical > 0 ? ` (${sweep.critical} critical)` : ''} — ${agent.name}`
-    : verdictAwareTitle(agent.name, verdict);
-  const message = sweep
-    ? sweep.summaryFirstLine || `${agent.name}: ${firstLine || run.status}`
-    : `${agent.name}: ${firstLine || run.status}`;
+  // Task A7 (wave P2-3) — a narrative run that actually produced an artifact
+  // gets its own copy; everything else (including a narrative run whose
+  // persistence failed) keeps the branch above.
+  const narrative = run.profile === 'narrative' ? readNarrativeDigest(run.outcome ?? {}) : null;
+  const orgName = narrative ? await loadOrgName(run.orgId) : '';
+  const title = narrative
+    ? `Weekly narrative ready${orgName ? ` — ${orgName}` : ''}`
+    : sweep
+      ? `Sweep finished: ${sweep.findings} finding(s)`
+        + `${sweep.critical > 0 ? ` (${sweep.critical} critical)` : ''} — ${agent.name}`
+      : verdictAwareTitle(agent.name, verdict);
+  const message = narrative
+    ? narrative.headline || `${agent.name}: ${firstLine || run.status}`
+    : sweep
+      ? sweep.summaryFirstLine || `${agent.name}: ${firstLine || run.status}`
+      : `${agent.name}: ${firstLine || run.status}`;
   // Anything critical escalates, exactly as `needs_attention` does for a
   // full-profile run — the two are mutually exclusive here (a sweep run never
   // produces a run verdict of its own).
-  const priority = sweep ? (sweep.critical > 0 ? 'high' : null) : (verdict === 'needs_attention' ? 'high' : null);
+  // A narrative is a scheduled deliverable, never an escalation — it stays at
+  // the default priority whatever the week contained.
+  const priority = narrative
+    ? null
+    : sweep ? (sweep.critical > 0 ? 'high' : null) : (verdict === 'needs_attention' ? 'high' : null);
 
   // AFTER the status commit and outside any held transaction (#1105).
   await inSystemDbContext(async () => {
@@ -322,7 +411,15 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
         // The run-detail page (wave 6.1) surfaces pending approvals itself,
         // so every run-finished notification links there unconditionally —
         // no more branching to '/approvals'.
-        link: `/ai-agents/runs/${run.id}`,
+        //
+        // DELIBERATE DEVIATION for a narrative (wave P2-3, Task A7): '/reports'.
+        // The deliverable is the stored, downloadable report artifact; the
+        // recipient of a weekly narrative wants the document, not the agent's
+        // execution trace. This is the one profile whose "what finished" and
+        // "what to look at" are different objects. A narrative run WITHOUT an
+        // artifact keeps the unconditional run link above — see
+        // `readNarrativeDigest`'s docstring.
+        link: narrative ? '/reports' : `/ai-agents/runs/${run.id}`,
         // Only 'needs_attention' (or, for a sweep, any critical finding)
         // escalates priority — every other verdict, including null, the
         // pre-Part-B/non-act-mode default, keeps the existing 'normal'
@@ -349,6 +446,14 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
                 kinds: sweep.kinds,
               },
             }
+            : {}),
+          // TWO ids and nothing else. The narrative itself — sections,
+          // bullets, derived markdown — lives in the report artifact and on
+          // the run row; a notification row is neither the place to duplicate
+          // a customer-facing document nor a surface with the artifact's
+          // access controls.
+          ...(narrative
+            ? { narrative: { reportRunId: narrative.reportRunId, reportId: narrative.reportId } }
             : {}),
         },
         dedupeKey: `agent-run:${run.id}`,

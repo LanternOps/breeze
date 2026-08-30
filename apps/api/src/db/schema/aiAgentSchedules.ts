@@ -1,7 +1,7 @@
 // apps/api/src/db/schema/aiAgentSchedules.ts
 import { boolean, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { AiSweepKind, AiAgentScheduleRunSummary } from '@breeze/shared';
+import type { AiSweepKind, AiAgentScheduleKind, AiAgentScheduleRunSummary } from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { aiAgents } from './aiAgents';
@@ -27,6 +27,15 @@ export const aiAgentSchedules = pgTable('ai_agent_schedules', {
   agentId: uuid('agent_id').notNull().references(() => aiAgents.id, { onDelete: 'cascade' }),
   // Same cross-tenant-pointer invariant as agentId above — see that comment.
   baselineScheduleId: uuid('baseline_schedule_id').references((): AnyPgColumn => aiAgentSchedules.id, { onDelete: 'cascade' }),
+  // P2-3 (#4190): which lane this schedule drives. A narrative schedule is its
+  // OWN row (never a flag on a sweep row); an org override may not disagree
+  // with its baseline, enforced by the composite self-FK
+  // ai_agent_schedules_baseline_kind_fk (baseline_schedule_id, kind) →
+  // (id, kind) in migrations/2026-09-24-b-ai-agents-org-narrative.sql, which
+  // is also where its backing UNIQUE (id, kind) index lives. Declared in SQL
+  // only — same treatment as every CHECK on this table; Drizzle is used for
+  // typed queries here, not as the constraint source of truth.
+  kind: text('kind').$type<AiAgentScheduleKind>().notNull().default('sweep'),
   cron: text('cron').notNull(),
   timezone: text('timezone').notNull().default('UTC'),
   sweepKinds: text('sweep_kinds').array().$type<AiSweepKind[]>().notNull().default(sql`'{}'::text[]`),

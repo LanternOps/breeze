@@ -12,6 +12,7 @@ import type {
   AiAlertVerdictPattern,
 } from './aiAgents';
 import type { AiSweepKind, AiSweepSeverity } from './aiAgentSchedules';
+import type { AiAgentRunNarrativeDto } from './orgNarrativeReport';
 
 /**
  * Wave 6 PR 1 (#3828) — the execution-trace DTOs: what `GET /ai/agents/runs`
@@ -418,6 +419,24 @@ export interface AiAgentRunDetailDto {
    * caller that has never seen this key still gets `null`, not `undefined`).
    */
   sweep: AiAgentRunSweepDto | null;
+  /**
+   * Phase 2 wave P2-3 (weekly org narrative) — the narrative this run
+   * produced, for a `narrative`-profile run that reached a
+   * `submit_narrative` outcome. Null for every `full`/`verdict`/`sweep`
+   * run and for a narrative run that has not produced one. Additive nullable
+   * field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION` (same rule as
+   * `alertVerdict`/`sweep` above).
+   */
+  narrative: AiAgentRunNarrativeDto | null;
+  /**
+   * Phase 2 wave P2-3 — the `report_runs` row this run materialised its
+   * narrative into, when it did. Duplicated from `narrative.reportRunId` on
+   * purpose: the runs UI links straight to the generated report without
+   * having to reach through a nullable sub-object, and a run whose narrative
+   * projection was dropped (a legacy outcome row) can still carry the link.
+   * Additive nullable field — does NOT bump the DTO schema version.
+   */
+  reportRunId: string | null;
 }
 
 /**

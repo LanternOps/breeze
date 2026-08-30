@@ -717,6 +717,25 @@ const runDetailResponseSchema = z.object({
         }).strict().nullable(),
       }).strict()),
     }).strict().nullable(),
+    // Phase 2 wave P2-3 (weekly org narrative), Task A7: `null` for every
+    // non-narrative run. Strict all the way down — the STRUCTURED sections
+    // reach the wire; the derived markdown and the weekly `NarrativeContext`
+    // the run was built from never do.
+    narrative: z.object({
+      headline: z.string(),
+      sections: z.array(z.object({
+        key: z.string(),
+        title: z.string(),
+        bullets: z.array(z.string()),
+      }).strict()),
+      reportRunId: z.string().nullable(),
+      reportId: z.string().nullable(),
+      downloadPath: z.string().nullable(),
+      periodStart: z.string().nullable(),
+      periodEnd: z.string().nullable(),
+      contextTruncated: z.boolean(),
+    }).strict().nullable(),
+    reportRunId: z.string().nullable(),
   }).strict(),
 }).strict();
 
@@ -754,6 +773,9 @@ function runRow(overrides: Record<string, unknown> = {}) {
     modeAtStart: 'shadow',
     status: 'completed',
     summary: 'Restarted the print spooler.',
+    // Phase 2 wave P2-3, Task A7 — the narrative artifact link; null for every
+    // non-narrative run.
+    reportRunId: null,
     outcome: {
       findings: [],
       executedActions: [{
@@ -957,6 +979,87 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
   // batched hostname read must resolve THAT device (via `sweepProposals`,
   // not just `sweepFindings`), or the finding renders a null hostname even
   // though `projectSweep` now falls back to the proposal's device.
+  /**
+   * Phase 2 wave P2-3 (weekly org narrative), Task A7 — the artifact read.
+   *
+   * `report_runs` has no `org_id` of its own, so the tenancy pin lives on the
+   * join to `reports`. Asserting the BOUND params (not just that `org_id`
+   * appears in the SQL) is what makes this non-vacuous: binding some other
+   * org's id would still print the column name.
+   */
+  it('reads the linked narrative artifact through an org-pinned join and projects only its scalars', async () => {
+    const NARRATIVE_SCHEDULE_ID = '88888888-8888-4888-8888-888888888888';
+    const REPORT_ID = '77777777-7777-4777-8777-777777777777';
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    let artifactWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        scheduleId: NARRATIVE_SCHEDULE_ID,
+        triggerRef: { scheduleId: NARRATIVE_SCHEDULE_ID, occurrenceKey: '2026-08-31T07:00:00+02:00' },
+        reportRunId: REPORT_RUN_ID,
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          narrative: {
+            version: 1,
+            headline: 'A quiet week.',
+            sections: [{ key: 'overview', title: 'Overview', bullets: ['Nothing needed a person.'] }],
+            markdown: '# A quiet week.',
+          },
+          narrativeReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+        },
+      })]))
+      .mockReturnValueOnce(selectChain(
+        [{
+          reportRunId: REPORT_RUN_ID,
+          reportId: REPORT_ID,
+          periodStart: '2026-08-24T07:00:00+02:00',
+          periodEnd: '2026-08-31T07:00:00+02:00',
+          contextTruncated: true,
+        }],
+        (predicate) => { artifactWhere = predicate; },
+      ));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+
+    // Two selects: the run row and the artifact. No session, no intent ids and
+    // no sweep findings, so nothing else is queried.
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    const params = sqlParams(artifactWhere);
+    expect(params).toContain(ORG_ID);
+    expect(params).toContain(REPORT_RUN_ID);
+
+    expect(parsed.data.reportRunId).toBe(REPORT_RUN_ID);
+    expect(parsed.data.narrative).toEqual({
+      headline: 'A quiet week.',
+      sections: [{ key: 'overview', title: 'Overview', bullets: ['Nothing needed a person.'] }],
+      reportRunId: REPORT_RUN_ID,
+      reportId: REPORT_ID,
+      downloadPath: `/api/reports/runs/${REPORT_RUN_ID}/download`,
+      periodStart: '2026-08-24T07:00:00+02:00',
+      periodEnd: '2026-08-31T07:00:00+02:00',
+      contextTruncated: true,
+    });
+  });
+
+  it('skips the artifact read entirely for a run that links none', async () => {
+    selectMock.mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(selectMock).toHaveBeenCalledTimes(1);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+    expect(parsed.data.narrative).toBeNull();
+    expect(parsed.data.reportRunId).toBeNull();
+  });
+
   it('resolves a finding\'s hostname from its proposal device when the finding omitted deviceId', async () => {
     let hostnameWhere: unknown;
     selectMock

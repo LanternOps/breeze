@@ -639,9 +639,11 @@ describe('org merge engine SQL against real Postgres', () => {
   }, 120_000);
 
   /**
-   * The four re-home-then-delete executors plus `incidents`, each driven with a
+   * The five re-home-then-delete executors plus `incidents`, each driven with a
    * colliding loser row that HAS the child the old `repoint-dedupe` DELETE
-   * would have tripped over.
+   * would have tripped over. `reports` (P2-3, #4190) is the one that was never
+   * a `repoint-dedupe` at all — it was a plain `repoint` that a new partial
+   * unique index turned into a 23505.
    *
    * Every one of these fixtures raises 23503 (or, for `incidents`, silently
    * destroys a case file) under the previous classification — that is the whole
@@ -661,6 +663,10 @@ describe('org merge engine SQL against real Postgres', () => {
       signerL: randomUUID(), signerS: randomUUID(), ruleL: randomUUID(),
       incidentL: randomUUID(), incidentS: randomUUID(), incidentActionL: randomUUID(),
       siteL: randomUUID(), siteS: randomUUID(), deviceL: randomUUID(),
+      userP: randomUUID(), agentP: randomUUID(), scheduleP: randomUUID(),
+      reportL: randomUUID(), reportS: randomUUID(),
+      reportPlainL: randomUUID(), reportPlainS: randomUUID(),
+      runL: randomUUID(), runS: randomUUID(), agentRunL: randomUUID(),
     };
     let asserted = 0;
 
@@ -827,12 +833,91 @@ describe('org merge engine SQL against real Postgres', () => {
         expect(survivorIncident[0]?.source_ref).toBe(`ref-${suffix}`);
         asserted++;
 
+        // --- reports (P2-3 narrative definitions, #4190) ----------------------
+        // A PARTNER-WIDE narrative schedule mints one system-managed definition
+        // per org, so both orgs hold a row for the SAME schedule id. Under the
+        // old `repoint` classification this fixture raises 23505 on
+        // reports_source_ai_agent_schedule_uniq and aborts the merge; under a
+        // `repoint-dedupe` it would raise 23503 on report_runs.report_id
+        // instead. Both loser report_runs below exist precisely so a version of
+        // this test that dropped them would fail.
+        await db.execute(sql`
+          INSERT INTO users (id, partner_id, email, name)
+          VALUES (${ids.userP}::uuid, ${P}::uuid, ${`rehome-${suffix}@example.com`}, 'Rehome')`);
+        await db.execute(sql`
+          INSERT INTO ai_agents (id, org_id, partner_id, kind, name, created_by)
+          VALUES (${ids.agentP}::uuid, NULL, ${P}::uuid, 'triage', 'Triage', ${ids.userP}::uuid)`);
+        await db.execute(sql`
+          INSERT INTO ai_agent_schedules (id, org_id, partner_id, agent_id, kind, cron, sweep_kinds)
+          VALUES (${ids.scheduleP}::uuid, NULL, ${P}::uuid, ${ids.agentP}::uuid, 'narrative', '0 6 * * 1', '{}')`);
+        await db.execute(sql`
+          INSERT INTO reports (id, org_id, name, type, source_ai_agent_schedule_id) VALUES
+            (${ids.reportL}::uuid, ${L}::uuid, 'Weekly narrative', 'ai_org_narrative', ${ids.scheduleP}::uuid),
+            (${ids.reportS}::uuid, ${S}::uuid, 'Weekly narrative', 'ai_org_narrative', ${ids.scheduleP}::uuid),
+            -- Ordinary reports in BOTH orgs: NULL keys must NOT be treated as a
+            -- collision -- the partial index and the executor's plain equality
+            -- are both NULL-blind. If they were, this pair would drop too.
+            (${ids.reportPlainL}::uuid, ${L}::uuid, 'Inventory', 'device_inventory', NULL),
+            (${ids.reportPlainS}::uuid, ${S}::uuid, 'Inventory', 'device_inventory', NULL)`);
+        await db.execute(sql`
+          INSERT INTO report_runs (id, report_id, status) VALUES
+            (${ids.runL}::uuid, ${ids.reportL}::uuid, 'completed'),
+            (${ids.runS}::uuid, ${ids.reportS}::uuid, 'completed')`);
+        await db.execute(sql`
+          INSERT INTO ai_agent_runs (id, agent_id, org_id, trigger_kind, dedupe_key, mode_at_start, policy_snapshot, profile, report_run_id)
+          VALUES (${ids.agentRunL}::uuid, ${ids.agentP}::uuid, ${L}::uuid, 'schedule', ${`narr-${suffix}`}, 'shadow', '{}'::jsonb, 'narrative', ${ids.runL}::uuid)`);
+
+        const reportsOut = await CUSTOM_EXECUTORS.reports!(L, S);
+        // Exactly ONE definition dropped (the narrative duplicate) — never the
+        // ordinary report, whose key is NULL.
+        expect(reportsOut.dropped).toBe(1);
+        expect(reportsOut.moved).toBe(1);
+        expect(reportsOut.notes.join('\n')).toMatch(/re-homed its generated reports/);
+        expect(reportsOut.notes.join('\n')).toMatch(/report_runs: 1/);
+        // The loser's generated artifact survives, re-homed by id onto the
+        // survivor's definition — a count alone would pass on an orphan.
+        const runRow = (await db.execute(sql`
+          SELECT report_id FROM report_runs WHERE id = ${ids.runL}::uuid`)) as unknown as Array<{
+          report_id: string;
+        }>;
+        expect(runRow[0]?.report_id).toBe(ids.reportS);
+        // BOTH runs are now reachable under the one surviving definition.
+        const survivingRuns = (await db.execute(sql`
+          SELECT r.id FROM report_runs r
+            JOIN reports p ON p.id = r.report_id
+           WHERE p.org_id = ${S}::uuid AND p.source_ai_agent_schedule_id = ${ids.scheduleP}::uuid
+           ORDER BY r.id`)) as unknown as Array<{ id: string }>;
+        expect(survivingRuns.map((r) => r.id).sort()).toEqual([ids.runL, ids.runS].sort());
+        // The run trace still resolves to a downloadable artifact.
+        const agentRunRow = (await db.execute(sql`
+          SELECT report_run_id FROM ai_agent_runs WHERE id = ${ids.agentRunL}::uuid`)) as unknown as Array<{
+          report_run_id: string | null;
+        }>;
+        expect(agentRunRow[0]?.report_run_id).toBe(ids.runL);
+        // Exactly one definition per (survivor org, schedule) — the whole point
+        // of reports_source_ai_agent_schedule_uniq.
+        const survivorDefs = (await db.execute(sql`
+          SELECT id FROM reports
+           WHERE org_id = ${S}::uuid AND source_ai_agent_schedule_id = ${ids.scheduleP}::uuid`)) as unknown as Array<{
+          id: string;
+        }>;
+        expect(survivorDefs.map((r) => r.id)).toEqual([ids.reportS]);
+        // Both ordinary reports survived and the loser's one moved across.
+        const plainReports = (await db.execute(sql`
+          SELECT id, org_id FROM reports
+           WHERE id IN (${ids.reportPlainL}::uuid, ${ids.reportPlainS}::uuid) ORDER BY id`)) as unknown as Array<{
+          id: string; org_id: string;
+        }>;
+        expect(plainReports).toHaveLength(2);
+        expect(new Set(plainReports.map((r) => r.org_id))).toEqual(new Set([S]));
+        asserted++;
+
         // Nothing left behind under the loser for the four whose move half ran
         // here. `discovered_assets` is excluded on purpose — see above: its
         // move half cannot run before `sites` does, so its one non-colliding
         // row is still under the loser at this point by design. The gauntlet
         // asserts the empty-under-loser property for it end to end.
-        for (const table of ['plugin_installations', 'playbook_definitions', 'pam_signer_groups', 'incidents']) {
+        for (const table of ['plugin_installations', 'playbook_definitions', 'pam_signer_groups', 'incidents', 'reports']) {
           const left = (await db.execute(
             sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${L}::uuid`,
           )) as unknown as Array<{ n: number }>;
@@ -844,6 +929,6 @@ describe('org merge engine SQL against real Postgres', () => {
     } catch (err) {
       if (!(err instanceof Rollback)) throw err;
     }
-    expect(asserted).toBe(5);
+    expect(asserted).toBe(6);
   }, 120_000);
 });
