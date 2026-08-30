@@ -25,4 +25,17 @@ Last release: **v0.106.0** (2026-08-17).
   `manual | timer | location | remote_session | support_session`). Existing rows backfill to
   `'manual'` via the column default; no data migration is required.
 - Adds `time_suggestion_decisions` (partner-axis RLS). No configuration needed.
-
+- **New (off by default): auto-suggested time entries.** Partner admins can enable
+  Settings → Ticketing → Time Tracking → "Suggest time entries from remote sessions".
+  Technicians then see ended remote sessions on their timesheet and can log one with a
+  single tap. Nothing is written without that tap, and the feature is invisible while the
+  setting is off.
+- **New API:** `GET /api/v1/time-entries/suggestions`,
+  `POST /api/v1/time-entries/suggestions/confirm`,
+  `POST|DELETE /api/v1/time-entries/suggestions/dismiss` — partner scope,
+  `time_entries:read` / `time_entries:write`.
+- **New field:** time entries returned by the API now carry `source`
+  (`manual | timer | location | remote_session | support_session`). It is server-stamped
+  and read-only; sending it on a create or update request is rejected.
+- No new environment variables. No action required for existing deployments beyond the
+  migration note above.
