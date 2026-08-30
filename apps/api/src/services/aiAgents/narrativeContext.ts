@@ -613,7 +613,22 @@ function reportLoaderFailure(orgId: string, loader: string, error: unknown): voi
 /** Read `N + 1` — see this module's header on observable truncation. */
 const TOP_N_FETCH_LIMIT = NARRATIVE_TOP_N + 1;
 
-type Window = { start: Date; end: Date };
+/**
+ * The period bounds AS ISO-8601 STRINGS, never as `Date` objects.
+ *
+ * A JS `Date` interpolated into a drizzle `sql` template and executed through
+ * `db.execute` is not serialisable by the postgres-js driver on this path: the
+ * Bind message reaches `Buffer.byteLength(<Date>)` and throws
+ * `TypeError: The "string" argument must be of type string ... Received an
+ * instance of Date`. Worse than a normal query error — postgres-js raises it
+ * OUTSIDE the awaited promise, so `settled()` cannot contain it and the whole
+ * run dies on an unhandled rejection while every block is also marked
+ * `unavailable`. An ISO string binds as an unspecified-type parameter, which
+ * Postgres coerces to `timestamp`/`timestamptz` from the comparison's other
+ * side. Proven live in `aiAgentNarrative.integration.test.ts` — the unit
+ * suite mocks `db` and can never see this.
+ */
+type Window = { start: string; end: string };
 
 /** Every loader's org identity. `partnerId` is `null` only when the header
  *  statement itself failed, in which case both partner-axis clauses admit
@@ -1004,8 +1019,9 @@ async function loadPatching(orgId: string, window: Window): Promise<RawPatchingI
 
   // Day buckets are `YYYY-MM-DD` strings; comparing them as strings is a
   // correct date comparison for that format and avoids re-parsing.
-  const thisWeekFrom = start.toISOString().slice(0, 10);
-  const priorWeekFrom = new Date(start.getTime() - PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const thisWeekFrom = start.slice(0, 10);
+  const priorWeekFrom = new Date(new Date(start).getTime() - PERIOD_DAYS * 24 * 60 * 60 * 1000)
+    .toISOString().slice(0, 10);
   const dayOf = (point: Record<string, string | number>): string => String(point.timestamp ?? '');
   const thisWeek = trend.filter((point) => dayOf(point) >= thisWeekFrom);
   const priorWeek = trend.filter((point) => dayOf(point) >= priorWeekFrom && dayOf(point) < thisWeekFrom);
@@ -1166,7 +1182,8 @@ export async function loadNarrativeContext(orgId: string): Promise<NarrativeCont
 
   const end = new Date();
   const start = new Date(end.getTime() - PERIOD_DAYS * 24 * 60 * 60 * 1000);
-  const window: Window = { start, end };
+  // ISO strings, not the `Date`s themselves — see `Window`.
+  const window: Window = { start: start.toISOString(), end: end.toISOString() };
   const timezone = header?.timezone ?? 'UTC';
 
   const alerts = await settled(orgId, 'alerts', () => loadAlerts(scope, window));

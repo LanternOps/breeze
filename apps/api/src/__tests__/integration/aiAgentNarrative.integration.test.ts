@@ -67,6 +67,7 @@ import {
   registerAgentRunEnqueuer,
   type AgentRunEnqueuer,
 } from '../../services/aiAgents/runService';
+import { loadNarrativeContext } from '../../services/aiAgents/narrativeContext';
 import { createOrganization, createPartner, createUser } from './db-utils';
 
 /** Monday 07:00 UTC — the only cron shape `isWeeklyLiteralCron` admits. */
@@ -510,5 +511,66 @@ describe('ai_agent_schedules.kind constraints (real Postgres)', () => {
       db.select({ id: organizations.id }).from(organizations).where(eq(organizations.partnerId, f.partner.id)),
     );
     expect(orgs.map((o) => o.id).sort()).toEqual([f.orgA.id, f.orgB.id].sort());
+  });
+});
+
+/**
+ * The task-5 follow-up the wave carried open: `loadNarrativeContext`'s sixteen
+ * hand-written statements had NEVER been executed against a real database.
+ * Every unit test in `narrativeContext.test.ts` mocks `../../db` and asserts
+ * COMPILED SQL, so the driver is never reached — and the driver is exactly
+ * where they failed.
+ *
+ * A JS `Date` bound through a drizzle `sql` template is not serialisable by
+ * postgres-js on this path (`TypeError: The "string" argument must be of type
+ * string ... Received an instance of Date`), so every windowed loader rejected,
+ * `settled()` recorded the block as `unavailable`, and the prompt would have
+ * rendered the entire narrative as "(not measured)" — while the run itself
+ * died on an unhandled rejection and never left `queued`. Found on the wave's
+ * live wt-stack check, not by any suite.
+ *
+ * This test is the guard: it asserts the loaders actually RUN. Only the two
+ * blocks that are structurally unavailable by design may appear in
+ * `unavailable`; anything else means a statement threw.
+ */
+describe('loadNarrativeContext against real Postgres', () => {
+  /** The seven windowed loaders. A statement that throws shows up as its own
+   *  block name in `unavailable` AND as `available: false` — both are asserted,
+   *  because the first is what a reader greps for and the second is what the
+   *  prompt actually renders. */
+  const LOADER_BLOCKS = ['alerts', 'sweeps', 'fixes', 'tickets', 'patching', 'backups', 'fleet'];
+
+  it('executes every statement — no windowed loader block is reported unavailable', async () => {
+    const f = await seedFixture();
+
+    const context = await withSystemDbAccessContext(() => loadNarrativeContext(f.orgA.id));
+
+    expect(context.alerts.available).toBe(true);
+    expect(context.sweeps.available).toBe(true);
+    expect(context.fixes.available).toBe(true);
+    expect(context.tickets.available).toBe(true);
+    // NOT `patching.available` — that flag tracks whether a posture SNAPSHOT
+    // exists for the org, not whether the loader ran. A fixture org has none,
+    // so the bare-name check below is what proves the statement executed.
+    expect(context.backups.available).toBe(true);
+    expect(context.fleet.available).toBe(true);
+
+    // `unavailable` legitimately carries the two STRUCTURALLY_UNAVAILABLE
+    // entries, and `patching.postureScores` for an org with no posture
+    // snapshots — all sub-block names. A bare loader name in this list means a
+    // statement threw.
+    expect(context.unavailable.filter((entry) => LOADER_BLOCKS.includes(entry))).toEqual([]);
+    expect(context.unavailable).toContain('alerts.suppressedInWindow');
+    expect(context.unavailable).toContain('fleet.onlineOfflineDelta');
+  });
+
+  it('the header statement ran: the org identity comes back off the real row', async () => {
+    const f = await seedFixture();
+
+    const context = await withSystemDbAccessContext(() => loadNarrativeContext(f.orgA.id));
+
+    expect(context.org.name).not.toBe('');
+    expect(context.org.partnerName).not.toBe('');
+    expect(context.period.start < context.period.end).toBe(true);
   });
 });

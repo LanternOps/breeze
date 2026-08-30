@@ -750,9 +750,16 @@ describe('loadNarrativeContext', () => {
     expect(ctx.period.start).toBe('2026-08-22T08:00:00-04:00');
     // Every windowed statement binds the SAME two instants — a block windowed
     // on its own `new Date()` would silently report a different week.
+    //
+    // The bounds are ISO STRINGS, not `Date` objects, and that is load-bearing
+    // rather than cosmetic: postgres-js cannot serialise a `Date` bound through
+    // a drizzle `sql` template on this path, and it fails OUTSIDE the awaited
+    // promise, so `settled()` cannot contain it. See the `Window` docstring and
+    // `aiAgentNarrative.integration.test.ts`.
+    const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+    expect(executed.flatMap((node) => boundParams(node).filter((v) => v instanceof Date))).toEqual([]);
     const bounds = executed.flatMap((node) => boundParams(node)
-      .filter((v): v is Date => v instanceof Date)
-      .map((d) => d.toISOString()));
+      .filter((v): v is string => typeof v === 'string' && ISO_INSTANT.test(v)));
     expect(bounds.length).toBeGreaterThan(10);
     expect([...new Set(bounds)].sort()).toEqual(['2026-08-22T12:00:00.000Z', '2026-08-29T12:00:00.000Z']);
     vi.useRealTimers();
