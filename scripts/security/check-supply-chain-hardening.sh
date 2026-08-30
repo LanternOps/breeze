@@ -51,6 +51,12 @@ AUDITED_APK_UPGRADE='^[[:space:]]*(RUN[[:space:]]+)?apk[[:space:]]+upgrade[[:spa
 # Matches an apk *invocation* anywhere on a line -- including a `\`-continuation
 # line, which the previous `^RUN .*apk` rule could not see, and a fully-qualified
 # path such as /sbin/apk.
+#
+# Known limit: this is a literal-token scan, so a command that never spells `apk`
+# (base64-decoded into sh, or assembled from shell variables) is invisible to it.
+# That is inherent to grep-based Dockerfile scanning and is NOT a regression -- the
+# previous rule required the same literal token. Recorded so nobody mistakes this
+# check for a defence against a hostile author; it guards against drift, not evasion.
 ANY_APK_INVOCATION='(^|[^[:alnum:]_-])apk([^[:alnum:]_-]|$)'
 
 reject_unaudited_apk() {
@@ -111,6 +117,7 @@ run_apk_policy_self_test() {
   check_case reject 'RUN apk -U upgrade libcrypto3 libssl3'
   # Right packages, wrong shape: order, extras, and deletes are all non-canonical.
   check_case reject 'RUN apk upgrade --no-cache libssl3 libcrypto3'
+  check_case reject 'RUN apk upgrade libcrypto3 libssl3'
   check_case reject 'RUN apk upgrade --no-cache libcrypto3 libssl3 curl'
   check_case reject 'RUN apk del busybox'
   # Evasions the previous `^RUN .*apk` rule would have missed entirely.

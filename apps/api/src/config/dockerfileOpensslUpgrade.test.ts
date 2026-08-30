@@ -238,6 +238,39 @@ describe('Dockerfile OpenSSL upgrade coverage', () => {
     expect(upgradesOpenssl(inheritanceChain(inherited).map((s) => s.body))).toBe(true);
   });
 
+  it('accepts the two packages in either order, and rejects a non-upgrade mention', () => {
+    // `apk` ignores argument order, so the guard must too — otherwise it fails a
+    // Dockerfile that is genuinely patched, which is worse than useless.
+    expect(upgradesOpenssl(['RUN apk upgrade --no-cache libssl3 libcrypto3'])).toBe(true);
+    expect(upgradesOpenssl(['RUN apk upgrade --no-cache libcrypto3 libssl3'])).toBe(true);
+    expect(
+      upgradesOpenssl(['RUN apk upgrade --no-cache libcrypto3', 'RUN apk upgrade --no-cache libssl3']),
+    ).toBe(true);
+
+    // Still strict where it matters: one package alone is not enough, and
+    // naming them outside an `apk upgrade` does not count.
+    expect(upgradesOpenssl(['RUN apk upgrade --no-cache libcrypto3'])).toBe(false);
+    expect(upgradesOpenssl(['RUN apk add --no-cache libcrypto3 libssl3'])).toBe(false);
+  });
+
+  it('still resolves the base ref when FROM carries build flags', () => {
+    // A multi-arch `FROM --platform=...` must not read the flag as the base
+    // ref: that would drop the image out of scope silently, which is the one
+    // way this guard could fail without anyone noticing.
+    const digest = 'a'.repeat(64);
+    const stages = parseStages(
+      [
+        `FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:${digest} AS build`,
+        'RUN pnpm build',
+        `FROM --platform=$TARGETPLATFORM node:24-alpine@sha256:${digest} AS runner`,
+        'RUN apk upgrade --no-cache libcrypto3 libssl3',
+      ].join('\n'),
+    );
+
+    expect(effectiveBaseRef(stages)).toBe(`node:24-alpine@sha256:${digest}`);
+    expect(PINNED_NODE_ALPINE_RE.test(effectiveBaseRef(stages))).toBe(true);
+  });
+
   it('leaves no Dockerfile silently out of scope', () => {
     // Scope is derived from each file's effective base ref, so this snapshot is
     // the anti-rot mechanism: a new image, or a base ref that changes shape,

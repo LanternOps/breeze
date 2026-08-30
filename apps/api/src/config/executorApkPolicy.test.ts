@@ -73,6 +73,9 @@ describe('credential-boundary executor apk policy', () => {
     // order for images that are not credential boundaries. Intentional: on this
     // boundary the permitted string is pinned so the allowance cannot drift.
     expect(policyAccepts('RUN apk upgrade --no-cache libssl3 libcrypto3')).toBe(false);
+    // Closest realistic fat-finger of the audited line: right packages, right
+    // order, dropped flag. Correct behaviour before, but nothing proved it.
+    expect(policyAccepts('RUN apk upgrade libcrypto3 libssl3')).toBe(false);
     expect(policyAccepts('RUN apk upgrade --no-cache libcrypto3 libssl3 curl')).toBe(false);
     expect(policyAccepts('RUN apk del busybox')).toBe(false);
   });
