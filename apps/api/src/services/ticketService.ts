@@ -1371,7 +1371,13 @@ export async function restoreTicket(ticketId: string, actor: TicketActor): Promi
 // scoped to an org that no longer owns it. Same UPDATE shape as the other
 // three tables; the mover already holds access to both orgs (same-partner
 // constraint), so RLS USING/WITH CHECK both pass.
-const TICKET_ORG_DENORMALIZED_TABLES = ['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox'] as const;
+// ticket_attachments (W08 #3902): comment photo/PDF metadata rows denormalize
+// org_id from their ticket (shape 1) and have no device_id. Appended LAST so
+// this path and the device-move path (routes/devices/moveOrg.ts) touch the
+// ticket-linked child tables in the same relative order; see the lock-order
+// comment at moveOrg.ts:~311. S3 objects are keyed by attachment id only
+// (spec D8) and are NOT touched by a move.
+const TICKET_ORG_DENORMALIZED_TABLES = ['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox', 'ticket_attachments'] as const;
 
 /**
  * Reassigns a ticket to another organization of the SAME partner.

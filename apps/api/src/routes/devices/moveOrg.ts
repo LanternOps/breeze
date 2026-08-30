@@ -332,6 +332,17 @@ moveOrgRoutes.post(
           sql`UPDATE ${sql.identifier('ticket_parts')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
         );
 
+        // ticket_attachments (W08 #3902) denormalizes org_id from its ticket and
+        // has no device_id; tickets bound to this device move org, so their
+        // attachment rows follow via the tickets join. Placed AFTER ticket_parts
+        // to extend — not reorder — the documented global lock order
+        // (tickets -> time_entries -> ticket_parts -> ticket_attachments); the
+        // moveTicketOrg loop appends it last for the same reason. S3 objects are
+        // keyed by attachment id only (spec D8) and are not touched.
+        await tx.execute(
+          sql`UPDATE ${sql.identifier('ticket_attachments')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
         // Rewrite denormalized site_id on every device-scoped table that has
         // one (currently elevation_requests — see DEVICE_SITE_DENORMALIZED_TABLES
         // in core.ts). Skipping any of these strands rows under the OLD

@@ -2672,7 +2672,7 @@ describe('moveTicketOrg', () => {
     });
   }
 
-  it('moves ticket to a same-partner org, detaches device, re-stamps child org_id on 4 tables including ticket_outbox', async () => {
+  it('moves ticket to a same-partner org, detaches device, re-stamps child org_id on 5 tables including ticket_attachments', async () => {
     // Ticket { id:'t1', orgId:'oA', partnerId:'p1', deviceId:'d1' }
     // Target org { id:'oB', partnerId:'p1', name:'Beta Corp' }
     dbMocks.selectResult
@@ -2700,9 +2700,10 @@ describe('moveTicketOrg', () => {
     // ticket_alert_links, ticket_outbox — #3828 wave-6-3 review fix: an
     // unpublished outbox row must move with the ticket or it keeps routing
     // to the source org's helpdesk agents after the move).
-    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(4);
+    // W08 #3902 added ticket_attachments as the 5th and LAST entry.
+    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(5);
     expect(executedTableNames()).toEqual(
-      expect.arrayContaining(['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox'])
+      expect.arrayContaining(['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox', 'ticket_attachments'])
     );
 
     // System feed comment inserted with "Moved to <org name>"
@@ -2732,6 +2733,30 @@ describe('moveTicketOrg', () => {
       resourceId: 't1'
     }));
   });
+
+  it('re-stamps ticket_attachments.org_id LAST on ticket move (W08 #3902)', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: 'd1' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'USD' }
+      ]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB', deviceId: null }]);
+    dbMocks.txExecuteMock.mockResolvedValue(undefined);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-sys' }]);
+
+    await moveTicketOrg('t1', 'oB', { userId: 'admin' });
+
+    const tables = executedTableNames();
+    expect(tables).toContain('ticket_attachments');
+    // Appended last so the device-move path (routes/devices/moveOrg.ts) and
+    // this path touch the ticket-linked tables in the same relative order —
+    // see the lock-order comment at moveOrg.ts:~311.
+    expect(tables[tables.length - 1]).toBe('ticket_attachments');
+  });
+
 
   it('rejects a cross-partner target (400)', async () => {
     // Ticket in org oA (partner p1), target org oX (partner p2)
@@ -2825,7 +2850,7 @@ describe('moveTicketOrg', () => {
     const result = await moveTicketOrg('t1', 'oB', { userId: 'admin' }, { acceptCurrencyMismatch: true });
     expect(result.orgId).toBe('oB');
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ acceptCurrencyMismatch: true }));
-    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(4);
+    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(5); // W08 #3902 added ticket_attachments
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
       commentType: 'system',
       content: 'Moved to Beta Corp — 2 unbilled items stay in USD'
@@ -2864,7 +2889,7 @@ describe('moveTicketOrg', () => {
 
     await moveTicketOrg('t1', 'oB', { userId: 'admin' });
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ sourceCurrency: 'USD', targetCurrency: 'USD', acceptCurrencyMismatch: false }));
-    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(4);
+    expect(dbMocks.txExecuteMock).toHaveBeenCalledTimes(5); // W08 #3902 added ticket_attachments
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Moved to Beta Corp' }));
     const sourceAudit = auditMock.mock.calls.find((c) => c[0].action === 'ticket.move_org.source')![0];
     expect(sourceAudit.details).not.toHaveProperty('currencyMismatchAccepted');
