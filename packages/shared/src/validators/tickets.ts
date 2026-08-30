@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TICKET_ATTACHMENT_LIMITS } from '../constants/ticketAttachments';
 
 export const ticketStatusSchema = z.enum(['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']);
 export const ticketPrioritySchema = z.enum(['low', 'normal', 'high', 'urgent']);
@@ -129,8 +130,14 @@ export const bulkTicketActionSchema = z.object({
 export const PORTAL_TICKET_COMMENT_MAX_CHARS = 5000;
 
 export const addTicketCommentSchema = z.object({
-  content: z.string().min(1).max(50_000),
-  isPublic: z.boolean().default(true)
+  // W08 #3902: content may be blank when the comment carries attachments; the
+  // refine below keeps the old "non-empty" rule for attachment-less comments.
+  content: z.string().max(50_000).default(''),
+  isPublic: z.boolean().default(true),
+  attachmentIds: z.array(z.string().guid()).max(TICKET_ATTACHMENT_LIMITS.maxPerComment).default([])
+}).refine((v) => v.content.trim().length > 0 || v.attachmentIds.length > 0, {
+  message: 'Comment needs text or at least one attachment',
+  path: ['content']
 });
 
 export const editCommentSchema = z.object({

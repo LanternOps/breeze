@@ -143,3 +143,6 @@ export const BULK_ID_LIMIT = 50;
 export const ACCESS_TOKEN_EXPIRY = '15m';
 export const REFRESH_TOKEN_EXPIRY = '7d';
 export const SESSION_EXPIRY_HOURS = 24;
+
+// Ticket comment attachments (W08 #3902)
+export * from './ticketAttachments';

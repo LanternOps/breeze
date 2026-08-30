@@ -284,3 +284,22 @@ describe('createTicketFromChatSchema', () => {
     expect(createTicketFromChatSchema.safeParse({ ...base, subject: '' }).success).toBe(false);
   });
 });
+
+describe('addTicketCommentSchema attachmentIds (W08)', () => {
+  const uuid = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
+
+  it('defaults attachmentIds to [] and still requires content when empty', () => {
+    expect(addTicketCommentSchema.parse({ content: 'hi' })).toMatchObject({ attachmentIds: [] });
+    expect(addTicketCommentSchema.safeParse({ content: '' }).success).toBe(false);
+  });
+
+  it('allows empty content when at least one attachment id is present', () => {
+    const r = addTicketCommentSchema.safeParse({ content: '', attachmentIds: [uuid(1)] });
+    expect(r.success).toBe(true);
+  });
+
+  it('caps attachmentIds at 5 and rejects non-uuids', () => {
+    expect(addTicketCommentSchema.safeParse({ content: 'x', attachmentIds: [1, 2, 3, 4, 5, 6].map(uuid) }).success).toBe(false);
+    expect(addTicketCommentSchema.safeParse({ content: 'x', attachmentIds: ['nope'] }).success).toBe(false);
+  });
+});
