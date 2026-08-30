@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const mocks = vi.hoisted(() => ({
+  captureMessage: vi.fn(),
   bearerTokenAuthMiddleware: vi.fn(),
   apiKeyAuthMiddleware: vi.fn(),
   executeTool: vi.fn(),
@@ -16,7 +17,14 @@ const envState = vi.hoisted(() => ({
   oauthIssuer: 'https://us.example.com',
 }));
 
-const redisState = vi.hoisted(() => ({ available: true }));
+const redisState = vi.hoisted(() => ({
+  available: true,
+  // Distinct from `available: false` on purpose: `getRedis()` returning null
+  // and a live client whose command REJECTS are different branches in the
+  // handler, and both must answer 503 rather than 404.
+  throwOnGet: false,
+  throwOnSetex: false,
+}));
 
 vi.mock('../config/env', () => ({
   get MCP_OAUTH_ENABLED() { return envState.oauthEnabled; },
@@ -132,12 +140,20 @@ vi.mock('../services/redis', () => ({
   getRedis: () => redisState.available
     ? {
         setex: vi.fn(async (k: string, _ttl: number, v: string) => {
+          if (redisState.throwOnSetex) throw new Error('ECONNRESET');
           __sessionStore.set(k, v);
           return 'OK';
         }),
-        get: vi.fn(async (k: string) => __sessionStore.get(k) ?? null),
+        get: vi.fn(async (k: string) => {
+          if (redisState.throwOnGet) throw new Error('ECONNRESET');
+          return __sessionStore.get(k) ?? null;
+        }),
       }
     : null,
+}));
+vi.mock('../services/sentry', () => ({
+  captureException: vi.fn(),
+  captureMessage: mocks.captureMessage,
 }));
 vi.mock('../services/rate-limit', () => ({
   rateLimiter: (...args: any[]) => mocks.rateLimiter(...args),
@@ -157,6 +173,9 @@ describe('Streamable HTTP transport (POST /sse)', () => {
     envState.oauthEnabled = true;
     envState.oauthIssuer = 'https://us.example.com';
     redisState.available = true;
+    redisState.throwOnGet = false;
+    redisState.throwOnSetex = false;
+    mocks.captureMessage.mockReset();
     __sessionStore.clear();
     mocks.executeTool.mockReset();
     mocks.getToolDefinitions.mockReset().mockReturnValue([]);
@@ -320,10 +339,133 @@ describe('Streamable HTTP transport (POST /sse)', () => {
     const mismatchResponse = await requestWithSession(mismatchSessionId);
     const mismatchBody = await mismatchResponse.json();
 
+    // These two are what discriminate old behaviour from new: the old code
+    // returned 403 here, and its body literally said "principal mismatch".
     expect(unknownResponse.status).toBe(404);
     expect(mismatchResponse.status).toBe(404);
-    expect(mismatchBody).toEqual(unknownBody);
     expect(mismatchBody.error.message).not.toMatch(/mismatch/i);
+    // This one would ALSO have passed against the old code (both cases shared a
+    // single branch there, so their bodies were trivially equal). It is kept as
+    // a forward regression guard — it fails the day someone edits one of the
+    // two 404 responses and not the other — not as proof of the fix.
+    expect(mismatchBody).toEqual(unknownBody);
+    // The no-oracle property extends to headers: a rejected request must not
+    // echo a session id back.
+    expect(unknownResponse.headers.get('mcp-session-id')).toBeNull();
+    expect(mismatchResponse.headers.get('mcp-session-id')).toBeNull();
+    // The mismatch is still surfaced to operators, just not to the caller.
+    expect(mocks.captureMessage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'mcp_session_principal_mismatch' }),
+    );
+  });
+
+  it('does not raise the principal-mismatch signal for an ordinary expiry', async () => {
+    const app = appWithMcpRoutes();
+    const init = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+    });
+    const sessionId = init.headers.get('mcp-session-id')!;
+    __sessionStore.delete(`mcp-session:${sessionId}`);
+
+    const res = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': 'k',
+        'Mcp-Session-Id': sessionId,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+    });
+
+    expect(res.status).toBe(404);
+    // Routine expiry is silent per-request by design — every session ages out
+    // this way. Only an abnormal RATE is reported, and one expiry is not that.
+    expect(mocks.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('returns 503, not 404, when the session lookup itself throws', async () => {
+    const app = appWithMcpRoutes();
+    const init = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+    });
+    const sessionId = init.headers.get('mcp-session-id')!;
+    // A live client whose command rejects — distinct from getRedis() === null,
+    // and a distinct catch block in the handler. If this ever answered 404,
+    // every client would re-initialize in a loop for the duration of an outage.
+    redisState.throwOnGet = true;
+
+    const res = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': 'k',
+        'Mcp-Session-Id': sessionId,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+    });
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.error.code).toBe(-32000);
+  });
+
+  it('still mints a session id when persisting it throws, and the next call fails closed', async () => {
+    const app = appWithMcpRoutes();
+    redisState.throwOnSetex = true;
+    const init = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+    });
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get('mcp-session-id')!;
+    expect(sessionId).toMatch(/^mcp-/);
+
+    // Connection recovers, but the mapping never landed -> 404, client re-inits.
+    redisState.throwOnSetex = false;
+    const res = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': 'k',
+        'Mcp-Session-Id': sessionId,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects a notification (no JSON-RPC id) carrying an expired session instead of accepting it 202', async () => {
+    const app = appWithMcpRoutes();
+    const init = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+    });
+    const sessionId = init.headers.get('mcp-session-id')!;
+    __sessionStore.delete(`mcp-session:${sessionId}`);
+
+    // Session validation must run BEFORE the notification fast-path, or an
+    // invalid-session notification would be silently accepted with a 202 and
+    // the client would never learn it needs to re-initialize.
+    const res = await app.request('/mcp/sse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': 'k',
+        'Mcp-Session-Id': sessionId,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    });
+
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error.code).toBe(-32001);
   });
 
   it('still returns 403 for a genuine authorization failure (missing ai:read scope), not 404', async () => {
