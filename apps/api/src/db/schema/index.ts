@@ -99,6 +99,7 @@ export * from './tenantVariables';
 export * from './tickets';
 export * from './officeAddin';
 export * from './ticketConfig';
+export * from './ticketAttachments';
 export * from './ticketEmailLinks';
 export * from './ticketResponseTemplates';
 export * from './ticketForms';

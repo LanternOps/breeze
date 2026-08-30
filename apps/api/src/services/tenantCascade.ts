@@ -380,6 +380,15 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // 'tenant_variables' < 'ticket_alert_links' by localeCompare).
   'tenant_variables',
   'ticket_alert_links',
+  // ticket_attachments (W08 #3902): comment photo/PDF attachments. Shape 1
+  // (direct org_id, denormalised from tickets.org_id). ticket_id / comment_id
+  // FKs are ON DELETE CASCADE; uploaded_by_user_id is ON DELETE SET NULL.
+  // Cascade leaf — nothing FK-references it. localeCompare:
+  // 'ticket_alert_links' < 'ticket_attachments' < 'ticket_email_links'
+  // ('al' < 'at' < 'em'), and it precedes its FK parent 'tickets'.
+  // S3 objects are cleared BEFORE this DELETE by the pre-step in
+  // cascadeDeleteOrg — the rows are the only index to the object keys.
+  'ticket_attachments',
   // ticket_email_links (spec 2026-08-15, outlook-tech-addin): cross-channel
   // email<->ticket association + idempotency ledger. Shape 1 (direct org_id).
   // ticket_id FK is ON DELETE CASCADE (child of tickets, deleted well before

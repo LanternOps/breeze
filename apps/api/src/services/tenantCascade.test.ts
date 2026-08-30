@@ -316,3 +316,14 @@ describe('quoteIdent', () => {
     expect(() => __testOnly.quoteIdent('123_starts_with_digit')).toThrow();
   });
 });
+
+describe('ticket_attachments registration (W08 #3902)', () => {
+  it('is in the org cascade list between ticket_alert_links and ticket_email_links', () => {
+    const order = getOrgCascadeDeleteOrder();
+    const i = order.indexOf('ticket_attachments');
+    expect(i).toBeGreaterThan(-1);
+    expect(order.indexOf('ticket_alert_links')).toBeLessThan(i);
+    expect(i).toBeLessThan(order.indexOf('ticket_email_links'));
+    expect(i).toBeLessThan(order.indexOf('tickets')); // FK child before parent
+  });
+});

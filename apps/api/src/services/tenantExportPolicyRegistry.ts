@@ -349,6 +349,16 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // credential material, hence reviewedIncluded.
   "tenant_variables": tablePolicy("org_id", {"included":["id","partner_id","org_id","key","description","version","created_by","updated_by","created_at","updated_at"],"reviewedIncluded":["is_secret"],"excludedSensitive":["value"],"excludedOpen":[]}),
   "ticket_alert_links": tablePolicy("org_id", {"included":["id","ticket_id","org_id","alert_id","link_type","created_by","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // ticket_attachments (W08 #3902): `data` is bytea -> excludedOpen by rule.
+  // storage_key is an opaque `ticket-attachments/<id>` path (precedent:
+  // ai_screenshots.storage_key, included); sha256 is a content digest, not a
+  // credential, and matches nothing in SUSPICIOUS_NAME_PARTS.
+  "ticket_attachments": tablePolicy("org_id", {
+    included: ["id", "org_id", "ticket_id", "comment_id", "uploaded_by_user_id", "storage_backend", "storage_key", "content_type", "byte_size", "original_filename", "sha256", "created_at", "attached_at"],
+    reviewedIncluded: [],
+    excludedSensitive: [],
+    excludedOpen: ["data"],
+  }),
   "ticket_email_links": tablePolicy("org_id", {
     included: ["id", "ticket_id", "org_id", "partner_id", "message_id", "comment_id", "origin", "visibility", "linked_by", "created_at"],
     reviewedIncluded: [],
