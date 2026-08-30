@@ -321,6 +321,41 @@ describe('explicit time-entry mutation audits', () => {
     });
   });
 
+  it('audit details carry the stamped source (W06 #3900)', async () => {
+    serviceMocks.createTimeEntry.mockImplementation(async (...args: unknown[]) => {
+      const actor = args.at(-1) as { recordAuditMutation?: (m: unknown) => void };
+      actor.recordAuditMutation?.({ action: 'time_entry.created', entryId: ENTRY_A, orgId: ORG_A, source: 'manual' });
+      return { id: ENTRY_A, orgId: ORG_A };
+    });
+    const res = await timeEntriesRoutes.request('/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ startedAt: '2026-08-29T09:00:00Z', endedAt: '2026-08-29T09:30:00Z' }),
+    });
+    expect(res.status).toBe(201);
+    expect(auditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      resourceType: 'time_entry',
+      details: expect.objectContaining({ source: 'manual' }),
+    }));
+  });
+
+  it('files a time_suggestion mutation under resourceType time_suggestion, not time_entry (W06 #3900)', async () => {
+    serviceMocks.createTimeEntry.mockImplementation(async (...args: unknown[]) => {
+      const actor = args.at(-1) as { recordAuditMutation?: (m: unknown) => void };
+      actor.recordAuditMutation?.({ action: 'time_suggestion.dismissed', entryId: 'sig-1', orgId: null });
+      return { id: ENTRY_A, orgId: ORG_A };
+    });
+    await timeEntriesRoutes.request('/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ startedAt: '2026-08-29T09:00:00Z', endedAt: '2026-08-29T09:30:00Z' }),
+    });
+    expect(auditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'time_suggestion.dismissed',
+      resourceType: 'time_suggestion',
+    }));
+  });
+
   it('emits one audit per affected entry for start auto-stop ownership', async () => {
     serviceMocks.startTimer.mockImplementation(async (_input, actor) => {
       actor.recordAuditMutation?.({

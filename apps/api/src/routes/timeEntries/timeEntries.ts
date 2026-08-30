@@ -48,7 +48,7 @@ export function timeActorFrom(
   };
 }
 
-function timeEntryAuditCollector(c: Ctx): {
+export function timeEntryAuditCollector(c: Ctx): {
   actor: TimeEntryActor;
   mutations: TimeEntryAuditMutation[];
 } {
@@ -70,7 +70,7 @@ function safelyWriteTimeEntryAudit(
   }
 }
 
-function writeSimpleTimeEntryAudits(
+export function writeSimpleTimeEntryAudits(
   c: Parameters<typeof writeRouteAudit>[0],
   mutations: readonly TimeEntryAuditMutation[],
 ): void {
@@ -78,9 +78,11 @@ function writeSimpleTimeEntryAudits(
     safelyWriteTimeEntryAudit(c, {
       orgId: mutation.orgId,
       action: mutation.action,
-      resourceType: 'time_entry',
+      // W06 (#3900): a dismissal is not a time entry — filing it as one would
+      // point the audit row at an id that is a signal, not an entry.
+      resourceType: mutation.action.startsWith('time_suggestion') ? 'time_suggestion' : 'time_entry',
       resourceId: mutation.entryId,
-      details: { entryIds: [mutation.entryId], count: 1 },
+      details: { entryIds: [mutation.entryId], count: 1, ...(mutation.source ? { source: mutation.source } : {}) },
     });
   }
 }
@@ -116,13 +118,13 @@ function writeBulkTimeEntryAudits(
     safelyWriteTimeEntryAudit(c, {
       orgId: group.orgId,
       action: group.action,
-      resourceType: 'time_entry',
+      resourceType: group.action.startsWith('time_suggestion') ? 'time_suggestion' : 'time_entry',
       details: { entryIds: group.entryIds, count: group.entryIds.length },
     });
   }
 }
 
-function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof TimeEntryServiceError) {
     return c.json({ error: err.message, code: err.code }, err.status);
   }
