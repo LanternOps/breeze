@@ -57,6 +57,9 @@ export interface TimesheetWeek {
 }
 
 export class TimeEntryError extends Error {
+  /** Alias of `status`, matching the `statusCode` idiom used by `ApiError` and other mobile error shapes. */
+  readonly statusCode?: number;
+
   constructor(
     message: string,
     readonly code?: string,
@@ -64,6 +67,7 @@ export class TimeEntryError extends Error {
   ) {
     super(message);
     this.name = 'TimeEntryError';
+    this.statusCode = status;
   }
 }
 
@@ -123,7 +127,9 @@ function narrowTimeEntry(row: ServerTimeEntry): TimeEntry {
 export async function getRunningTimer(): Promise<RunningTimer | null> {
   try {
     const response = await coreRequest<{ data: ServerTimeEntry | null }>('/time-entries/running');
-    return response.data === null ? null : narrowRunningTimer(response.data);
+    // `coreRequest` resolves to `{}` on an empty 2xx body, so `data` may be
+    // undefined as well as null; both mean "no timer running".
+    return response.data == null ? null : narrowRunningTimer(response.data);
   } catch (error) {
     throw asTimeEntryError(error);
   }

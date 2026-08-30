@@ -26,6 +26,11 @@ describe('getRunningTimer', () => {
     expect(coreRequest).toHaveBeenCalledWith('/time-entries/running');
   });
 
+  it('treats an empty response body (data undefined) as no timer running', async () => {
+    coreRequest.mockResolvedValue({});
+    await expect(getRunningTimer()).resolves.toBeNull();
+  });
+
   it('narrows the running-timer payload', async () => {
     coreRequest.mockResolvedValue({
       data: { id: 't1', ticketId: 'k1', startedAt: '2026-08-23T10:00:00Z', description: 'onsite', extra: 'ignored' },
@@ -43,6 +48,7 @@ describe('startTimer', () => {
     await expect(startTimer({ ticketId: 'k1' })).rejects.toMatchObject({
       code: 'ENTRY_RUNNING',
       status: 409,
+      statusCode: 409,
     });
     await expect(startTimer({ ticketId: 'k1' })).rejects.toBeInstanceOf(TimeEntryError);
   });
@@ -113,6 +119,25 @@ describe('createTimeEntry', () => {
     await expect(
       createTimeEntry({ startedAt: '2026-08-23T10:00:00Z', endedAt: '2026-08-23T11:00:00Z' }),
     ).rejects.toBeInstanceOf(TimeEntryError);
+    await expect(
+      createTimeEntry({ startedAt: '2026-08-23T10:00:00Z', endedAt: '2026-08-23T11:00:00Z' }),
+    ).rejects.toMatchObject({ code: 'ENTRY_BILLED', status: 409 });
+  });
+
+  it('pins the defaults applied to a sparse server payload', async () => {
+    coreRequest.mockResolvedValue({ data: { id: 'e2', startedAt: '2026-08-23T10:00:00Z' } });
+    const entry = await createTimeEntry({ startedAt: '2026-08-23T10:00:00Z', endedAt: '2026-08-23T11:00:00Z' });
+    expect(entry).toEqual({
+      id: 'e2',
+      ticketId: null,
+      startedAt: '2026-08-23T10:00:00Z',
+      endedAt: null,
+      durationMinutes: null,
+      isBillable: false,
+      billingStatus: 'not_billed',
+      isApproved: false,
+      description: null,
+    });
   });
 });
 
