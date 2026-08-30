@@ -83,6 +83,10 @@ export interface ApnsPayload {
   collapseId?: string;
   /** Store-and-forward window in seconds. 0 = deliver immediately or discard. */
   ttl?: number;
+  /** Groups notifications in Notification Center (aps.thread-id). */
+  threadId?: string;
+  /** UNNotificationCategory identifier (aps.category). No client category is registered in W07. */
+  category?: string;
 }
 
 export interface ApnsRequest {
@@ -170,14 +174,21 @@ export function buildApnsRequest(deviceToken: string, payload: ApnsPayload, jwt:
     headers['apns-collapse-id'] = payload.collapseId;
   }
 
+  // Optional keys are assigned conditionally so a payload without them stays
+  // byte-identical to what shipped before W07 (the approval path asserts on
+  // exact key sets).
+  const aps: Record<string, unknown> = {
+    alert: { title: payload.title, body: payload.body },
+    sound: 'default',
+  };
+  if (payload.threadId) aps['thread-id'] = payload.threadId;
+  if (payload.category) aps.category = payload.category;
+
   // Spread custom data first so a caller-supplied `aps` key can never clobber
   // the notification payload (aps is a reserved APNs key).
   const body = JSON.stringify({
     ...(payload.data ?? {}),
-    aps: {
-      alert: { title: payload.title, body: payload.body },
-      sound: 'default',
-    },
+    aps,
   });
 
   return { path, headers, body };
