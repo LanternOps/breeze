@@ -57,8 +57,14 @@ reject_unaudited_apk() {
   local file="$1"
   local message="$2"
   local offenders
-  # Strip comments first so prose mentioning apk cannot trip the check.
-  offenders="$(sed 's/#.*$//' "$file" \
+  # Drop WHOLE-LINE comments only, so prose mentioning apk cannot trip the check.
+  #
+  # Deliberately not `sed 's/#.*$//'`: in a Dockerfile `#` only starts a comment
+  # at the beginning of a line, and stripping from the first `#` anywhere would
+  # erase real commands -- `RUN echo "#" && apk add curl` would become
+  # `RUN echo "` and sail straight through this check. Found by probing the rule
+  # rather than reading it; both forms are pinned in the fixtures below.
+  offenders="$(grep -v '^[[:space:]]*#' "$file" \
     | grep -E "$ANY_APK_INVOCATION" \
     | grep -vE "$AUDITED_APK_UPGRADE" || true)"
   if [[ -n "$offenders" ]]; then
@@ -110,6 +116,13 @@ run_apk_policy_self_test() {
   # Evasions the previous `^RUN .*apk` rule would have missed entirely.
   check_case reject '    apk add --no-cache curl'
   check_case reject 'RUN /sbin/apk add --no-cache curl'
+  # A `#` mid-line is shell text, not a Dockerfile comment. Stripping from it
+  # would hide everything after it -- the bypass that comment handling must not
+  # reintroduce.
+  check_case reject 'RUN echo "#" && apk add --no-cache curl'
+  check_case reject 'RUN apk add --no-cache curl # trailing text'
+  # Chaining anything onto the audited form is still a second invocation.
+  check_case reject 'RUN apk upgrade --no-cache libcrypto3 libssl3 && apk add curl'
 
   rm -f "$tmp"
   if (( failures > 0 )); then

@@ -87,6 +87,30 @@ describe('credential-boundary executor apk policy', () => {
 
   it('does not trip over prose that merely mentions apk', () => {
     expect(policyAccepts('# we deliberately never apk add anything in this image')).toBe(true);
+    expect(policyAccepts('   # indented comment mentioning apk add')).toBe(true);
+  });
+
+  it('treats a mid-line # as shell text, not a comment', () => {
+    // Regression: the first cut stripped from the first `#` anywhere on the
+    // line, so `RUN echo "#" && apk add curl` collapsed to `RUN echo "` and the
+    // install sailed through the control. In a Dockerfile `#` only opens a
+    // comment at the start of a line. Caught by probing the rule, not reading it.
+    expect(policyAccepts('RUN echo "#" && apk add curl')).toBe(false);
+    expect(policyAccepts('RUN echo "# hi" >> /etc/motd && apk add --no-cache curl')).toBe(false);
+    expect(policyAccepts('RUN apk add curl # trailing text')).toBe(false);
+  });
+
+  it('rejects anything chained onto the audited form', () => {
+    // The permitted line is permitted whole; it is not a prefix that licenses
+    // whatever follows it.
+    expect(policyAccepts('RUN apk upgrade --no-cache libcrypto3 libssl3 && apk add curl')).toBe(false);
+    expect(policyAccepts('RUN apk upgrade --no-cache libcrypto3 libssl3 ; apk add curl')).toBe(false);
+  });
+
+  it('rejects apk reached indirectly', () => {
+    expect(policyAccepts('RUN sh -c "apk add curl"')).toBe(false);
+    expect(policyAccepts('RUN busybox apk add curl')).toBe(false);
+    expect(policyAccepts('RUN $(which apk) add curl')).toBe(false);
   });
 
   it('ships a self-test that passes', () => {
