@@ -1,5 +1,5 @@
 import type { TimeFormat } from '@breeze/shared';
-import { normalizeTimeFormat, readTimeFormatPreference } from './appearance';
+import { normalizeTimeFormat, readResolvedTimeFormatPreference } from './appearance';
 import { resolvedFormattingLocale } from './i18n/format';
 
 type DateInput = string | number | Date | null | undefined;
@@ -64,8 +64,17 @@ function fallbackFor(value: DateInput, fallback?: string): string {
   return typeof value === 'string' ? value : '';
 }
 
-export function getEffectiveTimeFormat(explicit?: TimeFormat | null): TimeFormat | undefined {
-  return normalizeTimeFormat(explicit) ?? readTimeFormatPreference();
+/**
+ * Resolves the hour cycle to format with, in priority order: an explicit
+ * per-call override, then the user's stored appearance preference, then the
+ * browser/OS's own 24h-vs-12h convention. Falling through all the way to
+ * browser detection (rather than stopping at "nothing stored") matters
+ * because otherwise an unset preference silently inherited the app UI
+ * locale's default hour cycle instead of the user's actual environment —
+ * e.g. a 24h-clock browser rendered AM/PM on the English UI locale (#4231).
+ */
+export function getEffectiveTimeFormat(explicit?: TimeFormat | null): TimeFormat {
+  return normalizeTimeFormat(explicit) ?? readResolvedTimeFormatPreference();
 }
 
 function formatIncludesTime(options: Intl.DateTimeFormatOptions, mode: FormatMode): boolean {
