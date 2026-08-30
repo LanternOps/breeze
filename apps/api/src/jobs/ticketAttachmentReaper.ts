@@ -36,11 +36,13 @@ export const TICKET_ATTACHMENT_REAPER_SCHEDULE_KEY = 'ticket-attachment-pending-
 
 type ReaperJobData = { type: typeof JOB_NAME; queuedAt: string };
 
-interface PendingRow {
+/** `db.execute<T>` constrains T to Record<string, unknown>; a `type` with an
+ *  index signature satisfies that where a bare `interface` does not. */
+type PendingRow = {
   id: string;
   storage_backend: string;
   storage_key: string | null;
-}
+} & Record<string, unknown>;
 
 let reaperQueue: Queue<ReaperJobData> | null = null;
 let reaperWorker: Worker<ReaperJobData> | null = null;

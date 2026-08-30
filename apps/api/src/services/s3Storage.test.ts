@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
 const s3ClientCtorMock = vi.fn();
-const s3SendMock = vi.fn(async () => ({}));
+// Typed with an (unused) command parameter so `mock.calls[n][0]` is a real
+// tuple slot — without it the calls tuple is `[]` and every input assertion
+// below is a compile error, not a passing test.
+const s3SendMock = vi.fn(async (_command?: unknown) => ({}));
 
 vi.mock('@aws-sdk/client-s3', () => ({
   S3Client: class S3Client {
