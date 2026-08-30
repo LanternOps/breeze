@@ -42,6 +42,9 @@ import {
   buildApprovalPush,
   getUserPushTokens,
   dispatchApprovalPush,
+  buildTicketPush,
+  dispatchPushToTokens,
+  dispatchApprovalPushToTokens,
 } from './expoPush';
 import { db } from '../db';
 
@@ -392,5 +395,66 @@ describe('dispatchApprovalPush routing', () => {
     expect(sendApnsNotificationMock).not.toHaveBeenCalled();
     expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('not wired to FCM'));
     infoSpy.mockRestore();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// W07 (#3901): generalised push spec + ticket pushes
+// ---------------------------------------------------------------------------
+
+describe('buildTicketPush', () => {
+  it('assigned: lock-screen-safe body, 24h ttl, collapse/thread ids, no subject', () => {
+    const spec = buildTicketPush({ ticketId: 't-1', reason: 'assigned', internalNumber: 'T-2026-0042', orgName: 'Acme' });
+    expect(spec.title).toBe('Ticket assigned to you');
+    expect(spec.body).toBe('T-2026-0042 \u00b7 Acme');
+    expect(spec.data).toEqual({ type: 'ticket', ticketId: 't-1', reason: 'assigned', internalNumber: 'T-2026-0042' });
+    expect(spec.ttl).toBe(86400);
+    expect(spec.collapseId).toBe('ticket:t-1:assigned');
+    expect(spec.threadId).toBe('ticket:t-1');
+    expect(spec.category).toBe('BREEZE_TICKET');
+    expect(spec.channelId).toBe('tickets');
+    expect(JSON.stringify(spec)).not.toContain('subject');
+  });
+  it('sla_breached: target in title/collapse, 4h ttl, "Ticket" fallback label', () => {
+    const spec = buildTicketPush({ ticketId: 't-1', reason: 'sla_breached', target: 'response', internalNumber: null, orgName: 'Acme' });
+    expect(spec.title).toBe('SLA breached (response)');
+    expect(spec.body).toBe('Ticket \u00b7 Acme');
+    expect(spec.ttl).toBe(14400);
+    expect(spec.collapseId).toBe('ticket:t-1:sla_breached:response');
+    expect(spec.data).toEqual({ type: 'ticket', ticketId: 't-1', reason: 'sla_breached', target: 'response' });
+  });
+  it('truncates a long org name', () => {
+    const spec = buildTicketPush({ ticketId: 't-1', reason: 'assigned', internalNumber: 'T-1', orgName: 'x'.repeat(200) });
+    expect(spec.body.length).toBeLessThanOrEqual('T-1 \u00b7 '.length + 60);
+  });
+});
+
+describe('dispatchPushToTokens', () => {
+  beforeEach(() => { sendApnsNotificationMock.mockReset(); updateSetCalls.length = 0; });
+
+  it('forwards ttl, collapseId, threadId and category to APNs', async () => {
+    sendApnsNotificationMock.mockResolvedValue({ ok: true, status: 200 });
+    const spec = buildTicketPush({ ticketId: 't-1', reason: 'assigned', internalNumber: 'T-1', orgName: 'Acme' });
+    const res = await dispatchPushToTokens([{ token: 'apns-1', platform: 'ios', provider: 'apns' }], spec);
+    expect(res).toEqual({ tokensFound: 1, dispatched: 1, errors: 0 });
+    expect(sendApnsNotificationMock).toHaveBeenCalledWith('apns-1', expect.objectContaining({
+      ttl: 86400, collapseId: 'ticket:t-1:assigned', threadId: 'ticket:t-1', category: 'BREEZE_TICKET',
+    }));
+  });
+
+  it('purges an unregistered APNs token', async () => {
+    sendApnsNotificationMock.mockResolvedValue({ ok: false, status: 410, unregistered: true });
+    await dispatchPushToTokens([{ token: 'dead', platform: 'ios', provider: 'apns' }],
+      buildTicketPush({ ticketId: 't-1', reason: 'assigned', internalNumber: 'T-1', orgName: 'Acme' }));
+    expect(updateSetCalls).toContainEqual({ apnsToken: null });
+  });
+
+  it('approval wrapper output is unchanged', async () => {
+    sendApnsNotificationMock.mockResolvedValue({ ok: true, status: 200 });
+    await dispatchApprovalPushToTokens([{ token: 'apns-1', platform: 'ios', provider: 'apns' }],
+      { approvalId: 'a1', actionLabel: 'Reboot', requestingClientLabel: 'Claude' });
+    const [, payload] = sendApnsNotificationMock.mock.calls[0]!;
+    expect(payload).toEqual({ title: 'Approval requested', body: 'Claude: Reboot', data: { type: 'approval', approvalId: 'a1' }, ttl: 60 });
   });
 });
