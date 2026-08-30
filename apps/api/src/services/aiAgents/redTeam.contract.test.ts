@@ -196,6 +196,9 @@ function agentAuthFor(deviceId: string | null): AuthContext {
 
 function hostilePromptContext(): AgentRunPromptContext {
   return {
+    // No sweep context: this suite drives the FULL profile's hostile-prompt
+    // surface, and a sweep run has its own dedicated turn (buildSweepTaskPrompt).
+    sweep: null,
     agent: { name: 'Red Team Agent', kind: 'triage' },
     run: { id: 'run-1', mode: 'act', triggerKind: 'alert' },
     device: {

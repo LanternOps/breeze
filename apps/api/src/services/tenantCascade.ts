@@ -78,6 +78,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_agent_circuit_state',
   'ai_agent_fix_watches',
   'ai_agent_runs',
+  // ai_agent_schedules (P2-2, #4189): dual-owner config. org override rows
+  // cascade with the org; partner rows have org_id NULL and are untouched by
+  // an org erasure. FK to ai_agents is ON DELETE CASCADE and ai_agent_runs →
+  // schedule_id is SET NULL, so relative position is cosmetic (topological
+  // order decides the real DELETE order).
+  'ai_agent_schedules',
   'ai_agents',
   // ai_alert_verdicts (Phase 2 wave P2-1, #4187): references ai_agent_runs
   // (ON DELETE CASCADE) and action_intents (SET NULL). Both carry an

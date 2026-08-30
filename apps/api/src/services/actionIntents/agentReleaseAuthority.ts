@@ -11,6 +11,7 @@ import {
   buildAgentAuthContext,
 } from '../aiAgents/agentAuthContext';
 import { resolveEffectiveAgent } from '../aiAgents/effectivePolicy';
+import { resolveIntentTargetDevice } from './intentTargetScope';
 
 export type AgentReleaseAuthority =
   | { ok: true }
@@ -92,21 +93,56 @@ export async function checkAgentReleaseAuthority(
         .where(eq(organizations.id, run.orgId))
         .limit(1);
       if (!org) return null;
+      // P2-2 (#4189): the intent's TARGET device — its explicit scope when it
+      // has one, the run's device otherwise. Never `run.deviceId` directly: a
+      // scheduled sweep's run is device-less and pins each intent through
+      // scope_device_id, and the guardrail re-runs below would deny every one
+      // of them ("the run is not device-bound") on the run's null device.
+      const target = resolveIntentTargetDevice(intent, run);
+      if (target.kind === 'tombstone') return 'scope_lost' as const;
       // Re-resolve the device's CURRENT site — never the site the snapshot
       // was taken under. A device moved out of its site since approval makes
       // site-scoped input veto below.
       let deviceSiteId: string | null = null;
-      if (run.deviceId) {
+      if (target.kind === 'scope') {
+        // Controller ruling (P2-2 A3): a scoped device must still exist AND
+        // still belong to the intent's org. A device org-move that landed
+        // through the DB-side cascade rather than the HTTP moveOrg route
+        // leaves scope_device_id live — this is the backstop, and it fails
+        // exactly like a tombstone.
+        const [device] = await db
+          .select({ orgId: devices.orgId, siteId: devices.siteId })
+          .from(devices)
+          .where(eq(devices.id, target.deviceId))
+          .limit(1);
+        if (!device || device.orgId !== intent.orgId) return 'scope_lost' as const;
+        deviceSiteId = device.siteId ?? null;
+      } else if (target.deviceId) {
         const [device] = await db
           .select({ siteId: devices.siteId })
           .from(devices)
-          .where(eq(devices.id, run.deviceId))
+          .where(eq(devices.id, target.deviceId))
           .limit(1);
         deviceSiteId = device?.siteId ?? null;
       }
-      return { run, agent, org, deviceSiteId };
+      return { run, agent, org, deviceSiteId, targetDeviceId: target.deviceId };
     }),
   );
+  if (loaded === 'scope_lost') {
+    // Terminal, like `agent_policy_denied` — jobs/intentReleaseWorker.ts CASes
+    // `executing -> failed` on every errorCode except the pausable
+    // `kill_switch_engaged`. A deleted or moved-away device is not coming
+    // back; the agent re-proposes against a live device on a later sweep.
+    return {
+      ok: false,
+      errorCode: 'agent_scope_lost',
+      details: {
+        reason: 'the intent\'s scoped target device was tombstoned, deleted, or moved to another org',
+        runId,
+        scopeDeviceId: intent.scopeDeviceId,
+      },
+    };
+  }
   if (!loaded) {
     return {
       ok: false,
@@ -117,7 +153,7 @@ export async function checkAgentReleaseAuthority(
       },
     };
   }
-  const { run, agent, org, deviceSiteId } = loaded;
+  const { run, agent, org, deviceSiteId, targetDeviceId } = loaded;
 
   // Reconstruct the agent's own AuthContext — assertRunOwnership inside
   // re-proves the org/partner lineage. Its canAccessOrg covers exactly the
@@ -132,7 +168,8 @@ export async function checkAgentReleaseAuthority(
         name: agent.name,
         kind: agent.kind,
       },
-      { id: run.id, orgId: run.orgId, deviceId: run.deviceId, deviceSiteId },
+      // The intent's target device (scope-aware), not the run's own.
+      { id: run.id, orgId: run.orgId, deviceId: targetDeviceId, deviceSiteId },
       { id: run.orgId, partnerId: org.partnerId },
     );
   } catch (error) {
@@ -209,8 +246,9 @@ export async function checkAgentReleaseAuthority(
     { policy: 'current' as const, effective: resolved.effective },
   ];
   for (const { policy, effective } of candidates) {
-    // deviceId/deviceSiteId come from the RUN row and the device's CURRENT
-    // site — never from tool input. A malformed snapshot fails
+    // deviceId/deviceSiteId come from the intent's RESOLVED TARGET (P2-2:
+    // its device scope when set, the run row otherwise) and that device's
+    // CURRENT site — never from tool input. A malformed snapshot fails
     // isAgentGuardrailPolicy inside checkAgentGuardrails and denies, which is
     // the fail-closed shape we want, hence the cast instead of a hand-rolled
     // validator (same shape as intentService's creation-time check).
@@ -222,7 +260,7 @@ export async function checkAgentReleaseAuthority(
         mode: effective?.mode,
         toolAllowlist: effective?.toolAllowlist,
         protectedResources: effective?.protectedResources,
-        deviceId: run.deviceId ?? null,
+        deviceId: targetDeviceId ?? null,
         deviceSiteId,
       } as AgentGuardrailPolicy,
     );

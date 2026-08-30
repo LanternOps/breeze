@@ -5,11 +5,13 @@ import type {
   AgentRunVerdict,
   AiAgentKind,
   AiAgentMode,
+  AiAgentRunProfile,
   AiAgentRunStatus,
   AiAgentTriggerKind,
   AiAlertVerdictClassification,
   AiAlertVerdictPattern,
 } from './aiAgents';
+import type { AiSweepKind, AiSweepSeverity } from './aiAgentSchedules';
 
 /**
  * Wave 6 PR 1 (#3828) — the execution-trace DTOs: what `GET /ai/agents/runs`
@@ -94,6 +96,15 @@ export interface AiAgentRunListItemDto {
   deviceId: string | null;
   status: AiAgentRunStatus;
   triggerKind: AiAgentTriggerKind;
+  /**
+   * Phase 2 wave P2-2 (scheduled sweeps), Task A7 — which run profile
+   * produced this row (`full` | `verdict` | `sweep`). The web runs list
+   * badges sweep/verdict rows off this rather than inferring one from
+   * `triggerKind`, which cannot distinguish a scheduled SWEEP from any other
+   * schedule-triggered run. Additive and always present, so it does NOT bump
+   * `AI_AGENT_RUN_DTO_SCHEMA_VERSION` (see the bump rule above).
+   */
+  profile: AiAgentRunProfile;
   /** Absent until `finishRun` computes it (services/aiAgents/runLoop.ts); null for any run that hasn't reached a terminal rollup yet. */
   runVerdict: AgentRunVerdict | null;
   queuedAt: string;
@@ -309,6 +320,47 @@ export interface AiAgentRunAlertVerdictDto {
   } | null;
 }
 
+/**
+ * Phase 2 wave P2-2 (scheduled sweeps) — the safe projection of one
+ * `SweepFinding` for `GET /ai/agents/runs/:runId`'s detail DTO. Same
+ * leak-impossible convention as the rest of this file: `evidence` is the
+ * already-bounded scalar map the finding schema enforces (see
+ * `sweepFindingsOutcomeSchema`), never a raw tool payload, and `proposal`
+ * carries only the display-safe outcome of attempting the finding's
+ * `SweepProposedAction`, never the raw args.
+ */
+export interface AiAgentRunSweepFindingDto {
+  kind: AiSweepKind;
+  severity: AiSweepSeverity;
+  deviceId: string | null;
+  deviceHostname: string | null;
+  title: string;
+  detail: string;
+  evidence: Record<string, string | number | boolean | null>;
+  proposal: {
+    tool: string;
+    action: string | null;
+    disposition: 'intent_created' | 'refused' | 'cap_reached' | 'error';
+    reason: string | null;
+    intentId: string | null;
+  } | null;
+}
+
+/**
+ * Phase 2 wave P2-2 (scheduled sweeps) — the safe projection of a
+ * `sweep`-profile run's outcome for `GET /ai/agents/runs/:runId`'s detail
+ * DTO. `scheduleId`/`occurrenceKey` are null for a manually-triggered sweep
+ * run (not every sweep run originates from a schedule).
+ */
+export interface AiAgentRunSweepDto {
+  scheduleId: string | null;
+  occurrenceKey: string | null;
+  kinds: AiSweepKind[];
+  summary: string;
+  findings: AiAgentRunSweepFindingDto[];
+  evidenceTruncated: boolean;
+}
+
 export interface AiAgentRunDetailDto {
   schemaVersion: 1;
   id: string;
@@ -357,6 +409,15 @@ export interface AiAgentRunDetailDto {
    * caller before that lands sees `null` unconditionally.
    */
   alertVerdict: AiAgentRunAlertVerdictDto | null;
+  /**
+   * Phase 2 wave P2-2 (scheduled sweeps) — the findings this run produced,
+   * for a `sweep`-profile run that reached a sweep outcome. Null for every
+   * `full`/`verdict`-profile run and for a `sweep`-profile run that has not
+   * produced one. Additive nullable field — does NOT bump
+   * `AI_AGENT_RUN_DTO_SCHEMA_VERSION` (same rule as `alertVerdict` above: a
+   * caller that has never seen this key still gets `null`, not `undefined`).
+   */
+  sweep: AiAgentRunSweepDto | null;
 }
 
 /**

@@ -239,6 +239,13 @@ const POLICY_SNAPSHOT: AiAgentPolicySnapshot = {
       maxVerdictRunsPerHour: 200,
       maxConcurrentVerdictRuns: 4,
       verdictBudgetCentsPerRun: 2,
+      // v6 (phase 2 wave P2-2) sweep-profile caps — `AiAgentLimits` requires
+      // them, so this fixture has to carry them even though nothing on the
+      // policy-decision path reads a sweep limit.
+      maxConcurrentSweepRuns: 2,
+      maxSweepRunsPerHour: 20,
+      sweepBudgetCentsPerRun: 30,
+      sweepMaxTurns: 8,
     },
     triggers: { alertSeverities: [], respectMaintenanceWindows: false },
     recipients: { userIds: ['recipient-1'], roleIds: [] },
@@ -714,5 +721,66 @@ describe('attemptPolicyDecision', () => {
 
     expect(intentServiceMock.runDeferredHumanFanout).not.toHaveBeenCalled();
     expect(sentryMock.captureException).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // P2-2 (Task A3, #4189): explicit device scope
+  // -------------------------------------------------------------------------
+
+  it('authorizes a SCOPED intent from a DEVICE-LESS run — never the "run has no deviceId" throw', async () => {
+    // Pre-P2-2 this shape was unreachable-by-construction and
+    // runAuthorizeTransaction threw on it. A sweep makes it the normal case:
+    // the run has no device, the intent carries the target.
+    pushRows('action_intents', [
+      makeIntentRow({ scopeKind: 'device', scopeDeviceId: DEVICE_ID }),
+    ]);
+    pushRows('ai_agent_runs', [makeRunRow({ deviceId: null })]);
+    pushRows('ai_agents', [makeAgentRow()]);
+    pushRows('organizations', [{ partnerId: PARTNER_ID }]);
+    // The scope branch projects org_id alongside site_id.
+    pushRows('devices', [{ orgId: ORG_ID, siteId: SITE_ID }]);
+    queueSuccessfulAuthorize();
+
+    await attemptPolicyDecision(INTENT_ID);
+
+    // No degrade, no transient throw, and the intent WAS authorized.
+    expect(intentServiceMock.runDeferredHumanFanout).not.toHaveBeenCalled();
+    expect(sentryMock.captureException).not.toHaveBeenCalled();
+    expect(dbMockState.updateSets.action_intents?.[0]).toMatchObject({ status: 'approved' });
+    // Both device-derived decisions used the SCOPE device: the live guardrail
+    // re-run (which denies a null deviceId outright) and the exposure
+    // reservation the fleet cap is computed from.
+    expect(guardrailMock.checkAgentGuardrails).toHaveBeenCalledWith(
+      'manage_services',
+      expect.anything(),
+      expect.objectContaining({ deviceId: DEVICE_ID, deviceSiteId: SITE_ID }),
+    );
+    expect(dbMockState.insertValues.ai_unattended_exposure?.[0]).toMatchObject({ deviceId: DEVICE_ID });
+  });
+
+  it('deterministic: a tombstoned scope degrades to the human path, it never authorizes', async () => {
+    pushRows('action_intents', [makeIntentRow({ scopeKind: 'device', scopeDeviceId: null })]);
+    pushRows('ai_agent_runs', [makeRunRow({ deviceId: null })]);
+    pushRows('ai_agents', [makeAgentRow()]);
+    pushRows('organizations', [{ partnerId: PARTNER_ID }]);
+
+    await attemptPolicyDecision(INTENT_ID);
+
+    expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
+    expect(dbMockState.updateSets.action_intents ?? []).toHaveLength(0);
+    expect(sentryMock.captureException).not.toHaveBeenCalled();
+  });
+
+  it('deterministic: a scoped device that moved to another org degrades, it never authorizes', async () => {
+    pushRows('action_intents', [makeIntentRow({ scopeKind: 'device', scopeDeviceId: DEVICE_ID })]);
+    pushRows('ai_agent_runs', [makeRunRow({ deviceId: null })]);
+    pushRows('ai_agents', [makeAgentRow()]);
+    pushRows('organizations', [{ partnerId: PARTNER_ID }]);
+    pushRows('devices', [{ orgId: 'some-other-org', siteId: SITE_ID }]);
+
+    await attemptPolicyDecision(INTENT_ID);
+
+    expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
+    expect(dbMockState.updateSets.action_intents ?? []).toHaveLength(0);
   });
 });

@@ -106,6 +106,16 @@ describe('Action intents migration', () => {
     // intent whose attributed run could be swapped after approval would
     // defeat release revalidation.
     'requesting_agent_run_id',
+    // 2026-09-23 (P2-2, #4189): typed target scope. scope_kind is a plain
+    // deny-listed column (never changes post-creation). scope_device_id's
+    // guard is actually conditional — `NEW.scope_device_id IS DISTINCT FROM
+    // OLD.scope_device_id AND NEW.scope_device_id IS NOT NULL` — so a
+    // non-null->NULL tombstone (the device-delete FK's ON DELETE SET NULL)
+    // is allowed through, but the regex parser can't see the AND clause and
+    // lists it as a plain deny-listed column regardless. That is fine: this
+    // list's job is drift detection, and the column genuinely is guarded.
+    'scope_kind',
+    'scope_device_id',
   ] as const;
 
   // Deliberately MUTABLE. release_by is written by the approve fan-in

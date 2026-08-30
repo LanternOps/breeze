@@ -49,8 +49,11 @@ import type {
   AiAgentRecipients,
   AiAgentRunProfile,
   AiAgentTriggerKind,
+  AiSweepKind,
   AlertVerdictOutcome,
+  SweepFindingsOutcome,
 } from '@breeze/shared';
+import { AI_AGENT_LIMIT_DEFAULTS, AI_SWEEP_KINDS } from '@breeze/shared';
 import { envFlag } from '../../config/env';
 import {
   db,
@@ -116,16 +119,21 @@ import {
   buildAgentRunTaskPrompt,
   type AgentRunAnomalyPromptContext,
   type AgentRunPromptContext,
+  type AgentRunSweepPromptContext,
   type AgentRunTicketPromptContext,
 } from './runnerPrompt';
 import {
   buildOutcomeSdkTools,
   isOutcomeTool,
   OUTCOME_MCP_TOOL_NAMES,
+  outcomeToolsForProfile,
   validateOutcomeToolInput,
 } from './outcomeTools';
 import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdictProfile';
+import { isSweepProfile, sweepLimits, sweepToolAllowlist } from './sweepProfile';
+import { loadSweepEvidence, type SweepEvidence } from './sweepEvidence';
 import { persistAlertVerdict, type AlertVerdictIntentInfo } from './alertVerdicts';
+import { persistSweepFindings, type SweepProposalRecord } from './sweepFindings';
 
 /** `ai_agent_runs.summary` is `text`, but a reviewer reads the first screen. */
 const RUN_SUMMARY_MAX_CHARS = 2000;
@@ -264,6 +272,33 @@ export interface AgentRunOutcome {
    * tool-input detail); see `AlertVerdictIntentInfo`'s own docstring.
    */
   alertVerdictIntent?: AlertVerdictIntentInfo;
+  /**
+   * Phase 2 wave P2-2 (scheduled sweeps) — the validated
+   * `submit_sweep_findings` input, captured by the post-tool-use hook on a
+   * sweep-profile run. Set at most once (the outcome tool's own description
+   * and the sweep task turn both tell the model to call it exactly once);
+   * absent for every other profile, which never has the sweep outcome tool
+   * exposed at all. Task A7 persists it and turns each accepted
+   * `proposedAction` into a supervised action intent — NOTHING here executes.
+   */
+  sweepFindings?: SweepFindingsOutcome;
+  /**
+   * Phase 2 wave P2-2 (scheduled sweeps), Task A7 — one bookkeeping record
+   * per finding that carried a `proposedAction`, written by `finalizeSweep`
+   * below. Absent when the run proposed nothing at all (nothing to report on)
+   * and for every non-sweep profile. Display strings only — NEVER the raw
+   * `Error.message` from `createActionIntent`; see `SweepProposalRecord`'s own
+   * docstring (sweepFindings.ts).
+   */
+  sweepProposals?: SweepProposalRecord[];
+  /**
+   * Phase 2 wave P2-2, Task A7 — whether the SYSTEM evidence this sweep run
+   * reported on was capped/byte-trimmed (`SweepEvidence.truncated`, Task 5).
+   * Persisted here because the evidence itself is never stored on the run,
+   * and the run-detail projection has to be able to tell a reader "the model
+   * saw a sample, not the whole fleet". Absent for every non-sweep profile.
+   */
+  sweepEvidenceTruncated?: boolean;
 }
 
 /** Error carrying the short code that lands in `ai_agent_runs.error_code` (varchar(64)). */
@@ -296,6 +331,14 @@ interface RunRow {
   /** Phase 2 wave P2-1 (alert verdicts) — see `verdictProfile.ts`. */
   profile: AiAgentRunProfile;
   correlationGroupId: string | null;
+  /** Phase 2 wave P2-2 (scheduled sweeps) — the `ai_agent_schedules` row a
+   *  `sweep`-profile run was fanned out from; `null` for every other trigger. */
+  scheduleId: string | null;
+  /** Free-form trigger provenance (`jsonb`, defaults `{}`). A sweep run's
+   *  carries `{ scheduleId, occurrenceKey, sweepKinds }`, written by the
+   *  fixed-tick sweeper — read DEFENSIVELY below (any field may be missing or
+   *  the wrong shape; the column has no compile-time schema). */
+  triggerRef: Record<string, unknown>;
 }
 
 interface AgentRow {
@@ -336,6 +379,19 @@ interface RunContext {
     noiseReductionPercent: number;
     rootAlertId: string | null;
     correlationTypes: string[];
+  } | null;
+  /**
+   * Phase 2 wave P2-2 (scheduled sweeps) — the schedule occurrence and the
+   * bounded, system-collected evidence this run reports on. Set only for a
+   * `sweep`-profile run; `null` for every other profile. An empty
+   * `kinds`/`evidence` is a legitimate value (see the loader below), never a
+   * reason to fail the run.
+   */
+  sweep: {
+    scheduleId: string;
+    occurrenceKey: string;
+    kinds: AiSweepKind[];
+    evidence: SweepEvidence;
   } | null;
   /**
    * The execution-ledger `ai_sessions` row for this run (Task 1/2). Set once,
@@ -388,6 +444,8 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         policySnapshot: aiAgentRuns.policySnapshot,
         profile: aiAgentRuns.profile,
         correlationGroupId: aiAgentRuns.correlationGroupId,
+        scheduleId: aiAgentRuns.scheduleId,
+        triggerRef: aiAgentRuns.triggerRef,
       })
       .from(aiAgentRuns)
       .where(eq(aiAgentRuns.id, runId))
@@ -540,6 +598,38 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       }
     }
 
+    // Phase 2 wave P2-2 (scheduled sweeps). Runs INSIDE this same system
+    // context (`loadSweepEvidence`'s own header states it manages none of its
+    // own) — the `org_id = run.orgId` predicate every one of its statements
+    // carries is therefore the only thing keeping one tenant's sweep out of
+    // another's rows, exactly like the hand-written org pins above.
+    //
+    // Read defensively: `trigger_ref` is an untyped jsonb column, and a run
+    // could reach here hand-enqueued, half-migrated, or written by an older
+    // sweeper. Unknown kinds are DROPPED rather than passed through (a kind
+    // with no loader would throw inside `loadSweepEvidence`); missing kinds
+    // yield empty evidence, which the prompt renders as "these checks found
+    // nothing" — never a failed run.
+    let sweep: RunContext['sweep'] = null;
+    if (isSweepProfile(run as RunRow)) {
+      const ref = (run.triggerRef ?? {}) as { occurrenceKey?: unknown; sweepKinds?: unknown };
+      const rawKinds = Array.isArray(ref.sweepKinds) ? ref.sweepKinds : [];
+      const kinds = rawKinds.filter(
+        (kind): kind is AiSweepKind => (AI_SWEEP_KINDS as readonly unknown[]).includes(kind),
+      );
+      if (kinds.length !== rawKinds.length) {
+        console.warn('[aiAgentRunLoop] dropped unknown sweep kinds from trigger_ref', {
+          runId, orgId: run.orgId, requested: rawKinds.length, kept: kinds.length,
+        });
+      }
+      sweep = {
+        scheduleId: run.scheduleId ?? '',
+        occurrenceKey: typeof ref.occurrenceKey === 'string' ? ref.occurrenceKey : '',
+        kinds,
+        evidence: await loadSweepEvidence(run.orgId, kinds),
+      };
+    }
+
     return {
       run: run as RunRow,
       agent: agent as AgentRow,
@@ -549,6 +639,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       ticket,
       anomaly,
       correlationGroup,
+      sweep,
       sessionId: null,
     };
   });
@@ -747,8 +838,17 @@ export function createAgentRunPreToolUse(args: {
         outcome.deniedActions.push({ tool: toolName, reason });
         return { allowed: false, error: reason };
       }
-      if (!isVerdictProfile(run)) {
-        outcome.deniedActions.push({ tool: toolName, reason: 'outcome tool is only available to verdict-profile runs' });
+      // Generalized in wave P2-2 (task 6) from "verdict runs only" to "the
+      // tool this run's profile owns": `outcomeToolsForProfile` is the SAME
+      // function that decides SDK exposure and post-hook capture below, so a
+      // sweep run can never record a verdict (or vice versa) even if a stale
+      // tool cache offers the wrong name. The deny reason names the profile
+      // because that is the mismatch a reviewer needs to see.
+      if (!outcomeToolsForProfile(run.profile).includes(toolName)) {
+        outcome.deniedActions.push({
+          tool: toolName,
+          reason: `outcome tool ${toolName} is not available to ${run.profile}-profile runs`,
+        });
         return { allowed: false, error: 'not available on this run' };
       }
       try {
@@ -782,8 +882,14 @@ export function createAgentRunPreToolUse(args: {
     // is even reached) — this catches anything that reasoning missed, e.g.
     // a read-only-looking tool with a mutating action this list didn't
     // anticipate.
-    if (isVerdictProfile(run) && check.disposition !== 'allow') {
-      const reason = 'verdict runs are read-only';
+    // Wave P2-2 (task 6): generalized from verdict-only to every READ-ONLY
+    // profile. A sweep run is read-only by the same construction (its floor
+    // is read-only tools, and `sweepLimits` pins `maxActionsPerRun: 0`), so
+    // a 'propose'/'act' disposition on one is the same class of miss this
+    // branch was added to catch. The rendered message is unchanged for a
+    // verdict run (`run.profile` IS 'verdict' there).
+    if ((isVerdictProfile(run) || isSweepProfile(run)) && check.disposition !== 'allow') {
+      const reason = `${run.profile} runs are read-only`;
       outcome.deniedActions.push({ tool: toolName, reason });
       return { allowed: false, error: reason };
     }
@@ -951,8 +1057,22 @@ export function createAgentRunPostToolUse(args: {
     // `allowedPending`/the execution ledger/the act pipeline — capture the
     // validated verdict and stop, before any of the ordinary accounting below.
     if (isOutcomeTool(toolName)) {
-      if (!isError && isVerdictProfile(run)) {
-        outcome.alertVerdict = validateOutcomeToolInput(toolName, input);
+      // Stored BY TOOL NAME (wave P2-2, task 6), gated on the same
+      // `outcomeToolsForProfile` the pre-hook denies against — so a name the
+      // pre-hook refused can never still land in the outcome via this path.
+      if (!isError && outcomeToolsForProfile(run.profile).includes(toolName)) {
+        switch (toolName) {
+          case 'submit_alert_verdict':
+            outcome.alertVerdict = validateOutcomeToolInput(toolName, input);
+            break;
+          case 'submit_sweep_findings':
+            outcome.sweepFindings = validateOutcomeToolInput(toolName, input);
+            break;
+          default: {
+            const exhaustive: never = toolName;
+            throw new Error(`[aiAgentRunLoop] unhandled outcome tool: ${String(exhaustive)}`);
+          }
+        }
       }
       return;
     }
@@ -1169,6 +1289,15 @@ function anomalyPromptContext(anomaly: AnomalyRunContext): AgentRunAnomalyPrompt
   };
 }
 
+function sweepPromptContext(sweep: NonNullable<RunContext['sweep']>): AgentRunSweepPromptContext {
+  return {
+    scheduleId: sweep.scheduleId,
+    occurrenceKey: sweep.occurrenceKey,
+    kinds: sweep.kinds,
+    evidence: sweep.evidence,
+  };
+}
+
 function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromptContext {
   return {
     agent: { name: ctx.agent.name, kind: ctx.agent.kind },
@@ -1182,6 +1311,7 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
     instructions: effective.instructions,
     profile: ctx.run.profile,
     correlationGroup: ctx.correlationGroup,
+    sweep: ctx.sweep ? sweepPromptContext(ctx.sweep) : null,
   };
 }
 
@@ -1223,7 +1353,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // options further down (`maxTurns`/`maxBudgetUsd`) and the local budget
   // backstop — never re-validated through `aiAgentLimitsSchema` (its
   // `maxActionsPerRun: 0` is below that schema's `min(1)`) and never written
-  // back into `run.policySnapshot`. `verdictAllowlist` is `null` for a
+  // back into `run.policySnapshot`. `profileAllowlist` is `null` for a
   // `full`-profile run (nothing to narrow); for a verdict run it is
   // `verdictToolAllowlist`'s pinned floor, reused below for BOTH
   // `guardrailPolicy.toolAllowlist` (review fix, wave P2-1 fix round 1 —
@@ -1232,9 +1362,21 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // `acknowledge`/`resolve`/`suppress` reach `checkAgentGuardrails`'s
   // allowlist gate on a verdict run) and the SDK's `allowedTools` exposure —
   // one computation, one source of truth for what a verdict run can reach.
+  //
+  // Wave P2-2 (task 6) generalized this from verdict-only to a single
+  // profile branch covering `full | verdict | sweep`: `profileAllowlist` is
+  // `null` for `full` (nothing to narrow) and otherwise the profile's pinned
+  // floor, reused below for BOTH `guardrailPolicy.toolAllowlist` and the
+  // SDK's `allowedTools`/`onlyTools` exposure — one computation, one source
+  // of truth for what this run can reach, whichever profile it is.
   const verdict = isVerdictProfile(run);
-  const runLimits = verdict ? verdictLimits(limits) : limits;
-  const verdictAllowlist = verdict ? verdictToolAllowlist(effective.toolAllowlist) : null;
+  const sweep = isSweepProfile(run);
+  const runLimits = verdict ? verdictLimits(limits) : sweep ? sweepLimits(limits) : limits;
+  const profileAllowlist = verdict
+    ? verdictToolAllowlist(effective.toolAllowlist)
+    : sweep
+      ? sweepToolAllowlist(effective.toolAllowlist)
+      : null;
   // Computed here (not by the SDK-loop timer below) so the pre-hook's
   // act-mode playbook executor (Task 5, #3826) can enforce the SAME
   // wall-clock ceiling independently of the SDK's `abortController` — a
@@ -1258,7 +1400,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   const guardrailPolicy: AgentGuardrailPolicy = {
     enabled: effective.enabled,
     mode: run.modeAtStart,
-    toolAllowlist: verdictAllowlist ?? effective.toolAllowlist,
+    toolAllowlist: profileAllowlist ?? effective.toolAllowlist,
     protectedResources: effective.protectedResources,
     deviceId: run.deviceId,
     deviceSiteId: ctx.device?.siteId ?? null,
@@ -1333,12 +1475,12 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // `exposedNames` governs SDK-level tool EXPOSURE for a verdict run, not a
   // second guardrail — `checkAgentGuardrails` (via `guardrailPolicy` above)
   // is still the sole authority for anything the model does manage to call;
-  // see `verdictToolAllowlist`'s own docstring. Reuses `verdictAllowlist`
+  // see `verdictToolAllowlist`'s own docstring. Reuses `profileAllowlist`
   // computed at the top of this function — the SAME list that narrowed
   // `guardrailPolicy.toolAllowlist` above, so exposure and authority can
   // never drift apart.
-  const exposedNames = verdictAllowlist
-    ? verdictAllowlist.map((name) => (
+  const exposedNames = profileAllowlist
+    ? profileAllowlist.map((name) => (
       isOutcomeTool(name) ? OUTCOME_MCP_TOOL_NAMES[name] : `mcp__breeze__${name.split(':')[0]}`
     ))
     : BREEZE_MCP_TOOL_NAMES;
@@ -1347,26 +1489,28 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // PERMISSION to call a tool — the MCP server still sends every REGISTERED
   // tool's full schema to the model on every turn regardless of
   // `allowedTools`. `onlyTools` (createBreezeMcpServer's 6th param) narrows
-  // what gets registered in the first place. Reuses `verdictAllowlist` again
+  // what gets registered in the first place. Reuses `profileAllowlist` again
   // — same source of truth as `exposedNames`/`guardrailPolicy.toolAllowlist`
   // above — collapsed to bare tool names (`manage_alerts:list` and
   // `manage_alerts:get` both collapse to `manage_alerts`) with the outcome
-  // tool excluded: `submit_alert_verdict` is never in the registry `tools`
+  // tool excluded: an outcome tool is never in the registry `tools`
   // array to begin with (see outcomeTools.ts) — it rides on `extraTools`
   // below instead, which `createBreezeMcpServer` always includes regardless
   // of `onlyTools`. Full runs pass no `onlyTools` and keep registering the
   // whole registry, unchanged.
-  const onlyTools = verdictAllowlist
-    ? new Set(verdictAllowlist.map((name) => name.split(':')[0]!).filter((name) => !isOutcomeTool(name)))
+  const onlyTools = profileAllowlist
+    ? new Set(profileAllowlist.map((name) => name.split(':')[0]!).filter((name) => !isOutcomeTool(name)))
     : undefined;
 
   // No getActiveSession: a headless run has no ActiveSession, and the
   // session-aware tools (M365/Google) correctly refuse without one. The
-  // outcome tool (`submit_alert_verdict`) is passed as `extraTools` ONLY for
-  // a verdict-profile run — a `full`-profile run never even registers it on
-  // the MCP server, let alone exposes it via `allowedTools`.
+  // profile's outcome tool (`submit_alert_verdict` for verdict,
+  // `submit_sweep_findings` for sweep) is passed as `extraTools`; `full`
+  // gets an EMPTY array from `outcomeToolsForProfile`, so it never even
+  // registers one on the MCP server, let alone exposes it via
+  // `allowedTools`.
   const mcpServer = createBreezeMcpServer(() => agentAuth, preToolUse, postToolUse, undefined,
-    verdict ? buildOutcomeSdkTools(['submit_alert_verdict']) : [],
+    buildOutcomeSdkTools(outcomeToolsForProfile(run.profile)),
     onlyTools ? { onlyTools } : undefined);
 
   const prompt = promptContext(ctx, effective);
@@ -1610,6 +1754,13 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // `ceiling` branches, which already carry a real, more specific code —
     // see `finalizeVerdict`'s own docstring for why).
     const verdictErrorCode = await finalizeVerdict(ctx, result);
+    // Task A7 (wave P2-2) — the sweep sibling, same placement and for the
+    // same reason: proposal→intent conversion must happen BEFORE the
+    // awaiting_approval/completed decision below so a freshly created pending
+    // intent is counted by `intentIds.length > 0`. A run is either a verdict
+    // run or a sweep run, never both, so at most one of these two codes is
+    // ever non-null.
+    const sweepErrorCode = await finalizeSweep(ctx, result);
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
@@ -1640,6 +1791,11 @@ export async function executeAgentRun(runId: string): Promise<void> {
       outcome.executedActions.length > 0
       || outcome.proposedActions.length > 0
       || outcome.alertVerdict !== undefined
+      // Same rule for a sweep run's ONE job (wave P2-2, task 6): a run that
+      // called `submit_sweep_findings` and only then hit `error_max_turns`
+      // has produced exactly what it was admitted to produce, and must not
+      // be counted a ceiling failure against the agent's circuit breaker.
+      || outcome.sweepFindings !== undefined
       || result.summary.trim().length > 0;
 
     const ceiling = outcome.wallClockExceeded
@@ -1658,7 +1814,12 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // done thinking and a human now owns the decision. Release of an approved
     // intent is 3b's machinery, not a continuation of this run.
     ledgerOutcome = 'completed';
-    await finishRun(ctx, intentIds.length > 0 ? 'awaiting_approval' : 'completed', verdictErrorCode, result);
+    await finishRun(
+      ctx,
+      intentIds.length > 0 ? 'awaiting_approval' : 'completed',
+      verdictErrorCode ?? sweepErrorCode,
+      result,
+    );
   } catch (error) {
     const errorCode = error instanceof AgentRunError
       ? error.errorCode
@@ -1776,6 +1937,88 @@ async function finalizeVerdict(ctx: RunContext, result: LoopResult): Promise<str
   }
 }
 
+/**
+ * Phase 2 wave P2-2 (scheduled sweeps), Task A7 — the sweep sibling of
+ * `finalizeVerdict` above, called from the SAME place in `executeAgentRun`
+ * (before the awaiting_approval/completed decision, outside any ambient DB
+ * context — `persistSweepFindings` inherits `createActionIntent`'s
+ * no-ambient-context precondition; see `alertVerdicts.ts:208-226`).
+ *
+ * Returns an errorCode override the caller applies ONLY on the normal-finish
+ * path, exactly as it does for `finalizeVerdict`'s. Unlike a verdict run, a
+ * sweep run that produced no findings is NOT an error: task 6 already treats
+ * `outcome.sweepFindings` as this profile's "produced something" signal, and a
+ * sweep that legitimately found nothing to report still completes cleanly.
+ *
+ * `evidenceDeviceIds` is built from `ctx.sweep.evidence` — the rows the
+ * SYSTEM loaded, not anything the model said — and is the control that keeps
+ * a crafted proposal from reaching a device this run never looked at. A run
+ * whose context carries no sweep block at all (defensive: `ctx.sweep` is
+ * populated for every sweep-profile run today) therefore has an EMPTY
+ * evidence set, which refuses every proposal — fail closed, never open.
+ */
+async function finalizeSweep(ctx: RunContext, result: LoopResult): Promise<string | null> {
+  if (!isSweepProfile(ctx.run)) return null;
+  const { outcome } = result;
+
+  // Recorded even when there are no findings: "the model only saw a sample"
+  // is true of the run regardless of what it chose to report.
+  if (ctx.sweep) outcome.sweepEvidenceTruncated = ctx.sweep.evidence.truncated;
+
+  if (!outcome.sweepFindings) return null;
+
+  // Same IMPORTANT-4 re-read as `finalizeVerdict`: the stall reaper
+  // (`reapStalledAgentRuns`) or a second executor may have moved this run out
+  // of `running` while the SDK loop was in flight. Skip persistence rather
+  // than mint live, human-approvable intents under a run nobody owns anymore.
+  const stillRunning = await isRunStillRunning(ctx.run.id, ctx.run.orgId);
+  if (!stillRunning) {
+    console.warn('[aiAgentRunLoop] skipped sweep persistence — run left `running` before it could be persisted', {
+      runId: ctx.run.id,
+    });
+    return null;
+  }
+
+  const evidenceDeviceIds = new Set<string>();
+  for (const kind of Object.values(ctx.sweep?.evidence.kinds ?? {})) {
+    for (const row of kind?.rows ?? []) {
+      if (row.deviceId) evidenceDeviceIds.add(row.deviceId);
+    }
+  }
+
+  try {
+    const { proposals, intentIds } = await persistSweepFindings(
+      {
+        id: ctx.run.id,
+        orgId: ctx.run.orgId,
+        agentId: ctx.run.agentId,
+        // A sweep run is device-less by construction — that is exactly why
+        // every intent it mints carries its own explicit device scope.
+        deviceId: null,
+        scheduleId: ctx.run.scheduleId,
+        // The AGENT's effective allowlist off the already-loaded run row —
+        // the same authority `agentReleaseAuthority.ts` re-checks at release.
+        toolAllowlist: ctx.run.policySnapshot.effective.toolAllowlist,
+        // The AGENT's action cap, NOT `sweepLimits`' hard `0` (which governs
+        // what the run LOOP may execute, and a sweep executes nothing). `??`
+        // tolerates a v1 policy snapshot, which predates the field entirely.
+        maxActionsPerRun:
+          ctx.run.policySnapshot.effective.limits.maxActionsPerRun
+          ?? AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun,
+        evidenceDeviceIds,
+      },
+      outcome.sweepFindings,
+      result.agentAuth,
+    );
+    if (proposals.length > 0) outcome.sweepProposals = proposals;
+    for (const intentId of intentIds) result.intentIds.push(intentId);
+    return null;
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to persist sweep findings', { runId: ctx.run.id, error });
+    return 'sweep_persist_failed';
+  }
+}
+
 /** IMPORTANT 4 helper — see `finalizeVerdict`. System-scoped: this runs from
  *  the background run loop, with no ambient request context. */
 async function isRunStillRunning(runId: string, orgId: string): Promise<boolean> {
@@ -1839,7 +2082,17 @@ async function finishRun(
   // for regression). Both are best-effort/failure-tolerant machinery built
   // for `full`-profile runs; there is nothing here for a verdict run to skip
   // INTO a gap — this is a deliberate no-op, not a missing feature.
-  if (!isVerdictProfile(ctx.run)) {
+  //
+  // Wave P2-2 (task 6) SPLIT the two: a SWEEP run does notify. Nobody is
+  // watching a 06:00 cron occurrence, and unlike a verdict it leaves no
+  // badge on an alert row a technician was already looking at — the
+  // run-finished notification IS the surface for it. It still schedules no
+  // fix-watch: a sweep executes nothing, so there is no fix whose
+  // regression could be watched for.
+  const notifies = !isVerdictProfile(ctx.run);
+  const watches = !isVerdictProfile(ctx.run) && !isSweepProfile(ctx.run);
+
+  if (notifies) {
     try {
       await deliverRunFinishedNotifications(ctx.run.id);
     } catch (error) {
@@ -1848,20 +2101,20 @@ async function finishRun(
       });
       await enqueueAgentNotifyRetry(ctx.run.id);
     }
+  }
 
-    // Fix-held watch scheduling (wave 6 PR 2, Task 3, #3828) — best-effort and
-    // deliberately never affects this run's own status: `scheduleFixWatch`
-    // swallows every failure internally (see its header). Only a clean
-    // `completed` finish is eligible at all (`awaiting_approval`/`failed` never
-    // are — `isFixWatchEligible` would reject them anyway via `modeAtStart`/
-    // `verification`, but gating on `status` here avoids the query entirely on
-    // the common non-completed paths).
-    if (status === 'completed') {
-      await scheduleFixWatch(
-        { id: ctx.run.id, orgId: ctx.run.orgId, agentId: ctx.run.agentId, alertId: ctx.run.alertId, modeAtStart: ctx.run.modeAtStart },
-        result.outcome,
-      );
-    }
+  // Fix-held watch scheduling (wave 6 PR 2, Task 3, #3828) — best-effort and
+  // deliberately never affects this run's own status: `scheduleFixWatch`
+  // swallows every failure internally (see its header). Only a clean
+  // `completed` finish is eligible at all (`awaiting_approval`/`failed` never
+  // are — `isFixWatchEligible` would reject them anyway via `modeAtStart`/
+  // `verification`, but gating on `status` here avoids the query entirely on
+  // the common non-completed paths).
+  if (watches && status === 'completed') {
+    await scheduleFixWatch(
+      { id: ctx.run.id, orgId: ctx.run.orgId, agentId: ctx.run.agentId, alertId: ctx.run.alertId, modeAtStart: ctx.run.modeAtStart },
+      result.outcome,
+    );
   }
 }
 

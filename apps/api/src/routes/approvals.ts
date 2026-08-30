@@ -34,6 +34,12 @@ import {
   isAgentIntentDecideAuthorized,
 } from '../services/actionIntents/intentApprovers';
 import { buildAuthContextForIntent } from '../services/actionIntents/actorContext';
+import {
+  effectiveTargetDeviceId,
+  resolveIntentTargetDevice,
+} from '../services/actionIntents/intentTargetScope';
+import { aiAgentRuns } from '../db/schema/aiAgents';
+import { devices } from '../db/schema/devices';
 import { checkToolPermission } from '../services/aiGuardrails';
 import { loadPartnerPolicy, isEnforcing } from '../services/authenticatorPolicy';
 import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../services/permissions';
@@ -121,6 +127,11 @@ type LiveAuthzIntent = Pick<
   | 'requestingAgentRunId'
   | 'actionName'
   | 'arguments'
+  // P2-2 (#4189): `isAgentIntentDecideAuthorized` resolves the intent's
+  // target through these two before it looks at the run at all — a
+  // tombstoned scope means nobody is decide-authorized.
+  | 'scopeKind'
+  | 'scopeDeviceId'
 >;
 
 /**
@@ -144,6 +155,9 @@ interface AuthorizedApproval {
   approval: typeof approvalRequests.$inferSelect;
   approvalScope: ActionIntentApprovalScope | null;
   attribution: IntentAttribution;
+  /** P2-2: the scope columns + org the batched `resolveTargetDevices` pass
+   *  needs. Carried on the projection rather than re-fetched per row. */
+  targetRef: IntentTargetRef | null;
 }
 
 /**
@@ -198,6 +212,19 @@ function makeAgentDecideAuthorizer(
       cache.set(intent.id, resolved);
     }
     return resolved;
+  };
+}
+
+/** Target-scope projection for `resolveTargetDevices` — null when there is no
+ *  intent. Kept alongside `toIntentAttribution` so both projections are
+ *  derived from the same loaded row, never re-read. */
+function toIntentTargetRef(intent: ActionIntent | null): IntentTargetRef | null {
+  if (!intent) return null;
+  return {
+    orgId: intent.orgId,
+    scopeKind: intent.scopeKind,
+    scopeDeviceId: intent.scopeDeviceId,
+    requestingAgentRunId: intent.requestingAgentRunId,
   };
 }
 
@@ -276,8 +303,9 @@ async function resolveRowLiveAuthorization(
   authorized: boolean;
   approvalScope: ActionIntentApprovalScope | null;
   attribution: IntentAttribution;
+  targetRef: IntentTargetRef | null;
 }> {
-  if (!row.intentId) return { authorized: true, approvalScope: null, attribution: null };
+  if (!row.intentId) return { authorized: true, approvalScope: null, attribution: null, targetRef: null };
   const intentId = row.intentId;
   const intent = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
@@ -298,6 +326,7 @@ async function resolveRowLiveAuthorization(
     authorized,
     approvalScope: intent?.approvalScope ?? null,
     attribution: toIntentAttribution(intent),
+    targetRef: toIntentTargetRef(intent),
   };
 }
 
@@ -342,7 +371,7 @@ async function fetchAuthorizedPendingApprovals(
   const authorized: AuthorizedApproval[] = [];
   for (const { approval, intent } of rows) {
     if (!approval.intentId) {
-      authorized.push({ approval, approvalScope: null, attribution: null });
+      authorized.push({ approval, approvalScope: null, attribution: null, targetRef: null });
       continue;
     }
     if (await isIntentRowLiveAuthorized(intent, userId, orgDecideAuthorizer, agentDecideAuthorizer)) {
@@ -350,6 +379,7 @@ async function fetchAuthorizedPendingApprovals(
         approval,
         approvalScope: intent?.approvalScope ?? null,
         attribution: toIntentAttribution(intent),
+        targetRef: toIntentTargetRef(intent),
       });
     }
   }
@@ -383,13 +413,20 @@ approvalRoutes.get('/pending', async (c) => {
   // Batched lookup: one query resolves the customer tenant for ALL M365
   // mutation rows in this page (no N+1).
   const tenants = await lookupCustomerTenants(page.map((r) => r.approval));
+  // P2-2: ONE batched pass for the whole page (at most two queries total —
+  // runs, then devices), never a lookup per row.
+  const targetDevices = await resolveTargetDevices(
+    page.map(({ approval, targetRef }) => ({ key: approval.id, intent: targetRef })),
+  );
   return c.json({
-    approvals: page.map(({ approval, approvalScope, attribution }) =>
+    approvals: page.map(({ approval, approvalScope, attribution, targetRef }) =>
       serialize(
         approval,
         (approval.executionId && tenants.get(approval.executionId)) || null,
         approvalScope,
         attribution,
+        targetDevices.get(approval.id) ?? null,
+        targetRef?.orgId ?? null,
       ),
     ),
     nextCursor,
@@ -498,7 +535,17 @@ approvalRoutes.get('/:id', async (c) => {
 
   const tenants = await lookupCustomerTenants([row]);
   const customerTenant = (row.executionId && tenants.get(row.executionId)) || null;
-  return c.json({ approval: serialize(row, customerTenant, live.approvalScope, live.attribution) });
+  const targetDevices = await resolveTargetDevices([{ key: row.id, intent: live.targetRef }]);
+  return c.json({
+    approval: serialize(
+      row,
+      customerTenant,
+      live.approvalScope,
+      live.attribution,
+      targetDevices.get(row.id) ?? null,
+      live.targetRef?.orgId ?? null,
+    ),
+  });
 });
 
 // Phase 2: issue a short-lived (120s) WebAuthn assertion challenge bound to
@@ -1892,12 +1939,21 @@ async function decideHandler(
     });
   }
 
+  // P2-2: the decide response carries the SAME target projection the inbox
+  // list does — a client that re-renders the card from this response must not
+  // watch `targetDevice` blank out just because the row was just decided.
+  const decidedTargetRef = toIntentTargetRef(linkedIntent);
+  const decidedTargetDevices = await resolveTargetDevices([
+    { key: updated.id, intent: decidedTargetRef },
+  ]);
   return c.json({
     approval: serialize(
       updated,
       null,
       linkedIntent?.approvalScope ?? null,
       toIntentAttribution(linkedIntent),
+      decidedTargetDevices.get(updated.id) ?? null,
+      decidedTargetRef?.orgId ?? null,
     ),
   });
 }
@@ -1948,6 +2004,98 @@ async function lookupCustomerTenants(
   return map;
 }
 
+/**
+ * The intent projection `resolveTargetDevices` needs. Every read surface here
+ * selects whole `action_intents` rows, so this is a narrowing, not an extra
+ * query.
+ */
+type IntentTargetRef = Pick<
+  ActionIntent,
+  'orgId' | 'scopeKind' | 'scopeDeviceId' | 'requestingAgentRunId'
+>;
+
+/**
+ * P2-2 (#4189): resolve the target DEVICE for a whole page of intent-linked
+ * approval rows in a BOUNDED number of queries — never per row.
+ *
+ * Two batched reads at most, regardless of page size:
+ *   1. `ai_agent_runs` for the agent-originated intents that have NO explicit
+ *      scope (their target is still the run's device). Skipped entirely when
+ *      every intent on the page is scoped or human-originated.
+ *   2. `devices` for the union of resolved device ids, projecting `org_id`
+ *      alongside the hostname.
+ *
+ * A device whose CURRENT `org_id` is not the intent's org is dropped (mapped
+ * to no entry, i.e. `targetDevice: null`) rather than rendered — the same
+ * fail-closed rule the release path applies to a scoped device that moved
+ * tenants, applied here so the inbox never renders another tenant's hostname
+ * off a stale `scope_device_id`. A tombstoned scope resolves to no device by
+ * construction (`effectiveTargetDeviceId` → null).
+ *
+ * System-scoped for the same reason the pending join is: `ai_agent_runs` and
+ * `devices` are org-scoped tables the caller's ambient request context may not
+ * make visible (a partner approver has no `organization_users` row), and the
+ * org pin above is the app-layer authorization decision, made explicitly.
+ */
+async function resolveTargetDevices(
+  entries: Array<{ key: string; intent: IntentTargetRef | null }>,
+): Promise<Map<string, { id: string; hostname: string }>> {
+  const linked = entries.filter(
+    (e): e is { key: string; intent: IntentTargetRef } => e.intent !== null,
+  );
+  if (linked.length === 0) return new Map();
+
+  const runIds = [
+    ...new Set(
+      linked
+        .filter((e) => e.intent.scopeKind !== 'device' && e.intent.requestingAgentRunId)
+        .map((e) => e.intent.requestingAgentRunId as string),
+    ),
+  ];
+
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const runDeviceById = new Map<string, string | null>();
+      if (runIds.length > 0) {
+        const runRows = await db
+          .select({ id: aiAgentRuns.id, deviceId: aiAgentRuns.deviceId })
+          .from(aiAgentRuns)
+          .where(inArray(aiAgentRuns.id, runIds));
+        for (const row of runRows) runDeviceById.set(row.id, row.deviceId);
+      }
+
+      const targetByKey = new Map<string, string>();
+      for (const { key, intent } of linked) {
+        const run = intent.requestingAgentRunId
+          ? { deviceId: runDeviceById.get(intent.requestingAgentRunId) ?? null }
+          : null;
+        const deviceId = effectiveTargetDeviceId(resolveIntentTargetDevice(intent, run));
+        if (deviceId) targetByKey.set(key, deviceId);
+      }
+      const deviceIds = [...new Set(targetByKey.values())];
+      if (deviceIds.length === 0) return new Map<string, { id: string; hostname: string }>();
+
+      const deviceRows = await db
+        .select({ id: devices.id, orgId: devices.orgId, hostname: devices.hostname })
+        .from(devices)
+        .where(inArray(devices.id, deviceIds));
+      const deviceById = new Map(deviceRows.map((row) => [row.id, row]));
+
+      const out = new Map<string, { id: string; hostname: string }>();
+      for (const { key, intent } of linked) {
+        const deviceId = targetByKey.get(key);
+        if (!deviceId) continue;
+        const device = deviceById.get(deviceId);
+        // Org pin (fail closed): a device that moved tenants since the intent
+        // was minted is reported as no target at all, never as a hostname.
+        if (!device || device.orgId !== intent.orgId) continue;
+        out.set(key, { id: device.id, hostname: device.hostname });
+      }
+      return out;
+    }),
+  );
+}
+
 function serialize(
   r: typeof approvalRequests.$inferSelect,
   customerTenant: string | null = null,
@@ -1966,8 +2114,21 @@ function serialize(
    * name at intent creation, so no join is needed. Web Task 9 consumes both.
    */
   attribution: IntentAttribution = null,
+  /**
+   * P2-2 (#4189): the linked intent's RESOLVED target device — its explicit
+   * `scope_device_id` when it has one, the run's device otherwise — with the
+   * hostname the inbox renders. Null for a row with no intent, an intent with
+   * no resolvable device, or a tombstoned scope. Resolved by the caller
+   * (which batches ONE `inArray(devices.id, …)` read per page); this
+   * function stays I/O-free.
+   */
+  targetDevice: { id: string; hostname: string } | null = null,
+  /** The linked intent's org, so a partner-scope inbox can group by customer
+   *  without a second fetch. Null for a row with no intent. */
+  orgId: string | null = null,
 ) {
   const isAgentOriginated = attribution?.requestingAgentRunId != null;
+  const actionArguments = r.actionArguments as Record<string, unknown> | null;
   return {
     id: r.id,
     origin: isAgentOriginated ? ('ai_agent' as const) : ('human' as const),
@@ -1977,6 +2138,13 @@ function serialize(
     actionLabel: r.actionLabel,
     actionToolName: r.actionToolName,
     actionArguments: r.actionArguments,
+    // Additive projection of the multiplexed tools' `action` discriminator
+    // (manage_services:restart, manage_patches:install, …) — mobile shows it
+    // without having to parse actionArguments itself. Null whenever the tool
+    // is not action-multiplexed or the value is not a plain string.
+    action: typeof actionArguments?.action === 'string' ? actionArguments.action : null,
+    orgId,
+    targetDevice,
     riskTier: r.riskTier,
     riskSummary: r.riskSummary,
     customerTenant,

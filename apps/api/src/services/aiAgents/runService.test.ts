@@ -24,6 +24,7 @@ const TICKET_ID = '00000000-0000-4000-8000-0000000000b4';
 const ANOMALY_INCIDENT_ID = '00000000-0000-4000-8000-0000000000c9';
 const GROUP_A = '00000000-0000-4000-8000-0000000000b5';
 const GROUP_B = '00000000-0000-4000-8000-0000000000b6';
+const SCHEDULE_ID = '00000000-0000-4000-8000-0000000000d1';
 
 interface CapturedSelect {
   table: string;
@@ -1910,6 +1911,107 @@ describe('createAndEnqueueAgentRun verdict-profile admission (P2-1)', () => {
     seedVerdictAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentVerdictRuns });
     await createAndEnqueueAgentRun(
       input({ profile: 'verdict', dedupeKey: 'alert-verdict:a5' }),
+    );
+    expect(publishEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('createAndEnqueueAgentRun sweep-profile admission (P2-2)', () => {
+  /**
+   * Sweep-profile runs skip the cooldown probe entirely (step 5 wraps in
+   * `profile === 'full'`), same as verdict — see
+   * `seedVerdictAdmissionReads`' docstring above for why this seeds only
+   * [reap, concurrency, per-hour, daily spend] rather than reusing
+   * `seedAdmissionReads`' 5-slot cooldown-inclusive queue.
+   */
+  function seedSweepAdmissionReads(options: {
+    concurrent?: number;
+    perHour?: number;
+    dailyCents?: number | null;
+  } = {}): void {
+    const { concurrent = 0, perHour = 0, dailyCents = 0 } = options;
+    seedAdmissionReads({ concurrent, perHour, dailyCents, deviceInOrg: true });
+    dbMockState.rowQueues.ai_agent_runs = [
+      [], // 4c reap candidates
+      [{ value: concurrent }], // 6b concurrency
+      [{ value: perHour }], // 6b per-hour
+      [{ totalCostCents: dailyCents }], // 7 daily spend
+    ];
+  }
+
+  it('max_concurrent_sweep_runs when queued+running sweep runs reach the sweep-only cap', async () => {
+    seedSweepAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentSweepRuns });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'sweep', deviceId: null, dedupeKey: 'sweep:s1' }),
+    );
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_sweep_runs' });
+  });
+
+  it('a sweep run is not blocked by 5 queued full runs — the sweep cap is scoped and counted independently', async () => {
+    // The real concurrency count is profile-scoped and excludes full rows
+    // entirely, so 5 queued full runs (which would already saturate the
+    // default maxConcurrentRuns: 1) have zero effect on the sweep count.
+    seedSweepAdmissionReads({ concurrent: 0 });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'sweep', deviceId: null, dedupeKey: 'sweep:s2' }),
+    );
+    expect(result).toMatchObject({ created: true });
+    const runSelects = dbMockState.selects.filter((s) => s.table === 'ai_agent_runs');
+    // [0] reap, [1] concurrency, [2] per-hour — no cooldown probe for sweep.
+    expect(compiled(runSelects[1]?.where)).toContain('"profile"');
+  });
+
+  it('rate-limits sweep-profile runs on maxSweepRunsPerHour with skip sweep_rate', async () => {
+    seedSweepAdmissionReads({ perHour: AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'sweep', deviceId: null, dedupeKey: 'sweep:s3' }),
+    );
+    expect(result).toEqual({ created: false, skipped: 'sweep_rate' });
+  });
+
+  it('skips the cooldown step entirely for a sweep run queued 1s after another device-less run, even with cooldownSeconds > 0', async () => {
+    // Default snapshot() carries cooldownSeconds: 900. If step 5's
+    // `profile === 'full'` guard ever regressed to also cover 'sweep', this
+    // would probe a cooldown SELECT this queue never seeded — the mock's
+    // `nextRows` throws "No queued rows for table ai_agent_runs" and the
+    // test fails, rather than silently misreading an unrelated row.
+    seedSweepAdmissionReads({ concurrent: 0, perHour: 0, dailyCents: 0 });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'sweep', deviceId: null, dedupeKey: 'sweep:s4' }),
+    );
+    expect(result).toMatchObject({ created: true });
+  });
+
+  it('a full run is not blocked by concurrent sweep runs — the full cap is scoped by profile too', async () => {
+    seedAdmissionReads({ concurrent: 0 });
+    const result = await createAndEnqueueAgentRun(input());
+    expect(result).toMatchObject({ created: true });
+    const runSelects = dbMockState.selects.filter((s) => s.table === 'ai_agent_runs');
+    // [0] reap, [1] cooldown, [2] concurrency, [3] per-hour, [4] daily spend
+    expect(compiled(runSelects[2]?.where)).toContain('"profile"');
+    expect(compiled(runSelects[3]?.where)).toContain('"profile"');
+  });
+
+  it('writes scheduleId on the run row when the trigger is a schedule', async () => {
+    seedSweepAdmissionReads();
+    await createAndEnqueueAgentRun(
+      input({ profile: 'sweep', deviceId: null, dedupeKey: 'sweep:s5', scheduleId: SCHEDULE_ID }),
+    );
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values).toMatchObject({ profile: 'sweep', scheduleId: SCHEDULE_ID });
+  });
+
+  it('defaults scheduleId to null when omitted', async () => {
+    seedAdmissionReads();
+    await createAndEnqueueAgentRun(input());
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values).toMatchObject({ scheduleId: null });
+  });
+
+  it('does not publish max_concurrent_sweep_runs or sweep_rate — logged only, volume guards not policy events', async () => {
+    seedSweepAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentSweepRuns });
+    await createAndEnqueueAgentRun(
+      input({ profile: 'sweep', deviceId: null, dedupeKey: 'sweep:s6' }),
     );
     expect(publishEvent).not.toHaveBeenCalled();
   });

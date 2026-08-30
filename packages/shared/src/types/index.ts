@@ -777,6 +777,7 @@ export * from './filters';
 export * from './ai';
 export * from './aiAgents';
 export * from './aiAgentRuns';
+export * from './aiAgentSchedules';
 
 // ============================================
 // Billing Enum SSOT

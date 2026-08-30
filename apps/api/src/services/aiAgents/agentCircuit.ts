@@ -134,6 +134,14 @@ export type TerminalClassification = 'increment' | 'reset' | 'neutral';
  * unaffected by profile — the runner/ceiling increment allowlist still
  * applies, since a verdict run can genuinely error out the same way a full
  * run can.
+ *
+ * Phase 2 wave P2-2 (scheduled sweeps, design-review ruling): a
+ * `sweep`-profile run gets the SAME `completed`/`awaiting_approval` →
+ * `neutral` treatment as `verdict`, for a different reason — a sweep run's
+ * success says nothing about the org's remediation health (it is read-only
+ * reconnaissance, never a remediation attempt), so it never RESETS the
+ * streak, clean or `needs_attention` alike; a genuine failure still
+ * increments, exactly as for every other profile.
  */
 export function classifyTerminal(
   to: AiAgentRunStatus,
@@ -142,10 +150,10 @@ export function classifyTerminal(
   profile: AiAgentRunProfile = 'full',
 ): TerminalClassification {
   if (to === 'completed') {
-    if (profile === 'verdict') return 'neutral';
+    if (profile === 'verdict' || profile === 'sweep') return 'neutral';
     return runVerdict === 'needs_attention' ? 'increment' : 'reset';
   }
-  if (to === 'awaiting_approval') return profile === 'verdict' ? 'neutral' : 'reset';
+  if (to === 'awaiting_approval') return (profile === 'verdict' || profile === 'sweep') ? 'neutral' : 'reset';
   if (to === 'failed') {
     return errorCode !== null && INCREMENT_FAILURE_ERROR_CODES.has(errorCode) ? 'increment' : 'neutral';
   }
