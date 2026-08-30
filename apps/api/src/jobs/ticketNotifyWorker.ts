@@ -28,7 +28,7 @@
 import { Worker, type Job } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { organizations, partners, tickets, userNotifications, users } from '../db/schema';
+import { organizations, partners, tickets } from '../db/schema';
 import { getEmailService } from '../services/email';
 import { escapeHtml } from '../services/emailLayout';
 import { buildThreadingHeaders, partnerInboundAddress, ticketThreadAnchor } from '../services/inboundEmail/outboundThreading';
@@ -39,6 +39,17 @@ import type { TicketTemplateVars } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents';
+import { createNotification } from '../services/userNotifications';
+import { buildTicketPush, dispatchPushToTokens } from '../services/expoPush';
+import {
+  assertSamePartner,
+  collectTicketPush,
+  isAuthorisedForTicket,
+  listAnySlaSubscribers,
+  loadTicketPushPrefs,
+  loadUserCandidate,
+  type PushJob,
+} from '../services/ticketPush';
 
 const { db } = dbModule;
 
@@ -70,17 +81,34 @@ async function getTicket(ticketId: string) {
   return rows[0] ?? null;
 }
 
+async function getOrgName(orgId: string): Promise<string> {
+  const rows = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+  return rows[0]?.name ?? '';
+}
+
+/** Resolved once per event; collected results are sent after the context exits. */
+interface Collected {
+  emails: EmailPayload[];
+  pushes: PushJob[];
+}
+
 /**
- * Returns collected email payloads (does not send). The assignee lookup is
- * done BEFORE the userNotifications insert so an FK-violation can never occur
+ * Returns collected email payloads AND push jobs (sends neither). The assignee
+ * lookup is done BEFORE the notification row so an FK violation can never occur
  * for a deleted user.
+ *
+ * W07 (#3901): the row is written through createNotification with a dedupeKey —
+ * that is the idempotency anchor. A null return means "already written by a
+ * previous attempt", so a BullMQ retry re-pushes nothing and re-emails nobody.
  */
 async function collectAssigneeNotification(
   event: TicketEvent,
-  assigneeId: string
-): Promise<EmailPayload[]> {
+  assigneeId: string,
+  eventId: string
+): Promise<Collected> {
+  const none: Collected = { emails: [], pushes: [] };
   // Self-assign: skip notification entirely.
-  if (!assigneeId || assigneeId === event.actorUserId) return [];
+  if (!assigneeId || assigneeId === event.actorUserId) return none;
 
   // Pre-commit emission contract: ticket may not be visible yet — throw to trigger retry.
   const ticket = await getTicket(event.ticketId);
@@ -91,35 +119,48 @@ async function collectAssigneeNotification(
   const label = ticket.internalNumber ?? ticket.ticketNumber ?? ticket.id;
 
   // Assignee lookup FIRST — if no user row, terminal condition (deleted user).
-  const assigneeRows = await db.select({ id: users.id, email: users.email })
-    .from(users)
-    .where(eq(users.id, assigneeId))
-    .limit(1);
-  const assignee = assigneeRows[0];
-  if (!assignee) {
-    // User was deleted — silently skip, no insert, no email (terminal).
-    return [];
-  }
+  // Then the D5 partner assertion: this worker runs with RLS bypassed, so the
+  // tenant boundary is entirely app-layer from here on.
+  const assignee = await loadUserCandidate(assigneeId);
+  if (!assignee) return none;
+  if (!assertSamePartner(assignee, event.partnerId, { ticketId: ticket.id })) return none;
+  if (assignee.status !== 'active') return none;
 
-  // Assignee exists — safe to insert FK-constrained notification row.
-  await db.insert(userNotifications).values({
+  // Idempotency anchor (D2): null = replay -> nothing else happens.
+  const id = await createNotification({
     userId: assigneeId,
     orgId: event.orgId,
     type: 'ticket',
     priority: 'normal',
     title: `Ticket assigned: ${label}`,
     message: ticket.subject,
-    link: `/tickets#${ticket.internalNumber ?? ticket.id}`
-  }).returning();
+    link: `/tickets#${ticket.internalNumber ?? ticket.id}`,
+    dedupeKey: `ticket:${ticket.id}:assigned:${assigneeId}:${eventId}`,
+  });
+  if (id === null) return none;
 
-  if (!assignee.email) return [];
+  const emails: EmailPayload[] = assignee.email
+    ? [{
+        to: assignee.email,
+        subject: `[${label}] Assigned to you: ${ticket.subject}`,
+        html: `<p>You have been assigned ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(ticket.subject)}</p>`,
+        bestEffort: true,
+      }]
+    : [];
 
-  return [{
-    to: assignee.email,
-    subject: `[${label}] Assigned to you: ${ticket.subject}`,
-    html: `<p>You have been assigned ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(ticket.subject)}</p>`,
-    bestEffort: true
-  }];
+  const pushes: PushJob[] = [];
+  const prefs = await loadTicketPushPrefs(assigneeId);
+  if (prefs.assignedEnabled && event.partnerId && (await isAuthorisedForTicket(assigneeId, event.partnerId, event.orgId))) {
+    const spec = buildTicketPush({
+      ticketId: ticket.id,
+      reason: 'assigned',
+      internalNumber: ticket.internalNumber ?? null,
+      orgName: await getOrgName(event.orgId),
+    });
+    const job = await collectTicketPush(assigneeId, spec);
+    if (job) pushes.push(job);
+  }
+  return { emails, pushes };
 }
 
 /**
@@ -281,52 +322,111 @@ async function collectAutoresponse(
 }
 
 async function collectSlaBreachNotification(
-  event: Extract<TicketEvent, { type: 'ticket.sla_breached' }>,
-  assigneeId: string
-): Promise<EmailPayload[]> {
+  event: Extract<TicketEvent, { type: 'ticket.sla_breached' }>
+): Promise<Collected> {
   const ticket = await getTicket(event.ticketId);
   if (!ticket) {
     throw new Error(`Ticket not found (likely uncommitted): ${event.ticketId}`);
   }
 
-  const assigneeRows = await db.select({ id: users.id, email: users.email })
-    .from(users)
-    .where(eq(users.id, assigneeId))
-    .limit(1);
-  const assignee = assigneeRows[0];
-  if (!assignee) {
-    return [];
-  }
-
   const label = event.payload.internalNumber ?? event.ticketId;
   const target = event.payload.target;
+  const emails: EmailPayload[] = [];
+  const pushes: PushJob[] = [];
+  const notified = new Set<string>();
+  let orgName: string | null = null;
+  const spec = async () =>
+    buildTicketPush({
+      ticketId: ticket.id,
+      reason: 'sla_breached',
+      target,
+      internalNumber: event.payload.internalNumber,
+      orgName: orgName ?? (orgName = await getOrgName(event.orgId)),
+    });
 
-  await db.insert(userNotifications).values({
-    userId: assigneeId,
-    orgId: event.orgId,
-    type: 'ticket',
-    priority: 'normal',
-    title: `SLA breached: ${label}`,
-    message: `${target} SLA breached for ${event.payload.subject}`,
-    link: `/tickets#${event.payload.internalNumber ?? event.ticketId}`
-  }).returning();
+  /**
+   * The in-app row is ALWAYS written for a candidate that reaches here; `push`
+   * governs the phone only (spec D6: the throttle applies to every push, never
+   * to in-app rows, and every push-drop row in the spec's failure-modes table
+   * keeps "in-app row + email written"). Suppressing the inbox row would also
+   * be a silent behaviour regression: the owner's SLA row is unconditional on
+   * main today.
+   */
+  const notify = async (userId: string, opts: { push: boolean }): Promise<void> => {
+    if (notified.has(userId)) return;
+    notified.add(userId);
+    const id = await createNotification({
+      userId,
+      orgId: event.orgId,
+      type: 'ticket',
+      priority: 'normal',
+      title: `SLA breached: ${label}`,
+      message: `${target} SLA breached for ${event.payload.subject}`,
+      link: `/tickets#${event.payload.internalNumber ?? event.ticketId}`,
+      dedupeKey: `ticket:${ticket.id}:sla:${target}:${userId}`,
+    });
+    if (id === null) return; // replay — nothing further
+    if (!opts.push) return;  // preference says no phone; row already written
+    const job = await collectTicketPush(userId, await spec());
+    if (job) pushes.push(job);
+  };
 
-  if (!assignee.email) return [];
+  // Owner: email and in-app row as before (unconditional). slaScope governs the
+  // PUSH only — 'off' means "stop buzzing my phone", not "hide it from my inbox".
+  const assigneeId = event.payload.assigneeId;
+  if (assigneeId) {
+    const assignee = await loadUserCandidate(assigneeId);
+    if (assignee && assertSamePartner(assignee, event.partnerId, { ticketId: ticket.id }) && assignee.status === 'active') {
+      if (assignee.email) {
+        emails.push({
+          to: assignee.email,
+          subject: `SLA breached: ${label} — ${event.payload.subject}`,
+          html: `<p>The ${escapeHtml(target)} SLA breached for ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(event.payload.subject)}</p>`,
+          bestEffort: true,
+        });
+      }
+      const prefs = await loadTicketPushPrefs(assigneeId);
+      // Short-circuit deliberately: skip the permission round-trip when the
+      // preference already rules the push out.
+      const pushOwner =
+        prefs.slaScope !== 'off' &&
+        !!event.partnerId &&
+        (await isAuthorisedForTicket(assigneeId, event.partnerId, event.orgId));
+      await notify(assigneeId, { push: pushOwner });
+    }
+  }
 
-  return [{
-    to: assignee.email,
-    subject: `SLA breached: ${label} — ${event.payload.subject}`,
-    html: `<p>The ${escapeHtml(target)} SLA breached for ticket <strong>${escapeHtml(label)}</strong>: ${escapeHtml(event.payload.subject)}</p>`,
-    bestEffort: true
-  }];
+  // 'any' subscribers (D5): partner-filtered in SQL, re-authorised per user.
+  // Push only — no email.
+  //
+  // NOTE the asymmetry with the owner branch above, and it is intentional: an
+  // 'any' subscriber gets NO row at all when unauthorised, because they would
+  // not otherwise be a recipient of this ticket — writing an inbox row for
+  // someone who cannot access the org would leak the ticket's existence. The
+  // owner is already a legitimate recipient, so only their push is gated.
+  if (event.partnerId) {
+    const { users: subs } = await listAnySlaSubscribers(event.partnerId);
+    for (const sub of subs) {
+      if (notified.has(sub.userId)) continue;
+      if (!assertSamePartner(sub, event.partnerId, { ticketId: ticket.id })) continue;
+      if (!(await isAuthorisedForTicket(sub.userId, event.partnerId, event.orgId))) continue;
+      await notify(sub.userId, { push: true });
+    }
+  }
+
+  return { emails, pushes };
 }
 
 /**
  * Core handler: runs DB work inside the system context, collects email payloads,
  * then sends emails after the context exits.
  */
-export async function handleTicketEvent(event: TicketEvent): Promise<void> {
+export async function handleTicketEvent(event: TicketEvent, jobId?: string): Promise<void> {
+  // W07 (#3901): the dedupe anchor. Jobs queued before eventId shipped lack it,
+  // so fall back to the BullMQ job id (stable across that job's retries).
+  const eventId = event.eventId ?? jobId ?? `legacy:${event.ticketId}:${event.type}`;
   let emailPayloads: EmailPayload[] = [];
+  let pushJobs: PushJob[] = [];
 
   await runWithSystemDbAccess(async () => {
     switch (event.type) {
@@ -334,15 +434,18 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
       case 'ticket.assigned': {
         const assigneeId = event.payload.assigneeId;
         if (assigneeId) {
-          emailPayloads = await collectAssigneeNotification(event, assigneeId);
+          const collected = await collectAssigneeNotification(event, assigneeId, eventId);
+          emailPayloads = collected.emails;
+          pushJobs = collected.pushes;
         }
         return;
       }
       case 'ticket.sla_breached': {
-        const assigneeId = event.payload.assigneeId;
-        if (assigneeId) {
-          emailPayloads = await collectSlaBreachNotification(event, assigneeId);
-        }
+        // NOT gated on assigneeId any more: an UNASSIGNED breach still fans out
+        // to partner-wide ('any') SLA subscribers.
+        const collected = await collectSlaBreachNotification(event);
+        emailPayloads = collected.emails;
+        pushJobs = collected.pushes;
         return;
       }
       case 'ticket.commented': {
@@ -419,6 +522,16 @@ export async function handleTicketEvent(event: TicketEvent): Promise<void> {
     }
   });
 
+  // Pushes — OUTSIDE the DB context (#1105). Best-effort; dispatchPushToTokens
+  // never throws. Deliberately BEFORE the email early-return below: a push-only
+  // recipient ('any' SLA subscriber) produces zero email payloads.
+  for (const job of pushJobs) {
+    const r = await dispatchPushToTokens(job.tokens, job.spec, 'ticket');
+    if (r.errors > 0) {
+      console.warn(`[TicketNotify] ticket push partial failure ticket=${event.ticketId} dispatched=${r.dispatched} errors=${r.errors}`);
+    }
+  }
+
   // Send emails OUTSIDE the DB context to avoid idle-in-transaction pool poison (#1105).
   if (emailPayloads.length === 0) return;
   // getEmailService() may be null (no platform transport configured). Graph payloads
@@ -470,7 +583,7 @@ export function initializeTicketNotifyWorker(): Promise<void> {
 
   worker = new Worker<TicketEvent>(
     TICKET_EVENTS_QUEUE,
-    async (job: Job<TicketEvent>) => handleTicketEvent(job.data),
+    async (job: Job<TicketEvent>) => handleTicketEvent(job.data, job.id),
     { connection: getBullMQConnection(), concurrency: 5 }
   );
 

@@ -35,9 +35,34 @@ vi.mock('../db/schema', () => ({
   partners: { id: 'id', slug: 'slug', name: 'name', settings: 'settings' },
   organizations: { id: 'id', name: 'name' },
   userNotifications: {},
-  users: { id: 'id' },
+  users: { id: 'id', partnerId: 'partner_id', status: 'status', email: 'email' },
+  mobileDevices: { userId: 'user_id', fcmToken: 'fcm_token', apnsToken: 'apns_token', platform: 'platform', status: 'status', notificationsEnabled: 'notifications_enabled', quietHours: 'quiet_hours' },
+  ticketPushPreferences: { userId: 'user_id', assignedEnabled: 'assigned_enabled', slaScope: 'sla_scope' },
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
   ticketSourceEnum: { enumValues: ['portal', 'email', 'alert', 'manual', 'api', 'ai'] },
+}));
+// W07 (#3901): the assignee branch now writes through createNotification and
+// consults the ticketPush helpers. Stub them so this file keeps testing exactly
+// what it is about — the Graph-vs-EmailService fork — and nothing else.
+const gfPush = vi.hoisted(() => ({
+  createNotification: vi.fn(async () => 'n-1' as string | null),
+  loadUserCandidate: vi.fn(async (id: string) => ({ userId: id, partnerId: 'p-1', status: 'active', email: 'tech@msp.example' })),
+  loadTicketPushPrefs: vi.fn(async () => ({ assignedEnabled: false, slaScope: 'off' as const })),
+  listAnySlaSubscribers: vi.fn(async () => ({ users: [] as unknown[], truncated: false })),
+  isAuthorisedForTicket: vi.fn(async () => false),
+  collectTicketPush: vi.fn(async () => null),
+}));
+vi.mock('../services/userNotifications', () => ({ createNotification: gfPush.createNotification }));
+vi.mock('../services/ticketPush', async (orig) => ({
+  ...(await orig<typeof import('../services/ticketPush')>()),
+  loadUserCandidate: gfPush.loadUserCandidate,
+  loadTicketPushPrefs: gfPush.loadTicketPushPrefs,
+  listAnySlaSubscribers: gfPush.listAnySlaSubscribers,
+  isAuthorisedForTicket: gfPush.isAuthorisedForTicket,
+  collectTicketPush: gfPush.collectTicketPush,
+}));
+vi.mock('../db/schema/mobile', () => ({
+  mobileDevices: { userId: 'user_id', fcmToken: 'fcm_token', apnsToken: 'apns_token', platform: 'platform', status: 'status', notificationsEnabled: 'notifications_enabled', quietHours: 'quiet_hours' },
 }));
 vi.mock('../services/ticketMailbox/resolveOutboundMailbox', () => ({ resolveOutboundMailbox: resolveMailboxMock }));
 vi.mock('../services/ticketMailbox/graphReplySender', () => ({ sendThreadedReply: sendThreadedMock, sendNewMail: sendNewMock }));
@@ -109,7 +134,7 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
   it('NEVER routes assignee/tech notifications through Graph (ticket.assigned uses EmailService)', async () => {
     selectMock
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', internalNumber: 'T-1', subject: 'Printer', submitterEmail: 'cust@x.com' }]) // getTicket
-      .mockResolvedValueOnce([{ id: 'u-2', email: 'tech@msp.example' }]); // assignee user
+      .mockResolvedValueOnce([{ name: 'Acme' }]); // org name (assignee now via loadUserCandidate)
     // Even if a mailbox WERE connected, the assignee path must never consult it.
     resolveMailboxMock.mockResolvedValue({ ...MAILBOX, originalMessageId: 'orig-1' });
 
