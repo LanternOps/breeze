@@ -250,7 +250,7 @@ const SUBMIT_NARRATIVE_SHAPE = {
         + 'stripped. Every section needs at least one bullet; when there is nothing to report, say that '
         + 'plainly in one bullet rather than omitting the section.',
       ),
-  })).max(NARRATIVE_SECTION_KEYS.length).describe(
+  })).min(NARRATIVE_SECTION_KEYS.length).max(NARRATIVE_SECTION_KEYS.length).describe(
     `Exactly ${NARRATIVE_SECTION_KEYS.length} entries — one per section key, in any order.`,
   ),
 };
