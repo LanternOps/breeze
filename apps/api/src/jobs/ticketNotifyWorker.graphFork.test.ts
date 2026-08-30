@@ -63,7 +63,7 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
 
     await handleTicketEvent({
       type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { commentId: 'c-1', isPublic: true },
+      actorUserId: 'u-1', eventId: 'evt-1', payload: { commentId: 'c-1', isPublic: true },
     });
 
     expect(sendThreadedMock).toHaveBeenCalledTimes(1);
@@ -80,7 +80,7 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
 
     await handleTicketEvent({
       type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { commentId: 'c-1', isPublic: true },
+      actorUserId: 'u-1', eventId: 'evt-2', payload: { commentId: 'c-1', isPublic: true },
     });
 
     expect(sendNewMock).toHaveBeenCalledTimes(1);
@@ -97,7 +97,7 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
 
     await handleTicketEvent({
       type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { commentId: 'c-1', isPublic: true },
+      actorUserId: 'u-1', eventId: 'evt-3', payload: { commentId: 'c-1', isPublic: true },
     });
 
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
@@ -115,7 +115,7 @@ describe('ticketNotifyWorker M365 Graph fork', () => {
 
     await handleTicketEvent({
       type: 'ticket.assigned', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { assigneeId: 'u-2' },
+      actorUserId: 'u-1', eventId: 'evt-4', payload: { assigneeId: 'u-2' },
     });
 
     expect(sendThreadedMock).not.toHaveBeenCalled();

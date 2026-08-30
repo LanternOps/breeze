@@ -72,7 +72,7 @@ describe('handleTicketEvent', () => {
 
     await handleTicketEvent({
       type: 'ticket.assigned', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { assigneeId: 'u-2' }
+      actorUserId: 'u-1', eventId: 'evt-1', payload: { assigneeId: 'u-2' }
     });
 
     expect(withSystemDbAccessContextMock).toHaveBeenCalled();
@@ -85,7 +85,7 @@ describe('handleTicketEvent', () => {
 
     await handleTicketEvent({
       type: 'ticket.assigned', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { assigneeId: 'u-2' }
+      actorUserId: 'u-1', eventId: 'evt-2', payload: { assigneeId: 'u-2' }
     });
 
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -97,7 +97,7 @@ describe('handleTicketEvent', () => {
   it('skips self-assignment notifications', async () => {
     await handleTicketEvent({
       type: 'ticket.assigned', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-2', payload: { assigneeId: 'u-2' }
+      actorUserId: 'u-2', eventId: 'evt-3', payload: { assigneeId: 'u-2' }
     });
     expect(insertValuesMock).not.toHaveBeenCalled();
   });
@@ -106,7 +106,7 @@ describe('handleTicketEvent', () => {
     selectMock.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', subject: 'Printer', submitterEmail: 'enduser@acme.example' }]);
     await handleTicketEvent({
       type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { commentId: 'c-1', isPublic: true }
+      actorUserId: 'u-1', eventId: 'evt-4', payload: { commentId: 'c-1', isPublic: true }
     });
     expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
       to: 'enduser@acme.example',
@@ -118,7 +118,7 @@ describe('handleTicketEvent', () => {
     selectMock.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', subject: 'Printer', submitterEmail: 'enduser@acme.example' }]);
     await handleTicketEvent({
       type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { commentId: 'c-1', isPublic: false }
+      actorUserId: 'u-1', eventId: 'evt-5', payload: { commentId: 'c-1', isPublic: false }
     });
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
@@ -129,7 +129,7 @@ describe('handleTicketEvent', () => {
     selectMock.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', subject: 'Printer', submitterEmail: 'enduser@acme.example' }]);
     await handleTicketEvent({
       type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { commentId: 'c-1', isPublic: true, inbound: true }
+      actorUserId: 'u-1', eventId: 'evt-6', payload: { commentId: 'c-1', isPublic: true, inbound: true }
     });
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
@@ -139,7 +139,7 @@ describe('handleTicketEvent', () => {
     selectMock.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', subject: 'Printer', submitterEmail: 'enduser@acme.example' }]);
     await handleTicketEvent({
       type: 'ticket.commented', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { commentId: 'c-2', isPublic: true, inbound: false }
+      actorUserId: 'u-1', eventId: 'evt-7', payload: { commentId: 'c-2', isPublic: true, inbound: false }
     });
     expect(sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
       to: 'enduser@acme.example'
@@ -155,7 +155,7 @@ describe('handleTicketEvent', () => {
     await handleTicketEvent({
       type: 'ticket.commented',
       ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1',
+      actorUserId: 'u-1', eventId: 'evt-8',
       payload: { commentId: 'c-9', isPublic: true /* inbound omitted = false */ }
     } as never);
 
@@ -182,7 +182,7 @@ describe('handleTicketEvent', () => {
     await handleTicketEvent({
       type: 'ticket.commented',
       ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1',
+      actorUserId: 'u-1', eventId: 'evt-9',
       payload: { commentId: 'c-9', isPublic: true }
     } as never);
 
@@ -198,7 +198,7 @@ describe('handleTicketEvent', () => {
     await handleTicketEvent({
       type: 'ticket.commented',
       ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1',
+      actorUserId: 'u-1', eventId: 'evt-10',
       payload: { commentId: 'c-9', isPublic: true }
     } as never);
 
@@ -215,7 +215,7 @@ describe('handleTicketEvent', () => {
     await handleTicketEvent({
       type: 'ticket.status_changed',
       ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1',
+      actorUserId: 'u-1', eventId: 'evt-11',
       payload: { from: 'open', to: 'resolved', resolutionNote: null }
     } as never);
 
@@ -238,7 +238,7 @@ describe('handleTicketEvent', () => {
     await handleTicketEvent({
       type: 'ticket.autoresponse',
       ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: null,
+      actorUserId: null, eventId: 'evt-12',
       payload: { to: 'jane@x.com', internalNumber: 'T-2026-0001', subject: 'printer down' }
     } as never);
 
@@ -264,7 +264,7 @@ describe('handleTicketEvent', () => {
     await handleTicketEvent({
       type: 'ticket.autoresponse',
       ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: null,
+      actorUserId: null, eventId: 'evt-13',
       payload: { to: 'jane@x.com', internalNumber: 'T-2026-0001', subject: 'printer down' }
     } as never);
 
@@ -283,7 +283,7 @@ describe('handleTicketEvent', () => {
     await handleTicketEvent({
       type: 'ticket.autoresponse',
       ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: null,
+      actorUserId: null, eventId: 'evt-14',
       payload: { to: 'jane@x.com', internalNumber: 'T-2026-0001', subject: 'printer down' }
     } as never);
 
@@ -298,7 +298,7 @@ describe('handleTicketEvent', () => {
       .mockResolvedValueOnce([{ id: 'u-2', email: 'tech@msp.example' }]);
     await expect(handleTicketEvent({
       type: 'ticket.assigned', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { assigneeId: 'u-2' }
+      actorUserId: 'u-1', eventId: 'evt-15', payload: { assigneeId: 'u-2' }
     })).resolves.toBeUndefined();
     expect(insertValuesMock).toHaveBeenCalled();
   });
@@ -309,7 +309,7 @@ describe('handleTicketEvent', () => {
 
     await expect(handleTicketEvent({
       type: 'ticket.assigned', ticketId: 'missing', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { assigneeId: 'u-2' }
+      actorUserId: 'u-1', eventId: 'evt-16', payload: { assigneeId: 'u-2' }
     })).rejects.toThrow(/not found/i);
   });
 
@@ -321,7 +321,7 @@ describe('handleTicketEvent', () => {
 
     await expect(handleTicketEvent({
       type: 'ticket.assigned', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { assigneeId: 'u-2' }
+      actorUserId: 'u-1', eventId: 'evt-17', payload: { assigneeId: 'u-2' }
     })).resolves.toBeUndefined();
 
     expect(insertValuesMock).toHaveBeenCalledTimes(1);
@@ -339,7 +339,7 @@ describe('handleTicketEvent', () => {
 
     await expect(handleTicketEvent({
       type: 'ticket.assigned', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { assigneeId: 'u-deleted' }
+      actorUserId: 'u-1', eventId: 'evt-18', payload: { assigneeId: 'u-deleted' }
     })).resolves.toBeUndefined();
 
     expect(insertValuesMock).not.toHaveBeenCalled();
@@ -355,7 +355,7 @@ describe('handleTicketEvent', () => {
 
     await handleTicketEvent({
       type: 'ticket.sla_breached', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: null, payload: { target: 'response', internalNumber: 'T-2026-0001', subject: 'Printer', assigneeId: 'u-2' }
+      actorUserId: null, eventId: 'evt-19', payload: { target: 'response', internalNumber: 'T-2026-0001', subject: 'Printer', assigneeId: 'u-2' }
     });
 
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -382,7 +382,7 @@ describe('handleTicketEvent', () => {
 
     await expect(handleTicketEvent({
       type: 'ticket.sla_breached', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: null, payload: { target: 'resolution', internalNumber: 'T-2026-0001', subject: 'Printer', assigneeId: 'u-deleted' }
+      actorUserId: null, eventId: 'evt-20', payload: { target: 'resolution', internalNumber: 'T-2026-0001', subject: 'Printer', assigneeId: 'u-deleted' }
     })).resolves.toBeUndefined();
 
     expect(selectMock).toHaveBeenCalledTimes(2);
@@ -394,7 +394,7 @@ describe('handleTicketEvent', () => {
 
     await expect(handleTicketEvent({
       type: 'ticket.sla_breached', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: null, payload: { target: 'response', internalNumber: 'T-2026-0001', subject: 'Printer', assigneeId: null }
+      actorUserId: null, eventId: 'evt-21', payload: { target: 'response', internalNumber: 'T-2026-0001', subject: 'Printer', assigneeId: null }
     })).resolves.toBeUndefined();
 
     expect(selectMock).not.toHaveBeenCalled();
@@ -407,7 +407,7 @@ describe('handleTicketEvent', () => {
 
     await expect(handleTicketEvent({
       type: 'ticket.sla_breached', ticketId: 'missing', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: null, payload: { target: 'response', internalNumber: 'T-2026-0001', subject: 'Printer', assigneeId: 'u-2' }
+      actorUserId: null, eventId: 'evt-22', payload: { target: 'response', internalNumber: 'T-2026-0001', subject: 'Printer', assigneeId: 'u-2' }
     })).rejects.toThrow(/not found/i);
   });
 
@@ -424,7 +424,7 @@ describe('handleTicketEvent', () => {
 
     await handleTicketEvent({
       type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { from: 'open', to: 'resolved' }
+      actorUserId: 'u-1', eventId: 'evt-23', payload: { from: 'open', to: 'resolved' }
     });
 
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
@@ -439,7 +439,7 @@ describe('handleTicketEvent', () => {
   it('ticket.updated is an explicit no-op — no ticket lookup, no insert, no email', async () => {
     await handleTicketEvent({
       type: 'ticket.updated', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { changed: ['subject', 'priority'] }
+      actorUserId: 'u-1', eventId: 'evt-24', payload: { changed: ['subject', 'priority'] }
     });
     expect(selectMock).not.toHaveBeenCalled();
     expect(insertValuesMock).not.toHaveBeenCalled();
@@ -454,7 +454,7 @@ describe('handleTicketEvent', () => {
 
     await handleTicketEvent({
       type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { from: 'open', to: 'pending' }
+      actorUserId: 'u-1', eventId: 'evt-25', payload: { from: 'open', to: 'pending' }
     });
 
     expect(sendEmailMock).not.toHaveBeenCalled();
@@ -468,7 +468,7 @@ describe('handleTicketEvent', () => {
 
     await expect(handleTicketEvent({
       type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { from: 'open', to: 'resolved' }
+      actorUserId: 'u-1', eventId: 'evt-26', payload: { from: 'open', to: 'resolved' }
     })).resolves.toBeUndefined();
 
     expect(sendEmailMock).not.toHaveBeenCalled();
@@ -487,7 +487,7 @@ describe('handleTicketEvent', () => {
 
     await expect(handleTicketEvent({
       type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { from: 'open', to: 'resolved' }
+      actorUserId: 'u-1', eventId: 'evt-27', payload: { from: 'open', to: 'resolved' }
     })).rejects.toThrow(/not yet visible/i);
 
     expect(sendEmailMock).not.toHaveBeenCalled();
@@ -507,7 +507,7 @@ describe('handleTicketEvent', () => {
 
     await expect(handleTicketEvent({
       type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { from: 'open', to: 'resolved' }
+      actorUserId: 'u-1', eventId: 'evt-28', payload: { from: 'open', to: 'resolved' }
     })).resolves.toBeUndefined();
 
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
@@ -522,7 +522,7 @@ describe('handleTicketEvent', () => {
 
     await handleTicketEvent({
       type: 'ticket.created', ticketId: 't-2', orgId: 'o-1', partnerId: 'p-1',
-      actorUserId: 'u-1', payload: { internalNumber: 'T-2026-0100', assigneeId: 'u-3', source: 'manual' }
+      actorUserId: 'u-1', eventId: 'evt-29', payload: { internalNumber: 'T-2026-0100', assigneeId: 'u-3', source: 'manual' }
     });
 
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
