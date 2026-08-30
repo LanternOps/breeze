@@ -35,6 +35,8 @@ MIGRATIONS_DIR="apps/api/migrations"
 AUTOMIGRATE_TS="apps/api/src/db/autoMigrate.ts"
 CANDIDATE_REGISTRY=".github/release-provenance/candidate-tags.tsv"
 SIDE_BRANCH_REGISTRY=".github/release-provenance/side-branch-tags.tsv"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+SEMVER_TOOL="$SCRIPT_DIR/release/sort-semver-tags.mjs"
 
 fail() {
   echo "check-migration-immutability: error: $*" >&2
@@ -71,7 +73,7 @@ EOF
        [ -n "${row_extra:-}" ]; then
       fail "malformed candidate registry row $line_number: expected four non-empty tab-separated fields"
     fi
-    if [[ ! "$row_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*$ ]]; then
+    if ! node "$SEMVER_TOOL" --validate "$row_tag" || [[ "$row_tag" != *-* ]]; then
       fail "invalid candidate tag '$row_tag' at registry row $line_number"
     fi
     if [[ ! "$row_sha" =~ ^[0-9a-f]{40}$ ]]; then
@@ -126,7 +128,7 @@ EOF
        [ -z "${row_note:-}" ] || [ -n "${row_extra:-}" ]; then
       fail "malformed side-branch registry row $line_number: expected three non-empty tab-separated fields"
     fi
-    if [[ ! "$row_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    if ! node "$SEMVER_TOOL" --validate "$row_tag" || [[ "$row_tag" == *-* ]]; then
       fail "invalid stable side-branch tag '$row_tag' at registry row $line_number"
     fi
     if [[ ! "$row_sha" =~ ^[0-9a-f]{40}$ ]]; then
@@ -172,16 +174,16 @@ else
   [ "$SHALLOW" != "true" ] || \
     fail "shallow repository cannot prove migration release ancestry; fetch full history and tags"
 
+  RAW_TAGS=$(git tag --list 'v*')
+  SORTED_TAGS=$(printf '%s\n' "$RAW_TAGS" | node "$SEMVER_TOOL" --sort-desc) || \
+    fail "invalid SemVer release tag set"
   TAGS=()
   TAG_COUNT=0
   while IFS= read -r release_tag; do
     [ -n "$release_tag" ] || continue
-    if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
-      fail "invalid v* release tag '$release_tag'; expected semantic version vX.Y.Z or vX.Y.Z-prerelease"
-    fi
     TAGS[$TAG_COUNT]="$release_tag"
     TAG_COUNT=$((TAG_COUNT + 1))
-  done < <(git -c versionsort.suffix=- tag --list 'v*' --sort=-v:refname)
+  done <<< "$SORTED_TAGS"
 
   if [ "$TAG_COUNT" -eq 0 ]; then
     echo "check-migration-immutability: no v* release tag found; skipping (nothing shipped yet)."

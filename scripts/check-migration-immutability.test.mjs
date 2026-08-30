@@ -287,6 +287,28 @@ test('SemVer precedence selects a stable release over its prerelease', () => {
   assert.match(result.output, /primary baseline v1\.1\.0(?:\s|$)/);
 });
 
+test('SemVer precedence handles hyphenated prerelease identifiers', () => {
+  const repo = initRepo();
+  tag(repo, 'v1.0.0-alpha.1');
+  write(repo, 'apps/api/migrations/2026-01-02-alpha-hyphen.sql', 'SELECT 2;\n');
+  commit(repo, 'hyphenated prerelease');
+  tag(repo, 'v1.0.0-alpha-1');
+  write(repo, 'apps/api/migrations/2026-01-02-alpha-hyphen.sql', 'SELECT 20;\n');
+
+  const result = runGuard(repo);
+
+  expectFailure(result, /v1\.0\.0-alpha-1/);
+  assert.match(result.output, /primary baseline v1\.0\.0-alpha-1/);
+  assert.match(result.output, /M 2026-01-02-alpha-hyphen\.sql/);
+});
+
+test('automatic mode rejects leading-zero SemVer identifiers', () => {
+  const repo = initRepo();
+  tag(repo, 'v1.0.0-01');
+
+  expectFailure(runGuard(repo), /invalid.*SemVer|leading zero/i);
+});
+
 test('peels an annotated primary tag and reports it on mutation', () => {
   const repo = initRepo();
   tag(repo, 'v1.0.0', { annotated: true });

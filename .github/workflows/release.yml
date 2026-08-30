@@ -2654,7 +2654,8 @@ jobs:
           # servers syncing published releases) see nothing until it is
           # explicitly published — used when a release must be verified and
           # coordinated with out-of-band deployment steps before going live.
-          # Publish only through the guarded release-promotion.yml workflow.
+          # Publish only through the guarded release-promotion.yml workflow;
+          # see docs/runbooks/2026-08-29-release-lineage-promotion.md.
           draft: ${{ needs.validate-release-lineage.outputs.channel == 'candidate' || vars.RELEASE_DRAFT_FIRST == 'true' }}
           prerelease: ${{ contains(github.ref_name, '-') }}
         env:

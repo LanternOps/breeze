@@ -4,6 +4,8 @@
 set -euo pipefail
 
 REGISTRY_PATH=".github/release-provenance/candidate-tags.tsv"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+SEMVER_TOOL="$SCRIPT_DIR/sort-semver-tags.mjs"
 
 usage() {
   cat >&2 <<'EOF'
@@ -61,9 +63,8 @@ SHALLOW=$(git rev-parse --is-shallow-repository 2>/dev/null) || \
 [ "$SHALLOW" != "true" ] || \
   fail "shallow repository cannot prove release ancestry; fetch full history and tags"
 
-if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
-  fail "invalid release tag '$TAG'; expected vX.Y.Z or vX.Y.Z-prerelease"
-fi
+node "$SEMVER_TOOL" --validate "$TAG" || \
+  fail "invalid SemVer release tag '$TAG'"
 
 TAG_SHA=$(git rev-parse "$TAG^{commit}" 2>/dev/null) || \
   fail "cannot resolve tag '$TAG' to a commit"
@@ -120,7 +121,7 @@ EOF
      [ -n "${row_extra:-}" ]; then
     fail "malformed candidate registry row $LINE_NUMBER: expected four non-empty tab-separated fields"
   fi
-  if [[ ! "$row_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*$ ]]; then
+  if ! node "$SEMVER_TOOL" --validate "$row_tag" || [[ "$row_tag" != *-* ]]; then
     fail "invalid candidate tag '$row_tag' at registry row $LINE_NUMBER"
   fi
   if [[ ! "$row_sha" =~ ^[0-9a-f]{40}$ ]]; then

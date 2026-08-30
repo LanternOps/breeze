@@ -15,10 +15,17 @@ import * as workflowSecurity from '../../.github/scripts/check-workflow-security
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'release', 'check-release-lineage.sh');
+const SEMVER_TOOL = join(REPO_ROOT, 'scripts', 'release', 'sort-semver-tags.mjs');
 const REGISTRY = '.github/release-provenance/candidate-tags.tsv';
 const RELEASE_WORKFLOW = join(REPO_ROOT, '.github', 'workflows', 'release.yml');
 const DRIFT_WORKFLOW = join(REPO_ROOT, '.github', 'workflows', 'drift-detector.yml');
 const PROMOTION_WORKFLOW = join(REPO_ROOT, '.github', 'workflows', 'release-promotion.yml');
+const PROMOTION_RUNBOOK = join(
+  REPO_ROOT,
+  'docs',
+  'runbooks',
+  '2026-08-29-release-lineage-promotion.md',
+);
 const scratch = mkdtempSync(join(tmpdir(), 'release-lineage-test-'));
 let fixtureNumber = 0;
 
@@ -109,6 +116,36 @@ test('workflow security exposes its YAML and expression parsers', () => {
   assert.equal(typeof workflowSecurity.activeLines, 'function');
   assert.equal(typeof workflowSecurity.workflowJobs, 'function');
   assert.equal(typeof workflowSecurity.topLevelLogicalParts, 'function');
+});
+
+test('tag ordering follows SemVer prerelease precedence', () => {
+  const tags = [
+    'v1.0.0-beta.11',
+    'v1.0.0-alpha',
+    'v1.0.0',
+    'v1.0.0-beta.2',
+    'v1.0.0-alpha.beta',
+    'v1.0.0-rc.1',
+    'v1.0.0-beta',
+    'v1.0.0-alpha.1',
+    'v1.0.0-alpha-1',
+  ];
+  const result = command(REPO_ROOT, 'node', [SEMVER_TOOL, '--sort-desc'], {
+    input: `${tags.join('\n')}\n`,
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n'), [
+    'v1.0.0',
+    'v1.0.0-rc.1',
+    'v1.0.0-beta.11',
+    'v1.0.0-beta.2',
+    'v1.0.0-beta',
+    'v1.0.0-alpha-1',
+    'v1.0.0-alpha.beta',
+    'v1.0.0-alpha.1',
+    'v1.0.0-alpha',
+  ]);
 });
 
 const releaseLines = workflowSecurity.activeLines(
@@ -386,6 +423,18 @@ test('promotion cannot rebuild, retag, publish images, or deploy', () => {
   assert.match(releaseText, /release-promotion\.yml/);
 });
 
+test('operator runbook forbids bypassing guarded promotion', () => {
+  const runbookText = readFileSync(PROMOTION_RUNBOOK, 'utf8');
+
+  assert.match(runbookText, /release-promotion\.yml/);
+  assert.match(runbookText, /bypass[^\n]*violates the release-lineage contract/i);
+  assert.match(
+    runbookText,
+    /exact tagged commit[\s\S]{0,100}reachable from `origin\/main`/i,
+  );
+  assert.match(runbookText, /do not move[^\n]*tag/i);
+});
+
 test('annotated reachable tag is mainline and reports the peeled commit', () => {
   const repo = initRepo();
   const commitSha = git(repo, 'rev-parse', 'HEAD');
@@ -399,6 +448,17 @@ test('annotated reachable tag is mainline and reports the peeled commit', () => 
   assert.match(result.stdout, /release-lineage: channel=mainline/);
   assert.match(result.stdout, new RegExp(`tag_sha=${commitSha}`));
   assert.doesNotMatch(result.stdout, new RegExp(`tag_sha=${tagObjectSha}`));
+});
+
+test('release validation rejects leading-zero SemVer identifiers', async (t) => {
+  for (const invalidTag of ['v01.0.0', 'v1.0.0-01']) {
+    await t.test(invalidTag, () => {
+      const repo = initRepo();
+      git(repo, 'tag', invalidTag);
+
+      assertFailure(run(repo, standardArgs(invalidTag)), /invalid.*SemVer|leading zero/i);
+    });
+  }
 });
 
 test('successful classification writes exact GitHub Actions outputs', () => {
