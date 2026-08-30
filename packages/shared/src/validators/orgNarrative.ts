@@ -31,6 +31,38 @@ import {
 const CONTROL_OR_FORMAT = /\p{C}/u;
 
 /**
+ * Collapses one bullet (or the headline) to a single markdown-safe line.
+ *
+ * Two things happen, and both are load-bearing:
+ *   1. every control/format codepoint becomes a space and runs of whitespace
+ *      collapse — so the text can only ever occupy ONE line, whatever it
+ *      contains;
+ *   2. a leading run of markdown block markers (`#`, `-`, `*`, `+`, `>`) is
+ *      stripped — so a bullet reading `## Forged heading` renders as a bullet
+ *      saying "Forged heading", and `- - nested` cannot open a sub-list
+ *      inside the list item we wrap it in.
+ *
+ * Only a REAL marker is stripped: CommonMark requires whitespace (or
+ * end-of-line) after the marker, so `-5% free disk` and `#3 by ticket volume`
+ * are ordinary text and survive intact. Stripping those would silently
+ * rewrite what the bullet says, which is its own kind of wrong.
+ *
+ * Idempotent: `narrativeOutcomeFromSubmission` applies it when it builds the
+ * stored sections, and the renderer applies it again, so the stored bullets
+ * and the rendered markdown never disagree about what a bullet says.
+ */
+const LEADING_MARKDOWN_MARKER = /^[#\-*+>]+(\s|$)/;
+function flattenNarrativeLine(value: string): string {
+  let line = value.replace(/\p{C}/gu, ' ').replace(/\s+/g, ' ').trim();
+  // Loop rather than a single pass: `- - nested` carries two markers, and
+  // each iteration consumes at least one character, so this terminates.
+  while (LEADING_MARKDOWN_MARKER.test(line)) {
+    line = line.replace(/^[#\-*+>]+\s*/, '');
+  }
+  return line.trim();
+}
+
+/**
  * One model-authored string. Order of the checks matters: the length bound
  * and the control-character rejection both run against the RAW value, so a
  * 300-char bullet cannot slip through by being whitespace-padded and a
@@ -43,6 +75,15 @@ const narrativeText = (max: number, label: string) => z.string()
   .refine((v) => v.trim().length > 0, { message: `${label} must not be blank` })
   .refine((v) => !CONTROL_OR_FORMAT.test(v), {
     message: `${label} must not contain control or format characters`,
+  })
+  // A string can be non-blank and still carry NO content once the renderer
+  // has stripped its leading markdown markers — `'#'`, `'- '`, `'>'`. Left
+  // to the builder to filter out, that produced a section with an h2 and
+  // zero bullets, breaking the >=1-bullet invariant this schema promises
+  // every downstream reader. So the schema refuses it here, against exactly
+  // the transformation the renderer will apply.
+  .refine((v) => flattenNarrativeLine(v).length > 0, {
+    message: `${label} has no content once markdown markers are stripped`,
   })
   .transform((v) => v.replace(/\s+/g, ' ').trim());
 
@@ -98,38 +139,6 @@ export const narrativeSubmissionSchema: z.ZodType<NarrativeSubmission> = z.objec
 });
 
 /**
- * Collapses one bullet (or the headline) to a single markdown-safe line.
- *
- * Two things happen, and both are load-bearing:
- *   1. every control/format codepoint becomes a space and runs of whitespace
- *      collapse — so the text can only ever occupy ONE line, whatever it
- *      contains;
- *   2. a leading run of markdown block markers (`#`, `-`, `*`, `+`, `>`) is
- *      stripped — so a bullet reading `## Forged heading` renders as a bullet
- *      saying "Forged heading", and `- - nested` cannot open a sub-list
- *      inside the list item we wrap it in.
- *
- * Only a REAL marker is stripped: CommonMark requires whitespace (or
- * end-of-line) after the marker, so `-5% free disk` and `#3 by ticket volume`
- * are ordinary text and survive intact. Stripping those would silently
- * rewrite what the bullet says, which is its own kind of wrong.
- *
- * Idempotent: `narrativeOutcomeFromSubmission` applies it when it builds the
- * stored sections, and the renderer applies it again, so the stored bullets
- * and the rendered markdown never disagree about what a bullet says.
- */
-const LEADING_MARKDOWN_MARKER = /^[#\-*+>]+(\s|$)/;
-function flattenNarrativeLine(value: string): string {
-  let line = value.replace(/\p{C}/gu, ' ').replace(/\s+/g, ' ').trim();
-  // Loop rather than a single pass: `- - nested` carries two markers, and
-  // each iteration consumes at least one character, so this terminates.
-  while (LEADING_MARKDOWN_MARKER.test(line)) {
-    line = line.replace(/^[#\-*+>]+\s*/, '');
-  }
-  return line.trim();
-}
-
-/**
  * Derives the markdown body of a narrative. The SERVER is the only producer
  * of this string — see `orgNarrativeReport.ts`'s file docstring for why the
  * model never authors it.
@@ -178,6 +187,10 @@ export function narrativeOutcomeFromSubmission(submission: NarrativeSubmission):
   const sections: NarrativeSection[] = NARRATIVE_SECTION_KEYS.map((key) => ({
     key,
     title: NARRATIVE_SECTION_TITLES[key],
+    // The `.filter` is belt-and-braces only: `narrativeSubmissionSchema` is
+    // the gate that guarantees every bullet still has content after the
+    // flatten (see `narrativeText`). It stays for a caller that hand-builds
+    // a submission without parsing it first.
     bullets: (byKey.get(key)?.bullets ?? [])
       .map(flattenNarrativeLine)
       .filter((bullet) => bullet.length > 0),

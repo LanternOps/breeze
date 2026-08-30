@@ -99,6 +99,43 @@ describe('narrativeSubmissionSchema', () => {
     }
   });
 
+  it('rejects a bullet whose only content is a markdown marker', () => {
+    // These pass "non-blank" and "no control characters", but the renderer
+    // strips the leading marker and is left with nothing — which would give
+    // that section an h2 with zero bullets and break the >=1-bullet
+    // invariant the schema promises downstream. The SCHEMA is the gate.
+    for (const bullet of ['#', '- ', '>', '-', '##', '*', '+', '  >  ']) {
+      const result = narrativeSubmissionSchema.safeParse(withFirstBullet(bullet));
+      expect(result.success).toBe(false);
+      expect(JSON.stringify(result.error?.issues)).toContain('no content');
+    }
+  });
+
+  it('rejects a section whose ONLY bullet is content-free', () => {
+    const onlyMarker = submission({
+      sections: NARRATIVE_SECTION_KEYS.map((key) => ({ key, bullets: key === 'backups' ? ['-'] : ['b'] })),
+    } as Partial<NarrativeSubmission>);
+    expect(narrativeSubmissionSchema.safeParse(onlyMarker).success).toBe(false);
+  });
+
+  it('rejects a content-free headline', () => {
+    expect(narrativeSubmissionSchema.safeParse(submission({ headline: '#' })).success).toBe(false);
+    expect(narrativeSubmissionSchema.safeParse(submission({ headline: '- ' })).success).toBe(false);
+  });
+
+  it('still accepts a bullet that merely STARTS with a marker-ish character', () => {
+    expect(narrativeSubmissionSchema.safeParse(withFirstBullet('-5% free disk on WS-01')).success).toBe(true);
+    expect(narrativeSubmissionSchema.safeParse(withFirstBullet('# 3 tickets closed')).success).toBe(true);
+  });
+
+  it('every accepted bullet survives the renderer with content intact', () => {
+    // The end-to-end statement of the invariant: parse -> build -> render,
+    // and every section still has at least one bullet line.
+    const outcome = narrativeOutcomeFromSubmission(narrativeSubmissionSchema.parse(submission()));
+    for (const section of outcome.sections) expect(section.bullets.length).toBeGreaterThanOrEqual(1);
+    expect(outcome.markdown.split('\n').filter((l) => l.startsWith('- '))).toHaveLength(NARRATIVE_SECTION_KEYS.length);
+  });
+
   it('trims and collapses whitespace in every string it accepts', () => {
     const parsed = narrativeSubmissionSchema.safeParse(submission({
       headline: '  spaced    out  ',

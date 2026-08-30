@@ -16,6 +16,16 @@
  * run. `expiring_certs` was considered and deferred — see the P2-2 plan's
  * amendments doc.
  */
+export const AI_SWEEP_KINDS = [
+  'disk_pressure',
+  'stale_agents',
+  'pending_reboots',
+  'failed_backups',
+  'service_down',
+  'unpatched_critical',
+] as const;
+export type AiSweepKind = (typeof AI_SWEEP_KINDS)[number];
+
 /**
  * Phase 2 wave P2-3 (weekly org narrative) — what a schedule occurrence
  * PRODUCES. `sweep` is every schedule that existed before P2-3 (hence the
@@ -37,16 +47,6 @@
  */
 export const AI_AGENT_SCHEDULE_KINDS = ['sweep', 'narrative'] as const;
 export type AiAgentScheduleKind = (typeof AI_AGENT_SCHEDULE_KINDS)[number];
-
-export const AI_SWEEP_KINDS = [
-  'disk_pressure',
-  'stale_agents',
-  'pending_reboots',
-  'failed_backups',
-  'service_down',
-  'unpatched_critical',
-] as const;
-export type AiSweepKind = (typeof AI_SWEEP_KINDS)[number];
 
 /** Severity a sweep evaluator assigns to one `SweepFinding`. */
 export const AI_SWEEP_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
