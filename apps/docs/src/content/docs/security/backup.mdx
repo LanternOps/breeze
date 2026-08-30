@@ -35,10 +35,10 @@ The `api_data` volume is mounted at `/data` on the `api` service, and on the `wo
 
 A report can be run again, but the replacement uses the current patch state. It does not reproduce the historical snapshot captured by the original CSV file.
 
-Back up the volume separately from `scripts/backup.sh`:
+`scripts/backup.sh` has no flag for this volume. It shells out to `pg_dump`, the S3 client and `openssl`, and reading a Docker volume needs access to the Docker socket, so the volume is handled as a separate command rather than a fourth flag. Copy it out with a throwaway container, writing into the same `$BACKUP_DIR` the script uses:
 
 ```bash
-docker run --rm -v breeze_api_data:/data -v "$(pwd)":/backup alpine \
+docker run --rm -v breeze_api_data:/data -v "${BACKUP_DIR:-/var/backups/breeze}":/backup alpine \
   tar czf /backup/api_data_$(date +%Y%m%d).tar.gz -C /data .
 ```
 
@@ -48,15 +48,26 @@ Compose prefixes the volume with the project name. The example assumes `COMPOSE_
 docker volume ls
 ```
 
-Restore the archive with the stack stopped. Set `API_DATA_ARCHIVE` to the file you are restoring:
+<Aside type="caution">
+  These archives are not pruned by `BACKUP_RETENTION_DAYS`. That retention applies only to what `scripts/backup.sh` writes. If you add this command to the cron job below, prune the archives yourself, and always use an absolute path for the destination: cron does not run from your shell's working directory.
+</Aside>
+
+Restore with the stack stopped. Extracting a `tar` archive over a volume overwrites the files it contains but does not delete anything else, so any report written after the backup was taken survives the restore and ends up mixed in with the restored files. Clear the directory first if you want the volume to match the archive exactly:
 
 ```bash
-export API_DATA_ARCHIVE="api_data_YYYYMMDD.tar.gz"
+export API_DATA_ARCHIVE="${BACKUP_DIR:-/var/backups/breeze}/api_data_YYYYMMDD.tar.gz"
 docker compose down
-docker run --rm -v breeze_api_data:/data -v "$(pwd)":/backup alpine \
-  tar xzf "/backup/${API_DATA_ARCHIVE}" -C /data
+
+# Optional: start from an empty directory so the restore is exact.
+docker run --rm -v breeze_api_data:/data alpine \
+  sh -c 'rm -rf /data/patch-reports'
+
+docker run --rm -v breeze_api_data:/data -v "$(dirname "$API_DATA_ARCHIVE")":/backup alpine \
+  tar xzf "/backup/$(basename "$API_DATA_ARCHIVE")" -C /data
 docker compose up -d
 ```
+
+Both commands run as root inside the throwaway `alpine` container, so `tar` preserves the numeric owner and the API process (uid 1001) can still read the files afterwards.
 
 <Aside type="caution">
   User uploads do not live on `api_data`, so backing up this volume is not a substitute for the database dump. Avatars, product and catalog images, and proposal and quote images are stored in PostgreSQL and are covered by `--db`. Software package uploads require object storage: without it the API returns `503` and the web UI grays the upload control out, rather than storing the package on local disk. Upload chunks, screenshots, installer media, recovery media, and BMR media are written to `/tmp`, which the shipped Compose file mounts as a 64 MB `tmpfs`. Breeze Backup storage targets are the S3 buckets or local and NAS paths you configure separately, not this volume.
