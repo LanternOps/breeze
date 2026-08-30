@@ -71,29 +71,44 @@ const ORG_A: Organization = {
   createdAt: '2026-01-01T00:00:00Z',
 };
 
-let requestedUrls: string[] = [];
+const ORG_B: Organization = { ...ORG_A, id: 'org-b', name: 'Org B' };
+
+/** Every request that reached the network, with the signal it was given. */
+let requests: Array<{ url: string; signal: AbortSignal | null }> = [];
 
 /** Every `/devices` page request that reached the network, in order. */
 function deviceRequests(): string[] {
-  return requestedUrls.filter((u) => /\/devices(\?|$)/.test(u.split('#')[0]));
+  return requests.map((r) => r.url).filter((u) => /\/devices(\?|$)/.test(u.split('#')[0]));
 }
 
-/** Let mount effects, promise microtasks and the cursor walk settle. */
+// Deliberately more than one macrotask: a single tick cannot tell "never
+// fetches" apart from "fetches after a short delay", so the absence assertions
+// below would read as a false green against a debounced/setTimeout'd variant of
+// the gate. The current gate is a synchronous early-return, but the negative
+// assertions are this suite's whole point — they should not depend on that.
 async function settle(): Promise<void> {
+  for (let i = 0; i < 3; i++) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 60));
   });
 }
 
 beforeEach(() => {
-  requestedUrls = [];
+  requests = [];
   eventStream.onEvent = null;
   // The orgId provider is page-aware: /devices is `org-or-all`, so the
   // selected org IS injected here (a `catalog` route would inject nothing).
   window.history.replaceState({}, '', '/devices');
 
-  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
-    requestedUrls.push(typeof input === 'string' ? input : input.toString());
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push({
+      url: typeof input === 'string' ? input : input.toString(),
+      signal: init?.signal ?? null,
+    });
     return new Response(
       JSON.stringify({ data: [], pagination: { nextCursor: null, total: 0 } }),
       { status: 200, headers: { 'content-type': 'application/json' } },
@@ -245,5 +260,75 @@ describe('DevicesPage — org-context race on first load after login (#4147)', (
     await settle();
     expect(deviceRequests()).toHaveLength(1);
     expect(deviceRequests()[0]).toContain(`orgId=${ORG_A.id}`);
+  });
+
+  // The reason the effect is KEYED on the scope rather than merely gated on it:
+  // a boolean "ready" gate passes every test above while leaving a later switch
+  // unobserved, which is the stale-cross-org-data half of #4147.
+  it('refetches with the new org when the selection changes while mounted', async () => {
+    useOrgStore.setState({
+      currentOrgId: ORG_A.id,
+      organizations: [ORG_A, ORG_B],
+      organizationsLoaded: true,
+    });
+
+    render(<DevicesPage />);
+    await waitFor(() => expect(deviceRequests().length).toBeGreaterThan(0));
+    await settle();
+    expect(deviceRequests()).toHaveLength(1);
+
+    act(() => {
+      useOrgStore.setState({ currentOrgId: ORG_B.id });
+    });
+
+    await waitFor(() => expect(deviceRequests().length).toBeGreaterThan(1));
+    await settle();
+    expect(deviceRequests()).toHaveLength(2);
+    expect(deviceRequests()[1]).toContain(`orgId=${ORG_B.id}`);
+  });
+
+  it('aborts the superseded request when the org changes mid-flight', async () => {
+    useOrgStore.setState({
+      currentOrgId: ORG_A.id,
+      organizations: [ORG_A, ORG_B],
+      organizationsLoaded: true,
+    });
+
+    render(<DevicesPage />);
+    await waitFor(() => expect(requests.length).toBeGreaterThan(0));
+    await settle();
+
+    // The AbortController the org-A pass created (fetchDevices threads its
+    // signal into the sibling /orgs + /orgs/sites reads). Switching org must
+    // abort it, or a slow org-A response can land after org-B's and repaint
+    // the list with the previous tenant's data.
+    const orgAsignal = requests.find((r) => r.signal)?.signal ?? null;
+    expect(orgAsignal).not.toBeNull();
+    expect(orgAsignal!.aborted).toBe(false);
+
+    act(() => {
+      useOrgStore.setState({ currentOrgId: ORG_B.id });
+    });
+    await settle();
+
+    expect(orgAsignal!.aborted).toBe(true);
+  });
+
+  it('fetches once the org list loads and this partner genuinely has zero orgs', async () => {
+    render(<DevicesPage />);
+    await settle();
+    expect(deviceRequests()).toEqual([]);
+
+    // 'empty' is terminal, not transient — there is nothing to scope to, so the
+    // page must settle rather than hold the skeleton waiting for a selection
+    // that is never coming.
+    act(() => {
+      useOrgStore.setState({ organizations: [], organizationsLoaded: true });
+    });
+
+    await waitFor(() => expect(deviceRequests().length).toBeGreaterThan(0));
+    await settle();
+    expect(deviceRequests()).toHaveLength(1);
+    expect(deviceRequests()[0]).not.toContain('orgId=');
   });
 });
