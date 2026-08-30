@@ -1345,8 +1345,11 @@ async function readFleetGauges(nowMs: number): Promise<void> {
     // function promised the opposite.
     //
     // INNER is the right join: `recovery_readiness.device_id` is NOT NULL with
-    // an FK to `devices.id` (and the row is cascade-deleted with the device), so
-    // it can never drop a readiness row that should have been counted.
+    // an FK to `devices.id`, and the row is removed with the device by
+    // `deleteDeviceCascade` (app-level — the FK itself is NO ACTION, so don't go
+    // looking for an ON DELETE CASCADE in the DDL). A readiness row therefore
+    // never outlives its device, and this join can never drop one that should
+    // have been counted.
     const [readinessRow] = await db
       .select({ count: sql<number>`count(*)` })
       .from(recoveryReadinessTable)
