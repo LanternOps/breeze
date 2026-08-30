@@ -1,44 +1,85 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Sentry from '@sentry/react-native';
 
-export const QUEUE_KEY = 'breeze.timeEntryQueue.v1';
-/** Where an unparseable blob is parked so the next write cannot overwrite it. */
-export const QUEUE_CORRUPT_KEY = 'breeze.timeEntryQueue.v1.corrupt';
 /**
- * Ids a drain already resolved (transmitted or dropped) but could not remove
+ * v2 is a NARROWING, and there is deliberately no migration from v1.
+ *
+ * v1 could hold `start` and `stop`. Both are SERVER-STAMPED verbs:
+ * `POST /time-entries/start` sets `startedAt = new Date()` and
+ * `POST /time-entries/stop` sets `endedAt = new Date()`, neither accepting a
+ * client timestamp. Queueing one defers its stamping to reconnect time, so a
+ * 40-minute basement job replayed at 18:00 is billed as a 0-minute entry, and a
+ * stop queued at 15:00 bills to 18:00. v2 therefore holds only writes that
+ * carry their own explicit bounds — `create` and `closeEntry` — which makes
+ * mobile-originated over-billing unrepresentable rather than defended against.
+ *
+ * No migration is required: this feature is unreleased (both waves are
+ * unmerged PRs), so no field install holds a v1 queue. A v1 row that somehow
+ * survives is rejected by `asQueuedWrite` on its `kind`.
+ */
+export const QUEUE_KEY = 'breeze.timeEntryQueue.v2';
+/** Where an unparseable blob is parked so the next write cannot overwrite it. */
+export const QUEUE_CORRUPT_KEY = 'breeze.timeEntryQueue.v2.corrupt';
+/**
+ * Ids a drain already resolved (transmitted or parked) but could not remove
  * from QUEUE_KEY, because storage failed while reconciling. Applied on every
  * read until a successful persist clears it. Without it a storage hiccup at the
  * end of a drain re-sends everything the drain just sent — a duplicate billable
  * entry on the customer's invoice.
  */
-export const QUEUE_TOMBSTONE_KEY = 'breeze.timeEntryQueue.v1.tombstone';
+export const QUEUE_TOMBSTONE_KEY = 'breeze.timeEntryQueue.v2.tombstone';
+/**
+ * Writes the server refused for good (see PERMANENT_STATUSES). They are moved
+ * here rather than deleted: a rejected write is still a record of real work,
+ * and issue #4251 makes one of these statuses ordinary rather than exotic — a
+ * default Partner Technician genuinely lacks `time_entries:write`.
+ */
+export const QUEUE_NEEDS_ATTENTION_KEY = 'breeze.timeEntryQueue.v2.needsAttention';
+
+/**
+ * Exported as a runtime value, not just a type, so a test can assert the union
+ * itself rather than one code path through it. `start`/`stop` never coming back
+ * is the invariant this whole module exists to hold.
+ */
+export const QUEUED_KINDS = ['create', 'closeEntry'] as const;
+
+export type QueuedWriteKind = (typeof QUEUED_KINDS)[number];
 
 export interface QueuedWrite {
   id: string;
-  kind: 'start' | 'stop' | 'create';
+  kind: QueuedWriteKind;
   payload: Record<string, unknown>;
   queuedAt: string;
   attempts: number;
   /**
-   * Ids of the queued starts this write can close, oldest first.
-   *
-   * A stop takes no entry id on the wire — the server closes whichever entry
-   * the user has running — so it is only safe to send while at least one start
-   * it could be closing has landed. `startTimer` auto-stops the previous timer,
-   * so every queued start ahead of the stop (back to the previous stop) is a
-   * candidate: if the newest is rejected the stop still legitimately closes the
-   * one before it. The link is dropped from this list as each candidate is
-   * dropped; when the list empties the write is an orphan and is discarded.
-   *
-   * Absent means "not linked to any queued start" — a timer that was started
-   * while online — and such a stop is always sent.
+   * When the last send attempt was made. The replay sender may translate a
+   * future-dated span back into the past against the server clock and rewrite
+   * `payload.startedAt`/`endedAt` in place; persisting the attempt time next to
+   * the rewritten bounds is what lets a retry compare like with like instead of
+   * shifting an already-shifted span a second time.
    */
-  dependsOn?: string[];
+  sentAt?: string;
+}
+
+/** A write the server refused permanently, kept for the technician to re-enter. */
+export interface NeedsAttentionRow {
+  write: QueuedWrite;
+  status: number;
+  code?: string;
+  message: string;
+  failedAt: string;
 }
 
 export interface DrainResult {
   sent: number;
-  dropped: QueuedWrite[];
+  /**
+   * Writes moved to QUEUE_NEEDS_ATTENTION_KEY by this pass. They are PARKED,
+   * not lost: `readNeedsAttention()` returns them and the UI surfaces them as a
+   * standing row until the technician deals with them.
+   */
+  needsAttention: QueuedWrite[];
+  /** Total parked rows in storage, including ones from earlier passes. */
+  needsAttentionTotal: number;
   remaining: number;
   /**
    * Attempts already spent on the write now at the head of the queue. Lets a
@@ -73,83 +114,33 @@ function withStorageLock<T>(operation: () => Promise<T>): Promise<T> {
   return result;
 }
 
-const WRITE_KINDS = new Set<QueuedWrite['kind']>(['start', 'stop', 'create']);
-
-function asDependsOn(value: unknown): string[] | undefined {
-  // A single string is the shape written by the first build of this queue; a
-  // row persisted by that build must keep its link across the app upgrade.
-  const ids = typeof value === 'string' ? [value] : Array.isArray(value) ? value : [];
-  const valid = ids.filter((id): id is string => typeof id === 'string' && id.length > 0);
-  return valid.length > 0 ? valid : undefined;
-}
+const WRITE_KINDS = new Set<string>(QUEUED_KINDS);
 
 function asQueuedWrite(value: unknown): QueuedWrite | null {
   if (typeof value !== 'object' || value === null) return null;
   const candidate = value as Partial<QueuedWrite>;
   if (typeof candidate.id !== 'string' || candidate.id.length === 0) return null;
   if (typeof candidate.kind !== 'string') return null;
-  if (!WRITE_KINDS.has(candidate.kind as QueuedWrite['kind'])) return null;
+  if (!WRITE_KINDS.has(candidate.kind)) return null;
   if (typeof candidate.payload !== 'object' || candidate.payload === null) return null;
-  const dependsOn = asDependsOn(candidate.dependsOn);
   return {
     id: candidate.id,
-    kind: candidate.kind as QueuedWrite['kind'],
+    kind: candidate.kind as QueuedWriteKind,
     payload: candidate.payload as Record<string, unknown>,
     queuedAt: typeof candidate.queuedAt === 'string' ? candidate.queuedAt : new Date(0).toISOString(),
     attempts: typeof candidate.attempts === 'number' ? candidate.attempts : 0,
-    ...(dependsOn === undefined ? {} : { dependsOn }),
+    ...(typeof candidate.sentAt === 'string' ? { sentAt: candidate.sentAt } : {}),
   };
-}
-
-/**
- * Removes every write whose only remaining reason to exist has been dropped.
- *
- * `dropped` grows as the pass runs (a discarded dependant can itself have
- * dependants), so this iterates to a fixpoint rather than filtering once.
- * Surviving writes have the dead ids stripped from their `dependsOn`, which is
- * what makes the decision durable: once the result is persisted, a later drain
- * with no memory of this pass still sees the correct candidate list.
- */
-function resolveDependants(
-  writes: QueuedWrite[],
-  dropped: ReadonlySet<string>
-): { kept: QueuedWrite[]; orphaned: QueuedWrite[] } {
-  const gone = new Set(dropped);
-  const orphaned: QueuedWrite[] = [];
-  let kept = writes;
-  let changed = true;
-
-  while (changed) {
-    changed = false;
-    const next: QueuedWrite[] = [];
-    for (const write of kept) {
-      if (gone.has(write.id)) continue;
-      if (write.dependsOn !== undefined) {
-        const live = write.dependsOn.filter((id) => !gone.has(id));
-        if (live.length === 0) {
-          orphaned.push(write);
-          gone.add(write.id);
-          changed = true;
-          continue;
-        }
-        if (live.length !== write.dependsOn.length) write.dependsOn = live;
-      }
-      next.push(write);
-    }
-    kept = next;
-  }
-
-  return { kept, orphaned };
 }
 
 interface Tombstone {
   /** Already transmitted; must not be sent again. */
   sent: string[];
-  /** Permanently rejected; also kills anything that depends on them. */
-  dropped: string[];
+  /** Already parked in needs-attention; must not be sent again either. */
+  parked: string[];
 }
 
-const EMPTY_TOMBSTONE: Tombstone = { sent: [], dropped: [] };
+const EMPTY_TOMBSTONE: Tombstone = { sent: [], parked: [] };
 
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -171,8 +162,8 @@ async function readTombstone(): Promise<Tombstone> {
   }
   if (stored === null) return EMPTY_TOMBSTONE;
   try {
-    const parsed = JSON.parse(stored) as { sent?: unknown; dropped?: unknown };
-    return { sent: asStringArray(parsed?.sent), dropped: asStringArray(parsed?.dropped) };
+    const parsed = JSON.parse(stored) as { sent?: unknown; parked?: unknown };
+    return { sent: asStringArray(parsed?.sent), parked: asStringArray(parsed?.parked) };
   } catch {
     // A tombstone we cannot read is worse than none only in theory: the rows it
     // named are still in the queue and will simply be replayed.
@@ -223,7 +214,7 @@ export async function readQueue(): Promise<QueuedWrite[]> {
     stored = await AsyncStorage.getItem(QUEUE_KEY);
   } catch (error) {
     // A read failure is NOT an empty queue. Returning [] here would let the very
-    // next enqueue persist [stopWrite] over a full offline shift, so this
+    // next enqueue persist [oneWrite] over a full offline shift, so this
     // propagates and the callers below refuse to write.
     Sentry.captureException(error instanceof Error ? error : new QueueStorageError(error), {
       tags: { area: 'time-entry-queue' },
@@ -258,20 +249,15 @@ export async function readQueue(): Promise<QueuedWrite[]> {
   }
 
   const tombstone = await readTombstone();
-  if (tombstone.sent.length === 0 && tombstone.dropped.length === 0) return writes;
-  const consumed = new Set([...tombstone.sent, ...tombstone.dropped]);
-  // Orphans found here were already reported to the caller by the drain that
-  // dropped their start; this is that decision being replayed, not a new one.
-  return resolveDependants(
-    writes.filter((write) => !consumed.has(write.id)),
-    new Set(tombstone.dropped)
-  ).kept;
+  if (tombstone.sent.length === 0 && tombstone.parked.length === 0) return writes;
+  const consumed = new Set([...tombstone.sent, ...tombstone.parked]);
+  return writes.filter((write) => !consumed.has(write.id));
 }
 
 export async function enqueue(
   write: Omit<QueuedWrite, 'id' | 'queuedAt' | 'attempts'>
 ): Promise<QueuedWrite> {
-  const base: QueuedWrite = {
+  const item: QueuedWrite = {
     ...write,
     id: `${Date.now()}-${Math.floor(Math.random() * Number.MAX_SAFE_INTEGER).toString(36)}`,
     queuedAt: new Date().toISOString(),
@@ -281,24 +267,85 @@ export async function enqueue(
     // Throws QueueStorageError on a storage read failure, which aborts before
     // the setItem below — the backlog is never overwritten with a stale view.
     const queue = await readQueue();
-    const item: QueuedWrite = { ...base };
-    if (item.kind === 'stop' && item.dependsOn === undefined) {
-      // Link the stop to every queued start it could be closing, back to the
-      // previous stop. A stop for a timer started while online finds none and
-      // stays unlinked, which is what keeps it sendable.
-      const candidates: string[] = [];
-      for (let i = queue.length - 1; i >= 0; i -= 1) {
-        const candidate = queue[i];
-        if (candidate.kind === 'stop') break;
-        if (candidate.kind === 'start') candidates.unshift(candidate.id);
-      }
-      if (candidates.length > 0) item.dependsOn = candidates;
-    }
     queue.push(item);
     await persistQueue(queue);
     return item;
   });
 }
+
+// --- Needs attention ---------------------------------------------------------
+
+function asNeedsAttentionRow(value: unknown): NeedsAttentionRow | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const candidate = value as Partial<NeedsAttentionRow>;
+  const write = asQueuedWrite(candidate.write);
+  if (write === null) return null;
+  return {
+    write,
+    status: typeof candidate.status === 'number' ? candidate.status : 0,
+    ...(typeof candidate.code === 'string' ? { code: candidate.code } : {}),
+    message: typeof candidate.message === 'string' ? candidate.message : '',
+    failedAt: typeof candidate.failedAt === 'string' ? candidate.failedAt : new Date(0).toISOString(),
+  };
+}
+
+/** Reads without the lock; a torn read here degrades to an empty list, never a throw. */
+async function readNeedsAttentionUnlocked(): Promise<NeedsAttentionRow[]> {
+  let stored: string | null;
+  try {
+    stored = await AsyncStorage.getItem(QUEUE_NEEDS_ATTENTION_KEY);
+  } catch {
+    return [];
+  }
+  if (stored === null) return [];
+  try {
+    const parsed: unknown = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(asNeedsAttentionRow).filter((row): row is NeedsAttentionRow => row !== null);
+  } catch {
+    return [];
+  }
+}
+
+export async function readNeedsAttention(): Promise<NeedsAttentionRow[]> {
+  return withStorageLock(readNeedsAttentionUnlocked);
+}
+
+/** Removes parked rows by WRITE id, once the technician has dealt with them. */
+export async function clearNeedsAttention(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const gone = new Set(ids);
+  await withStorageLock(async () => {
+    const rows = await readNeedsAttentionUnlocked();
+    const kept = rows.filter((row) => !gone.has(row.write.id));
+    await AsyncStorage.setItem(QUEUE_NEEDS_ATTENTION_KEY, JSON.stringify(kept));
+  });
+}
+
+/**
+ * Appends one permanently-rejected write. Returns false if the append did not
+ * land, which is the caller's signal to LEAVE the write queued: a park that did
+ * not happen must never be reported as one, because the drain's next step is to
+ * remove the row from the queue.
+ */
+async function parkNeedsAttention(row: NeedsAttentionRow): Promise<boolean> {
+  return withStorageLock(async () => {
+    try {
+      const rows = await readNeedsAttentionUnlocked();
+      rows.push(row);
+      await AsyncStorage.setItem(QUEUE_NEEDS_ATTENTION_KEY, JSON.stringify(rows));
+      return true;
+    } catch (error) {
+      Sentry.captureException(error instanceof Error ? error : new QueueStorageError(error), {
+        tags: { area: 'time-entry-queue' },
+        extra: { reason: 'needs-attention-park-failed', writeId: row.write.id, status: row.status },
+      });
+      return false;
+    }
+  });
+}
+
+// --- Draining ----------------------------------------------------------------
 
 function getStatus(error: unknown): unknown {
   if (typeof error !== 'object' || error === null) return undefined;
@@ -306,9 +353,15 @@ function getStatus(error: unknown): unknown {
   return statusError.status ?? statusError.statusCode;
 }
 
+function getStringField(error: unknown, field: string): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const value = (error as Record<string, unknown>)[field];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
 /**
  * Statuses that are a verdict on the payload itself and will never succeed on
- * replay: 400 validation, 404 ticket/timer gone, 409 conflict, 422.
+ * replay: 400 validation, 404 entry/ticket gone, 409 conflict, 422.
  *
  * The rest of the 4xx range is deliberately NOT here. 401 (coreRequest has no
  * refresh-and-retry, so a phone offline past the token TTL gets one on the
@@ -328,34 +381,17 @@ async function drainQueue(send: (write: QueuedWrite) => Promise<void>): Promise<
   const priorTombstone = await readTombstone();
   const queue = await readQueue();
   const snapshotIds = new Set(queue.map((write) => write.id));
-  const dropped: QueuedWrite[] = [];
-  const droppedIds = new Set<string>();
+  const parked: QueuedWrite[] = [];
+  const parkedIds = new Set<string>();
   const sentIds = new Set<string>();
   let sent = 0;
   let nextIndex = 0;
 
-  const drop = (write: QueuedWrite): void => {
-    dropped.push(write);
-    droppedIds.add(write.id);
-  };
-
   while (nextIndex < queue.length) {
     const write = queue[nextIndex];
-
-    if (write.dependsOn !== undefined) {
-      const live = write.dependsOn.filter((id) => !droppedIds.has(id));
-      if (live.length === 0) {
-        // Every start it could close was rejected. The server's stop takes no
-        // entry id — it is a CAS on "whatever entry this user has running" — so
-        // sending this would end an unrelated timer (e.g. one started from the
-        // web dashboard) and stamp it with the replay time.
-        drop(write);
-        nextIndex += 1;
-        continue;
-      }
-      // Rewritten in place so the surviving candidates are what gets persisted.
-      write.dependsOn = live;
-    }
+    // Recorded before the attempt so a rewritten payload and the moment it was
+    // rewritten are persisted together on a transient failure.
+    write.sentAt = new Date().toISOString();
 
     try {
       await send(write);
@@ -364,9 +400,26 @@ async function drainQueue(send: (write: QueuedWrite) => Promise<void>): Promise<
       nextIndex += 1;
     } catch (error) {
       if (isPermanentRejection(error)) {
-        drop(write);
-        nextIndex += 1;
-        continue;
+        const landed = await parkNeedsAttention({
+          write,
+          status: getStatus(error) as number,
+          ...(getStringField(error, 'code') === undefined
+            ? {}
+            : { code: getStringField(error, 'code') as string }),
+          message: getStringField(error, 'message') ?? 'The server rejected this time entry.',
+          failedAt: new Date().toISOString(),
+        });
+        if (landed) {
+          parked.push(write);
+          parkedIds.add(write.id);
+          nextIndex += 1;
+          continue;
+        }
+        // The park did not happen. Removing the row now would delete the only
+        // copy of real work; a visibly wedged queue is the lesser failure and
+        // `headAttempts` is how the UI reports it.
+        write.attempts += 1;
+        break;
       }
 
       write.attempts += 1;
@@ -379,14 +432,7 @@ async function drainQueue(send: (write: QueuedWrite) => Promise<void>): Promise<
     remainingQueue = await withStorageLock(async () => {
       const currentQueue = await readQueue();
       const appendedWrites = currentQueue.filter((write) => !snapshotIds.has(write.id));
-      // Writes appended mid-drain are resolved here too: a stop the technician
-      // queued while the replay was running can be linked to a start this pass
-      // has just dropped, and nothing later would know that.
-      const { kept, orphaned } = resolveDependants(
-        [...queue.slice(nextIndex), ...appendedWrites],
-        droppedIds
-      );
-      for (const orphan of orphaned) drop(orphan);
+      const kept = [...queue.slice(nextIndex), ...appendedWrites];
       await persistQueue(kept);
       return kept;
     });
@@ -395,18 +441,17 @@ async function drainQueue(send: (write: QueuedWrite) => Promise<void>): Promise<
     // as stored is now wrong in the dangerous direction; record the outcome as
     // a tombstone that the next read applies. Merging with any prior tombstone
     // matters: its ids are still in the blob and would otherwise be replayed.
-    const { kept, orphaned } = resolveDependants(queue.slice(nextIndex), droppedIds);
-    for (const orphan of orphaned) drop(orphan);
-    remainingQueue = kept;
+    remainingQueue = queue.slice(nextIndex);
     // Under the lock: an enqueue that lands between the failure and this write
     // would otherwise clear the tombstone it never saw, and the sent writes
     // would be replayed after all.
-    await withStorageLock(() => recordTombstone(priorTombstone, sentIds, droppedIds, error));
+    await withStorageLock(() => recordTombstone(priorTombstone, sentIds, parkedIds, error));
   }
 
   return {
     sent,
-    dropped,
+    needsAttention: parked,
+    needsAttentionTotal: (await readNeedsAttentionUnlocked()).length,
     remaining: remainingQueue.length,
     headAttempts: remainingQueue[0]?.attempts ?? 0,
   };
@@ -415,12 +460,12 @@ async function drainQueue(send: (write: QueuedWrite) => Promise<void>): Promise<
 async function recordTombstone(
   prior: Tombstone,
   sentIds: ReadonlySet<string>,
-  droppedIds: ReadonlySet<string>,
+  parkedIds: ReadonlySet<string>,
   cause: unknown
 ): Promise<void> {
   const tombstone: Tombstone = {
     sent: [...new Set([...prior.sent, ...sentIds])],
-    dropped: [...new Set([...prior.dropped, ...droppedIds])],
+    parked: [...new Set([...prior.parked, ...parkedIds])],
   };
   let recorded = true;
   try {
@@ -434,7 +479,7 @@ async function recordTombstone(
       reason: 'drain-reconcile-failed',
       recorded,
       sentCount: tombstone.sent.length,
-      droppedCount: tombstone.dropped.length,
+      parkedCount: tombstone.parked.length,
     },
   });
 }
@@ -442,21 +487,20 @@ async function recordTombstone(
 /**
  * Replays queued writes oldest-first.
  *
- * Transient failures stop the drain to preserve ordering, so a stop can never
- * reach the server before its start. Only a verdict on the payload itself
- * (see PERMANENT_STATUSES) is dropped, because retrying one forever would wedge
- * every later entry behind it — an auth, permission or throttle failure is
- * retried instead, and `headAttempts` is how a caller notices a wedge.
+ * Every queued write carries its own explicit timestamps (see QUEUE_KEY), so a
+ * replay can never rewrite when the work happened. Transient failures still
+ * stop the drain to preserve ordering, so a `closeEntry` cannot reach the
+ * server before the `create` it corrects.
  *
- * Dropping a write also drops the writes left with nothing to depend on, so a
- * stop is never replayed against a running entry its start never created. That
- * decision is written back to storage — as a rewritten `dependsOn` on the rows
- * that survive, or as a tombstone when storage fails mid-reconcile — so a later
- * drain, which has no memory of this pass, reaches the same conclusion.
+ * Only a verdict on the payload itself (see PERMANENT_STATUSES) leaves the
+ * queue, and it is PARKED in needs-attention rather than deleted — retrying one
+ * forever would wedge every later entry behind it, and deleting it would
+ * silently destroy a record of real work. An auth, permission or throttle
+ * failure is retried instead, and `headAttempts` is how a caller notices a
+ * wedge.
  *
  * Calls are serialised: a flapping connection fires several false->true
- * transitions, and a concurrently replayed start would 409 ENTRY_RUNNING and
- * then be discarded as a verdict, losing billable work.
+ * transitions, and a concurrently replayed create would land twice.
  *
  * Rejects with QueueStorageError if storage cannot be read before any write is
  * sent; the queue is left untouched in that case rather than truncated.
