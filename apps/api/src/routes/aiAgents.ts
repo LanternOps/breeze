@@ -118,6 +118,17 @@ function mapRow(row: AiAgentRow): AiAgentDto {
   };
 }
 
+/**
+ * The two partial unique indexes enforcing one live agent per kind per owner
+ * (apps/api/migrations/2026-09-02-ai-agents.sql). `ai_agents` is dual-ownership
+ * -- org_id XOR partner_id -- so the invariant needs one index per axis, and
+ * the conflict branch in `mapError` has to accept either. Keep these in step
+ * with the migration: renaming an index without updating these turns the 409
+ * back into a 500.
+ */
+const AI_AGENT_ORG_KIND_UQ = 'ai_agents_org_kind_uq';
+const AI_AGENT_PARTNER_KIND_UQ = 'ai_agents_partner_kind_uq';
+
 export function mapError(c: Context, err: unknown) {
   if (err instanceof UnsupportedAgentModeError) {
     // err.code, not a repeated literal — the class types it as a literal, so
@@ -153,12 +164,23 @@ export function mapError(c: Context, err: unknown) {
   // The pre-check in createAgent cannot win a concurrent create; the partial
   // unique index settles that race. Answer it the same way rather than letting
   // it become an unactionable 500.
-  // `isPgUniqueViolation`, not a top-level `err.code === '23505'` read: the
-  // insert goes through Drizzle, which rethrows a `DrizzleQueryError` whose own
-  // `.code` is undefined and carries the SQLSTATE on `.cause`. The hand-rolled
-  // top-level check this replaced (#4020) never matched, so the race it exists
-  // for surfaced as a 500 instead of this 409.
-  if (isPgUniqueViolation(err)) {
+  //
+  // Goes through `isPgUniqueViolation` (utils/pgErrors.ts, which owns the
+  // unwrap contract) rather than a top-level `err.code === '23505'` read: the
+  // insert is issued through Drizzle, which carries the SQLSTATE on `.cause`.
+  // The hand-rolled top-level check this replaced (#4020) never matched, so
+  // the race it exists for surfaced as a 500 instead of this 409.
+  //
+  // Scoped to the two indexes that actually mean "this kind is taken".
+  // Matching a bare 23505 would answer `agent_kind_exists` for a violation of
+  // some future unrelated constraint added under these handlers -- a
+  // wrong-but-plausible 409 that nothing logs. Scoping fails the other way: if
+  // an index is renamed this stops matching and the race reverts to a 500,
+  // which is loud and reaches Sentry. Prefer the loud failure.
+  if (
+    isPgUniqueViolation(err, AI_AGENT_ORG_KIND_UQ)
+    || isPgUniqueViolation(err, AI_AGENT_PARTNER_KIND_UQ)
+  ) {
     return c.json({ error: 'An agent of this kind already exists', code: 'agent_kind_exists' }, 409);
   }
   if (err instanceof PartnerWideWriteDeniedError) {

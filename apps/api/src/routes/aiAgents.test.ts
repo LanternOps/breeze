@@ -1346,7 +1346,10 @@ describe('mapError — create-race unique violation (#4020)', () => {
 
   it('maps a flat postgres.js 23505 to 409', () => {
     const { jsonMock } = callMapError(
-      Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' }),
+      Object.assign(
+        new Error('duplicate key value violates unique constraint "ai_agents_org_kind_uq"'),
+        { code: '23505', constraint_name: 'ai_agents_org_kind_uq' },
+      ),
     );
 
     expect(jsonMock).toHaveBeenCalledWith(CONFLICT, 409);
@@ -1357,6 +1360,41 @@ describe('mapError — create-race unique violation (#4020)', () => {
     const cause = Object.assign(
       new Error('duplicate key value violates unique constraint "ai_agents_org_kind_uq"'),
       { code: '23505', constraint_name: 'ai_agents_org_kind_uq' },
+    );
+    const wrapped = Object.assign(new Error('Failed query: insert into "ai_agents" ...'), { cause });
+    wrapped.name = 'DrizzleQueryError';
+
+    const { jsonMock, threw } = callMapError(wrapped);
+
+    expect(threw).toBeUndefined();
+    expect(jsonMock).toHaveBeenCalledWith(CONFLICT, 409);
+  });
+
+  /**
+   * The constraint scoping is itself a discriminating property, and needs a
+   * fixture that can tell the difference. A 23505 from some OTHER unique index
+   * does not mean "this kind is taken", so answering `agent_kind_exists` would
+   * be a wrong-but-plausible 409 that nothing logs — strictly worse than the
+   * 500 it would otherwise get, which is loud and reaches Sentry.
+   */
+  it('does not mislabel a 23505 from an unrelated constraint as agent_kind_exists', () => {
+    const cause = Object.assign(
+      new Error('duplicate key value violates unique constraint "some_other_table_uq"'),
+      { code: '23505', constraint_name: 'some_other_table_uq' },
+    );
+    const wrapped = Object.assign(new Error('Failed query: insert into "some_other_table" ...'), { cause });
+    wrapped.name = 'DrizzleQueryError';
+
+    const { jsonMock, threw } = callMapError(wrapped);
+
+    expect(threw).toBe(wrapped);
+    expect(jsonMock).not.toHaveBeenCalled();
+  });
+
+  it('maps a wrapped 23505 on the PARTNER-wide index to 409 too', () => {
+    const cause = Object.assign(
+      new Error('duplicate key value violates unique constraint "ai_agents_partner_kind_uq"'),
+      { code: '23505', constraint_name: 'ai_agents_partner_kind_uq' },
     );
     const wrapped = Object.assign(new Error('Failed query: insert into "ai_agents" ...'), { cause });
     wrapped.name = 'DrizzleQueryError';
