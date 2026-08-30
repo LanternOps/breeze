@@ -79,7 +79,8 @@ The parser requires:
 - a `vX.Y.Z-<prerelease>` tag;
 - a lowercase 40-character hexadecimal commit;
 - exactly one row for a tag;
-- the tag to peel to the recorded commit;
+- the tag to peel to the recorded commit (`git rev-parse "$TAG^{commit}"`, so
+  an annotated tag resolves to its commit, never to the tag object);
 - a non-empty integration reference and note.
 
 Repository checks evaluate the registry in the checked tree so the reviewed PR
@@ -105,10 +106,19 @@ publication.
 
 When an explicit base ref is supplied, the guard preserves its current behavior
 and compares that ref to the working tree. Automatic resolution requires full
-history and tags, then follows this algorithm:
+history and tags: a shallow repository (`git rev-parse --is-shallow-repository`
+prints `true`) fails closed with a distinct diagnostic before any tag is
+inspected, because `git merge-base --is-ancestor` returns false negatives on a
+shallow clone and would present as a missing baseline. Resolution then follows
+this algorithm:
 
 1. Find the highest semantic-version `v*` tag reachable from `HEAD`. This is the
-   branch's primary baseline.
+   branch's primary baseline. Ordering is SemVer precedence, where a prerelease
+   sorts below its release (`v0.109.0-rc.3` < `v0.109.0`). Git's default
+   `--sort=v:refname` ranks a prerelease *above* its release (the live tag list
+   already shows `v0.107.0-rc.2` above `v0.107.0`), so every tag ordering runs
+   with `git -c versionsort.suffix=- tag --sort=-v:refname` or an explicit
+   SemVer comparator. The same ordering defines "higher" in steps 4–8.
 2. If no `v*` tags exist, report that nothing has shipped and exit successfully.
 3. If tags exist but none is reachable, fail because the checked lineage has no
    trustworthy automatic baseline.
@@ -118,9 +128,17 @@ history and tags, then follows this algorithm:
 6. A higher non-ancestor tag in the existing side-branch-release registry is
    applicable only when its recorded main-equivalent commit is reachable from
    `HEAD`; its tag becomes an additional baseline.
-7. Any higher non-ancestor tag without a valid classification fails with a
-   release-provenance error.
-8. Compare every applicable baseline to the working tree using the existing
+7. A higher non-ancestor tag that is reachable from `origin/main` is a mainline
+   release the checked lineage has not merged yet (a stale local branch, or a
+   `workflow_dispatch` of `ci.yml` on a branch; pull-request runs check out the
+   merge ref and are unaffected). It fails with a distinct "behind mainline"
+   diagnostic naming the tag and the remediation: merge or rebase onto main, or
+   pass an explicit base ref. It is not excluded, because a migration added on
+   main after the primary baseline and then edited on the branch would
+   otherwise pass as an addition. When `origin/main` does not resolve, this
+   classification is unavailable and the tag falls through to step 8.
+8. Any other higher non-ancestor tag fails with a release-provenance error.
+9. Compare every applicable baseline to the working tree using the existing
    no-renames and top-level-SQL rules. Deduplicate violations by baseline and
    filename while retaining the baseline in diagnostics.
 
@@ -150,8 +168,17 @@ tag/SHA mismatches, stable tags outside main, and candidate records that exist
 only on the candidate branch.
 
 `release.yml` runs this validation before `create-release` and every image job
-that can publish to GHCR. Candidate mode forces the GitHub release to draft
-regardless of `RELEASE_DRAFT_FIRST`. The existing prerelease behavior of
+that can publish to GHCR. The validation job carries the same job-level gate as
+`create-release` (`github.ref_type == 'tag'`,
+`startsWith(github.ref, 'refs/tags/v')`, and not a `skip_release` dispatch) so a
+build-only `workflow_dispatch` from a branch skips it instead of failing on a
+non-SemVer ref name. `create-release`'s existing `if:` uses `!cancelled()` and
+enumerates `needs.<job>.result == 'success'`; that disables the implicit
+`success()` gate, so a `needs:` entry alone does not block it. The condition
+`needs.validate-release-lineage.result == 'success'` must therefore be a
+top-level `&&` conjunct of that expression, which also excludes a skipped
+validation. Candidate mode forces the GitHub release to draft regardless of
+`RELEASE_DRAFT_FIRST`. The existing prerelease behavior of
 `docker/metadata-action` remains in force: prereleases receive exact-version and
 SHA tags but no `latest`, major, or minor tag.
 
@@ -167,7 +194,10 @@ with a guarded manual promotion workflow. The workflow:
 2. fetches full main history and tags;
 3. resolves the tag to an exact commit;
 4. refuses unless that commit is an ancestor of `origin/main`;
-5. refuses a missing, non-draft, or mismatched release;
+5. refuses a missing, non-draft, or mismatched release, where mismatch is
+   decided by re-peeling the tag after the fetch and comparing it to the
+   classifier's `tag_sha` (the release's `targetCommitish` may be a branch name
+   and is not used for identity);
 6. publishes the already-created draft without rebuilding or moving the tag.
 
 The implementation will create the workflow but will not dispatch it. Direct
@@ -181,7 +211,9 @@ The detector retains its existing root check and side-branch release logic. For
 the latest unreachable tag, it adds candidate classification before reporting an
 unknown-provenance failure:
 
-1. look up the tag in the candidate registry;
+1. look up the tag in the candidate registry read from `origin/main` (the
+   detector monitors main; a manual dispatch from another branch must not read
+   that branch's ledger);
 2. require prerelease syntax;
 3. require the tag to peel to the exact recorded SHA;
 4. report a distinct candidate-lineage success without claiming main reaches
@@ -197,6 +229,9 @@ Diagnostics distinguish:
 
 - migration mutation or deletion against a named applicable baseline;
 - no reachable release baseline;
+- shallow repository in automatic mode;
+- checked lineage behind a mainline release (higher tag reachable from
+  `origin/main` but not from `HEAD`);
 - higher unclassified non-ancestor tag;
 - malformed or duplicate candidate record;
 - candidate tag/SHA mismatch;
@@ -216,6 +251,12 @@ the live Breeze tag graph.
 ### Migration guard
 
 - ancestral release tag selects and passes;
+- an annotated primary baseline tag is peeled to its commit;
+- SemVer precedence: a release and its own prerelease both ancestral selects
+  the release, not the prerelease;
+- a higher tag reachable from `origin/main` but not from `HEAD` fails with the
+  behind-mainline diagnostic, not the provenance error;
+- a `--depth=1` clone fails closed in automatic mode;
 - an edit and a deletion of an ancestral migration fail;
 - a valid checksum reconciliation retains existing behavior;
 - a higher registered candidate is classified and excluded on main;
@@ -228,8 +269,14 @@ the live Breeze tag graph.
 
 ### Release validator and workflows
 
-- mainline tag succeeds as `mainline`;
+- mainline tag succeeds as `mainline`, and an annotated mainline tag reports
+  the peeled commit as `tag_sha`;
 - exact registered prerelease outside main succeeds as `candidate`;
+- a shallow repository fails closed;
+- the validation job is skipped, not failed, on a build-only branch dispatch;
+- `create-release` carries `needs.validate-release-lineage.result == 'success'`
+  as a top-level `&&` conjunct of its `if:`;
+- the drift detector reads the candidate registry from `origin/main`;
 - stable non-main tag and self-authorizing branch-only record fail;
 - candidate release is structurally forced to draft;
 - publishing jobs depend on successful validation;

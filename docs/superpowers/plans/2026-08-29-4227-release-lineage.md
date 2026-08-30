@@ -50,7 +50,9 @@ Actions YAML, and `gh` inside the promotion workflow.
 
 Use `node:test`, `mkdtemp`, local Git repos, and `spawnSync`. Freeze:
 
-1. reachable tag returns `mainline` and exact SHA;
+1. reachable tag returns `mainline` and exact SHA — create it with `git tag -a`
+   so the test proves `tag_sha` is the peeled commit, not the tag object
+   (`v0.108.0` is annotated in the live repo; the rc tags are lightweight);
 2. exact registered prerelease outside main returns `candidate`;
 3. stable non-main and unregistered prerelease tags fail;
 4. duplicate or malformed rows fail;
@@ -58,7 +60,9 @@ Use `node:test`, `mkdtemp`, local Git repos, and `spawnSync`. Freeze:
 6. a ledger present only on the candidate branch cannot authorize when the
    registry ref points at main;
 7. `--allow-unclassified` returns `unclassified`;
-8. `--require-mainline` rejects a valid candidate.
+8. `--require-mainline` rejects a valid candidate;
+9. a `git clone --depth=1` of the fixture fails closed with a distinct shallow
+   diagnostic before any tag is inspected.
 
 Invoke the real CLI with `--tag`, `--main-ref`, and
 `--candidate-registry-ref` arguments.
@@ -93,8 +97,10 @@ Support exactly:
 [--allow-unclassified] [--require-mainline]
 ```
 
-Use `set -euo pipefail`. Validate SemVer tag syntax, peel to a commit, and return
-`mainline` only when the tag is an ancestor of the supplied main ref. For a
+Use `set -euo pipefail`. Fail closed when `git rev-parse --is-shallow-repository`
+prints `true`. Validate SemVer tag syntax, peel with
+`git rev-parse "$TAG^{commit}"`, and return `mainline` only when the peeled
+commit is an ancestor of the supplied main ref. For a
 non-main prerelease, read the ledger using `git show REGISTRY_REF:path`, validate
 every row, reject duplicates, and require exact SHA equality. Emit `channel`,
 `tag`, and `tag_sha` to `$GITHUB_OUTPUT` when set.
@@ -153,7 +159,18 @@ the fixture as `cwd`. Freeze:
 8. the additional baseline detects mutation/deletion;
 9. stale side-branch equivalent fails;
 10. no tags skips, while tags with no reachable/classified baseline fail;
-11. explicit base operation remains deterministic.
+11. explicit base operation remains deterministic;
+12. SemVer precedence: `v0.109.0-rc.3` and `v0.109.0` both ancestral selects
+    `v0.109.0` (git's default `v:refname` ranks the prerelease higher, and the
+    current script inherits that);
+13. the primary baseline is an annotated tag (`git tag -a`) and is still
+    selected and diffed correctly;
+14. a higher tag reachable from `origin/main` but not from `HEAD` fails with
+    the behind-mainline diagnostic, not the provenance error — the fixture
+    needs a real `origin` remote (clone from a bare repo) so `origin/main`
+    resolves;
+15. a `--depth=1` clone fails closed in automatic mode with the shallow
+    diagnostic.
 
 ### Step 2: Prove RED
 
@@ -167,18 +184,24 @@ Expected: FAIL because the current guard uses the global highest tag.
 
 Keep existing per-file rules. In automatic mode:
 
-1. fetch tags when an origin exists and require enough history for ancestry;
-2. select the highest version-sorted `v*` tag merged into `HEAD`;
+1. fetch tags when an origin exists; fail closed with a distinct message when
+   `git rev-parse --is-shallow-repository` prints `true`;
+2. select the highest `v*` tag merged into `HEAD` under SemVer precedence
+   (`git -c versionsort.suffix=- tag --sort=-v:refname`, or an explicit
+   comparator); use the same ordering to decide which tags are "higher";
 3. distinguish no tags from no reachable baseline;
 4. inspect every higher tag;
 5. validate exact candidate rows from the checked tree and exclude them from an
    unrelated lineage;
 6. add a higher stable side-branch baseline only when its recorded equivalent is
    an ancestor of `HEAD`;
-7. fail every other higher tag;
-8. compare the primary plus applicable side-branch baselines;
-9. preserve `--no-renames`, top-level SQL scope, additions, reconciliation, and
-   working-tree comparison.
+7. when `origin/main` resolves and the higher tag is an ancestor of it, fail
+   with the behind-mainline diagnostic (merge/rebase main, or pass an explicit
+   base ref) — do not exclude it;
+8. fail every other higher tag with the provenance error;
+9. compare the primary plus applicable side-branch baselines;
+10. preserve `--no-renames`, top-level SQL scope, additions, reconciliation,
+    and working-tree comparison.
 
 ### Step 4: Wire tests and history into CI
 
@@ -221,11 +244,21 @@ candidates, guard OK, and no migration file output.
 
 ### Step 1: Add failing workflow tests
 
-Read `release.yml` and assert:
+Parse `release.yml` with `workflowJobs` and `topLevelLogicalParts` from
+`.github/scripts/check-workflow-security.mjs` rather than regexes over YAML,
+and assert:
 
-1. `validate-release-lineage` exists with full history and tags;
+1. `validate-release-lineage` exists with full history and tags, and carries
+   the same job-level gate as `create-release` (`github.ref_type == 'tag'`,
+   `startsWith(github.ref, 'refs/tags/v')`, and not a `skip_release`
+   dispatch) so a build-only branch dispatch skips it instead of failing on a
+   non-SemVer ref name;
 2. it resolves `origin/main` explicitly and uses that registry ref;
-3. `create-release` needs successful validation;
+3. `create-release` lists it in `needs:` **and** its `if:` contains
+   `needs.validate-release-lineage.result == 'success'` as a top-level `&&`
+   conjunct — the existing `if:` uses `!cancelled()`, which disables the
+   implicit `success()` gate, so a `needs:` entry alone does not block
+   publication (`release.yml` lines 2114–2132);
 4. candidate channel forces draft independently of `RELEASE_DRAFT_FIRST`;
 5. all GHCR publishers remain transitively behind `create-release`;
 6. prerelease metadata cannot emit `latest`, major, or minor tags.
@@ -242,7 +275,10 @@ Expected: FAIL on the missing validation job and draft expression.
 
 Add a read-only job that checks out full history/tags, resolves `origin/main`,
 runs the classifier for `github.ref_name`, and exposes `channel`, `tag`, and
-`tag_sha`. It may run beside build jobs, but `create-release` must depend on it.
+`tag_sha`. Give it the `create-release` tag gate as its own `if:`. It may run
+beside build jobs, but `create-release` must both list it in `needs:` and add
+`&& needs.validate-release-lineage.result == 'success'` to its `if:`
+expression; `'success'` also excludes a skipped validation.
 
 Use:
 
@@ -281,7 +317,8 @@ Do not push a tag or dispatch `release.yml`.
 
 Assert:
 
-1. drift classification uses `--allow-unclassified` before the existing stable
+1. drift classification uses `--allow-unclassified` with
+   `--candidate-registry-ref origin/main` before the existing stable
    side-branch fallback;
 2. candidate gets a distinct success while `unclassified` retains that fallback;
 3. expected root SHA and stale-equivalent checks remain;
@@ -289,7 +326,9 @@ Assert:
 5. only its publisher gets `contents: write`;
 6. promotion checks out full main history/tags and uses `--require-mainline`
    against authoritative `origin/main` refs;
-7. it requires an existing matching draft before publication;
+7. it requires an existing matching draft before publication, where the match
+   is decided by re-peeling the tag after the fetch and comparing it to the
+   classifier's `tag_sha`, never by `targetCommitish`;
 8. it does not rebuild, move tags, push images, or deploy.
 
 ### Step 2: Prove RED
@@ -303,8 +342,9 @@ Expected: FAIL because drift lacks candidate handling and promotion is absent.
 ### Step 3: Update drift monitoring
 
 Keep root and direct-ancestry fast paths. For the latest unreachable tag, invoke
-the classifier with main `origin/main`, registry `HEAD`, and
-`--allow-unclassified`. Exact candidate returns a distinct success without
+the classifier with main `origin/main`, registry `origin/main` (the checkout
+has no `ref:`, so a manual dispatch from another branch would otherwise read
+that branch's ledger), and `--allow-unclassified`. Exact candidate returns a distinct success without
 claiming main reaches it. `unclassified` continues through the current
 `side-branch-tags.tsv` checks. Unknown provenance and stale equivalent stay red.
 
@@ -315,7 +355,10 @@ publishing job must:
 
 1. check out main with full history/tags and resolve `origin/main`;
 2. run the classifier with `--require-mainline` and authoritative main refs;
-3. query GitHub and require the matching release exists and is draft;
+3. run `gh release view "$TAG" --json isDraft,tagName`, require `isDraft`
+   true and `tagName` equal to the input, and re-peel the tag after the fetch
+   to compare with the classifier's `tag_sha` (do not use `targetCommitish`;
+   it may be a branch name);
 4. run quoted `gh release edit "$TAG" --draft=false`;
 5. perform no build, signing, image push, tag update, or deployment.
 
