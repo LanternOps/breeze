@@ -1585,7 +1585,8 @@
         "period": "Zeitraum {{start}} bis {{end}}",
         "truncatedNote": "Der Kontext des Agenten wurde gekürzt — diese Zusammenfassung hat nicht die ganze Woche gesehen.",
         "openReport": "Bericht öffnen",
-        "download": "PDF herunterladen"
+        "download": "PDF herunterladen",
+        "downloadFailed": "Das PDF konnte nicht heruntergeladen werden."
       },
       "noAgent": "Unbekannter Agent",
       "loading": "Läufe werden geladen…",

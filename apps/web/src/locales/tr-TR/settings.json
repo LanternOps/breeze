@@ -1585,7 +1585,8 @@
         "period": "{{start}} - {{end}} arasını kapsar",
         "truncatedNote": "Aracının bağlamı kısaltıldı: bu anlatı haftanın tamamını görmedi.",
         "openReport": "Raporu aç",
-        "download": "PDF'yi indir"
+        "download": "PDF'yi indir",
+        "downloadFailed": "PDF indirilemedi."
       },
       "noAgent": "Bilinmeyen aracı",
       "loading": "Çalıştırmalar yükleniyor…",

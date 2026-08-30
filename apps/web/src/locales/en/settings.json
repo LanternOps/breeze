@@ -1585,7 +1585,8 @@
         "period": "Covers {{start}} to {{end}}",
         "truncatedNote": "The agent's context was cut short — this narrative did not see the whole week.",
         "openReport": "Open report",
-        "download": "Download PDF"
+        "download": "Download PDF",
+        "downloadFailed": "Could not download the PDF."
       },
       "noAgent": "Unknown agent",
       "loading": "Loading runs…",

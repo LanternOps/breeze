@@ -1585,7 +1585,8 @@
         "period": "Couvre du {{start}} au {{end}}",
         "truncatedNote": "Le contexte de l'agent a été tronqué : cette synthèse n'a pas vu la semaine entière.",
         "openReport": "Ouvrir le rapport",
-        "download": "Télécharger le PDF"
+        "download": "Télécharger le PDF",
+        "downloadFailed": "Impossible de télécharger le PDF."
       },
       "noAgent": "Agent inconnu",
       "loading": "Chargement des exécutions…",

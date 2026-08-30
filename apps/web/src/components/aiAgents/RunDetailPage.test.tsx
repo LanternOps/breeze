@@ -1,12 +1,18 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../reports/reportExport', () => ({
+  exportReport: vi.fn().mockResolvedValue(undefined),
+  getBrowserTimezone: () => 'UTC',
+}));
 
 import RunDetailPage from './RunDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { exportReport } from '../reports/reportExport';
 
 const fetchMock = vi.mocked(fetchWithAuth);
+const exportReportMock = vi.mocked(exportReport);
 
 const json = (payload: unknown, ok = true, status = 200): Response =>
   ({ ok, status, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
@@ -237,6 +243,8 @@ function mockEndpoints(opts: {
 
 beforeEach(() => {
   fetchMock.mockReset();
+  exportReportMock.mockReset();
+  exportReportMock.mockResolvedValue(undefined);
 });
 
 describe('RunDetailPage', () => {
@@ -509,16 +517,61 @@ describe('RunDetailPage narrative', () => {
     expect(block.querySelector('img')).toBeNull();
   });
 
-  it('links to the generated report and offers the direct download', async () => {
+  it('links to the generated report and offers the download as a button, never a raw API anchor', async () => {
     mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
     render(<RunDetailPage runId="run-1" />);
 
     await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
     expect(screen.getByTestId('ai-agent-run-narrative-report-link')).toHaveAttribute('href', '/reports');
-    expect(screen.getByTestId('ai-agent-run-narrative-download')).toHaveAttribute(
-      'href',
-      '/api/reports/runs/rr-1/download',
-    );
+
+    // The download route answers JSON and authenticates from the Authorization
+    // header only, so an <a href> to it is dead in a browser. It must be a
+    // button that fetches + renders client-side.
+    const download = screen.getByTestId('ai-agent-run-narrative-download');
+    expect(download.tagName).toBe('BUTTON');
+    expect(download).not.toHaveAttribute('href');
+  });
+
+  it('fetches the stored snapshot and hands the narrative summary to exportReport', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
+    const snapshot = {
+      type: 'ai_org_narrative',
+      format: 'pdf',
+      data: { rows: [], summary: { narrative: { headline: NARRATIVE.headline, sections: NARRATIVE.sections } } },
+    };
+    render(<RunDetailPage runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(url.startsWith('/reports/runs/') ? json(snapshot) : json({ data: [] })));
+    fireEvent.click(screen.getByTestId('ai-agent-run-narrative-download'));
+
+    await waitFor(() => expect(exportReportMock).toHaveBeenCalledTimes(1));
+    // Bearer-authenticated fetch against the API-relative path, not the raw
+    // /api/... downloadPath a browser navigation would have used.
+    expect(fetchMock).toHaveBeenCalledWith('/reports/runs/rr-1/download');
+    expect(exportReportMock).toHaveBeenCalledWith([], expect.objectContaining({
+      format: 'pdf',
+      reportType: 'ai_org_narrative',
+      summary: snapshot.data.summary,
+    }));
+    expect(screen.queryByTestId('ai-agent-run-narrative-download-error')).not.toBeInTheDocument();
+  });
+
+  it('surfaces an inline error when the snapshot fetch fails, and never calls exportReport', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
+    render(<RunDetailPage runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(url.startsWith('/reports/runs/')
+        ? json({ error: 'nope' }, false, 404)
+        : json({ data: [] })));
+    fireEvent.click(screen.getByTestId('ai-agent-run-narrative-download'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('ai-agent-run-narrative-download-error')).toBeInTheDocument());
+    expect(exportReportMock).not.toHaveBeenCalled();
   });
 
   it('omits both links for a narrative that never reached a report run', async () => {

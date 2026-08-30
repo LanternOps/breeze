@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { ArrowLeft, Bot, ExternalLink } from 'lucide-react';
+import { ArrowLeft, Bot, Download, ExternalLink, Loader2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { exportReport, getBrowserTimezone } from '../reports/reportExport';
 import { formatDate, formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import type {
@@ -13,6 +14,7 @@ import type {
   AiSweepSeverity,
   ExposureBudgetDto,
   NarrativeSection,
+  OrgNarrativeReportSummary,
 } from '@breeze/shared';
 
 interface RunDetailPageProps {
@@ -485,6 +487,8 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [notFound, setNotFound] = useState(false);
+  const [downloadingNarrative, setDownloadingNarrative] = useState(false);
+  const [narrativeDownloadError, setNarrativeDownloadError] = useState<string>();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -516,6 +520,46 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * Phase 2 wave P2-3 (#4190) — "Download PDF" on the narrative section.
+   *
+   * The report-run download route answers JSON (`{ type, format, data }`) and
+   * authenticates from the `Authorization` header only, so a plain `<a href>`
+   * to `narrative.downloadPath` is doubly dead: an unauthenticated browser
+   * navigation 401s, and an authenticated one would save the raw snapshot
+   * instead of a PDF. Mirror `ReportsList`'s "Open latest": fetch the snapshot
+   * with the bearer token, then render the PDF client-side via jsPDF.
+   *
+   * Read-only, so no `runAction` wrapper — failure surfaces inline next to the
+   * button (the same shape `ReportsList` uses for its download errors).
+   */
+  const handleDownloadNarrative = useCallback(async () => {
+    const reportRunId = run?.narrative?.reportRunId;
+    if (!reportRunId) return;
+    setDownloadingNarrative(true);
+    setNarrativeDownloadError(undefined);
+    try {
+      const response = await fetchWithAuth(`/reports/runs/${reportRunId}/download`);
+      if (!response.ok) {
+        throw new Error(t('aiAgentsPage.runs.narrative.downloadFailed'));
+      }
+      const payload = (await response.json()) as {
+        type?: string;
+        data?: { rows?: unknown[]; summary?: unknown };
+      };
+      await exportReport(payload.data?.rows ?? [], {
+        format: 'pdf',
+        reportType: payload.type ?? 'ai_org_narrative',
+        timezone: getBrowserTimezone(),
+        summary: payload.data?.summary as OrgNarrativeReportSummary | undefined,
+      });
+    } catch {
+      setNarrativeDownloadError(t('aiAgentsPage.runs.narrative.downloadFailed'));
+    } finally {
+      setDownloadingNarrative(false);
+    }
+  }, [run, t]);
 
   if (loading) {
     return (
@@ -737,29 +781,37 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
             ))}
           </div>
 
-          {(run.narrative.reportRunId || run.narrative.downloadPath) && (
+          {run.narrative.reportRunId && (
             <div className="mt-3 flex flex-wrap items-center gap-4">
-              {run.narrative.reportRunId && (
-                <a
-                  href="/reports"
-                  data-testid="ai-agent-run-narrative-report-link"
-                  className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
-                >
-                  {t('aiAgentsPage.runs.narrative.openReport')}
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              )}
-              {run.narrative.downloadPath && (
-                <a
-                  href={run.narrative.downloadPath}
-                  data-testid="ai-agent-run-narrative-download"
-                  className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
-                >
-                  {t('aiAgentsPage.runs.narrative.download')}
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              )}
+              <a
+                href="/reports"
+                data-testid="ai-agent-run-narrative-report-link"
+                className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+              >
+                {t('aiAgentsPage.runs.narrative.openReport')}
+                <ExternalLink className="h-3 w-3" />
+              </a>
+              <button
+                type="button"
+                onClick={() => void handleDownloadNarrative()}
+                disabled={downloadingNarrative}
+                data-testid="ai-agent-run-narrative-download"
+                className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline disabled:opacity-50"
+              >
+                {downloadingNarrative ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Download className="h-3 w-3" />
+                )}
+                {t('aiAgentsPage.runs.narrative.download')}
+              </button>
             </div>
+          )}
+
+          {narrativeDownloadError && (
+            <p className="mt-2 text-xs text-destructive" data-testid="ai-agent-run-narrative-download-error">
+              {narrativeDownloadError}
+            </p>
           )}
         </section>
       )}

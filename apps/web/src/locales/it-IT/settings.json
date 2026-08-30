@@ -1585,7 +1585,8 @@
         "period": "Copre dal {{start}} al {{end}}",
         "truncatedNote": "Il contesto dell'agente è stato troncato: questa sintesi non ha visto l'intera settimana.",
         "openReport": "Apri il report",
-        "download": "Scarica il PDF"
+        "download": "Scarica il PDF",
+        "downloadFailed": "Impossibile scaricare il PDF."
       },
       "noAgent": "Agente sconosciuto",
       "loading": "Caricamento delle esecuzioni…",

@@ -1585,7 +1585,8 @@
         "period": "Cubre del {{start}} al {{end}}",
         "truncatedNote": "El contexto del agente se recortó: esta narrativa no vio la semana completa.",
         "openReport": "Abrir informe",
-        "download": "Descargar PDF"
+        "download": "Descargar PDF",
+        "downloadFailed": "No se pudo descargar el PDF."
       },
       "noAgent": "Agente desconocido",
       "loading": "Cargando ejecuciones…",
