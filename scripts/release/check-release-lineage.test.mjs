@@ -17,6 +17,8 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'release', 'check-release-lineage.sh');
 const REGISTRY = '.github/release-provenance/candidate-tags.tsv';
 const RELEASE_WORKFLOW = join(REPO_ROOT, '.github', 'workflows', 'release.yml');
+const DRIFT_WORKFLOW = join(REPO_ROOT, '.github', 'workflows', 'drift-detector.yml');
+const PROMOTION_WORKFLOW = join(REPO_ROOT, '.github', 'workflows', 'release-promotion.yml');
 const scratch = mkdtempSync(join(tmpdir(), 'release-lineage-test-'));
 let fixtureNumber = 0;
 
@@ -298,6 +300,90 @@ test('prerelease GHCR publishers preserve exact-version and SHA-only tagging', (
     assert.ok(publisherText.includes('--tag "${EXECUTOR_REPOSITORY}:sha-${SHORT_SHA}"'));
     assert.ok(!publisherText.includes('--tag "${EXECUTOR_REPOSITORY}:latest"'));
   }
+});
+
+test('drift monitoring classifies candidates before the side-branch fallback', () => {
+  const driftText = readFileSync(DRIFT_WORKFLOW, 'utf8');
+  const classifierIndex = driftText.indexOf('scripts/release/check-release-lineage.sh');
+  const fallbackIndex = driftText.indexOf(
+    'PROVENANCE=.github/release-provenance/side-branch-tags.tsv',
+  );
+
+  assert.notEqual(classifierIndex, -1, 'drift must invoke the shared lineage classifier');
+  assert.ok(
+    classifierIndex < fallbackIndex,
+    'candidate classification must run before the stable side-branch fallback',
+  );
+  assert.ok(driftText.includes('--main-ref origin/main'));
+  assert.ok(driftText.includes('--candidate-registry-ref origin/main'));
+  assert.ok(driftText.includes('--allow-unclassified'));
+  assert.match(driftText, /channel[^\n]*candidate[\s\S]*candidate release lineage/i);
+  assert.match(driftText, /channel[^\n]*unclassified[\s\S]*side-branch-tags\.tsv/i);
+});
+
+test('drift monitoring retains root and stale-equivalent checks', () => {
+  const driftText = readFileSync(DRIFT_WORKFLOW, 'utf8');
+
+  assert.ok(driftText.includes('EXPECTED_ROOT=93bad0ec76d6f0134ed3b21ee7bfef224b4c102e'));
+  assert.ok(driftText.includes('git rev-list --max-parents=0 origin/main'));
+  assert.ok(driftText.includes('git merge-base --is-ancestor "$EXPECTED_EQUIV" origin/main'));
+});
+
+test('promotion is manual-only with a least-privilege publication job', () => {
+  const promotionText = readFileSync(PROMOTION_WORKFLOW, 'utf8');
+  const promotionLines = workflowSecurity.activeLines(promotionText);
+  const promotionJobs = workflowSecurity.workflowJobs(promotionLines);
+
+  assert.match(promotionText, /\non:\n  workflow_dispatch:\n/);
+  assert.doesNotMatch(promotionText, /^\s{2}(?:push|pull_request|schedule):/mu);
+  assert.match(promotionText, /\npermissions:\n  contents: read\n/);
+  assert.equal(promotionJobs.length, 1, 'promotion must have one bounded publisher job');
+  assert.ok(jobText(promotionJobs[0]).includes('contents: write'));
+  assert.equal(
+    promotionLines.filter((line) => line.trimmed === 'contents: write').length,
+    1,
+    'only the publisher may receive contents: write',
+  );
+});
+
+test('promotion requires authoritative mainline and an exact matching draft', () => {
+  const promotionText = readFileSync(PROMOTION_WORKFLOW, 'utf8');
+
+  assert.ok(promotionText.includes('ref: main'));
+  assert.ok(promotionText.includes('fetch-depth: 0'));
+  assert.ok(promotionText.includes('fetch-tags: true'));
+  assert.ok(promotionText.includes('persist-credentials: false'));
+  assert.ok(promotionText.includes('--main-ref origin/main'));
+  assert.ok(promotionText.includes('--candidate-registry-ref origin/main'));
+  assert.ok(promotionText.includes('--require-mainline'));
+  assert.ok(promotionText.includes('gh release view "$TAG" --json isDraft,tagName'));
+  assert.ok(promotionText.includes('git rev-parse "$TAG^{commit}"'));
+  assert.match(promotionText, /tag_sha/);
+  assert.match(promotionText, /isDraft/);
+  assert.match(promotionText, /tagName/);
+  assert.doesNotMatch(promotionText, /targetCommitish/);
+  assert.ok(promotionText.includes('gh release edit "$TAG" --draft=false'));
+});
+
+test('promotion cannot rebuild, retag, publish images, or deploy', () => {
+  const promotionText = readFileSync(PROMOTION_WORKFLOW, 'utf8');
+
+  for (const forbidden of [
+    /\bgo build\b/,
+    /\bpnpm build\b/,
+    /docker\/(?:build-push|login)-action/,
+    /\bdocker push\b/,
+    /\bgh workflow run\b/,
+    /\bgit tag\b/,
+    /\bgit push\b/,
+    /\bdeploy\b/i,
+  ]) {
+    assert.doesNotMatch(promotionText, forbidden);
+  }
+
+  const releaseText = readFileSync(RELEASE_WORKFLOW, 'utf8');
+  assert.doesNotMatch(releaseText, /Publish with: gh release edit/);
+  assert.match(releaseText, /release-promotion\.yml/);
 });
 
 test('annotated reachable tag is mainline and reports the peeled commit', () => {
