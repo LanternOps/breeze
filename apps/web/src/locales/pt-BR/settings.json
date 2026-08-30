@@ -1342,13 +1342,20 @@
       "cronHint": "Cinco campos: minuto hora dia-do-mês mês dia-da-semana. Por exemplo, 0 3 * * * é executado todos os dias às 03:00.",
       "cronInvalid": "Informe uma expressão cron válida de cinco campos antes de salvar.",
       "timezone": "Fuso horário",
-      "kinds": "Verificações a executar",
+      "kinds": {
+        "sweep": "Varredura",
+        "narrative": "Relatório semanal"
+      },
+      "kindsLabel": "Verificações a executar",
+      "kind": "Tipo de agendamento",
+      "weeklyOnlyHint": "Um relatório semanal é disparado exatamente uma vez por semana: minuto e hora literais, * para dia-do-mês e mês, e um único dia da semana de 0 a 6. Por exemplo, 0 7 * * 1 é executado toda segunda-feira às 07:00.",
       "kindsRequired": "Selecione pelo menos uma verificação.",
       "enabled": "Ativado",
       "override": "Substituir para esta organização",
       "editOverride": "Editar a exceção desta organização",
       "overrideHint": "A exceção desta organização à linha de base do parceiro. Ela sempre segue a cadência da linha de base.",
       "overrideSummary": "Esta organização: {{state}} · {{kinds}}",
+      "overrideSummaryNarrative": "Esta organização: {{state}}",
       "tightenOnly": "Uma exceção só pode restringir a linha de base: pode desativar a varredura ou remover verificações, nunca adicioná-las.",
       "noKinds": "Nenhuma verificação",
       "lastRun": "Última execução {{at}} · {{admitted}} de {{total}} organizações varridas, {{skipped}} ignoradas.",
@@ -1376,7 +1383,9 @@
         "baselineNotPartnerRow": "Essa linha de base não tem proprietário e não pode ser substituída.",
         "baselineAgentMismatch": "Essa linha de base pertence a outro agente.",
         "agentNotPartnerWide": "Agendamentos de varredura exigem um agente de todo o parceiro.",
-        "agentKindNotTriage": "Somente um agente de triagem pode ser agendado."
+        "agentKindNotTriage": "Somente um agente de triagem pode ser agendado.",
+        "kindsNotEmpty": "Um agendamento de relatório semanal não executa verificações. Limpe as verificações selecionadas antes de salvar.",
+        "invalidCronForKind": "Um relatório semanal precisa ser disparado exatamente uma vez por semana. Use minuto e hora literais, * para dia-do-mês e mês, e um único dia da semana."
       }
     },
     "title": "Agentes de IA",
@@ -1530,7 +1539,8 @@
         "anomaly": "Anomalia"
       },
       "profile": {
-        "sweep": "Varredura"
+        "sweep": "Varredura",
+        "narrative": "Relatório semanal"
       },
       "sweep": {
         "title": "Constatações da varredura",
@@ -1569,6 +1579,13 @@
           "intent_error": "Não foi possível criar a aprovação",
           "max_actions_per_run": "Limite de ações atingido para esta execução"
         }
+      },
+      "narrative": {
+        "title": "Narrativa semanal",
+        "period": "Cobre de {{start}} a {{end}}",
+        "truncatedNote": "O contexto do agente foi cortado: esta narrativa não viu a semana inteira.",
+        "openReport": "Abrir relatório",
+        "download": "Baixar PDF"
       },
       "noAgent": "Agente desconhecido",
       "loading": "Carregando execuções…",

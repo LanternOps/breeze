@@ -1342,13 +1342,20 @@
       "cronHint": "Beş alan: dakika saat ayın-günü ay haftanın-günü. Örneğin 0 3 * * * her gün 03:00'te çalışır.",
       "cronInvalid": "Kaydetmeden önce geçerli, beş alanlı bir cron ifadesi girin.",
       "timezone": "Saat dilimi",
-      "kinds": "Çalıştırılacak denetimler",
+      "kinds": {
+        "sweep": "Tarama",
+        "narrative": "Haftalık rapor"
+      },
+      "kindsLabel": "Çalıştırılacak denetimler",
+      "kind": "Zamanlama türü",
+      "weeklyOnlyHint": "Haftalık rapor haftada tam olarak bir kez çalışır: sabit dakika ve saat, ayın-günü ve ay için * ve 0-6 arasında tek bir haftanın günü. Örneğin 0 7 * * 1 her pazartesi 07:00'de çalışır.",
       "kindsRequired": "En az bir denetim seçin.",
       "enabled": "Etkin",
       "override": "Bu kuruluş için geçersiz kıl",
       "editOverride": "Bu kuruluşun geçersiz kılmasını düzenle",
       "overrideHint": "Bu kuruluşun, iş ortağı temel çizgisini geçersiz kılması. Her zaman temel çizginin sıklığıyla çalışır.",
       "overrideSummary": "Bu kuruluş: {{state}} · {{kinds}}",
+      "overrideSummaryNarrative": "Bu kuruluş: {{state}}",
       "tightenOnly": "Geçersiz kılma temel çizgiyi yalnızca daraltabilir: taramayı kapatabilir veya denetim çıkarabilir, asla ekleyemez.",
       "noKinds": "Denetim yok",
       "lastRun": "Son çalışma {{at}} · {{total}} kuruluştan {{admitted}} tanesi tarandı, {{skipped}} atlandı.",
@@ -1376,7 +1383,9 @@
         "baselineNotPartnerRow": "O temel çizginin sahibi yok ve geçersiz kılınamaz.",
         "baselineAgentMismatch": "O temel çizgi başka bir aracıya ait.",
         "agentNotPartnerWide": "Tarama zamanlamaları iş ortağı genelinde bir aracı gerektirir.",
-        "agentKindNotTriage": "Yalnızca bir triyaj aracısı zamanlanabilir."
+        "agentKindNotTriage": "Yalnızca bir triyaj aracısı zamanlanabilir.",
+        "kindsNotEmpty": "Haftalık rapor zamanlaması denetim çalıştırmaz. Kaydetmeden önce seçili denetimleri kaldırın.",
+        "invalidCronForKind": "Haftalık rapor haftada tam olarak bir kez çalışmalıdır. Sabit dakika ve saat, ayın-günü ve ay için * ve tek bir haftanın günü kullanın."
       }
     },
     "title": "Yapay Zeka Aracıları",
@@ -1530,7 +1539,8 @@
         "anomaly": "Anormallik"
       },
       "profile": {
-        "sweep": "Tarama"
+        "sweep": "Tarama",
+        "narrative": "Haftalık rapor"
       },
       "sweep": {
         "title": "Tarama bulguları",
@@ -1569,6 +1579,13 @@
           "intent_error": "Onay oluşturulamadı",
           "max_actions_per_run": "Bu çalıştırma için eylem sınırına ulaşıldı"
         }
+      },
+      "narrative": {
+        "title": "Haftalık anlatı",
+        "period": "{{start}} - {{end}} arasını kapsar",
+        "truncatedNote": "Aracının bağlamı kısaltıldı: bu anlatı haftanın tamamını görmedi.",
+        "openReport": "Raporu aç",
+        "download": "PDF'yi indir"
       },
       "noAgent": "Bilinmeyen aracı",
       "loading": "Çalıştırmalar yükleniyor…",

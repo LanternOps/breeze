@@ -204,6 +204,27 @@ describe('RunsListPage', () => {
     expect(screen.queryByTestId('ai-agent-run-profile-sweep-run-2')).not.toBeInTheDocument();
   });
 
+  // Phase 2 wave P2-3 (#4190) — a narrative-profile run is the weekly org
+  // report, not a device outcome; the badge is what tells the two apart.
+  it('badges a narrative-profile run beside its verdict', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, id: 'run-7', profile: 'narrative' as const }] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-table')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-profile-narrative-run-7')).toHaveTextContent('Weekly report');
+    // The two profile badges are mutually exclusive.
+    expect(screen.queryByTestId('ai-agent-run-profile-sweep-run-7')).not.toBeInTheDocument();
+  });
+
+  it('omits the narrative badge for every other run profile', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, id: 'run-6', profile: 'sweep' as const }, RUN_2] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-table')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-profile-narrative-run-6')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-run-profile-narrative-run-2')).not.toBeInTheDocument();
+  });
+
   it('hides the Organization column when a single org is selected', async () => {
     mockEndpoints();
     render(<RunsListPage />);
