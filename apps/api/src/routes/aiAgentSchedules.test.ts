@@ -77,6 +77,7 @@ function scheduleRow(overrides: Record<string, unknown> = {}) {
     partnerId: PARTNER_ID,
     agentId: AGENT_ID,
     baselineScheduleId: null,
+    kind: 'sweep',
     cron: '0 6 * * *',
     timezone: 'Europe/Berlin',
     sweepKinds: ['disk_pressure'],
@@ -191,13 +192,22 @@ describe('POST /ai/agents/schedules', () => {
       partnerId: PARTNER_ID,
       orgId: null,
       cron: '0 6 * * *',
+      // P2-3: the DTO is what the web page branches on to decide whether a
+      // sweep-kind selector applies at all. An omitted body field still
+      // parses to 'sweep' (the schema default), so this is also the proof
+      // that a pre-P2-3 create is unchanged end to end.
+      kind: 'sweep',
       createdAt: '2026-08-01T00:00:00.000Z',
     });
     expect(createScheduleMock).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ ownerScope: 'partner', agentId: AGENT_ID }),
+      expect.objectContaining({ ownerScope: 'partner', agentId: AGENT_ID, kind: 'sweep' }),
     );
     expect(writeRouteAuditMock).toHaveBeenCalledTimes(1);
+    expect(writeRouteAuditMock.mock.calls[0]![1]).toMatchObject({
+      action: 'ai_agent.schedule.created',
+      details: expect.objectContaining({ kind: 'sweep' }),
+    });
   });
 
   it('creates an org override and returns 201', async () => {
@@ -221,6 +231,65 @@ describe('POST /ai/agents/schedules', () => {
       orgId: ORG_ID,
       baselineScheduleId: BASELINE_ID,
     });
+  });
+
+  it('creates a narrative baseline and returns its kind on the DTO', async () => {
+    createScheduleMock.mockResolvedValue(scheduleRow({
+      kind: 'narrative',
+      sweepKinds: [],
+      cron: '0 7 * * 1',
+    }));
+
+    const res = await post({
+      ...PARTNER_BODY,
+      kind: 'narrative',
+      cron: '0 7 * * 1',
+      sweepKinds: [],
+    });
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).data).toMatchObject({ kind: 'narrative', sweepKinds: [], cron: '0 7 * * 1' });
+    expect(createScheduleMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: 'narrative', sweepKinds: [] }),
+    );
+    expect(writeRouteAuditMock.mock.calls[0]![1]).toMatchObject({
+      details: expect.objectContaining({ kind: 'narrative' }),
+    });
+  });
+
+  it('rejects a narrative baseline on a non-weekly cron with 400, before the service is called', async () => {
+    // The shared schema's superRefine, not the service: a daily cron would
+    // mail seven overlapping "weekly" reports.
+    const res = await post({ ...PARTNER_BODY, kind: 'narrative', cron: '0 6 * * *', sweepKinds: [] });
+
+    expect(res.status).toBe(400);
+    expect(createScheduleMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a narrative baseline that carries sweep kinds with 400', async () => {
+    const res = await post({
+      ...PARTNER_BODY, kind: 'narrative', cron: '0 7 * * 1', sweepKinds: ['disk_pressure'],
+    });
+
+    expect(res.status).toBe(400);
+    expect(createScheduleMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a client-supplied kind on an ORG override (strict schema, 400)', async () => {
+    // An override INHERITS its baseline's kind; a body that could set one
+    // would let a single org flip a sweep schedule into a narrative one.
+    const res = await post({
+      ownerScope: 'organization',
+      orgId: ORG_ID,
+      baselineScheduleId: BASELINE_ID,
+      enabled: true,
+      sweepKinds: [],
+      kind: 'narrative',
+    });
+
+    expect(res.status).toBe(400);
+    expect(createScheduleMock).not.toHaveBeenCalled();
   });
 
   it('rejects a 6-field cron with 400 before the service is called', async () => {

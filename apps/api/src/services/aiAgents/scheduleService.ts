@@ -22,9 +22,11 @@ import {
   createAiAgentScheduleSchema,
   isHourlyFloorCron,
   isStructurallyValidCron,
+  isWeeklyLiteralCron,
   updateAiAgentScheduleSchema,
   type AiAgentEffectiveScheduleDto,
   type AiAgentScheduleDto,
+  type AiAgentScheduleKind,
   type AiSweepKind,
 } from '@breeze/shared';
 import {
@@ -48,9 +50,19 @@ export type ScheduleValidationCode =
   | 'baseline_is_override'
   | 'kinds_not_subset'
   | 'kinds_empty'
+  // P2-3, the narrative mirror of `kinds_empty`: a narrative schedule
+  // evaluates NO sweep kinds, so a non-empty list is the violation. Its own
+  // code rather than `kinds_not_subset`, for the same reason `kinds_empty`
+  // is: nothing was widened relative to a baseline, and saying so would be a
+  // false statement about what the client sent.
+  | 'kinds_not_empty'
   | 'agent_not_partner_wide'
   | 'agent_kind_not_triage'
   | 'invalid_cron'
+  // P2-3: structurally fine and inside the hourly floor, but wrong for THIS
+  // schedule's kind. Distinct from `invalid_cron` so a client can tell "not a
+  // cron" from "not a WEEKLY cron" without parsing the message.
+  | 'invalid_cron_for_kind'
   | 'invalid_timezone';
 
 /** Routes map this to 422 `{ error: code }`. The code IS the client contract. */
@@ -88,7 +100,7 @@ export function effectiveSchedule(
  * shared zod schema, because the service is also reachable from non-HTTP
  * callers.
  */
-function assertValidCron(cron: string): void {
+function assertValidCron(cron: string, kind: AiAgentScheduleKind): void {
   if (!isStructurallyValidCron(cron) || cron.trim().split(/\s+/).length !== 5) {
     throw new ScheduleValidationError('invalid_cron', `Not a 5-field cron expression: ${cron}`);
   }
@@ -101,6 +113,52 @@ function assertValidCron(cron: string): void {
     throw new ScheduleValidationError(
       'invalid_cron',
       `sweep schedules fire at most hourly; the minute field must be a literal minute or comma-separated list of minutes: ${cron}`,
+    );
+  }
+  // P2-3 (narrative). "Weekly" has to be a property of the STORED cron, not
+  // something the report generator asserts after the fact: a narrative
+  // schedule firing daily would mail an MSP's customer seven "weekly"
+  // reports over overlapping windows. `isWeeklyLiteralCron` is strictly
+  // narrower than the hourly floor above (it pins every field), so the order
+  // here only decides which code a client sees, never whether a bad cron
+  // gets through.
+  if (kind === 'narrative' && !isWeeklyLiteralCron(cron)) {
+    throw new ScheduleValidationError(
+      'invalid_cron_for_kind',
+      `a narrative schedule must fire exactly once a week — literal minute and hour, \`*\` day-of-month and month, and a single day-of-week 0-6: ${cron}`,
+    );
+  }
+}
+
+/**
+ * The per-kind `sweep_kinds` rule, shared by create and update so the two can
+ * never drift. Mirrors `ai_agent_schedules_kind_kinds_chk` exactly — the DB
+ * CHECK is the backstop, this is the one that produces a 422 with a code
+ * instead of a 500 with a constraint name.
+ *
+ * ORG OVERRIDES ARE NOT ROUTED HERE: an override's `[]` legitimately means
+ * "disable every kind for this org" on a SWEEP baseline (the same convention
+ * as its `enabled: false`), which is why the CHECK exempts `org_id IS NOT
+ * NULL` from the sweep arm. Its widening is bounded by `assertKindsSubset`
+ * instead — and against a narrative baseline, whose kinds are `[]`, that
+ * already rejects every non-empty list.
+ */
+function assertPartnerKindsForScheduleKind(kind: AiAgentScheduleKind, sweepKinds: AiSweepKind[]): void {
+  if (kind === 'narrative') {
+    if (sweepKinds.length > 0) {
+      throw new ScheduleValidationError(
+        'kinds_not_empty',
+        'A narrative schedule evaluates no sweep kinds; sweepKinds must be empty',
+      );
+    }
+    return;
+  }
+  // kind === 'sweep', unchanged since P2-2: a baseline that sweeps nothing is
+  // a disabled schedule wearing an enabled flag.
+  if (sweepKinds.length === 0) {
+    throw new ScheduleValidationError(
+      'kinds_empty',
+      'A partner baseline must sweep at least one kind; disable the schedule instead',
     );
   }
 }
@@ -121,6 +179,7 @@ function toScheduleDto(row: AiAgentScheduleRow, includeRunSummary: boolean): AiA
     partnerId: row.partnerId,
     agentId: row.agentId,
     baselineScheduleId: row.baselineScheduleId,
+    kind: row.kind,
     cron: row.cron,
     timezone: row.timezone,
     sweepKinds: row.sweepKinds,
@@ -338,7 +397,10 @@ export async function createSchedule(
     // Owner pair first: an ai_agent principal and a 'selected' partner admin
     // must be refused before any lookup, let alone a write.
     assertAgentWriteAllowed(auth, { orgId: null, partnerId });
-    assertValidCron(input.cron);
+    // `createPartnerScheduleSchema` defaults this to 'sweep', so every
+    // pre-P2-3 body still lands on exactly the branch it used to.
+    assertValidCron(input.cron, input.kind);
+    assertPartnerKindsForScheduleKind(input.kind, input.sweepKinds);
     const timezone = canonicalTimezoneOrThrow(input.timezone);
     await assertPartnerWideTriageAgent(input.agentId, partnerId);
 
@@ -349,6 +411,11 @@ export async function createSchedule(
         partnerId,
         agentId: input.agentId,
         baselineScheduleId: null,
+        // Written explicitly, never left to the column DEFAULT: the default
+        // is a migration compatibility shim for pre-P2-3 rows, and letting it
+        // decide a new row's kind would re-point every schedule the day it
+        // changes.
+        kind: input.kind,
         cron: input.cron,
         timezone,
         sweepKinds: input.sweepKinds,
@@ -377,6 +444,12 @@ export async function createSchedule(
       // NOT NULL on the table, so the copy is what keeps the row well-formed.
       agentId: baseline.agentId,
       baselineScheduleId: baseline.id,
+      // COPIED from the baseline, never client-supplied (the create schema's
+      // org arm is `.strict()` and has no `kind` field at all). Backed by the
+      // composite self-FK `(baseline_schedule_id, kind) -> (id, kind)`: an
+      // override that disagreed with its baseline is a 23503 here, not a row
+      // that silently produces a run profile the partner never configured.
+      kind: baseline.kind,
       cron: baseline.cron,
       timezone: baseline.timezone,
       sweepKinds: input.sweepKinds,
@@ -401,7 +474,9 @@ export async function updateSchedule(
 
   if (existing.partnerId !== null) {
     if (input.cron !== undefined) {
-      assertValidCron(input.cron);
+      // `kind` is immutable (the update schema never admits it), so the
+      // STORED row is what decides which cadence rule applies.
+      assertValidCron(input.cron, existing.kind);
       patch.cron = input.cron;
     }
     if (input.timezone !== undefined) patch.timezone = canonicalTimezoneOrThrow(input.timezone);
@@ -416,12 +491,12 @@ export async function updateSchedule(
       // be a hole straight through it. Its own code, not `kinds_not_subset`:
       // nothing was widened, and telling a client "not a subset" for an empty
       // list is a false statement about what it sent (review fix, #4189).
-      if (input.sweepKinds.length === 0) {
-        throw new ScheduleValidationError(
-          'kinds_empty',
-          'A partner baseline must sweep at least one kind; disable the schedule instead',
-        );
-      }
+      // Per-kind since P2-3: `kinds_empty` stays a SWEEP-only rule, and a
+      // narrative baseline instead refuses every NON-empty list. `[]` on a
+      // narrative baseline is admitted as the no-op it is — it is the only
+      // value that row may ever hold — rather than answered with a code whose
+      // message would be false.
+      assertPartnerKindsForScheduleKind(existing.kind, input.sweepKinds);
       patch.sweepKinds = input.sweepKinds;
     }
   } else {
