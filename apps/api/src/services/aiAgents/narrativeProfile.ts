@@ -5,7 +5,7 @@
  * `verdict` (P2-1) triages one alert/correlation group; `sweep` (P2-2) runs
  * on a schedule against pre-collected evidence for one org; `narrative`
  * turns one org's pre-collected WEEK of activity into an
- * `OrgNarrativeOutcome` for a customer-facing report (see
+ * `NarrativeOutcome` for a customer-facing report (see
  * `AiAgentRunProfile`, packages/shared/src/types/aiAgents.ts).
  */
 import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentLimits, type AiAgentRunProfile } from '@breeze/shared';
@@ -37,23 +37,19 @@ export const NARRATIVE_TOOL_ALLOWLIST = [] as const;
 /**
  * The narrative outcome tool's name.
  *
- * CROSS-TASK DEPENDENCY (wave P2-3): `outcomeTools.ts` is the single source of
- * truth for outcome-tool names, and `verdictToolAllowlist`/`sweepToolAllowlist`
- * therefore both derive their outcome entry by filtering `OUTCOME_TOOL_NAMES`.
- * This module cannot do that yet: task 6 of this same wave is what adds
- * `submit_narrative` to `OUTCOME_TOOL_NAMES` (together with its schema,
- * MCP-name mapping and `outcomeToolsForProfile` arm), and this task lands
- * first. A filter would therefore evaluate to `[]` today and hand a narrative
- * run NO way to produce its outcome at all — a silently broken profile, which
- * is worse than the drift risk a literal carries.
- *
- * The drift risk is covered instead of ignored: `narrativeProfile.test.ts`'s
- * "agrees with outcomeTools.ts once task 6 registers the narrative outcome
- * tool" case compares this literal against every narrative-ish entry of
- * `OUTCOME_TOOL_NAMES` the moment one exists, and `outcomeTools.test.ts`'s
- * per-profile floor-agreement case then pins the two representations to each
- * other permanently. Once task 6 has landed this constant may be switched to
- * the filter form for exact parity with the two sibling profiles.
+ * `outcomeTools.ts` is the single source of truth for outcome-tool names, and
+ * `verdictToolAllowlist`/`sweepToolAllowlist` both derive their outcome entry
+ * by filtering `OUTCOME_TOOL_NAMES`. This constant is a literal instead for a
+ * historical reason: within wave P2-3 this module landed before the tool was
+ * registered, when the filter form would have evaluated to `[]` and shipped a
+ * profile with no way to produce its outcome. The registration has since
+ * landed (`outcomeTools.ts` carries `submit_narrative`, its schema, MCP-name
+ * mapping and `outcomeToolsForProfile` arm), and the drift risk is pinned from
+ * both sides: `narrativeProfile.test.ts` compares this literal against every
+ * narrative entry of `OUTCOME_TOOL_NAMES`, and `outcomeTools.test.ts`'s
+ * per-profile floor-agreement case pins the two representations to each other.
+ * Switching to the filter form for parity with the sibling profiles is safe
+ * whenever someone next touches this file.
  */
 export const NARRATIVE_OUTCOME_TOOL_NAME = 'submit_narrative';
 
@@ -72,7 +68,7 @@ export function isNarrativeProfile(run: { profile: AiAgentRunProfile }): boolean
  * `maxActionsPerRun: 0` is a deliberate hard override, not a passthrough, and
  * is stricter here than for either sibling profile: a narrative run does not
  * even PROPOSE a mutation (`sweep`'s `proposedAction` / `verdict`'s proposed
- * remediation have no analogue in `OrgNarrativeOutcome`). It writes prose
+ * remediation have no analogue in `NarrativeOutcome`). It writes prose
  * about a week that already happened. Same out-of-schema-safe `0` as
  * `verdictLimits`/`sweepLimits` — this object is a runtime-derived value
  * handed straight to the run loop, never re-validated through

@@ -88,7 +88,7 @@ export interface AiAgentLimits {
    * a burst of them is always a bug (a re-fired schedule occurrence, a
    * retry storm) rather than legitimate load. `narrativeMaxTurns` is 3
    * because the profile's whole job is one bounded context read followed by
-   * one `submit_org_narrative` call — a run needing more turns than that is
+   * one `submit_narrative` call — a run needing more turns than that is
    * not converging and should end.
    */
   maxConcurrentNarrativeRuns: number;

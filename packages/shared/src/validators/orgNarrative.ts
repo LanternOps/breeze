@@ -97,7 +97,7 @@ const narrativeSectionSubmissionSchema = z.object({
 }).strict();
 
 /**
- * What the MODEL submits through the `submit_org_narrative` outcome tool.
+ * What the MODEL submits through the `submit_narrative` outcome tool.
  * `.strict()` at both levels so a model that invents `title`, `markdown`, or
  * `order` is rejected rather than silently having its extra key dropped — the
  * server owns all three (see `orgNarrativeReport.ts`'s file docstring).

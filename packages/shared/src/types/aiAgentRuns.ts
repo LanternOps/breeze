@@ -422,7 +422,7 @@ export interface AiAgentRunDetailDto {
   /**
    * Phase 2 wave P2-3 (weekly org narrative) — the narrative this run
    * produced, for a `narrative`-profile run that reached a
-   * `submit_org_narrative` outcome. Null for every `full`/`verdict`/`sweep`
+   * `submit_narrative` outcome. Null for every `full`/`verdict`/`sweep`
    * run and for a narrative run that has not produced one. Additive nullable
    * field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION` (same rule as
    * `alertVerdict`/`sweep` above).
