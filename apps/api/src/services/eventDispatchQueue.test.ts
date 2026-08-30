@@ -238,6 +238,114 @@ describe('eventDispatchQueue', () => {
       // The rejection is real (so a caller's .catch() sees it), but nothing in
       // THIS module crashes synchronously — the promise simply rejects.
     });
+
+    // #4125: ioredis resolves `exec()` with one [error, result] tuple per queued
+    // command. A per-command failure NEVER rejects, so it can't reach the
+    // caller's `.catch()` in eventBus.ts — it has to be inspected here.
+    it('warns on a per-command error tuple, without rejecting', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      pipelineExec.mockResolvedValueOnce([
+        [null, 1],
+        [new Error('WRONGTYPE Operation against a key holding the wrong kind of value'), null],
+        [null, 1],
+      ]);
+
+      const event = makeEvent({ type: 'alert.triggered' as EventType });
+      // Resolves (that IS the bug — the caller's .catch() never fires), so the
+      // warning has to come from inside this module.
+      await expect(
+        mod.recordShadowLocalInvocation(event, 'webhook-delivery', 'ok'),
+      ).resolves.toBeUndefined();
+
+      const logs = warnSpy.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0].includes('shadow-record-command-failed'),
+      );
+      expect(logs).toHaveLength(1);
+      const payload = JSON.parse(logs[0]![1] as string);
+      expect(payload.errorId).toBe('EVENT_DISPATCH_SHADOW_COMMAND_FAILED');
+      expect(payload.eventId).toBe(event.id);
+      expect(payload.eventType).toBe('alert.triggered');
+      expect(payload.orgId).toBe('org-1');
+      expect(payload.subscriberId).toBe('webhook-delivery');
+      expect(payload.outcome).toBe('ok');
+      expect(payload.failures).toEqual([
+        { index: 1, error: expect.stringContaining('WRONGTYPE') },
+      ]);
+
+      warnSpy.mockRestore();
+    });
+
+    it('reports every failing command in one warning line', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      pipelineExec.mockResolvedValueOnce([
+        [new Error('WRONGTYPE hincrby'), null],
+        [null, 1],
+        [new Error('ERR expire'), null],
+      ]);
+
+      await mod.recordShadowLocalInvocation(
+        makeEvent({ type: 'alert.triggered' as EventType }),
+        'automation-worker',
+        'error',
+      );
+
+      const logs = warnSpy.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0].includes('shadow-record-command-failed'),
+      );
+      expect(logs).toHaveLength(1);
+      const payload = JSON.parse(logs[0]![1] as string);
+      expect(payload.failures.map((f: { index: number }) => f.index)).toEqual([0, 2]);
+
+      warnSpy.mockRestore();
+    });
+
+    it('stays quiet when every queued command succeeded', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      pipelineExec.mockResolvedValueOnce([
+        [null, 1],
+        [null, 1],
+        [null, 1],
+      ]);
+
+      await mod.recordShadowLocalInvocation(
+        makeEvent({ type: 'alert.triggered' as EventType }),
+        'webhook-delivery',
+        'ok',
+      );
+
+      expect(
+        warnSpy.mock.calls.filter(
+          (c) => typeof c[0] === 'string' && c[0].includes('shadow-record'),
+        ),
+      ).toHaveLength(0);
+
+      warnSpy.mockRestore();
+    });
+
+    it('warns when exec() resolves null (the MULTI was discarded — nothing ran)', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      pipelineExec.mockResolvedValueOnce(null);
+
+      const event = makeEvent({ type: 'alert.triggered' as EventType });
+      await expect(
+        mod.recordShadowLocalInvocation(event, 'webhook-delivery', 'ok'),
+      ).resolves.toBeUndefined();
+
+      const logs = warnSpy.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0].includes('shadow-record-discarded'),
+      );
+      expect(logs).toHaveLength(1);
+      const payload = JSON.parse(logs[0]![1] as string);
+      expect(payload.errorId).toBe('EVENT_DISPATCH_SHADOW_PIPELINE_DISCARDED');
+      expect(payload.eventId).toBe(event.id);
+      expect(payload.subscriberId).toBe('webhook-delivery');
+
+      warnSpy.mockRestore();
+    });
   });
 
   describe('isShadowSampledEvent', () => {

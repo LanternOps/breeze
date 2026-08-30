@@ -181,5 +181,62 @@ export async function recordShadowLocalInvocation(
     pipeline.expire(key, SHADOW_LOCAL_TTL_SECONDS);
   }
 
-  await pipeline.exec();
+  // `exec()` only REJECTS on transport-level failure (connection gone) — that
+  // rejection propagates to the caller's `.catch()` in eventBus.ts, which is
+  // where it has always been warned. A single command failing inside an
+  // otherwise-healthy pipeline resolves instead, as an `[error, result]` tuple,
+  // so it has to be inspected here or it disappears entirely (#4125).
+  reportShadowPipelineFailures(await pipeline.exec(), event, subscriberId, outcome);
+}
+
+/**
+ * Surface per-command failures from `recordShadowLocalInvocation`'s coalesced
+ * pipeline (#4125). Before the HINCRBY/HSET/EXPIRE were coalesced into one
+ * `multi()` (#4085 final-review cost trim) each was awaited discretely, so any
+ * failure rejected and the eventBus call site warned; coalescing silently
+ * dropped that signal for everything short of a transport failure.
+ *
+ * Log-only, and never throws: this is shadow-comparison bookkeeping, explicitly
+ * best-effort, and must not break the delivery path it is observing. No
+ * `captureException` either — this runs once per local subscriber invocation at
+ * full event volume, so a persistently-broken shadow key (a WRONGTYPE, say)
+ * would mean one Sentry event per published event. The structured
+ * `EVENT_DISPATCH_SHADOW_*` lines are the intended signal; they are greppable
+ * and the shadow-comparison job's own mismatch output corroborates them.
+ */
+function reportShadowPipelineFailures(
+  results: [error: Error | null, result: unknown][] | null,
+  event: BreezeEvent,
+  subscriberId: SubscriberId,
+  outcome: 'ok' | 'error',
+): void {
+  const context = {
+    eventId: event.id,
+    eventType: event.type,
+    orgId: event.orgId,
+    subscriberId,
+    outcome,
+  };
+
+  // ioredis resolves `null` when the MULTI was discarded — nothing ran at all,
+  // which is a strictly worse outcome than one failed command.
+  if (results === null) {
+    console.warn(
+      '[EventDispatchQueue] shadow-record-discarded',
+      JSON.stringify({ errorId: 'EVENT_DISPATCH_SHADOW_PIPELINE_DISCARDED', ...context }),
+    );
+    return;
+  }
+
+  const failures = results.flatMap(([error], index) =>
+    error
+      ? [{ index, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) }]
+      : [],
+  );
+  if (failures.length === 0) return;
+
+  console.warn(
+    '[EventDispatchQueue] shadow-record-command-failed',
+    JSON.stringify({ errorId: 'EVENT_DISPATCH_SHADOW_COMMAND_FAILED', ...context, failures }),
+  );
 }
