@@ -1473,6 +1473,44 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
 
     expect(evaluateRebootPolicy).not.toHaveBeenCalled();
     expect(executeReboot).not.toHaveBeenCalled();
+    // ...but an unparsable result is an anomaly, not a shrug: it is the one way a
+    // real partial success can still read as "nothing installed", so it has to
+    // leave a trail rather than silently taking the conservative branch.
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('unparsable patch install result') }),
+    );
+    const logged = logSpy.mock.calls.map((args: unknown[]) => args.join(' ')).join('\n');
+    expect(logged).toMatch(/unparsable/i);
+    // Must NOT claim the stronger "no patch installed successfully" — we do not know that.
+    expect(logged).not.toContain('no patch installed successfully');
+  });
+
+  it('records that a declined reboot was deferred by the maintenance window', async () => {
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: false,
+      reason: 'Outside maintenance window — reboot deferred',
+      deferred: true,
+    });
+
+    await runDeviceExecution({
+      approvedPatches: TWO_PATCHES,
+      rebootPolicy: 'maintenance_window',
+      command: agentCommandRow({
+        success: false,
+        installedCount: 1,
+        failedCount: 1,
+        rebootRequired: true,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'installed', rebootRequired: true },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'failed', error: '0x80070005' },
+        ],
+      }),
+    });
+
+    expect(executeReboot).not.toHaveBeenCalled();
+    const logged = logSpy.mock.calls.map((args: unknown[]) => args.join(' ')).join('\n');
+    expect(logged).toContain('Outside maintenance window');
+    expect(logged).toContain('(deferred)');
   });
 
   it('does not reboot when the install command never came back', async () => {

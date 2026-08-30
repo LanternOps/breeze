@@ -1130,11 +1130,26 @@ async function recordDeviceExecution(
     failedCount?: number;
   } | null = null;
 
+  // A well-formed agent ALWAYS emits the install summary as JSON
+  // (`executePatchInstallCommand` marshals it on both the success and the
+  // failure return), so unparsable stdout is an anomaly, not a shrug. It also
+  // became load-bearing with #4228: the reboot decision is now read out of this
+  // payload, so a parse failure is the one way a genuine partial success can
+  // still look like "nothing installed". It must leave a trail.
+  let resultUnparsable = false;
   if (commandResult?.stdout) {
     try {
       parsedResult = JSON.parse(commandResult.stdout);
-    } catch {
-      // Non-JSON stdout
+    } catch (err) {
+      resultUnparsable = true;
+      console.warn(
+        `[PatchJobExecutor] unparsable patch result stdout for job ${patchJobId} device ${deviceId}: ${String(err)}`
+      );
+      captureException(
+        new Error(
+          `[PatchJobExecutor] unparsable patch install result for job ${patchJobId} device ${deviceId}`
+        )
+      );
     }
   }
 
@@ -1213,8 +1228,13 @@ async function recordDeviceExecution(
   const rebootLog = `[PatchJobExecutor] job ${patchJobId} device ${deviceId} reboot policy "${rebootPolicy}"`;
 
   if (!overallSuccess && !anyPatchInstalled) {
+    // Say which of the two it is. "No patch installed" is a fact when the agent
+    // told us so; when its output was unparsable it is an assumption, and an
+    // operator chasing a device that did not reboot needs to tell them apart.
     console.log(
-      `${rebootLog}: not evaluated — no patch installed successfully (rebootRequired=${anyRebootRequired})`
+      `${rebootLog}: not evaluated — ${resultUnparsable
+        ? 'result unparsable, cannot confirm any install (see prior warning)'
+        : 'no patch installed successfully'} (rebootRequired=${anyRebootRequired})`
     );
   } else {
     const rebootEval = await evaluateRebootPolicy(deviceId, rebootPolicy, anyRebootRequired);
