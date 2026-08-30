@@ -327,8 +327,13 @@ export async function clearNeedsAttention(ids: string[]): Promise<void> {
  * land, which is the caller's signal to LEAVE the write queued: a park that did
  * not happen must never be reported as one, because the drain's next step is to
  * remove the row from the queue.
+ *
+ * Exported because the drain is not the only source of unsendable work: a stop
+ * whose device clock moved backwards mid-span produces a span that cannot be
+ * invoiced, and that record has to reach the same place a rejected write does
+ * rather than being dropped on the floor at the tap.
  */
-async function parkNeedsAttention(row: NeedsAttentionRow): Promise<boolean> {
+export async function parkNeedsAttention(row: NeedsAttentionRow): Promise<boolean> {
   return withStorageLock(async () => {
     try {
       const rows = await readNeedsAttentionUnlocked();

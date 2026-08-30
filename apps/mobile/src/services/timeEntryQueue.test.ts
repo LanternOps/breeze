@@ -47,6 +47,7 @@ import {
   drain,
   readNeedsAttention,
   clearNeedsAttention,
+  parkNeedsAttention,
   QUEUE_KEY,
   QUEUE_CORRUPT_KEY,
   QUEUE_NEEDS_ATTENTION_KEY,
@@ -305,6 +306,32 @@ describe('timeEntryQueue', () => {
     expect(parked[0].write.kind).toBe('create');
     expect(parked[0].write.payload).toMatchObject({ ticketId: 'k9', startedAt: SPAN.startedAt });
     expect(Number.isNaN(Date.parse(parked[0].failedAt))).toBe(false);
+  });
+
+  it('parks a row a caller could never enqueue, so unsendable work still surfaces', async () => {
+    // A local timer whose device clock moved backwards mid-span has no valid
+    // span to enqueue. That is still a record of real work and must reach the
+    // same place a server-rejected write does.
+    const landed = await parkNeedsAttention({
+      write: {
+        id: 'local-1',
+        kind: 'create',
+        payload: { ...SPAN, ticketId: 'k1' },
+        queuedAt: '2026-08-30T09:40:00.000Z',
+        attempts: 0,
+      },
+      status: 0,
+      code: 'CLOCK_WENT_BACKWARDS',
+      message: 'The device clock changed while this timer ran — enter it manually.',
+      failedAt: '2026-08-30T09:40:00.000Z',
+    });
+    expect(landed).toBe(true);
+    const parked = await readNeedsAttention();
+    expect(parked).toHaveLength(1);
+    expect(parked[0]).toMatchObject({ code: 'CLOCK_WENT_BACKWARDS' });
+    expect(parked[0].write.payload).toMatchObject({ ticketId: 'k1' });
+    // The queue itself is untouched — this was never a queued write.
+    await expect(readQueue()).resolves.toEqual([]);
   });
 
   it('needs-attention rows survive a later drain and can be cleared by id', async () => {
