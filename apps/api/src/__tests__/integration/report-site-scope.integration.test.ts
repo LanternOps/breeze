@@ -39,7 +39,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { and, eq, sql } from 'drizzle-orm';
 
@@ -106,6 +106,17 @@ const REPORT_PERMS = [
   { resource: 'reports', action: 'delete' },
 ];
 const MIGRATION_FILE = '2026-08-06-a-report-site-scope.sql';
+// Replaying MIGRATION_FILE re-runs its `DROP CONSTRAINT IF EXISTS ... ADD
+// CONSTRAINT reports_execution_scope_shape_chk` (and the report_runs twin),
+// which REVERTS every later redefinition of those two CHECKs for the rest of
+// the process — a real cross-file hazard, because the integration runner
+// shares one database across the files in a shard. 2026-09-24-b (wave P2-3,
+// #4190) widens exactly those CHECKs so a system-principal report may carry a
+// NULL execution_scope_user_id; without the restore below, whichever suite
+// happens to run after this one sees the pre-P2-3 shape. Every successor that
+// redefines a constraint owned by MIGRATION_FILE belongs in this list, newest
+// last; each is idempotent, so re-applying is a no-op beyond the restore.
+const SUCCESSOR_MIGRATION_FILES = ['2026-09-24-b-ai-agents-org-narrative.sql'] as const;
 
 function buildApp(): Hono {
   const app = new Hono();
@@ -2393,6 +2404,17 @@ describe('Wave 2 · scheduled execution fails closed before any side effect', ()
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('Wave 2 · migration is idempotent and the shape CHECK holds', () => {
+  // Runs even when a test above threw mid-replay, so the shared database never
+  // leaves this file with a reverted shape CHECK. See SUCCESSOR_MIGRATION_FILES.
+  afterAll(async () => {
+    if (!process.env.DATABASE_URL) return;
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    for (const file of SUCCESSOR_MIGRATION_FILES) {
+      const successorSql = await readFile(path.resolve(here, '../../../migrations', file), 'utf8');
+      await getTestDb().execute(sql.raw(successorSql));
+    }
+  });
+
   runDb('reapplying the expansion migration changes neither schema nor rows', async () => {
     const f = await buildFixture();
     await seedReport({

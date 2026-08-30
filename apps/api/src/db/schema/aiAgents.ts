@@ -33,6 +33,7 @@ import { devices } from './devices';
 import { metricAnomalyIncidents } from './metricAnomalyIncidents';
 import { organizations, partners } from './orgs';
 import { tickets } from './portal';
+import { reportRuns } from './reports';
 import { users } from './users';
 
 // Dual-ownership (#2135, spec §4.1): an agent belongs to EITHER one org
@@ -100,6 +101,14 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // same-file self-reference like `aiAlertVerdicts.supersededBy` — same
   // workaround, applied across the module boundary this time.
   scheduleId: uuid('schedule_id').references((): AnyPgColumn => aiAgentSchedules.id, { onDelete: 'set null' }),
+  // P2-3 (#4190): the narrative ARTIFACT (`report_runs`), not the definition —
+  // the trace links to something downloadable; the definition is
+  // `report_runs.report_id`. ON DELETE SET NULL, same treatment as
+  // scheduleId/alertId: run history survives artifact deletion. A plain
+  // `() =>` reference is safe here: reports.ts imports only orgs/users, so
+  // this edge introduces no cycle (and reports.sourceAiAgentScheduleId is
+  // deliberately SQL-only for exactly that reason — see its comment).
+  reportRunId: uuid('report_run_id').references(() => reportRuns.id, { onDelete: 'set null' }),
   sessionId: uuid('session_id').references(() => aiSessions.id, { onDelete: 'set null' }),
   // Wave 6 PR 3 (#3828): the triggering ticket for a `triggerKind==='ticket'`
   // run. ON DELETE SET NULL (run history survives ticket deletion — mirrors

@@ -10,14 +10,22 @@
  * calls) plus the migration's two extra CHECKs (`_baseline_chk`, `_kinds_chk`)
  * and the action_intents typed-scope trigger extension this migration also
  * ships.
+ *
+ * Phase 2 wave P2-3 (#4187 / #4190) extends this file with the narrative
+ * migrations' DB contracts (2026-09-24-a-report-type-ai-org-narrative.sql,
+ * 2026-09-24-b-ai-agents-org-narrative.sql): the `kind` CHECK and its
+ * `AI_AGENT_SCHEDULE_KINDS` equality, the per-arm `_kind_kinds_chk`, the
+ * composite self-FK that stops an org override disagreeing with its
+ * baseline's kind, the widened `profile` CHECK, the new `report_type` enum
+ * label, and the reports/report_runs system-principal shape CHECK.
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { eq, inArray, sql } from 'drizzle-orm';
-import { AI_AGENT_RUN_PROFILES, AI_SWEEP_KINDS, type AiSweepKind } from '@breeze/shared';
+import { AI_AGENT_RUN_PROFILES, AI_AGENT_SCHEDULE_KINDS, AI_SWEEP_KINDS, type AiSweepKind } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import { aiAgentRuns, aiAgents, aiAgentSchedules, actionIntents, devices } from '../../db/schema';
+import { aiAgentRuns, aiAgents, aiAgentSchedules, actionIntents, devices, reports } from '../../db/schema';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 
 const createdSchedules: string[] = [];
@@ -25,6 +33,7 @@ const createdAgents: string[] = [];
 const createdDevices: string[] = [];
 const createdIntents: string[] = [];
 const createdRuns: string[] = [];
+const createdReports: string[] = [];
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
@@ -42,6 +51,9 @@ afterEach(async () => {
     if (createdRuns.length > 0) {
       await db.delete(aiAgentRuns).where(inArray(aiAgentRuns.id, createdRuns));
     }
+    if (createdReports.length > 0) {
+      await db.delete(reports).where(inArray(reports.id, createdReports));
+    }
     if (createdSchedules.length > 0) {
       await db.delete(aiAgentSchedules).where(inArray(aiAgentSchedules.id, createdSchedules));
     }
@@ -54,6 +66,7 @@ afterEach(async () => {
   });
   createdIntents.length = 0;
   createdRuns.length = 0;
+  createdReports.length = 0;
   createdSchedules.length = 0;
   createdAgents.length = 0;
   createdDevices.length = 0;
@@ -490,5 +503,390 @@ describe("ai_agent_runs_profile_chk — DB constraint matches AI_AGENT_RUN_PROFI
     );
     createdRuns.push(row!.id);
     expect(row!.profile).toBe('sweep');
+  });
+
+  // P2-3 (#4190): the same CHECK is widened a second time, to four values.
+  // The equality test above is what actually pins the set — this case proves
+  // the widened CHECK admits a real INSERT, mirroring the 'sweep' case.
+  it("accepts an insert with profile='narrative' (P2-3's CHECK widening)", async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const by = await creator(partner.id);
+    const agentId = await createAgent(partner.id, by);
+    const [row] = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db
+        .insert(aiAgentRuns)
+        .values({
+          agentId,
+          orgId: org.id,
+          triggerKind: 'alert',
+          dedupeKey: `narrative-chk-${randomUUID()}`,
+          modeAtStart: 'shadow',
+          policySnapshot: { schemaVersion: 1 } as never,
+          profile: 'narrative',
+        })
+        .returning(),
+    );
+    createdRuns.push(row!.id);
+    expect(row!.profile).toBe('narrative');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 2 wave P2-3 (#4187 / #4190) — 2026-09-24-a / 2026-09-24-b.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Same reasoning as the AI_SWEEP_KINDS / AI_AGENT_RUN_PROFILES contracts above:
+// the migration's CHECK and @breeze/shared's AI_AGENT_SCHEDULE_KINDS are two
+// independently hand-maintained lists with nothing structurally tying them
+// together, so only a live-DB equality test can see a drift.
+describe('ai_agent_schedules_kind_chk — DB constraint matches AI_AGENT_SCHEDULE_KINDS', () => {
+  it('the constraint value set equals AI_AGENT_SCHEDULE_KINDS exactly', async () => {
+    const rows = (await db.execute(sql`
+      SELECT pg_get_constraintdef(oid) AS def
+      FROM pg_constraint
+      WHERE conrelid = 'ai_agent_schedules'::regclass
+        AND conname = 'ai_agent_schedules_kind_chk';
+    `)) as unknown as Array<{ def: string }>;
+
+    expect(rows).toHaveLength(1);
+    const def = rows[0]?.def ?? '';
+    // e.g. CHECK (kind = ANY (ARRAY['sweep'::text, 'narrative'::text]))
+    const matches = [...def.matchAll(/'([^']+)'::text/g)].map((m) => m[1]!);
+    expect(matches.length).toBeGreaterThan(0);
+    const constraintKinds = new Set(matches);
+    const sharedKinds = new Set<string>(AI_AGENT_SCHEDULE_KINDS);
+
+    for (const kind of constraintKinds) {
+      expect(sharedKinds.has(kind), `DB constraint allows '${kind}' but AI_AGENT_SCHEDULE_KINDS does not`).toBe(true);
+    }
+    for (const kind of sharedKinds) {
+      expect(constraintKinds.has(kind), `AI_AGENT_SCHEDULE_KINDS has '${kind}' but the DB constraint rejects it`).toBe(true);
+    }
+  });
+});
+
+// The kind/sweep_kinds rule is PER ARM, not an XOR: a sweep ORG OVERRIDE may
+// legitimately hold '{}' (= disabled, P2-2 behaviour that must survive this
+// migration), while a sweep PARTNER BASELINE may not, and a narrative row of
+// either ownership never carries sweep kinds.
+describe('ai_agent_schedules_kind_kinds_chk — per-arm empty-kinds rule', () => {
+  it("accepts a partner narrative baseline with sweep_kinds '{}'", async () => {
+    const partner = await createPartner();
+    const by = await creator(partner.id);
+    const agentId = await createAgent(partner.id, by);
+    const [row] = await withDbAccessContext(partnerContext(partner.id, []), () =>
+      db
+        .insert(aiAgentSchedules)
+        .values({
+          cron: BASE.cron,
+          sweepKinds: [],
+          kind: 'narrative',
+          orgId: null,
+          partnerId: partner.id,
+          agentId,
+          baselineScheduleId: null,
+          createdBy: by,
+        })
+        .returning(),
+    );
+    createdSchedules.push(row!.id);
+    expect(row!.kind).toBe('narrative');
+    expect(row!.sweepKinds).toEqual([]);
+  });
+
+  it('rejects a partner narrative baseline that carries sweep kinds (23514)', async () => {
+    const partner = await createPartner();
+    const by = await creator(partner.id);
+    const agentId = await createAgent(partner.id, by);
+    await expectSqlState(
+      () =>
+        withDbAccessContext(partnerContext(partner.id, []), () =>
+          db
+            .insert(aiAgentSchedules)
+            .values({
+              ...BASE,
+              kind: 'narrative',
+              orgId: null,
+              partnerId: partner.id,
+              agentId,
+              baselineScheduleId: null,
+              createdBy: by,
+            })
+            .returning(),
+        ),
+      '23514',
+    );
+  });
+
+  it("rejects a partner sweep baseline with sweep_kinds '{}' (23514)", async () => {
+    const partner = await createPartner();
+    const by = await creator(partner.id);
+    const agentId = await createAgent(partner.id, by);
+    await expectSqlState(
+      () =>
+        withDbAccessContext(partnerContext(partner.id, []), () =>
+          db
+            .insert(aiAgentSchedules)
+            .values({
+              cron: BASE.cron,
+              sweepKinds: [],
+              kind: 'sweep',
+              orgId: null,
+              partnerId: partner.id,
+              agentId,
+              baselineScheduleId: null,
+              createdBy: by,
+            })
+            .returning(),
+        ),
+      '23514',
+    );
+  });
+
+  it("still accepts a sweep ORG OVERRIDE with sweep_kinds '{}' (P2-2 'disabled' shape)", async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const by = await creator(partner.id);
+    const agentId = await createAgent(partner.id, by);
+    const [baseline] = await withDbAccessContext(partnerContext(partner.id, [org.id]), () =>
+      db
+        .insert(aiAgentSchedules)
+        .values({ ...BASE, orgId: null, partnerId: partner.id, agentId, baselineScheduleId: null, createdBy: by })
+        .returning(),
+    );
+    createdSchedules.push(baseline!.id);
+    const [override] = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db
+        .insert(aiAgentSchedules)
+        .values({
+          cron: BASE.cron,
+          sweepKinds: [],
+          kind: 'sweep',
+          orgId: org.id,
+          partnerId: null,
+          agentId,
+          baselineScheduleId: baseline!.id,
+          createdBy: by,
+        })
+        .returning(),
+    );
+    createdSchedules.push(override!.id);
+    expect(override!.sweepKinds).toEqual([]);
+    expect(override!.kind).toBe('sweep');
+  });
+
+  it("rejects an org override whose kind disagrees with its baseline's (23503 — composite self-FK)", async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const by = await creator(partner.id);
+    const agentId = await createAgent(partner.id, by);
+    const [baseline] = await withDbAccessContext(partnerContext(partner.id, [org.id]), () =>
+      db
+        .insert(aiAgentSchedules)
+        .values({
+          cron: BASE.cron,
+          sweepKinds: [],
+          kind: 'narrative',
+          orgId: null,
+          partnerId: partner.id,
+          agentId,
+          baselineScheduleId: null,
+          createdBy: by,
+        })
+        .returning(),
+    );
+    createdSchedules.push(baseline!.id);
+    // kind='sweep' + org_id NOT NULL passes _kind_kinds_chk, so the ONLY thing
+    // that can reject this row is ai_agent_schedules_baseline_kind_fk.
+    await expectSqlState(
+      () =>
+        withDbAccessContext(orgContext(org.id, partner.id), () =>
+          db
+            .insert(aiAgentSchedules)
+            .values({
+              cron: BASE.cron,
+              sweepKinds: [],
+              kind: 'sweep',
+              orgId: org.id,
+              partnerId: null,
+              agentId,
+              baselineScheduleId: baseline!.id,
+              createdBy: by,
+            })
+            .returning(),
+        ),
+      '23503',
+    );
+  });
+
+  // The composite FK is added ALONGSIDE the single-column baseline FK from
+  // 2026-09-23; if the two disagreed on ON DELETE, deleting a baseline would
+  // raise instead of cascading. 'c' = CASCADE in pg_constraint.confdeltype.
+  it('the composite self-FK cascades on delete, matching the single-column baseline FK', async () => {
+    const rows = (await db.execute(sql`
+      SELECT conname, confdeltype
+      FROM pg_constraint
+      WHERE conrelid = 'ai_agent_schedules'::regclass
+        AND contype = 'f'
+        AND confrelid = 'ai_agent_schedules'::regclass;
+    `)) as unknown as Array<{ conname: string; confdeltype: string }>;
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    expect(rows.find((r) => r.conname === 'ai_agent_schedules_baseline_kind_fk')?.confdeltype).toBe('c');
+    for (const row of rows) {
+      expect(row.confdeltype, `${row.conname} must cascade like every other self-FK on this table`).toBe('c');
+    }
+  });
+});
+
+describe('report_type enum — ai_org_narrative label (2026-09-24-a)', () => {
+  it('the shipped enum carries ai_org_narrative', async () => {
+    const rows = (await db.execute(sql`
+      SELECT unnest(enum_range(NULL::report_type))::text AS label;
+    `)) as unknown as Array<{ label: string }>;
+    expect(rows.map((r) => r.label)).toContain('ai_org_narrative');
+  });
+});
+
+// The narrative worker writes a report definition with NO acting user. The
+// pre-P2-3 shape CHECK required execution_scope_user_id NOT NULL on every
+// non-legacy arm, which would have made that write impossible; the P2-3
+// re-definition opens exactly one hole (unrestricted + principal 'system') and
+// closes it everywhere else.
+describe('reports execution-scope system principal (2026-09-24-b)', () => {
+  const FINGERPRINT = 'a'.repeat(64);
+
+  it("accepts an unrestricted 'system' definition with no acting user", async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const [row] = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db
+        .insert(reports)
+        .values({
+          orgId: org.id,
+          name: `Weekly narrative ${randomUUID().slice(0, 8)}`,
+          type: 'ai_org_narrative',
+          executionScopeVersion: 1,
+          executionScopeKind: 'unrestricted',
+          executionScopeSiteIds: null,
+          executionScopeUserId: null,
+          executionScopeFingerprint: FINGERPRINT,
+          executionScopeCapturedAt: new Date(),
+          executionScopePrincipalKind: 'system',
+        })
+        .returning(),
+    );
+    createdReports.push(row!.id);
+    expect(row!.executionScopePrincipalKind).toBe('system');
+    expect(row!.executionScopeUserId).toBeNull();
+  });
+
+  it("rejects a 'system' definition that also names an acting user (23514)", async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const user = await createUser({ partnerId: partner.id, orgId: org.id, email: `narr-sys-${randomUUID()}@example.com` });
+    await expectSqlState(
+      () =>
+        withDbAccessContext(orgContext(org.id, partner.id), () =>
+          db
+            .insert(reports)
+            .values({
+              orgId: org.id,
+              name: `Weekly narrative ${randomUUID().slice(0, 8)}`,
+              type: 'ai_org_narrative',
+              executionScopeVersion: 1,
+              executionScopeKind: 'unrestricted',
+              executionScopeSiteIds: null,
+              executionScopeUserId: user.id,
+              executionScopeFingerprint: FINGERPRINT,
+              executionScopeCapturedAt: new Date(),
+              executionScopePrincipalKind: 'system',
+            })
+            .returning(),
+        ),
+      '23514',
+    );
+  });
+
+  it("rejects a 'restricted' + 'system' definition (23514 — a system run has no site grants)", async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const user = await createUser({ partnerId: partner.id, orgId: org.id, email: `narr-restr-${randomUUID()}@example.com` });
+    await expectSqlState(
+      () =>
+        withDbAccessContext(orgContext(org.id, partner.id), () =>
+          db
+            .insert(reports)
+            .values({
+              orgId: org.id,
+              name: `Weekly narrative ${randomUUID().slice(0, 8)}`,
+              type: 'ai_org_narrative',
+              executionScopeVersion: 1,
+              executionScopeKind: 'restricted',
+              executionScopeSiteIds: [site!.id],
+              executionScopeUserId: user.id,
+              executionScopeFingerprint: FINGERPRINT,
+              executionScopeCapturedAt: new Date(),
+              executionScopePrincipalKind: 'system',
+            })
+            .returning(),
+        ),
+      '23514',
+    );
+  });
+
+  // reports_source_ai_agent_schedule_uniq is what makes the worker's
+  // find-or-create idempotent under concurrency — two ticks racing on the same
+  // (org, schedule) must collide, not fork the definition.
+  it('allows only one definition per (org, source schedule) (23505)', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const by = await creator(partner.id);
+    const agentId = await createAgent(partner.id, by);
+    const [baseline] = await withDbAccessContext(partnerContext(partner.id, [org.id]), () =>
+      db
+        .insert(aiAgentSchedules)
+        .values({
+          cron: BASE.cron,
+          sweepKinds: [],
+          kind: 'narrative',
+          orgId: null,
+          partnerId: partner.id,
+          agentId,
+          baselineScheduleId: null,
+          createdBy: by,
+        })
+        .returning(),
+    );
+    createdSchedules.push(baseline!.id);
+    const [first] = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db
+        .insert(reports)
+        .values({
+          orgId: org.id,
+          name: `Weekly narrative ${randomUUID().slice(0, 8)}`,
+          type: 'ai_org_narrative',
+          sourceAiAgentScheduleId: baseline!.id,
+        })
+        .returning(),
+    );
+    createdReports.push(first!.id);
+    expect(first!.sourceAiAgentScheduleId).toBe(baseline!.id);
+    await expectSqlState(
+      () =>
+        withDbAccessContext(orgContext(org.id, partner.id), () =>
+          db
+            .insert(reports)
+            .values({
+              orgId: org.id,
+              name: `Weekly narrative ${randomUUID().slice(0, 8)}`,
+              type: 'ai_org_narrative',
+              sourceAiAgentScheduleId: baseline!.id,
+            })
+            .returning(),
+        ),
+      '23505',
+    );
   });
 });
