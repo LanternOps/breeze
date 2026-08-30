@@ -2790,7 +2790,8 @@
     "export": "Exportar",
     "inboundEmail": "E-mail de entrada",
     "cannedResponses": "Respostas prontas",
-    "checkingAccess": "Verificando seu acesso..."
+    "checkingAccess": "Verificando seu acesso...",
+    "timeTracking": "Controle de tempo"
   },
   "ticketFormsCard": {
     "heading": "Formulários de abertura",
@@ -3937,5 +3938,17 @@
     "confirmBody": "Isso desconecta {{name}} do add-in técnico do Outlook em todos os dispositivos. É possível vincular novamente ao entrar na conta.",
     "cancel": "Cancelar",
     "confirmRevoke": "Revogar vínculo"
+  },
+  "timeTrackingSettingsCard": {
+    "heading": "Lançamentos de tempo sugeridos",
+    "subheading": "Quando uma sessão remota termina, ela é oferecida na folha de horas do técnico como um lançamento de tempo de um toque. Nada é registrado sem esse toque.",
+    "enabledLabel": "Sugerir lançamentos de tempo a partir de sessões remotas",
+    "minSessionLabel": "Duração mínima da sessão (segundos)",
+    "mergeGapLabel": "Intervalo de mesclagem (minutos)",
+    "save": "Salvar",
+    "saved": "Configurações de controle de tempo salvas",
+    "saveFailed": "Não foi possível salvar as configurações de controle de tempo",
+    "minSessionRange": "A duração mínima da sessão deve estar entre {{min}} e {{max}} segundos",
+    "mergeGapRange": "O intervalo de mesclagem deve estar entre {{min}} e {{max}} minutos"
   }
 }

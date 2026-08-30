@@ -2790,7 +2790,8 @@
     "export": "Export",
     "inboundEmail": "Inbound Email",
     "cannedResponses": "Canned responses",
-    "checkingAccess": "Checking your access..."
+    "checkingAccess": "Checking your access...",
+    "timeTracking": "Time Tracking"
   },
   "ticketFormsCard": {
     "heading": "Intake forms",
@@ -3937,5 +3938,17 @@
     "confirmBody": "This signs {{name}} out of the Outlook tech add-in on every device. They can re-bind by signing in again.",
     "cancel": "Cancel",
     "confirmRevoke": "Revoke binding"
+  },
+  "timeTrackingSettingsCard": {
+    "heading": "Suggested time entries",
+    "subheading": "When a remote session ends, offer it on the technician’s timesheet as a one-tap time entry. Nothing is logged without the tap.",
+    "enabledLabel": "Suggest time entries from remote sessions",
+    "minSessionLabel": "Minimum session length (seconds)",
+    "mergeGapLabel": "Merge gap (minutes)",
+    "save": "Save",
+    "saved": "Time tracking settings saved",
+    "saveFailed": "Could not save time tracking settings",
+    "minSessionRange": "Minimum session length must be between {{min}} and {{max}} seconds",
+    "mergeGapRange": "Merge gap must be between {{min}} and {{max}} minutes"
   }
 }

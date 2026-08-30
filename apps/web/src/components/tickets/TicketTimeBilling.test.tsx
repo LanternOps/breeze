@@ -37,6 +37,25 @@ describe('TicketTimeBilling', () => {
     expect(screen.getByTestId('ticket-billing-parts-total-USD').textContent).toBe('$12.00');
   });
 
+  // W06 (#3900): the SAME badge the timesheet renders, from the same helper, so
+  // the two surfaces cannot disagree about what a provenance value is called.
+  it('shows a provenance badge in the rail for a non-manual entry and none for manual', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/tickets/tk-1/time-entries')) {
+        return { ok: true, status: 200, json: async () => ({ data: [
+          { ...entries[0], id: 'e1', source: 'support_session' },
+          { ...entries[0], id: 'e2', source: 'manual' },
+          { ...entries[0], id: 'e3' },
+        ], total: 3 }) } as Response;
+      }
+      return route(url);
+    });
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    expect((await screen.findByTestId('time-entry-source-e1')).textContent).toBe('From Quick Support');
+    expect(screen.queryByTestId('time-entry-source-e2')).toBeNull();
+    expect(screen.queryByTestId('time-entry-source-e3')).toBeNull();
+  });
+
   it('renders a dash (not $0.00) when a summary carries no money', async () => {
     fetchWithAuth.mockImplementation(async (url: string) => {
       if (url.startsWith('/tickets/tk-1/billing-summary')) {

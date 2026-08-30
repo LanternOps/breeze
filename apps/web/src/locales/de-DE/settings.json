@@ -2737,7 +2737,8 @@
     "export": "Exportieren",
     "inboundEmail": "Eingehende E-Mail",
     "cannedResponses": "Vorgefertigte Antworten",
-    "checkingAccess": "Zugriff wird geprüft..."
+    "checkingAccess": "Zugriff wird geprüft...",
+    "timeTracking": "Zeiterfassung"
   },
   "ticketFormsCard": {
     "heading": "Aufnahmeformulare",
@@ -3937,5 +3938,17 @@
     "confirmBody": "Dadurch wird {{name}} auf allen Geräten vom Outlook-Techniker-Add-In abgemeldet. Eine erneute Verbindung ist durch erneutes Anmelden möglich.",
     "cancel": "Abbrechen",
     "confirmRevoke": "Bindung widerrufen"
+  },
+  "timeTrackingSettingsCard": {
+    "heading": "Vorgeschlagene Zeiteinträge",
+    "subheading": "Wenn eine Remote-Sitzung endet, wird sie im Stundenzettel des Technikers als Zeiteintrag mit einem Tippen angeboten. Ohne dieses Tippen wird nichts erfasst.",
+    "enabledLabel": "Zeiteinträge aus Remote-Sitzungen vorschlagen",
+    "minSessionLabel": "Mindestdauer der Sitzung (Sekunden)",
+    "mergeGapLabel": "Zusammenführungsintervall (Minuten)",
+    "save": "Speichern",
+    "saved": "Zeiterfassungseinstellungen gespeichert",
+    "saveFailed": "Zeiterfassungseinstellungen konnten nicht gespeichert werden",
+    "minSessionRange": "Die Mindestdauer der Sitzung muss zwischen {{min}} und {{max}} Sekunden liegen",
+    "mergeGapRange": "Das Zusammenführungsintervall muss zwischen {{min}} und {{max}} Minuten liegen"
   }
 }

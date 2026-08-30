@@ -1628,6 +1628,12 @@
         "editEntry": "Eintrag {{id}} bearbeiten",
         "total": "Gesamt: {{duration}}",
         "billableTotal": "Abrechnungsfähig: {{duration}}"
+      },
+      "sourceBadge": {
+        "timer": "Timer",
+        "location": "Aus Standort",
+        "remote_session": "Aus Remote-Sitzung",
+        "support_session": "Aus Quick Support"
       }
     },
     "snmp": {

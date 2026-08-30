@@ -2790,7 +2790,8 @@
     "export": "Dışa aktar",
     "inboundEmail": "Gelen E-posta",
     "cannedResponses": "Hazır yanıtlar",
-    "checkingAccess": "Erişiminiz kontrol ediliyor..."
+    "checkingAccess": "Erişiminiz kontrol ediliyor...",
+    "timeTracking": "Zaman Takibi"
   },
   "ticketFormsCard": {
     "heading": "Başvuru formları",
@@ -3937,5 +3938,17 @@
     "confirmBody": "Bu işlem {{name}} kullanıcısının Outlook teknisyen eklentisi oturumunu tüm cihazlarda kapatır. Yeniden oturum açarak tekrar bağlanabilirler.",
     "cancel": "İptal",
     "confirmRevoke": "Bağlamayı iptal et"
+  },
+  "timeTrackingSettingsCard": {
+    "heading": "Önerilen zaman kayıtları",
+    "subheading": "Bir uzak oturum sona erdiğinde, teknisyenin zaman çizelgesinde tek dokunuşluk bir zaman kaydı olarak sunulur. Bu dokunuş olmadan hiçbir şey kaydedilmez.",
+    "enabledLabel": "Uzak oturumlardan zaman kayıtları öner",
+    "minSessionLabel": "Minimum oturum süresi (saniye)",
+    "mergeGapLabel": "Birleştirme aralığı (dakika)",
+    "save": "Kaydet",
+    "saved": "Zaman takibi ayarları kaydedildi",
+    "saveFailed": "Zaman takibi ayarları kaydedilemedi",
+    "minSessionRange": "Minimum oturum süresi {{min}} ile {{max}} saniye arasında olmalıdır",
+    "mergeGapRange": "Birleştirme aralığı {{min}} ile {{max}} dakika arasında olmalıdır"
   }
 }

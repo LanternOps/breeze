@@ -1628,6 +1628,12 @@
         "editEntry": "Girişi düzenle {{id}}",
         "total": "Toplam: {{duration}}",
         "billableTotal": "Faturalandırılabilir: {{duration}}"
+      },
+      "sourceBadge": {
+        "timer": "Zamanlayıcı",
+        "location": "Konumdan",
+        "remote_session": "Uzak oturumdan",
+        "support_session": "Quick Support'tan"
       }
     },
     "snmp": {

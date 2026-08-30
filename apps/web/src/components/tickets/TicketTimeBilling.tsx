@@ -5,6 +5,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { startTimerAction, onTimerChanged, onBillingChanged, broadcastBillingChanged } from '../../lib/timerActions';
 import { formatMinutes } from '../../lib/timeFormat';
+import { sourceBadgeLabelKey } from '../time/timeEntrySource';
 import { formatMoney } from '../billing/shared/format';
 import { ApproximateMoneyLine } from '../billing/shared/ApproximateMoneyLine';
 
@@ -26,6 +27,8 @@ interface EntryRow {
   isBillable: boolean;
   userName: string | null;
   endedAt: string | null;
+  /** W06 (#3900) server-stamped provenance; absent on an older API. */
+  source?: string | null;
 }
 
 /** One chip per currency; an empty list renders a dash rather than a zero in
@@ -241,6 +244,14 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
               <span className="min-w-0 truncate text-muted-foreground">
                 {entry.userName ?? t('ticketTimeBilling.techFallback')}
                 {entry.description ? ` — ${entry.description}` : ''}
+                {sourceBadgeLabelKey(entry.source) && (
+                  <span
+                    data-testid={`time-entry-source-${entry.id}`}
+                    className="ml-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px]"
+                  >
+                    {t(/* i18n-dynamic */ `common:${sourceBadgeLabelKey(entry.source)!}`)}
+                  </span>
+                )}
               </span>
               <span className="shrink-0">
                 {entry.endedAt == null ? t('ticketTimeBilling.running') : formatMinutes(entry.durationMinutes)}

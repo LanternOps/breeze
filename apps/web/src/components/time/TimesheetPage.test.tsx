@@ -38,6 +38,43 @@ describe('TimesheetPage', () => {
     expect(screen.getByTestId('timesheet-total').textContent).toContain('1h 30m');
   });
 
+  // W06 (#3900) provenance badge. `manual` is the default for every entry ever
+  // typed by hand, so badging it would put a chip on nearly every row and say
+  // nothing — only a non-manual source is worth surfacing.
+  it('shows a provenance badge for a non-manual entry and none for a manual one', async () => {
+    const fromSession = { ...entry, id: 'e1', source: 'remote_session' };
+    const manual = { ...entry, id: 'e2', source: 'manual' };
+    const noSource = { ...entry, id: 'e3' };  // older server: field absent
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/time-entries/timesheet')) {
+        return jsonRes({ ...week, days: [{ ...week.days[0], entries: [fromSession, manual, noSource] }, ...week.days.slice(1)] });
+      }
+      if (url.startsWith('/users')) return jsonRes([]);
+      return jsonRes({});
+    });
+    render(<TimesheetPage />);
+    expect((await screen.findByTestId('time-entry-source-e1')).textContent).toBe('From remote session');
+    expect(screen.queryByTestId('time-entry-source-e2')).toBeNull();
+    expect(screen.queryByTestId('time-entry-source-e3')).toBeNull();
+  });
+
+  it('labels every value in the vocabulary', async () => {
+    const rows = (['timer', 'location', 'remote_session', 'support_session'] as const)
+      .map((source, i) => ({ ...entry, id: `s${i}`, source }));
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/time-entries/timesheet')) {
+        return jsonRes({ ...week, days: [{ ...week.days[0], entries: rows }, ...week.days.slice(1)] });
+      }
+      if (url.startsWith('/users')) return jsonRes([]);
+      return jsonRes({});
+    });
+    render(<TimesheetPage />);
+    expect((await screen.findByTestId('time-entry-source-s0')).textContent).toBe('Timer');
+    expect(screen.getByTestId('time-entry-source-s1').textContent).toBe('From location');
+    expect(screen.getByTestId('time-entry-source-s2').textContent).toBe('From remote session');
+    expect(screen.getByTestId('time-entry-source-s3').textContent).toBe('From Quick Support');
+  });
+
   it('renders one money chip per currency in the week total, never a summed figure', async () => {
     render(<TimesheetPage />);
     const amounts = await screen.findByTestId('timesheet-billable-amounts');
