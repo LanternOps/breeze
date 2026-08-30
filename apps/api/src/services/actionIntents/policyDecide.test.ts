@@ -246,6 +246,13 @@ const POLICY_SNAPSHOT: AiAgentPolicySnapshot = {
       maxSweepRunsPerHour: 20,
       sweepBudgetCentsPerRun: 30,
       sweepMaxTurns: 8,
+      // v7 (phase 2 wave P2-3) narrative-profile caps — same reason as the v6
+      // sweep block above: `AiAgentLimits` requires them, and nothing on the
+      // policy-decision path reads a narrative limit.
+      maxConcurrentNarrativeRuns: 1,
+      maxNarrativeRunsPerHour: 5,
+      narrativeBudgetCentsPerRun: 20,
+      narrativeMaxTurns: 3,
     },
     triggers: { alertSeverities: [], respectMaintenanceWindows: false },
     recipients: { userIds: ['recipient-1'], roleIds: [] },

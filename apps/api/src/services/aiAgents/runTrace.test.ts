@@ -585,4 +585,66 @@ describe('buildRunTrace — safe projection (#3828)', () => {
       expect(detail.sweep?.findings[0]?.deviceHostname).toBe('WS-ACCT-04');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Phase 2 wave P2-3 (weekly org narrative), task 6 — leak tripwire.
+  //
+  // The weekly `NarrativeContext` is a whole organization's activity,
+  // assembled under a SYSTEM db context that bypasses RLS. It exists to be
+  // rendered into ONE prompt. `buildRunTrace` is a named-field projection, so
+  // the guarantee is structural rather than filtered — this case pins it, and
+  // pins it against the shape a future task is most likely to reach for
+  // (stashing the context on the outcome "so the report can quote it").
+  // -------------------------------------------------------------------------
+  describe('narrative run projection (P2-3)', () => {
+    const SCHEDULE_ID = '77777777-7777-4777-8777-777777777777';
+
+    it('never carries the weekly narrative context onto the trace, even when the outcome holds one', () => {
+      const detail = buildRunTrace(
+        baseRun({
+          deviceId: null,
+          triggerKind: 'schedule',
+          scheduleId: SCHEDULE_ID,
+          triggerRef: { scheduleId: SCHEDULE_ID, occurrenceKey: '2026-08-31T07:00:00Z', kind: 'narrative' },
+          outcome: {
+            executedActions: [],
+            proposedActions: [],
+            deniedActions: [],
+            toolExecutionCount: 0,
+            narrative: {
+              version: 1,
+              headline: 'A quiet week.',
+              sections: [{ key: 'overview', title: 'Overview', bullets: ['Nothing needed a person.'] }],
+              markdown: '# A quiet week.\n\n## Overview\n- Nothing needed a person.',
+            },
+            // Not a field of `AgentRunOutcome` — deliberately forged onto the
+            // stored jsonb, which is exactly how this would reach the DTO if
+            // the projection ever became a spread.
+            narrativeContext: {
+              org: { name: 'Acme Dental', partnerName: 'zzz-leak-marker-zzz' },
+              unavailable: ['alerts.suppressedInWindow'],
+              toolInput: { secret: 'zzz-leak-marker-zzz' },
+            },
+          } as never,
+        }),
+        AGENT,
+        null,
+        [],
+        [],
+      );
+
+      const json = JSON.stringify(detail);
+      for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+        expect(json).not.toContain(`"${forbidden}"`);
+      }
+      for (const forbidden of ['narrativeContext', 'context', 'unavailable', 'partnerName']) {
+        expect(json, `trace must not carry "${forbidden}"`).not.toContain(`"${forbidden}"`);
+      }
+      expect(json).not.toContain('zzz-leak-marker-zzz');
+      // Control: the run itself still projected — a trace that dropped
+      // everything would pass every assertion above vacuously.
+      expect(detail.id).toBe(RUN_ID);
+      expect(detail.status).toBe('completed');
+    });
+  });
 });
