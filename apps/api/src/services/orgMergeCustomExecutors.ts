@@ -16,9 +16,9 @@
  *   - the generic dedupe DELETE would have ABORTED THE MERGE with 23503,
  *     because the row it removes has non-deferrable NO ACTION / RESTRICT
  *     children: `discovered_assets`, `plugin_installations`,
- *     `playbook_definitions`, `pam_signer_groups`. These re-home their children
- *     onto the survivor's equivalent row and then delete the duplicate; see
- *     `rehomeChildrenThenDelete`.
+ *     `playbook_definitions`, `pam_signer_groups`, `reports`. These re-home
+ *     their children onto the survivor's equivalent row and then delete the
+ *     duplicate; see `rehomeChildrenThenDelete`.
  *
  * Contract, deliberately narrow so the engine stays uniform:
  *   - every executor runs inside the engine's ONE Phase-B transaction
@@ -36,7 +36,9 @@
  * NEVER add a DELETE to `contacts`, `backup_configs`, `audit_baselines`,
  * `fleet_findings`, `ai_agents` or `incidents`: their registry notes each
  * record the cascade, the credential material, the RESTRICT child or the case
- * file that a delete would take with it.
+ * file that a delete would take with it. `reports` deletes only the duplicate
+ * DEFINITION, never a `report_runs` row — those are generated artifacts the
+ * customer can download, so they are re-homed onto the surviving definition.
  */
 import { sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
@@ -745,6 +747,51 @@ const mergeOrganizationUsers: CustomMergeExecutor = async (loser, survivor) => {
   return { moved, dropped, notes };
 };
 
+// ---------------------------------------------------------------------------
+// reports — `reports_source_ai_agent_schedule_uniq (org_id,
+// source_ai_agent_schedule_id) WHERE source_ai_agent_schedule_id IS NOT NULL`
+// (P2-3, #4190). A partner-wide narrative schedule mints one system-managed
+// definition per org, so two orgs under the same partner both hold a row for
+// the SAME schedule id; a plain repoint collides on 23505 and aborts the merge.
+//
+// `report_runs.report_id` is NOT NULL with a NO ACTION FK (verified against
+// pg_constraint), so a dedupe DELETE would raise 23503 instead — and even if it
+// did not, the runs are the customer's generated report artifacts, so dropping
+// them is not on the table. The survivor's definition for the same schedule is
+// the same weekly narrative under a different id, so the loser's run history
+// simply continues there. `ai_agent_runs.report_run_id` keeps pointing at the
+// same (untouched) report_runs rows, so run traces stay linked.
+//
+// The key deliberately carries no keyWhere: `keyMatch` compares with a plain
+// `=`, which is NULL-blind, so ordinary reports (NULL
+// source_ai_agent_schedule_id) never match each other — exactly the semantics
+// of the partial index this mirrors.
+// ---------------------------------------------------------------------------
+const REPORTS_KEY = ['source_ai_agent_schedule_id'] as const;
+
+const mergeReports: CustomMergeExecutor = async (loser, survivor) => {
+  const { dropped, rehomed } = await rehomeChildrenThenDelete(
+    'reports',
+    REPORTS_KEY,
+    [{ table: 'report_runs', column: 'report_id' }],
+    loser,
+    survivor,
+  );
+  const moved = await run(buildRepoint('reports', loser, survivor));
+  return {
+    moved,
+    dropped,
+    notes: dropped > 0
+      ? [
+        `reports: dropped ${dropped} duplicate AI narrative report definition from the merged-away org (the survivor already had one for the same schedule; the merged-away definition's own name/config/execution-scope fields were discarded — re-check the surviving definition)`
+        + (rehomed.length > 0
+          ? ` and re-homed its generated reports onto the survivor's definition (${describeRehomed(rehomed)})`
+          : ''),
+      ]
+      : [],
+  };
+};
+
 /**
  * The `move`-phase half of every `custom` table (which, for all but one of
  * them, is the whole executor).
@@ -764,6 +811,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   playbook_definitions: mergePlaybookDefinitions,
   pam_signer_groups: mergePamSignerGroups,
   incidents: mergeIncidents,
+  reports: mergeReports,
 };
 
 /**
@@ -818,6 +866,7 @@ export const CUSTOM_WOULD_DROP_COUNTS: Readonly<Record<string, (loser: string, s
   plugin_installations: collidingRowCount('plugin_installations', ['catalog_id']),
   playbook_definitions: collidingRowCount('playbook_definitions', ['lower({name})']),
   pam_signer_groups: collidingRowCount('pam_signer_groups', ['name']),
+  reports: collidingRowCount('reports', REPORTS_KEY),
   pax8_orders: (loser, survivor) => sql`
     SELECT count(*)::int AS n FROM pax8_orders AS t
      WHERE t.org_id = ${uuid(loser)}

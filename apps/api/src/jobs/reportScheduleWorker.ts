@@ -28,6 +28,7 @@ import {
   isNull,
   ne,
   not,
+  notInArray,
   or,
   sql,
 } from 'drizzle-orm';
@@ -148,9 +149,31 @@ function timezoneFor(
   });
 }
 
+/**
+ * P2-3 (#4190) — report types this worker must never poll for or execute.
+ *
+ * A weekly AI narrative definition lives in `reports` with `schedule =
+ * 'weekly'`, so it matches the polling predicate on shape alone; its
+ * occurrences belong to the AGENT scheduler, and its artifact is stored by the
+ * run's own transaction rather than generated.
+ *
+ * Excluding it here does a second job that is easy to miss: it keeps those rows
+ * out of the "requires scope reauthorization" warning count below. A system
+ * definition has `execution_scope_user_id IS NULL` by construction, so it fails
+ * `completeExecutableScope` forever — and without this exclusion the operator
+ * signal would climb by one per org, per narrative schedule, pointing at rows
+ * nobody can or should reauthorize.
+ */
+const WORKER_EXCLUDED_REPORT_TYPES = ['ai_org_narrative'] as const;
+
 export async function findDueReports(
   now: Date,
 ): Promise<Array<{ id: string; occurrenceKey: number; lastGeneratedAt: Date | null }>> {
+  // Applied to BOTH statements below — see WORKER_EXCLUDED_REPORT_TYPES.
+  const pollable = and(
+    ne(reports.schedule, 'one_time'),
+    notInArray(reports.type, [...WORKER_EXCLUDED_REPORT_TYPES]),
+  )!;
   const completeExecutableScope = and(
     eq(reports.executionScopeVersion, 1),
     inArray(reports.executionScopeKind, ['unrestricted', 'restricted']),
@@ -181,12 +204,12 @@ export async function findDueReports(
     .from(reports)
     .innerJoin(organizations, eq(reports.orgId, organizations.id))
     .leftJoin(partners, eq(organizations.partnerId, partners.id))
-    .where(and(ne(reports.schedule, 'one_time'), completeExecutableScope));
+    .where(and(pollable, completeExecutableScope));
 
   const [skipped] = await db
     .select({ count: sql<number>`count(*)` })
     .from(reports)
-    .where(and(ne(reports.schedule, 'one_time'), not(completeExecutableScope)));
+    .where(and(pollable, not(completeExecutableScope)));
   const skippedCount = Number(skipped?.count ?? 0);
   if (skippedCount > 0) {
     console.warn(
@@ -432,6 +455,20 @@ export async function processRunScheduledReport(
     .limit(1);
   if (!report) return; // deleted or switched to one_time since enqueue
 
+  // P2-3 (#4190) — a job already on the queue when the type exclusion in
+  // `findDueReports` shipped, or one forced in by hand. An EARLY RETURN with no
+  // run row, deliberately unlike the `deny()` paths below: a failed
+  // `report_runs` row would render in the org's report history under the
+  // narrative definition, beside the real weekly artifacts, claiming the weekly
+  // narrative failed. It did not — this worker simply is not its owner.
+  if ((WORKER_EXCLUDED_REPORT_TYPES as readonly string[]).includes(report.type)) {
+    console.warn(
+      '[ReportScheduleWorker] Skipping a report type owned by the agent scheduler',
+      { reportId: report.id, orgId: report.orgId, type: report.type },
+    );
+    return;
+  }
+
   const config = (report.config ?? {}) as Record<string, unknown>;
 
   const deny = async (reason: string): Promise<void> => {
@@ -445,6 +482,22 @@ export async function processRunScheduledReport(
       })
       .returning();
   };
+
+  // P2-3 (#4190) — defence in depth. A system-authored definition (the weekly
+  // AI org narrative) has no acting user, so there is nobody for this worker to
+  // reauthorize against; it is owned by the agent scheduler, not the report
+  // scheduler. findDueReports already skips it (its executable-scope predicate
+  // requires execution_scope_user_id NOT NULL) and A7 adds the type exclusion —
+  // this refuses it even if a caller forces the job in directly, BEFORE any
+  // scope decode or authority resolution can invent a principal.
+  if (report.executionScopePrincipalKind === 'system') {
+    console.warn(
+      '[ReportScheduleWorker] Refusing a system-principal report definition',
+      { reportId: report.id, orgId: report.orgId },
+    );
+    await deny('system_principal_definition');
+    return;
+  }
 
   let persistedScope;
   try {

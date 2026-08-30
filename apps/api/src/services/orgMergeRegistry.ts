@@ -30,10 +30,13 @@ export type OrgMergePolicy =
   | { kind: 'loser-shell' }; // organizations itself
 
 // device_commands / user_sso_identities / sso_sessions / psa_ticket_mappings /
-// deployment_results / software_versions have no org_id column of their own:
+// deployment_results / software_versions / report_runs have no org_id column
+// of their own:
 // tenancy is inferred by joining to a parent row, so once the parent's
 // org_id is repointed these rows travel along for free — the merge engine
-// does nothing to them directly.
+// does nothing to them directly. (Exception: `report_runs` rows under a
+// DUPLICATE narrative definition are re-homed by the `mergeReports` custom
+// executor before the repoint; the rest still just travel with their parent.)
 //
 // These names are NOT retyped here: they're derived below from
 // tenantCascade's ASSOCIATED_SYSTEM_SCOPED_TABLES (its FK pre-clear list for
@@ -55,6 +58,7 @@ const FOLLOWS_PARENT_NOTES: Readonly<Record<string, string>> = {
   psa_ticket_mappings: 'connection/alert/device-keyed',
   deployment_results: 'deployment-keyed',
   software_versions: 'parent-keyed (software_catalog)',
+  report_runs: 'parent-keyed (reports)',
 };
 const FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS = new Set(['software_deployments']);
 
@@ -122,6 +126,13 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // itself stays with the source org (ai_agent_runs disposition above) —
   // same reasoning, not a separate immutability trigger.
   ai_alert_verdicts: { kind: 'leave-for-erasure', note: 'verdicts hang off ai_agent_runs (leave-for-erasure) and cascade with them; alert/group FKs cascade too' },
+  // ai_agent_schedules (Phase 2 wave P2-2, #4189): dual-owner (org_id XOR
+  // partner_id) config, same "not a normal org_id table" shape as ai_agents
+  // above. An org override only makes sense against the LOSER org's own
+  // partner-baseline relationship; the survivor keeps whatever override it
+  // already has (or none, falling back to the baseline). Partner baseline
+  // rows have org_id NULL and are never touched by an org merge at all.
+  ai_agent_schedules: { kind: 'leave-for-erasure', note: 'org override rows tighten a partner baseline for the LOSER org only; the survivor keeps its own overrides. Partner rows have org_id NULL and are not merge participants.' },
   // ai_agent_fix_watches (Wave 6 PR 2, #3828): a fix-held watch is per-run
   // HISTORY tied to a specific ai_agent_runs row that itself never follows
   // an org merge (see ai_agent_runs above) — repointing the watch while its
@@ -231,16 +242,32 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   //   plugin_installations <- plugin_logs.installation_id     (NO ACTION, NOT NULL)
   //   playbook_definitions <- playbook_executions.playbook_id (NO ACTION, NOT NULL)
   //   pam_signer_groups    <- pam_rules.match_signer_group_id (ON DELETE RESTRICT)
+  //   reports              <- report_runs.report_id           (NO ACTION, NOT NULL)
   //   incidents            <- incident_actions.incident_id,
   //                           incident_evidence.incident_id   (2x NO ACTION, NOT NULL)
   //
-  // The first four re-home their children onto the SURVIVOR's row and then
+  // The first five re-home their children onto the SURVIVOR's row and then
   // delete the now-unreferenced duplicate. `incidents` does not delete at all
   // (see its note) — an incident is a case file, not a derived row.
   discovered_assets: { kind: 'custom', note: 're-home network_monitors/snmp_devices/unifi_* children onto the survivor asset with the same ip_address, then delete the duplicate; SPLIT across phases because discovered_assets rides sites\' ON UPDATE CASCADE (see CUSTOM_RESOLVE_EXECUTORS)' },
   plugin_installations: { kind: 'custom', note: 're-home plugin_logs.installation_id onto the survivor installation for the same catalog_id, then delete the duplicate' },
   playbook_definitions: { kind: 'custom', note: 're-home playbook_executions.playbook_id (and remediation_suggestions.playbook_id) onto the survivor definition with the same lower(name), then delete the duplicate' },
   pam_signer_groups: { kind: 'custom', note: 're-home pam_rules.match_signer_group_id onto the survivor group with the same name, then delete the duplicate (the FK is ON DELETE RESTRICT — a plain dedupe DELETE raises 23503)' },
+  // CORRECTED (P2-3 review, #4190): `reports` was a plain `repoint` — correct
+  // until P2-3 gave it its FIRST collidable unique index,
+  // `reports_source_ai_agent_schedule_uniq (org_id, source_ai_agent_schedule_id)
+  // WHERE source_ai_agent_schedule_id IS NOT NULL`. A PARTNER-WIDE narrative
+  // schedule mints one definition per org, so merging two orgs under the same
+  // partner repoints both onto `(survivor, same schedule)` -> 23505, and the
+  // whole merge aborts. `repoint-dedupe` cannot fix it either: its DELETE hits
+  // `report_runs.report_id` (NO ACTION, NOT NULL, non-deferrable — verified
+  // against pg_constraint) and raises 23503 instead. Same shape as
+  // plugin_installations/plugin_logs, so the same remedy.
+  //
+  // Only narrative definitions dedupe: every other report has a NULL
+  // source_ai_agent_schedule_id, and the executor's key match is a plain `=`,
+  // which is NULL-blind exactly like the partial index it mirrors.
+  reports: { kind: 'custom', note: "re-home report_runs.report_id onto the survivor's definition for the same source_ai_agent_schedule_id, then delete the duplicate definition, then repoint the rest; NEVER delete the runs — they are the customer's generated artifacts and report_runs.report_id is a NOT NULL NO ACTION child" },
   incidents: { kind: 'custom', note: "NULL the colliding loser row's source_ref (it leaves the incidents_source_ref_unique partial index, which is WHERE source_ref IS NOT NULL) and record the old value in `summary`; NEVER delete — incident_actions/incident_evidence are NOT NULL NO ACTION children and an incident is a case file, not a derived row" },
   contacts: { kind: 'custom', note: 'clear loser is_primary if survivor has one, then repoint (partial unique)' },
   backup_configs: { kind: 'custom', note: 'clear loser is_default if survivor has one, then repoint (org-owned storage creds must NOT be dropped)' },
@@ -476,7 +503,7 @@ const REPOINT_TABLES: readonly string[] = [
   "recovery_readiness",
   "recovery_tokens",
   "remote_sessions",
-  "reports",
+  // "reports" is SPECIAL (custom) — see its note there.
   "restore_jobs",
   "roles",
   "s1_actions",

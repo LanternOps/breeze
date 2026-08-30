@@ -124,6 +124,7 @@ const aiReportDefinitionMetadataProjection = {
   executionScopeUserId: reports.executionScopeUserId,
   executionScopeFingerprint: reports.executionScopeFingerprint,
   executionScopeCapturedAt: reports.executionScopeCapturedAt,
+  executionScopePrincipalKind: reports.executionScopePrincipalKind,
 };
 
 const aiReportRunMetadataProjection = {
@@ -136,6 +137,7 @@ const aiReportRunMetadataProjection = {
   executionScopeUserId: reportRuns.executionScopeUserId,
   executionScopeFingerprint: reportRuns.executionScopeFingerprint,
   executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+  executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
 };
 
 async function aiLiveReportAuthority(
@@ -2458,6 +2460,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           executionScopeUserId: reportRuns.executionScopeUserId,
           executionScopeFingerprint: reportRuns.executionScopeFingerprint,
           executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+          executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
         }).from(reportRuns)
           .innerJoin(reports, eq(reportRuns.reportId, reports.id))
           .where(and(

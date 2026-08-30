@@ -145,7 +145,10 @@ describe('createBreezeMcpServer wraps extraTools with the run hooks (P2-1 fix ro
     expect(outcome.alertVerdict).toBeUndefined();
     expect(outcome.deniedActions).toContainEqual({
       tool: 'submit_alert_verdict',
-      reason: 'outcome tool is only available to verdict-profile runs',
+      // Wave P2-2 (task 6) generalized the gate from "verdict runs only" to
+      // "the outcome tool this run's profile owns" — the deny reason now
+      // names both the tool and the profile that rejected it.
+      reason: 'outcome tool submit_alert_verdict is not available to full-profile runs',
     });
   });
 
