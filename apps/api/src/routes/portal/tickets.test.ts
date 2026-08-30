@@ -1215,7 +1215,7 @@ describe('portal ticket attachments (W08 #3902)', () => {
     expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
     expect(res.headers.get('Content-Type')).toBe('image/png');
     expect(res.headers.get('ETag')).toBe(`"${SHA}"`);
-    expect(res.headers.get('Content-Disposition')).toBe('inline; filename="photo.png"');
+    expect(res.headers.get('Content-Disposition')).toBe(`inline; filename="photo.png"; filename*=UTF-8''photo.png`);
   });
 
   it('304s on a matching If-None-Match without fetching the bytes', async () => {

@@ -261,7 +261,20 @@ async function loadAttachmentRow(ticketId: string, attachmentId: string) {
  */
 export function contentDispositionFor(contentType: string, filename: string): string {
   const disposition = contentType.startsWith('image/') ? 'inline' : 'attachment';
-  return `${disposition}; filename="${sanitizeAttachmentFilename(filename)}"`;
+  const safe = sanitizeAttachmentFilename(filename);
+  // A Node header value must be latin-1 — anything above U+00FF throws
+  // ERR_INVALID_CHAR and 500s this route, which would make an ordinary upload
+  // called `写真.png` permanently unreadable. So the quoted-string form carries an
+  // ASCII-only fallback and the real name rides in the RFC 5987 `filename*`
+  // parameter, which every current browser prefers.
+  const ascii = safe.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '') || 'attachment';
+  // encodeURIComponent leaves !'()* unescaped; they are not RFC 5987
+  // attr-chars, so escape them too.
+  const encoded = encodeURIComponent(safe).replace(
+    /['()!*]/g,
+    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `${disposition}; filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }
 
 // GET /tickets/:id/attachments/:attachmentId/content — authenticated bytes.

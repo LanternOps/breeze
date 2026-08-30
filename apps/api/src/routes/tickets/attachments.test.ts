@@ -387,13 +387,15 @@ describe('GET /tickets/:id/attachments/:attachmentId/content (W08 #3902)', () =>
     expect(res.headers.get('Cache-Control')).toBe('private, max-age=300');
     expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
     expect(res.headers.get('Content-Type')).toBe('image/png');
-    expect(res.headers.get('Content-Disposition')).toBe('inline; filename="photo.png"');
+    // W08: the RFC 5987 parameter rides alongside the ASCII fallback so a
+    // non-latin-1 filename cannot 500 the route (see the non-ASCII case below).
+    expect(res.headers.get('Content-Disposition')).toBe(`inline; filename="photo.png"; filename*=UTF-8''photo.png`);
   });
 
   it('uses Content-Disposition: attachment for a PDF', async () => {
     dbRowMock.mockReturnValue(joinRow({ contentType: 'application/pdf', originalFilename: 'report.pdf' }));
     const res = await content();
-    expect(res.headers.get('Content-Disposition')).toBe('attachment; filename="report.pdf"');
+    expect(res.headers.get('Content-Disposition')).toBe(`attachment; filename="report.pdf"; filename*=UTF-8''report.pdf`);
   });
 
   it('strips quotes and newlines out of the Content-Disposition filename (header injection)', async () => {
@@ -405,6 +407,23 @@ describe('GET /tickets/:id/attachments/:attachmentId/content (W08 #3902)', () =>
     // ...and exactly two quotes remain: the delimiters.
     expect(cd.match(/"/g)).toHaveLength(2);
     expect(res.headers.get('X-Injected')).toBeNull();
+  });
+
+  it('keeps a non-ASCII filename out of the raw header and offers it via RFC 5987', async () => {
+    // A Node header value must be latin-1; a CJK or emoji filename in the
+    // quoted-string form throws ERR_INVALID_CHAR and 500s the byte route, so
+    // an ordinary upload named 写真.png would be permanently unreadable.
+    dbRowMock.mockReturnValue(joinRow({ originalFilename: '写真.png' }));
+    const res = await content();
+    expect(res.status).toBe(200);
+    const cd = res.headers.get('Content-Disposition')!;
+    // Every code unit is latin-1 representable...
+    expect([...cd].every((ch) => ch.charCodeAt(0) <= 0xff)).toBe(true);
+    // ...the ASCII fallback is still a usable name...
+    expect(cd).toMatch(/^inline; filename="[^"]+"/);
+    // ...and the real name survives percent-encoded.
+    expect(cd).toContain("filename*=UTF-8''");
+    expect(cd).toContain(encodeURIComponent('写真.png'));
   });
 
   it('304s on a matching If-None-Match WITHOUT fetching the bytes', async () => {
