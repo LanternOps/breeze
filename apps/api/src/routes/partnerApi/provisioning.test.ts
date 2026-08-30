@@ -117,16 +117,21 @@ function post(path: string, scope: string, body: unknown, apiKey = 'test-key') {
 }
 
 /**
- * The shape `drizzle-orm/postgres-js` ACTUALLY throws, and the reason this
- * helper exists instead of a one-line literal: a `DrizzleQueryError` whose own
- * `.code` is `undefined`, carrying the postgres.js `PostgresError` — SQLSTATE
- * and `constraint_name` — on `.cause`. A flat `{ code: '23505' }` fixture is a
- * shape the driver never produces for a Drizzle-issued statement, so a check
- * reading only the top-level `.code` passes such a test while being dead in
- * production. That exact trap has now been found five times in this repo
- * (#3998, #4020, and two in ee/workspace filed as #4245); every fixture here
- * is built through this helper so a regression cannot hide behind an
- * unrealistic error object.
+ * The error shape `drizzle-orm/postgres-js` actually throws — a wrapper whose
+ * own `.code` is `undefined`, carrying the postgres.js `PostgresError`
+ * (SQLSTATE + `constraint_name`) on `.cause`. `utils/pgErrors.ts` documents
+ * why that shape matters; what matters HERE is that the old fixture was a flat
+ * `{ code: '23505' }` object, which the driver never produces for a
+ * Drizzle-issued statement. A check reading only the top-level `.code` passes
+ * against such a fixture while being dead in production — that is how this bug
+ * class survives its own tests. Every fixture in this file is built through
+ * this helper so a regression cannot hide behind an unrealistic error object.
+ *
+ * Faithful in the fields the check reads — the cause chain, `code`,
+ * `constraint_name`, and the message — not a `DrizzleQueryError` instance.
+ * The real class leaves `.name` as `'Error'` (only `.constructor.name` says
+ * `DrizzleQueryError`), so the wrapper here does the same rather than stamping
+ * a `.name` the driver never sets.
  *
  * `dropConstraintName` models the wrappers that surface the SQLSTATE but lose
  * the structured constraint field, leaving the index name only in the message.
@@ -144,10 +149,10 @@ function drizzleUniqueViolation(
       ...(dropConstraintName ? {} : { constraint_name: constraintName }),
     },
   );
+  // postgres.js sets `this.name = this.constructor.name` on PostgresError;
+  // DrizzleQueryError sets no name at all. Mirror both.
   cause.name = 'PostgresError';
-  const wrapper = new Error('Failed query: insert into "organizations" ...', { cause });
-  wrapper.name = 'DrizzleQueryError';
-  return wrapper;
+  return new Error('Failed query: insert into "organizations" ...', { cause });
 }
 
 const orgRow = {
@@ -285,18 +290,23 @@ describe('POST /organizations', () => {
   // #3982 — the discriminating half. An unconstrained `code === '23505'` check
   // answers 409 "slug conflict" here too, handing an unattended partner-API
   // caller a confident, WRONG diagnosis for a constraint that has nothing to do
-  // with the slug it sent. The insert's AFTER triggers (partner export lock /
-  // discovery stamp) write other tables inside this same statement, so a
-  // foreign 23505 is reachable, not hypothetical.
+  // with the slug it sent. The constraint used here is real: `organizations`
+  // also carries organizations_id_partner_id_unique on (id, partner_id).
   it('does not report a NON-slug unique violation as a slug conflict', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     selectResults = [[{ maxOrganizations: null, currencyCode: 'CAD' }]];
     insertResults = [drizzleUniqueViolation('organizations_id_partner_id_unique')];
     const res = await post('/organizations', 'organizations:write', { name: 'Acme', slug: 'acme' });
-    // Falls through to `throw error` → the app's onError, which logs and
-    // captures to Sentry before answering 500. Not silent, just not pretending
-    // to know which constraint fired.
+    // Rethrown, so this bare test app answers via Hono's DEFAULT error handler.
+    // In the real app the same throw reaches `app.onError` (index.ts), which
+    // logs and captures to Sentry — not asserted here, that is index.ts's
+    // contract, not this route's.
     expect(res.status).toBe(500);
     expect(await res.text()).not.toContain('partner_provisioning_slug_conflict');
+    // The route still names the constraint that actually fired, so triage does
+    // not have to unwrap `.cause` off a generic DrizzleQueryError by hand.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('organizations_id_partner_id_unique'));
+    warn.mockRestore();
   });
 
   // Some wrappers hand back the SQLSTATE but drop `constraint_name`; the index
