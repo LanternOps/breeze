@@ -1,14 +1,31 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
-const { execCalls, execResults, settingsMock } = vi.hoisted(() => ({
+const {
+  execCalls, execResults, settingsMock,
+  inserted, deletedWhere, createEntryMock, orgLinkMock, readEntryMock,
+} = vi.hoisted(() => ({
   execCalls: [] as unknown[],
   execResults: [] as unknown[][],
   settingsMock: vi.fn(),
+  inserted: [] as unknown[],
+  deletedWhere: [] as unknown[],
+  createEntryMock: vi.fn(),
+  orgLinkMock: vi.fn(),
+  readEntryMock: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
-  db: { execute: vi.fn((q: unknown) => { execCalls.push(q); return Promise.resolve(execResults.shift() ?? []); }) },
+  db: {
+    execute: vi.fn((q: unknown) => { execCalls.push(q); return Promise.resolve(execResults.shift() ?? []); }),
+    insert: vi.fn(() => ({
+      values: (v: unknown) => {
+        inserted.push(v);
+        return { onConflictDoNothing: () => ({ returning: () => Promise.resolve(Array.isArray(v) ? v : [v]) }) };
+      },
+    })),
+    delete: vi.fn(() => ({ where: (w: unknown) => { deletedWhere.push(w); return Promise.resolve(); } })),
+  },
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
@@ -16,8 +33,20 @@ vi.mock('./timeSuggestionSettings', () => ({
   getSessionSuggestionSettings: (...a: unknown[]) => settingsMock(...a),
   SESSION_SUGGESTION_DEFAULTS: { enabled: false, minSessionSeconds: 120, mergeGapMinutes: 10 },
 }));
+vi.mock('./timeEntryService', async () => {
+  const actual = await vi.importActual<typeof import('./timeEntryService')>('./timeEntryService');
+  return {
+    ...actual,
+    createTimeEntry: (...a: unknown[]) => createEntryMock(...a),
+    resolveAndLockOrgLink: (...a: unknown[]) => orgLinkMock(...a),
+    readTimeEntryById: (...a: unknown[]) => readEntryMock(...a),
+  };
+});
 
-import { listTimeSuggestions, countUnloggedSuggestions, loadSignals } from './timeSuggestionService';
+import {
+  listTimeSuggestions, countUnloggedSuggestions, loadSignals,
+  confirmTimeSuggestion, dismissTimeSuggestions, undismissTimeSuggestions,
+} from './timeSuggestionService';
 
 const compiled = (i: number) => new PgDialect().sqlToQuery(execCalls[i] as never);
 const actor = { userId: 'u1', partnerId: 'p1', manageAll: false, accessibleOrgIds: ['o1'], scope: 'partner' as const };
@@ -27,7 +56,11 @@ const sessionRow = (over: Record<string, unknown> = {}) => ({
   attributed_org_id: null, attributed_org_name: null, attribution_label: null, ...over,
 });
 
-beforeEach(() => { execCalls.length = 0; execResults.length = 0; settingsMock.mockReset(); });
+beforeEach(() => {
+  execCalls.length = 0; execResults.length = 0; settingsMock.mockReset();
+  inserted.length = 0; deletedWhere.length = 0;
+  createEntryMock.mockReset(); orgLinkMock.mockReset(); readEntryMock.mockReset();
+});
 
 describe('loadSignals — compiled SQL carries the isolation predicates (F1)', () => {
   it('binds user_id, partner_id, the NOT EXISTS decision filter and the org allowlist', async () => {
@@ -226,5 +259,227 @@ describe('countUnloggedSuggestions (W07 hook)', () => {
     execResults.push([]);
     await countUnloggedSuggestions({ userId: 'u1', partnerId: 'p1', date: '2026-08-29' });
     expect(execCalls).toHaveLength(2);
+  });
+});
+
+// ── Task 8: confirm / dismiss / undismiss ───────────────────────────────────
+const enabled = () => settingsMock.mockResolvedValue({ settings: { enabled: true, minSessionSeconds: 120, mergeGapMinutes: 10 }, timezone: 'UTC' });
+const SIG1 = { kind: 'remote_session' as const, id: 's1' };
+const confirmBody = { signals: [SIG1], startedAt: new Date('2026-08-29T14:02:00Z'), endedAt: new Date('2026-08-29T14:40:00Z') };
+
+describe('confirmTimeSuggestion', () => {
+  it('403 SUGGESTIONS_DISABLED when the flag is off', async () => {
+    settingsMock.mockResolvedValue({ settings: { enabled: false, minSessionSeconds: 120, mergeGapMinutes: 10 }, timezone: 'UTC' });
+    await expect(confirmTimeSuggestion(confirmBody, actor)).rejects.toMatchObject({ code: 'SUGGESTIONS_DISABLED', status: 403 });
+    expect(execCalls).toHaveLength(0);
+  });
+
+  it('takes an advisory xact lock per signal, then 404s a signal the caller cannot see (F2)', async () => {
+    enabled();
+    execResults.push([]);   // advisory lock
+    execResults.push([]);   // loadSignals (ids) -> nothing visible
+    await expect(confirmTimeSuggestion(confirmBody, actor)).rejects.toMatchObject({ code: 'SIGNAL_NOT_FOUND', status: 404 });
+    expect(compiled(0).sql).toMatch(/pg_advisory_xact_lock/);
+    // The lock key must be per (user, signal) — never a bare signal id, or two
+    // technicians confirming different sessions would serialise on each other.
+    expect(compiled(0).params).toEqual(expect.arrayContaining(['u1:remote_session:s1']));
+  });
+
+  it('re-reads signals under the caller RLS + org allowlist (a forged id can only 404)', async () => {
+    enabled();
+    execResults.push([], []);
+    await expect(confirmTimeSuggestion(confirmBody, actor)).rejects.toMatchObject({ code: 'SIGNAL_NOT_FOUND' });
+    const { sql } = compiled(1);
+    expect(sql).toMatch(/rs\.user_id = \$\d/);
+    expect(sql).toMatch(/o\.partner_id = \$\d/);
+    expect(sql).toMatch(/rs\.org_id = ANY\(/);
+    expect(sql).toMatch(/rs\.id = ANY\(/);
+    expect(sql).not.toMatch(/NOT EXISTS/); // includeDecided: a decided signal must reach the ledger branches
+  });
+
+  it('happy path: creates a closed entry with remote_session provenance + org link and writes one confirmed decision per signal', async () => {
+    enabled();
+    execResults.push([]);                                   // lock
+    execResults.push([sessionRow()]);                       // signals (includeDecided)
+    execResults.push([]);                                   // existing decisions
+    orgLinkMock.mockResolvedValue({ orgId: 'o1', currencyCode: 'EUR' });
+    createEntryMock.mockResolvedValue({ id: 'e1', orgId: 'o1', ticketId: null, source: 'remote_session' });
+    const r = await confirmTimeSuggestion(confirmBody, actor);
+    expect(r).toEqual({ entry: expect.objectContaining({ id: 'e1' }), replay: false });
+    expect(createEntryMock).toHaveBeenCalledWith(
+      expect.objectContaining({ startedAt: confirmBody.startedAt, endedAt: confirmBody.endedAt }),
+      expect.objectContaining({ userId: 'u1' }),
+      { source: 'remote_session', orgLink: { orgId: 'o1', currencyCode: 'EUR' } }
+    );
+    expect(inserted[0]).toEqual([expect.objectContaining({ partnerId: 'p1', userId: 'u1', signalKind: 'remote_session', signalId: 's1', decision: 'confirmed', timeEntryId: 'e1' })]);
+  });
+
+  it('never lets the client choose org, currency or source', async () => {
+    enabled();
+    execResults.push([], [sessionRow()], []);
+    orgLinkMock.mockResolvedValue({ orgId: 'o1', currencyCode: 'EUR' });
+    createEntryMock.mockResolvedValue({ id: 'e1', orgId: 'o1' });
+    await confirmTimeSuggestion(confirmBody, actor);
+    const input = createEntryMock.mock.calls[0]![0] as Record<string, unknown>;
+    for (const k of ['source', 'orgId', 'currency', 'currencyCode', 'partnerId']) {
+      expect(input).not.toHaveProperty(k);
+    }
+  });
+
+  it('with a ticket: no org link is resolved (the ticket path stamps org/currency) and a ticket in another org is 422 ORG_MISMATCH (F3)', async () => {
+    enabled();
+    execResults.push([], [sessionRow()], []);
+    execResults.push([{ org_id: 'o-other' }]);              // ticket org probe
+    await expect(confirmTimeSuggestion({ ...confirmBody, ticketId: 't-1' }, actor)).rejects.toMatchObject({ code: 'ORG_MISMATCH', status: 422 });
+    expect(orgLinkMock).not.toHaveBeenCalled();
+    expect(createEntryMock).not.toHaveBeenCalled();
+  });
+
+  it('with a matching ticket: passes the ticket through and resolves no org link', async () => {
+    enabled();
+    execResults.push([], [sessionRow()], []);
+    execResults.push([{ org_id: 'o1' }]);
+    createEntryMock.mockResolvedValue({ id: 'e6', orgId: 'o1', ticketId: 't-1' });
+    await confirmTimeSuggestion({ ...confirmBody, ticketId: 't-1' }, actor);
+    expect(orgLinkMock).not.toHaveBeenCalled();
+    expect(createEntryMock).toHaveBeenCalledWith(
+      expect.objectContaining({ ticketId: 't-1' }),
+      expect.anything(),
+      { source: 'remote_session', orgLink: null }
+    );
+  });
+
+  it('a ticket that does not exist is 404 TICKET_NOT_FOUND', async () => {
+    enabled();
+    execResults.push([], [sessionRow()], [], []);
+    await expect(confirmTimeSuggestion({ ...confirmBody, ticketId: 't-gone' }, actor)).rejects.toMatchObject({ code: 'TICKET_NOT_FOUND', status: 404 });
+  });
+
+  it('Quick Support with no ticket: org NULL, support_session, description prefixed with the attribution label (D6)', async () => {
+    enabled();
+    execResults.push([], [sessionRow({ org_type: 'quick_support', attribution_label: 'Bob @ ACME' })], []);
+    createEntryMock.mockResolvedValue({ id: 'e2', orgId: null });
+    await confirmTimeSuggestion({ ...confirmBody, description: 'reset password' }, actor);
+    expect(orgLinkMock).not.toHaveBeenCalled();
+    expect(createEntryMock).toHaveBeenCalledWith(
+      expect.objectContaining({ description: 'Bob @ ACME — reset password' }),
+      expect.anything(),
+      { source: 'support_session', orgLink: null }
+    );
+  });
+
+  it('replay: every signal already confirmed to one entry -> 200 same entry, no new writes (F4)', async () => {
+    enabled();
+    execResults.push([], [sessionRow()]);
+    execResults.push([{ signal_id: 's1', decision: 'confirmed', time_entry_id: 'e1' }]);
+    readEntryMock.mockResolvedValue({ id: 'e1', orgId: 'o1', durationMinutes: 38 });
+    const r = await confirmTimeSuggestion(confirmBody, actor);
+    expect(r.replay).toBe(true);
+    expect(r.entry).toMatchObject({ id: 'e1', durationMinutes: 38 });
+    expect(createEntryMock).not.toHaveBeenCalled();
+    expect(inserted).toHaveLength(0);
+  });
+
+  it('replay whose entry has since vanished is 410, never a silent second entry', async () => {
+    enabled();
+    execResults.push([], [sessionRow()]);
+    execResults.push([{ signal_id: 's1', decision: 'confirmed', time_entry_id: 'e1' }]);
+    readEntryMock.mockResolvedValue(null);
+    await expect(confirmTimeSuggestion(confirmBody, actor)).rejects.toMatchObject({ code: 'SUGGESTION_ENTRY_DELETED', status: 410 });
+    expect(createEntryMock).not.toHaveBeenCalled();
+  });
+
+  it('tombstone: confirmed decision whose entry was deleted -> 410 (F5)', async () => {
+    enabled();
+    execResults.push([], [sessionRow()], [{ signal_id: 's1', decision: 'confirmed', time_entry_id: null }]);
+    await expect(confirmTimeSuggestion(confirmBody, actor)).rejects.toMatchObject({ code: 'SUGGESTION_ENTRY_DELETED', status: 410 });
+  });
+
+  it('dismissed -> 409', async () => {
+    enabled();
+    execResults.push([], [sessionRow()], [{ signal_id: 's1', decision: 'dismissed', time_entry_id: null }]);
+    await expect(confirmTimeSuggestion(confirmBody, actor)).rejects.toMatchObject({ code: 'SUGGESTION_DISMISSED', status: 409 });
+  });
+
+  it('signals spanning two orgs -> 422 ORG_MISMATCH', async () => {
+    enabled();
+    execResults.push([], []);                                                   // one lock per signal
+    execResults.push([sessionRow({ id: 's1' }), sessionRow({ id: 's2', org_id: 'o2' })]);
+    execResults.push([]);                                                       // decisions
+    await expect(confirmTimeSuggestion({ ...confirmBody, signals: [SIG1, { kind: 'remote_session', id: 's2' }] }, actor))
+      .rejects.toMatchObject({ code: 'ORG_MISMATCH' });
+    expect(createEntryMock).not.toHaveBeenCalled();
+  });
+
+  it('edits outside +/-15 min -> 400 RANGE_OUTSIDE_SIGNAL', async () => {
+    enabled();
+    execResults.push([], [sessionRow()], []);
+    await expect(confirmTimeSuggestion({ ...confirmBody, startedAt: new Date('2026-08-29T13:00:00Z') }, actor))
+      .rejects.toMatchObject({ code: 'RANGE_OUTSIDE_SIGNAL', status: 400 });
+    expect(createEntryMock).not.toHaveBeenCalled();
+  });
+
+  it('unreliable member without endedAt -> 400 ENDED_AT_REQUIRED', async () => {
+    enabled();
+    execResults.push([], [sessionRow({ duration_seconds: null, error_message: 'Session timed out: exceeded maximum session duration' })], []);
+    await expect(confirmTimeSuggestion({ signals: confirmBody.signals, startedAt: confirmBody.startedAt }, actor))
+      .rejects.toMatchObject({ code: 'ENDED_AT_REQUIRED', status: 400 });
+  });
+
+  it('endedAt omitted on a reliable signal -> envelope end is used', async () => {
+    enabled();
+    execResults.push([], [sessionRow()], []);
+    orgLinkMock.mockResolvedValue({ orgId: 'o1', currencyCode: 'EUR' });
+    createEntryMock.mockResolvedValue({ id: 'e1', orgId: 'o1' });
+    await confirmTimeSuggestion({ signals: confirmBody.signals, startedAt: confirmBody.startedAt }, actor);
+    expect(createEntryMock.mock.calls[0]![0]).toMatchObject({ endedAt: new Date('2026-08-29T14:40:00Z') });
+  });
+
+  it('a partial ledger (one of two signals already confirmed) refuses rather than double-logging', async () => {
+    enabled();
+    execResults.push([], []);
+    execResults.push([sessionRow({ id: 's1' }), sessionRow({ id: 's2' })]);
+    execResults.push([{ signal_id: 's1', decision: 'confirmed', time_entry_id: 'e1' }]);
+    await expect(confirmTimeSuggestion({ ...confirmBody, signals: [SIG1, { kind: 'remote_session', id: 's2' }] }, actor))
+      .rejects.toMatchObject({ status: 409 });
+    expect(createEntryMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('dismiss / undismiss', () => {
+  it('dismiss re-validates ownership via the signal query then inserts ON CONFLICT DO NOTHING', async () => {
+    enabled();
+    execResults.push([sessionRow()]);
+    const recordAuditMutation = vi.fn();
+    await dismissTimeSuggestions([SIG1], { ...actor, recordAuditMutation });
+    expect(compiled(0).sql).toMatch(/rs\.user_id = \$\d/);
+    expect(inserted[0]).toEqual([expect.objectContaining({ decision: 'dismissed', timeEntryId: null, userId: 'u1', partnerId: 'p1' })]);
+    expect(recordAuditMutation).toHaveBeenCalledWith(expect.objectContaining({ action: 'time_suggestion.dismissed' }));
+  });
+  it('dismiss 404s a signal the caller cannot see', async () => {
+    enabled();
+    execResults.push([]);
+    await expect(dismissTimeSuggestions([SIG1], actor)).rejects.toMatchObject({ code: 'SIGNAL_NOT_FOUND' });
+    expect(inserted).toHaveLength(0);
+  });
+  it('dismiss 403s when the flag is off', async () => {
+    settingsMock.mockResolvedValue({ settings: { enabled: false, minSessionSeconds: 120, mergeGapMinutes: 10 }, timezone: 'UTC' });
+    await expect(dismissTimeSuggestions([SIG1], actor)).rejects.toMatchObject({ code: 'SUGGESTIONS_DISABLED', status: 403 });
+  });
+  it("undismiss deletes the actor's dismissed rows and confirmed rows with a NULL entry only", async () => {
+    enabled();
+    const recordAuditMutation = vi.fn();
+    await undismissTimeSuggestions([SIG1], { ...actor, recordAuditMutation });
+    const where = new PgDialect().sqlToQuery(deletedWhere[0] as never);
+    expect(where.sql).toMatch(/"user_id" = \$\d/);
+    expect(where.sql).toMatch(/"decision" = \$\d/);
+    expect(where.sql).toMatch(/"time_entry_id" is null/i);
+    expect(where.sql).toMatch(/"signal_id" in \(/i);
+    expect(recordAuditMutation).toHaveBeenCalledWith(expect.objectContaining({ action: 'time_suggestion.undismissed' }));
+  });
+  it('undismiss 403s when the flag is off', async () => {
+    settingsMock.mockResolvedValue({ settings: { enabled: false, minSessionSeconds: 120, mergeGapMinutes: 10 }, timezone: 'UTC' });
+    await expect(undismissTimeSuggestions([SIG1], actor)).rejects.toMatchObject({ code: 'SUGGESTIONS_DISABLED', status: 403 });
+    expect(deletedWhere).toHaveLength(0);
   });
 });

@@ -1,11 +1,15 @@
-import { sql } from 'drizzle-orm';
-import { isValidIanaTimezone } from '@breeze/shared';
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { isValidIanaTimezone, type ConfirmSuggestionInput } from '@breeze/shared';
 import { db, withSystemDbAccessContext } from '../db';
-import { TimeEntryServiceError, type TimeEntryActor } from './timeEntryService';
+import { timeSuggestionDecisions } from '../db/schema';
+import {
+  createTimeEntry, readTimeEntryById, resolveAndLockOrgLink,
+  TimeEntryServiceError, type TimeEntryActor, type TimeEntryRow,
+} from './timeEntryService';
 import { getSessionSuggestionSettings, type SessionSuggestionSettings } from './timeSuggestionSettings';
 import {
   alreadyLoggedVerdict, classifySignal, dayWindowUtc, envelopeOf, mergeSignals,
-  rankTicketCandidates, suggestionKey,
+  rankTicketCandidates, suggestionKey, validateConfirmRange,
   UNRELIABLE_AFTER_MS, TICKET_WINDOW_BEFORE_MS, TICKET_WINDOW_AFTER_MS,
   type LoggedRange, type SignalPrecision, type SignalRow, type TicketCandidateRow,
 } from './timeSuggestionRules';
@@ -344,5 +348,210 @@ export async function countUnloggedSuggestions(args: { userId: string; partnerId
     // Same F19 filter as list — a push that says "3 unlogged sessions" while
     // the screen shows 1 is worse than no push at all.
     return dropAlreadyLogged(groupSignals(signals, settings), loggedRanges).length;
+  });
+}
+
+// ── decisions ────────────────────────────────────────────────────────────────
+
+async function requireEnabled(actor: SuggestionActor): Promise<SessionSuggestionSettings> {
+  if (!actor.partnerId) throw new TimeEntryServiceError('Partner is unresolvable', 400, 'PARTNER_UNRESOLVABLE');
+  const { settings } = await getSessionSuggestionSettings(actor.partnerId);
+  if (!settings.enabled) {
+    throw new TimeEntryServiceError('Session suggestions are disabled for this partner', 403, 'SUGGESTIONS_DISABLED');
+  }
+  return settings;
+}
+
+/**
+ * Re-reads the named signals under the caller's RLS + user/partner/org
+ * predicates. Anything missing is 404 — a foreign or forged id is
+ * indistinguishable from a purged one on purpose (F2).
+ */
+async function loadOwnedSignals(actor: SuggestionActor, signals: SuggestionSignalRef[]): Promise<LoadedSignal[]> {
+  const ids = signals.map((s) => s.id);
+  const rows = await loadSignals({
+    userId: actor.userId, partnerId: actor.partnerId!, accessibleOrgIds: actor.accessibleOrgIds,
+    ids, includeDecided: true,
+  });
+  if (rows.length !== ids.length) throw new TimeEntryServiceError('Session not found', 404, 'SIGNAL_NOT_FOUND');
+  return rows;
+}
+
+/**
+ * Serialises concurrent confirms of the same (user, signal) INSIDE the request
+ * transaction. A raised 23505 would abort the whole request (#2189), so the
+ * lock — not a unique-violation retry — is what makes a double tap yield one
+ * entry; the ON CONFLICT DO NOTHING on the ledger insert is only a backstop.
+ * Ids are locked in sorted order so two overlapping merged suggestions cannot
+ * deadlock against each other.
+ */
+async function lockSignals(userId: string, ids: string[]): Promise<void> {
+  for (const id of [...ids].sort()) {
+    await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`${userId}:remote_session:${id}`}))`);
+  }
+}
+
+async function readDecisions(userId: string, ids: string[]): Promise<Array<{ signalId: string; decision: string; timeEntryId: string | null }>> {
+  const rows = (await db.execute(sql`
+    SELECT signal_id, decision, time_entry_id FROM time_suggestion_decisions
+    WHERE user_id = ${userId} AND signal_kind = 'remote_session' AND signal_id = ANY(${ids}::uuid[])
+  `)) as unknown as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    signalId: String(r.signal_id),
+    decision: String(r.decision),
+    timeEntryId: (r.time_entry_id as string | null) ?? null,
+  }));
+}
+
+/**
+ * F19 and confirm — deliberate non-check. Confirm does NOT re-run the
+ * already-logged overlap test: the technician saw the residual
+ * `alreadyLoggedOverlapMinutes` in the sheet and chose to log anyway, and a
+ * server-side refusal would make a legitimate "I worked on two things in that
+ * hour" impossible while adding no tenant-safety value. F19 is list-side only.
+ */
+export async function confirmTimeSuggestion(
+  input: ConfirmSuggestionInput,
+  actor: SuggestionActor,
+): Promise<{ entry: TimeEntryRow; replay: boolean }> {
+  await requireEnabled(actor);
+  const ids = input.signals.map((s) => s.id);
+  await lockSignals(actor.userId, ids);
+
+  const signals = await loadOwnedSignals(actor, input.signals);
+  if (signals.some((s) => Number.isNaN(s.endedAt.getTime()))) {
+    throw new TimeEntryServiceError('Session has not ended', 409, 'SIGNAL_NOT_ENDED');
+  }
+
+  // Existing decisions: full replay -> 200; tombstone -> 410; dismissed -> 409.
+  const decisions = await readDecisions(actor.userId, ids);
+  if (decisions.some((d) => d.decision === 'dismissed')) {
+    throw new TimeEntryServiceError('Suggestion was dismissed — restore it first', 409, 'SUGGESTION_DISMISSED');
+  }
+  if (decisions.some((d) => d.decision === 'confirmed' && d.timeEntryId == null)) {
+    throw new TimeEntryServiceError('The time entry created from this session was deleted', 410, 'SUGGESTION_ENTRY_DELETED');
+  }
+  const entryIds = new Set(decisions.map((d) => d.timeEntryId));
+  if (decisions.length === ids.length && entryIds.size === 1) {
+    // Re-read with the SAME selection createTimeEntry returns, so the replay
+    // body is shape-identical to the 201 body. A raw `SELECT *` here would hand
+    // the client snake_case columns and break `entry.durationMinutes`.
+    const entry = await readTimeEntryById([...entryIds][0]!);
+    if (entry) return { entry, replay: true };
+    throw new TimeEntryServiceError('The time entry created from this session was deleted', 410, 'SUGGESTION_ENTRY_DELETED');
+  }
+  if (decisions.length > 0) {
+    // A partial ledger: some members already belong to another entry. Logging
+    // the rest would double-bill the overlap, so refuse and let the client
+    // refetch.
+    throw new TimeEntryServiceError('Some sessions are already logged to a different entry', 409, 'SUGGESTION_DISMISSED');
+  }
+
+  const orgIds = new Set(signals.map((s) => s.orgId));
+  if (orgIds.size !== 1) throw new TimeEntryServiceError('Sessions span more than one organization', 422, 'ORG_MISMATCH');
+  const head = signals[0]!;
+  const isQuickSupport = head.orgType === 'quick_support';
+
+  const env = envelopeOf(signals);
+  const rangeError = validateConfirmRange(env, { startedAt: input.startedAt, endedAt: input.endedAt });
+  if (rangeError === 'ENDED_AT_REQUIRED') {
+    throw new TimeEntryServiceError('endedAt is required for a session with an unreliable end', 400, 'ENDED_AT_REQUIRED');
+  }
+  if (rangeError === 'RANGE_OUTSIDE_SIGNAL') {
+    throw new TimeEntryServiceError('Start/end must stay within 15 minutes of the recorded session', 400, 'RANGE_OUTSIDE_SIGNAL');
+  }
+  const endedAt = input.endedAt ?? env.endedAt!;
+
+  // Org / currency resolution (spec confirm step 4).
+  let provenance: { source: 'remote_session' | 'support_session'; orgLink: { orgId: string; currencyCode: string } | null };
+  let description = input.description;
+  if (input.ticketId) {
+    // The ticket path inside createTimeEntry stamps org + currency under its own
+    // locks; here we only assert the ticket belongs to the session's org for
+    // non-QS sessions (F3) so a mis-picked ticket cannot silently move the money
+    // to another customer.
+    const [ticket] = (await db.execute(sql`
+      SELECT org_id FROM tickets WHERE id = ${input.ticketId} AND deleted_at IS NULL
+    `)) as unknown as Array<{ org_id: string }>;
+    if (!ticket) throw new TimeEntryServiceError('Ticket not found', 404, 'TICKET_NOT_FOUND');
+    if (!isQuickSupport && ticket.org_id !== head.orgId) {
+      throw new TimeEntryServiceError('Ticket belongs to a different organization than the session', 422, 'ORG_MISMATCH');
+    }
+    provenance = { source: isQuickSupport ? 'support_session' : 'remote_session', orgLink: null };
+  } else if (isQuickSupport) {
+    // D6: never the hidden quick_support org, never attributed_org_id — the
+    // attribution is a reporting hint, and stamping it would turn a hint into a
+    // billing fact.
+    provenance = { source: 'support_session', orgLink: null };
+    if (head.attributionLabel) {
+      description = description ? `${head.attributionLabel} — ${description}` : head.attributionLabel;
+    }
+  } else {
+    provenance = { source: 'remote_session', orgLink: await resolveAndLockOrgLink(head.orgId, actor) };
+  }
+
+  const entry = await createTimeEntry(
+    {
+      ticketId: input.ticketId ?? undefined,
+      startedAt: input.startedAt,
+      endedAt,
+      description,
+      isBillable: input.isBillable,
+      hourlyRate: input.hourlyRate,
+    } as Parameters<typeof createTimeEntry>[0],
+    actor,
+    provenance,
+  );
+
+  await db
+    .insert(timeSuggestionDecisions)
+    .values(ids.map((signalId) => ({
+      partnerId: actor.partnerId!, userId: actor.userId,
+      signalKind: 'remote_session', signalId, decision: 'confirmed', timeEntryId: entry.id,
+    })))
+    .onConflictDoNothing()
+    .returning();
+
+  return { entry, replay: false };
+}
+
+export async function dismissTimeSuggestions(signals: SuggestionSignalRef[], actor: SuggestionActor): Promise<void> {
+  await requireEnabled(actor);
+  await loadOwnedSignals(actor, signals);
+  await db
+    .insert(timeSuggestionDecisions)
+    .values(signals.map((s) => ({
+      partnerId: actor.partnerId!, userId: actor.userId,
+      signalKind: s.kind, signalId: s.id, decision: 'dismissed', timeEntryId: null,
+    })))
+    .onConflictDoNothing()
+    .returning();
+  actor.recordAuditMutation?.({
+    action: 'time_suggestion.dismissed',
+    entryId: signals.map((s) => s.id).join('+'),
+    orgId: null,
+  });
+}
+
+/**
+ * "Re-suggest": removes the actor's dismissed rows AND confirmed tombstones
+ * (the entry was deleted). Idempotent. Scoped to `user_id = actor` so it can
+ * only ever remove the caller's own decisions.
+ */
+export async function undismissTimeSuggestions(signals: SuggestionSignalRef[], actor: SuggestionActor): Promise<void> {
+  await requireEnabled(actor);
+  await db.delete(timeSuggestionDecisions).where(and(
+    eq(timeSuggestionDecisions.userId, actor.userId),
+    eq(timeSuggestionDecisions.signalKind, 'remote_session'),
+    inArray(timeSuggestionDecisions.signalId, signals.map((s) => s.id)),
+    or(
+      eq(timeSuggestionDecisions.decision, 'dismissed'),
+      and(eq(timeSuggestionDecisions.decision, 'confirmed'), isNull(timeSuggestionDecisions.timeEntryId)),
+    ),
+  ));
+  actor.recordAuditMutation?.({
+    action: 'time_suggestion.undismissed',
+    entryId: signals.map((s) => s.id).join('+'),
+    orgId: null,
   });
 }
