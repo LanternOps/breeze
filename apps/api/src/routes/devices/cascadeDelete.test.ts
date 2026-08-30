@@ -327,6 +327,13 @@ function deriveLinkConditionalColumns(): Map<string, Set<string>> {
       // Intersect the constraint's identifiers with the table's REAL columns.
       // That is what removes the need to blacklist SQL keywords: `IS`, `NULL`
       // and `OR` are not columns of discovered_assets, so they drop out.
+      //
+      // KNOWN NARROW BLIND SPOT: "REAL columns" means the DRIZZLE schema, not
+      // the database. A column that exists in a migration but was never added
+      // to the schema file would be dropped here and silently escape the
+      // contract below. That drift is `pnpm db:check-drift`'s job, not this
+      // test's — noted so the gap is a documented handoff rather than an
+      // assumed impossibility.
       const columns = columnNamesOf(table);
       const conditional = derived.get(table) ?? new Set<string>();
       for (const token of body.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
@@ -340,6 +347,64 @@ function deriveLinkConditionalColumns(): Map<string, Set<string>> {
 
   return derived;
 }
+
+describe('migration CHECK parsing (the derivation the contract below rests on)', () => {
+  // The contract test's vacuity guard pins the ONE constraint that exists
+  // today, which proves the parser is not matching nothing — but it says
+  // nothing about SQL shapes this repo has not written yet. A parser that
+  // silently stops recognising a future shape would take the contract quietly
+  // vacuous with it, so pin the shapes directly against synthetic SQL.
+  it('reads an ALTER TABLE ... ADD CONSTRAINT ... CHECK', () => {
+    const found = checkConstraints(
+      `ALTER TABLE discovered_assets\n  ADD CONSTRAINT x CHECK (link_source IS NULL OR linked_device_id IS NOT NULL);`
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0]!.table).toBe('discovered_assets');
+    expect(found[0]!.body).toContain('link_source');
+    expect(found[0]!.body).toContain('linked_device_id');
+  });
+
+  it('reads a CHECK inline in a CREATE TABLE, with nested parentheses', () => {
+    const found = checkConstraints(
+      `CREATE TABLE IF NOT EXISTS public.discovered_assets (\n  link_source text,\n  linked_device_id uuid,\n  CONSTRAINT c CHECK ((link_source IS NULL) OR (linked_device_id IS NOT NULL))\n);`
+    );
+    expect(found).toHaveLength(1);
+    // `public.` qualified and paren-nested — the balanced scan must not stop at
+    // the first inner ')'.
+    expect(found[0]!.table).toBe('discovered_assets');
+    expect(found[0]!.body).toContain('linked_device_id IS NOT NULL');
+  });
+
+  it('attributes each CHECK to the nearest preceding table, not the first in the file', () => {
+    // A migration that touches several tables must not hand one table's
+    // constraint to another — that would both miss a real registration and
+    // demand a bogus one. Two constraints on two tables in one file is the
+    // smallest fixture where "nearest" and "first" give different answers.
+    const found = checkConstraints(
+      `CREATE TABLE network_change_events (\n`
+      + `  linked_device_id uuid,\n`
+      + `  CONSTRAINT a CHECK (alert_id IS NULL OR linked_device_id IS NOT NULL)\n`
+      + `);\n`
+      + `CREATE TABLE discovered_assets (\n`
+      + `  link_source text,\n`
+      + `  linked_device_id uuid\n`
+      + `);\n`
+      + `ALTER TABLE discovered_assets ADD CONSTRAINT b CHECK (link_source IS NULL OR linked_device_id IS NOT NULL);`
+    );
+    expect(found.map((f) => f.table)).toEqual(['network_change_events', 'discovered_assets']);
+    // And the bodies did not get swapped along with the names.
+    expect(found[0]!.body).toContain('alert_id');
+    expect(found[1]!.body).toContain('link_source');
+  });
+
+  it('is case-insensitive and tolerates quoted identifiers', () => {
+    const found = checkConstraints(
+      `alter table "discovered_assets" add constraint c check (link_source is null or linked_device_id is not null);`
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0]!.table).toBe('discovered_assets');
+  });
+});
 
 describe('linked_device_id detach clears every link-conditional column (#3952)', () => {
   const derived = deriveLinkConditionalColumns();
@@ -700,5 +765,54 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     // "related records in undefined".
     expect(body.error).toContain('some_child');
     expect(body.error).toMatch(/already sent/i);
+  });
+
+  /**
+   * #3952 was a 23514 check violation, which is NOT one of the two mapped
+   * SQLSTATEs — it took the generic rethrow. That path must stay a 500 (a
+   * cascade defect is not user-retryable, so a 409 would advertise a retry
+   * that fails identically forever), but it must not take the diagnosis down
+   * with it: the global onError logs a bare `Error:` with no deviceId, and in
+   * production returns a sanitized body, so without a log here the fact that
+   * an irreversible SELF_UNINSTALL had already gone out is unrecoverable from
+   * the server side. That breadcrumb is precisely what the original report was
+   * missing.
+   */
+  it('logs deviceId and uninstallSent before rethrowing an unmapped SQLSTATE (#3952)', async () => {
+    rigDeviceLookup(CONNECTED_DEVICE);
+    rigUninstallDispatched();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(db.transaction).mockImplementation(async () => {
+      throw Object.assign(new Error('Failed query: UPDATE discovered_assets'), {
+        cause: Object.assign(
+          new Error('new row for relation "discovered_assets" violates check constraint'),
+          { code: '23514', constraint_name: 'discovered_assets_link_source_requires_link' },
+        ),
+      });
+    });
+
+    try {
+      const res = await app.request(`/devices/${CONNECTED_DEVICE.id}/permanent`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+      // Deliberately NOT mapped to a 409 — see the doc comment above.
+      expect(res.status).toBe(500);
+
+      const logged = consoleError.mock.calls
+        .map((call) => String(call[0]))
+        .filter((line) => line.includes('cascade delete'));
+      expect(
+        logged,
+        `Expected one cascade-delete context log.\nconsole.error calls: ${JSON.stringify(consoleError.mock.calls.map((c) => String(c[0])))}`
+      ).toHaveLength(1);
+      // The three facts that make the line worth having: which device, whether
+      // the irreversible uninstall already went out, and which SQLSTATE.
+      expect(logged[0]).toContain(CONNECTED_DEVICE.id);
+      expect(logged[0]).toContain('uninstallSent=true');
+      expect(logged[0]).toContain('23514');
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

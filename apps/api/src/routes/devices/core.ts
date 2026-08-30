@@ -98,9 +98,16 @@ export const DEVICE_LINKED_DEVICE_ID_TABLES = [
  * The cascade nulled `linked_device_id` alone, leaving `link_source = 'auto'`
  * behind, so permanently deleting any AUTO-linked device raised 23514 and
  * rolled the whole transaction back as a 500 — a self-hoster hit this on
- * 0.107.0. Manual links happened to survive only because the manual-link route
- * is also the manual-UNLINK route, and users unlink before deleting; the
- * constraint makes no such distinction.
+ * 0.107.0.
+ *
+ * The constraint draws NO manual/auto distinction: a manually-linked asset
+ * failed identically. 'auto' is simply what the bug report carried, and why no
+ * manual-link report arrived is NOT established — do not read the reported
+ * shape as the bug's boundary. (It is specifically not an API asymmetry:
+ * #3261/#3295 removed the manual-only rule from the unlink route on
+ * 2026-08-11, ten days before 0.107.0 was tagged, so by then that route
+ * unlinked both.) The integration test covers both link sources for this
+ * reason.
  *
  * Rows are DETACHED, never deleted: a discovered asset is a network-inventory
  * record about an endpoint that exists whether or not Breeze manages it, and
@@ -1828,6 +1835,19 @@ coreRoutes.delete(
           uninstallSent,
         }, 409);
       }
+      // Anything else is a server-side cascade defect, and it STAYS a 500 —
+      // #3952 was exactly this (a 23514 check violation), and mapping such a
+      // failure to a 409 would advertise "retry me" for something that fails
+      // identically forever. But the status code is not the reason to lose the
+      // context: the global onError logs a bare `Error:` with no deviceId and,
+      // in production, returns a sanitized body, so on this path the fact that
+      // an IRREVERSIBLE SELF_UNINSTALL was already dispatched vanishes
+      // entirely — the same "agent uninstalling itself while its device row
+      // survives" hazard the two branches above go out of their way to
+      // disclose. Log it here, where uninstallSent is still in scope, then
+      // rethrow unchanged so the response contract and Sentry reporting stay
+      // owned by onError.
+      console.error(`[devices] unhandled ${pgCode ?? 'non-postgres'} error during cascade delete of ${deviceId} (uninstallSent=${uninstallSent})`, err);
       throw err;
     }
 

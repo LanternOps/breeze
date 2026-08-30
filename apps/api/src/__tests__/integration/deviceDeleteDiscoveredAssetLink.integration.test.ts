@@ -35,9 +35,11 @@
  *      was never applied, i.e. prove nothing at all.
  *   2. The regression — an AUTO-linked asset no longer blocks the cascade, and
  *      the asset row SURVIVES the delete with its curated state intact.
- *   3. A MANUALLY linked asset detaches the same way. The constraint never
- *      distinguished the two; auto-links were merely how users hit it, since
- *      the manual-link UI is also the manual-UNLINK UI.
+ *   3. A MANUALLY linked asset detaches the same way. 'auto' is what the bug
+ *      report carried, not the bug's boundary — the constraint draws no
+ *      manual/auto distinction, and why no manual-link report arrived is not
+ *      established. Covered so the fix is not silently scoped to the reported
+ *      shape.
  */
 import './setup';
 
