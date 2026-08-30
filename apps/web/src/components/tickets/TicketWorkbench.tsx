@@ -1209,6 +1209,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               )}
             </div>
             <TicketFeed
+              ticketId={ticket.id}
               comments={ticket.comments}
               onEditComment={handleEditComment}
               onDeleteComment={handleDeleteComment}

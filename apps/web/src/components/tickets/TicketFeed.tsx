@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { statusConfig, type TicketComment, type TicketStatus } from './ticketConfig';
 import { formatDateTime, formatTime } from '@/lib/dateTimeFormat';
+import { TicketAttachmentList } from './TicketAttachments';
 
 const SYSTEM_TYPES = new Set(['status_change', 'assignment', 'system', 'time_entry']);
 
@@ -75,14 +76,21 @@ function SystemRun({ items }: { items: TicketComment[] }) {
 }
 
 export default function TicketFeed({
+  ticketId,
   comments,
   onEditComment,
   onDeleteComment,
+  onDeleteAttachment,
   canManageComment,
 }: {
+  /** W08 #3902 — needed to build the authenticated attachment content URL.
+   *  Optional so existing callers keep compiling; attachments simply do not
+   *  render without it. */
+  ticketId?: string;
   comments: TicketComment[];
   onEditComment?: (id: string, content: string) => void;
   onDeleteComment?: (id: string) => void;
+  onDeleteAttachment?: (attachmentId: string) => void;
   canManageComment?: (c: TicketComment) => boolean;
 }) {
   const { t } = useTranslation('tickets');
@@ -198,6 +206,17 @@ export default function TicketFeed({
                 </div>
               ) : (
                 <p className="whitespace-pre-wrap text-sm">{b.item.content}</p>
+              )}
+              {/* W08 #3902. A soft-deleted comment renders through the branch
+                  above and therefore never reaches this line — its photos go
+                  with its text. */}
+              {ticketId && (
+                <TicketAttachmentList
+                  ticketId={ticketId}
+                  attachments={b.item.attachments ?? []}
+                  canDelete={Boolean(onDeleteAttachment) && canManageComment?.(b.item)}
+                  onDelete={onDeleteAttachment}
+                />
               )}
             </div>
           )
