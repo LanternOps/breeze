@@ -65,6 +65,18 @@ describe('HashLink (#4229)', () => {
     expect(router.intercepted).toHaveLength(0);
   });
 
+  it('navigates on keyboard activation, which is why this stays an anchor', async () => {
+    const user = userEvent.setup();
+    render(<HashLink hash="activities">View all activity</HashLink>);
+
+    const link = screen.getByRole('link', { name: 'View all activity' });
+    link.focus();
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => expect(window.location.hash).toBe('#activities'));
+    expect(router.intercepted).toHaveLength(0);
+  });
+
   it('hands a cmd-click to the browser instead of navigating in place', async () => {
     const user = userEvent.setup();
     render(<HashLink hash="activities">View all activity</HashLink>);

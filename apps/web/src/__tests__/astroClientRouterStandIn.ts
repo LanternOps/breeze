@@ -1,22 +1,22 @@
 /**
  * Test stand-in for Astro's `<ClientRouter />` anchor interception (#4229).
  *
- * jsdom has no Astro runtime, so a naive `fireEvent.click(anchor)` follows the
- * browser default — hash updated, `hashchange` fired — and every hash-anchor
- * test passes while the real app is broken. In production `Layout.astro`
- * renders `<ClientRouter />`, which installs a document-level click listener
- * that swallows EVERY same-origin anchor click:
+ * The full explanation of what Astro does and why it breaks fragment links
+ * lives in `src/components/shared/HashLink.tsx` — read that first. This file is
+ * the executable form of it.
  *
- *   ev.preventDefault();
- *   navigate(href);        // astro:transitions/client
+ * Why it must exist: jsdom has no Astro runtime, so a naive
+ * `fireEvent.click(anchor)` follows the browser default — hash updated,
+ * `hashchange` fired — and every hash-anchor test passes while the real app is
+ * broken. Installing this stand-in reproduces production's behaviour (claim the
+ * click, `preventDefault()`, move the URL with `history.pushState`, emit no
+ * `hashchange` and no `popstate`), so such a test fails for the same reason the
+ * product does.
  *
- * and `navigate()` short-circuits a same-path/same-search link that only
- * changes the fragment to `history.pushState(..., to.href)`. `pushState` fires
- * neither `hashchange` nor `popstate`, so the URL flips while every
- * `hashchange` subscriber keeps the old value until a reload.
- *
- * Installing this stand-in reproduces that environment, so a hash-anchor test
- * fails for the same reason the product does.
+ * Faithful to `astro@7.2.4` for the fields these tests exercise: the
+ * already-prevented-default bail-out and the `leavesWindow` modifier check. It
+ * deliberately does NOT model `data-astro-reload`, `download`, `target`, or
+ * cross-origin hrefs — none apply to a same-page fragment link.
  */
 
 export type ObservedAnchorClick = {

@@ -2,10 +2,9 @@
  * #4229 — hash links inside the device detail page must switch tabs on click,
  * not only after a page refresh.
  *
- * These tests run with `installAstroClientRouterStandIn()`, which reproduces
- * the `<ClientRouter />` interception that made the bug invisible to a plain
- * jsdom click: Astro preventDefaults every same-origin anchor and moves a
- * fragment-only link with `history.pushState`, which fires no `hashchange`.
+ * These tests run with `installAstroClientRouterStandIn()`, without which a
+ * plain jsdom click follows the browser default and passes even against the
+ * broken code. See `components/shared/HashLink.tsx` for the mechanism.
  */
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
