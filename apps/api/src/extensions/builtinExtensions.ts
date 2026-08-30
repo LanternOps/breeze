@@ -274,9 +274,17 @@ export interface BuiltinPorts {
    * Has this built-in ever applied even ONE migration on this database? Used
    * ONLY on the disabled path, and ONLY when the manifest could not be
    * resolved, to decide whether an unreadable manifest is survivable.
+   *
    * Extension migrations and their namespaced ledger rows commit in the SAME
-   * transaction (see migrator.ts), so no ledger row proves the built-in created
-   * none of its tables here.
+   * transaction (see migrator.ts), so the ABSENCE of any ledger row means the
+   * built-in never created a table here — including for a partially-applied
+   * multi-file run, which leaves both the committed tables and their rows.
+   *
+   * That is an inference about an INTACT ledger, not a survey of the schema:
+   * it does not hold on a database whose `breeze_migrations` rows were dropped
+   * or restored separately from the tables they describe. The manifest is
+   * unreadable on this path, so there is no declared-table list to survey
+   * instead — hence the deliberately loud log on the continue branch.
    */
   builtinEverMigrated(extensionName: string): Promise<boolean>;
   /**
@@ -553,7 +561,13 @@ async function handleUnavailableDisabledManifest(
     );
   }
 
-  console.warn(
+  // console.ERROR, not warn, even though boot continues. Every other branch in
+  // this file that could strand tenant rows THROWS; this is the one place we
+  // proceed on an inference instead, and if that inference is ever wrong the
+  // damage (org-cascade and tenant-export skipping real rows) is silent and
+  // only discovered at erasure time. The one line an operator gets has to be
+  // greppable at error level and has to name the assumption it rests on.
+  console.error(
     `[extensions] ${JSON.stringify({
       event: 'builtin_extension_manifest_unavailable',
       extension: builtin.name,
@@ -561,11 +575,16 @@ async function handleUnavailableDisabledManifest(
       enableFlag: builtin.enableEnvVar,
       error: manifestErrorMessage,
       reason:
-        'this built-in is disabled and has never applied a migration on this database, so ' +
-        'it can own no tables and there is no tenancy to declare — boot continues',
+        'this built-in is disabled and has no row in the migration ledger, so it never ' +
+        'created a table on this database and there is no tenancy to declare — boot continues',
+      assumption:
+        'the migration ledger is intact. If this database had its breeze_migrations rows ' +
+        'dropped or restored separately from the tables they describe, this built-in may own ' +
+        'tables that org-cascade and tenant-export will NOT cover while its manifest is ' +
+        'unreadable',
       remedy:
-        `enabling it (${builtin.enableEnvVar}=true) would require a readable ` +
-        `${builtin.packageDir}/manifest.json`,
+        `restore "${builtin.packageDir}/manifest.json" in the image; enabling it ` +
+        `(${builtin.enableEnvVar}=true) requires it in any case`,
     })}`,
   );
 }
@@ -578,10 +597,14 @@ async function handleUnavailableDisabledManifest(
  * web-dist requirement: a deployment that never enabled this built-in must boot
  * on plain Postgres with none of the built-in's infrastructure.
  *
- * If its manifest is unreadable, skipping is safe only when the namespaced
- * migration ledger proves this built-in never ran here. That probe, rather than
- * a guess based on the enable flag or current schema, proves it can own no
- * tables whose tenancy would otherwise be lost.
+ * If its manifest is unreadable there is no declared-table list to work from at
+ * all, so the decision falls back to the namespaced migration ledger: a built-in
+ * with no `<name>/…` row never applied a migration here and therefore created
+ * none of its tables. Only then is skipping safe. A ledger row — or a ledger
+ * probe that fails — aborts boot instead, because the alternative is dropping
+ * tenancy for tables that demonstrably (or possibly) exist. That inference
+ * assumes an intact ledger rather than surveying the schema, which is why the
+ * continue branch logs at ERROR: see handleUnavailableDisabledManifest.
  *
  * Tenancy is the one exception, and it cuts BOTH ways:
  *

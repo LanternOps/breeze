@@ -827,11 +827,12 @@ describe('loadBuiltinExtensions — disabled built-in with an unreadable manifes
     return vi.spyOn(console, 'warn').mockImplementation(() => {});
   }
 
-  it('continues when the ledger proves the disabled built-in never migrated', async () => {
+  it('continues when the ledger shows the disabled built-in never migrated', async () => {
     const manifestError = new Error('manifest fixture is unreadable');
     const builtinEverMigrated = vi.fn(async () => false);
     const existingDeclaredTables = vi.fn(async () => []);
     const warn = captureWarnings();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const h = createHarness({
         builtins: [unreadableBuiltin(manifestError)],
@@ -844,13 +845,25 @@ describe('loadBuiltinExtensions — disabled built-in with an unreadable manifes
       expect(h.validatedTenancy).toEqual([]);
       expect(existingDeclaredTables).not.toHaveBeenCalled();
       expect(builtinEverMigrated).toHaveBeenCalledWith(NAME);
+
+      // The ordinary skip line still comes first, at warn.
       const warnings = warn.mock.calls.map((args) => args.join(' '));
-      expect(warnings).toHaveLength(2);
+      expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain('builtin_extension_disabled');
-      expect(warnings[1]).toContain('builtin_extension_manifest_unavailable');
-      expect(warnings[1]).toContain(`"extension":"${NAME}"`);
-      expect(warnings[1]).toContain(`"enableFlag":"${ENABLE_ENV_VAR}"`);
+
+      // The continue-on-an-inference line is ERROR, not warn: it is the only
+      // branch here that proceeds without proof, so it must not sit at the same
+      // level as the routine "this built-in is switched off" line.
+      const errors = error.mock.calls.map((args) => args.join(' '));
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain('builtin_extension_manifest_unavailable');
+      expect(errors[0]).toContain(`"extension":"${NAME}"`);
+      expect(errors[0]).toContain(`"enableFlag":"${ENABLE_ENV_VAR}"`);
+      // The assumption the skip rests on is named in the line itself, so an
+      // operator reading it knows what would invalidate it.
+      expect(errors[0]).toContain('migration ledger is intact');
     } finally {
+      error.mockRestore();
       warn.mockRestore();
     }
   });
@@ -992,9 +1005,23 @@ describe('BUILTIN_EXTENSION_NAMES', () => {
     expect(workspace?.helperRoutes).toBe(true);
   });
 
-  it('keeps the static workspace name aligned with the shipped manifest', () => {
+  /**
+   * The static `name` is what the disabled path probes the migration ledger
+   * with when the manifest cannot be read, so it MUST match the shipped
+   * `manifest.name`. `defineBuiltin` already enforces that at resolution time —
+   * which is exactly why the assertion here is `not.toThrow()` and not an
+   * equality check: an equality check could never observe a mismatch, because
+   * the getter throws before returning one. What this test contributes is
+   * FORCING that resolution against the REAL ee/workspace/manifest.json (every
+   * other suite in this file uses a fixture and never touches `.manifest` on
+   * the real registry), so a drift between the two lands here at test time
+   * instead of at boot.
+   */
+  it('resolves the real workspace manifest against the static registry name', () => {
     const workspace = BUILTINS.find((builtin) => builtin.name === 'workspace');
-    expect(workspace!.name).toBe(workspace!.manifest.name);
+    expect(workspace).toBeDefined();
+    expect(() => workspace!.manifest).not.toThrow();
+    expect(workspace!.manifest.name).toBe('workspace');
   });
 });
 

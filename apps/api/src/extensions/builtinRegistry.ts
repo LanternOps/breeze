@@ -25,6 +25,15 @@ export interface BuiltinExtension {
    * The STATIC, authoritative extension name. The disabled path uses this
    * identity when the manifest is unavailable; resolution enforces that it
    * equals `manifest.name`.
+   *
+   * IMMUTABLE ONCE MIGRATIONS HAVE SHIPPED UNDER IT. Extension migrations are
+   * recorded in the core ledger under `<manifest.name>/<file>` (see
+   * builtinExtensions.ts `runMigrations`), and — because resolution pins
+   * `manifest.name === name` — that is this string. `builtinEverMigrated` finds
+   * those rows by the same string, so renaming a built-in that has already
+   * migrated somewhere would make the probe answer "never ran here" about a
+   * database that has its tables. A rename must therefore be paired with a
+   * ledger backfill, not done on its own.
    */
   name: string;
   /** Its parsed v1 manifest (read from the package's manifest.json). */
@@ -180,6 +189,11 @@ export function loadBuiltinManifest(packageDir: string): ExtensionManifestV1 {
  *     retrying caller cannot hammer the disk and the operator sees one stable
  *     diagnostic instead of a different one per attempt.
  *
+ * A cached failure is NOT retried for the lifetime of the process, deliberately:
+ * the manifest ships inside the image, so it cannot legitimately appear after
+ * boot, and a per-access retry would turn one diagnosable failure into a
+ * stuttering series of them. The remedy for a fixed image is a restart.
+ *
  * Resolution also enforces `manifest.name === spec.name`. The static name is
  * the identity the disabled path uses when the manifest is unavailable
  * (skipDisabledBuiltin), so a silent disagreement between the registry entry
@@ -250,11 +264,15 @@ export const BUILTIN_EXTENSION_NAMES: ReadonlySet<string> = new Set(
  * builtinExtensions.test.ts, which pin the real manifest's classification.
  *
  * DELIBERATELY STATIC — it ignores {@link BuiltinExtension.enableEnvVar}, and
- * must keep doing so. The sweep only examines tables that EXIST, so declaring a
- * table that was never created is inert there, while gating the accessor on the
- * enable flag would resurrect exactly the failure it was written to prevent: a
+ * must keep doing so. That property is inherited from the boot-time sweep this
+ * once fed, which only examined tables that EXIST: declaring a table that was
+ * never created was inert there, while gating the accessor on the enable flag
+ * would have resurrected exactly the failure it was written to prevent — a
  * deployment that enabled workspace once (creating `workspace_*`) and later
- * unset the flag would have those tables read as unaccounted and abort boot.
+ * unset the flag would have had those tables read as unaccounted and abort
+ * boot. That sweep is no longer wired into any boot path; the property is kept
+ * because the contract tests still assert it, and because a future caller would
+ * want the same semantics.
  * The narrower, existence-checked publication that the DISABLED path performs
  * (builtinExtensions.ts) is a different thing: that one feeds the live tenancy
  * registry, which core cascade/export code iterates and issues SQL against, so
