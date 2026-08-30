@@ -484,8 +484,8 @@ jobs:
       - name: Run Web tests
         run: pnpm test --filter=@breeze/web
 
-  # Not yet wired into ci-success / branch protection — see #3139. Promote to
-  # required once the job proves stable.
+  # REQUIRED check: asserted in ci-success (see #3941, and #3139 for the
+  # original gap).
   test-mobile:
     name: Test Mobile
     runs-on: ubuntu-latest
