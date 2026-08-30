@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { ArrowLeft, Bot, ExternalLink } from 'lucide-react';
+import { ArrowLeft, Bot, Download, ExternalLink, Loader2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
-import { formatDateTime } from '@/lib/dateTimeFormat';
+import { exportReport, getBrowserTimezone } from '../reports/reportExport';
+import { formatDate, formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import type {
   AiAgentRunDetailDto,
@@ -12,6 +13,8 @@ import type {
   AiSweepKind,
   AiSweepSeverity,
   ExposureBudgetDto,
+  NarrativeSection,
+  OrgNarrativeReportSummary,
 } from '@breeze/shared';
 
 interface RunDetailPageProps {
@@ -352,6 +355,48 @@ function SweepFindingRow({
   );
 }
 
+/**
+ * Phase 2 wave P2-3 (#4190) — the weekly org narrative a `narrative`-profile
+ * run produced (`AiAgentRunNarrativeDto`).
+ *
+ * Same leak-impossible contract as the sweep and trace sections above: the
+ * DTO is the SAFE projection, so nothing here can be a raw tool payload. Two
+ * rendering rules matter and are load-bearing:
+ *
+ *  - Every string lands as a TEXT NODE. React escapes those, so a bullet the
+ *    model wrote can never become markup — `dangerouslySetInnerHTML` is
+ *    forbidden on this surface, which is precisely why the DTO ships the
+ *    structured `sections` rather than the derived markdown blob.
+ *  - Section titles come from the DTO, not from this catalog. The SERVER
+ *    attaches them (`NARRATIVE_SECTION_TITLES`), so the run detail and the
+ *    generated PDF name the same eight sections identically — a second,
+ *    locally translated set would drift from the customer-facing document.
+ */
+function NarrativeSectionBlock({
+  section,
+  index,
+}: {
+  section: NarrativeSection;
+  index: number;
+}) {
+  return (
+    <div data-testid={`ai-agent-run-narrative-section-${section.key}`} className="space-y-1">
+      <h3 className="text-sm font-medium">{section.title}</h3>
+      {section.bullets.length === 0 ? (
+        <p className="text-xs text-muted-foreground" data-testid={`ai-agent-run-narrative-section-${index}-empty`}>
+          —
+        </p>
+      ) : (
+        <ul className="list-disc space-y-0.5 pl-5 text-sm text-muted-foreground">
+          {section.bullets.map((bullet, bulletIndex) => (
+            <li key={bulletIndex}>{bullet}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function ExposureBudgetCard({ orgId, kind, t }: { orgId: string; kind: string; t: (key: string, opts?: Record<string, unknown>) => string }) {
   const [budget, setBudget] = useState<ExposureBudgetDto | null>(null);
   const [loading, setLoading] = useState(true);
@@ -442,6 +487,8 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [notFound, setNotFound] = useState(false);
+  const [downloadingNarrative, setDownloadingNarrative] = useState(false);
+  const [narrativeDownloadError, setNarrativeDownloadError] = useState<string>();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -473,6 +520,46 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * Phase 2 wave P2-3 (#4190) — "Download PDF" on the narrative section.
+   *
+   * The report-run download route answers JSON (`{ type, format, data }`) and
+   * authenticates from the `Authorization` header only, so a plain `<a href>`
+   * to `narrative.downloadPath` is doubly dead: an unauthenticated browser
+   * navigation 401s, and an authenticated one would save the raw snapshot
+   * instead of a PDF. Mirror `ReportsList`'s "Open latest": fetch the snapshot
+   * with the bearer token, then render the PDF client-side via jsPDF.
+   *
+   * Read-only, so no `runAction` wrapper — failure surfaces inline next to the
+   * button (the same shape `ReportsList` uses for its download errors).
+   */
+  const handleDownloadNarrative = useCallback(async () => {
+    const reportRunId = run?.narrative?.reportRunId;
+    if (!reportRunId) return;
+    setDownloadingNarrative(true);
+    setNarrativeDownloadError(undefined);
+    try {
+      const response = await fetchWithAuth(`/reports/runs/${reportRunId}/download`);
+      if (!response.ok) {
+        throw new Error(t('aiAgentsPage.runs.narrative.downloadFailed'));
+      }
+      const payload = (await response.json()) as {
+        type?: string;
+        data?: { rows?: unknown[]; summary?: unknown };
+      };
+      await exportReport(payload.data?.rows ?? [], {
+        format: 'pdf',
+        reportType: payload.type ?? 'ai_org_narrative',
+        timezone: getBrowserTimezone(),
+        summary: payload.data?.summary as OrgNarrativeReportSummary | undefined,
+      });
+    } catch {
+      setNarrativeDownloadError(t('aiAgentsPage.runs.narrative.downloadFailed'));
+    } finally {
+      setDownloadingNarrative(false);
+    }
+  }, [run, t]);
 
   if (loading) {
     return (
@@ -656,6 +743,75 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
                 </tbody>
               </table>
             </div>
+          )}
+        </section>
+      )}
+
+      {/* Phase 2 wave P2-3 (#4190) — a `narrative`-profile run's weekly org
+          narrative. Null for every full/verdict/sweep run, so the whole
+          section is absent rather than empty for them. */}
+      {run.narrative && (
+        <section data-testid="ai-agent-run-narrative" className="rounded-lg border bg-card p-4">
+          <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.narrative.title')}</h2>
+
+          <p className="mt-2 text-sm font-medium" data-testid="ai-agent-run-narrative-headline">
+            {run.narrative.headline}
+          </p>
+
+          {run.narrative.periodStart && run.narrative.periodEnd && (
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="ai-agent-run-narrative-period">
+              {t('aiAgentsPage.runs.narrative.period', {
+                // Date-only: the window is a calendar week, so a wall-clock
+                // time on either end is noise the reader has to skip past.
+                start: formatDate(run.narrative.periodStart),
+                end: formatDate(run.narrative.periodEnd),
+              })}
+            </p>
+          )}
+
+          {run.narrative.contextTruncated && (
+            <p className="mt-2 text-xs text-amber-700" data-testid="ai-agent-run-narrative-truncated">
+              {t('aiAgentsPage.runs.narrative.truncatedNote')}
+            </p>
+          )}
+
+          <div className="mt-3 space-y-3" data-testid="ai-agent-run-narrative-sections">
+            {run.narrative.sections.map((section, index) => (
+              <NarrativeSectionBlock key={section.key} section={section} index={index} />
+            ))}
+          </div>
+
+          {run.narrative.reportRunId && (
+            <div className="mt-3 flex flex-wrap items-center gap-4">
+              <a
+                href="/reports"
+                data-testid="ai-agent-run-narrative-report-link"
+                className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+              >
+                {t('aiAgentsPage.runs.narrative.openReport')}
+                <ExternalLink className="h-3 w-3" />
+              </a>
+              <button
+                type="button"
+                onClick={() => void handleDownloadNarrative()}
+                disabled={downloadingNarrative}
+                data-testid="ai-agent-run-narrative-download"
+                className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline disabled:opacity-50"
+              >
+                {downloadingNarrative ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Download className="h-3 w-3" />
+                )}
+                {t('aiAgentsPage.runs.narrative.download')}
+              </button>
+            </div>
+          )}
+
+          {narrativeDownloadError && (
+            <p className="mt-2 text-xs text-destructive" data-testid="ai-agent-run-narrative-download-error">
+              {narrativeDownloadError}
+            </p>
           )}
         </section>
       )}

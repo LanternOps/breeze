@@ -1342,13 +1342,20 @@
       "cronHint": "Five fields: minute hour day-of-month month day-of-week. For example 0 3 * * * runs every day at 03:00.",
       "cronInvalid": "Enter a valid five-field cron expression before saving.",
       "timezone": "Timezone",
-      "kinds": "Checks to run",
+      "kinds": {
+        "sweep": "Sweep",
+        "narrative": "Weekly report"
+      },
+      "kindsLabel": "Checks to run",
+      "kind": "Schedule type",
+      "weeklyOnlyHint": "A weekly report fires exactly once a week: a literal minute and hour, * for day-of-month and month, and a single day of the week 0-6. For example 0 7 * * 1 runs every Monday at 07:00.",
       "kindsRequired": "Select at least one check.",
       "enabled": "Enabled",
       "override": "Override for this org",
       "editOverride": "Edit this org's override",
       "overrideHint": "This organization's override of the partner baseline. It always runs on the baseline's cadence.",
       "overrideSummary": "This organization: {{state}} · {{kinds}}",
+      "overrideSummaryNarrative": "This organization: {{state}}",
       "tightenOnly": "An override can only narrow the baseline: it may disable the sweep or drop checks, never add one.",
       "noKinds": "No checks",
       "lastRun": "Last run {{at}} · {{admitted}} of {{total}} organizations swept, {{skipped}} skipped.",
@@ -1376,7 +1383,9 @@
         "baselineNotPartnerRow": "That baseline has no owner and cannot be overridden.",
         "baselineAgentMismatch": "That baseline belongs to a different agent.",
         "agentNotPartnerWide": "Sweep schedules require a partner-wide agent.",
-        "agentKindNotTriage": "Only a triage agent can be scheduled."
+        "agentKindNotTriage": "Only a triage agent can be scheduled.",
+        "kindsNotEmpty": "A weekly report schedule runs no checks. Clear the selected checks before saving.",
+        "invalidCronForKind": "A weekly report must fire exactly once a week. Use a literal minute and hour, * for day-of-month and month, and a single day of the week."
       }
     },
     "title": "AI Agents",
@@ -1530,7 +1539,8 @@
         "anomaly": "Anomaly"
       },
       "profile": {
-        "sweep": "Sweep"
+        "sweep": "Sweep",
+        "narrative": "Weekly report"
       },
       "sweep": {
         "title": "Sweep findings",
@@ -1569,6 +1579,14 @@
           "intent_error": "Could not create the approval",
           "max_actions_per_run": "Action limit reached for this run"
         }
+      },
+      "narrative": {
+        "title": "Weekly narrative",
+        "period": "Covers {{start}} to {{end}}",
+        "truncatedNote": "The agent's context was cut short — this narrative did not see the whole week.",
+        "openReport": "Open report",
+        "download": "Download PDF",
+        "downloadFailed": "Could not download the PDF."
       },
       "noAgent": "Unknown agent",
       "loading": "Loading runs…",
