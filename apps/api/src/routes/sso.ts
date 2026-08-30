@@ -123,10 +123,12 @@ export const ssoRoutes = new Hono();
 // victim a /callback?code=...&state=... URL captured against the attacker's own
 // IdP account and silently log the victim in AS THE ATTACKER (login-CSRF /
 // forced-login). We now bind the flow to the initiating browser with a signed,
-// HttpOnly, SameSite=Lax cookie scoped to the callback path — mirroring the
-// proven M365 admin-consent flow (`routes/c2c/m365Auth.ts`). SameSite=Lax means
-// the cookie is NOT attached on a cross-site top-level GET navigation to
-// /callback, so the forged-login delivery fails the cookie/state match.
+// HttpOnly cookie scoped to the callback path — mirroring the proven M365
+// admin-consent flow (`routes/c2c/m365Auth.ts`). Its value is an HMAC of the
+// unpredictable, single-use `state`, which the callback verifies before consuming
+// the session. An attacker cannot mint the cookie bound to their captured state in
+// the victim's browser. SameSite=Lax lets the cookie survive the IdP's cross-site
+// top-level GET redirect; it is cookie hygiene, not the forced-login defense.
 
 const SSO_STATE_COOKIE_NAME = 'breeze_sso_state';
 const SSO_STATE_COOKIE_PATH = '/api/v1/sso/callback';
@@ -2544,8 +2546,10 @@ ssoRoutes.get('/callback', async (c) => {
 
   // Browser-binding check: require the signed cookie set at /login to be present
   // and match the URL `state` (constant-time) BEFORE we consume the session.
-  // A cross-site forced-login navigation won't carry this SameSite=Lax cookie,
-  // and a forged/attacker-issued state won't match the victim's cookie.
+  // A forced-login replay carries a `state` the attacker obtained from their own
+  // /sso/login run, but the victim's browser holds no HMAC cookie bound to it and the
+  // attacker cannot mint one without the server-side secret. SameSite=Lax permits the
+  // legitimate IdP's cross-site top-level redirect; it is not what blocks the replay.
   if (!isValidSsoStateCookie(state, c.req.header('cookie'))) {
     console.warn('[sso/callback] Missing or invalid login-binding cookie');
     clearStateCookie();
