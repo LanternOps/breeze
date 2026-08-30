@@ -37,13 +37,26 @@ ANY_APK_INVOCATION='(^|[^[:alnum:]_-])apk([^[:alnum:]_-]|$)'
 
 reject_unaudited_apk() {
   local dockerfile="$1"
-  local offenders
+  local offenders status=0
 
+  # A security predicate must never answer "clean" about input it could not
+  # read: an unreadable file makes the pipeline below emit nothing, which is
+  # indistinguishable from a genuinely clean file.
+  [[ -r "$dockerfile" ]] || fail "cannot read $dockerfile"
+
+  # Strip WHOLE-LINE comments only. A '#' mid-line inside a RUN is ordinary
+  # shell text (a sed delimiter, a URL fragment, a quoted literal), so deleting
+  # from the first '#' — as `sed 's/#.*$//'` did — would hide a real `apk add`
+  # that follows it on the same line and silently pass the credential boundary.
   offenders="$(
-    sed 's/#.*$//' "$dockerfile" |
+    grep -vE '^[[:space:]]*#' "$dockerfile" |
       grep -E "$ANY_APK_INVOCATION" |
-      grep -vE "$AUDITED_APK_UPGRADE" || true
-  )"
+      grep -vE "$AUDITED_APK_UPGRADE"
+  )" || status=$?
+  # grep exits 1 for "no matching lines" (the clean case) and >=2 for a real
+  # error (unreadable, bad regex). Only the former may be treated as clean.
+  (( status <= 1 )) || fail "apk scan of $dockerfile failed (grep status $status)"
+
   if [[ -n "$offenders" ]]; then
     fail "$dockerfile contains an unaudited apk invocation: $(printf '%s' "$offenders" | head -1 | sed 's/^[[:space:]]*//')"
   fi
@@ -58,7 +71,7 @@ require_audited_openssl_upgrade() {
 }
 
 if [[ "${1:-}" == "--check-apk" ]]; then
-  [[ -n "${2:-}" && -f "${2:-}" ]] || fail "--check-apk needs a readable Dockerfile"
+  [[ -n "${2:-}" && -f "${2:-}" && -r "${2:-}" ]] || fail "--check-apk needs a readable Dockerfile"
   reject_unaudited_apk "$2"
   exit 0
 fi

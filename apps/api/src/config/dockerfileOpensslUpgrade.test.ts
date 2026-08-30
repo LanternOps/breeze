@@ -88,9 +88,16 @@ function upgradesOpenssl(bodies: string[]): boolean {
   const upgraded = new Set<string>();
   for (const body of bodies) {
     for (const line of body.split('\n')) {
-      if (!/\bapk\s+upgrade\b/.test(line)) continue;
-      for (const pkg of REQUIRED_PACKAGES) {
-        if (new RegExp(`\\b${pkg}\\b`).test(line)) upgraded.add(pkg);
+      // Credit a package only when it is a standalone argument of an actual
+      // `apk upgrade` command, scoped to that command's own arguments (up to
+      // the next shell separator). A `\b`-only match on the whole line credited
+      // `apk upgrade libcrypto3 && apk add libssl3-dev` — the `-dev` is a
+      // *different*, still-vulnerable package — and a bare `echo "...libssl3"`.
+      for (const match of line.matchAll(/\bapk\s+upgrade\b(.*?)(?=&&|[;|]|$)/g)) {
+        const args = match[1];
+        for (const pkg of REQUIRED_PACKAGES) {
+          if (new RegExp(`(?:^|\\s)${pkg}(?=\\s|$)`).test(args)) upgraded.add(pkg);
+        }
       }
     }
   }
@@ -295,6 +302,13 @@ describe('Dockerfile OpenSSL upgrade coverage', () => {
       'RUN apk -U upgrade libcrypto3 libssl3',
       'RUN true && \\\n    apk add --no-cache curl',
       'RUN /sbin/apk add --no-cache curl',
+      // An intra-line '#' is ordinary shell text, not a comment start. Stripping
+      // from the first '#' once hid the `apk add` that follows on these lines and
+      // let them pass the credential boundary — the previous blanket rule caught
+      // all three, so this pins the regression closed.
+      "RUN sed -i 's#^#  #' /etc/motd && apk add --no-cache curl",
+      "RUN echo '#' && apk add --no-cache curl",
+      'RUN curl -o /t https://x.io/a#frag && apk add --no-cache netcat-openbsd',
     ];
 
     for (const source of accepted) {
@@ -320,6 +334,20 @@ describe('Dockerfile OpenSSL upgrade coverage', () => {
     // naming them outside an `apk upgrade` does not count.
     expect(upgradesOpenssl(['RUN apk upgrade --no-cache libcrypto3'])).toBe(false);
     expect(upgradesOpenssl(['RUN apk add --no-cache libcrypto3 libssl3'])).toBe(false);
+
+    // A package must be a standalone argument of the `apk upgrade` command
+    // itself. `libssl3-dev` is a different, still-vulnerable package; a package
+    // upgraded by a *different* command in the same &&-chain is not credited to
+    // the upgrade; and a bare mention in an echo does not count.
+    expect(
+      upgradesOpenssl(['RUN apk upgrade --no-cache libcrypto3 libssl3-dev']),
+    ).toBe(false);
+    expect(
+      upgradesOpenssl(['RUN apk upgrade --no-cache libcrypto3 && apk add --no-cache libssl3-dev']),
+    ).toBe(false);
+    expect(
+      upgradesOpenssl(['RUN apk upgrade --no-cache libcrypto3 && echo "TODO: also libssl3"']),
+    ).toBe(false);
   });
 
   it('still resolves the base ref when FROM carries build flags', () => {
