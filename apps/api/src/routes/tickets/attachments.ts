@@ -2,11 +2,13 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { createHash, randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { TICKET_ATTACHMENT_LIMITS } from '@breeze/shared';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
 import { db } from '../../db';
 import { ATTACHMENT_META_COLUMNS, ticketAttachments } from '../../db/schema/ticketAttachments';
+import { ticketComments } from '../../db/schema';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { userRateLimit } from '../../middleware/userRateLimit';
 import { createAuditLogAsync } from '../../services/auditService';
@@ -14,6 +16,7 @@ import { sniffAttachmentMime } from '../../services/attachmentSniff';
 import {
   AttachmentStorageError,
   deleteBytes,
+  openBytes,
   putBytes,
 } from '../../services/ticketAttachmentStorage';
 import { getScopedTicketOr404 } from './tickets';
@@ -202,5 +205,189 @@ ticketAttachmentRoutes.post(
     });
 
     return c.json({ data: { ...row, createdAt: row.createdAt } }, 201);
+  },
+);
+
+const contentParam = z.object({ id: z.string().guid(), attachmentId: z.string().guid() });
+
+function callerCanManageTickets(c: { get: (k: 'permissions') => unknown }): boolean {
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  return perms
+    ? hasPermission(perms, PERMISSIONS.TICKETS_MANAGE.resource, PERMISSIONS.TICKETS_MANAGE.action)
+    : false;
+}
+
+/**
+ * One attachment plus its parent comment's visibility fields. `data` and
+ * `storage_key` are selected here BECAUSE this is the byte path — every other
+ * read uses ATTACHMENT_META_COLUMNS (spec D10).
+ */
+async function loadAttachmentRow(ticketId: string, attachmentId: string) {
+  const rows = await db
+    .select({
+      attachment: {
+        id: ticketAttachments.id,
+        ticketId: ticketAttachments.ticketId,
+        commentId: ticketAttachments.commentId,
+        uploadedByUserId: ticketAttachments.uploadedByUserId,
+        storageBackend: ticketAttachments.storageBackend,
+        storageKey: ticketAttachments.storageKey,
+        data: ticketAttachments.data,
+        contentType: ticketAttachments.contentType,
+        byteSize: ticketAttachments.byteSize,
+        originalFilename: ticketAttachments.originalFilename,
+        sha256: ticketAttachments.sha256,
+        createdAt: ticketAttachments.createdAt,
+      },
+      comment: {
+        id: ticketComments.id,
+        isPublic: ticketComments.isPublic,
+        deletedAt: ticketComments.deletedAt,
+        userId: ticketComments.userId,
+      },
+    })
+    .from(ticketAttachments)
+    .leftJoin(ticketComments, eq(ticketComments.id, ticketAttachments.commentId))
+    .where(and(eq(ticketAttachments.id, attachmentId), eq(ticketAttachments.ticketId, ticketId)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * Build the D7 `Content-Disposition` value. The filename is re-sanitised on the
+ * way OUT as well as on the way in: a quote or CRLF reaching this header is a
+ * response-splitting vector, and defence here does not depend on every row
+ * having been written by the current upload route.
+ */
+export function contentDispositionFor(contentType: string, filename: string): string {
+  const disposition = contentType.startsWith('image/') ? 'inline' : 'attachment';
+  return `${disposition}; filename="${sanitizeAttachmentFilename(filename)}"`;
+}
+
+// GET /tickets/:id/attachments/:attachmentId/content — authenticated bytes.
+// Never a public or presigned URL (spec D7).
+ticketAttachmentRoutes.get(
+  '/:id/attachments/:attachmentId/content',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action),
+  zValidator('param', contentParam),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id, attachmentId } = c.req.valid('param');
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return fail(c, 403, 'ORG_CONTEXT_REQUIRED', 'Organization context required');
+    }
+    const canManage = callerCanManageTickets(c);
+
+    // Every rung below returns a BARE 404 so the route never discloses that an
+    // attachment exists to someone who may not see it.
+    const ticket = await getScopedTicketOr404(auth, id, { includeDeleted: canManage });
+    if (!ticket) return fail(c, 404, 'ATTACHMENT_NOT_FOUND', 'Attachment not found');
+
+    const row = await loadAttachmentRow(id, attachmentId);
+    if (!row) return fail(c, 404, 'ATTACHMENT_NOT_FOUND', 'Attachment not found');
+    const att = row.attachment;
+
+    if (!att.commentId) {
+      // Pending upload: visible only to its own uploader.
+      if (att.uploadedByUserId !== auth.user.id) {
+        return fail(c, 404, 'ATTACHMENT_NOT_FOUND', 'Attachment not found');
+      }
+    } else if (row.comment?.deletedAt && !canManage) {
+      // A soft-deleted comment hides its attachments (rows and objects are
+      // kept so a restore is free — spec open question 8).
+      return fail(c, 404, 'ATTACHMENT_NOT_FOUND', 'Attachment not found');
+    }
+
+    const etag = `"${att.sha256}"`;
+    // Short-circuit BEFORE opening the bytes — a 304 that still fetched from
+    // the object store is a silent egress bill.
+    if (c.req.header('If-None-Match') === etag) {
+      return c.body(null, 304, {
+        ETag: etag,
+        'Cache-Control': 'private, max-age=300',
+        'X-Content-Type-Options': 'nosniff',
+      });
+    }
+
+    let opened: Awaited<ReturnType<typeof openBytes>>;
+    try {
+      opened = await openBytes(att);
+    } catch (err) {
+      captureException(err);
+      return fail(c, 503, 'STORAGE_UNAVAILABLE', 'Attachment storage is unavailable — try again shortly');
+    }
+    if (!opened.body) {
+      console.error('[ticket-attachments] object missing for row', { attachmentId, backend: att.storageBackend });
+      return fail(c, 404, 'ATTACHMENT_NOT_FOUND', 'Attachment not found');
+    }
+
+    const headers: Record<string, string> = {
+      ETag: etag,
+      'Cache-Control': 'private, max-age=300',
+      'X-Content-Type-Options': 'nosniff',
+      // The STORED content type, sniffed at upload — never the client's.
+      'Content-Type': att.contentType,
+      'Content-Disposition': contentDispositionFor(att.contentType, att.originalFilename),
+    };
+    const length = opened.contentLength ?? att.byteSize;
+    if (typeof length === 'number') headers['Content-Length'] = String(length);
+
+    if (Buffer.isBuffer(opened.body)) {
+      return c.body(new Uint8Array(opened.body), 200, headers);
+    }
+    return c.body(Readable.toWeb(opened.body) as ReadableStream, 200, headers);
+  },
+);
+
+// DELETE /tickets/:id/attachments/:attachmentId — hard delete, object first.
+ticketAttachmentRoutes.delete(
+  '/:id/attachments/:attachmentId',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action),
+  zValidator('param', contentParam),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id, attachmentId } = c.req.valid('param');
+    if (auth.scope === 'organization' && !auth.orgId) {
+      return fail(c, 403, 'ORG_CONTEXT_REQUIRED', 'Organization context required');
+    }
+    const canManage = callerCanManageTickets(c);
+
+    const ticket = await getScopedTicketOr404(auth, id, { includeDeleted: canManage });
+    if (!ticket) return fail(c, 404, 'ATTACHMENT_NOT_FOUND', 'Attachment not found');
+
+    const row = await loadAttachmentRow(id, attachmentId);
+    if (!row) return fail(c, 404, 'ATTACHMENT_NOT_FOUND', 'Attachment not found');
+    const att = row.attachment;
+
+    const isOwn = att.uploadedByUserId === auth.user.id;
+    if (!isOwn && !canManage) {
+      return fail(c, 403, 'ATTACHMENT_NOT_DELETABLE', "Deleting another user's attachment requires ticket management permission");
+    }
+
+    // Object BEFORE row: reversed, a failed object delete would leave bytes in
+    // the bucket with no row left to find them by — the same reasoning as the
+    // org-erasure ordering in spec D9. A storage fault leaves the row intact
+    // and the delete is safely retryable.
+    try {
+      await deleteBytes(att);
+    } catch (err) {
+      captureException(err);
+      return fail(c, 503, 'STORAGE_UNAVAILABLE', 'Attachment storage is unavailable — try again shortly');
+    }
+    await db.delete(ticketAttachments).where(eq(ticketAttachments.id, attachmentId));
+
+    await createAuditLogAsync({
+      orgId: ticket.orgId,
+      actorId: auth.user.id,
+      action: 'ticket.attachment.delete',
+      resourceType: 'ticket',
+      resourceId: ticket.id,
+      details: { attachmentId, byteSize: att.byteSize, contentType: att.contentType },
+      result: 'success',
+    });
+
+    return c.body(null, 204);
   },
 );

@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 const {
   authRef, getScopedTicketOr404Mock, dbSelectMock, dbInsertReturningMock,
   selectColumnArgs, insertedValues, putBytesMock, deleteBytesMock, auditMock, rateLimitAllowed,
+  openBytesMock, dbRowMock, deletedRowIds,
 } = vi.hoisted(() => ({
   authRef: {
     current: {
@@ -23,6 +24,9 @@ const {
   insertedValues: [] as Record<string, unknown>[],
   putBytesMock: vi.fn(),
   deleteBytesMock: vi.fn(),
+  openBytesMock: vi.fn(),
+  dbRowMock: vi.fn(),
+  deletedRowIds: [] as unknown[],
   auditMock: vi.fn(),
   rateLimitAllowed: { current: true },
 }));
@@ -31,6 +35,8 @@ vi.mock('../../middleware/auth', async () => ({
   authMiddleware: vi.fn(async (c: any, next: any) => {
     if (!authRef.current) return c.json({ error: 'Not authenticated' }, 401);
     c.set('auth', authRef.current);
+    const perms = (authRef.current as any).permissions;
+    if (perms) c.set('permissions', perms);
     await next();
   }),
   requireScope: () => async (c: any, next: any) => {
@@ -57,6 +63,12 @@ vi.mock('../../db', () => ({
       selectColumnArgs.push(cols);
       return {
         from: vi.fn(() => ({
+          // Single-row attachment lookup joins its parent comment.
+          leftJoin: vi.fn(() => ({
+            where: vi.fn(() => ({
+              limit: vi.fn(() => Promise.resolve(dbRowMock() ?? [])),
+            })),
+          })),
           where: vi.fn(() => ({
             limit: vi.fn(() => Promise.resolve(dbSelectMock() ?? [])),
             then: (res: (v: unknown) => unknown, rej: (r?: unknown) => unknown) =>
@@ -71,7 +83,12 @@ vi.mock('../../db', () => ({
         return { returning: vi.fn(() => dbInsertReturningMock()) };
       }),
     })),
-    delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
+    delete: vi.fn(() => ({
+      where: vi.fn((w: unknown) => {
+        deletedRowIds.push(w);
+        return Promise.resolve();
+      }),
+    })),
   },
 }));
 
@@ -84,7 +101,7 @@ vi.mock('../../services/ticketAttachmentStorage', async () => {
   const actual = await vi.importActual<typeof import('../../services/ticketAttachmentStorage')>(
     '../../services/ticketAttachmentStorage',
   );
-  return { ...actual, putBytes: putBytesMock, deleteBytes: deleteBytesMock };
+  return { ...actual, putBytes: putBytesMock, deleteBytes: deleteBytesMock, openBytes: openBytesMock };
 });
 
 vi.mock('../../services/auditService', () => ({ createAuditLogAsync: auditMock }));
@@ -127,6 +144,13 @@ beforeEach(() => {
   };
   getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'org-1', deletedAt: null, deviceId: null });
   dbSelectMock.mockReturnValue([{ count: 0 }]);
+  dbRowMock.mockReturnValue([]);
+  deletedRowIds.length = 0;
+  openBytesMock.mockResolvedValue({ body: Buffer.from('bytes'), contentLength: 5 });
+  // clearAllMocks keeps implementations — reset the ones individual tests
+  // override with a rejection, or the failure leaks into the next test.
+  deleteBytesMock.mockReset();
+  deleteBytesMock.mockResolvedValue(undefined);
   putBytesMock.mockResolvedValue({ backend: 'db', storageKey: null, data: PNG });
   dbInsertReturningMock.mockImplementation(() =>
     Promise.resolve([{
@@ -277,5 +301,179 @@ describe('POST /tickets/:id/attachments (W08 #3902)', () => {
     const res = await upload(oneFile(PNG));
     expect(res.status).toBe(429);
     expect(putBytesMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 10 — byte serving and delete
+// ---------------------------------------------------------------------------
+const ATT_ID = 'aaaabbbb-cccc-4ddd-8eee-ffff00001111';
+const SHA = 'd'.repeat(64);
+
+/** Shape the leftJoin lookup returns: { attachment, comment } */
+function joinRow(over: Record<string, unknown> = {}, commentOver: Record<string, unknown> | null = {}) {
+  return [{
+    attachment: {
+      id: ATT_ID,
+      ticketId: TICKET_ID,
+      commentId: 'c-1',
+      uploadedByUserId: 'u-1',
+      storageBackend: 'db',
+      storageKey: null,
+      data: Buffer.from('bytes'),
+      contentType: 'image/png',
+      byteSize: 5,
+      originalFilename: 'photo.png',
+      sha256: SHA,
+      createdAt: new Date('2026-08-30T00:00:00Z'),
+      ...over,
+    },
+    comment: commentOver === null ? null : { id: 'c-1', isPublic: true, deletedAt: null, userId: 'u-1', ...commentOver },
+  }];
+}
+
+function content(headers: Record<string, string> = {}, attId = ATT_ID, ticketId = TICKET_ID) {
+  return app.request(`/${ticketId}/attachments/${attId}/content`, { method: 'GET', headers });
+}
+
+describe('GET /tickets/:id/attachments/:attachmentId/content (W08 #3902)', () => {
+  it('404s when no row matches (id + ticket_id)', async () => {
+    dbRowMock.mockReturnValue([]);
+    const res = await content();
+    expect(res.status).toBe(404);
+    expect(openBytesMock).not.toHaveBeenCalled();
+  });
+
+  it('404s a PENDING row for anyone but its uploader', async () => {
+    dbRowMock.mockReturnValue(joinRow({ commentId: null, uploadedByUserId: 'someone-else' }, null));
+    const res = await content();
+    expect(res.status).toBe(404);
+    expect(openBytesMock).not.toHaveBeenCalled();
+  });
+
+  it('serves a PENDING row to its own uploader', async () => {
+    dbRowMock.mockReturnValue(joinRow({ commentId: null, uploadedByUserId: 'u-1' }, null));
+    const res = await content();
+    expect(res.status).toBe(200);
+  });
+
+  it('404s when the parent comment is soft-deleted and the caller lacks tickets:manage', async () => {
+    dbRowMock.mockReturnValue(joinRow({}, { deletedAt: new Date() }));
+    const res = await content();
+    expect(res.status).toBe(404);
+    expect(openBytesMock).not.toHaveBeenCalled();
+  });
+
+  it('serves a soft-deleted parent comment to a tickets:manage caller', async () => {
+    authRef.current = { ...authRef.current, permissions: { permissions: [{ resource: 'tickets', action: 'manage' }] } } as never;
+    dbRowMock.mockReturnValue(joinRow({}, { deletedAt: new Date() }));
+    const res = await content();
+    expect(res.status).toBe(200);
+  });
+
+  it('404s when the ticket itself is out of scope', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(null);
+    dbRowMock.mockReturnValue(joinRow());
+    const res = await content();
+    expect(res.status).toBe(404);
+    expect(openBytesMock).not.toHaveBeenCalled();
+  });
+
+  it('sends the D7 header set with the STORED content type', async () => {
+    dbRowMock.mockReturnValue(joinRow());
+    const res = await content();
+    expect(res.status).toBe(200);
+    expect(res.headers.get('ETag')).toBe(`"${SHA}"`);
+    expect(res.headers.get('Cache-Control')).toBe('private, max-age=300');
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(res.headers.get('Content-Type')).toBe('image/png');
+    expect(res.headers.get('Content-Disposition')).toBe('inline; filename="photo.png"');
+  });
+
+  it('uses Content-Disposition: attachment for a PDF', async () => {
+    dbRowMock.mockReturnValue(joinRow({ contentType: 'application/pdf', originalFilename: 'report.pdf' }));
+    const res = await content();
+    expect(res.headers.get('Content-Disposition')).toBe('attachment; filename="report.pdf"');
+  });
+
+  it('strips quotes and newlines out of the Content-Disposition filename (header injection)', async () => {
+    dbRowMock.mockReturnValue(joinRow({ originalFilename: 'ev"il\r\nX-Injected: 1.png' }));
+    const res = await content();
+    const cd = res.headers.get('Content-Disposition')!;
+    // No CR/LF can survive, so nothing can start a new header line...
+    expect(cd).not.toMatch(/[\r\n]/);
+    // ...and exactly two quotes remain: the delimiters.
+    expect(cd.match(/"/g)).toHaveLength(2);
+    expect(res.headers.get('X-Injected')).toBeNull();
+  });
+
+  it('304s on a matching If-None-Match WITHOUT fetching the bytes', async () => {
+    dbRowMock.mockReturnValue(joinRow());
+    const res = await content({ 'If-None-Match': `"${SHA}"` });
+    expect(res.status).toBe(304);
+    expect(openBytesMock).not.toHaveBeenCalled();
+  });
+
+  it('200s when If-None-Match does not match', async () => {
+    dbRowMock.mockReturnValue(joinRow());
+    const res = await content({ 'If-None-Match': '"stale"' });
+    expect(res.status).toBe(200);
+    expect(openBytesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('404s when the stored object has vanished', async () => {
+    dbRowMock.mockReturnValue(joinRow({ storageBackend: 's3', storageKey: 'ticket-attachments/x', data: null }));
+    openBytesMock.mockResolvedValue({ body: null, contentLength: null });
+    const res = await content();
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('DELETE /tickets/:id/attachments/:attachmentId (W08 #3902)', () => {
+  function del(attId = ATT_ID) {
+    return app.request(`/${TICKET_ID}/attachments/${attId}`, { method: 'DELETE' });
+  }
+
+  it('404s when there is no matching row', async () => {
+    dbRowMock.mockReturnValue([]);
+    expect((await del()).status).toBe(404);
+  });
+
+  it('lets the uploader delete their own pending attachment', async () => {
+    dbRowMock.mockReturnValue(joinRow({ commentId: null, uploadedByUserId: 'u-1' }, null));
+    expect((await del()).status).toBe(204);
+    expect(deleteBytesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('403s another user\'s attachment without tickets:manage', async () => {
+    dbRowMock.mockReturnValue(joinRow({ uploadedByUserId: 'someone-else' }));
+    expect((await del()).status).toBe(403);
+    expect(deleteBytesMock).not.toHaveBeenCalled();
+    expect(deletedRowIds).toHaveLength(0);
+  });
+
+  it('lets a tickets:manage caller delete anyone\'s attachment', async () => {
+    authRef.current = { ...authRef.current, permissions: { permissions: [{ resource: 'tickets', action: 'manage' }] } } as never;
+    dbRowMock.mockReturnValue(joinRow({ uploadedByUserId: 'someone-else' }));
+    expect((await del()).status).toBe(204);
+  });
+
+  it('deletes the OBJECT before the row (same reasoning as D9)', async () => {
+    const order: string[] = [];
+    deleteBytesMock.mockImplementation(async () => { order.push('object'); });
+    dbRowMock.mockReturnValue(joinRow({ storageBackend: 's3', storageKey: 'ticket-attachments/x', data: null }));
+    const res = await del();
+    order.push('row');
+    expect(res.status).toBe(204);
+    expect(order).toEqual(['object', 'row']);
+    expect(deletedRowIds).toHaveLength(1);
+  });
+
+  it('does NOT delete the row when the object delete fails', async () => {
+    deleteBytesMock.mockRejectedValue(new Error('s3 down'));
+    dbRowMock.mockReturnValue(joinRow({ storageBackend: 's3', storageKey: 'ticket-attachments/x', data: null }));
+    const res = await del();
+    expect(res.status).toBe(503);
+    expect(deletedRowIds).toHaveLength(0);
   });
 });
