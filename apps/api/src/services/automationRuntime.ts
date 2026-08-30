@@ -1121,6 +1121,11 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   // declined for volume is a cap doing its job, not a data-integrity bug.
   max_concurrent_narrative_runs: false,
   narrative_rate: false,
+  // Phase 2 wave P2-4 (ticket triage) — the triage-profile equivalents. Same
+  // classification again: a triage run being declined for volume is a cap
+  // doing its job, not a data-integrity bug.
+  max_concurrent_triage_runs: false,
+  triage_rate: false,
 });
 
 // Exported for direct unit coverage of the script_executions correlation

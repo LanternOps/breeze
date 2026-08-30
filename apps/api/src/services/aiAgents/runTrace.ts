@@ -181,13 +181,23 @@ function mapDenied(action: { tool: string; reason: string }): AiAgentRunTraceEnt
  * — means a future field added to the OUTCOME side does not silently reach
  * the wire until someone deliberately adds it here too, matching every other
  * mapper in this file.
+ *
+ * P2-4 (#4191) compile-forward fix: `TicketProposalOutcome` is now a type
+ * alias onto `TicketTriageProposal` (`@breeze/shared`); this projects the new
+ * shape's fields (`version`, `summary`, `fields`, `device`, `draftReply`,
+ * `draftResolutionNote`, `notes`) rather than the retired
+ * `proposedReply`/`proposedStatus`/`proposedPriority` fields. `intentIds`/
+ * `draftsWritten` are left unset here — nothing populates them yet; A8/A10
+ * wire those in.
  */
 function mapTicketProposal(proposal: TicketProposalOutcome): AiAgentRunTicketProposalDto {
   return {
+    version: proposal.version,
     summary: proposal.summary,
-    proposedReply: proposal.proposedReply,
-    proposedStatus: proposal.proposedStatus,
-    proposedPriority: proposal.proposedPriority,
+    fields: proposal.fields,
+    device: proposal.device,
+    draftReply: proposal.draftReply,
+    draftResolutionNote: proposal.draftResolutionNote,
     notes: proposal.notes,
   };
 }

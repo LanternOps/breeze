@@ -198,10 +198,10 @@ describe('buildRunTrace — safe projection (#3828)', () => {
             deniedActions: [],
             toolExecutionCount: 0,
             ticketProposal: {
+              version: 1,
               summary: 'The print spooler was stuck; a restart would likely fix it.',
-              proposedReply: 'Hi — please try restarting your computer; this often clears it.',
-              proposedStatus: 'pending',
-              proposedPriority: 'normal',
+              draftReply: 'Hi — please try restarting your computer; this often clears it.',
+              fields: { priority: { value: 'normal', confidence: 0.9 } },
               notes: ['Spooler.exe pegged at 100% CPU'],
             },
           },
@@ -213,10 +213,12 @@ describe('buildRunTrace — safe projection (#3828)', () => {
       );
 
       expect(detail.ticketProposal).toEqual({
+        version: 1,
         summary: 'The print spooler was stuck; a restart would likely fix it.',
-        proposedReply: 'Hi — please try restarting your computer; this often clears it.',
-        proposedStatus: 'pending',
-        proposedPriority: 'normal',
+        draftReply: 'Hi — please try restarting your computer; this often clears it.',
+        fields: { priority: { value: 'normal', confidence: 0.9 } },
+        device: undefined,
+        draftResolutionNote: undefined,
         notes: ['Spooler.exe pegged at 100% CPU'],
       });
     });

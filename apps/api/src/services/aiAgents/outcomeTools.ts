@@ -78,6 +78,10 @@ export function outcomeToolsForProfile(profile: AiAgentRunProfile): OutcomeToolN
     // this function grants IS the run's entire tool surface.
     case 'narrative':
       return ['submit_narrative'];
+    // P2-4 task A6 registers submit_ticket_proposal here (empty is safe:
+    // nothing admits triage runs yet).
+    case 'triage':
+      return [];
     default: {
       const exhaustive: never = profile;
       throw new Error(`[outcomeToolsForProfile] Unknown run profile: ${String(exhaustive)}`);

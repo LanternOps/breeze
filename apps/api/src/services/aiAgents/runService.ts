@@ -223,7 +223,13 @@ export type AgentRunSkipReason =
   // rule 6b, via profileCaps()). Same posture as the verdict and sweep pairs
   // above: deliberately NOT added to PUBLISHED_SKIP_REASONS — volume guards
   // on a scheduled, low-frequency run shape, not policy events.
-  | 'max_concurrent_narrative_runs' | 'narrative_rate';
+  | 'max_concurrent_narrative_runs' | 'narrative_rate'
+  // Phase 2 wave P2-4 (ticket triage) — the triage-profile equivalents,
+  // counted against maxConcurrentTriageRuns/maxTriageRunsPerHour instead
+  // (admission rule 6b, via profileCaps()). Same posture as the verdict,
+  // sweep and narrative pairs above: deliberately NOT added to
+  // PUBLISHED_SKIP_REASONS — volume guards, not policy events.
+  | 'max_concurrent_triage_runs' | 'triage_rate';
 
 export type CreateAgentRunResult =
   | { created: true; run: AiAgentRunRow }
@@ -447,7 +453,8 @@ export async function evaluateAnomalyTriggerFilters(
  *
  * `max_concurrent_verdict_runs`/`verdict_rate` (phase 2 P2-1),
  * `max_concurrent_sweep_runs`/`sweep_rate` (phase 2 P2-2) and
- * `max_concurrent_narrative_runs`/`narrative_rate` (phase 2 P2-3) are
+ * `max_concurrent_narrative_runs`/`narrative_rate` (phase 2 P2-3) and
+ * `max_concurrent_triage_runs`/`triage_rate` (phase 2 P2-4) are
  * deliberately absent: they are volume guards on a scheduled or
  * high-frequency, cheap run shape, not a policy event — see
  * `AgentRunSkipReason`'s docstring.
@@ -647,6 +654,16 @@ function profileCaps(
         maxPerHour: limits.maxNarrativeRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour,
         concurrentSkip: 'max_concurrent_narrative_runs',
         rateSkip: 'narrative_rate',
+      };
+    // Phase 2 wave P2-4 (ticket triage). P2-4 task A6 registers submit_ticket_proposal;
+    // this profile has no admitting caller yet, so this arm is a
+    // forward-compatible placeholder that keeps this switch exhaustive.
+    case 'triage':
+      return {
+        maxConcurrent: limits.maxConcurrentTriageRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentTriageRuns,
+        maxPerHour: limits.maxTriageRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxTriageRunsPerHour,
+        concurrentSkip: 'max_concurrent_triage_runs',
+        rateSkip: 'triage_rate',
       };
     default: {
       const exhaustive: never = profile;

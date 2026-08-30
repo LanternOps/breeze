@@ -53,6 +53,7 @@ import type {
   AlertVerdictOutcome,
   NarrativeOutcome,
   SweepFindingsOutcome,
+  TicketTriageProposal,
 } from '@breeze/shared';
 import { AI_AGENT_LIMIT_DEFAULTS, AI_SWEEP_KINDS } from '@breeze/shared';
 import { envFlag } from '../../config/env';
@@ -227,14 +228,16 @@ export interface OutcomeExecutedAction {
  * ever the input to a write: shadow mode + the device-less mutation gate
  * together guarantee `manage_tickets` cannot execute for a ticket run
  * regardless of what this field ever holds (`ticketShadowGuardrail.contract.test.ts`).
+ *
+ * P2-4 (#4191) compile-forward fix: this had zero writers pre-P2-4 (grepped
+ * repo-wide), so it is now a type alias onto the shared `TicketTriageProposal`
+ * — the real `submit_ticket_proposal` outcome shape — rather than the old
+ * ad-hoc `proposedReply`/`proposedStatus`/`proposedPriority` shape, keeping
+ * this file and `runTrace.ts`'s projection of it coherent with the DTO.
+ * `outcomeToolsForProfile`'s `triage` arm (A6) is what will actually populate
+ * this field; it is still unpopulated here today.
  */
-export interface TicketProposalOutcome {
-  summary: string;
-  proposedReply?: string;
-  proposedStatus?: string;
-  proposedPriority?: string;
-  notes: string[];
-}
+export type TicketProposalOutcome = TicketTriageProposal;
 
 export interface AgentRunOutcome {
   /** Reserved — see `TicketProposalOutcome`'s own docstring for why it is

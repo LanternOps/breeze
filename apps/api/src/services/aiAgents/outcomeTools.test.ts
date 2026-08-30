@@ -158,6 +158,9 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
       // The narrative floor is the outcome tool ALONE (empty drill-down
       // tier) — the same broad agent allowlist must not widen it either.
       narrative: narrativeToolAllowlist(['manage_services', 'run_script']),
+      // P2-4 task A6 registers submit_ticket_proposal here (empty is safe:
+      // nothing admits triage runs yet).
+      triage: [],
     };
 
     for (const profile of AI_AGENT_RUN_PROFILES) {
