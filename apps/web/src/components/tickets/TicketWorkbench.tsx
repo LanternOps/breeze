@@ -634,9 +634,28 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     setPendingStatusId(null);
   }, [mutate, pendingOpen, pendingReason, pendingStatusId, t]);
 
-  const sendComment = useCallback(async (content: string, isPublic: boolean) => {
+  /**
+   * W08 #3902 — one file per call. The body is FormData, so fetchWithAuth
+   * deliberately leaves Content-Type unset and the browser supplies the
+   * multipart boundary. runAction surfaces 413/415/429/503 as a toast; the
+   * composer turns the rejection into a retryable chip.
+   */
+  const uploadAttachment = useCallback(async (file: File): Promise<{ id: string }> => {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await runAction({
+      request: () => fetchWithAuth(`/tickets/${ticketId}/attachments`, { method: 'POST', body: form }),
+      errorFallback: t('ticketWorkbench.toast.attachmentFailed'),
+      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+    });
+    const id = (res as { data?: { id?: string } } | undefined)?.data?.id;
+    if (!id) throw new Error('upload returned no attachment id');
+    return { id };
+  }, [ticketId, t]);
+
+  const sendComment = useCallback(async (content: string, isPublic: boolean, attachmentIds: string[] = []) => {
     await runAction({
-      request: () => fetchWithAuth(`/tickets/${ticketId}/comments`, { method: 'POST', body: JSON.stringify({ content, isPublic }) }),
+      request: () => fetchWithAuth(`/tickets/${ticketId}/comments`, { method: 'POST', body: JSON.stringify({ content, isPublic, attachmentIds }) }),
       errorFallback: t('ticketWorkbench.toast.replyFailed'),
       onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
     });
@@ -1219,6 +1238,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           <TicketComposer
             requesterName={ticket.submitterName}
             onSend={sendComment}
+            onUploadAttachment={uploadAttachment}
             templates={cannedTemplates}
             templateVars={templateVars}
           />

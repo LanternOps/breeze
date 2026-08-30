@@ -116,7 +116,15 @@
     "internalPlaceholder": "Add an internal note…",
     "sending": "Sending",
     "sendReply": "Send reply",
-    "addInternalNote": "Add internal note"
+    "addInternalNote": "Add internal note",
+    "attachments": {
+      "attach": "Attach",
+      "uploading": "Uploading…",
+      "retry": "Retry",
+      "remove": "Remove file",
+      "tooMany": "You can attach at most {{max}} files to one comment.",
+      "tooLarge": "{{name}} is larger than 10 MB."
+    }
   },
   "ticketFeed": {
     "empty": "No activity yet.",
@@ -474,7 +482,8 @@
       "categoryUpdateFailed": "Category update failed. Retry.",
       "assigned": "Assigned",
       "unassigned": "Unassigned",
-      "assignFailed": "Assign failed. Retry."
+      "assignFailed": "Assign failed. Retry.",
+      "attachmentFailed": "Could not upload the attachment."
     },
     "delete": {
       "failed": "Delete failed. Retry.",
