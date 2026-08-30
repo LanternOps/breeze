@@ -8,7 +8,7 @@ const MAX_LABEL_LEN = 60;
 // Approval pushes are time-critical: a stale prompt is worthless once the
 // requester has moved on, so we cap the store-and-forward window at 60s across
 // every provider (Expo ttl + APNs apns-expiration).
-const APPROVAL_PUSH_TTL_SECONDS = 60;
+export const APPROVAL_PUSH_TTL_SECONDS = 60;
 
 /**
  * Expo push tokens are bearer-like device addresses: anyone holding one can
@@ -171,6 +171,57 @@ export function buildApprovalPush(args: {
     priority: 'high',
     channelId: 'approvals',
     ttl: APPROVAL_PUSH_TTL_SECONDS,
+  };
+}
+
+/**
+ * W06 (#3900) — the daily "you have unlogged sessions" nudge. W06 ships the
+ * PAYLOAD ONLY: the scheduler, quiet hours, the dedupe write and the mobile
+ * listener are W07's. Nothing in this wave calls it.
+ *
+ * Reserved `push_notifications.event_type` for that future dispatch. The column
+ * is varchar(100) with no enum, so reserving the string here is what stops two
+ * waves picking different spellings.
+ */
+export const TIME_SUGGESTIONS_PUSH_EVENT_TYPE = 'time_suggestions_daily';
+
+/**
+ * 12 hours. A nudge, not an alert: a phone that was off all evening should not
+ * surface yesterday's prompt at breakfast, by which time the technician has a
+ * new day's work and the count is stale.
+ */
+export const TIME_SUGGESTION_PUSH_TTL_SECONDS = 12 * 60 * 60;
+
+/**
+ * Feeds `user_notifications.dedupe_key`, which carries a partial-unique index
+ * on (user_id, dedupe_key). Must be a pure function of (userId, date) so two
+ * processes computing it independently collide in the database rather than
+ * double-notifying (F16).
+ */
+export function timeSuggestionsDedupeKey(userId: string, date: string): string {
+  return `time.unlogged:${userId}:${date}`;
+}
+
+/**
+ * Lock-screen safe BY CONSTRUCTION: a pure function of (count, date), so no
+ * device hostname, org name, ticket number or customer string can reach a
+ * locked screen. Widening the argument list is how that guarantee gets lost —
+ * the "no leak" test in expoPush.test.ts pins it.
+ */
+export function buildTimeSuggestionPush(args: {
+  count: number;
+  date: string;
+}): Pick<ExpoPushMessage, 'title' | 'body' | 'data' | 'sound' | 'priority' | 'channelId' | 'ttl'> {
+  return {
+    title: `${args.count} unlogged session${args.count === 1 ? '' : 's'} today`,
+    body: 'Tap to review and log your remote sessions.',
+    data: { type: 'time_suggestions', date: args.date },
+    sound: 'default',
+    // 'normal', not 'high': this is a nudge. An approval interrupts; a
+    // timesheet reminder waits for the next natural unlock.
+    priority: 'normal',
+    channelId: 'timesheet',
+    ttl: TIME_SUGGESTION_PUSH_TTL_SECONDS,
   };
 }
 
