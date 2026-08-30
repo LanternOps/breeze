@@ -51,13 +51,48 @@ import { describe, expect, it } from 'vitest';
  * new image appears, or a base ref changes shape, the snapshot fails and forces
  * a human to decide which side of the line it belongs on, rather than letting an
  * image drop silently out of coverage.
+ *
+ * Two assumptions this guard rests on, recorded so they are not rediscovered
+ * the hard way:
+ *
+ *  - **"Last stage in the file" == "the stage that ships."** True for every
+ *    Dockerfile here today, but a `docker build --target <stage>` in a workflow
+ *    would ship an earlier stage and quietly defeat the whole check. Nothing in
+ *    the repo does that at present.
+ *  - The `HARDENING_BLOCKED` coupling below proves the hardening *rule text*
+ *    still exists; it cannot prove the hardening *script* is still wired into
+ *    CI. If that script were dropped from its workflow the control would stop
+ *    running while this suite stayed green.
  */
 
 // apps/api/src/config -> repo root is 4 levels up.
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 
-/** The exact mitigation the shipped images already use. */
-const UPGRADE_RE = /apk\s+upgrade\b[^\n]*?\blibcrypto3\b[^\n]*?\blibssl3\b/;
+/** The packages CVE-2026-14456 is fixed in. */
+const REQUIRED_PACKAGES = ['libcrypto3', 'libssl3'] as const;
+
+/**
+ * True when `bodies` collectively `apk upgrade` both OpenSSL packages.
+ *
+ * Deliberately order-independent, and tolerant of the two being split across
+ * separate `apk upgrade` commands: `apk` does not care about argument order, so
+ * a guard that did would reject a Dockerfile that is genuinely patched and send
+ * the next author hunting for a bug that is not there. What it still requires is
+ * that each package be named on an actual `apk upgrade` line — a bare mention in
+ * a comment or an `apk add` does not count.
+ */
+function upgradesOpenssl(bodies: string[]): boolean {
+  const upgraded = new Set<string>();
+  for (const body of bodies) {
+    for (const line of body.split('\n')) {
+      if (!/\bapk\s+upgrade\b/.test(line)) continue;
+      for (const pkg of REQUIRED_PACKAGES) {
+        if (new RegExp(`\\b${pkg}\\b`).test(line)) upgraded.add(pkg);
+      }
+    }
+  }
+  return REQUIRED_PACKAGES.every((pkg) => upgraded.has(pkg));
+}
 
 /**
  * A digest-pinned node Alpine base, e.g.
@@ -117,7 +152,12 @@ function parseStages(source: string): Stage[] {
   for (const rawLine of joined.split('\n')) {
     const line = rawLine.trim();
     if (line.startsWith('#')) continue;
-    const from = /^FROM\s+(\S+)(?:\s+AS\s+(\S+))?/i.exec(line);
+    // Leading flags (`FROM --platform=$BUILDPLATFORM node:24-alpine AS x`) must
+    // be skipped, or the flag itself is read as the base ref and the image
+    // silently drops out of scope — the exact blind spot this guard exists to
+    // close. Nothing in the repo builds multi-arch this way today; this is here
+    // so the first image that does is still covered.
+    const from = /^FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?/i.exec(line);
     if (from?.[1]) {
       stages.push({ parent: from[1], alias: from[2]?.toLowerCase(), body: '' });
       continue;
@@ -177,7 +217,7 @@ describe('Dockerfile OpenSSL upgrade coverage', () => {
 
   it.each(COVERED)('%s upgrades libcrypto3/libssl3 in its shipped stage', (dockerfile) => {
     const chain = inheritanceChain(STAGES.get(dockerfile)!);
-    const upgraded = chain.some((stage) => UPGRADE_RE.test(stage.body));
+    const upgraded = upgradesOpenssl(chain.map((stage) => stage.body));
 
     expect(
       upgraded,
@@ -203,7 +243,7 @@ describe('Dockerfile OpenSSL upgrade coverage', () => {
       ].join('\n'),
     );
     const chain = inheritanceChain(discarded);
-    expect(chain.some((stage) => UPGRADE_RE.test(stage.body))).toBe(false);
+    expect(upgradesOpenssl(chain.map((stage) => stage.body))).toBe(false);
 
     // ...while an upgrade inherited through `FROM base` is correctly credited.
     const inherited = parseStages(
@@ -214,7 +254,7 @@ describe('Dockerfile OpenSSL upgrade coverage', () => {
         'CMD ["node", "index.js"]',
       ].join('\n'),
     );
-    expect(inheritanceChain(inherited).some((s) => UPGRADE_RE.test(s.body))).toBe(true);
+    expect(upgradesOpenssl(inheritanceChain(inherited).map((s) => s.body))).toBe(true);
   });
 
   it.each([...HARDENING_BLOCKED])(
@@ -233,6 +273,39 @@ describe('Dockerfile OpenSSL upgrade coverage', () => {
       ).toBe(true);
     },
   );
+
+  it('accepts the two packages in either order, and rejects a non-upgrade mention', () => {
+    // `apk` ignores argument order, so the guard must too — otherwise it fails a
+    // Dockerfile that is genuinely patched, which is worse than useless.
+    expect(upgradesOpenssl(['RUN apk upgrade --no-cache libssl3 libcrypto3'])).toBe(true);
+    expect(upgradesOpenssl(['RUN apk upgrade --no-cache libcrypto3 libssl3'])).toBe(true);
+    expect(
+      upgradesOpenssl(['RUN apk upgrade --no-cache libcrypto3', 'RUN apk upgrade --no-cache libssl3']),
+    ).toBe(true);
+
+    // Still strict where it matters: one package alone is not enough, and
+    // naming them outside an `apk upgrade` does not count.
+    expect(upgradesOpenssl(['RUN apk upgrade --no-cache libcrypto3'])).toBe(false);
+    expect(upgradesOpenssl(['RUN apk add --no-cache libcrypto3 libssl3'])).toBe(false);
+  });
+
+  it('still resolves the base ref when FROM carries build flags', () => {
+    // A multi-arch `FROM --platform=...` must not read the flag as the base
+    // ref: that would drop the image out of scope silently, which is the one
+    // way this guard could fail without anyone noticing.
+    const digest = 'a'.repeat(64);
+    const stages = parseStages(
+      [
+        `FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:${digest} AS build`,
+        'RUN pnpm build',
+        `FROM --platform=$TARGETPLATFORM node:24-alpine@sha256:${digest} AS runner`,
+        'RUN apk upgrade --no-cache libcrypto3 libssl3',
+      ].join('\n'),
+    );
+
+    expect(effectiveBaseRef(stages)).toBe(`node:24-alpine@sha256:${digest}`);
+    expect(PINNED_NODE_ALPINE_RE.test(effectiveBaseRef(stages))).toBe(true);
+  });
 
   it('leaves no Dockerfile silently out of scope', () => {
     // Scope is derived from each file's effective base ref, so this snapshot is
