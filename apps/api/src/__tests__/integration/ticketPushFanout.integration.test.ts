@@ -243,20 +243,41 @@ describe('ticket push fan-out — tenant boundary', () => {
     expect(dispatch).toHaveBeenCalledTimes(2);
   });
 
-  runDb(`'any' fan-out is capped at ${ANY_SUBSCRIBER_CAP} and always includes the owner`, async () => {
+  /**
+   * The cap, proven with a small injected value instead of 505 real users.
+   *
+   * The plan's original shape seeded ANY_SUBSCRIBER_CAP + 5 users, each with a
+   * role and a permission grant; that is ~2000 serial statements and blows the
+   * 30s integration timeout (it did, twice). The plan's own fallback applies:
+   * make the cap injectable rather than delete the test — it is a
+   * tenant-blast-radius control. listAnySlaSubscribers takes `cap` for exactly
+   * this; the worker never passes it, so production stays at
+   * ANY_SUBSCRIBER_CAP, which ticketPush.sql.test.ts pins into the compiled
+   * LIMIT.
+   */
+  runDb('the any-SLA subscriber list truncates at the cap, lowest user id first', async () => {
     const fx = await seed();
-    // makeUser goes through db-utils' own privileged handle; keep it OUTSIDE
-    // withSystemDbAccessContext so the two connection paths never nest.
-    const extras: string[] = [];
-    for (let i = 0; i < ANY_SUBSCRIBER_CAP + 5; i++) {
-      const u = await makeUser({ partnerId: fx.p1.id }); // real tickets:read grant
-      extras.push(u.id);
-    }
-    await withSystemDbAccessContext(async () => {
-      for (const id of extras) {
-        await db.insert(ticketPushPreferences).values({ userId: id, slaScope: 'any' });
-      }
-    });
+    const CAP = 2;
+    // seed() already opted 4 users in (anyA, anyB, foreign, noPerm); three of
+    // them are in p1, which is > CAP.
+    const { users: subs, truncated } = await withSystemDbAccessContext(() =>
+      listAnySlaSubscribers(fx.p1.id, CAP));
+
+    expect(truncated).toBe(true);
+    expect(subs).toHaveLength(CAP);
+    // Deterministic truncation: ordered by user id, so the same partner always
+    // loses the same tail rather than a random subset per run.
+    const ids = subs.map((s) => s.userId);
+    expect(ids).toEqual([...ids].sort());
+    // Positive control: an uncapped call returns strictly more than the capped one.
+    const { users: all, truncated: allTruncated } = await withSystemDbAccessContext(() =>
+      listAnySlaSubscribers(fx.p1.id));
+    expect(all.length).toBeGreaterThan(CAP);
+    expect(allTruncated).toBe(false);
+  });
+
+  runDb('the owner is notified from the assignee branch, never via the capped list', async () => {
+    const fx = await seed();
     await handleTicketEvent({
       type: 'ticket.sla_breached',
       ticketId: fx.ticket.id,
@@ -267,9 +288,9 @@ describe('ticket push fan-out — tenant boundary', () => {
       payload: { target: 'response', internalNumber: null, subject: 'Printer', assigneeId: fx.owner.id },
     });
     const rows = await rowsFor(fx.ticket.id);
-    expect(rows.length).toBeLessThanOrEqual(ANY_SUBSCRIBER_CAP + 1);
-    // Positive control: the cap truncates, it does not empty the fan-out.
-    expect(rows.length).toBeGreaterThan(1);
+    // The owner has no ticket_push_preferences row at all, so they can never
+    // appear in listAnySlaSubscribers — they are reached only because they are
+    // the assignee. That is what keeps the cap from ever dropping the owner.
     expect(rows.some((r) => r.userId === fx.owner.id)).toBe(true);
   });
 });

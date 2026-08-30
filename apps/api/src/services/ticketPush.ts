@@ -51,7 +51,7 @@ export function __resetApnsWarnForTests(): void {
  * `eq(users.partnerId, partnerId)` IS the tenant boundary — the worker runs with
  * RLS bypassed, so nothing below this line stops a cross-partner subscriber.
  */
-export function anySlaSubscribersQuery(partnerId: string) {
+export function anySlaSubscribersQuery(partnerId: string, cap: number = ANY_SUBSCRIBER_CAP) {
   return db
     .select({
       userId: users.id,
@@ -69,20 +69,27 @@ export function anySlaSubscribersQuery(partnerId: string) {
       )
     )
     .orderBy(asc(users.id))
-    .limit(ANY_SUBSCRIBER_CAP + 1); // +1 so truncation is observable
+    .limit(cap + 1); // +1 so truncation is observable
 }
 
+/**
+ * `cap` is a parameter, not a constant read, ONLY so the real-DB truncation test
+ * can prove the behaviour with a handful of users instead of 505 (seeding 505
+ * users with roles and permission grants blows a 30s integration timeout). The
+ * worker never passes it — production is always ANY_SUBSCRIBER_CAP.
+ */
 export async function listAnySlaSubscribers(
-  partnerId: string
+  partnerId: string,
+  cap: number = ANY_SUBSCRIBER_CAP
 ): Promise<{ users: RecipientCandidate[]; truncated: boolean }> {
-  const rows = (await anySlaSubscribersQuery(partnerId)) as RecipientCandidate[];
-  const truncated = rows.length > ANY_SUBSCRIBER_CAP;
+  const rows = (await anySlaSubscribersQuery(partnerId, cap)) as RecipientCandidate[];
+  const truncated = rows.length > cap;
   if (truncated) {
     console.warn(
-      `[TicketPush] 'any' SLA subscribers exceed cap partner=${partnerId} cap=${ANY_SUBSCRIBER_CAP}; first ${ANY_SUBSCRIBER_CAP} by user id`
+      `[TicketPush] 'any' SLA subscribers exceed cap partner=${partnerId} cap=${cap}; first ${cap} by user id`
     );
   }
-  return { users: rows.slice(0, ANY_SUBSCRIBER_CAP), truncated };
+  return { users: rows.slice(0, cap), truncated };
 }
 
 export async function loadUserCandidate(userId: string): Promise<RecipientCandidate | null> {
