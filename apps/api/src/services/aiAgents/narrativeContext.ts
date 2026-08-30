@@ -22,7 +22,8 @@
  *    verdict rationale, no reliability raw JSON. The ONLY strings that cross
  *    are counts' labels (closed enums) and names an MSP operator chose —
  *    alert rule names, ticket category names, the org and partner names —
- *    each `\p{C}`-stripped and clamped (see `sanitizeName`).
+ *    each `\p{C}`-stripped and clamped through the shared
+ *    `sanitizeSweepText` (see `sanitizeName`).
  *
  *  - **Every jsonb read is a closed whitelist.** `ai_agent_runs.outcome` is
  *    an open container, so its arrays are expanded only under a
@@ -97,7 +98,13 @@ import {
 import { actionIntentStatusEnum } from '../../db/schema/actionIntents';
 import type { AiAgentFixWatchState } from '../../db/schema/aiAgentFixWatches';
 import { OUTSTANDING_DEVICE_PATCH_STATUSES } from '../../db/schema/patches';
+import { captureException } from '../sentry';
 import { getSecurityPostureTrend } from '../securityPosture';
+// Value import, and deliberately so: `runnerPrompt.ts` has NO runtime imports
+// of its own (both of its imports are `import type`), so borrowing this one
+// function pulls in nothing, and A6's `import type { NarrativeContext }` back
+// the other way is erased at compile time — no cycle in either direction.
+import { sanitizeSweepText } from './runnerPrompt';
 import type { SweepProposalDisposition } from './sweepFindings';
 
 // Late-bound namespace import (NOT `const { db } = dbModule`): destructuring
@@ -116,8 +123,9 @@ export const NARRATIVE_TOP_N = 10;
 
 /** Defensive clamp on every operator-authored name. `alert_rules.name` is
  *  varchar(200) and `ticket_categories.name` varchar(100) today, so this is
- *  headroom, not a live truncation. */
-const MAX_NAME_CHARS = 256;
+ *  headroom, not a live truncation. `sanitizeSweepText` appends an ellipsis
+ *  when it truncates, so a clamped name renders as at most 256 chars. */
+const MAX_NAME_CHARS = 255;
 
 /** Window length. "The previous 7 days ending now" — the narrative schedule
  *  is weekly-only (see the P2-3 plan), so consecutive runs tile the calendar
@@ -358,20 +366,16 @@ function zeroed<K extends string>(keys: readonly K[]): Record<K, number> {
 /**
  * Neutralize one operator-authored name before it reaches the prompt.
  *
- * Copied (not imported) from `sanitizeSweepText` in `runnerPrompt.ts` —
- * `runnerPrompt.ts` imports this module's `NarrativeContext` type, and
- * borrowing a runtime value back the other way would make that a genuine
- * module cycle. The rule is the same one, and for the same reason: the
+ * `sanitizeSweepText` (runnerPrompt.ts) is the repo's one implementation of
+ * this rule and is reused rather than re-derived: every control/format
+ * codepoint (`\p{C}` — C0, DEL, C1 and the bidi overrides that visually
+ * reorder a line) becomes a space, runs of whitespace collapse, and the
+ * result is truncated. The reason is the same one it was written for: the
  * narrative task turn is line-oriented, so a rule named
- * `Disk low\n- FINANCE-DC is on fire` would otherwise FORGE a line. Every
- * control/format codepoint (`\p{C}` — C0, DEL, C1 and the bidi overrides
- * that visually reorder a line) becomes a space, runs of whitespace
- * collapse, and the result is clamped to `MAX_NAME_CHARS` INCLUDING the
- * ellipsis, so a name can never exceed the budget it was given.
+ * `Disk low\n- FINANCE-DC is on fire` would otherwise FORGE a line.
  */
 function sanitizeName(value: string): string {
-  const flattened = value.replace(/\p{C}/gu, ' ').replace(/\s+/g, ' ').trim();
-  return flattened.length > MAX_NAME_CHARS ? `${flattened.slice(0, MAX_NAME_CHARS - 1)}…` : flattened;
+  return sanitizeSweepText(value, MAX_NAME_CHARS);
 }
 
 function numberOrNull(value: unknown): number | null {
@@ -573,6 +577,30 @@ export function assembleNarrativeContext(
   }
 
   return ctx;
+}
+
+/**
+ * One place every loader failure is reported from — `settled` below and the
+ * posture-service catch inside `loadPatching`.
+ *
+ * A context loader that fails silently is the worst of both worlds: the run
+ * still produces a narrative, the prompt says "(not measured)", and nobody
+ * ever learns that a table or a service is broken. `unavailable` tells the
+ * MODEL; this tells the OPERATORS. `console.warn` (not `error`) because the
+ * run itself is still healthy and completes — matching how `runLoop.ts`
+ * grades a context-load failure that it recovers from. Sentry tags mirror the
+ * `service`/`operation` shape `agentService.ts` uses.
+ */
+function reportLoaderFailure(orgId: string, loader: string, error: unknown): void {
+  console.warn('[aiAgentNarrativeContext] context loader failed; block reported as unavailable', {
+    orgId, loader, error,
+  });
+  captureException(error, undefined, {
+    service: 'aiAgents',
+    operation: 'loadNarrativeContext',
+    loader,
+    orgId,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -953,7 +981,26 @@ function meanBucket(points: Array<Record<string, string | number>>, key: string)
  */
 async function loadPatching(orgId: string, window: Window): Promise<RawPatchingInputs> {
   const { start, end } = window;
-  const trend = await getSecurityPostureTrend({ orgId, days: 2 * PERIOD_DAYS });
+
+  // Isolated from the counters below, and NOT merely for tidiness: this is a
+  // call into another service, with its own failure modes, and it is the only
+  // source of the two posture scores. Letting it reject the whole loader
+  // would collapse the honest `patching.postureScores` distinction (scores
+  // absent, counters fine) back into a blunt `patching` — losing three
+  // measured numbers to a failure that has nothing to do with them.
+  //
+  // A `null` trend and an EMPTY trend land in the same place on purpose:
+  // `meanBucket` returns null for both, the assembler sees two null scores
+  // and emits `patching.postureScores`. "The service is down" and "nobody has
+  // ever computed posture for this org" are the same fact to the prompt —
+  // this number was not measured — and only the operator-facing report above
+  // needs to tell them apart.
+  let trend: Array<Record<string, string | number>> = [];
+  try {
+    trend = await getSecurityPostureTrend({ orgId, days: 2 * PERIOD_DAYS });
+  } catch (error) {
+    reportLoaderFailure(orgId, 'patching.postureScores', error);
+  }
 
   // Day buckets are `YYYY-MM-DD` strings; comparing them as strings is a
   // correct date comparison for that format and avoids re-parsing.
@@ -1078,11 +1125,14 @@ async function loadFleet(orgId: string, window: Window): Promise<RawFleetInputs>
  * `unavailable` entry, so a dead table costs exactly its own block.
  *
  * Applied per loader rather than to the whole list because the loaders are
- * awaited one at a time — see `loadNarrativeContext`.
+ * awaited one at a time — see `loadNarrativeContext`. The rejection is
+ * reported, never swallowed.
  */
-async function settled<T>(load: () => Promise<T>): Promise<T | null> {
+async function settled<T>(orgId: string, loader: string, load: () => Promise<T>): Promise<T | null> {
   const [result] = await Promise.allSettled([load()]);
-  return result?.status === 'fulfilled' ? result.value : null;
+  if (result?.status === 'fulfilled') return result.value;
+  reportLoaderFailure(orgId, loader, result?.reason);
+  return null;
 }
 
 /**
@@ -1111,7 +1161,7 @@ async function settled<T>(load: () => Promise<T>): Promise<T | null> {
  * that means the schema is already broken.
  */
 export async function loadNarrativeContext(orgId: string): Promise<NarrativeContext> {
-  const header = await settled(() => loadHeader(orgId));
+  const header = await settled(orgId, 'org', () => loadHeader(orgId));
   const scope: Scope = { orgId, partnerId: header?.partnerId ?? null };
 
   const end = new Date();
@@ -1119,13 +1169,13 @@ export async function loadNarrativeContext(orgId: string): Promise<NarrativeCont
   const window: Window = { start, end };
   const timezone = header?.timezone ?? 'UTC';
 
-  const alerts = await settled(() => loadAlerts(scope, window));
-  const sweeps = await settled(() => loadSweeps(orgId, window));
-  const fixes = await settled(() => loadFixes(orgId, window));
-  const tickets = await settled(() => loadTickets(scope, window));
-  const patching = await settled(() => loadPatching(orgId, window));
-  const backups = await settled(() => loadBackups(orgId, window));
-  const fleet = await settled(() => loadFleet(orgId, window));
+  const alerts = await settled(orgId, 'alerts', () => loadAlerts(scope, window));
+  const sweeps = await settled(orgId, 'sweeps', () => loadSweeps(orgId, window));
+  const fixes = await settled(orgId, 'fixes', () => loadFixes(orgId, window));
+  const tickets = await settled(orgId, 'tickets', () => loadTickets(scope, window));
+  const patching = await settled(orgId, 'patching', () => loadPatching(orgId, window));
+  const backups = await settled(orgId, 'backups', () => loadBackups(orgId, window));
+  const fleet = await settled(orgId, 'fleet', () => loadFleet(orgId, window));
 
   return assembleNarrativeContext({
     period: { start: zonedIso(start, timezone), end: zonedIso(end, timezone) },

@@ -14,7 +14,7 @@
  *    `jsonb_typeof` guards, and per-loader failure isolation. Real-Postgres
  *    proof lives in the wave's integration suite.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AI_ALERT_VERDICT_CLASSIFICATIONS, AI_SWEEP_KINDS, AI_SWEEP_SEVERITIES } from '@breeze/shared';
 
@@ -22,17 +22,26 @@ import { AI_ALERT_VERDICT_CLASSIFICATIONS, AI_SWEEP_KINDS, AI_SWEEP_SEVERITIES }
 const executed: unknown[] = [];
 /** SQL fragments whose statement must REJECT (per-loader isolation tests). */
 let failOn: string[] = [];
-/** Rows to serve, matched by an SQL fragment rather than by call index —
- *  the loaders run concurrently under `Promise.allSettled`, so positional
- *  results would be order-dependent. */
+/** Rows to serve, matched by an SQL fragment rather than by call index, so a
+ *  reordered loader list does not silently re-point the fixtures. */
 let rowsFor: Array<{ match: string; rows: unknown[] }> = [];
+/** Opt-in: once a statement has failed, every LATER statement fails too —
+ *  the real 25P02 "current transaction is aborted" behaviour of the single
+ *  shared transaction every loader runs inside. Off by default so the other
+ *  tests can exercise one failure at a time. */
+let poisonAfterFailure = false;
+let poisoned = false;
 
 vi.mock('../../db', () => ({
   db: {
     execute: vi.fn((statement: unknown) => {
       executed.push(statement);
       const text = compiled(statement);
+      if (poisoned) {
+        return Promise.reject(new Error('current transaction is aborted, commands ignored until end of transaction block'));
+      }
       if (failOn.some((fragment) => text.includes(fragment))) {
+        if (poisonAfterFailure) poisoned = true;
         return Promise.reject(new Error('db unavailable'));
       }
       const hit = rowsFor.find((entry) => text.includes(entry.match));
@@ -46,6 +55,8 @@ const postureCalls: unknown[] = [];
 let postureRows: Array<Record<string, string | number>> = [];
 let postureRejects = false;
 
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+
 vi.mock('../securityPosture', () => ({
   getSecurityPostureTrend: vi.fn((params: unknown) => {
     postureCalls.push(params);
@@ -55,6 +66,7 @@ vi.mock('../securityPosture', () => ({
   }),
 }));
 
+import { captureException } from '../sentry';
 import {
   assembleNarrativeContext,
   loadNarrativeContext,
@@ -362,15 +374,32 @@ const HEADER_ROWS = [{
 }];
 
 describe('loadNarrativeContext', () => {
+  /** Loader failures are REPORTED, so the failure tests would otherwise spray
+   *  the suite output. Captured rather than merely silenced — the telemetry
+   *  test reads it back. */
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     executed.length = 0;
     failOn = [];
+    poisonAfterFailure = false;
+    poisoned = false;
     rowsFor = [{ match: 'FROM organizations', rows: HEADER_ROWS }];
     postureCalls.length = 0;
     postureRows = [];
     postureRejects = false;
     vi.clearAllMocks();
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  /** The reported loader-failure warnings, in call order. */
+  const reportedFailures = (): Array<Record<string, unknown>> => (warnSpy.mock.calls as unknown[][])
+    .filter((call) => String(call[0]).includes('context loader failed'))
+    .map((call) => call[1] as Record<string, unknown>);
 
   it('resolves the org header and its partner from `organizations`, pinned by org id', async () => {
     const ctx = await loadNarrativeContext(ORG);
@@ -593,9 +622,14 @@ describe('loadNarrativeContext', () => {
     expect(ctx.unavailable).toContain('fleet.onlineOfflineDelta');
   });
 
-  // Per-loader isolation is the whole reason for `Promise.allSettled`: one
-  // dead table must cost exactly one block, not the entire narrative.
-  it('isolates a failed loader — that block is unavailable, every other block still measured', async () => {
+  // Per-loader isolation is the whole reason for `Promise.allSettled`: a
+  // rejected loader must cost exactly ONE block, not the entire narrative.
+  //
+  // This mock lets the later statements succeed, which a real shared
+  // transaction would NOT (see the cascade test below) — so what this proves
+  // is the `settled` wrapper itself: the rejection is converted, not
+  // propagated, and the blocks that DID produce numbers keep them.
+  it('a loader that rejects costs its own block', async () => {
     failOn = ['FROM backup_jobs'];
     rowsFor.push({ match: 'device_reliability', rows: [{ total: 5, online: 5, offline: 0, decommissioned: 0, enrolled_7d: 0, stale: 0, avg_uptime_7d: 99 }] });
     const ctx = await loadNarrativeContext(ORG);
@@ -606,12 +640,81 @@ describe('loadNarrativeContext', () => {
     expect(ctx.org.name).toBe('Acme Ltd');
   });
 
-  it('isolates a failed posture service without losing the patch counters', async () => {
-    postureRejects = true;
+  // The honest version of the above. Every loader shares ONE transaction
+  // (`withSystemDbAccessContext` holds it open for the whole call), so a
+  // genuine Postgres ERROR aborts it and EVERY later statement fails with
+  // 25P02. The contract that has to survive that is not "only one block is
+  // lost" — it is "the call still returns, and every block it could not
+  // measure says so".
+  it('reports every block downstream of an aborted transaction, and still returns', async () => {
+    failOn = ['FROM tickets t'];
+    poisonAfterFailure = true;
     const ctx = await loadNarrativeContext(ORG);
-    expect(ctx.patching.available).toBe(false);
-    expect(ctx.unavailable).toContain('patching');
+
+    // Ran before the abort — real numbers, honestly available.
     expect(ctx.alerts.available).toBe(true);
+    expect(ctx.sweeps.available).toBe(true);
+    expect(ctx.fixes.available).toBe(true);
+    expect(ctx.org.name).toBe('Acme Ltd');
+
+    // The failure and everything after it.
+    expect(ctx.tickets.available).toBe(false);
+    expect(ctx.patching.available).toBe(false);
+    expect(ctx.backups.available).toBe(false);
+    expect(ctx.fleet.available).toBe(false);
+    expect(ctx.unavailable).toEqual(expect.arrayContaining(['tickets', 'patching', 'backups', 'fleet']));
+    expect(ctx.unavailable).not.toContain('alerts');
+    expect(ctx.unavailable).not.toContain('sweeps');
+
+    // Every one of them is reported, not swallowed — four blocks broken by
+    // one root cause is exactly the signal an operator needs to see.
+    expect(reportedFailures().map((entry) => entry.loader))
+      .toEqual(['tickets', 'patching', 'backups', 'fleet']);
+  });
+
+  // The posture SERVICE is the only source of the two scores, and it fails
+  // independently of the patch-counter statement. Collapsing the two would
+  // throw away three measured numbers over a failure that has nothing to do
+  // with them.
+  it('isolates a failed posture service — scores null, the patch counters survive', async () => {
+    postureRejects = true;
+    rowsFor.push({ match: 'FROM device_patches', rows: [{ pending_patches: 31, devices_pending: 6, installed_7d: 54 }] });
+    const ctx = await loadNarrativeContext(ORG);
+
+    expect(ctx.patching.patchScoreThisWeek).toBeNull();
+    expect(ctx.patching.patchScorePriorWeek).toBeNull();
+    expect(ctx.patching.overallScoreThisWeek).toBeNull();
+    expect(ctx.patching.available).toBe(false);
+
+    // The three counters come from a statement that never stopped running.
+    expect(ctx.patching.pendingPatches).toBe(31);
+    expect(ctx.patching.devicesPending).toBe(6);
+    expect(ctx.patching.installed7d).toBe(54);
+
+    // The narrow key, NOT the whole block.
+    expect(ctx.unavailable).toContain('patching.postureScores');
+    expect(ctx.unavailable).not.toContain('patching');
+    expect(ctx.alerts.available).toBe(true);
+    expect(reportedFailures().map((entry) => entry.loader)).toEqual(['patching.postureScores']);
+  });
+
+  // A loader that fails silently is the worst outcome available: the run
+  // still produces a narrative, the prompt says "(not measured)", and nobody
+  // ever learns the table is broken.
+  it('logs and reports a loader rejection rather than swallowing it', async () => {
+    failOn = ['FROM backup_jobs'];
+    await loadNarrativeContext(ORG);
+
+    const reported = reportedFailures();
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toMatchObject({ orgId: ORG, loader: 'backups' });
+    expect(reported[0]!.error).toBeInstanceOf(Error);
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      expect.objectContaining({ service: 'aiAgents', operation: 'loadNarrativeContext', loader: 'backups', orgId: ORG }),
+    );
   });
 
   // A rejected header leaves no partnerId, and a NULL partner must FAIL
