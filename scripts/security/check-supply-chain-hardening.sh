@@ -27,6 +27,42 @@ reject_grep() {
   fi
 }
 
+# Credential-boundary executor images normally prohibit build-time package
+# resolution. The sole exception is the owner-approved repair for
+# CVE-2026-14456: upgrade exactly the two already-installed OpenSSL packages,
+# with no apk add, general upgrade, extra package, alternate flags, or
+# continuation-line bypass.
+AUDITED_APK_UPGRADE='^RUN[[:space:]]+apk[[:space:]]+upgrade[[:space:]]+--no-cache[[:space:]]+libcrypto3[[:space:]]+libssl3([[:space:]]*&&[[:space:]]*\\)?[[:space:]]*$'
+ANY_APK_INVOCATION='(^|[^[:alnum:]_-])apk([^[:alnum:]_-]|$)'
+
+reject_unaudited_apk() {
+  local dockerfile="$1"
+  local offenders
+
+  offenders="$(
+    sed 's/#.*$//' "$dockerfile" |
+      grep -E "$ANY_APK_INVOCATION" |
+      grep -vE "$AUDITED_APK_UPGRADE" || true
+  )"
+  if [[ -n "$offenders" ]]; then
+    fail "$dockerfile contains an unaudited apk invocation: $(printf '%s' "$offenders" | head -1 | sed 's/^[[:space:]]*//')"
+  fi
+}
+
+require_audited_openssl_upgrade() {
+  local dockerfile="$1"
+
+  reject_unaudited_apk "$dockerfile"
+  require_grep "$AUDITED_APK_UPGRADE" "$dockerfile" \
+    "$dockerfile must contain exactly: apk upgrade --no-cache libcrypto3 libssl3"
+}
+
+if [[ "${1:-}" == "--check-apk" ]]; then
+  [[ -n "${2:-}" && -f "${2:-}" ]] || fail "--check-apk needs a readable Dockerfile"
+  reject_unaudited_apk "$2"
+  exit 0
+fi
+
 extract_yaml_job() {
   local job="$1"
   local workflow="$2"
@@ -150,8 +186,7 @@ require_grep '^HEALTHCHECK .*\/healthz' "$EXECUTOR_DOCKERFILE" \
   "executor image must declare its bounded health endpoint"
 require_grep '^CMD[[:space:]]+\["node",[[:space:]]*"dist/index\.cjs"\]' "$EXECUTOR_DOCKERFILE" \
   "executor image must start only its compiled bounded runtime"
-reject_grep '^RUN[[:space:]].*apk[[:space:]]+(upgrade|add)' "$EXECUTOR_DOCKERFILE" \
-  "executor runtime must not resolve mutable Alpine packages during the image build"
+require_audited_openssl_upgrade "$EXECUTOR_DOCKERFILE"
 reject_grep '^(COPY|ADD)[[:space:]].*(\.env|\.pem|\.key|secret)' "$EXECUTOR_DOCKERFILE" \
   "executor image must not copy env, certificate, key, or secret files"
 reject_grep '^COPY[[:space:]]+\.[[:space:]]+\.' "$EXECUTOR_DOCKERFILE" \
@@ -324,8 +359,7 @@ require_grep '^HEALTHCHECK .*\/healthz' "$COMMS_EXECUTOR_DOCKERFILE" \
   "communications-executor image must declare its bounded health endpoint"
 require_grep '^CMD[[:space:]]+\["node",[[:space:]]*"dist/index\.cjs"\]' "$COMMS_EXECUTOR_DOCKERFILE" \
   "communications-executor image must start only its compiled bounded runtime"
-reject_grep '^RUN[[:space:]].*apk[[:space:]]+(upgrade|add)' "$COMMS_EXECUTOR_DOCKERFILE" \
-  "communications-executor runtime must not resolve mutable Alpine packages during the image build"
+require_audited_openssl_upgrade "$COMMS_EXECUTOR_DOCKERFILE"
 reject_grep '^(COPY|ADD)[[:space:]].*(\.env|\.pem|\.key|secret)' "$COMMS_EXECUTOR_DOCKERFILE" \
   "communications-executor image must not copy env, certificate, key, or secret files"
 reject_grep '^COPY[[:space:]]+\.[[:space:]]+\.' "$COMMS_EXECUTOR_DOCKERFILE" \

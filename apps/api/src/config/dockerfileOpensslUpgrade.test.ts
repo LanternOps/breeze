@@ -1,5 +1,7 @@
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -59,10 +61,11 @@ import { describe, expect, it } from 'vitest';
  *    Dockerfile here today, but a `docker build --target <stage>` in a workflow
  *    would ship an earlier stage and quietly defeat the whole check. Nothing in
  *    the repo does that at present.
- *  - The `HARDENING_BLOCKED` coupling below proves the hardening *rule text*
- *    still exists; it cannot prove the hardening *script* is still wired into
- *    CI. If that script were dropped from its workflow the control would stop
- *    running while this suite stayed green.
+ *  - The supply-chain contract below proves the hardening *rule text* still
+ *    admits only the exact two-package CVE repair; it cannot prove the
+ *    hardening *script* is still wired into CI. If that script were dropped
+ *    from its workflow the control would stop running while this suite stayed
+ *    green.
  */
 
 // apps/api/src/config -> repo root is 4 levels up.
@@ -101,27 +104,28 @@ function upgradesOpenssl(bodies: string[]): boolean {
  */
 const PINNED_NODE_ALPINE_RE = /^node:[^\s@]*-alpine@sha256:[0-9a-f]{64}$/;
 
-/**
- * The two customer-Graph credential-boundary executors, which
- * `scripts/security/check-supply-chain-hardening.sh` forbids from running ANY
- * `apk upgrade`/`apk add` ("executor runtime must not resolve mutable Alpine
- * packages during the image build"). That rule and this guard want opposite
- * things, and the conflict is a real security tradeoff — build reproducibility
- * for the credential boundary versus shipping a known HIGH CVE — so it belongs
- * to the repo owner, not to whoever is fixing CI that day. Until that call is
- * made these two stay unpatched and `Trivy Image Scan` stays red on them.
- *
- * The exception is deliberately self-invalidating: the test below asserts the
- * hardening rule is still there. Relax or delete that rule and this entry stops
- * being justified, the assertion fails, and the upgrade becomes required — so
- * the two controls can never quietly both be off.
- */
-const HARDENING_BLOCKED = new Set([
+/** Customer-Graph credential-boundary images with the narrow CVE exception. */
+const CREDENTIAL_BOUNDARY_DOCKERFILES = [
   'apps/m365-graph-read-executor/Dockerfile',
   'apps/m365-communications-executor/Dockerfile',
-]);
+] as const;
 
 const HARDENING_SCRIPT = 'scripts/security/check-supply-chain-hardening.sh';
+
+function checkApkPolicy(source: string) {
+  const directory = mkdtempSync(path.join(tmpdir(), 'breeze-apk-policy-'));
+  const dockerfile = path.join(directory, 'Dockerfile');
+  writeFileSync(dockerfile, source);
+  try {
+    return spawnSync(
+      'bash',
+      [path.join(REPO_ROOT, HARDENING_SCRIPT), '--check-apk', dockerfile],
+      { encoding: 'utf8' },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
 
 interface Stage {
   /** Lowercased `AS` alias, or undefined for an unnamed stage. */
@@ -203,8 +207,8 @@ const IN_SCOPE = DOCKERFILES.filter((f) =>
   PINNED_NODE_ALPINE_RE.test(effectiveBaseRef(STAGES.get(f)!)),
 );
 
-/** In scope and actually allowed to carry the upgrade today. */
-const COVERED = IN_SCOPE.filter((f) => !HARDENING_BLOCKED.has(f));
+/** Every digest-pinned shipping Node/Alpine image must carry the repair. */
+const COVERED = IN_SCOPE;
 
 describe('Dockerfile OpenSSL upgrade coverage', () => {
   it('finds the repo Dockerfiles', () => {
@@ -257,22 +261,51 @@ describe('Dockerfile OpenSSL upgrade coverage', () => {
     expect(upgradesOpenssl(inheritanceChain(inherited).map((s) => s.body))).toBe(true);
   });
 
-  it.each([...HARDENING_BLOCKED])(
-    '%s is exempt only while the hardening rule still forbids the upgrade',
+  it.each(CREDENTIAL_BOUNDARY_DOCKERFILES)(
+    '%s permits only the exact audited OpenSSL upgrade at the credential boundary',
     (dockerfile) => {
       const script = readFileSync(path.join(REPO_ROOT, HARDENING_SCRIPT), 'utf8');
-      const stillForbidden =
-        script.includes(dockerfile) && /reject_grep\s+'\^RUN.*apk.*upgrade/.test(script);
+      const source = SOURCES.get(dockerfile)!;
+      const variable =
+        dockerfile === 'apps/m365-graph-read-executor/Dockerfile'
+          ? 'EXECUTOR_DOCKERFILE'
+          : 'COMMS_EXECUTOR_DOCKERFILE';
+      const apkMutationLines = source
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => !line.startsWith('#') && /\bapk\s+(?:add|upgrade)\b/.test(line));
 
-      expect(
-        stillForbidden,
-        `${dockerfile} is listed in HARDENING_BLOCKED because ${HARDENING_SCRIPT} rejects ` +
-          '`apk upgrade` in it, but that rule is no longer there. The reason for the exemption ' +
-          'is gone, so either restore the rule or drop the entry and add ' +
-          '`apk upgrade --no-cache libcrypto3 libssl3` to the image (issue #4246).',
-      ).toBe(true);
+      expect(apkMutationLines).toEqual([
+        'RUN apk upgrade --no-cache libcrypto3 libssl3 && \\',
+      ]);
+      expect(script).toContain(`require_audited_openssl_upgrade "$${variable}"`);
     },
   );
+
+  it('rejects every apk mutation except the exact two-package repair', () => {
+    const accepted = [
+      'RUN apk upgrade --no-cache libcrypto3 libssl3 && \\\n    rm -rf /usr/local/lib/node_modules/npm',
+      '# historical note: never use apk add here',
+    ];
+    const rejected = [
+      'RUN apk add --no-cache curl',
+      'RUN apk upgrade',
+      'RUN apk upgrade --no-cache libssl3 libcrypto3',
+      'RUN apk upgrade --no-cache libcrypto3 libssl3 curl',
+      'RUN apk -U upgrade libcrypto3 libssl3',
+      'RUN true && \\\n    apk add --no-cache curl',
+      'RUN /sbin/apk add --no-cache curl',
+    ];
+
+    for (const source of accepted) {
+      const result = checkApkPolicy(source);
+      expect(result.status, result.stderr).toBe(0);
+    }
+    for (const source of rejected) {
+      const result = checkApkPolicy(source);
+      expect(result.status, `unexpectedly accepted: ${source}`).not.toBe(0);
+    }
+  });
 
   it('accepts the two packages in either order, and rejects a non-upgrade mention', () => {
     // `apk` ignores argument order, so the guard must too — otherwise it fails a
@@ -314,21 +347,15 @@ describe('Dockerfile OpenSSL upgrade coverage', () => {
     const classification = Object.fromEntries(
       DOCKERFILES.map((f) => [
         f,
-        HARDENING_BLOCKED.has(f)
-          ? 'blocked-by-hardening'
-          : IN_SCOPE.includes(f)
-            ? 'covered'
-            : effectiveBaseRef(STAGES.get(f)!),
+        IN_SCOPE.includes(f) ? 'covered' : effectiveBaseRef(STAGES.get(f)!),
       ]),
     );
 
     expect(classification).toEqual({
       'apps/api/Dockerfile': 'covered',
-      // Credential-boundary images: see HARDENING_BLOCKED. Still vulnerable to
-      // CVE-2026-14456; awaiting an owner decision on a CVE-scoped exception.
-      'apps/m365-communications-executor/Dockerfile': 'blocked-by-hardening',
+      'apps/m365-communications-executor/Dockerfile': 'covered',
       'apps/m365-graph-actions-executor/Dockerfile': 'covered',
-      'apps/m365-graph-read-executor/Dockerfile': 'blocked-by-hardening',
+      'apps/m365-graph-read-executor/Dockerfile': 'covered',
       'apps/portal/Dockerfile': 'covered',
       'apps/web/Dockerfile': 'covered',
       'docker/Dockerfile.api': 'covered',
