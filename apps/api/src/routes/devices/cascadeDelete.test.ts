@@ -85,6 +85,9 @@ vi.mock('../agents/enrollment', () => ({
   getGlobalEnrollmentSecret: vi.fn().mockReturnValue(null),
 }));
 
+import { readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+
 import * as schema from '../../db/schema';
 import {
   coreRoutes,
@@ -92,6 +95,7 @@ import {
   DEVICE_CASCADE_DELETE_TABLES,
   DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_LINKED_DEVICE_ID_TABLES,
+  DEVICE_LINK_DEPENDENT_COLUMNS,
 } from './core';
 import { db } from '../../db';
 import { isAgentConnected, sendCommandToAgent } from '../agentWs';
@@ -238,6 +242,172 @@ describe('device hard-delete table coverage contract', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #3952 — a link's provenance columns must be cleared WITH the link.
+//
+// Detaching a device nulls `linked_device_id`. Any CHECK constraint that makes
+// another column conditional on that link is therefore violated the instant the
+// pointer is nulled and the companion column is not — Postgres raises 23514 and
+// the whole cascade rolls back as a 500. That is exactly what shipped for
+// `discovered_assets.link_source`.
+//
+// Membership contracts are checked from the SCHEMA above; this one has to be
+// derived from the MIGRATIONS, because a CHECK constraint exists only in SQL —
+// the Drizzle schema has no idea the constraint is there. Without that,
+// "remember to null the provenance column too" is a code-review item, and this
+// repo's own history says review catches cascade-registration misses 0/5 while
+// contract tests catch them 5/5.
+// ---------------------------------------------------------------------------
+
+const MIGRATIONS_DIR = path.resolve(__dirname, '../../../migrations');
+
+/**
+ * Columns a `linked_device_id` CHECK names that must NOT be cleared on detach.
+ *
+ * Empty today, and an entry needs a written reason. The derivation below flags
+ * every column co-mentioned with `linked_device_id` in a CHECK, which is
+ * deliberately broader than "columns the constraint actually forbids": proving
+ * the logical form of arbitrary SQL is not something a regex should attempt, so
+ * a constraint like `CHECK (linked_device_id IS NULL OR site_id IS NOT NULL)`
+ * — where nulling site_id is wrong — is resolved by a human writing it down
+ * here rather than by the parser guessing.
+ */
+const LINK_CHECK_COLUMNS_NOT_CLEARED: ReadonlyMap<string, ReadonlySet<string>> = new Map();
+
+/** Every `CHECK (...)` body in one migration file, with its owning table. */
+function checkConstraints(sqlText: string): { table: string | null; body: string }[] {
+  const found: { table: string | null; body: string }[] = [];
+  const opener = /\bCHECK\s*\(/gi;
+  let match: RegExpExecArray | null;
+  while ((match = opener.exec(sqlText)) !== null) {
+    const start = match.index + match[0].length;
+    let depth = 1;
+    let i = start;
+    for (; i < sqlText.length && depth > 0; i++) {
+      if (sqlText[i] === '(') depth++;
+      else if (sqlText[i] === ')') depth--;
+    }
+    // Unbalanced (a paren inside a string literal, say) — skip rather than
+    // guess at a body. The vacuity check below is what keeps a parser that
+    // silently matches nothing from passing as a green guard.
+    if (depth !== 0) continue;
+    found.push({ table: owningTable(sqlText, match.index), body: sqlText.slice(start, i - 1) });
+  }
+  return found;
+}
+
+/** The nearest CREATE/ALTER TABLE ahead of this CHECK — inline or ADD CONSTRAINT. */
+function owningTable(sqlText: string, checkIndex: number): string | null {
+  const preceding = sqlText.slice(0, checkIndex);
+  const decl = /\b(?:CREATE|ALTER)\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:ONLY\s+)?(?:public\s*\.\s*)?"?([A-Za-z_][A-Za-z0-9_]*)"?/gi;
+  let table: string | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = decl.exec(preceding)) !== null) table = match[1]!.toLowerCase();
+  return table;
+}
+
+function columnNamesOf(tableName: string): ReadonlySet<string> {
+  const table = allSchemaTables().find((t) => getTableName(t) === tableName);
+  return new Set<string>(table ? getTableColumns(table).map((col) => String(col.name)) : []);
+}
+
+/** table -> columns named by a CHECK that also names linked_device_id. */
+function deriveLinkConditionalColumns(): Map<string, Set<string>> {
+  const linkedTables = new Set<string>(DEVICE_LINKED_DEVICE_ID_TABLES);
+  const derived = new Map<string, Set<string>>();
+
+  for (const file of readdirSync(MIGRATIONS_DIR)) {
+    if (!file.endsWith('.sql')) continue;
+    const text = readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8');
+    if (!text.includes('linked_device_id')) continue;
+
+    for (const { table, body } of checkConstraints(text)) {
+      if (!table || !linkedTables.has(table)) continue;
+      if (!/\blinked_device_id\b/.test(body)) continue;
+
+      // Intersect the constraint's identifiers with the table's REAL columns.
+      // That is what removes the need to blacklist SQL keywords: `IS`, `NULL`
+      // and `OR` are not columns of discovered_assets, so they drop out.
+      const columns = columnNamesOf(table);
+      const conditional = derived.get(table) ?? new Set<string>();
+      for (const token of body.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
+        const name = token.toLowerCase();
+        if (name === 'linked_device_id') continue;
+        if (columns.has(name)) conditional.add(name);
+      }
+      derived.set(table, conditional);
+    }
+  }
+
+  return derived;
+}
+
+describe('linked_device_id detach clears every link-conditional column (#3952)', () => {
+  const derived = deriveLinkConditionalColumns();
+
+  it('actually finds the known link_source constraint', () => {
+    // A derivation that matches nothing would make the contract test below
+    // pass unconditionally — the failure mode that makes a static guard worse
+    // than none. Pin the one constraint that exists today: if migration
+    // 2026-06-27-discovered-asset-link-source.sql is renamed, reworded, or the
+    // parser stops recognising ADD CONSTRAINT ... CHECK, this fails loudly
+    // rather than going quietly vacuous.
+    expect(
+      [...(derived.get('discovered_assets') ?? [])],
+      `The migration scan no longer sees discovered_assets_link_source_requires_link ` +
+        `(CHECK (link_source IS NULL OR linked_device_id IS NOT NULL)). Either the ` +
+        `constraint moved or checkConstraints()/owningTable() stopped parsing it — ` +
+        `fix the derivation, do NOT delete this test.`
+    ).toContain('link_source');
+  });
+
+  it('registers every link-conditional column in DEVICE_LINK_DEPENDENT_COLUMNS', () => {
+    const problems: string[] = [];
+
+    for (const [table, conditional] of derived) {
+      const cleared = new Set<string>(DEVICE_LINK_DEPENDENT_COLUMNS[table] ?? []);
+      const exempt = LINK_CHECK_COLUMNS_NOT_CLEARED.get(table) ?? new Set<string>();
+      for (const column of conditional) {
+        if (cleared.has(column) || exempt.has(column)) continue;
+        problems.push(`${table}.${column}`);
+      }
+    }
+
+    expect(
+      problems,
+      `A CHECK constraint in apps/api/migrations ties these columns to ` +
+        `linked_device_id, but the device hard-delete detach does not clear them. ` +
+        `Nulling linked_device_id alone violates the constraint (23514) and rolls ` +
+        `the whole cascade back as a 500 — this is issue #3952. Add each column to ` +
+        `DEVICE_LINK_DEPENDENT_COLUMNS in core.ts, or, if the constraint genuinely ` +
+        `does not forbid the detached state, record it in ` +
+        `LINK_CHECK_COLUMNS_NOT_CLEARED in this file WITH a reason.\n\n` +
+        `Unregistered: ${problems.join(', ')}`
+    ).toEqual([]);
+  });
+
+  it('only names tables and columns that exist', () => {
+    // A typo here does not fail loudly at runtime — it becomes a 42703
+    // undefined_column raised from inside the delete transaction, i.e. the same
+    // 500 this fix removed, wearing a different SQLSTATE.
+    const linkedTables = new Set<string>(DEVICE_LINKED_DEVICE_ID_TABLES);
+    const problems: string[] = [];
+
+    for (const [table, columns] of Object.entries(DEVICE_LINK_DEPENDENT_COLUMNS)) {
+      if (!linkedTables.has(table)) {
+        problems.push(`${table}: not in DEVICE_LINKED_DEVICE_ID_TABLES`);
+        continue;
+      }
+      const real = columnNamesOf(table);
+      for (const column of columns) {
+        if (!real.has(column)) problems.push(`${table}.${column}: no such column in the schema`);
+      }
+    }
+
+    expect(problems, `DEVICE_LINK_DEPENDENT_COLUMNS problems: ${problems.join('; ')}`).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Behavior: DELETE /devices/:id/permanent must DETACH tickets, not delete them.
 // ---------------------------------------------------------------------------
 
@@ -359,6 +529,56 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     expect(
       statements.some((s) => s.startsWith('DELETE FROM psa_ticket_mappings WHERE'))
     ).toBe(true);
+  });
+
+  it('hard delete clears discovered_assets.link_source in the same UPDATE as the link (#3952)', async () => {
+    // The reported 500: an AUTO-linked discovered asset carries
+    // link_source='auto', and `discovered_assets_link_source_requires_link`
+    // (CHECK (link_source IS NULL OR linked_device_id IS NOT NULL)) rejects the
+    // row the moment linked_device_id alone is nulled. Postgres raises 23514,
+    // which the route's catch does not special-case, so the whole permanent
+    // delete came back as an unhandled 500.
+    //
+    // Asserted on the COMPILED statement text, not on a mock call count: the
+    // bug and the fix differ only in the SET clause, so anything short of
+    // reading the generated SQL cannot tell them apart.
+    rigDeviceLookup(DEVICE);
+    const statements = rigDeleteTransaction();
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+
+    const detach = statements.filter((s) => s.startsWith('UPDATE discovered_assets SET '));
+    expect(
+      detach,
+      `Expected exactly one discovered_assets detach UPDATE.\nStatements:\n${statements.join('\n')}`
+    ).toHaveLength(1);
+    // One statement, both columns. A CHECK is evaluated per row at the end of
+    // each statement, so a follow-up "UPDATE ... SET link_source = NULL" would
+    // still transit the forbidden state and fail identically — the columns have
+    // to be cleared together, which is what pinning the whole SET clause proves.
+    expect(detach[0]).toBe(
+      `UPDATE discovered_assets SET linked_device_id = NULL, link_source = NULL WHERE linked_device_id = ${DEVICE.id}`
+    );
+
+    // network_change_events has no link_source column: appending the assignment
+    // to every linked table would trade 23514 for 42703 (undefined_column).
+    const otherDetach = statements.filter((s) =>
+      s.startsWith('UPDATE network_change_events SET linked_device_id')
+    );
+    expect(otherDetach).toHaveLength(1);
+    expect(otherDetach[0]).not.toContain('link_source');
+
+    // And the asset row itself survives — it is network inventory about an
+    // endpoint that exists whether or not Breeze manages it, so a detach must
+    // never become a delete.
+    expect(
+      statements.filter((s) => s.startsWith('DELETE FROM discovered_assets'))
+    ).toEqual([]);
   });
 
   it('runs the link-group dissolve check when hard-deleting a linked boot profile (#2138)', async () => {
