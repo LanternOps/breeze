@@ -1,0 +1,348 @@
+import { sql } from 'drizzle-orm';
+import { isValidIanaTimezone } from '@breeze/shared';
+import { db, withSystemDbAccessContext } from '../db';
+import { TimeEntryServiceError, type TimeEntryActor } from './timeEntryService';
+import { getSessionSuggestionSettings, type SessionSuggestionSettings } from './timeSuggestionSettings';
+import {
+  alreadyLoggedVerdict, classifySignal, dayWindowUtc, envelopeOf, mergeSignals,
+  rankTicketCandidates, suggestionKey,
+  UNRELIABLE_AFTER_MS, TICKET_WINDOW_BEFORE_MS, TICKET_WINDOW_AFTER_MS,
+  type LoggedRange, type SignalPrecision, type SignalRow, type TicketCandidateRow,
+} from './timeSuggestionRules';
+
+export type SuggestionSignalRef = { kind: 'remote_session'; id: string };
+
+export interface TimeSuggestionSignal {
+  kind: 'remote_session';
+  id: string;
+  type: 'terminal' | 'desktop' | 'file_transfer';
+  startedAt: string;
+  endedAt: string;
+  precision: SignalPrecision;
+}
+
+export interface TimeSuggestion {
+  key: string;
+  signals: TimeSuggestionSignal[];
+  startedAt: string;
+  endedAt: string | null;
+  durationMinutes: number | null;
+  device: { id: string; hostname: string } | null;
+  org: { id: string; name: string } | null;
+  quickSupport: { attributionLabel: string | null; attributedOrgName: string | null } | null;
+  candidateTicket: { id: string; ticketNumber: string; subject: string; status: string; reason: 'closed_by_you' | 'assigned_to_you' } | null;
+  otherTickets: Array<{ id: string; ticketNumber: string; subject: string }>;
+  suggestedSource: 'remote_session' | 'support_session';
+  /**
+   * F19: minutes of this window already covered by the actor's existing
+   * time_entries. 0 normally; > 0 means a partial overlap the sheet must show.
+   * A window >= ALREADY_LOGGED_DROP_RATIO covered is dropped and never reaches
+   * the client.
+   */
+  alreadyLoggedOverlapMinutes: number;
+}
+
+export interface ListSuggestionsResult {
+  enabled: boolean;
+  date: string;
+  timezone: string;
+  suggestions: TimeSuggestion[];
+  unloggedCount: number;
+}
+
+export interface SuggestionActor extends TimeEntryActor {
+  scope: 'partner' | 'system';
+}
+
+export interface LoadedSignal extends SignalRow {
+  precision: SignalPrecision;
+  orgId: string;
+  orgName: string;
+  orgType: string;
+  deviceHostname: string | null;
+  attributedOrgId: string | null;
+  attributedOrgName: string | null;
+  attributionLabel: string | null;
+}
+
+const MAX_LOOKBACK_DAYS = 31;
+
+/**
+ * ISO string for a naive-UTC `timestamp` comparison. remote_sessions.*_at and
+ * time_entries.*_at are `timestamp` WITHOUT time zone written from a JS Date,
+ * i.e. UTC wall-clock. The explicit `AT TIME ZONE 'UTC'` means no session
+ * `TimeZone` setting can shift the day window.
+ */
+const utcTs = (d: Date) => sql`(${d.toISOString()}::timestamptz AT TIME ZONE 'UTC')`;
+
+/**
+ * The one signal query (spec backend-flow step 3). Runs in the CALLER's DB
+ * context — RLS on remote_sessions / organizations / devices / support_sessions
+ * is the first wall; `rs.user_id = :user AND o.partner_id = :partner` and the
+ * accessibleOrgIds allowlist are the app-layer backstop. A bug here can only
+ * over-restrict (F1).
+ *
+ * `accessibleOrgIds: []` (a partner user granted no orgs) still emits
+ * `org_id = ANY('{}')`, which matches nothing — an empty allowlist must never
+ * read as "no filter".
+ */
+export async function loadSignals(q: {
+  userId: string;
+  partnerId: string;
+  accessibleOrgIds: string[] | null;
+  window?: { start: Date; end: Date };
+  ids?: string[];
+  includeDecided?: boolean;
+}): Promise<LoadedSignal[]> {
+  const conds = [
+    sql`rs.user_id = ${q.userId}`,
+    sql`rs.started_at IS NOT NULL AND rs.ended_at IS NOT NULL`,
+    sql`rs.status IN ('disconnected','failed')`,
+  ];
+  if (q.window) conds.push(sql`rs.ended_at >= ${utcTs(q.window.start)} AND rs.ended_at < ${utcTs(q.window.end)}`);
+  if (q.ids) conds.push(sql`rs.id = ANY(${q.ids}::uuid[])`);
+  if (q.accessibleOrgIds) conds.push(sql`rs.org_id = ANY(${q.accessibleOrgIds}::uuid[])`);
+  if (!q.includeDecided) {
+    conds.push(sql`NOT EXISTS (SELECT 1 FROM time_suggestion_decisions x
+      WHERE x.user_id = ${q.userId} AND x.signal_kind = 'remote_session' AND x.signal_id = rs.id)`);
+  }
+
+  const rows = (await db.execute(sql`
+    SELECT rs.id, rs.type, rs.device_id,
+           (rs.started_at AT TIME ZONE 'UTC') AS started_at,
+           (rs.ended_at   AT TIME ZONE 'UTC') AS ended_at,
+           rs.duration_seconds, rs.error_message,
+           rs.org_id, o.name AS org_name, o.type AS org_type,
+           d.hostname AS device_hostname,
+           qs.attributed_org_id, ao.name AS attributed_org_name, qs.attribution_label
+    FROM remote_sessions rs
+    JOIN organizations o ON o.id = rs.org_id AND o.partner_id = ${q.partnerId}
+    LEFT JOIN devices d ON d.id = rs.device_id
+    LEFT JOIN LATERAL (
+      SELECT ss.attributed_org_id, ss.attribution_label
+      FROM support_sessions ss
+      WHERE o.type = 'quick_support' AND ss.device_id = rs.device_id
+      ORDER BY ss.created_at DESC LIMIT 1
+    ) qs ON true
+    LEFT JOIN organizations ao ON ao.id = qs.attributed_org_id
+    WHERE ${sql.join(conds, sql` AND `)}
+    ORDER BY rs.started_at
+  `)) as unknown as Array<Record<string, unknown>>;
+
+  return rows.map((r) => {
+    const base = {
+      id: String(r.id),
+      type: r.type as SignalRow['type'],
+      deviceId: String(r.device_id),
+      startedAt: new Date(r.started_at as string | Date),
+      endedAt: new Date(r.ended_at as string | Date),
+      durationSeconds: r.duration_seconds == null ? null : Number(r.duration_seconds),
+      errorMessage: (r.error_message as string | null) ?? null,
+    };
+    return {
+      ...base,
+      precision: classifySignal(base).precision,
+      orgId: String(r.org_id),
+      orgName: String(r.org_name),
+      orgType: String(r.org_type),
+      deviceHostname: (r.device_hostname as string | null) ?? null,
+      attributedOrgId: (r.attributed_org_id as string | null) ?? null,
+      attributedOrgName: (r.attributed_org_name as string | null) ?? null,
+      attributionLabel: (r.attribution_label as string | null) ?? null,
+    };
+  });
+}
+
+/**
+ * F19 — everything this technician has ALREADY logged inside the day window.
+ * One query per list call, not one per suggestion. Ranges are clipped to the
+ * window in SQL so the TS side only unions and intersects.
+ *
+ * A running timer (`ended_at IS NULL`) counts as `[started_at, now)` clipped to
+ * the window — not zero-length (which would re-suggest work in progress) and
+ * not open-ended to end-of-day (which would hide everything after it). Runs in
+ * the caller's DB context; the partner-axis time_entries policy plus the
+ * explicit `user_id` predicate are the walls.
+ */
+export async function loadLoggedRanges(q: { userId: string; window: { start: Date; end: Date } }): Promise<LoggedRange[]> {
+  const rows = (await db.execute(sql`
+    WITH bounds AS (
+      SELECT ${utcTs(q.window.start)} AS day_start,
+             ${utcTs(q.window.end)}   AS day_end,
+             (statement_timestamp() AT TIME ZONE 'UTC') AS now_utc
+    )
+    SELECT GREATEST(te.started_at, b.day_start)                        AS range_start,
+           LEAST(COALESCE(te.ended_at, b.now_utc), b.day_end)          AS range_end
+    FROM time_entries te CROSS JOIN bounds b
+    WHERE te.user_id = ${q.userId}
+      AND te.started_at < b.day_end
+      AND COALESCE(te.ended_at, b.now_utc) > b.day_start
+  `)) as unknown as Array<Record<string, unknown>>;
+  return rows
+    .map((r) => ({ startedAt: new Date(r.range_start as string | Date), endedAt: new Date(r.range_end as string | Date) }))
+    .filter((r) => r.endedAt.getTime() > r.startedAt.getTime());
+}
+
+function resolveWindow(date: string, tz: string | undefined, partnerTz: string): { window: { start: Date; end: Date }; timezone: string } {
+  const timezone = tz ?? partnerTz ?? 'UTC';
+  if (!isValidIanaTimezone(timezone)) throw new TimeEntryServiceError(`Unknown timezone ${timezone}`, 400, 'INVALID_TZ');
+  const window = dayWindowUtc(date, timezone);
+  if (Number.isNaN(window.start.getTime()) || Number.isNaN(window.end.getTime())) {
+    throw new TimeEntryServiceError('Invalid date', 400, 'INVALID_RANGE');
+  }
+  if (Date.now() - window.end.getTime() > MAX_LOOKBACK_DAYS * 24 * 60 * 60_000) {
+    throw new TimeEntryServiceError(`date must be within the last ${MAX_LOOKBACK_DAYS} days`, 400, 'INVALID_RANGE');
+  }
+  return { window, timezone };
+}
+
+/** Groups (merge) + threshold filter shared by list and count so the two never disagree. */
+function groupSignals(signals: LoadedSignal[], settings: SessionSuggestionSettings): LoadedSignal[][] {
+  const kept = signals.filter((s) => {
+    const { durationSeconds } = classifySignal(s);
+    // Unreliable rows (durationSeconds null) are never hidden (F7).
+    return durationSeconds == null || durationSeconds >= settings.minSessionSeconds;
+  });
+  return mergeSignals(kept, settings.mergeGapMinutes);
+}
+
+async function loadTicketCandidates(q: {
+  partnerId: string; actorId: string; deviceIds: string[]; window: { start: Date; end: Date }; orgId?: string;
+}): Promise<Array<TicketCandidateRow & { deviceId: string }>> {
+  if (q.deviceIds.length === 0) return [];
+  const lo = new Date(q.window.start.getTime() - TICKET_WINDOW_BEFORE_MS);
+  const hi = new Date(q.window.end.getTime() + UNRELIABLE_AFTER_MS + TICKET_WINDOW_AFTER_MS);
+  const orgCond = q.orgId ? sql`AND t.org_id = ${q.orgId}` : sql``;
+  const rows = (await db.execute(sql`
+    SELECT t.id, t.ticket_number, t.subject, t.status, t.org_id, t.device_id, t.assigned_to, t.closed_by,
+           (t.closed_at AT TIME ZONE 'UTC') AS closed_at,
+           (sc.created_at AT TIME ZONE 'UTC') AS actor_status_change_at, sc.new_value AS actor_status_change_to
+    FROM tickets t
+    LEFT JOIN LATERAL (
+      SELECT c.created_at, c.new_value FROM ticket_comments c
+      WHERE c.ticket_id = t.id AND c.user_id = ${q.actorId} AND c.comment_type = 'status_change'
+        AND c.deleted_at IS NULL
+        AND c.new_value IN ('resolved','closed')
+        AND c.created_at >= ${utcTs(lo)} AND c.created_at < ${utcTs(hi)}
+      ORDER BY c.created_at DESC LIMIT 1
+    ) sc ON true
+    WHERE t.partner_id = ${q.partnerId}
+      AND t.deleted_at IS NULL
+      AND t.device_id = ANY(${q.deviceIds}::uuid[])
+      ${orgCond}
+      AND (t.assigned_to = ${q.actorId} OR t.closed_by = ${q.actorId} OR sc.created_at IS NOT NULL)
+  `)) as unknown as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    id: String(r.id),
+    ticketNumber: String(r.ticket_number ?? ''),
+    subject: String(r.subject ?? ''),
+    status: String(r.status),
+    orgId: String(r.org_id),
+    deviceId: String(r.device_id),
+    assignedTo: (r.assigned_to as string | null) ?? null,
+    closedBy: (r.closed_by as string | null) ?? null,
+    closedAt: r.closed_at ? new Date(r.closed_at as string | Date) : null,
+    actorStatusChangeAt: r.actor_status_change_at ? new Date(r.actor_status_change_at as string | Date) : null,
+    actorStatusChangeTo: (r.actor_status_change_to as string | null) ?? null,
+  }));
+}
+
+function toSuggestion(
+  group: LoadedSignal[],
+  actorId: string,
+  tickets: Array<TicketCandidateRow & { deviceId: string }>,
+  loggedRanges: LoggedRange[],
+): TimeSuggestion {
+  const head = group[0]!;
+  const isQuickSupport = head.orgType === 'quick_support';
+  const env = envelopeOf(group);
+  // QS sessions run under the hidden org, so a candidate ticket can only come
+  // from the ATTRIBUTED org — and only when one is recorded (D4/F12).
+  const mine = tickets.filter((t) =>
+    t.deviceId === head.deviceId
+    && (!isQuickSupport || (head.attributedOrgId != null && t.orgId === head.attributedOrgId)));
+  const ranked = rankTicketCandidates(mine, actorId, env);
+  return {
+    key: suggestionKey(group.map((s) => s.id)),
+    signals: group.map((s) => ({
+      kind: 'remote_session' as const, id: s.id, type: s.type,
+      startedAt: s.startedAt.toISOString(), endedAt: s.endedAt.toISOString(), precision: s.precision,
+    })),
+    startedAt: env.startedAt.toISOString(),
+    endedAt: env.endedAt ? env.endedAt.toISOString() : null,
+    durationMinutes: env.durationMinutes,
+    device: head.deviceHostname ? { id: head.deviceId, hostname: head.deviceHostname } : null,
+    // D6: the hidden quick_support org is never shown and never stamped.
+    org: isQuickSupport ? null : { id: head.orgId, name: head.orgName },
+    quickSupport: isQuickSupport ? { attributionLabel: head.attributionLabel, attributedOrgName: head.attributedOrgName } : null,
+    candidateTicket: ranked.candidate
+      ? {
+        id: ranked.candidate.id, ticketNumber: ranked.candidate.ticketNumber,
+        subject: ranked.candidate.subject, status: ranked.candidate.status, reason: ranked.candidate.reason,
+      }
+      : null,
+    otherTickets: ranked.otherTickets.map((t) => ({ id: t.id, ticketNumber: t.ticketNumber, subject: t.subject })),
+    suggestedSource: isQuickSupport ? 'support_session' : 'remote_session',
+    // F19: residual overlap only — anything >= the drop ratio is filtered out
+    // by the caller and never reaches the client.
+    alreadyLoggedOverlapMinutes: alreadyLoggedVerdict(env, loggedRanges).overlapMinutes,
+  };
+}
+
+/** F19 filter, shared by list and count so the two can never disagree. */
+function dropAlreadyLogged(groups: LoadedSignal[][], loggedRanges: LoggedRange[]): LoadedSignal[][] {
+  if (loggedRanges.length === 0) return groups;
+  return groups.filter((g) => !alreadyLoggedVerdict(envelopeOf(g), loggedRanges).drop);
+}
+
+export async function listTimeSuggestions(
+  actor: SuggestionActor,
+  opts: { date: string; tz?: string; userId?: string },
+): Promise<ListSuggestionsResult> {
+  if (!actor.partnerId) throw new TimeEntryServiceError('Partner is unresolvable', 400, 'PARTNER_UNRESOLVABLE');
+  const { settings, timezone: partnerTz } = await getSessionSuggestionSettings(actor.partnerId);
+  if (!settings.enabled) {
+    return { enabled: false, date: opts.date, timezone: opts.tz ?? partnerTz, suggestions: [], unloggedCount: 0 };
+  }
+  const { window, timezone } = resolveWindow(opts.date, opts.tz, partnerTz);
+  const userId = opts.userId ?? actor.userId;
+
+  const signals = await loadSignals({ userId, partnerId: actor.partnerId, accessibleOrgIds: actor.accessibleOrgIds, window });
+  // F19: fetch once, then drop windows the technician has already logged.
+  const loggedRanges = await loadLoggedRanges({ userId, window });
+  const groups = dropAlreadyLogged(groupSignals(signals, settings), loggedRanges);
+  if (groups.length === 0) return { enabled: true, date: opts.date, timezone, suggestions: [], unloggedCount: 0 };
+
+  const nonQs = groups.filter((g) => g[0]!.orgType !== 'quick_support');
+  const qsWithOrg = groups.filter((g) => g[0]!.orgType === 'quick_support' && g[0]!.attributedOrgId);
+  const tickets = [
+    ...(await loadTicketCandidates({
+      partnerId: actor.partnerId, actorId: userId,
+      deviceIds: [...new Set(nonQs.map((g) => g[0]!.deviceId))], window,
+    })),
+    ...(await Promise.all(qsWithOrg.map((g) => loadTicketCandidates({
+      partnerId: actor.partnerId!, actorId: userId, deviceIds: [g[0]!.deviceId], window, orgId: g[0]!.attributedOrgId!,
+    })))).flat(),
+  ];
+
+  const suggestions = groups.map((g) => toSuggestion(g, userId, tickets, loggedRanges));
+  return { enabled: true, date: opts.date, timezone, suggestions, unloggedCount: suggestions.length };
+}
+
+/**
+ * W07 hook — same grouping as list, number only. Safe under system context
+ * because `o.partner_id = :partner` and `rs.user_id = :user` are explicit
+ * predicates, not RLS side-effects. Dispatch, quiet hours and dedupe are W07.
+ */
+export async function countUnloggedSuggestions(args: { userId: string; partnerId: string; date: string; tz?: string }): Promise<number> {
+  return withSystemDbAccessContext(async () => {
+    const { settings, timezone: partnerTz } = await getSessionSuggestionSettings(args.partnerId);
+    if (!settings.enabled) return 0;
+    const { window } = resolveWindow(args.date, args.tz, partnerTz);
+    const signals = await loadSignals({ userId: args.userId, partnerId: args.partnerId, accessibleOrgIds: null, window });
+    const loggedRanges = await loadLoggedRanges({ userId: args.userId, window });
+    // Same F19 filter as list — a push that says "3 unlogged sessions" while
+    // the screen shows 1 is worse than no push at all.
+    return dropAlreadyLogged(groupSignals(signals, settings), loggedRanges).length;
+  });
+}
