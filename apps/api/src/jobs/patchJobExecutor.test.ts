@@ -1546,4 +1546,96 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
     expect(evaluateRebootPolicy).toHaveBeenCalledWith('device-1', 'if_required', true);
     expect(executeReboot).toHaveBeenCalled();
   });
+
+  it('honors a reported rebootRequired: false over the static patch flags', async () => {
+    // The approved set statically claims patch-1 requires a reboot, but the agent
+    // installed it and reported `rebootRequired: false` — Windows does not always
+    // need the restart the catalog advertises. The agent observed the real
+    // machine, so its `false` wins. Drop the `??` and read the static flags
+    // directly and this device gets an unnecessary reboot.
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: false,
+      reason: 'No installed patch requires reboot',
+      deferred: false,
+    });
+
+    await runDeviceExecution({
+      approvedPatches: TWO_PATCHES, // patch-1 has requiresReboot: true
+      rebootPolicy: 'if_required',
+      command: agentCommandRow({
+        success: true,
+        installedCount: 2,
+        failedCount: 0,
+        rebootRequired: false,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'installed', rebootRequired: false },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'installed', rebootRequired: false },
+        ],
+      }),
+    });
+
+    expect(evaluateRebootPolicy).toHaveBeenCalledWith('device-1', 'if_required', false);
+    expect(executeReboot).not.toHaveBeenCalled();
+  });
+
+  it('treats a per-patch installed entry as an install even when installedCount is 0', async () => {
+    // The two signals disagree: the summary counter says nothing installed, the
+    // per-patch array says patch-1 did. `anyPatchInstalled` ORs them, so the
+    // reboot still gets evaluated. Reading only `installedCount` would silently
+    // reinstate #4228 for any agent whose counter is absent, stale, or wrong.
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: true,
+      reason: 'Installed patch requires reboot',
+      deferred: false,
+    });
+
+    await runDeviceExecution({
+      approvedPatches: TWO_PATCHES,
+      rebootPolicy: 'if_required',
+      command: agentCommandRow({
+        success: false,
+        installedCount: 0,
+        failedCount: 1,
+        rebootRequired: true,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'installed', rebootRequired: true },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'failed', error: '0x80070005' },
+        ],
+      }),
+    });
+
+    expect(evaluateRebootPolicy).toHaveBeenCalledWith('device-1', 'if_required', true);
+    expect(executeReboot).toHaveBeenCalled();
+  });
+
+  it('evaluates the reboot policy for a rollback-only run with no net installs', async () => {
+    // Deliberate: `rolled_back` counts as "the device changed". Uninstalling a
+    // patch can require a restart just as installing one can, so a rollback that
+    // reports rebootRequired must reach the policy even though nothing was
+    // installed. Pinned because it is the least obvious arm of anyPatchInstalled
+    // and reads like a copy-paste at a glance.
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: true,
+      reason: 'Installed patch requires reboot',
+      deferred: false,
+    });
+
+    await runDeviceExecution({
+      approvedPatches: TWO_PATCHES,
+      rebootPolicy: 'if_required',
+      command: agentCommandRow({
+        success: false,
+        installedCount: 0,
+        failedCount: 1,
+        rebootRequired: true,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'rolled_back', rebootRequired: true },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'failed', error: '0x80070005' },
+        ],
+      }),
+    });
+
+    expect(evaluateRebootPolicy).toHaveBeenCalledWith('device-1', 'if_required', true);
+    expect(executeReboot).toHaveBeenCalled();
+  });
 });
