@@ -265,6 +265,7 @@ describe('action_intents schema', () => {
         'requestingAgentRunId',
         'scopeKind',
         'scopeDeviceId',
+        'scopeTicketId',
         'source',
         'requestingClientLabel',
         'actionName',

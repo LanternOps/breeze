@@ -148,6 +148,24 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // across two orgs. Same composite (org_id, partner_id) FK fragility as
   // llm_egress_events/ai_unattended_exposure applies too.
   ai_agent_fix_watches: { kind: 'leave-for-erasure', note: 'watch history is tied to a run that itself stays with the source org (ai_agent_runs disposition); composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
+  // ticket_drafts (P2-4, #4191): a DIFFERENT fragility shape than the
+  // (org_id, partner_id) composite-FK tables above — this table has TWO
+  // composite FKs pointing at TWO different disposition classes under the
+  // SAME org_id column: ticket_drafts_ticket_org_fk -> tickets(id, org_id)
+  // (tickets IS a plain `repoint` table, below) and
+  // ticket_drafts_run_org_fk / ticket_drafts_intent_org_fk -> ai_agent_runs /
+  // action_intents(id, org_id) (both `leave-for-erasure` above — their own
+  // org_id is trigger-immutable). A plain repoint of ticket_drafts.org_id
+  // would follow the ticket to the survivor while run_id/intent_id still
+  // point at rows stuck under the loser org — the composite FK's org_id leg
+  // then disagrees with the row it targets, and the UPDATE raises 23503 for
+  // any draft with a non-null run_id/intent_id (which is the common case:
+  // triage-generated drafts always have both set). Rather than a
+  // conditional per-row policy this registry doesn't support, the row goes
+  // where its run/intent history already goes: it dies with the loser
+  // shell, same disposition as ai_alert_verdicts (which "hangs off"
+  // ai_agent_runs the same way).
+  ticket_drafts: { kind: 'leave-for-erasure', note: 'composite FKs to BOTH tickets (repoints) and ai_agent_runs/action_intents (leave-for-erasure, trigger-immutable org_id) under the same org_id column — a plain repoint would 23503 the moment run_id/intent_id is set; rows die with the loser shell alongside the run/intent history they reference' },
   // ai_agent_circuit_state (Wave 6 PR 2, #3828): per-(org_id, agent_id)
   // failure-streak STATE, not a config row to carry forward — repointing
   // would let a loser org's failure streak silently open (or mask) a

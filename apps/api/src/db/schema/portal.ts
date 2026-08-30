@@ -66,6 +66,13 @@ export const portalUsers = pgTable('portal_users', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
 
+// P2-4 (#4191): tickets also gains a composite-FK target unique index,
+// `tickets_id_org_uq` on (id, org_id) — a plain `CREATE UNIQUE INDEX` in
+// 2026-09-25-ai-agents-ticket-triage.sql, not modeled here as a Drizzle
+// table-option (same "SQL migration only" convention as this table's own
+// categoryId/statusId FKs above — see their inline comments). It backs
+// ticket_drafts.ticketId and action_intents.scopeTicketId's composite FKs
+// (ticketDrafts.ts, actionIntents.ts).
 export const tickets = pgTable('tickets', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
@@ -112,7 +119,17 @@ export const tickets = pgTable('tickets', {
   deletedAt: timestamp('deleted_at'),
   deletedBy: uuid('deleted_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull()
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  // P2-4 (#4191): per-field authorship map for AI-assisted edits — keys are
+  // ticket column names (e.g. 'subject', 'category'), values are the
+  // principal kind that last set that field. NOT NULL DEFAULT {} so every
+  // pre-existing row backfills to "nobody has attributed this field yet"
+  // rather than NULL. jsonb -> excludedOpen in the export policy regardless
+  // of contents (CLAUDE.md: any json/jsonb/bytea column is excludedOpen).
+  fieldProvenance: jsonb('field_provenance')
+    .$type<Record<string, 'user' | 'ai_agent' | 'system'>>()
+    .notNull()
+    .default({})
 });
 
 export const ticketComments = pgTable('ticket_comments', {
