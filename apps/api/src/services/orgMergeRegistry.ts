@@ -238,16 +238,32 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   //   plugin_installations <- plugin_logs.installation_id     (NO ACTION, NOT NULL)
   //   playbook_definitions <- playbook_executions.playbook_id (NO ACTION, NOT NULL)
   //   pam_signer_groups    <- pam_rules.match_signer_group_id (ON DELETE RESTRICT)
+  //   reports              <- report_runs.report_id           (NO ACTION, NOT NULL)
   //   incidents            <- incident_actions.incident_id,
   //                           incident_evidence.incident_id   (2x NO ACTION, NOT NULL)
   //
-  // The first four re-home their children onto the SURVIVOR's row and then
+  // The first five re-home their children onto the SURVIVOR's row and then
   // delete the now-unreferenced duplicate. `incidents` does not delete at all
   // (see its note) — an incident is a case file, not a derived row.
   discovered_assets: { kind: 'custom', note: 're-home network_monitors/snmp_devices/unifi_* children onto the survivor asset with the same ip_address, then delete the duplicate; SPLIT across phases because discovered_assets rides sites\' ON UPDATE CASCADE (see CUSTOM_RESOLVE_EXECUTORS)' },
   plugin_installations: { kind: 'custom', note: 're-home plugin_logs.installation_id onto the survivor installation for the same catalog_id, then delete the duplicate' },
   playbook_definitions: { kind: 'custom', note: 're-home playbook_executions.playbook_id (and remediation_suggestions.playbook_id) onto the survivor definition with the same lower(name), then delete the duplicate' },
   pam_signer_groups: { kind: 'custom', note: 're-home pam_rules.match_signer_group_id onto the survivor group with the same name, then delete the duplicate (the FK is ON DELETE RESTRICT — a plain dedupe DELETE raises 23503)' },
+  // CORRECTED (P2-3 review, #4190): `reports` was a plain `repoint` — correct
+  // until P2-3 gave it its FIRST collidable unique index,
+  // `reports_source_ai_agent_schedule_uniq (org_id, source_ai_agent_schedule_id)
+  // WHERE source_ai_agent_schedule_id IS NOT NULL`. A PARTNER-WIDE narrative
+  // schedule mints one definition per org, so merging two orgs under the same
+  // partner repoints both onto `(survivor, same schedule)` -> 23505, and the
+  // whole merge aborts. `repoint-dedupe` cannot fix it either: its DELETE hits
+  // `report_runs.report_id` (NO ACTION, NOT NULL, non-deferrable — verified
+  // against pg_constraint) and raises 23503 instead. Same shape as
+  // plugin_installations/plugin_logs, so the same remedy.
+  //
+  // Only narrative definitions dedupe: every other report has a NULL
+  // source_ai_agent_schedule_id, and the executor's key match is a plain `=`,
+  // which is NULL-blind exactly like the partial index it mirrors.
+  reports: { kind: 'custom', note: "re-home report_runs.report_id onto the survivor's definition for the same source_ai_agent_schedule_id, then delete the duplicate definition, then repoint the rest; NEVER delete the runs — they are the customer's generated artifacts and report_runs.report_id is a NOT NULL NO ACTION child" },
   incidents: { kind: 'custom', note: "NULL the colliding loser row's source_ref (it leaves the incidents_source_ref_unique partial index, which is WHERE source_ref IS NOT NULL) and record the old value in `summary`; NEVER delete — incident_actions/incident_evidence are NOT NULL NO ACTION children and an incident is a case file, not a derived row" },
   contacts: { kind: 'custom', note: 'clear loser is_primary if survivor has one, then repoint (partial unique)' },
   backup_configs: { kind: 'custom', note: 'clear loser is_default if survivor has one, then repoint (org-owned storage creds must NOT be dropped)' },
@@ -483,7 +499,7 @@ const REPOINT_TABLES: readonly string[] = [
   "recovery_readiness",
   "recovery_tokens",
   "remote_sessions",
-  "reports",
+  // "reports" is SPECIAL (custom) — see its note there.
   "restore_jobs",
   "roles",
   "s1_actions",
