@@ -11,10 +11,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test, { after } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as workflowSecurity from '../../.github/scripts/check-workflow-security.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'release', 'check-release-lineage.sh');
 const REGISTRY = '.github/release-provenance/candidate-tags.tsv';
+const RELEASE_WORKFLOW = join(REPO_ROOT, '.github', 'workflows', 'release.yml');
 const scratch = mkdtempSync(join(tmpdir(), 'release-lineage-test-'));
 let fixtureNumber = 0;
 
@@ -100,6 +102,203 @@ function assertFailure(result, pattern) {
   assert.notEqual(result.status, 0, `expected failure\nstdout: ${result.stdout}`);
   assert.match(`${result.stdout}\n${result.stderr}`, pattern);
 }
+
+test('workflow security exposes its YAML and expression parsers', () => {
+  assert.equal(typeof workflowSecurity.activeLines, 'function');
+  assert.equal(typeof workflowSecurity.workflowJobs, 'function');
+  assert.equal(typeof workflowSecurity.topLevelLogicalParts, 'function');
+});
+
+const releaseLines = workflowSecurity.activeLines(
+  readFileSync(RELEASE_WORKFLOW, 'utf8'),
+);
+const releaseJobs = new Map(
+  workflowSecurity.workflowJobs(releaseLines).map((job) => [job.name, job]),
+);
+
+function requiredReleaseJob(name) {
+  const job = releaseJobs.get(name);
+  assert.ok(job, `release workflow must define job ${name}`);
+  return job;
+}
+
+function directJobScalar(job, key) {
+  const propertyIndent = job.lines[0].indent + 2;
+  const propertyIndex = job.lines.findIndex((line, index) => (
+    index > 0
+    && !line.isBlockScalarContent
+    && line.indent === propertyIndent
+    && line.trimmed.startsWith(`${key}:`)
+  ));
+  assert.notEqual(propertyIndex, -1, `${job.name} must define ${key}`);
+
+  const property = job.lines[propertyIndex];
+  const value = property.trimmed.slice(`${key}:`.length).trim();
+  if (!/^[>|][0-9+-]*$/u.test(value)) {
+    return value;
+  }
+
+  const parts = [];
+  for (let index = propertyIndex + 1; index < job.lines.length; index += 1) {
+    if (!job.lines[index].isBlockScalarContent) {
+      break;
+    }
+    parts.push(job.lines[index].trimmed);
+  }
+  return parts.join(' ');
+}
+
+function jobText(job) {
+  return job.lines.map((line) => line.content).join('\n');
+}
+
+function jobNeeds(job) {
+  const value = directJobScalar(job, 'needs');
+  assert.ok(value.startsWith('[') && value.endsWith(']'), `${job.name} needs must be a flow list`);
+  return value.slice(1, -1).split(',').map((need) => need.trim());
+}
+
+function dependsOn(jobName, requiredName, visited = new Set()) {
+  if (jobName === requiredName) {
+    return true;
+  }
+  if (visited.has(jobName)) {
+    return false;
+  }
+  visited.add(jobName);
+
+  const job = requiredReleaseJob(jobName);
+  const needsLine = job.lines.find((line, index) => (
+    index > 0
+    && !line.isBlockScalarContent
+    && line.indent === job.lines[0].indent + 2
+    && line.trimmed.startsWith('needs:')
+  ));
+  if (!needsLine) {
+    return false;
+  }
+
+  return jobNeeds(job).some((need) => dependsOn(need, requiredName, visited));
+}
+
+function blockScalarEntries(job, key) {
+  const entries = [];
+
+  for (const [index, line] of job.lines.entries()) {
+    if (line.isBlockScalarContent || line.trimmed !== `${key}: |`) {
+      continue;
+    }
+    const nestedEntries = [];
+    for (let nestedIndex = index + 1; nestedIndex < job.lines.length; nestedIndex += 1) {
+      if (!job.lines[nestedIndex].isBlockScalarContent) {
+        break;
+      }
+      nestedEntries.push(job.lines[nestedIndex].trimmed);
+    }
+    entries.push(nestedEntries);
+  }
+
+  return entries;
+}
+
+test('release validation uses the tag publication gate and authoritative main refs', () => {
+  const validation = requiredReleaseJob('validate-release-lineage');
+  const createRelease = requiredReleaseJob('create-release');
+  const requiredGate = [
+    "github.ref_type == 'tag'",
+    "startsWith(github.ref, 'refs/tags/v')",
+    "!(github.event_name == 'workflow_dispatch' && inputs.skip_release)",
+  ];
+  const validationParts = workflowSecurity
+    .topLevelLogicalParts(directJobScalar(validation, 'if'), '&&')
+    .map((part) => part.trim());
+  const createReleaseParts = workflowSecurity
+    .topLevelLogicalParts(directJobScalar(createRelease, 'if'), '&&')
+    .map((part) => part.trim());
+
+  assert.deepEqual(validationParts, requiredGate);
+  for (const conjunct of requiredGate) {
+    assert.ok(
+      createReleaseParts.includes(conjunct),
+      `create-release must retain gate conjunct: ${conjunct}`,
+    );
+  }
+
+  const validationText = jobText(validation);
+  assert.ok(validationText.includes('permissions:'));
+  assert.ok(validationText.includes('contents: read'));
+  assert.ok(validationText.includes('fetch-depth: 0'));
+  assert.ok(validationText.includes('fetch-tags: true'));
+  assert.ok(validationText.includes("git rev-parse --verify 'origin/main^{commit}'"));
+  assert.ok(validationText.includes('--main-ref origin/main'));
+  assert.ok(validationText.includes('--candidate-registry-ref origin/main'));
+});
+
+test('release validation exposes classifier outputs to the publication boundary', () => {
+  const validationText = jobText(requiredReleaseJob('validate-release-lineage'));
+
+  assert.ok(validationText.includes("channel: ${{ steps.lineage.outputs.channel }}"));
+  assert.ok(validationText.includes("tag: ${{ steps.lineage.outputs.tag }}"));
+  assert.ok(validationText.includes("tag_sha: ${{ steps.lineage.outputs.tag_sha }}"));
+  assert.ok(validationText.includes('id: lineage'));
+  assert.ok(validationText.includes('--tag "$RELEASE_TAG"'));
+});
+
+test('create-release requires successful release-lineage validation', () => {
+  const createRelease = requiredReleaseJob('create-release');
+  const ifParts = workflowSecurity
+    .topLevelLogicalParts(directJobScalar(createRelease, 'if'), '&&')
+    .map((part) => part.trim());
+
+  assert.ok(jobNeeds(createRelease).includes('validate-release-lineage'));
+  assert.ok(ifParts.includes("needs.validate-release-lineage.result == 'success'"));
+});
+
+test('candidate channel always creates a draft release', () => {
+  const createReleaseText = jobText(requiredReleaseJob('create-release'));
+
+  assert.ok(createReleaseText.includes(
+    "draft: ${{ needs.validate-release-lineage.outputs.channel == 'candidate' || vars.RELEASE_DRAFT_FIRST == 'true' }}",
+  ));
+});
+
+test('every GHCR publisher remains transitively behind create-release', () => {
+  const publishers = [...releaseJobs.values()]
+    .filter((job) => job.lines.some((line) => line.trimmed === 'packages: write'));
+  assert.ok(publishers.length > 0, 'release workflow must contain GHCR publishers');
+
+  for (const publisher of publishers) {
+    assert.ok(
+      dependsOn(publisher.name, 'create-release'),
+      `${publisher.name} must depend transitively on create-release`,
+    );
+  }
+});
+
+test('prerelease GHCR publishers preserve exact-version and SHA-only tagging', () => {
+  const publishers = [...releaseJobs.values()]
+    .filter((job) => job.lines.some((line) => line.trimmed === 'packages: write'));
+
+  for (const publisher of publishers) {
+    const publisherText = jobText(publisher);
+    if (publisherText.includes('docker/metadata-action@')) {
+      const tagBlocks = blockScalarEntries(publisher, 'tags');
+      assert.equal(tagBlocks.length, 1, `${publisher.name} must define one metadata tag block`);
+      assert.deepEqual(tagBlocks[0], [
+        'type=semver,pattern={{version}}',
+        'type=semver,pattern={{major}}.{{minor}}',
+        'type=semver,pattern={{major}}',
+        "type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}",
+        'type=sha',
+      ]);
+      continue;
+    }
+
+    assert.ok(publisherText.includes('--tag "${EXECUTOR_REPOSITORY}:${VERSION}"'));
+    assert.ok(publisherText.includes('--tag "${EXECUTOR_REPOSITORY}:sha-${SHORT_SHA}"'));
+    assert.ok(!publisherText.includes('--tag "${EXECUTOR_REPOSITORY}:latest"'));
+  }
+});
 
 test('annotated reachable tag is mainline and reports the peeled commit', () => {
   const repo = initRepo();
