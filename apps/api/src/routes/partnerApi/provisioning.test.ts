@@ -68,6 +68,9 @@ vi.mock('../../middleware/partnerApiAuth', () => ({
 }));
 
 import { partnerApiRoutes } from './index';
+// The real index name, from the schema declaration itself — a hand-typed
+// literal here could drift from the index the route actually has to match.
+import { ORG_SLUG_UNIQUE_INDEX } from '../../db/schema/orgs';
 
 type QueryResult = unknown[] | Error;
 
@@ -111,6 +114,40 @@ function post(path: string, scope: string, body: unknown, apiKey = 'test-key') {
     headers: { 'X-API-Key': apiKey, 'X-Test-Scopes': scope, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+/**
+ * The shape `drizzle-orm/postgres-js` ACTUALLY throws, and the reason this
+ * helper exists instead of a one-line literal: a `DrizzleQueryError` whose own
+ * `.code` is `undefined`, carrying the postgres.js `PostgresError` — SQLSTATE
+ * and `constraint_name` — on `.cause`. A flat `{ code: '23505' }` fixture is a
+ * shape the driver never produces for a Drizzle-issued statement, so a check
+ * reading only the top-level `.code` passes such a test while being dead in
+ * production. That exact trap has now been found five times in this repo
+ * (#3998, #4020, and two in ee/workspace filed as #4245); every fixture here
+ * is built through this helper so a regression cannot hide behind an
+ * unrealistic error object.
+ *
+ * `dropConstraintName` models the wrappers that surface the SQLSTATE but lose
+ * the structured constraint field, leaving the index name only in the message.
+ */
+function drizzleUniqueViolation(
+  constraintName: string,
+  { dropConstraintName = false }: { dropConstraintName?: boolean } = {},
+): Error {
+  const cause = Object.assign(
+    new Error(`duplicate key value violates unique constraint "${constraintName}"`),
+    {
+      code: '23505',
+      severity: 'ERROR',
+      table_name: 'organizations',
+      ...(dropConstraintName ? {} : { constraint_name: constraintName }),
+    },
+  );
+  cause.name = 'PostgresError';
+  const wrapper = new Error('Failed query: insert into "organizations" ...', { cause });
+  wrapper.name = 'DrizzleQueryError';
+  return wrapper;
 }
 
 const orgRow = {
@@ -237,9 +274,37 @@ describe('POST /organizations', () => {
     expect(((await res.json()) as any).code).toBe('partner_provisioning_org_limit_reached');
   });
 
-  it('maps a slug unique violation to 409', async () => {
+  it('maps the slug unique violation to 409', async () => {
     selectResults = [[{ maxOrganizations: null, currencyCode: 'CAD' }]];
-    insertResults = [Object.assign(new Error('duplicate key'), { code: '23505' })];
+    insertResults = [drizzleUniqueViolation(ORG_SLUG_UNIQUE_INDEX)];
+    const res = await post('/organizations', 'organizations:write', { name: 'Acme', slug: 'acme' });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as any).code).toBe('partner_provisioning_slug_conflict');
+  });
+
+  // #3982 — the discriminating half. An unconstrained `code === '23505'` check
+  // answers 409 "slug conflict" here too, handing an unattended partner-API
+  // caller a confident, WRONG diagnosis for a constraint that has nothing to do
+  // with the slug it sent. The insert's AFTER triggers (partner export lock /
+  // discovery stamp) write other tables inside this same statement, so a
+  // foreign 23505 is reachable, not hypothetical.
+  it('does not report a NON-slug unique violation as a slug conflict', async () => {
+    selectResults = [[{ maxOrganizations: null, currencyCode: 'CAD' }]];
+    insertResults = [drizzleUniqueViolation('organizations_id_partner_id_unique')];
+    const res = await post('/organizations', 'organizations:write', { name: 'Acme', slug: 'acme' });
+    // Falls through to `throw error` → the app's onError, which logs and
+    // captures to Sentry before answering 500. Not silent, just not pretending
+    // to know which constraint fired.
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain('partner_provisioning_slug_conflict');
+  });
+
+  // Some wrappers hand back the SQLSTATE but drop `constraint_name`; the index
+  // name still rides along in the driver's message. isPgUniqueViolation's
+  // message-scan fallback is what keeps the 409 reachable in that shape.
+  it('maps the slug violation when only the message names the index', async () => {
+    selectResults = [[{ maxOrganizations: null, currencyCode: 'CAD' }]];
+    insertResults = [drizzleUniqueViolation(ORG_SLUG_UNIQUE_INDEX, { dropConstraintName: true })];
     const res = await post('/organizations', 'organizations:write', { name: 'Acme', slug: 'acme' });
     expect(res.status).toBe(409);
     expect(((await res.json()) as any).code).toBe('partner_provisioning_slug_conflict');

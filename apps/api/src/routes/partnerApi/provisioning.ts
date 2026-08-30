@@ -26,6 +26,14 @@ import { isValidIanaTimezone } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { enrollmentKeys, organizations, partners, sites } from '../../db/schema';
+// Concrete module, not the barrel — see the note in routes/orgs.ts.
+import { ORG_SLUG_UNIQUE_INDEX } from '../../db/schema/orgs';
+// The canonical unique-violation check. Hand-rolling one here is how this bug
+// class keeps shipping: `drizzle-orm/postgres-js` rethrows a
+// `DrizzleQueryError` whose OWN `.code` is undefined, with the SQLSTATE and
+// `constraint_name` on `.cause`, so a top-level `err.code === '23505'` test is
+// dead for every Drizzle-issued statement (#3998, #4020, #4245).
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 import {
   requirePartnerApiScope,
   type PartnerApiPrincipalContext,
@@ -122,14 +130,6 @@ class OrgQuotaExceededError extends Error {
     super('partner organization quota exceeded');
     this.name = 'OrgQuotaExceededError';
   }
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const code = (error as { code?: unknown }).code;
-  if (code === '23505') return true;
-  const cause = (error as { cause?: unknown }).cause;
-  return !!cause && typeof cause === 'object' && (cause as { code?: unknown }).code === '23505';
 }
 
 function iso(value: Date | string): string {
@@ -279,7 +279,21 @@ partnerProvisioningRoutes.post(
       if (error instanceof OrgQuotaExceededError) {
         // The transaction (including the over-cap insert) has rolled back.
         outcome = { kind: 'quota', cap: error.cap };
-      } else if (isUniqueViolation(error)) {
+      } else if (isPgUniqueViolation(error, ORG_SLUG_UNIQUE_INDEX)) {
+        // #3982 — pinned to the slug index BY NAME, not to "some 23505".
+        // Before #3967 there was no unique index on
+        // (partner_id, lower(slug)), so an unconstrained check was dead for
+        // slugs and nothing exercised how wrong it was. Now it is live, and
+        // this INSERT is not the only statement that can raise a 23505: its
+        // AFTER triggers stamp the partner export/discovery rows, and any
+        // future column or trigger adds another index. Answering
+        // `partner_provisioning_slug_conflict` for one of those tells an
+        // unattended provisioning client — confidently — to go fix a slug
+        // that was never the problem, which is worse than no diagnosis: it
+        // sends the retry loop somewhere that can never succeed. Anything
+        // that is not this index falls through to the generic error path and
+        // surfaces as a 500, which is the honest answer for a unique
+        // violation the route does not model.
         return c.json({
           error: 'An organization with this slug already exists.',
           code: 'partner_provisioning_slug_conflict',

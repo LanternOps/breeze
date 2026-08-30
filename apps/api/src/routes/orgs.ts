@@ -6,6 +6,11 @@ import { z } from 'zod';
 import { and, eq, ilike, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners, organizations, sites, devices, agentVersions, partnerUsers } from '../db/schema';
+// Imported from the CONCRETE schema module, not the '../db/schema' barrel:
+// several suites mock that barrel with a non-partial factory, and a plain
+// constant added to it would throw "No export is defined on the mock" at the
+// exact moment this 409 mapping runs.
+import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
@@ -222,7 +227,11 @@ export const updateOrganizationSchema = createOrganizationSchema.partial().omit(
 // breeze_has_org_access(id), so a partner-scope caller whose accessible org set
 // excludes the clashing org would read zero rows here and fall through to the
 // 23505 anyway.
-const ORG_SLUG_UNIQUE_INDEX = 'organizations_partner_slug_uniq';
+//
+// `ORG_SLUG_UNIQUE_INDEX` (imported at the top from the schema declaration) is
+// the name every one of those mappings has to match EXACTLY: an unconstrained
+// "any 23505 is a slug conflict" check misdiagnoses unrelated unique
+// violations raised by the same statement (#3982).
 
 interface OrgSlugConflict {
   id: string;
@@ -2160,6 +2169,26 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
 
   // See the create path: the slug pre-check above cannot close the race, so the
   // index's 23505 gets the same 409 treatment here too.
+  //
+  // #3982 — one asymmetry with the create path, load-bearing for anyone editing
+  // below this line. The create path runs its insert in its OWN transaction
+  // (`runOutsideDbContext(() => withSystemDbAccessContext(...))`), so a 23505
+  // there poisons only that inner tx. The non-override branch here does NOT:
+  // `runUpdate()` executes on the request's ambient context, and
+  // `withDbAccessContext` is a real `baseDb.transaction(...)` — so the moment
+  // Postgres raises the 23505 the REQUEST's transaction is aborted, and every
+  // subsequent statement in it fails with 25P02 ("current transaction is
+  // aborted") regardless of what it does.
+  //
+  // That is benign today for exactly one reason: the catch below returns the
+  // 409 immediately and nothing after it touches the database on that path. It
+  // stops being benign the instant a DB write is added between here and the
+  // response — an audit row, a lifecycle event, a cache invalidation — because
+  // that write would fail with an unrelated-looking 25P02 rather than the 409.
+  // If a follow-up write ever has to happen here, move `runUpdate` into its own
+  // transaction (matching the create path) instead of adding statements after
+  // this catch. The suspendedLifecycleOverride branch is already immune: it
+  // opens a fresh system-scoped tx of its own.
   let organization: Awaited<ReturnType<typeof runUpdate>>[number] | undefined;
   try {
     [organization] = suspendedLifecycleOverride
