@@ -191,6 +191,10 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['ticket_statuses', 'partner_id'],
   ['ticket_priority_settings', 'partner_id'],
   ['time_entries', 'partner_id'],
+  // W06 (#3900): decisions ledger for auto-suggested time entries. Shape 3,
+  // same policy shape as time_entries. No org_id / device_id by design, so it
+  // appears in no other registration list.
+  ['time_suggestion_decisions', 'partner_id'],
   ['huntress_integrations', 'partner_id'],
   ['huntress_org_mappings', 'partner_id'],
   ['pax8_integrations', 'partner_id'],
