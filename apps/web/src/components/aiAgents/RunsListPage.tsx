@@ -347,6 +347,14 @@ export default function RunsListPage() {
                       >
                         {verdictLabel(t, run.runVerdict)}
                       </span>
+                      {run.profile === 'sweep' && (
+                        <span
+                          data-testid={`ai-agent-run-profile-sweep-${run.id}`}
+                          className="ml-1.5 inline-flex rounded bg-sky-500/10 px-1.5 py-0.5 text-xs font-medium text-sky-700"
+                        >
+                          {t('aiAgentsPage.runs.profile.sweep')}
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
                       {formatDateTime(run.queuedAt)}
