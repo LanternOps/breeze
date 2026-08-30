@@ -23,9 +23,23 @@ vi.mock('@/lib/featureFlags', () => ({
   ENABLE_ENDPOINT_AV_FEATURES: false,
 }));
 
-vi.mock('../../hooks/useEventStream', () => ({
-  useEventStream: () => ({ subscribe: vi.fn() }),
+// Captures the page's own onEvent handler so a test can deliver a real-time
+// event at a chosen moment (the enroll-during-pre-resolution case below).
+type DeviceEvent = { type: string; payload: Record<string, unknown> };
+const eventStream = vi.hoisted(() => ({
+  onEvent: null as null | ((event: { type: string; payload: Record<string, unknown> }) => void),
 }));
+vi.mock('../../hooks/useEventStream', () => ({
+  useEventStream: (opts: { onEvent: (event: DeviceEvent) => void }) => {
+    eventStream.onEvent = opts.onEvent;
+    return { subscribe: vi.fn() };
+  },
+}));
+
+function emitDeviceEvent(event: DeviceEvent): void {
+  if (!eventStream.onEvent) throw new Error('useEventStream never received an onEvent handler');
+  eventStream.onEvent(event);
+}
 vi.mock('../../hooks/useAdvancedFilterIds', () => ({
   useAdvancedFilterIds: () => ({ ids: null, loading: false }),
 }));
@@ -73,6 +87,7 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   requestedUrls = [];
+  eventStream.onEvent = null;
   // The orgId provider is page-aware: /devices is `org-or-all`, so the
   // selected org IS injected here (a `catalog` route would inject nothing).
   window.history.replaceState({}, '', '/devices');
@@ -160,19 +175,75 @@ describe('DevicesPage — org-context race on first load after login (#4147)', (
     expect(deviceRequests()[0]).not.toContain('orgId=');
   });
 
-  it('fetches rather than hanging when the org list fails to load', async () => {
-    render(<DevicesPage />);
+  it('surfaces the org-load failure instead of quietly listing every org\'s devices', async () => {
+    const { findByTestId } = render(<DevicesPage />);
     await settle();
     expect(deviceRequests()).toEqual([]);
 
-    // /orgs/organizations failed: no selection will ever arrive, so the page
-    // must degrade to an unscoped fetch instead of spinning forever.
+    // /orgs/organizations failed with no selection to fall back on. Fetching
+    // here would go out unscoped and render a cross-tenant list that looks
+    // exactly like a real org-scoped one, so the page must say so instead —
+    // and its Retry re-runs the org resolution rather than stranding the user.
     act(() => {
       useOrgStore.setState({ error: 'Failed to fetch organizations' });
+    });
+
+    expect(await findByTestId('org-load-failed-state')).toBeInTheDocument();
+    await settle();
+    expect(deviceRequests()).toEqual([]);
+  });
+
+  it('fetches scoped once the org context recovers after a failure', async () => {
+    render(<DevicesPage />);
+    await settle();
+
+    act(() => {
+      useOrgStore.setState({ error: 'Failed to fetch organizations' });
+    });
+    await settle();
+    expect(deviceRequests()).toEqual([]);
+
+    // Retry succeeded (the store clears `error` and resolves a selection).
+    act(() => {
+      useOrgStore.setState({
+        error: null,
+        currentOrgId: ORG_A.id,
+        organizations: [ORG_A],
+        organizationsLoaded: true,
+      });
     });
 
     await waitFor(() => expect(deviceRequests().length).toBeGreaterThan(0));
     await settle();
     expect(deviceRequests()).toHaveLength(1);
+    expect(deviceRequests()[0]).toContain(`orgId=${ORG_A.id}`);
+  });
+
+  it('does not let an enroll event fire an unscoped fetch during the pre-resolution window', async () => {
+    render(<DevicesPage />);
+    await settle();
+    expect(deviceRequests()).toEqual([]);
+
+    // useEventStream connects on auth alone, so a device.enrolled event can
+    // arrive before the org context resolves. Its refetch must respect the
+    // same gate as the mount effect (the stub captures the page's handler).
+    act(() => {
+      emitDeviceEvent({ type: 'device.enrolled', payload: { deviceId: 'dev-1' } });
+    });
+    await settle();
+    expect(deviceRequests()).toEqual([]);
+
+    act(() => {
+      useOrgStore.setState({
+        currentOrgId: ORG_A.id,
+        organizations: [ORG_A],
+        organizationsLoaded: true,
+      });
+    });
+
+    await waitFor(() => expect(deviceRequests().length).toBeGreaterThan(0));
+    await settle();
+    expect(deviceRequests()).toHaveLength(1);
+    expect(deviceRequests()[0]).toContain(`orgId=${ORG_A.id}`);
   });
 });

@@ -29,7 +29,8 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
 import { useOrgStore } from '../../stores/orgStore';
-import { useOrgScope } from '../../hooks/useOrgScope';
+import { useOrgScope } from '@/hooks/useOrgScope';
+import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
@@ -141,9 +142,12 @@ export default function DevicesPage() {
   // leave a resolved-later change unobserved.
   const orgScope = useOrgScope();
   const orgScopeResolving = orgScope.status === 'loading';
+  // 'error' gets its own render branch (see OrgLoadFailedState below) rather
+  // than an unscoped fetch. 'empty' — list loaded, this partner genuinely has
+  // zero orgs — is terminal and harmless: there is nothing to scope to, so it
+  // fetches and settles instead of spinning.
+  const orgContextFailed = orgScope.status === 'error';
   // Prefixed so an org id can never collide with a status/fleet sentinel.
-  // 'error'/'empty' are terminal, not transient: no selection is ever coming,
-  // so they must still fetch (unscoped) rather than spin forever.
   const orgScopeKey =
     orgScope.status !== 'resolved'
       ? `status:${orgScope.status}`
@@ -600,15 +604,17 @@ export default function DevicesPage() {
   }, [t]);
 
   useEffect(() => {
-    // Org context not resolved yet (#4147). Issuing the request now would send
-    // it unscoped; `loading` is the sub-second window before the shell's
-    // OrgSwitcher resolves the org list, and the page is already showing its
-    // initial loading state, so nothing is gained by racing it.
-    if (orgScopeResolving) return;
+    // Org context not usable for scoping yet (#4147). A request now would go
+    // out unscoped: `loading` is the sub-second window before the shell's
+    // OrgSwitcher resolves the org list (the page already shows its initial
+    // loading state, so nothing is gained by racing it), and `error` renders
+    // OrgLoadFailedState instead of a misleading fleet-wide list. Both clear
+    // via orgScopeKey, which re-runs this effect.
+    if (orgScopeResolving || orgContextFailed) return;
     const controller = new AbortController();
     fetchDevices(controller.signal);
     return () => controller.abort();
-  }, [fetchDevices, orgScopeResolving, orgScopeKey]);
+  }, [fetchDevices, orgScopeResolving, orgContextFailed, orgScopeKey]);
 
   const handleGroupCreated = useCallback(async (newGroupId: string) => {
     setShowCreateGroup(false);
@@ -647,9 +653,17 @@ export default function DevicesPage() {
       // fetch / device-detail load. Wire a producer in the watchdog heartbeat
       // branch before adding a consumer here.
     } else if (type === 'device.enrolled' || type === 'device.decommissioned') {
+      // #4147 review: useEventStream connects as soon as there is an auth
+      // token, independent of org resolution, so an enroll/decommission event
+      // can land inside the same pre-resolution window the mount effect holds
+      // for. Refetching here would issue the very unscoped request that gate
+      // exists to prevent — and could land AFTER the scoped one, leaving the
+      // fleet-wide list on screen. Nothing is lost by skipping: the mount
+      // effect fetches as soon as the scope resolves.
+      if (orgScopeResolving || orgContextFailed) return;
       fetchDevices();
     }
-  }, [fetchDevices]);
+  }, [fetchDevices, orgScopeResolving, orgContextFailed]);
 
   const { subscribe } = useEventStream({ onEvent: handleDeviceEvent });
 
@@ -1231,6 +1245,21 @@ export default function DevicesPage() {
       setActionInProgress(false);
     }
   };
+
+  // The org context itself failed to load (#4147 review). Falling through would
+  // fetch with no orgId, and the API reads an absent orgId as "every accessible
+  // org" — so a transient /orgs/organizations failure would quietly render a
+  // cross-tenant device list indistinguishable from a real org-scoped one
+  // (ContextScopeLine deliberately does NOT let the error state read as fleet
+  // view, so nothing on screen would say otherwise). Surface it instead, via
+  // the shared state whose Retry re-runs the org resolution — which doubles as
+  // the escape hatch when the context is stuck. Same treatment as DiscoveryPage
+  // and MonitoringAssetsDashboard. Only reachable when there is NO selection at
+  // all: deriveOrgScope gives a concrete currentOrgId precedence over a later
+  // refetch failure, so a warm session keeps working.
+  if (orgContextFailed) {
+    return <OrgLoadFailedState error={orgScope.error} />;
+  }
 
   if (loading) {
     return (
