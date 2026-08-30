@@ -383,7 +383,15 @@ describe('Streamable HTTP transport (POST /sse)', () => {
     expect(res.status).toBe(404);
     // Routine expiry is silent per-request by design — every session ages out
     // this way. Only an abnormal RATE is reported, and one expiry is not that.
-    expect(mocks.captureMessage).not.toHaveBeenCalled();
+    //
+    // Asserted against the specific event code rather than "never called":
+    // the unknown-session rate counter is module-level and survives
+    // `mockReset`, so a blanket assertion would become a landmine for whoever
+    // adds the 50th expiry test to this file.
+    expect(mocks.captureMessage).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'mcp_session_principal_mismatch' }),
+    );
   });
 
   it('returns 503, not 404, when the session lookup itself throws', async () => {
