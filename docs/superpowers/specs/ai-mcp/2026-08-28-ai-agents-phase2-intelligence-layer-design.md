@@ -107,7 +107,7 @@ Produced via the `submit_alert_verdict` outcome tool and persisted to `ai_alert_
 
 ### 4.3 P2-3 Weekly org narrative
 
-**Trigger.** A `narrative` sweep kind on `ai_agent_schedules` (weekly default), full profile, one run per org.
+**Trigger.** A `narrative` schedule kind on `ai_agent_schedules` (weekly), `profile: 'narrative'`, one run per org (originally drafted as a sweep kind on the full profile — superseded by the amendment below).
 
 **Amendment (P2-3 plan, 2026-08-29):** `narrative` is a schedule **kind** (`ai_agent_schedules.kind IN ('sweep','narrative')`; a narrative schedule is its own row with `sweep_kinds = '{}'`; org rows inherit the baseline's kind via a composite self-FK and expose only `enabled`; weekly default `0 7 * * 1`; **the cron must be weekly** — minute/hour literal, day-of-month and month `*`, a single day-of-week — so the report definition's `schedule = 'weekly'` is truthful), not an `AiSweepKind` — every sweep kind must own an evidence loader. The occurrence job admits one `profile: 'narrative'` run per live org (`dedupeKey narrative-<schedule>-<org>-<occurrence>`).
 
@@ -117,7 +117,7 @@ Produced via the `submit_alert_verdict` outcome tool and persisted to `ai_alert_
 
 **Outcome.** The run is `profile: 'narrative'` (a `full`-profile run cannot reach an outcome tool) with an EMPTY tool floor + `submit_narrative`; the model submits `{ headline, sections: [{ key ∈ NARRATIVE_SECTION_KEYS (all eight, exactly once), bullets }] }` — titles and markdown are server-owned. Stored in one transaction as a system-authored `reports` DEFINITION row per (org, schedule) (`type 'ai_org_narrative'`, `schedule 'weekly'`, `format 'pdf'`, `source_ai_agent_schedule_id` = the schedule, execution scope `unrestricted` with `execution_scope_principal_kind = 'system'` and no user) plus one `report_runs` row per narrative carrying `result.summary.narrative`; `ai_agent_runs.report_run_id` links the artifact (CAS on `IS NULL`). The report worker never runs the AI type (`findDueReports` and `processRunScheduledReport` exclude it; `generateReport('ai_org_narrative')` throws `StoredArtifactOnlyReportError`; create/ad-hoc schemas reject the type). Rendered from `sections[]` by the jsPDF renderer (no markdown-to-PDF). Delivery v1 = in-app notification to the agent's recipients + the protected download route; email is deferred until recipients can be filtered through `resolveLiveReportAuthority(userId, orgId, 'export')` requiring `unrestricted`. Partner branding via `reportBranding` as for every other report type.
 
-**UI.** Appears in the reports list like any other scheduled report; the run trace links to it. Partner-brandable, exportable, emailable through the existing report delivery.
+**UI.** Appears in the reports list like any other scheduled report; the run trace links to it. Partner-brandable, exportable (protected download); email delivery deferred (see Outcome).
 
 ### 4.4 P2-4 Ticket triage (act)
 
