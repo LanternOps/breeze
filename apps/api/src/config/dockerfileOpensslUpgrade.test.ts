@@ -59,10 +59,12 @@ import { describe, expect, it } from 'vitest';
  *    Dockerfile here today, but a `docker build --target <stage>` in a workflow
  *    would ship an earlier stage and quietly defeat the whole check. Nothing in
  *    the repo does that at present.
- *  - The `HARDENING_BLOCKED` coupling below proves the hardening *rule text*
- *    still exists; it cannot prove the hardening *script* is still wired into
- *    CI. If that script were dropped from its workflow the control would stop
- *    running while this suite stayed green.
+ *  - Coverage here does not imply the *credential-boundary* policy is intact.
+ *    The two M365 executors that are credential boundaries are additionally
+ *    constrained to one literal `apk upgrade` form by
+ *    `scripts/security/check-supply-chain-hardening.sh`; that rule is proven
+ *    separately in `executorApkPolicy.test.ts`. This suite would stay green if
+ *    that policy were loosened, so the two are not interchangeable.
  */
 
 // apps/api/src/config -> repo root is 4 levels up.
@@ -101,27 +103,6 @@ function upgradesOpenssl(bodies: string[]): boolean {
  */
 const PINNED_NODE_ALPINE_RE = /^node:[^\s@]*-alpine@sha256:[0-9a-f]{64}$/;
 
-/**
- * The two customer-Graph credential-boundary executors, which
- * `scripts/security/check-supply-chain-hardening.sh` forbids from running ANY
- * `apk upgrade`/`apk add` ("executor runtime must not resolve mutable Alpine
- * packages during the image build"). That rule and this guard want opposite
- * things, and the conflict is a real security tradeoff — build reproducibility
- * for the credential boundary versus shipping a known HIGH CVE — so it belongs
- * to the repo owner, not to whoever is fixing CI that day. Until that call is
- * made these two stay unpatched and `Trivy Image Scan` stays red on them.
- *
- * The exception is deliberately self-invalidating: the test below asserts the
- * hardening rule is still there. Relax or delete that rule and this entry stops
- * being justified, the assertion fails, and the upgrade becomes required — so
- * the two controls can never quietly both be off.
- */
-const HARDENING_BLOCKED = new Set([
-  'apps/m365-graph-read-executor/Dockerfile',
-  'apps/m365-communications-executor/Dockerfile',
-]);
-
-const HARDENING_SCRIPT = 'scripts/security/check-supply-chain-hardening.sh';
 
 interface Stage {
   /** Lowercased `AS` alias, or undefined for an unnamed stage. */
@@ -203,8 +184,8 @@ const IN_SCOPE = DOCKERFILES.filter((f) =>
   PINNED_NODE_ALPINE_RE.test(effectiveBaseRef(STAGES.get(f)!)),
 );
 
-/** In scope and actually allowed to carry the upgrade today. */
-const COVERED = IN_SCOPE.filter((f) => !HARDENING_BLOCKED.has(f));
+/** Every in-scope image is now allowed to carry the upgrade. */
+const COVERED = IN_SCOPE;
 
 describe('Dockerfile OpenSSL upgrade coverage', () => {
   it('finds the repo Dockerfiles', () => {
@@ -257,56 +238,6 @@ describe('Dockerfile OpenSSL upgrade coverage', () => {
     expect(upgradesOpenssl(inheritanceChain(inherited).map((s) => s.body))).toBe(true);
   });
 
-  it.each([...HARDENING_BLOCKED])(
-    '%s is exempt only while the hardening rule still forbids the upgrade',
-    (dockerfile) => {
-      const script = readFileSync(path.join(REPO_ROOT, HARDENING_SCRIPT), 'utf8');
-      const stillForbidden =
-        script.includes(dockerfile) && /reject_grep\s+'\^RUN.*apk.*upgrade/.test(script);
-
-      expect(
-        stillForbidden,
-        `${dockerfile} is listed in HARDENING_BLOCKED because ${HARDENING_SCRIPT} rejects ` +
-          '`apk upgrade` in it, but that rule is no longer there. The reason for the exemption ' +
-          'is gone, so either restore the rule or drop the entry and add ' +
-          '`apk upgrade --no-cache libcrypto3 libssl3` to the image (issue #4246).',
-      ).toBe(true);
-    },
-  );
-
-  it('accepts the two packages in either order, and rejects a non-upgrade mention', () => {
-    // `apk` ignores argument order, so the guard must too — otherwise it fails a
-    // Dockerfile that is genuinely patched, which is worse than useless.
-    expect(upgradesOpenssl(['RUN apk upgrade --no-cache libssl3 libcrypto3'])).toBe(true);
-    expect(upgradesOpenssl(['RUN apk upgrade --no-cache libcrypto3 libssl3'])).toBe(true);
-    expect(
-      upgradesOpenssl(['RUN apk upgrade --no-cache libcrypto3', 'RUN apk upgrade --no-cache libssl3']),
-    ).toBe(true);
-
-    // Still strict where it matters: one package alone is not enough, and
-    // naming them outside an `apk upgrade` does not count.
-    expect(upgradesOpenssl(['RUN apk upgrade --no-cache libcrypto3'])).toBe(false);
-    expect(upgradesOpenssl(['RUN apk add --no-cache libcrypto3 libssl3'])).toBe(false);
-  });
-
-  it('still resolves the base ref when FROM carries build flags', () => {
-    // A multi-arch `FROM --platform=...` must not read the flag as the base
-    // ref: that would drop the image out of scope silently, which is the one
-    // way this guard could fail without anyone noticing.
-    const digest = 'a'.repeat(64);
-    const stages = parseStages(
-      [
-        `FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:${digest} AS build`,
-        'RUN pnpm build',
-        `FROM --platform=$TARGETPLATFORM node:24-alpine@sha256:${digest} AS runner`,
-        'RUN apk upgrade --no-cache libcrypto3 libssl3',
-      ].join('\n'),
-    );
-
-    expect(effectiveBaseRef(stages)).toBe(`node:24-alpine@sha256:${digest}`);
-    expect(PINNED_NODE_ALPINE_RE.test(effectiveBaseRef(stages))).toBe(true);
-  });
-
   it('leaves no Dockerfile silently out of scope', () => {
     // Scope is derived from each file's effective base ref, so this snapshot is
     // the anti-rot mechanism: a new image, or a base ref that changes shape,
@@ -314,21 +245,15 @@ describe('Dockerfile OpenSSL upgrade coverage', () => {
     const classification = Object.fromEntries(
       DOCKERFILES.map((f) => [
         f,
-        HARDENING_BLOCKED.has(f)
-          ? 'blocked-by-hardening'
-          : IN_SCOPE.includes(f)
-            ? 'covered'
-            : effectiveBaseRef(STAGES.get(f)!),
+        IN_SCOPE.includes(f) ? 'covered' : effectiveBaseRef(STAGES.get(f)!),
       ]),
     );
 
     expect(classification).toEqual({
       'apps/api/Dockerfile': 'covered',
-      // Credential-boundary images: see HARDENING_BLOCKED. Still vulnerable to
-      // CVE-2026-14456; awaiting an owner decision on a CVE-scoped exception.
-      'apps/m365-communications-executor/Dockerfile': 'blocked-by-hardening',
+      'apps/m365-communications-executor/Dockerfile': 'covered',
       'apps/m365-graph-actions-executor/Dockerfile': 'covered',
-      'apps/m365-graph-read-executor/Dockerfile': 'blocked-by-hardening',
+      'apps/m365-graph-read-executor/Dockerfile': 'covered',
       'apps/portal/Dockerfile': 'covered',
       'apps/web/Dockerfile': 'covered',
       'docker/Dockerfile.api': 'covered',

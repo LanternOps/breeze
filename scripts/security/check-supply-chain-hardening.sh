@@ -27,6 +27,113 @@ reject_grep() {
   fi
 }
 
+# The credential-boundary executors may perform exactly ONE Alpine package
+# operation: the audited OpenSSL security upgrade for CVE-2026-14456 (issue
+# #4246). Everything else -- `apk add`, a bare `apk upgrade`, upgrading some
+# other package -- still resolves mutable packages into the boundary and stays
+# rejected.
+#
+# Accepted tradeoff (owner-approved): these two builds become time-dependent
+# rather than fully reproducible from the pinned base digest, bounded to these
+# two named packages.
+#
+# The allowance is deliberately expressed as subtraction over a
+# character-literal form: enumerate every apk invocation, drop the single
+# permitted line, fail on whatever remains. A permissive "allow apk upgrade"
+# pattern would silently reopen the entire policy, which is a worse outcome than
+# the CVE. So the flags, the package names and their order are all pinned.
+#
+# This is stricter than apps/api/src/config/dockerfileOpensslUpgrade.test.ts,
+# which tolerates either package order for images that are NOT credential
+# boundaries. That difference is intentional.
+AUDITED_APK_UPGRADE='^[[:space:]]*(RUN[[:space:]]+)?apk[[:space:]]+upgrade[[:space:]]+--no-cache[[:space:]]+libcrypto3[[:space:]]+libssl3([[:space:]]*&&[[:space:]]*\\)?[[:space:]]*$'
+
+# Matches an apk *invocation* anywhere on a line -- including a `\`-continuation
+# line, which the previous `^RUN .*apk` rule could not see, and a fully-qualified
+# path such as /sbin/apk.
+ANY_APK_INVOCATION='(^|[^[:alnum:]_-])apk([^[:alnum:]_-]|$)'
+
+reject_unaudited_apk() {
+  local file="$1"
+  local message="$2"
+  local offenders
+  # Strip comments first so prose mentioning apk cannot trip the check.
+  offenders="$(sed 's/#.*$//' "$file" \
+    | grep -E "$ANY_APK_INVOCATION" \
+    | grep -vE "$AUDITED_APK_UPGRADE" || true)"
+  if [[ -n "$offenders" ]]; then
+    fail "$message -- offending line: $(printf '%s' "$offenders" | head -1 | sed 's/^[[:space:]]*//')"
+  fi
+}
+
+# `--self-test` exercises the apk policy against fixtures. It exists so that
+# loosening AUDITED_APK_UPGRADE or ANY_APK_INVOCATION fails loudly instead of
+# silently reopening the boundary; a rule change that only proves the happy path
+# proves nothing. Run by apps/api/src/config/executorApkPolicy.test.ts.
+run_apk_policy_self_test() {
+  local tmp expect line got failures=0
+  tmp="$(mktemp)"
+
+  check_case() {
+    expect="$1"
+    line="$2"
+    printf 'FROM node:24-alpine AS runner\n%s\n' "$line" >"$tmp"
+    if ( reject_unaudited_apk "$tmp" "unaudited apk" ) >/dev/null 2>&1; then
+      got=accept
+    else
+      got=reject
+    fi
+    if [[ "$got" != "$expect" ]]; then
+      echo "SELF-TEST FAIL: expected $expect but got $got for: $line" >&2
+      failures=$((failures + 1))
+    fi
+  }
+
+  # The one permitted form, in the shapes it legitimately appears in.
+  check_case accept 'RUN apk upgrade --no-cache libcrypto3 libssl3 && \'
+  check_case accept 'RUN apk upgrade --no-cache libcrypto3 libssl3'
+  check_case accept '    apk upgrade --no-cache libcrypto3 libssl3 && \'
+  check_case accept '# historical note: we deliberately never apk add anything here'
+
+  # Installing anything at all stays rejected.
+  check_case reject 'RUN apk add --no-cache wget'
+  check_case reject 'RUN apk add --no-cache curl && rm -rf /var/cache/apk'
+  # A general upgrade -- the over-broad allowance this rule must never become.
+  check_case reject 'RUN apk upgrade'
+  check_case reject 'RUN apk upgrade --no-cache'
+  check_case reject 'RUN apk upgrade --no-cache openssl'
+  check_case reject 'RUN apk -U upgrade libcrypto3 libssl3'
+  # Right packages, wrong shape: order, extras, and deletes are all non-canonical.
+  check_case reject 'RUN apk upgrade --no-cache libssl3 libcrypto3'
+  check_case reject 'RUN apk upgrade --no-cache libcrypto3 libssl3 curl'
+  check_case reject 'RUN apk del busybox'
+  # Evasions the previous `^RUN .*apk` rule would have missed entirely.
+  check_case reject '    apk add --no-cache curl'
+  check_case reject 'RUN /sbin/apk add --no-cache curl'
+
+  rm -f "$tmp"
+  if (( failures > 0 )); then
+    fail "apk policy self-test failed with $failures case(s)"
+  fi
+  echo "apk policy self-test: all cases passed."
+}
+
+if [[ "${1:-}" == "--self-test" ]]; then
+  run_apk_policy_self_test
+  exit 0
+fi
+
+# `--check-apk <file>` applies the apk policy to one arbitrary Dockerfile and
+# exits non-zero if it violates. This lets a test drive the real rule against its
+# own fixtures rather than trusting the case list in --self-test above, so
+# deleting cases from that list cannot quietly reduce coverage.
+if [[ "${1:-}" == "--check-apk" ]]; then
+  [[ -n "${2:-}" && -f "${2:-}" ]] || fail "--check-apk needs a readable file"
+  reject_unaudited_apk "$2" "unaudited apk invocation in $2"
+  echo "apk policy: $2 is clean."
+  exit 0
+fi
+
 extract_yaml_job() {
   local job="$1"
   local workflow="$2"
@@ -150,8 +257,8 @@ require_grep '^HEALTHCHECK .*\/healthz' "$EXECUTOR_DOCKERFILE" \
   "executor image must declare its bounded health endpoint"
 require_grep '^CMD[[:space:]]+\["node",[[:space:]]*"dist/index\.cjs"\]' "$EXECUTOR_DOCKERFILE" \
   "executor image must start only its compiled bounded runtime"
-reject_grep '^RUN[[:space:]].*apk[[:space:]]+(upgrade|add)' "$EXECUTOR_DOCKERFILE" \
-  "executor runtime must not resolve mutable Alpine packages during the image build"
+reject_unaudited_apk "$EXECUTOR_DOCKERFILE" \
+  "executor runtime must resolve no Alpine packages beyond the audited libcrypto3/libssl3 upgrade"
 reject_grep '^(COPY|ADD)[[:space:]].*(\.env|\.pem|\.key|secret)' "$EXECUTOR_DOCKERFILE" \
   "executor image must not copy env, certificate, key, or secret files"
 reject_grep '^COPY[[:space:]]+\.[[:space:]]+\.' "$EXECUTOR_DOCKERFILE" \
@@ -324,8 +431,8 @@ require_grep '^HEALTHCHECK .*\/healthz' "$COMMS_EXECUTOR_DOCKERFILE" \
   "communications-executor image must declare its bounded health endpoint"
 require_grep '^CMD[[:space:]]+\["node",[[:space:]]*"dist/index\.cjs"\]' "$COMMS_EXECUTOR_DOCKERFILE" \
   "communications-executor image must start only its compiled bounded runtime"
-reject_grep '^RUN[[:space:]].*apk[[:space:]]+(upgrade|add)' "$COMMS_EXECUTOR_DOCKERFILE" \
-  "communications-executor runtime must not resolve mutable Alpine packages during the image build"
+reject_unaudited_apk "$COMMS_EXECUTOR_DOCKERFILE" \
+  "communications-executor runtime must resolve no Alpine packages beyond the audited libcrypto3/libssl3 upgrade"
 reject_grep '^(COPY|ADD)[[:space:]].*(\.env|\.pem|\.key|secret)' "$COMMS_EXECUTOR_DOCKERFILE" \
   "communications-executor image must not copy env, certificate, key, or secret files"
 reject_grep '^COPY[[:space:]]+\.[[:space:]]+\.' "$COMMS_EXECUTOR_DOCKERFILE" \
