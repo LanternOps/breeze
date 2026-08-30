@@ -73,7 +73,7 @@ Both commands run as root inside the throwaway `alpine` container, so `tar` pres
   User uploads do not live on `api_data`, so backing up this volume is not a substitute for the database dump. Avatars, product and catalog images, and proposal and quote images are stored in PostgreSQL and are covered by `--db`. Software package uploads require object storage: without it the API returns `503` and the web UI grays the upload control out, rather than storing the package on local disk. Upload chunks, screenshots, installer media, recovery media, and BMR media are written to `/tmp`, which the shipped Compose file mounts as a 64 MB `tmpfs`. Breeze Backup storage targets are the S3 buckets or local and NAS paths you configure separately, not this volume.
 </Aside>
 
-Custom deployments must set `PATCH_REPORT_STORAGE_PATH` to a persistent location. Its default is the relative path `./data/patch-reports`, which resolves to `/app/data/patch-reports` in the API container and is lost when that container is replaced. The shipped Compose files set `/data/patch-reports` so the files use `api_data`.
+Custom deployments must set `PATCH_REPORT_STORAGE_PATH` to a persistent location. Its default, `./data/patch-reports`, is relative, so it resolves against the API process's working directory rather than against the volume. In the published image that working directory is `/app/apps/api`, putting the reports in the container's own writable layer, where they are lost the moment the container is replaced. The shipped Compose files set the absolute `/data/patch-reports`, and that override is what places the files on `api_data`.
 
 ## The `redis_data` Volume
 
