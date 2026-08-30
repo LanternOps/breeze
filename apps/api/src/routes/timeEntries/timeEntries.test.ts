@@ -356,6 +356,15 @@ describe('explicit time-entry mutation audits', () => {
     }));
   });
 
+  // W06 (#3900): the regression a future refactor breaks. /suggestions is a
+  // literal path registered ABOVE /:id; if it ever slips below, PATCH/GET /:id
+  // swallows it and the entry handler runs with id === 'suggestions'.
+  it('/suggestions is registered before /:id and never reaches the entry handler', async () => {
+    const res = await timeEntriesRoutes.request('/suggestions?date=2026-08-29');
+    expect(serviceMocks.updateTimeEntry).not.toHaveBeenCalled();
+    expect(res.status).not.toBe(404);
+  });
+
   it('emits one audit per affected entry for start auto-stop ownership', async () => {
     serviceMocks.startTimer.mockImplementation(async (_input, actor) => {
       actor.recordAuditMutation?.({

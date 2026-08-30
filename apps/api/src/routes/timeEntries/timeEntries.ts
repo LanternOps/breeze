@@ -16,6 +16,7 @@ import {
   TimeEntryServiceError, type TimeEntryActor, type TimeEntryAuditMutation
 } from '../../services/timeEntryService';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { timeSuggestionRoutes } from './suggestions';
 
 export const timeEntriesApiRoutes = new Hono();
 
@@ -132,6 +133,11 @@ export function handleServiceError(c: { json: (b: unknown, s: number) => Respons
 }
 
 // Literal paths BEFORE /:id (Hono matching is registration-ordered).
+
+// W06 (#3900). MUST stay above the `/:id` registrations — Hono matches in
+// registration order, so a later mount would let PATCH /:id swallow
+// /suggestions/confirm.
+timeEntriesApiRoutes.route('/suggestions', timeSuggestionRoutes);
 
 timeEntriesApiRoutes.get('/running', scopes, readPerm, async (c) => {
   const auth = c.get('auth');
