@@ -78,10 +78,10 @@ import { persistedSystemSiteScopeValues, systemReportAuthority } from '../siteSc
 export const NARRATIVE_REPORT_NAME = 'Weekly AI operations narrative';
 
 /** The `reports.type` value that marks a system-managed narrative definition.
- *  Declared here (rather than reached for as a bare literal) because four
- *  other modules gate on it: the report write routes, the ad-hoc generate
- *  schema, `reportGenerationService`'s two exhaustive switches, and the
- *  scheduled-report worker. */
+ *  Several other modules gate on the same value as a bare literal (the report
+ *  write routes, the ad-hoc generate schema, `reportGenerationService`'s two
+ *  exhaustive switches, the scheduled-report worker) — kept literal there
+ *  because the pg enum + exhaustive switches already pin them. */
 export const NARRATIVE_REPORT_TYPE = 'ai_org_narrative' as const;
 
 /** Max characters of an org/partner/agent NAME carried into the stored

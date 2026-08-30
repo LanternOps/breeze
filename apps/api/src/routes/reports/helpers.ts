@@ -131,7 +131,7 @@ export const reportDefinitionMetadataProjection = {
  * read. Only the four mutation routes do.
  */
 export function isSystemManagedReportDefinition(
-  row: { type?: string | null; executionScopePrincipalKind?: string | null },
+  row: { type: string | null; executionScopePrincipalKind: string | null },
 ): boolean {
   return row.executionScopePrincipalKind === 'system' || row.type === 'ai_org_narrative';
 }

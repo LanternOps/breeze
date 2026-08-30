@@ -34,7 +34,9 @@ export type OrgMergePolicy =
 // of their own:
 // tenancy is inferred by joining to a parent row, so once the parent's
 // org_id is repointed these rows travel along for free — the merge engine
-// does nothing to them directly.
+// does nothing to them directly. (Exception: `report_runs` rows under a
+// DUPLICATE narrative definition are re-homed by the `mergeReports` custom
+// executor before the repoint; the rest still just travel with their parent.)
 //
 // These names are NOT retyped here: they're derived below from
 // tenantCascade's ASSOCIATED_SYSTEM_SCOPED_TABLES (its FK pre-clear list for
