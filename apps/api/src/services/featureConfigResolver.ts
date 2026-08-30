@@ -1599,6 +1599,30 @@ function getRetentionImmutableDays(retention: Record<string, unknown> | null): n
 }
 
 /**
+ * The device rows a backup policy is allowed to target (#3968).
+ *
+ * `decommissioned` is this schema's soft delete — `DELETE /devices/:id` only
+ * flips `status`, so the row (and every backup assignment reaching it) survives
+ * indefinitely — and an ephemeral device is a Quick Support session box the
+ * reaper purges a few hours after the session ends. Neither can ever complete a
+ * backup, so fanning out to them buys a guaranteed-failing `backup_jobs` row per
+ * schedule tick, forever, plus a `recovery_readiness` row scoring 0 that pins
+ * the low-readiness alert.
+ *
+ * Built as ONE predicate every branch of the fan-out switch reuses: the bug this
+ * fixes was five independent WHERE clauses of which zero carried the exclusion,
+ * and a sixth branch written later must not be able to miss it. Same pair used
+ * by `GET /metrics/`, `readFleetGauges`, and the fleet workers.
+ *
+ * A function rather than a module constant so the `sql` template is built at
+ * call time — module-level evaluation would run inside every suite that mocks
+ * `drizzle-orm` at import.
+ */
+function backupTargetableDeviceCondition(): SQL {
+  return sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false`;
+}
+
+/**
  * Finds ALL devices with backup config policy assignments for an org.
  * Used by the backup scheduler (to know which devices to back up) and the run-all endpoint.
  *
@@ -1683,6 +1707,12 @@ export async function resolveAllBackupAssignedDevices(
   // Track which devices we've already seen — first (highest priority) wins
   const seen = new Map<string, BackupAssignedDevice>();
 
+  // EVERY branch of the switch below must ALSO exclude decommissioned and
+  // ephemeral rows — see `backupTargetableDeviceCondition`. Bound once and
+  // reused because the bug was that all five branches independently forgot it
+  // (#3968); a sixth branch should have to reach for this same name.
+  const targetableDevice = backupTargetableDeviceCondition();
+
   for (const row of sorted) {
     let deviceIds: string[];
 
@@ -1699,7 +1729,13 @@ export async function resolveAllBackupAssignedDevices(
         const [device] = await db
           .select({ id: devices.id })
           .from(devices)
-          .where(and(eq(devices.id, row.assignmentTargetId), eq(devices.orgId, orgId)))
+          .where(
+            and(
+              eq(devices.id, row.assignmentTargetId),
+              eq(devices.orgId, orgId),
+              targetableDevice
+            )
+          )
           .limit(1);
         deviceIds = device ? [device.id] : [];
         break;
@@ -1712,7 +1748,8 @@ export async function resolveAllBackupAssignedDevices(
           .where(
             and(
               eq(deviceGroupMemberships.groupId, row.assignmentTargetId),
-              eq(devices.orgId, orgId)
+              eq(devices.orgId, orgId),
+              targetableDevice
             )
           );
         deviceIds = members.map((m) => m.deviceId);
@@ -1722,7 +1759,13 @@ export async function resolveAllBackupAssignedDevices(
         const siteDevices = await db
           .select({ id: devices.id })
           .from(devices)
-          .where(and(eq(devices.siteId, row.assignmentTargetId), eq(devices.orgId, orgId)));
+          .where(
+            and(
+              eq(devices.siteId, row.assignmentTargetId),
+              eq(devices.orgId, orgId),
+              targetableDevice
+            )
+          );
         deviceIds = siteDevices.map((d) => d.id);
         break;
       }
@@ -1735,7 +1778,7 @@ export async function resolveAllBackupAssignedDevices(
         const orgDevices = await db
           .select({ id: devices.id })
           .from(devices)
-          .where(eq(devices.orgId, orgId));
+          .where(and(eq(devices.orgId, orgId), targetableDevice));
         deviceIds = orgDevices.map((d) => d.id);
         break;
       }
@@ -1748,6 +1791,7 @@ export async function resolveAllBackupAssignedDevices(
             and(
               eq(organizations.partnerId, row.assignmentTargetId),
               eq(devices.orgId, orgId),
+              targetableDevice
             )
           );
         deviceIds = partnerDevices.map((d) => d.id);
