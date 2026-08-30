@@ -80,6 +80,11 @@ let app: Hono;
 let permissionCalls: Array<[string, string]>;
 let scopeCalls: string[][];
 
+// 60s, not the 10s default: this hook imports ./tickets, one of the largest
+// modules in the API (it pulls the whole ticket route surface plus the service
+// layer). Under a loaded CI runner the transform alone can exceed 10s, and the
+// hook timing out SKIPS all nine assertions while still reporting a "failure"
+// that reads like a contract break rather than a stopwatch.
 beforeAll(async () => {
   await import('./tickets');
   const permBaseline = requirePermissionCalls.length;
@@ -90,7 +95,7 @@ beforeAll(async () => {
   app = new Hono();
   app.use('*', authMiddleware);
   app.route('/', ticketAttachmentRoutes);
-});
+}, 60_000);
 
 const ROUTES: Array<[string, string, RequestInit]> = [
   ['POST', `/${TICKET_ID}/attachments`, { method: 'POST', body: new FormData() }],

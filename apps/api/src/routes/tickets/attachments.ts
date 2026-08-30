@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../../lib/validation';
 import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { and, eq, isNull, sql } from 'drizzle-orm';
