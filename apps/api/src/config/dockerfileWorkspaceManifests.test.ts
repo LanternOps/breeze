@@ -419,6 +419,28 @@ describe('Dockerfile workspace-manifest copy scope', () => {
     ]);
   });
 
+  it.each(COVERED)('%s copies patches/ before its pnpm install when patchedDependencies exist', (dockerfile) => {
+    // pnpm.patchedDependencies (root package.json) makes `patches/<pkg>.patch`
+    // part of dependency resolution itself: an install stage that has the
+    // lockfile but not the patch file hard-fails under `--frozen-lockfile`
+    // (ERR_PNPM_PATCH_NOT_APPLIED-class) and silently skips the patch on an
+    // unpinned install. Neither failure surfaces in a required PR job — image
+    // builds live in the non-blocking smoke-test job and the release
+    // workflows — which is the same late-discovery profile as the manifest
+    // drift above (#2661). First patched dep: postgres@3.4.9 (#3225).
+    const rootManifest = readJson(path.join(REPO_ROOT, 'package.json'));
+    const patched = ((rootManifest.pnpm ?? {}) as Record<string, unknown>).patchedDependencies;
+    const hasPatches = patched !== undefined && Object.keys(patched as object).length > 0;
+    if (!hasPatches) return;
+
+    const analysis = ANALYSES.get(dockerfile)!;
+    expect(
+      analysis.installSources.some((src) => src === '.' || src === 'patches' || src.startsWith('patches/')),
+      `${dockerfile} runs its pnpm install without copying patches/, but root package.json declares ` +
+        'pnpm.patchedDependencies. Add `COPY patches ./patches` before the `RUN pnpm install`.',
+    ).toBe(true);
+  });
+
   it.each(COVERED)('%s copies the source of every workspace package it installs', (dockerfile) => {
     const analysis = ANALYSES.get(dockerfile)!;
     const missing = [...analysis.required]
