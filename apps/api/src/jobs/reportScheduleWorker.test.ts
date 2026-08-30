@@ -45,6 +45,7 @@ vi.mock('../db/schema', () => ({
     executionScopeUserId: 'reports.execution_scope_user_id',
     executionScopeFingerprint: 'reports.execution_scope_fingerprint',
     executionScopeCapturedAt: 'reports.execution_scope_captured_at',
+    executionScopePrincipalKind: 'reports.execution_scope_principal_kind',
   },
   reportRuns: {
     id: 'report_runs.id',
@@ -112,6 +113,7 @@ vi.mock('../services/siteScope', () => ({
     executionScopeUserId: authority.principalUserId,
     executionScopeFingerprint: authority.fingerprint,
     executionScopeCapturedAt: authority.capturedAt,
+    executionScopePrincipalKind: 'user',
   })),
 }));
 
@@ -762,6 +764,44 @@ describe('processRunScheduledReport', () => {
 
     expect(insertMock).not.toHaveBeenCalled();
     expect(generateReportMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a system-principal definition before resolving any authority', async () => {
+    // P2-3 (#4190): the report scheduler has no acting user to reauthorize a
+    // system-authored definition against, and must never invent one. A7 also
+    // excludes the type from findDueReports; this is the defence in depth.
+    selectMock.mockReturnValueOnce(
+      selectChain([
+        {
+          ...report,
+          executionScopeUserId: null,
+          executionScopePrincipalKind: 'system',
+        },
+      ]),
+    );
+    const failedInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(failedInsert);
+
+    await processRunScheduledReport({
+      type: 'run-scheduled-report',
+      reportId: REPORT_ID,
+      occurrenceKey: 202607010900,
+    });
+
+    expect(failedInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reportId: REPORT_ID,
+        status: 'failed',
+        errorMessage: 'system_principal_definition',
+      }),
+    );
+    expect(decodeSiteScopeMock).not.toHaveBeenCalled();
+    expect(resolveLiveReportAuthorityMock).not.toHaveBeenCalled();
+    expect(intersectSiteScopesMock).not.toHaveBeenCalled();
+    expect(generateReportMock).not.toHaveBeenCalled();
+    expect(previousBaselineForMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -73,7 +73,8 @@ vi.mock('../services/siteScope', () => ({
       : null,
     executionScopeUserId: authority.principalUserId,
     executionScopeFingerprint: authority.fingerprint,
-    executionScopeCapturedAt: authority.capturedAt
+    executionScopeCapturedAt: authority.capturedAt,
+    executionScopePrincipalKind: 'user'
   })),
   decodeSiteScope: vi.fn((row: any, orgId: string) => {
     if (row.executionScopeKind === undefined) {
@@ -170,7 +171,8 @@ vi.mock('../db/schema', () => ({
     executionScopeSiteIds: 'reports.executionScopeSiteIds',
     executionScopeUserId: 'reports.executionScopeUserId',
     executionScopeFingerprint: 'reports.executionScopeFingerprint',
-    executionScopeCapturedAt: 'reports.executionScopeCapturedAt'
+    executionScopeCapturedAt: 'reports.executionScopeCapturedAt',
+    executionScopePrincipalKind: 'reports.executionScopePrincipalKind'
   },
   reportRuns: {
     id: 'reportRuns.id',
@@ -188,7 +190,8 @@ vi.mock('../db/schema', () => ({
     executionScopeSiteIds: 'reportRuns.executionScopeSiteIds',
     executionScopeUserId: 'reportRuns.executionScopeUserId',
     executionScopeFingerprint: 'reportRuns.executionScopeFingerprint',
-    executionScopeCapturedAt: 'reportRuns.executionScopeCapturedAt'
+    executionScopeCapturedAt: 'reportRuns.executionScopeCapturedAt',
+    executionScopePrincipalKind: 'reportRuns.executionScopePrincipalKind'
   },
   devices: {
     id: 'devices.id',
@@ -1257,7 +1260,8 @@ describe('report definition scope enforcement', () => {
       'executionScopeSiteIds',
       'executionScopeUserId',
       'executionScopeFingerprint',
-      'executionScopeCapturedAt'
+      'executionScopeCapturedAt',
+      'executionScopePrincipalKind'
     ]);
     expect(metadataProjection).not.toHaveProperty('config');
     expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
@@ -2859,6 +2863,7 @@ describe('report run immutable scope enforcement', () => {
           'executionScopeCapturedAt',
           'executionScopeFingerprint',
           'executionScopeKind',
+          'executionScopePrincipalKind',
           'executionScopeSiteIds',
           'executionScopeUserId',
           'executionScopeVersion',

@@ -446,6 +446,22 @@ export async function processRunScheduledReport(
       .returning();
   };
 
+  // P2-3 (#4190) — defence in depth. A system-authored definition (the weekly
+  // AI org narrative) has no acting user, so there is nobody for this worker to
+  // reauthorize against; it is owned by the agent scheduler, not the report
+  // scheduler. findDueReports already skips it (its executable-scope predicate
+  // requires execution_scope_user_id NOT NULL) and A7 adds the type exclusion —
+  // this refuses it even if a caller forces the job in directly, BEFORE any
+  // scope decode or authority resolution can invent a principal.
+  if (report.executionScopePrincipalKind === 'system') {
+    console.warn(
+      '[ReportScheduleWorker] Refusing a system-principal report definition',
+      { reportId: report.id, orgId: report.orgId },
+    );
+    await deny('system_principal_definition');
+    return;
+  }
+
   let persistedScope;
   try {
     persistedScope = decodeSiteScope(

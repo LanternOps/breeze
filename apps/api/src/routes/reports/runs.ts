@@ -319,6 +319,7 @@ runsRoutes.get(
         executionScopeUserId: reportRuns.executionScopeUserId,
         executionScopeFingerprint: reportRuns.executionScopeFingerprint,
         executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+        executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
       })
       .from(reportRuns)
       .innerJoin(reports, eq(reportRuns.reportId, reports.id))
@@ -430,6 +431,7 @@ runsRoutes.get(
         executionScopeUserId: reportRuns.executionScopeUserId,
         executionScopeFingerprint: reportRuns.executionScopeFingerprint,
         executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+        executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
         reportName: reports.name,
         reportType: reports.type,
         reportFormat: reports.format,

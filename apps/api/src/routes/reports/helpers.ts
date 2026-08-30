@@ -108,6 +108,7 @@ export const reportDefinitionMetadataProjection = {
   executionScopeUserId: reports.executionScopeUserId,
   executionScopeFingerprint: reports.executionScopeFingerprint,
   executionScopeCapturedAt: reports.executionScopeCapturedAt,
+  executionScopePrincipalKind: reports.executionScopePrincipalKind,
 };
 
 export function tenantAuthorizedReportCondition(
@@ -199,6 +200,7 @@ export const reportRunMetadataProjection = {
   executionScopeUserId: reportRuns.executionScopeUserId,
   executionScopeFingerprint: reportRuns.executionScopeFingerprint,
   executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+  executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
 };
 
 export async function getOrgIdsForAuth(

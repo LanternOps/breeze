@@ -123,7 +123,9 @@ function persistedMetadataMatches(
     left.executionScopeUserId === right.executionScopeUserId &&
     left.executionScopeFingerprint === right.executionScopeFingerprint &&
     left.executionScopeCapturedAt?.getTime() ===
-      right.executionScopeCapturedAt?.getTime()
+      right.executionScopeCapturedAt?.getTime() &&
+    (left.executionScopePrincipalKind ?? null) ===
+      (right.executionScopePrincipalKind ?? null)
   );
 }
 
@@ -340,6 +342,7 @@ coreRoutes.get(
         executionScopeUserId: reportRuns.executionScopeUserId,
         executionScopeFingerprint: reportRuns.executionScopeFingerprint,
         executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+        executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
       })
       .from(reportRuns)
       .where(and(eq(reportRuns.reportId, reportId), runScopePredicate))
