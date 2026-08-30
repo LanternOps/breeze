@@ -660,6 +660,11 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   'user_sso_identities',
   'push_notifications',
   'mobile_devices',
+  // ticket_push_preferences: W07 (#3901) per-user ticket push preferences.
+  // Pure Shape 6 — user_id PK, no org/partner axis. Behavioural proof is
+  // ticketPushPreferencesRls.integration.test.ts; this entry only pins that
+  // the policy references breeze_current_user_id.
+  'ticket_push_preferences',
   // ticket_comments: Shape 6 on the author axis, PLUS an extra permissive
   // SELECT policy (breeze_ticket_parent_select, 2026-06-10-a migration)
   // that ORs in visibility when the parent ticket is org-accessible —
