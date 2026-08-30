@@ -55,7 +55,6 @@ vi.mock('./workerObservability', () => ({
 import {
   __testOnly,
   createUserRiskRetentionWorker,
-  extractUserRiskRetentionRowCount,
   initializeUserRiskRetention,
   shutdownUserRiskRetention,
 } from './userRiskRetention';
@@ -75,13 +74,6 @@ describe('user risk retention worker', () => {
 
   afterEach(async () => {
     await shutdownUserRiskRetention();
-  });
-
-  it('extracts row counts from supported driver result shapes', () => {
-    expect(extractUserRiskRetentionRowCount({ rowCount: 4, count: 2 })).toBe(4);
-    expect(extractUserRiskRetentionRowCount({ count: 3 })).toBe(3);
-    expect(extractUserRiskRetentionRowCount([{}, {}])).toBe(2);
-    expect(extractUserRiskRetentionRowCount({})).toBe(0);
   });
 
   it('registers a repeatable compaction job with a stable jobId', async () => {

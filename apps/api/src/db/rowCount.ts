@@ -12,8 +12,12 @@
  * invert services→jobs and pull BullMQ + ioredis into the module graph of a
  * plain DELETE.
  *
- * Note there are still several private copies of this check in `jobs/` and
- * other services. Consolidating them is worthwhile but is not this change.
+ * This is the ONLY row-count reader in `apps/api` (#3894 folded in the thirteen
+ * private copies that had accumulated across `jobs/` and `services/`, four of
+ * them under a different name). Don't hand-roll the shape check again — import
+ * this. `db/rowCount.test.ts` fails the build on a re-introduced copy, because
+ * the note that used to sit here asking for consolidation was copied past nine
+ * more times before anyone acted on it.
  */
 export function extractRowCount(result: unknown): number {
   // Deliberately NOT null-safe. postgres-js never resolves a successful

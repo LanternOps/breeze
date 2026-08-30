@@ -38,6 +38,7 @@
 
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
+import { extractRowCount } from '../db/rowCount';
 import { withExtensionOrgCascade } from '../extensions/tenancyRegistry';
 import { createAuditLog } from './auditService';
 // Self-import so cascadeDeletePartner calls cascadeDeleteOrg /
@@ -836,14 +837,6 @@ function deleteOrgRows(
   );
 }
 
-function extractRowCount(result: unknown): number {
-  const raw = result as { rowCount?: number; count?: number; length?: number };
-  if (typeof raw?.rowCount === 'number') return raw.rowCount;
-  if (typeof raw?.count === 'number') return raw.count;
-  if (Array.isArray(result)) return (result as unknown[]).length;
-  return 0;
-}
-
 function isUndefinedTable(err: unknown): boolean {
   // Postgres SQLSTATE 42P01 = undefined_table.
   //
@@ -1158,5 +1151,4 @@ export const __testOnly = {
   ASSOCIATED_SYSTEM_SCOPED_TABLES,
   AUDIT_ADMIN_REQUIRED_TABLES,
   quoteIdent,
-  extractRowCount,
 };

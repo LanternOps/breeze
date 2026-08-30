@@ -21,6 +21,7 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
+import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
@@ -41,18 +42,6 @@ const REPEAT_JOB_ID = 'ai-unattended-exposure-retention';
 export const RETENTION_HOURS = 48;
 
 type RetentionJobResult = { deletedCount: number; durationMs: number };
-
-/**
- * postgres-js / node-postgres row-count extraction — same shape as every
- * other retention worker's own local copy (processSampleRetention.ts,
- * mlOutputRetention.ts, ipHistoryRetention.ts).
- */
-export function extractRowCount(result: unknown): number {
-  const raw = result as { rowCount?: number; count?: number };
-  if (typeof raw.rowCount === 'number') return raw.rowCount;
-  if (typeof raw.count === 'number') return raw.count;
-  return Array.isArray(result) ? result.length : 0;
-}
 
 export async function pruneAiUnattendedExposure(): Promise<RetentionJobResult> {
   const startedAt = Date.now();

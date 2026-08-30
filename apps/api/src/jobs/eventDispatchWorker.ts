@@ -2,6 +2,7 @@ import { Worker, Queue, type Job } from 'bullmq';
 import { and, eq, ne, sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { eventDeliveryReceipts } from '../db/schema';
+import { extractRowCount } from '../db/rowCount';
 import { eventDispatchMode } from '../config/env';
 import { getBullMQConnection, getRedisConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
@@ -408,19 +409,6 @@ export async function eventDispatchProcessor(job: Job): Promise<void> {
 const RETENTION_BATCH_SIZE = 5000;
 
 /**
- * postgres-js DELETE/SELECT row-count extraction — same shape as
- * `deviceMetricsRetention.extractRowCount`. Never report 0 when rows were
- * actually affected, which would end a batched-delete loop one iteration
- * early and silently leave old rows behind.
- */
-export function extractAffectedCount(result: unknown): number {
-  const raw = result as { rowCount?: number; count?: number };
-  if (typeof raw.rowCount === 'number') return raw.rowCount;
-  if (typeof raw.count === 'number') return raw.count;
-  return Array.isArray(result) ? (result as unknown[]).length : 0;
-}
-
-/**
  * Pass 1: `delivered` receipts older than 7 days — the workload the partial
  * index (`event_delivery_receipts_retention_idx`) exists for.
  */
@@ -495,7 +483,7 @@ async function deleteBatchedUntilEmpty(buildQuery: () => SQL): Promise<number> {
   let deleted = 0;
   for (;;) {
     const result = await db.execute(buildQuery());
-    const n = extractAffectedCount(result);
+    const n = extractRowCount(result);
     deleted += n;
     if (n < RETENTION_BATCH_SIZE) break;
   }

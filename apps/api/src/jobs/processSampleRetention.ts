@@ -9,6 +9,7 @@ import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 
 import * as dbModule from '../db';
+import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
@@ -26,21 +27,6 @@ const BATCH_SIZE = 10000;
 const DEFAULT_RETENTION_DAYS = Math.min(14, Math.max(1, parseInt(process.env.PROCESS_SAMPLE_RETENTION_DAYS || '7', 10)));
 
 type RetentionJobData = { retentionDays?: number };
-
-/**
- * postgres-js / drizzle row-count extraction. The result may expose `.count`
- * (postgres-js DELETE), `.rowCount`, or — when the driver returns rows as an
- * array — fall back to `.length`. Mirrors `auditRetention.extractRowCount`
- * (and the inline `.count ?? .length` check in `ipHistoryRetention`) so we never
- * report 0 when rows were actually deleted — which would prematurely end the
- * batched-delete loop and silently leave old rows.
- */
-export function extractRowCount(result: unknown): number {
-  const raw = result as { rowCount?: number; count?: number };
-  if (typeof raw.rowCount === 'number') return raw.rowCount;
-  if (typeof raw.count === 'number') return raw.count;
-  return Array.isArray(result) ? (result as unknown[]).length : 0;
-}
 
 let retentionQueue: Queue<RetentionJobData> | null = null;
 let retentionWorker: Worker<RetentionJobData> | null = null;

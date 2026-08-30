@@ -9,6 +9,7 @@ import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 
 import * as dbModule from '../db';
+import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
@@ -37,13 +38,6 @@ type RetentionJobData = {
 let retentionQueue: Queue<RetentionJobData> | null = null;
 let retentionWorker: Worker<RetentionJobData> | null = null;
 
-export function extractReliabilityRetentionRowCount(result: unknown): number {
-  const raw = result as { rowCount?: number; count?: number };
-  if (typeof raw.rowCount === 'number') return raw.rowCount;
-  if (typeof raw.count === 'number') return raw.count;
-  return Array.isArray(result) ? result.length : 0;
-}
-
 export async function pruneReliabilityHistory(options: {
   retentionDays: number;
   batchSize?: number;
@@ -69,7 +63,7 @@ export async function pruneReliabilityHistory(options: {
         LIMIT ${batchSize}
       )
     `);
-    lastBatchDeleted = extractReliabilityRetentionRowCount(result);
+    lastBatchDeleted = extractRowCount(result);
     deleted += lastBatchDeleted;
     batches += 1;
     if (lastBatchDeleted < batchSize) break;
