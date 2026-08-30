@@ -61,8 +61,9 @@ Use `node:test`, `mkdtemp`, local Git repos, and `spawnSync`. Freeze:
    registry ref points at main;
 7. `--allow-unclassified` returns `unclassified`;
 8. `--require-mainline` rejects a valid candidate;
-9. a `git clone --depth=1` of the fixture fails closed with a distinct shallow
-   diagnostic before any tag is inspected.
+9. a `git clone --depth=1 file://...` of the fixture fails closed with a
+   distinct shallow diagnostic before any tag is inspected (a plain local-path
+   clone ignores `--depth`).
 
 Invoke the real CLI with `--tag`, `--main-ref`, and
 `--candidate-registry-ref` arguments.
@@ -166,11 +167,11 @@ the fixture as `cwd`. Freeze:
 13. the primary baseline is an annotated tag (`git tag -a`) and is still
     selected and diffed correctly;
 14. a higher tag reachable from `origin/main` but not from `HEAD` fails with
-    the behind-mainline diagnostic, not the provenance error — the fixture
-    needs a real `origin` remote (clone from a bare repo) so `origin/main`
-    resolves;
-15. a `--depth=1` clone fails closed in automatic mode with the shallow
-    diagnostic.
+    the behind-mainline diagnostic even when the tag has a retained candidate
+    row — the fixture needs a real `origin` remote (clone from a bare repo) so
+    `origin/main` resolves;
+15. a `--depth=1 file://...` clone fails closed in automatic mode with the
+    shallow diagnostic.
 
 ### Step 2: Prove RED
 
@@ -191,13 +192,13 @@ Keep existing per-file rules. In automatic mode:
    comparator); use the same ordering to decide which tags are "higher";
 3. distinguish no tags from no reachable baseline;
 4. inspect every higher tag;
-5. validate exact candidate rows from the checked tree and exclude them from an
-   unrelated lineage;
-6. add a higher stable side-branch baseline only when its recorded equivalent is
-   an ancestor of `HEAD`;
-7. when `origin/main` resolves and the higher tag is an ancestor of it, fail
+5. when `origin/main` resolves and the higher tag is an ancestor of it, fail
    with the behind-mainline diagnostic (merge/rebase main, or pass an explicit
-   base ref) — do not exclude it;
+   base ref) — do not exclude it, even when a retained candidate row records it;
+6. validate exact candidate rows from the checked tree and exclude them from an
+   unrelated lineage;
+7. add a higher stable side-branch baseline only when its recorded equivalent is
+   an ancestor of `HEAD`;
 8. fail every other higher tag with the provenance error;
 9. compare the primary plus applicable side-branch baselines;
 10. preserve `--no-renames`, top-level SQL scope, additions, reconciliation,
@@ -240,13 +241,15 @@ candidates, guard OK, and no migration file output.
 **Files:**
 
 - Modify `scripts/release/check-release-lineage.test.mjs`
+- Modify `.github/scripts/check-workflow-security.mjs`
 - Modify `.github/workflows/release.yml`
 
 ### Step 1: Add failing workflow tests
 
-Parse `release.yml` with `workflowJobs` and `topLevelLogicalParts` from
-`.github/scripts/check-workflow-security.mjs` rather than regexes over YAML,
-and assert:
+Import `.github/scripts/check-workflow-security.mjs` as a namespace. First
+assert that `activeLines`, `workflowJobs`, and `topLevelLogicalParts` are exposed
+as functions; this is RED against the current internal-only helpers. Then parse
+`release.yml` with those helpers rather than regexes over YAML and assert:
 
 1. `validate-release-lineage` exists with full history and tags, and carries
    the same job-level gate as `create-release` (`github.ref_type == 'tag'`,
@@ -273,7 +276,9 @@ Expected: FAIL on the missing validation job and draft expression.
 
 ### Step 3: Implement the gate
 
-Add a read-only job that checks out full history/tags, resolves `origin/main`,
+Export `activeLines`, `workflowJobs`, and `topLevelLogicalParts` from the
+existing workflow-security module without changing their behavior. Add a
+read-only job that checks out full history/tags, resolves `origin/main`,
 runs the classifier for `github.ref_name`, and exposes `channel`, `tag`, and
 `tag_sha`. Give it the `create-release` tag gate as its own `if:`. It may run
 beside build jobs, but `create-release` must both list it in `needs:` and add
@@ -295,7 +300,8 @@ prerelease tags.
 pnpm test:release-lineage
 pnpm test:workflow-security
 git diff --check
-git add .github/workflows/release.yml \
+git add .github/scripts/check-workflow-security.mjs \
+  .github/workflows/release.yml \
   scripts/release/check-release-lineage.test.mjs
 git commit -m "fix(release): gate publication on exact tag lineage"
 ```

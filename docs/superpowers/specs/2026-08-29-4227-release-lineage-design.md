@@ -123,20 +123,22 @@ this algorithm:
 3. If tags exist but none is reachable, fail because the checked lineage has no
    trustworthy automatic baseline.
 4. Inspect tags that sort higher than the primary baseline.
-5. A higher non-ancestor tag exactly registered as a candidate is classified and
-   excluded from this unrelated branch's migration baselines.
-6. A higher non-ancestor tag in the existing side-branch-release registry is
-   applicable only when its recorded main-equivalent commit is reachable from
-   `HEAD`; its tag becomes an additional baseline.
-7. A higher non-ancestor tag that is reachable from `origin/main` is a mainline
+5. A higher non-ancestor tag that is reachable from `origin/main` is a mainline
    release the checked lineage has not merged yet (a stale local branch, or a
    `workflow_dispatch` of `ci.yml` on a branch; pull-request runs check out the
    merge ref and are unaffected). It fails with a distinct "behind mainline"
    diagnostic naming the tag and the remediation: merge or rebase onto main, or
    pass an explicit base ref. It is not excluded, because a migration added on
    main after the primary baseline and then edited on the branch would
-   otherwise pass as an addition. When `origin/main` does not resolve, this
-   classification is unavailable and the tag falls through to step 8.
+   otherwise pass as an addition. This check precedes candidate classification
+   so a retained candidate row cannot let a stale branch ignore that tag after
+   its exact commit reaches main. When `origin/main` does not resolve, this
+   classification is unavailable and the tag falls through to step 6.
+6. A higher non-ancestor tag exactly registered as a candidate is classified and
+   excluded from this unrelated branch's migration baselines.
+7. A higher non-ancestor tag in the existing side-branch-release registry is
+   applicable only when its recorded main-equivalent commit is reachable from
+   `HEAD`; its tag becomes an additional baseline.
 8. Any other higher non-ancestor tag fails with a release-provenance error.
 9. Compare every applicable baseline to the working tree using the existing
    no-renames and top-level-SQL rules. Deduplicate violations by baseline and
@@ -255,8 +257,8 @@ the live Breeze tag graph.
 - SemVer precedence: a release and its own prerelease both ancestral selects
   the release, not the prerelease;
 - a higher tag reachable from `origin/main` but not from `HEAD` fails with the
-  behind-mainline diagnostic, not the provenance error;
-- a `--depth=1` clone fails closed in automatic mode;
+  behind-mainline diagnostic even when a retained candidate row records it;
+- a `--depth=1 file://...` clone fails closed in automatic mode;
 - an edit and a deletion of an ancestral migration fail;
 - a valid checksum reconciliation retains existing behavior;
 - a higher registered candidate is classified and excluded on main;
