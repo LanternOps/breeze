@@ -52,6 +52,7 @@ import { registerRuntimeExtensionTenancy } from './tenancyRegistry';
 import { assertExtensionTenancyRls } from './tenancyTripwire';
 import { registerExtensionWebAsset, type RegisterableExtensionWebAsset } from './webAssets';
 import { registerGlobalRateLimitSkipPrefix } from '../middleware/globalRateLimit';
+import { MIGRATION_TABLE } from '../db/autoMigrate';
 
 export { BUILTIN_EXTENSION_NAMES, builtinTenancyDeclarations } from './builtinRegistry';
 export type { BuiltinExtension } from './builtinRegistry';
@@ -270,6 +271,15 @@ export interface BuiltinPorts {
   checkMigrationParity(builtin: BuiltinExtension, sql: postgres.Sql | null): Promise<void>;
   publishTenancy(manifest: ExtensionManifestV1): void;
   /**
+   * Has this built-in ever applied even ONE migration on this database? Used
+   * ONLY on the disabled path, and ONLY when the manifest could not be
+   * resolved, to decide whether an unreadable manifest is survivable.
+   * Extension migrations and their namespaced ledger rows commit in the SAME
+   * transaction (see migrator.ts), so no ledger row proves the built-in created
+   * none of its tables here.
+   */
+  builtinEverMigrated(extensionName: string): Promise<boolean>;
+  /**
    * WHICH of these public tables already exist — the present SUBSET, not a
    * yes/no. Used ONLY on the disabled path, where it decides both whether a
    * switched-off built-in's tenancy declaration still has to be published AND
@@ -355,6 +365,36 @@ export async function defaultExistingDeclaredTables(
   }
 }
 
+/**
+ * The production {@link BuiltinPorts.builtinEverMigrated}: whether the core
+ * migration ledger contains any namespaced row for this built-in.
+ *
+ * Exported for the same reason as {@link defaultExistingDeclaredTables}: an
+ * integration test can drive this exact SQL against a real server.
+ */
+export async function defaultBuiltinEverMigrated(extensionName: string): Promise<boolean> {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error(
+      'DATABASE_URL is required to decide whether a disabled built-in with an unreadable manifest ever ran here',
+    );
+  }
+  const sql = postgres(databaseUrl, { max: 1 });
+  try {
+    // MIGRATION_TABLE is a hardcoded constant (never user input); the LIKE
+    // pattern is parameterized.
+    const rows = await sql.unsafe<{ present: boolean }[]>(
+      `SELECT EXISTS (SELECT 1 FROM ${MIGRATION_TABLE} WHERE filename LIKE $1) AS present`,
+      [`${extensionName}/%`],
+    );
+    return rows[0]?.present === true;
+  } finally {
+    // A close failure must never REPLACE the probe's own result or error: an
+    // exception thrown from a `finally` discards the in-flight one.
+    await sql.end().catch(() => {});
+  }
+}
+
 export interface LoadBuiltinExtensionsArgs {
   registry: ExtensionContributionRegistry;
   stateStore: ExtensionStateStore;
@@ -423,6 +463,7 @@ function buildDefaultPorts(args: LoadBuiltinExtensionsArgs): BuiltinPorts {
       }
     },
     publishTenancy: (manifest) => registerRuntimeExtensionTenancy(manifest.tenancy),
+    builtinEverMigrated: defaultBuiltinEverMigrated,
     existingDeclaredTables: defaultExistingDeclaredTables,
     stageExtension: (module, manifest, opts) =>
       defaultStageExtension(module, manifest, args.registry, opts),
@@ -479,6 +520,56 @@ function registerBuiltinWebAsset(builtin: BuiltinExtension, ports: BuiltinPorts)
   ports.registerWebAsset(name, ports.readWebDist(root));
 }
 
+async function handleUnavailableDisabledManifest(
+  builtin: BuiltinExtension,
+  ports: BuiltinPorts,
+  manifestError: unknown,
+): Promise<void> {
+  let everMigrated: boolean;
+  try {
+    everMigrated = await ports.builtinEverMigrated(builtin.name);
+  } catch (probeError) {
+    throw new Error(
+      `[extensions] built-in "${builtin.name}" is DISABLED ` +
+        `(${builtin.enableEnvVar} is not "true") and its manifest was also unavailable, so ` +
+        'we cannot decide whether it left tables behind on this database.',
+      { cause: probeError },
+    );
+  }
+
+  const manifestErrorMessage =
+    manifestError instanceof Error ? manifestError.message : String(manifestError);
+  if (everMigrated) {
+    throw new Error(
+      `[extensions] built-in "${builtin.name}" is DISABLED ` +
+        `(${builtin.enableEnvVar} is not "true") but it has applied migrations on this ` +
+        'database, so its tables may exist; their tenancy MUST still be declared or ' +
+        'org-deletion cascades and the GDPR tenant-export path silently skip their rows. ' +
+        'That declaration comes from the manifest, which could not be read. ' +
+        `Restore "${builtin.packageDir}/manifest.json" in the image (the release Dockerfile ` +
+        'COPYs it), or drop the orphaned tables. ' +
+        `Original manifest error: ${manifestErrorMessage}`,
+      { cause: manifestError },
+    );
+  }
+
+  console.warn(
+    `[extensions] ${JSON.stringify({
+      event: 'builtin_extension_manifest_unavailable',
+      extension: builtin.name,
+      packageDir: builtin.packageDir,
+      enableFlag: builtin.enableEnvVar,
+      error: manifestErrorMessage,
+      reason:
+        'this built-in is disabled and has never applied a migration on this database, so ' +
+        'it can own no tables and there is no tenancy to declare — boot continues',
+      remedy:
+        `enabling it (${builtin.enableEnvVar}=true) would require a readable ` +
+        `${builtin.packageDir}/manifest.json`,
+    })}`,
+  );
+}
+
 /**
  * The DISABLED path: everything a switched-off built-in still owes the boot,
  * which is one log line and — conditionally — its tenancy declaration.
@@ -486,6 +577,11 @@ function registerBuiltinWebAsset(builtin: BuiltinExtension, ports: BuiltinPorts)
  * No migrations, no staging, no activation, no `installed_extensions` row, no
  * web-dist requirement: a deployment that never enabled this built-in must boot
  * on plain Postgres with none of the built-in's infrastructure.
+ *
+ * If its manifest is unreadable, skipping is safe only when the namespaced
+ * migration ledger proves this built-in never ran here. That probe, rather than
+ * a guess based on the enable flag or current schema, proves it can own no
+ * tables whose tenancy would otherwise be lost.
  *
  * Tenancy is the one exception, and it cuts BOTH ways:
  *
@@ -526,12 +622,11 @@ async function skipDisabledBuiltin(
   builtin: BuiltinExtension,
   ports: BuiltinPorts,
 ): Promise<void> {
-  const { manifest } = builtin;
   const raw = process.env[builtin.enableEnvVar];
   console.warn(
     `[extensions] ${JSON.stringify({
       event: 'builtin_extension_disabled',
-      extension: manifest.name,
+      extension: builtin.name,
       reason:
         raw === undefined
           ? 'built-in extensions are opt-in per deployment and this one is not enabled'
@@ -543,6 +638,14 @@ async function skipDisabledBuiltin(
       observedValue: raw === undefined ? null : raw,
     })}`,
   );
+
+  let manifest: ExtensionManifestV1;
+  try {
+    manifest = builtin.manifest;
+  } catch (error) {
+    await handleUnavailableDisabledManifest(builtin, ports, error);
+    return;
+  }
 
   const tables = declaredTenancyTables(manifest);
   if (tables.length === 0) return;
