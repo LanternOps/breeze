@@ -929,6 +929,11 @@ const NARRATIVE_BULLET_INDENT = 5; // marker + gap before bullet text, matches d
 const NARRATIVE_BULLET_GAP = 1.6; // vertical gap after a bullet block, before the next bullet
 const NARRATIVE_SECTION_GAP = 2.5; // vertical gap after a section's last bullet, before the next heading
 const NARRATIVE_CONTENT_BOTTOM = PAGE.footY - 8; // keep clear of the footnote line above the footer rule
+// org/agent display names come from the same unvalidated jsonb summary blob as
+// bullets (legacy/hand-built snapshots included), so they get the same
+// sanitizeNarrativeText treatment before reaching the header chrome — a
+// generous cap since these are short display names, not prose.
+const NARRATIVE_NAME_MAX_CHARS = 120;
 
 /**
  * Collapse one model-authored (or legacy/hand-built) narrative string to a
@@ -995,8 +1000,8 @@ function ensureNarrativeRoom(doc: jsPDF, opts: BuildOpts, y: number, neededH: nu
 }
 
 function renderNarrativeReport(doc: jsPDF, narrative: NarrativeSnapshot, opts: BuildOpts): void {
-  const orgName = typeof narrative.orgName === 'string' ? narrative.orgName.trim() : '';
-  const agentName = typeof narrative.agentName === 'string' ? narrative.agentName.trim() : '';
+  const orgName = sanitizeNarrativeText(narrative.orgName, NARRATIVE_NAME_MAX_CHARS);
+  const agentName = sanitizeNarrativeText(narrative.agentName, NARRATIVE_NAME_MAX_CHARS);
   const period = narrativePeriodLabel(narrative, opts.timezone);
 
   const metaParts = [`Generated ${opts.generatedAt}`];

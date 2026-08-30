@@ -124,6 +124,18 @@ describe('buildReportPdf: ai_org_narrative', () => {
     expect(text).not.toContain('​');
   });
 
+  it('strips hostile control/format characters (RTL override, zero-width space) from orgName and agentName in the header chrome', () => {
+    const fixture = fullNarrativeFixture();
+    fixture.narrative!.orgName = 'Acme‮​Corp';
+    fixture.narrative!.agentName = 'Ops‮​Narrator';
+    const doc = buildReportPdf([], { ...opts, summary: fixture });
+    const text = pdfCommandText(doc);
+    expect(text).toContain('Acme Corp');
+    expect(text).toContain('Agent: Ops Narrator');
+    expect(text).not.toContain('‮');
+    expect(text).not.toContain('​');
+  });
+
   it('renders an oversized headline/bullet without throwing (belt-and-braces beyond the intake schema cap)', () => {
     const fixture = fullNarrativeFixture();
     // Space-separated so jsPDF's word wrap is well-defined; the exact
