@@ -80,6 +80,25 @@ const MAX_LOOKBACK_DAYS = 31;
 const utcTs = (d: Date) => sql`(${d.toISOString()}::timestamptz AT TIME ZONE 'UTC')`;
 
 /**
+ * A `uuid[]` literal built from ONE bound parameter per element.
+ *
+ * NOT `ANY(${ids}::uuid[])`. Interpolating a JS array binds the WHOLE array as
+ * a single parameter, and postgres.js then hands Postgres the bare element text
+ * rather than a `{...}` array literal — `malformed array literal` (22P02) at
+ * runtime, from a query that every mocked unit test accepts because no mock
+ * ever serialises a parameter. This is the #2655 failure class; see the note on
+ * `buildUnpromotedAdminMatch` in services/platformAdminBootstrap.ts. Caught here
+ * by timeSuggestionDecisionsRls.integration.test.ts against real Postgres.
+ *
+ * An EMPTY list renders `ARRAY[]::uuid[]`, which matches nothing — exactly what
+ * `accessibleOrgIds: []` (a partner user granted no orgs) must mean.
+ */
+const uuidArray = (ids: readonly string[]) =>
+  ids.length === 0
+    ? sql`ARRAY[]::uuid[]`
+    : sql`ARRAY[${sql.join(ids.map((id) => sql`${id}`), sql`, `)}]::uuid[]`;
+
+/**
  * The one signal query (spec backend-flow step 3). Runs in the CALLER's DB
  * context — RLS on remote_sessions / organizations / devices / support_sessions
  * is the first wall; `rs.user_id = :user AND o.partner_id = :partner` and the
@@ -104,8 +123,8 @@ export async function loadSignals(q: {
     sql`rs.status IN ('disconnected','failed')`,
   ];
   if (q.window) conds.push(sql`rs.ended_at >= ${utcTs(q.window.start)} AND rs.ended_at < ${utcTs(q.window.end)}`);
-  if (q.ids) conds.push(sql`rs.id = ANY(${q.ids}::uuid[])`);
-  if (q.accessibleOrgIds) conds.push(sql`rs.org_id = ANY(${q.accessibleOrgIds}::uuid[])`);
+  if (q.ids) conds.push(sql`rs.id = ANY(${uuidArray(q.ids)})`);
+  if (q.accessibleOrgIds) conds.push(sql`rs.org_id = ANY(${uuidArray(q.accessibleOrgIds)})`);
   if (!q.includeDecided) {
     conds.push(sql`NOT EXISTS (SELECT 1 FROM time_suggestion_decisions x
       WHERE x.user_id = ${q.userId} AND x.signal_kind = 'remote_session' AND x.signal_id = rs.id)`);
@@ -175,8 +194,18 @@ export async function loadLoggedRanges(q: { userId: string; window: { start: Dat
              ${utcTs(q.window.end)}   AS day_end,
              (statement_timestamp() AT TIME ZONE 'UTC') AS now_utc
     )
-    SELECT GREATEST(te.started_at, b.day_start)                        AS range_start,
-           LEAST(COALESCE(te.ended_at, b.now_utc), b.day_end)          AS range_end
+    -- The AT TIME ZONE 'UTC' on the SELECT list is load-bearing, not decoration.
+    -- GREATEST/LEAST over the timestamp columns yields a timestamp WITHOUT time
+    -- zone, which postgres.js hands back as a bare 'YYYY-MM-DD HH:MM:SS' string;
+    -- new Date(...) then reads it in the NODE PROCESS's local zone. On any API
+    -- host not running UTC that shifts every already-logged range by the offset,
+    -- the overlap test finds nothing, and F19 silently stops suppressing work the
+    -- technician already logged — one tap from a duplicate billable row. Casting
+    -- back to timestamptz here matches what loadSignals already does for
+    -- rs.started_at/ended_at. Caught by timeSuggestionDecisionsRls.integration
+    -- .test.ts running on an America/Denver host.
+    SELECT (GREATEST(te.started_at, b.day_start) AT TIME ZONE 'UTC')               AS range_start,
+           (LEAST(COALESCE(te.ended_at, b.now_utc), b.day_end) AT TIME ZONE 'UTC') AS range_end
     FROM time_entries te CROSS JOIN bounds b
     WHERE te.user_id = ${q.userId}
       AND te.started_at < b.day_end
@@ -232,7 +261,7 @@ async function loadTicketCandidates(q: {
     ) sc ON true
     WHERE t.partner_id = ${q.partnerId}
       AND t.deleted_at IS NULL
-      AND t.device_id = ANY(${q.deviceIds}::uuid[])
+      AND t.device_id = ANY(${uuidArray(q.deviceIds)})
       ${orgCond}
       AND (t.assigned_to = ${q.actorId} OR t.closed_by = ${q.actorId} OR sc.created_at IS NOT NULL)
   `)) as unknown as Array<Record<string, unknown>>;
@@ -394,7 +423,7 @@ async function lockSignals(userId: string, ids: string[]): Promise<void> {
 async function readDecisions(userId: string, ids: string[]): Promise<Array<{ signalId: string; decision: string; timeEntryId: string | null }>> {
   const rows = (await db.execute(sql`
     SELECT signal_id, decision, time_entry_id FROM time_suggestion_decisions
-    WHERE user_id = ${userId} AND signal_kind = 'remote_session' AND signal_id = ANY(${ids}::uuid[])
+    WHERE user_id = ${userId} AND signal_kind = 'remote_session' AND signal_id = ANY(${uuidArray(ids)})
   `)) as unknown as Array<Record<string, unknown>>;
   return rows.map((r) => ({
     signalId: String(r.signal_id),

@@ -84,6 +84,27 @@ describe('loadSignals — compiled SQL carries the isolation predicates (F1)', (
     expect(sql).toMatch(/o\.partner_id = \$\d/);
     expect(sql).toMatch(/rs\.id = ANY\(/);
   });
+  // #2655 regression: an array must reach Postgres as ONE BOUND PARAM PER
+  // ELEMENT inside an ARRAY[...] constructor. `ANY(${ids}::uuid[])` binds the
+  // whole JS array as a single param and dies with `malformed array literal`
+  // against a real server while every mock here happily accepts it. Caught by
+  // timeSuggestionDecisionsRls.integration.test.ts; pinned in the unit job so
+  // the fast suite fails too.
+  it('binds ONE param per org id inside ARRAY[...]::uuid[], never the array as one param', async () => {
+    execResults.push([]);
+    await loadSignals({ userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['o1', 'o2'], ids: ['s1'] });
+    const { sql, params } = compiled(0);
+    expect(sql).toMatch(/rs\.org_id = ANY\(ARRAY\[\$\d+, \$\d+\]::uuid\[\]\)/);
+    expect(sql).toMatch(/rs\.id = ANY\(ARRAY\[\$\d+\]::uuid\[\]\)/);
+    expect(params).toEqual(expect.arrayContaining(['o1', 'o2', 's1']));
+  });
+
+  it('an EMPTY org allowlist renders ARRAY[]::uuid[] — matches nothing, never "no filter"', async () => {
+    execResults.push([]);
+    await loadSignals({ userId: 'u1', partnerId: 'p1', accessibleOrgIds: [], ids: ['s1'] });
+    expect(compiled(0).sql).toMatch(/rs\.org_id = ANY\(ARRAY\[\]::uuid\[\]\)/);
+  });
+
   it('an EMPTY org allowlist still narrows (it must never read as "no filter")', async () => {
     execResults.push([]);
     await loadSignals({ userId: 'u1', partnerId: 'p1', accessibleOrgIds: [], ids: ['s1'] });
