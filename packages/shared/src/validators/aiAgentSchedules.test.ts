@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createAiAgentScheduleSchema, updateAiAgentScheduleSchema, sweepFindingsOutcomeSchema, sweepProposedActionSchema } from './aiAgentSchedules';
+import { createAiAgentScheduleSchema, updateAiAgentScheduleSchema, sweepFindingsOutcomeSchema, sweepProposedActionSchema, isWeeklyLiteralCron } from './aiAgentSchedules';
 
 const uuid = '11111111-1111-4111-8111-111111111111';
 describe('createAiAgentScheduleSchema', () => {
@@ -132,5 +132,87 @@ describe('sweepProposedActionSchema numeric bounds', () => {
     expect(sweepProposedActionSchema.safeParse({ ...base, deviceVulnerabilityIds: uuidsOf(1) }).success).toBe(true);
     expect(sweepProposedActionSchema.safeParse({ ...base, deviceVulnerabilityIds: uuidsOf(100) }).success).toBe(true);
     expect(sweepProposedActionSchema.safeParse({ ...base, deviceVulnerabilityIds: uuidsOf(101) }).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2 wave P2-3 (weekly org narrative). A schedule now carries a `kind`:
+// `sweep` (every pre-P2-3 schedule, hence the default) or `narrative`. A
+// narrative baseline sweeps nothing and fires exactly once a week, so it
+// rejects a non-empty `sweepKinds` and any cron that is not a weekly literal.
+// ---------------------------------------------------------------------------
+describe('createAiAgentScheduleSchema — narrative kind (phase 2 P2-3)', () => {
+  const narrative = (over: Record<string, unknown> = {}) => ({
+    ownerScope: 'partner' as const, kind: 'narrative' as const, agentId: uuid,
+    cron: '0 7 * * 1', timezone: 'UTC', enabled: true, ...over,
+  });
+
+  it('accepts a narrative partner baseline with no sweepKinds', () => {
+    const parsed = createAiAgentScheduleSchema.safeParse(narrative());
+    expect(parsed.success).toBe(true);
+  });
+
+  it('accepts a narrative partner baseline with an explicitly empty sweepKinds', () => {
+    expect(createAiAgentScheduleSchema.safeParse(narrative({ sweepKinds: [] })).success).toBe(true);
+  });
+
+  it('rejects a narrative baseline that selects sweep kinds', () => {
+    const result = createAiAgentScheduleSchema.safeParse(narrative({ sweepKinds: ['disk_pressure'] }));
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain('sweepKinds');
+  });
+
+  it('rejects every non-weekly-literal cron', () => {
+    for (const cron of ['0 * * * *', '0 7 * * *', '0 7,19 * * 1', '0 7 1 * *', '0 7 * * 1,3']) {
+      expect(createAiAgentScheduleSchema.safeParse(narrative({ cron })).success).toBe(false);
+    }
+  });
+
+  it('accepts a weekly literal cron on a non-Monday', () => {
+    expect(createAiAgentScheduleSchema.safeParse(narrative({ cron: '30 18 * * 5' })).success).toBe(true);
+    expect(createAiAgentScheduleSchema.safeParse(narrative({ cron: '0 7 * * 0' })).success).toBe(true);
+    expect(createAiAgentScheduleSchema.safeParse(narrative({ cron: '59 23 * * 6' })).success).toBe(true);
+  });
+
+  it('defaults kind to sweep and leaves every existing sweep rule intact', () => {
+    const sweep = { ownerScope: 'partner' as const, agentId: uuid, cron: '0 6 * * 1-5', timezone: 'UTC', sweepKinds: ['disk_pressure'], enabled: true };
+    const parsed = createAiAgentScheduleSchema.safeParse(sweep);
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && 'kind' in parsed.data && parsed.data.kind).toBe('sweep');
+    // A sweep baseline still requires at least one kind, and a non-weekly
+    // cron is still perfectly legal for it.
+    expect(createAiAgentScheduleSchema.safeParse({ ...sweep, sweepKinds: [] }).success).toBe(false);
+    expect(createAiAgentScheduleSchema.safeParse({ ...sweep, kind: 'sweep' }).success).toBe(true);
+    expect(createAiAgentScheduleSchema.safeParse({ ...sweep, kind: 'digest' }).success).toBe(false);
+  });
+
+  it('an org override never accepts kind — it is inherited from the baseline', () => {
+    expect(createAiAgentScheduleSchema.safeParse({ ownerScope: 'organization', orgId: uuid, baselineScheduleId: uuid, enabled: false, sweepKinds: [] }).success).toBe(true);
+    expect(createAiAgentScheduleSchema.safeParse({ ownerScope: 'organization', orgId: uuid, baselineScheduleId: uuid, enabled: false, sweepKinds: [], kind: 'narrative' }).success).toBe(false);
+  });
+
+  it('update never admits kind', () => {
+    expect(updateAiAgentScheduleSchema.safeParse({ kind: 'narrative' }).success).toBe(false);
+    expect(updateAiAgentScheduleSchema.safeParse({ kind: 'sweep' }).success).toBe(false);
+    expect(updateAiAgentScheduleSchema.safeParse({ enabled: true }).success).toBe(true);
+  });
+});
+
+describe('isWeeklyLiteralCron (phase 2 P2-3)', () => {
+  it('accepts a 5-field literal minute/hour with * dom, * month and a single dow', () => {
+    expect(isWeeklyLiteralCron('0 7 * * 1')).toBe(true);
+    expect(isWeeklyLiteralCron('30 18 * * 5')).toBe(true);
+    expect(isWeeklyLiteralCron('0 0 * * 0')).toBe(true);
+    expect(isWeeklyLiteralCron('59 23 * * 6')).toBe(true);
+  });
+
+  it('rejects wildcards, lists, ranges, steps, names and out-of-range values', () => {
+    for (const cron of [
+      '0 * * * *', '* 7 * * 1', '0 7 * * *', '0 7,19 * * 1', '0 7 1 * *',
+      '0 7 * 3 1', '0 7 * * 1,3', '0 7 * * 1-5', '0 7 * * */2', '0 7 * * MON',
+      '60 7 * * 1', '0 24 * * 1', '0 7 * * 7', '0 0 7 * * 1', '0 7 * *', '',
+    ]) {
+      expect(isWeeklyLiteralCron(cron)).toBe(false);
+    }
   });
 });

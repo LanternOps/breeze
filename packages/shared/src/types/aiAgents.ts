@@ -80,6 +80,21 @@ export interface AiAgentLimits {
   maxSweepRunsPerHour: number;
   sweepBudgetCentsPerRun: number;
   sweepMaxTurns: number;
+  /**
+   * Phase 2 wave P2-3 (weekly org narrative) — the `narrative`-profile
+   * admission caps, split from `full`/`verdict`/`sweep` for the same reason
+   * those three are split from each other. Deliberately the TIGHTEST of the
+   * four: a narrative run is a once-a-week, one-per-org report generator, so
+   * a burst of them is always a bug (a re-fired schedule occurrence, a
+   * retry storm) rather than legitimate load. `narrativeMaxTurns` is 3
+   * because the profile's whole job is one bounded context read followed by
+   * one `submit_org_narrative` call — a run needing more turns than that is
+   * not converging and should end.
+   */
+  maxConcurrentNarrativeRuns: number;
+  maxNarrativeRunsPerHour: number;
+  narrativeBudgetCentsPerRun: number;
+  narrativeMaxTurns: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -108,6 +123,12 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   maxSweepRunsPerHour: 20,
   sweepBudgetCentsPerRun: 30,
   sweepMaxTurns: 8,
+  // Narrative-profile admission caps (phase 2 P2-3) — see
+  // AiAgentLimits.maxConcurrentNarrativeRuns's docstring.
+  maxConcurrentNarrativeRuns: 1,
+  maxNarrativeRunsPerHour: 5,
+  narrativeBudgetCentsPerRun: 20,
+  narrativeMaxTurns: 3,
 });
 
 export interface AiAgentTriggers {
@@ -318,12 +339,20 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS` for a pre-v6
  * snapshot. Every site that switches on `schemaVersion` must tolerate 1
  * through 6.
+ *
+ * v7 (this bump, P2-3): narrative-profile counters/budget/turns —
+ * `effective.limits` gained `maxConcurrentNarrativeRuns`,
+ * `maxNarrativeRunsPerHour`, `narrativeBudgetCentsPerRun`,
+ * `narrativeMaxTurns`. Same rule as every prior bump: a v1-v6 in-flight
+ * run's snapshot lacks these fields and MUST still execute; read sites fall
+ * back to `AI_AGENT_LIMIT_DEFAULTS` for a pre-v7 snapshot. Every site that
+ * switches on `schemaVersion` must tolerate 1 through 7.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 6 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 7 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), or 6 (current). Read sites must tolerate all six. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), or 7 (current). Read sites must tolerate all seven. */
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;
@@ -442,8 +471,14 @@ export type AgentRunVerdict = 'remediated' | 'needs_attention' | 'partial' | 'no
  * Admission for `sweep`-profile runs is counted against
  * `AiAgentLimits.maxConcurrentSweepRuns`/`maxSweepRunsPerHour`, not the
  * `full`/`verdict` counters above — see that field's docstring.
+ *
+ * Phase 2 wave P2-3 (weekly org narrative) added `narrative`: a
+ * `schedule`-triggered run profile that reads one org's bounded weekly
+ * context and produces a `NarrativeOutcome` (see `orgNarrativeReport.ts`)
+ * instead of findings or a verdict. Admission is counted against
+ * `AiAgentLimits.maxConcurrentNarrativeRuns`/`maxNarrativeRunsPerHour`.
  */
-export const AI_AGENT_RUN_PROFILES = ['full', 'verdict', 'sweep'] as const;
+export const AI_AGENT_RUN_PROFILES = ['full', 'verdict', 'sweep', 'narrative'] as const;
 export type AiAgentRunProfile = (typeof AI_AGENT_RUN_PROFILES)[number];
 
 /**

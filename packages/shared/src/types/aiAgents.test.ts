@@ -8,17 +8,17 @@ import {
   type AlertVerdictSuggestedAction,
 } from './aiAgents';
 
-describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v6, phase 2 P2-2)', () => {
-  it('is the literal 6', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(6);
+describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v7, phase 2 P2-3)', () => {
+  it('is the literal 7', () => {
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(7);
   });
 
-  it('AiAgentPolicySnapshot.schemaVersion type-accepts every historical version 1-6', () => {
+  it('AiAgentPolicySnapshot.schemaVersion type-accepts every historical version 1-7', () => {
     // Type-level assertion: this only compiles if `schemaVersion` is widened
-    // to `1 | 2 | 3 | 4 | 5 | 6`. If a future bump forgets to widen the union,
-    // `tsc` fails this assignment, not a runtime check.
-    const versions: Array<AiAgentPolicySnapshot['schemaVersion']> = [1, 2, 3, 4, 5, 6];
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6]);
+    // to `1 | 2 | 3 | 4 | 5 | 6 | 7`. If a future bump forgets to widen the
+    // union, `tsc` fails this assignment, not a runtime check.
+    const versions: Array<AiAgentPolicySnapshot['schemaVersion']> = [1, 2, 3, 4, 5, 6, 7];
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 });
 
@@ -31,9 +31,18 @@ describe('AI_AGENT_LIMIT_DEFAULTS (sweep-profile limits, phase 2 P2-2)', () => {
   });
 });
 
-describe('AI_AGENT_RUN_PROFILES (sweep profile, phase 2 P2-2)', () => {
-  it('equals full, verdict, sweep', () => {
-    expect(AI_AGENT_RUN_PROFILES).toEqual(['full', 'verdict', 'sweep']);
+describe('AI_AGENT_LIMIT_DEFAULTS (narrative-profile limits, phase 2 P2-3)', () => {
+  it('has the four narrative-profile fields', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxConcurrentNarrativeRuns).toBe(1);
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour).toBe(5);
+    expect(AI_AGENT_LIMIT_DEFAULTS.narrativeBudgetCentsPerRun).toBe(20);
+    expect(AI_AGENT_LIMIT_DEFAULTS.narrativeMaxTurns).toBe(3);
+  });
+});
+
+describe('AI_AGENT_RUN_PROFILES (narrative profile, phase 2 P2-3)', () => {
+  it('equals full, verdict, sweep, narrative', () => {
+    expect(AI_AGENT_RUN_PROFILES).toEqual(['full', 'verdict', 'sweep', 'narrative']);
   });
 });
 
