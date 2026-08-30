@@ -251,6 +251,12 @@ describe('eventDispatchQueue', () => {
         [null, 1],
       ]);
 
+      // The sentry mock is module-scoped and is NOT reset between tests in this
+      // file (an earlier case exercises the enqueue-failure captureException),
+      // so clear it here to make the assertion below about THIS call only.
+      const { captureException } = await import('./sentry');
+      vi.mocked(captureException).mockClear();
+
       const event = makeEvent({ type: 'alert.triggered' as EventType });
       // Resolves (that IS the bug — the caller's .catch() never fires), so the
       // warning has to come from inside this module.
@@ -269,8 +275,51 @@ describe('eventDispatchQueue', () => {
       expect(payload.orgId).toBe('org-1');
       expect(payload.subscriberId).toBe('webhook-delivery');
       expect(payload.outcome).toBe('ok');
+      // Index 1 of a sampled (3-command) pipeline is the per-event detail HSET,
+      // and the line has to SAY so — a bare index means nothing on an on-call
+      // pager when the pipeline is 1 command long half the time.
       expect(payload.failures).toEqual([
-        { index: 1, error: expect.stringContaining('WRONGTYPE') },
+        {
+          index: 1,
+          command: 'hset:detail',
+          error: expect.objectContaining({
+            name: 'Error',
+            message: expect.stringContaining('WRONGTYPE'),
+            stack: expect.any(String),
+          }),
+        },
+      ]);
+
+      // Deliberately log-only: this runs once per local subscriber invocation at
+      // full event volume, so a broken shadow key must not become one Sentry
+      // event per invocation. Pinned so a future "helpful" fix has to argue with
+      // a failing test rather than an absence.
+      expect(captureException).not.toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+    });
+
+    it('names the failing command for a non-sampled, single-command pipeline', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // 0xff is above the <26 sampling threshold and device.online isn't
+      // alert.*/policy.*, so only the counter is queued — a ONE-tuple result.
+      pipelineExec.mockResolvedValueOnce([[new Error('OOM command not allowed'), null]]);
+
+      await mod.recordShadowLocalInvocation(
+        makeEvent({ id: 'ff000000-0000-4000-8000-000000000000', type: 'device.online' as EventType }),
+        'webhook-delivery',
+        'ok',
+      );
+
+      expect(pipelineHset).not.toHaveBeenCalled();
+      const logs = warnSpy.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0].includes('shadow-record-command-failed'),
+      );
+      expect(logs).toHaveLength(1);
+      const payload = JSON.parse(logs[0]![1] as string);
+      expect(payload.failures).toEqual([
+        { index: 0, command: 'hincrby:count', error: expect.objectContaining({ name: 'Error' }) },
       ]);
 
       warnSpy.mockRestore();
@@ -297,6 +346,10 @@ describe('eventDispatchQueue', () => {
       expect(logs).toHaveLength(1);
       const payload = JSON.parse(logs[0]![1] as string);
       expect(payload.failures.map((f: { index: number }) => f.index)).toEqual([0, 2]);
+      expect(payload.failures.map((f: { command: string }) => f.command)).toEqual([
+        'hincrby:count',
+        'expire:detail',
+      ]);
 
       warnSpy.mockRestore();
     });

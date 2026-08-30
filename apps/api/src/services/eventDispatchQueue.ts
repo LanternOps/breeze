@@ -173,20 +173,31 @@ export async function recordShadowLocalInvocation(
   // HSET+EXPIRE only queue when the event is sampled — same shape as before,
   // just pipelined rather than sequentially awaited.
   const pipeline = redis.multi();
+  // `commandLabels` runs parallel to the queued order so a failing tuple can be
+  // reported as the command that actually failed rather than a bare index the
+  // on-call reader has to map back to this function by hand — the pipeline is 1
+  // or 3 commands long depending on sampling, so the index alone is ambiguous.
+  // Each push sits next to its queue call to keep the two from drifting apart.
+  const commandLabels: string[] = [];
   pipeline.hincrby(`${SHADOW_COUNT_PREFIX}:${subscriberId}`, outcome, 1);
+  commandLabels.push('hincrby:count');
 
   if (isShadowSampledEvent(event)) {
     const key = `${SHADOW_LOCAL_PREFIX}:${event.id}`;
     pipeline.hset(key, subscriberId, outcome);
+    commandLabels.push('hset:detail');
     pipeline.expire(key, SHADOW_LOCAL_TTL_SECONDS);
+    commandLabels.push('expire:detail');
   }
 
-  // `exec()` only REJECTS on transport-level failure (connection gone) — that
-  // rejection propagates to the caller's `.catch()` in eventBus.ts, which is
-  // where it has always been warned. A single command failing inside an
-  // otherwise-healthy pipeline resolves instead, as an `[error, result]` tuple,
-  // so it has to be inspected here or it disappears entirely (#4125).
-  reportShadowPipelineFailures(await pipeline.exec(), event, subscriberId, outcome);
+  // `exec()` REJECTS on a transport failure (connection gone) or an EXECABORT
+  // (a command Redis refused at queue time) — the latter can't arise from these
+  // three fixed, well-formed calls, and either way the rejection propagates to
+  // the caller's `.catch()` in eventBus.ts, which is where it has always been
+  // warned. A single command's RUNTIME error (WRONGTYPE, OOM, …) is the case
+  // this fix is about: it RESOLVES, as an `[error, result]` tuple, so it
+  // disappears entirely unless inspected here (#4125).
+  reportShadowPipelineFailures(await pipeline.exec(), commandLabels, event, subscriberId, outcome);
 }
 
 /**
@@ -198,14 +209,17 @@ export async function recordShadowLocalInvocation(
  *
  * Log-only, and never throws: this is shadow-comparison bookkeeping, explicitly
  * best-effort, and must not break the delivery path it is observing. No
- * `captureException` either — this runs once per local subscriber invocation at
+ * `captureException` either — this runs once per local SUBSCRIBER invocation at
  * full event volume, so a persistently-broken shadow key (a WRONGTYPE, say)
- * would mean one Sentry event per published event. The structured
- * `EVENT_DISPATCH_SHADOW_*` lines are the intended signal; they are greppable
- * and the shadow-comparison job's own mismatch output corroborates them.
+ * would mean one Sentry event per subscriber invocation: worse than one per
+ * published event on any event type with more than one local subscriber. The
+ * structured `EVENT_DISPATCH_SHADOW_*` lines are the intended signal; they are
+ * greppable and the shadow-comparison job's own mismatch output corroborates
+ * them.
  */
 function reportShadowPipelineFailures(
   results: [error: Error | null, result: unknown][] | null,
+  commandLabels: readonly string[],
   event: BreezeEvent,
   subscriberId: SubscriberId,
   outcome: 'ok' | 'error',
@@ -218,8 +232,11 @@ function reportShadowPipelineFailures(
     outcome,
   };
 
-  // ioredis resolves `null` when the MULTI was discarded — nothing ran at all,
-  // which is a strictly worse outcome than one failed command.
+  // ioredis resolves `null` only when EXEC itself replies nil — the transaction
+  // was discarded and NOTHING ran, strictly worse than one failed command. This
+  // pipeline never WATCHes a key, so today that is unreachable; the branch is
+  // here so a future WATCH (or a server-side discard) can't quietly reintroduce
+  // the very silence this function exists to remove.
   if (results === null) {
     console.warn(
       '[EventDispatchQueue] shadow-record-discarded',
@@ -228,9 +245,21 @@ function reportShadowPipelineFailures(
     return;
   }
 
+  // Error shape matches this file's `enqueue-failed` log and eventBus.ts's
+  // `local-handler-failed`: keep the stack, it is the only evidence of where a
+  // bad key type was introduced.
   const failures = results.flatMap(([error], index) =>
     error
-      ? [{ index, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) }]
+      ? [
+          {
+            index,
+            command: commandLabels[index] ?? 'unknown',
+            error:
+              error instanceof Error
+                ? { name: error.name, message: error.message, stack: error.stack }
+                : String(error),
+          },
+        ]
       : [],
   );
   if (failures.length === 0) return;
