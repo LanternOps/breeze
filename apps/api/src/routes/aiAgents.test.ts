@@ -661,14 +661,36 @@ const runDetailResponseSchema = z.object({
       approvalScope: z.string(),
       decidedVia: z.string().nullable(),
     }).strict()),
-    // Wave 6 PR 3 (#3828, Task 4) — text-only; no args/toolInput/toolOutput
-    // field exists on this shape either (see AiAgentRunTicketProposalDto).
+    // Wave 6 PR 3 (#3828, Task 4); reshaped in P2-4 (#4191) onto the
+    // `TicketTriageProposal` outcome (@breeze/shared) — no args/toolInput/
+    // toolOutput field exists on this shape either (see
+    // AiAgentRunTicketProposalDto). `intentIds`/`draftsWritten` are the two
+    // DTO-only fields nothing populates yet (A8/A10 wire those in).
     ticketProposal: z.object({
+      version: z.literal(1),
       summary: z.string(),
-      proposedReply: z.string().optional(),
-      proposedStatus: z.string().optional(),
-      proposedPriority: z.string().optional(),
-      notes: z.array(z.string()),
+      fields: z.object({
+        categoryId: z.object({
+          value: z.string(),
+          confidence: z.number(),
+        }).strict().optional(),
+        priority: z.object({
+          value: z.string(),
+          confidence: z.number(),
+        }).strict().optional(),
+      }).strict().optional(),
+      device: z.object({
+        hostname: z.string().optional(),
+        serial: z.string().optional(),
+      }).strict().optional(),
+      draftReply: z.string().optional(),
+      draftResolutionNote: z.string().optional(),
+      notes: z.array(z.string()).optional(),
+      intentIds: z.array(z.string()).optional(),
+      draftsWritten: z.array(z.object({
+        kind: z.enum(['reply', 'resolution_note']),
+        draftId: z.string(),
+      }).strict()).optional(),
     }).strict().nullable(),
     // Phase 2 wave P2-1 (alert verdicts): `null` for a full-profile run and
     // for a verdict run that hasn't produced one. `suggestedAction`'s
