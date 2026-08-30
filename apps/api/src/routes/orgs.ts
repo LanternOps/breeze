@@ -741,6 +741,20 @@ const partnerSettingsSchema = z.object({
       });
     }
   }).optional(),
+  // W06 (#3900): partner-wide time-tracking suggestion flags. Deep-merged one
+  // level in the PATCH handler so the location spec's sibling
+  // `timeTracking.locationSuggestions` survives a save that only carries this key.
+  // `.strict()` on the inner object so a typo ("enabledd") is a 400 rather than a
+  // silently stored no-op; `.passthrough()` on the wrapper so the sibling block
+  // this wave does not own is neither rejected nor stripped.
+  timeTracking: z.object({
+    sessionSuggestions: z.object({
+      enabled: z.boolean().optional(),
+      minSessionSeconds: z.number().int().min(30).max(3600).optional(),
+      mergeGapMinutes: z.number().int().min(0).max(120).optional()
+    }).strict().optional()
+  }).passthrough().optional(),
+
   // PATCH /partners/me deep-merges `ticketing` one level (see the handler), so a
   // future sibling like `ticketing.outbound` survives — but the `inbound` sub-object
   // is replaced wholesale, so the card must send the COMPLETE ticketing.inbound
@@ -881,6 +895,16 @@ orgRoutes.patch(
     newSettings.ticketing = {
       ...((currentSettings.ticketing as Record<string, unknown> | undefined) ?? {}),
       ...body.settings.ticketing,
+    };
+  }
+
+  // Deep-merge `timeTracking` one level for the same reason (W06 #3900): the
+  // location-suggestions wave owns a sibling `timeTracking.locationSuggestions`
+  // block, and a save that carries only `sessionSuggestions` must not wipe it.
+  if (body.settings?.timeTracking) {
+    newSettings.timeTracking = {
+      ...((currentSettings.timeTracking as Record<string, unknown> | undefined) ?? {}),
+      ...body.settings.timeTracking,
     };
   }
 
