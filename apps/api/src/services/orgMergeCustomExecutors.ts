@@ -783,7 +783,7 @@ const mergeReports: CustomMergeExecutor = async (loser, survivor) => {
     dropped,
     notes: dropped > 0
       ? [
-        `reports: dropped ${dropped} duplicate AI narrative report definition from the merged-away org (the survivor already had one for the same schedule)`
+        `reports: dropped ${dropped} duplicate AI narrative report definition from the merged-away org (the survivor already had one for the same schedule; the merged-away definition's own name/config/execution-scope fields were discarded — re-check the surviving definition)`
         + (rehomed.length > 0
           ? ` and re-homed its generated reports onto the survivor's definition (${describeRehomed(rehomed)})`
           : ''),
