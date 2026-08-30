@@ -24,7 +24,6 @@ const json = (payload: unknown, ok = true, status = 200): Response =>
 
 const BASELINE: AiAgentEffectiveScheduleDto = {
   id: 's-1',
-  kind: 'sweep',
   ownerScope: 'partner',
   orgId: null,
   partnerId: 'p-1',
