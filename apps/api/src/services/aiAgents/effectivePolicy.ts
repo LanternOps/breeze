@@ -148,7 +148,15 @@ export function mergeAgentPolicies(
       // see AiAgentTriggers.anomalyEnabled's docstring for the full account,
       // and the general-merge branch below for the "org override present"
       // case (same rule: only the org's OWN value is ever consulted).
-      effective: { ...partner, triggers: { ...partner.triggers, anomalyEnabled: undefined } },
+      //
+      // P2-4 Task A6 (#4191) — `ticketAutonomousWrites` gets the identical
+      // treatment, for the identical reason: a partner-wide baseline row
+      // must never blanket-enable unattended ticket writes for every org
+      // under it. See AiAgentTriggers.ticketAutonomousWrites's docstring.
+      effective: {
+        ...partner,
+        triggers: { ...partner.triggers, anomalyEnabled: undefined, ticketAutonomousWrites: undefined },
+      },
       provenance,
     };
   }
@@ -222,6 +230,12 @@ export function mergeAgentPolicies(
       // on AiAgentTriggers (packages/shared) and the `!org` branch above
       // (same rule applied to the "no org override" fast path).
       anomalyEnabled: org.triggers.anomalyEnabled === true ? true : undefined,
+      // P2-4 Task A6 (#4191) — same org-row-only opt-in as anomalyEnabled
+      // directly above: reads ONLY org.triggers.ticketAutonomousWrites,
+      // partner.triggers.ticketAutonomousWrites is never consulted in
+      // either direction. See AiAgentTriggers.ticketAutonomousWrites's
+      // docstring (packages/shared) for the full rationale.
+      ticketAutonomousWrites: org.triggers.ticketAutonomousWrites === true ? true : undefined,
     }, 'merged'),
     recipients: pick('recipients', {
       userIds: union(partner.recipients.userIds, org.recipients.userIds),

@@ -545,8 +545,9 @@ describe('isAgentIntentDecideAuthorized', () => {
     // P2-2 (#4189): unscoped — every pre-existing case in this describe block
     // resolves its target from the RUN, exactly as before the scope columns
     // existed. The scoped cases live in the block below.
-    scopeKind: null as 'device' | null,
+    scopeKind: null as 'device' | 'ticket' | null,
     scopeDeviceId: null as string | null,
+    scopeTicketId: null as string | null,
   };
 
   /**

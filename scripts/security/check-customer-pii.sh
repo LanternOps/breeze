@@ -28,7 +28,7 @@ cd "$(dirname "$0")/../.."
 # reserved/placeholder TLDs + infra families, then exact known-safe domains).
 # "domains" that are really file extensions (e.g. an icon path "128x128@2x.png"
 # parses as foo@2x.png) — never customer data.
-ALLOW_RE='\.(png|ico|svg|jpe?g|webp|gif|html?|css|js|jsx|ts|tsx|json|md|sh|ya?ml|txt|woff2?)$'
+ALLOW_RE='\.(png|ico|svg|jpe?g|webp|gif|html?|css|js|jsx|ts|tsx|json|md|sh|ya?ml|txt|woff2?|patch)$'
 ALLOW_RE="$ALLOW_RE"'|\.(test|example|local|internal|invalid|localhost)$'
 ALLOW_RE="$ALLOW_RE"'|(^|\.)example\.(com|net|org)$'
 ALLOW_RE="$ALLOW_RE"'|(^|\.)sentry\.io$'

@@ -3,13 +3,13 @@ import { Hono } from 'hono';
 import { mssqlRoutes } from './mssql';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-const OTHER_ORG_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 const SNAPSHOT_DB_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 vi.mock('../../services', () => ({}));
 
 const executeCommandMock = vi.fn();
+const authorizeResilienceResourcesMock = vi.fn();
 const resolveBackupConfigForDeviceMock = vi.fn();
 const resolveAllBackupAssignedDevicesMock = vi.fn();
 const applyBackupCommandResultToJobMock = vi.fn();
@@ -26,6 +26,7 @@ function chainMock(resolvedValue: unknown = []) {
 const selectMock = vi.fn(() => chainMock([]));
 const insertMock = vi.fn(() => chainMock([]));
 let authState = {
+  principal: { kind: 'user_session' as const },
   user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
   scope: 'organization' as const,
   partnerId: null,
@@ -119,7 +120,16 @@ vi.mock('../../services/backupResultPersistence', () => ({
   applyBackupCommandResultToJob: (...args: unknown[]) => applyBackupCommandResultToJobMock(...(args as [])),
 }));
 
+vi.mock('../../services/resilienceSiteAuthorization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/resilienceSiteAuthorization')>();
+  return {
+    ...actual,
+    authorizeResilienceResources: (...args: unknown[]) => authorizeResilienceResourcesMock(...args),
+  };
+});
+
 import { authMiddleware } from '../../middleware/auth';
+import { ResilienceAuthorizationError } from '../../services/resilienceSiteAuthorization';
 
 describe('mssql routes', () => {
   let app: Hono;
@@ -133,12 +143,14 @@ describe('mssql routes', () => {
     resolveAllBackupAssignedDevicesMock.mockReset();
     applyBackupCommandResultToJobMock.mockReset();
     authState = {
+      principal: { kind: 'user_session' },
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       partnerId: null,
       orgId: ORG_ID,
       token: { sub: 'user-123' },
     };
+    authorizeResilienceResourcesMock.mockResolvedValue({ resources: [] });
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', authState);
       return next();
@@ -146,6 +158,28 @@ describe('mssql routes', () => {
     app = new Hono();
     app.use('*', authMiddleware);
     app.route('/backup', mssqlRoutes);
+  });
+
+  it('denies a source-site MSSQL restore before metadata or command side effects', async () => {
+    authorizeResilienceResourcesMock.mockRejectedValueOnce(
+      new ResilienceAuthorizationError(403, 'site_access_denied')
+    );
+
+    const res = await app.request('/backup/mssql/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        deviceId: DEVICE_ID,
+        snapshotId: SNAPSHOT_DB_ID,
+        targetDatabase: 'RecoveredDb',
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'site_access_denied' });
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(executeCommandMock).not.toHaveBeenCalled();
   });
 
   it('returns an empty MSSQL instance list', async () => {
@@ -205,7 +239,6 @@ describe('mssql routes', () => {
   });
 
   it('dispatches MSSQL discovery for a device', async () => {
-    selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, orgId: ORG_ID }]));
     executeCommandMock.mockResolvedValueOnce({
       status: 'completed',
       stdout: JSON.stringify({ instances: [] }),
@@ -241,7 +274,6 @@ describe('mssql routes', () => {
   });
 
   it('dispatches MSSQL backup against provider-backed storage and persists snapshot metadata', async () => {
-    selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, orgId: ORG_ID }]));
     insertMock.mockReturnValueOnce(chainMock([{ id: 'job-1' }]));
     resolveBackupConfigForDeviceMock.mockResolvedValueOnce({
       configId: 'config-1',
@@ -315,9 +347,7 @@ describe('mssql routes', () => {
   });
 
   it('restores MSSQL from snapshot metadata instead of a local backup path', async () => {
-    selectMock
-      .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, orgId: ORG_ID }]))
-      .mockReturnValueOnce(chainMock([{
+    selectMock.mockReturnValueOnce(chainMock([{
         id: 'snapshot-db-1',
         providerSnapshotId: 'provider-snapshot-1',
         metadata: {
@@ -325,7 +355,7 @@ describe('mssql routes', () => {
           instance: 'MSSQLSERVER',
           backupFileName: 'AppDb_full_20260331.bak',
         },
-      }]));
+    }]));
     executeCommandMock.mockResolvedValueOnce({
       status: 'completed',
       stdout: JSON.stringify({ status: 'completed' }),
@@ -366,7 +396,6 @@ describe('mssql routes', () => {
         backupFileName: 'AppDb_full_20260331.bak',
       },
     }]));
-    selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, orgId: ORG_ID, siteId: null }]));
     executeCommandMock.mockResolvedValueOnce({
       status: 'completed',
       stdout: JSON.stringify({ valid: true }),
@@ -391,7 +420,9 @@ describe('mssql routes', () => {
   });
 
   it('rejects cross-org device discovery', async () => {
-    selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, orgId: OTHER_ORG_ID }]));
+    authorizeResilienceResourcesMock.mockRejectedValueOnce(
+      new ResilienceAuthorizationError(404, 'resource_not_found')
+    );
 
     const res = await app.request(`/backup/mssql/discover/${DEVICE_ID}`, {
       method: 'POST',

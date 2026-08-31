@@ -29,9 +29,15 @@ const { schema, dbState, permState } = vi.hoisted(() => {
   };
   const organizationsTbl = { id: col('id'), partnerId: col('partner_id') };
   const devicesTbl = { id: col('id'), siteId: col('site_id') };
+  const ticketsTbl = {
+    id: col('id'),
+    orgId: col('org_id'),
+    status: col('status'),
+    deletedAt: col('deleted_at'),
+  };
 
   return {
-    schema: { usersTbl, apiKeysTbl, aiAgentRunsTbl, aiAgentsTbl, organizationsTbl, devicesTbl },
+    schema: { usersTbl, apiKeysTbl, aiAgentRunsTbl, aiAgentsTbl, organizationsTbl, devicesTbl, ticketsTbl },
     dbState: {
       selectUsersResults: [] as unknown[][],
       selectApiKeysResults: [] as unknown[][],
@@ -39,6 +45,7 @@ const { schema, dbState, permState } = vi.hoisted(() => {
       selectAgentsResults: [] as unknown[][],
       selectOrgsResults: [] as unknown[][],
       selectDevicesResults: [] as unknown[][],
+      selectTicketsResults: [] as unknown[][],
     },
     permState: {
       getUserPermissions: vi.fn(),
@@ -75,6 +82,9 @@ vi.mock('../../db', () => ({
           if (table === schema.devicesTbl) {
             return resultBox(() => dbState.selectDevicesResults.shift() ?? []);
           }
+          if (table === schema.ticketsTbl) {
+            return resultBox(() => dbState.selectTicketsResults.shift() ?? []);
+          }
           throw new Error('unexpected select table in mock');
         }),
       })),
@@ -92,6 +102,7 @@ vi.mock('../../db/schema/aiAgents', () => ({
 }));
 vi.mock('../../db/schema/orgs', () => ({ organizations: schema.organizationsTbl }));
 vi.mock('../../db/schema/devices', () => ({ devices: schema.devicesTbl }));
+vi.mock('../../db/schema/portal', () => ({ tickets: schema.ticketsTbl }));
 
 vi.mock('../permissions', () => ({
   getUserPermissions: permState.getUserPermissions,
@@ -514,6 +525,76 @@ describe('buildAuthContextForIntent — agent-owned intents (wave 3b)', () => {
     seedScoped([{ orgId: 'org-2', siteId: 'site-scope' }]);
 
     await expect(buildAuthContextForIntent(scopedIntent())).rejects.toBeInstanceOf(IntentScopeLostError);
+  });
+
+  // -------------------------------------------------------------------------
+  // P2-4 (Task A3, #4191): explicit ticket scope
+  // -------------------------------------------------------------------------
+
+  /** A ticket-triage-minted intent: device-less run, target from `scope_ticket_id`. */
+  const ticketScopedIntent = (overrides: Partial<ActionIntent> = {}) => agentIntent({
+    scopeKind: 'ticket',
+    scopeTicketId: 'ticket-scope',
+    ...overrides,
+  } as Partial<ActionIntent>);
+
+  function seedTicketScoped(ticket: unknown[]) {
+    dbState.selectAgentRunsResults.push([{ ...runRow, deviceId: null }]);
+    dbState.selectAgentsResults.push([agentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+    dbState.selectTicketsResults.push(ticket);
+  }
+
+  it('throws IntentScopeLostError immediately when the ticket scope was tombstoned (no DB read)', async () => {
+    dbState.selectAgentRunsResults.push([{ ...runRow, deviceId: null }]);
+    dbState.selectAgentsResults.push([agentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+
+    await expect(
+      buildAuthContextForIntent(ticketScopedIntent({ scopeTicketId: null } as Partial<ActionIntent>)),
+    ).rejects.toBeInstanceOf(IntentScopeLostError);
+    expect(dbState.selectTicketsResults.length).toBe(0);
+  });
+
+  it('throws IntentScopeLostError when the scoped ticket is missing', async () => {
+    seedTicketScoped([]);
+
+    await expect(buildAuthContextForIntent(ticketScopedIntent())).rejects.toBeInstanceOf(IntentScopeLostError);
+  });
+
+  it('throws IntentScopeLostError when the scoped ticket was soft-deleted', async () => {
+    seedTicketScoped([{ id: 'ticket-scope', orgId: 'org-1', status: 'open', deletedAt: new Date() }]);
+
+    await expect(buildAuthContextForIntent(ticketScopedIntent())).rejects.toBeInstanceOf(IntentScopeLostError);
+  });
+
+  it('throws IntentScopeLostError when the scoped ticket moved to another org', async () => {
+    seedTicketScoped([{ id: 'ticket-scope', orgId: 'org-2', status: 'open', deletedAt: null }]);
+
+    await expect(buildAuthContextForIntent(ticketScopedIntent())).rejects.toBeInstanceOf(IntentScopeLostError);
+  });
+
+  it('throws IntentScopeLostError when the scoped ticket is closed', async () => {
+    seedTicketScoped([{ id: 'ticket-scope', orgId: 'org-1', status: 'closed', deletedAt: null }]);
+
+    await expect(buildAuthContextForIntent(ticketScopedIntent())).rejects.toBeInstanceOf(IntentScopeLostError);
+  });
+
+  it('builds an AuthContext for a resolved ticket — resolution-note drafts execute on resolved tickets', async () => {
+    seedTicketScoped([{ id: 'ticket-scope', orgId: 'org-1', status: 'resolved', deletedAt: null }]);
+
+    const result = await buildAuthContextForIntent(ticketScopedIntent());
+
+    expect(result).not.toBeNull();
+    expect(result!.orgId).toBe('org-1');
+  });
+
+  it('builds an AuthContext for every other live status (open)', async () => {
+    seedTicketScoped([{ id: 'ticket-scope', orgId: 'org-1', status: 'open', deletedAt: null }]);
+
+    const result = await buildAuthContextForIntent(ticketScopedIntent());
+
+    expect(result).not.toBeNull();
   });
 });
 

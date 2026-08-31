@@ -11,6 +11,7 @@ const COMMAND_ID = '11111111-1111-4111-8111-111111111111';
 vi.mock('../../services', () => ({}));
 
 const queueCommandForExecutionMock = vi.fn();
+const authorizeResilienceResourcesMock = vi.fn();
 const runOutsideDbContextMock = vi.fn((fn: () => unknown) => fn());
 
 function chainMock(resolvedValue: unknown = []) {
@@ -25,6 +26,7 @@ const selectMock = vi.fn(() => chainMock([]));
 const insertMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
 let authState = {
+  principal: { kind: 'user_session' as const },
   user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
   scope: 'organization' as const,
   partnerId: null,
@@ -94,14 +96,25 @@ vi.mock('../../services/backupMetrics', () => ({
   recordBackupDispatchFailure: vi.fn(),
 }));
 
+vi.mock('../../services/resilienceSiteAuthorization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/resilienceSiteAuthorization')>();
+  return {
+    ...actual,
+    authorizeResilienceResources: (...args: unknown[]) => authorizeResilienceResourcesMock(...args),
+  };
+});
+
 import { authMiddleware } from '../../middleware/auth';
+import { ResilienceAuthorizationError } from '../../services/resilienceSiteAuthorization';
 
 describe('vm restore routes', () => {
   let app: Hono;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    authorizeResilienceResourcesMock.mockResolvedValue({ resources: [] });
     authState = {
+      principal: { kind: 'user_session' },
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       partnerId: null,
@@ -115,6 +128,29 @@ describe('vm restore routes', () => {
     app = new Hono();
     app.use('*', authMiddleware);
     app.route('/', vmRestoreRoutes);
+  });
+
+  it('denies cross-site VM restore before loading snapshot metadata or creating a job', async () => {
+    authorizeResilienceResourcesMock.mockRejectedValueOnce(
+      new ResilienceAuthorizationError(403, 'site_access_denied')
+    );
+
+    const res = await app.request('/backup/restore/as-vm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        snapshotId: SNAPSHOT_ID,
+        targetDeviceId: DEVICE_ID,
+        hypervisor: 'hyperv',
+        vmName: 'Recovered VM',
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'site_access_denied' });
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
   });
 
   it('validates required fields for restore as VM', async () => {

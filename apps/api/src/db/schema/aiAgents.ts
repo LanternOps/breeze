@@ -150,10 +150,15 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // Tenant-scoped (see 2026-09-02-ai-agents.sql): a global unique on
   // dedupe_key is enforced below RLS and leaks cross-tenant existence.
   dedupeUq: unique('ai_agent_runs_org_dedupe_key_uq').on(table.orgId, table.dedupeKey),
-  // Declares the tuple the action_intents composite tenant FK references.
-  // `id` is already PK, so this adds no new tenancy invariant on its own —
-  // it exists so (requesting_agent_run_id, org_id) has a target.
-  idOrgUq: unique('ai_agent_runs_id_org_id_key').on(table.id, table.orgId),
+  // Declares the tuple the action_intents AND ticket_drafts composite
+  // tenant FKs reference. `id` is already PK, so this adds no new tenancy
+  // invariant on its own — it exists so (requesting_agent_run_id, org_id) /
+  // (run_id, org_id) have a target. Renamed from the original
+  // ai_agent_runs_id_org_id_key (2026-09-05-a-agent-originated-intents.sql)
+  // to ai_agent_runs_id_org_uq by 2026-09-25-ai-agents-ticket-triage.sql —
+  // same physical index, new name only — see that migration's comment for
+  // why (a second composite-FK dependent forced the rename).
+  idOrgUq: unique('ai_agent_runs_id_org_uq').on(table.id, table.orgId),
   agentQueuedIdx: index('ai_agent_runs_agent_queued_idx').on(table.agentId, table.queuedAt.desc()),
   orgQueuedIdx: index('ai_agent_runs_org_queued_idx').on(table.orgId, table.queuedAt.desc()),
   // Wave 6 PR 1 (#3828, migrations/2026-09-17-ai-agent-runs-keyset-index.sql):

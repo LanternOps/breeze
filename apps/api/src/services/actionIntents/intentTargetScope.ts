@@ -55,12 +55,21 @@ export type IntentTargetDevice =
 
 /**
  * The scope projection every caller must select alongside the intent row.
- * Both fields are nullable in the DB; `scopeKind` is only ever 'device' or
- * NULL (CHECK-constrained by the P2-2 migration).
+ * All three fields are nullable in the DB. `scopeKind` is CHECK-constrained
+ * to 'device' | 'ticket' | NULL (P2-2 + P2-4's action_intents_scope_kind_chk)
+ * — but `resolveIntentTargetDevice` below is PURELY about the intent's
+ * target DEVICE, so 'ticket' is deliberately handled the same as no
+ * explicit scope at all there (falls through to the run's own device, which
+ * may be null): a ticket-triage intent has no device target by
+ * construction. `resolveIntentTargetTicket` (P2-4 Task A3, #4191) is the
+ * mirror-image resolver for the ticket target — same shape, not an
+ * extension of the device one, since a device-scoped or unscoped intent has
+ * no ticket target either.
  */
 export interface IntentScopeColumns {
-  scopeKind: 'device' | null;
+  scopeKind: 'device' | 'ticket' | null;
   scopeDeviceId: string | null;
+  scopeTicketId: string | null;
 }
 
 /**
@@ -88,6 +97,37 @@ export function resolveIntentTargetDevice(
  */
 export function effectiveTargetDeviceId(target: IntentTargetDevice): string | null {
   return target.kind === 'tombstone' ? null : target.deviceId;
+}
+
+/**
+ * What an intent actually targets on the TICKET axis (P2-4 Task A3, #4191).
+ * Unlike `IntentTargetDevice`, there is no `'run'` fallback variant — a run
+ * has no run-level "own ticket" equivalent to `run.deviceId` that a reader
+ * should fall back to, so an intent with no ticket scope simply targets no
+ * ticket (`'none'`).
+ */
+export type IntentTargetTicket =
+  /** Explicit ticket scope, ticket still linked. */
+  | { kind: 'scope'; ticketId: string }
+  /** `scope_kind='ticket'` but `scope_ticket_id IS NULL` — fail closed,
+   *  same tombstone shape as the device resolver (produced by the
+   *  `manage_tickets:move_org` executor's detach — see that file). */
+  | { kind: 'tombstone' }
+  /** No ticket scope at all: `scopeKind` is `null` or `'device'`. */
+  | { kind: 'none' };
+
+/**
+ * Resolve the intent's target ticket. Pure and synchronous, same contract as
+ * `resolveIntentTargetDevice` — no DB, no run fallback (see the type's doc
+ * comment above for why there is nothing to fall back to).
+ */
+export function resolveIntentTargetTicket(intent: IntentScopeColumns): IntentTargetTicket {
+  if (intent.scopeKind !== 'ticket') {
+    return { kind: 'none' };
+  }
+  return intent.scopeTicketId === null || intent.scopeTicketId === undefined
+    ? { kind: 'tombstone' }
+    : { kind: 'scope', ticketId: intent.scopeTicketId };
 }
 
 /**
@@ -178,5 +218,42 @@ export function assertArgsMatchScope(
     if (!Array.isArray(deviceIds) || deviceIds.length !== 1 || deviceIds[0] !== scopeDeviceId) {
       fail(`name deviceIds ${JSON.stringify(deviceIds)}`);
     }
+  }
+}
+
+/**
+ * Creation-time consistency gate for the ticket axis (I2, final review
+ * #4191) — mirrors `assertArgsMatchScope` exactly, including reusing
+ * `IntentScopeArgumentMismatchError` (same error class/code:
+ * `scope_argument_mismatch`) so `intentService.ts`'s existing catch/rethrow
+ * onto `ActionIntentError(..., 'scope_argument_mismatch')` covers both axes
+ * unchanged.
+ *
+ * Before this gate, a scoped intent's arguments could name a DIFFERENT
+ * ticket than the one `scope_ticket_id` pins it to — release-time guardrail
+ * re-runs and approver fan-out narrow to the scope ticket
+ * (`resolveIntentTargetTicket`), so an argument mismatch would let the tool
+ * act on a ticket that never went through that narrowing.
+ *
+ * Only one argument name is known here, `ticketId` (the ticketing tools have
+ * no `ticketIds` plural — every ticket-scoped tool call names exactly one
+ * ticket; see `aiToolsTicketing.ts`). A tool call carrying NO `ticketId` at
+ * all passes: the scope itself is the binding for those calls (e.g.
+ * `move_org`'s `ticketId` argument IS present and checked, but a
+ * hypothetical scoped tool with no ticket argument has nothing to check
+ * against and is not this gate's problem, same boundary as the device
+ * version's doc comment above).
+ */
+export function assertArgsMatchTicketScope(
+  toolName: string,
+  args: Record<string, unknown>,
+  scopeTicketId: string,
+): void {
+  const ticketId = args.ticketId;
+  if (ticketId === undefined || ticketId === null) return;
+  if (typeof ticketId !== 'string' || ticketId !== scopeTicketId) {
+    throw new IntentScopeArgumentMismatchError(
+      `scope_argument_mismatch: tool "${toolName}" arguments name ticketId ${JSON.stringify(ticketId)} but the intent is scoped to ticket ${scopeTicketId}`,
+    );
   }
 }

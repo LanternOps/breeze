@@ -449,6 +449,62 @@ describe('mergeAgentPolicies — anomalyEnabled conservative opt-in (wave-6-4 fo
   });
 });
 
+// P2-4 Task A6 (#4191) — ticketAutonomousWrites gets the SAME conservative
+// org-row-only opt-in rule as anomalyEnabled above (same docstring, same
+// rationale: a partner-wide baseline row must never blanket-enable
+// unattended ticket writes for every org under it). See
+// AiAgentTriggers.ticketAutonomousWrites's docstring (packages/shared).
+describe('mergeAgentPolicies — ticketAutonomousWrites conservative opt-in (P2-4 #4191)', () => {
+  it('a partner baseline alone can NEVER opt an org in: no org override at all, partner sets true -> effective is falsy', () => {
+    const partner = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: true } });
+    const { effective } = mergeAgentPolicies(partner, null, { allowedModels: null });
+
+    expect(effective.triggers.ticketAutonomousWrites).not.toBe(true);
+  });
+
+  it('org override present but does not set ticketAutonomousWrites -> effective is falsy even when partner is true', () => {
+    const partner = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: true } });
+    const org = policy(); // no ticketAutonomousWrites key at all
+    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+
+    expect(effective.triggers.ticketAutonomousWrites).not.toBe(true);
+  });
+
+  it('org override explicitly sets ticketAutonomousWrites: false -> effective is false even when partner is true', () => {
+    const partner = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: true } });
+    const org = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: false } });
+    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+
+    expect(effective.triggers.ticketAutonomousWrites).not.toBe(true);
+  });
+
+  it("the org's OWN override governs regardless of the partner's value: org true + partner false -> effective true", () => {
+    const partner = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: false } });
+    const org = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: true } });
+    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+
+    expect(effective.triggers.ticketAutonomousWrites).toBe(true);
+  });
+
+  it("the org's OWN override governs even when the partner never set it at all: org true + partner absent -> effective true", () => {
+    const partner = policy(); // no ticketAutonomousWrites key at all
+    const org = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: true } });
+    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+
+    expect(effective.triggers.ticketAutonomousWrites).toBe(true);
+  });
+
+  it('does not disturb the general "no org override -> effective === partner" invariant for every other field', () => {
+    const partner = policy({ triggers: { ...policy().triggers, ticketAutonomousWrites: true } });
+    const { effective } = mergeAgentPolicies(partner, null, { allowedModels: null });
+
+    expect(effective).toEqual({
+      ...partner,
+      triggers: { ...partner.triggers, ticketAutonomousWrites: undefined },
+    });
+  });
+});
+
 describe('resolveEffectiveAgentSystem', () => {
   it('returns the same merged snapshot as the authorized resolver', async () => {
     seedResolverRows();

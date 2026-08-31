@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import type { AiAgentPolicySnapshot } from '@breeze/shared';
+import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentPolicySnapshot } from '@breeze/shared';
 
 const dialect = new PgDialect();
 const renderSql = (value: unknown) => dialect.sqlToQuery(value as SQL).sql;
@@ -253,6 +253,13 @@ const POLICY_SNAPSHOT: AiAgentPolicySnapshot = {
       maxNarrativeRunsPerHour: 5,
       narrativeBudgetCentsPerRun: 20,
       narrativeMaxTurns: 3,
+      // v8 (phase 2 wave P2-4) triage-profile caps — same reason as the v6/v7
+      // blocks above: `AiAgentLimits` requires them, and nothing on the
+      // policy-decision path reads a triage limit.
+      maxConcurrentTriageRuns: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentTriageRuns,
+      maxTriageRunsPerHour: AI_AGENT_LIMIT_DEFAULTS.maxTriageRunsPerHour,
+      triageBudgetCentsPerRun: AI_AGENT_LIMIT_DEFAULTS.triageBudgetCentsPerRun,
+      triageMaxTurns: AI_AGENT_LIMIT_DEFAULTS.triageMaxTurns,
     },
     triggers: { alertSeverities: [], respectMaintenanceWindows: false },
     recipients: { userIds: ['recipient-1'], roleIds: [] },

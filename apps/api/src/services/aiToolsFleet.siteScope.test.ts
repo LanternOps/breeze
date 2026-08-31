@@ -27,6 +27,9 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: deleteSpy, transaction: vi.fn() },
 }));
+vi.mock('../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice: vi.fn(async () => undefined),
+}));
 
 // Override only the reused site-scope helpers (spread the rest so other
 // importers still get the real exports). These drive SR5-05 (automations) and
@@ -139,11 +142,11 @@ describe('manage_groups remove_devices — per-device site scoping', () => {
     });
     let deletedIds: string[] | null = null;
     deleteSpy.mockReturnValue({
-      where: (cond: any) => {
+      where: (_cond: any) => {
         // Capture the device-id list the delete is scoped to by re-running the
         // inArray against a probe. We can't introspect the SQL easily, so the
         // handler must have narrowed the id list before building the condition.
-        return Promise.resolve();
+        return { returning: () => Promise.resolve([{ deviceId: 'd-in' }]) };
       },
     });
     // Spy on inArray indirectly: assert handler reports the skipped count.
@@ -173,7 +176,11 @@ describe('manage_groups remove_devices — per-device site scoping', () => {
       if (call === 0) { call++; return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'g1', name: 'G', orgId: 'org-1' }]) }) }) }; }
       return { from: () => ({ where: () => Promise.resolve([{ id: 'd1', siteId: 'site-Z' }, { id: 'd2', siteId: 'site-Y' }]) }) };
     });
-    deleteSpy.mockReturnValue({ where: () => Promise.resolve() });
+    deleteSpy.mockReturnValue({
+      where: () => ({
+        returning: () => Promise.resolve([{ deviceId: 'd1' }, { deviceId: 'd2' }]),
+      }),
+    });
     const r = await handlerFor('manage_groups')({ action: 'remove_devices', groupId: 'g1', deviceIds: ['d1', 'd2'] }, makeAuth(undefined));
     const parsed = JSON.parse(r);
     expect(parsed.success).toBe(true);
