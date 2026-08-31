@@ -84,11 +84,14 @@ describe('buildOrganizationListQuery — preferred order participates in page se
   });
 
   it('falls back to created_at, id alone when no order is stored', () => {
-    for (const empty of [undefined, null, []] as const) {
+    for (const empty of [undefined, null, [] as string[]]) {
       const { sql: text } = compile(empty);
       expect(text).not.toContain('array_position');
-      const orderBy = text.slice(text.indexOf('order by'));
-      expect(orderBy).toContain('"created_at"');
+      // Pin the whole term, not just the presence of created_at: the #3462
+      // tiebreaker is only load-bearing if `id` is still there behind it.
+      expect(text).toContain(
+        'order by "organizations"."created_at", "organizations"."id" limit',
+      );
     }
   });
 });
