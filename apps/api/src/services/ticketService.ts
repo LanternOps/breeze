@@ -560,6 +560,49 @@ export interface ChangeStatusTarget {
   statusId?: string;
 }
 
+/**
+ * P2-4 (#4191) — shared by every `changeTicketStatus` branch that can apply
+ * an `aiDraftId` (the full FSM transition AND the same-core-status paths
+ * that skip FSM validation — a review fix: those used to return before ever
+ * looking at `aiDraftId`, silently dropping it). Locks the draft row for
+ * the rest of this transaction (`for('update')`) so a concurrent
+ * send/discard/resolve racing the SAME draft blocks here until this
+ * transaction commits or rolls back, then observes the now-committed state.
+ */
+async function lockAndValidateResolutionDraft(
+  ticketId: string,
+  draftId: string
+): Promise<{ id: string; content: string }> {
+  const [draft] = await db
+    .select()
+    .from(ticketDrafts)
+    .where(and(eq(ticketDrafts.id, draftId), eq(ticketDrafts.ticketId, ticketId)))
+    .limit(1)
+    .for('update');
+  if (!draft) throw new TicketServiceError('Draft not found', 404);
+  if (draft.kind !== 'resolution_note') {
+    throw new TicketServiceError('Only resolution-note drafts can be applied when resolving', 409);
+  }
+  if (draft.state !== 'active') {
+    throw new TicketServiceError('Draft is no longer active', 409);
+  }
+  return { id: draft.id, content: draft.content };
+}
+
+/** Companion to `lockAndValidateResolutionDraft` — CAS `active -> consumed` in the
+ *  SAME transaction as the caller's ticket update, so a failure here rolls back
+ *  that update too (defense-in-depth: unreachable while the lock above holds). */
+async function consumeResolutionDraft(draftId: string, consumedBy: string): Promise<void> {
+  const consumed = await db
+    .update(ticketDrafts)
+    .set({ state: 'consumed', consumedBy, consumedAt: new Date() })
+    .where(and(eq(ticketDrafts.id, draftId), eq(ticketDrafts.state, 'active')))
+    .returning({ id: ticketDrafts.id });
+  if (consumed.length === 0) {
+    throw new TicketServiceError('Draft was already consumed', 409);
+  }
+}
+
 export async function changeTicketStatus(
   ticketId: string,
   target: ChangeStatusTarget,
@@ -596,13 +639,40 @@ export async function changeTicketStatus(
     customStatusName = undefined;
   }
 
-  // No-op: same core status AND same statusId
-  if (toStatus === fromStatus && resolvedStatusId === ticket.statusId) return ticket;
+  // Review fix (#4191): this must run BEFORE every early-return branch below
+  // (no-op, same-status statusId relabel, AND the full FSM transition) — an
+  // aiDraftId on a non-resolve target must always 400, never be silently
+  // swallowed by a branch that returns before reaching a later check.
+  if (opts.aiDraftId && toStatus !== 'resolved') {
+    throw new TicketServiceError('aiDraftId is only accepted when resolving a ticket', 400, 'INVALID_INPUT');
+  }
 
-  // Same core status but different statusId — update statusId only (skip FSM validation)
+  // Review fix (#4191): the same-core-status branches below (no-op and the
+  // statusId-only relabel) skip FSM validation entirely and used to return
+  // BEFORE the full-transition path's aiDraftId handling ever ran — an
+  // aiDraftId supplied while relabeling an ALREADY-resolved ticket (or
+  // no-op-resolving it) was silently dropped: no error, no consumption, no
+  // resolutionNote write. Lock + validate it HERE, unconditionally, whenever
+  // the target core status is 'resolved' and the core status isn't changing.
+  let sameStatusDraft: { id: string; content: string } | null = null;
+  if (toStatus === fromStatus && toStatus === 'resolved' && opts.aiDraftId) {
+    sameStatusDraft = await lockAndValidateResolutionDraft(ticketId, opts.aiDraftId);
+  }
+
+  // No-op: same core status AND same statusId AND nothing else to apply —
+  // a draft still needing to be applied/consumed is real, explicit intent,
+  // never a silent no-op.
+  if (toStatus === fromStatus && resolvedStatusId === ticket.statusId && !sameStatusDraft) {
+    return ticket;
+  }
+
+  // Same core status but a statusId change and/or a draft to apply — update
+  // statusId/resolutionNote only (skip FSM validation; core status is
+  // unchanged either way).
   if (toStatus === fromStatus) {
     const now = new Date();
     const patch: Partial<typeof tickets.$inferInsert> = { statusId: resolvedStatusId ?? null, updatedAt: now };
+    if (sameStatusDraft) patch.resolutionNote = sameStatusDraft.content;
     const updated = await db
       .update(tickets)
       .set(patch)
@@ -615,27 +685,37 @@ export async function changeTicketStatus(
     if (updated.length === 0) {
       throw new TicketServiceError('Ticket was modified concurrently', 409, 'CONCURRENT_MODIFICATION');
     }
-    // Only write a feed entry when there is meaningful content — i.e. the caller
-    // supplied a custom status name (statusId path).  A legacy {status} call that
-    // happens to resolve to the same core value but swaps the statusId back to the
-    // system row produces an empty content and identical oldValue/newValue, which
-    // would be a no-op noise row in the feed.
-    if (customStatusName) {
+
+    // Consume in the SAME transaction as the ticket update above — a failure
+    // here rolls the whole thing back (mirrors the full-transition path).
+    if (sameStatusDraft) {
+      await consumeResolutionDraft(sameStatusDraft.id, actor.userId);
+    }
+
+    // Only write a feed entry when there is meaningful content — i.e. the
+    // caller supplied a custom status name (statusId path) or an aiDraftId
+    // was applied. A legacy {status} call that happens to resolve to the
+    // same core value but swaps the statusId back to the system row (and
+    // carries no draft) produces an empty content and identical
+    // oldValue/newValue, which would be a no-op noise row in the feed.
+    const feedContent = sameStatusDraft ? sameStatusDraft.content : customStatusName;
+    if (feedContent) {
       await db.insert(ticketComments).values({
         ticketId,
         userId: actor.userId,
         authorName: actor.name ?? null,
         authorType: 'internal',
         commentType: 'status_change',
-        content: customStatusName,
+        content: feedContent,
         isPublic: false,
         oldValue: fromStatus,
         newValue: toStatus
       });
     }
     // Do NOT emit ticket.status_changed — core status is unchanged; only the
-    // custom-status label (statusId) differs.  Emitting with identical from/to
-    // would produce noise and confuse downstream consumers.
+    // custom-status label (statusId) and/or resolutionNote differ.  Emitting
+    // with identical from/to would produce noise and confuse downstream
+    // consumers.
     await createAuditLogAsync({
       orgId: ticket.orgId,
       actorId: actor.userId,
@@ -648,10 +728,6 @@ export async function changeTicketStatus(
     return updated[0];
   }
 
-  if (opts.aiDraftId && toStatus !== 'resolved') {
-    throw new TicketServiceError('aiDraftId is only accepted when resolving a ticket', 400, 'INVALID_INPUT');
-  }
-
   if (!TICKET_STATUS_TRANSITIONS[fromStatus]?.includes(toStatus)) {
     throw new TicketServiceError(`Cannot transition ticket from ${fromStatus} to ${toStatus}`, 409, 'INVALID_TRANSITION');
   }
@@ -659,29 +735,13 @@ export async function changeTicketStatus(
     throw new TicketServiceError('A resolution note is required to resolve a ticket', 400);
   }
 
-  // P2-4 (#4191), Task A10 — lock + validate the `resolution_note` draft
-  // BEFORE the ticket's own CAS update below: a missing/wrong-kind/inactive
-  // draft must fail the whole resolve, not silently resolve without it.
-  // `for('update')` mirrors `sendTicketDraft`'s locking contract — a second,
-  // concurrent resolve (or a `POST .../discard`) racing the same draft blocks
-  // here until this transaction commits or rolls back, then observes the
-  // now-committed state rather than a stale 'active' read.
+  // Lock + validate the `resolution_note` draft BEFORE the ticket's own CAS
+  // update below: a missing/wrong-kind/inactive draft must fail the whole
+  // resolve, not silently resolve without it.
   let resolutionNote = opts.resolutionNote;
   let draftToConsume: { id: string } | null = null;
   if (toStatus === 'resolved' && opts.aiDraftId) {
-    const [draft] = await db
-      .select()
-      .from(ticketDrafts)
-      .where(and(eq(ticketDrafts.id, opts.aiDraftId), eq(ticketDrafts.ticketId, ticketId)))
-      .limit(1)
-      .for('update');
-    if (!draft) throw new TicketServiceError('Draft not found', 404);
-    if (draft.kind !== 'resolution_note') {
-      throw new TicketServiceError('Only resolution-note drafts can be applied when resolving', 409);
-    }
-    if (draft.state !== 'active') {
-      throw new TicketServiceError('Draft is no longer active', 409);
-    }
+    const draft = await lockAndValidateResolutionDraft(ticketId, opts.aiDraftId);
     resolutionNote = draft.content;
     draftToConsume = { id: draft.id };
   }
@@ -737,20 +797,10 @@ export async function changeTicketStatus(
   }
 
   // Consume the draft in the SAME transaction as the ticket's own CAS update
-  // above — a failure here (already consumed by a racing caller between the
-  // lock and this point is impossible under the held row lock, but the CAS
-  // WHERE stays as defense-in-depth matching sendTicketDraft) throws and
-  // rolls back the whole request transaction, including the status change
-  // just written.
+  // above — a failure here throws and rolls back the whole request
+  // transaction, including the status change just written.
   if (draftToConsume) {
-    const consumed = await db
-      .update(ticketDrafts)
-      .set({ state: 'consumed', consumedBy: actor.userId, consumedAt: new Date() })
-      .where(and(eq(ticketDrafts.id, draftToConsume.id), eq(ticketDrafts.state, 'active')))
-      .returning({ id: ticketDrafts.id });
-    if (consumed.length === 0) {
-      throw new TicketServiceError('Draft was already consumed', 409);
-    }
+    await consumeResolutionDraft(draftToConsume.id, actor.userId);
   }
 
   await db.insert(ticketComments).values({

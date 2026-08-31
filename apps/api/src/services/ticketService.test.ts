@@ -969,6 +969,50 @@ describe('changeTicketStatus — aiDraftId (P2-4, #4191, Task A10)', () => {
     const result = await changeTicketStatus('t-1', { status: 'resolved' }, { aiDraftId: 'draft-1' }, actor).catch(e => e);
     expect(result).not.toBeInstanceOf(TicketServiceError);
   });
+
+  // Review fix (#4191): the same-core-status branches (no-op / statusId-only
+  // relabel) used to return BEFORE aiDraftId was ever looked at, silently
+  // dropping it. These two cover that class of bug directly.
+  it('applies aiDraftId on the same-status resolve fast path (fromStatus=resolved, toStatus=resolved via statusId relabel)', async () => {
+    const ticket = { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'resolved', statusId: 'old-status-id', resolvedAt: new Date('2026-08-01') };
+    // Call order: getTicketOrThrow, then the draft SELECT ... FOR UPDATE.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([ticket])
+      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'resolution_note', state: 'active', content: 'AI relabel note' }]);
+    configMocks.getTicketStatusById.mockResolvedValueOnce({
+      id: 'new-status-id', partnerId: 'p-1', coreStatus: 'resolved', name: 'Resolved - Verified', isActive: true
+    });
+    dbMocks.updateReturning
+      .mockResolvedValueOnce([{ ...ticket, statusId: 'new-status-id', resolutionNote: 'AI relabel note' }]) // ticket CAS (fast path)
+      .mockResolvedValueOnce([{ id: 'draft-1' }]); // draft consume CAS
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    const result = await changeTicketStatus('t-1', { statusId: 'new-status-id' }, { aiDraftId: 'draft-1' }, actor);
+    expect(result).not.toBeInstanceOf(TicketServiceError);
+
+    // The fast-path ticket UPDATE payload carries the draft's content.
+    const ticketUpdatePayload = setMock.mock.calls[0]![0];
+    expect(ticketUpdatePayload).toMatchObject({ statusId: 'new-status-id', resolutionNote: 'AI relabel note' });
+
+    // The draft was actually consumed — not silently dropped.
+    const draftUpdatePayload = setMock.mock.calls[1]![0];
+    expect(draftUpdatePayload).toMatchObject({ state: 'consumed', consumedBy: 'u-1' });
+    expect(draftUpdatePayload.consumedAt).toBeInstanceOf(Date);
+  });
+
+  it('rejects aiDraftId on a non-resolve same-status fast-path transition (different statusId, same core status) with 400', async () => {
+    const ticket = { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', statusId: 'old-status-id' };
+    dbMocks.selectResult.mockResolvedValue([ticket]);
+    configMocks.getTicketStatusById.mockResolvedValueOnce({
+      id: 'new-status-id', partnerId: 'p-1', coreStatus: 'open', name: 'Waiting on Customer', isActive: true
+    });
+
+    const err = await changeTicketStatus('t-1', { statusId: 'new-status-id' }, { aiDraftId: 'draft-1' }, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+    // Never reached the fast path's update — no ticket/draft write attempted.
+    expect(setMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('sendTicketDraft (P2-4, #4191, Task A10)', () => {
