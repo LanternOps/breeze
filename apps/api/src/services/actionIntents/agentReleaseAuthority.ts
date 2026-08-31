@@ -3,6 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
 import { organizations } from '../../db/schema/orgs';
 import { devices } from '../../db/schema/devices';
+import { tickets } from '../../db/schema/portal';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 import { checkAgentGuardrails, type AgentGuardrailPolicy } from '../aiGuardrails';
 import { readAiKillState } from '../aiKillState';
@@ -11,7 +12,7 @@ import {
   buildAgentAuthContext,
 } from '../aiAgents/agentAuthContext';
 import { resolveEffectiveAgent } from '../aiAgents/effectivePolicy';
-import { resolveIntentTargetDevice } from './intentTargetScope';
+import { resolveIntentTargetDevice, resolveIntentTargetTicket } from './intentTargetScope';
 
 export type AgentReleaseAuthority =
   | { ok: true }
@@ -125,7 +126,37 @@ export async function checkAgentReleaseAuthority(
           .limit(1);
         deviceSiteId = device?.siteId ?? null;
       }
-      return { run, agent, org, deviceSiteId, targetDeviceId: target.deviceId };
+
+      // P2-4 (#4191): the TICKET-scope mirror of the device resolution
+      // above, needed so `checkAgentGuardrails`'s ticket-scope exemption to
+      // the device-less-mutation deny (aiGuardrails.ts) actually fires at
+      // RELEASE time — without this, a ticket-triage intent would pass
+      // creation-time re-verification (intentService.ts already threads
+      // `scope.ticketId` there) and then be denied here every time, since
+      // `targetDeviceId` stays null for a device-less triage run. Same
+      // fail-closed shape as the device branch: a tombstoned or no-longer-
+      // valid scoped ticket is `scope_lost`, not silently ignored.
+      const ticketTarget = resolveIntentTargetTicket(intent);
+      let scopeTicketId: string | null = null;
+      if (ticketTarget.kind === 'tombstone') return 'scope_lost' as const;
+      if (ticketTarget.kind === 'scope') {
+        const [ticket] = await db
+          .select({ id: tickets.id, orgId: tickets.orgId, status: tickets.status, deletedAt: tickets.deletedAt })
+          .from(tickets)
+          .where(eq(tickets.id, ticketTarget.ticketId))
+          .limit(1);
+        // Missing, soft-deleted, moved to another org, or closed — mirrors
+        // actorContext.ts's identical check for the release AuthContext.
+        // 'resolved' is deliberately NOT excluded — resolution-note drafts
+        // are the motivating case for proposing against an already-resolved
+        // (not yet closed) ticket.
+        if (!ticket || ticket.deletedAt !== null || ticket.orgId !== intent.orgId || ticket.status === 'closed') {
+          return 'scope_lost' as const;
+        }
+        scopeTicketId = ticketTarget.ticketId;
+      }
+
+      return { run, agent, org, deviceSiteId, targetDeviceId: target.deviceId, scopeTicketId };
     }),
   );
   if (loaded === 'scope_lost') {
@@ -137,9 +168,12 @@ export async function checkAgentReleaseAuthority(
       ok: false,
       errorCode: 'agent_scope_lost',
       details: {
-        reason: 'the intent\'s scoped target device was tombstoned, deleted, or moved to another org',
+        reason: intent.scopeKind === 'ticket'
+          ? 'the intent\'s scoped target ticket was tombstoned, deleted, closed, or moved to another org'
+          : 'the intent\'s scoped target device was tombstoned, deleted, or moved to another org',
         runId,
         scopeDeviceId: intent.scopeDeviceId,
+        scopeTicketId: intent.scopeTicketId,
       },
     };
   }
@@ -153,7 +187,7 @@ export async function checkAgentReleaseAuthority(
       },
     };
   }
-  const { run, agent, org, deviceSiteId, targetDeviceId } = loaded;
+  const { run, agent, org, deviceSiteId, targetDeviceId, scopeTicketId } = loaded;
 
   // Reconstruct the agent's own AuthContext — assertRunOwnership inside
   // re-proves the org/partner lineage. Its canAccessOrg covers exactly the
@@ -262,6 +296,9 @@ export async function checkAgentReleaseAuthority(
         protectedResources: effective?.protectedResources,
         deviceId: targetDeviceId ?? null,
         deviceSiteId,
+        // P2-4 (#4191): the ticket-scope exemption to the device-less-
+        // mutation deny — see AgentGuardrailPolicy.scope's doc comment.
+        ...(scopeTicketId ? { scope: { ticketId: scopeTicketId } } : {}),
       } as AgentGuardrailPolicy,
     );
     if (verdict.disposition === 'deny') {

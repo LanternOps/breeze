@@ -142,6 +142,14 @@ const _agentGuardrailPolicyFields: Record<keyof AgentGuardrailPolicy, true> = {
   protectedResources: true,
   deviceSiteId: true,
   deviceId: true,
+  // P2-4 (#4191): `scope` is populated ONLY by the release path's own
+  // DB-verified ticket resolution (agentReleaseAuthority.ts /
+  // resolveIntentTargetTicket), exactly like deviceSiteId/deviceId above —
+  // never from caller-controlled tool input. See section B's new test
+  // below, which pins that an attacker-supplied `input.ticketId` or
+  // `input.scope` cannot impersonate `policy.scope` the way B already pins
+  // for `input.deviceId`.
+  scope: true,
 };
 
 function toolCallFor(toolName: string): {
@@ -409,6 +417,40 @@ describe('B. attacker-controlled input cannot impersonate the policy', () => {
 
     expect(verdict.disposition).toBe('deny');
     expect(verdict.reason).toMatch(/device-bound/);
+  });
+
+  // P2-4 (#4191): the mirror-image of the deviceId test above for the new
+  // ticket-scope exemption. `checkAgentGuardrails` reads `policy.scope`,
+  // never `input.ticketId`/`input.scope` — an attacker cannot forge ticket
+  // binding through tool arguments the way it cannot forge device binding.
+  it('does not let an input ticketId/scope satisfy the ticket-scope exemption', () => {
+    const verdict = checkAgentGuardrails('manage_tickets', {
+      action: 'update_fields',
+      ticketId: 'ticket-1',
+      scope: { ticketId: 'ticket-1' },
+      fields: { priority: 'high' },
+    }, policyWith({
+      deviceId: null,
+      toolAllowlist: ['manage_tickets:update_fields'],
+      // policy.scope deliberately absent — only the release path sets it.
+    }));
+
+    expect(verdict.disposition).toBe('deny');
+    expect(verdict.reason).toMatch(/device-bound/);
+  });
+
+  it('a genuine policy.scope.ticketId (as the release path would set it) does exempt manage_tickets', () => {
+    const verdict = checkAgentGuardrails('manage_tickets', {
+      action: 'update_fields',
+      ticketId: 'ticket-1',
+      fields: { priority: 'high' },
+    }, policyWith({
+      deviceId: null,
+      toolAllowlist: ['manage_tickets:update_fields'],
+      scope: { ticketId: 'ticket-1' },
+    }));
+
+    expect(verdict.disposition).not.toBe('deny');
   });
 });
 
