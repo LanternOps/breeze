@@ -40,7 +40,8 @@ const hoisted = vi.hoisted(() => {
   const loadTicketPushPrefsMock = vi.fn(async () => ({ assignedEnabled: true, slaScope: 'owned' as const }));
   const listAnySlaSubscribersMock = vi.fn(async () => ({ users: [] as unknown[], truncated: false }));
   const isAuthorisedForTicketMock = vi.fn(async () => true);
-  const collectTicketPushMock = vi.fn(async () => null);
+  const admitPushMock = vi.fn(async () => []);
+  const resolvePushJobsMock = vi.fn(async () => []);
   const dispatchPushToTokensMock = vi.fn(async () => ({ tokensFound: 0, dispatched: 0, errors: 0 }));
   return {
     selectQueue,
@@ -56,7 +57,8 @@ const hoisted = vi.hoisted(() => {
     loadTicketPushPrefsMock,
     listAnySlaSubscribersMock,
     isAuthorisedForTicketMock,
-    collectTicketPushMock,
+    admitPushMock,
+    resolvePushJobsMock,
     dispatchPushToTokensMock
   };
 });
@@ -148,7 +150,8 @@ vi.mock('./ticketPush', () => ({
   loadTicketPushPrefs: hoisted.loadTicketPushPrefsMock,
   listAnySlaSubscribers: hoisted.listAnySlaSubscribersMock,
   isAuthorisedForTicket: hoisted.isAuthorisedForTicketMock,
-  collectTicketPush: hoisted.collectTicketPushMock,
+  admitPush: hoisted.admitPushMock,
+  resolvePushJobs: hoisted.resolvePushJobsMock,
   assertSamePartner: (c: { partnerId: string }, eventPartnerId: string | null) =>
     !!eventPartnerId && c.partnerId === eventPartnerId,
   ANY_SUBSCRIBER_CAP: 500,
@@ -192,7 +195,8 @@ describe('ticket-events producer→consumer contract', () => {
     hoisted.loadTicketPushPrefsMock.mockResolvedValue({ assignedEnabled: true, slaScope: 'owned' });
     hoisted.listAnySlaSubscribersMock.mockResolvedValue({ users: [], truncated: false });
     hoisted.isAuthorisedForTicketMock.mockResolvedValue(true);
-    hoisted.collectTicketPushMock.mockResolvedValue(null);
+    hoisted.admitPushMock.mockResolvedValue([]);
+    hoisted.resolvePushJobsMock.mockResolvedValue([]);
   });
 
   // ── createTicket with assignee → ticket.created ──────────────────────────

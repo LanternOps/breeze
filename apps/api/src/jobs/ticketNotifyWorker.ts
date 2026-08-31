@@ -42,13 +42,14 @@ import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents'
 import { createNotification } from '../services/userNotifications';
 import { buildTicketPush, dispatchPushToTokens } from '../services/expoPush';
 import {
+  admitPush,
   assertSamePartner,
-  collectTicketPush,
   isAuthorisedForTicket,
   listAnySlaSubscribers,
   loadTicketPushPrefs,
   loadUserCandidate,
-  type PushJob,
+  resolvePushJobs,
+  type PendingPush,
 } from '../services/ticketPush';
 
 const { db } = dbModule;
@@ -89,7 +90,12 @@ async function getOrgName(orgId: string): Promise<string> {
 /** Resolved once per event; collected results are sent after the context exits. */
 interface Collected {
   emails: EmailPayload[];
-  pushes: PushJob[];
+  /**
+   * Recipients that SHOULD be pushed. Deliberately not resolved jobs: the
+   * transport gates (Redis throttle) and the device read happen after the
+   * collection context closes — see handleTicketEvent (#1105).
+   */
+  pushes: PendingPush[];
 }
 
 /**
@@ -123,8 +129,15 @@ async function collectAssigneeNotification(
   // tenant boundary is entirely app-layer from here on.
   const assignee = await loadUserCandidate(assigneeId);
   if (!assignee) return none;
-  if (!assertSamePartner(assignee, event.partnerId, { ticketId: ticket.id })) return none;
-  if (assignee.status !== 'active') return none;
+  // A NULL event.partnerId is NOT a mismatch. `tickets.partner_id` is
+  // deliberately nullable (2026-06-09-a-native-ticketing-core.sql: "old API
+  // code may still insert tickets without it during a rolling deploy") and both
+  // emitters propagate the null verbatim, so treating it as a forged recipient
+  // would drop the row AND the email main writes unconditionally — and raise a
+  // Sentry error for a legacy row. When the event carries no partner the PUSH
+  // is withheld (it is gated on event.partnerId below); the inbox row and email
+  // are not.
+  if (event.partnerId && !assertSamePartner(assignee, event.partnerId, { ticketId: ticket.id })) return none;
 
   // Idempotency anchor (D2): null = replay -> nothing else happens.
   const id = await createNotification({
@@ -148,17 +161,27 @@ async function collectAssigneeNotification(
       }]
     : [];
 
-  const pushes: PushJob[] = [];
+  // Account status (D5) gates the PHONE only — a device cannot be registered
+  // without a login, so a non-active user has nothing to push to. It must never
+  // suppress the inbox row or the email: an invited technician assigned a
+  // ticket before accepting their invite still has to be told.
+  const pushes: PendingPush[] = [];
   const prefs = await loadTicketPushPrefs(assigneeId);
-  if (prefs.assignedEnabled && event.partnerId && (await isAuthorisedForTicket(assigneeId, event.partnerId, event.orgId))) {
-    const spec = buildTicketPush({
-      ticketId: ticket.id,
-      reason: 'assigned',
-      internalNumber: ticket.internalNumber ?? null,
-      orgName: await getOrgName(event.orgId),
+  if (
+    prefs.assignedEnabled &&
+    assignee.status === 'active' &&
+    event.partnerId &&
+    (await isAuthorisedForTicket(assigneeId, event.partnerId, event.orgId))
+  ) {
+    pushes.push({
+      userId: assigneeId,
+      spec: buildTicketPush({
+        ticketId: ticket.id,
+        reason: 'assigned',
+        internalNumber: ticket.internalNumber ?? null,
+        orgName: await getOrgName(event.orgId),
+      }),
     });
-    const job = await collectTicketPush(assigneeId, spec);
-    if (job) pushes.push(job);
   }
   return { emails, pushes };
 }
@@ -332,7 +355,7 @@ async function collectSlaBreachNotification(
   const label = event.payload.internalNumber ?? event.ticketId;
   const target = event.payload.target;
   const emails: EmailPayload[] = [];
-  const pushes: PushJob[] = [];
+  const pushes: PendingPush[] = [];
   const notified = new Set<string>();
   let orgName: string | null = null;
   const spec = async () =>
@@ -352,8 +375,8 @@ async function collectSlaBreachNotification(
    * be a silent behaviour regression: the owner's SLA row is unconditional on
    * main today.
    */
-  const notify = async (userId: string, opts: { push: boolean }): Promise<void> => {
-    if (notified.has(userId)) return;
+  const notify = async (userId: string, opts: { push: boolean }): Promise<boolean> => {
+    if (notified.has(userId)) return false;
     notified.add(userId);
     const id = await createNotification({
       userId,
@@ -365,10 +388,9 @@ async function collectSlaBreachNotification(
       link: `/tickets#${event.payload.internalNumber ?? event.ticketId}`,
       dedupeKey: `ticket:${ticket.id}:sla:${target}:${userId}`,
     });
-    if (id === null) return; // replay — nothing further
-    if (!opts.push) return;  // preference says no phone; row already written
-    const job = await collectTicketPush(userId, await spec());
-    if (job) pushes.push(job);
+    if (id === null) return false; // replay — nothing further, INCLUDING the email
+    if (opts.push) pushes.push({ userId, spec: await spec() });
+    return true;
   };
 
   // Owner: email and in-app row as before (unconditional). slaScope governs the
@@ -376,8 +398,25 @@ async function collectSlaBreachNotification(
   const assigneeId = event.payload.assigneeId;
   if (assigneeId) {
     const assignee = await loadUserCandidate(assigneeId);
-    if (assignee && assertSamePartner(assignee, event.partnerId, { ticketId: ticket.id }) && assignee.status === 'active') {
-      if (assignee.email) {
+    // Same null-partner rule as the assigned branch: a legacy ticket with no
+    // partner_id is not a forged recipient, it just cannot be pushed.
+    const partnerOk = assignee && (!event.partnerId || assertSamePartner(assignee, event.partnerId, { ticketId: ticket.id }));
+    if (assignee && partnerOk) {
+      const prefs = await loadTicketPushPrefs(assigneeId);
+      // Short-circuit deliberately: skip the permission round-trip when the
+      // preference (or a non-active account) already rules the push out.
+      const pushOwner =
+        prefs.slaScope !== 'off' &&
+        assignee.status === 'active' &&
+        !!event.partnerId &&
+        (await isAuthorisedForTicket(assigneeId, event.partnerId, event.orgId));
+      // The email is queued only AFTER the dedupe anchor confirms this is not a
+      // replay. Queuing it first (as this branch originally did) meant a
+      // redelivered BullMQ job re-emailed the owner while the row and the push
+      // both deduped — breaking the wave's "a retry re-emails nobody" contract
+      // that the assigned branch already honours.
+      const wrote = await notify(assigneeId, { push: pushOwner });
+      if (wrote && assignee.email) {
         emails.push({
           to: assignee.email,
           subject: `SLA breached: ${label} — ${event.payload.subject}`,
@@ -385,14 +424,6 @@ async function collectSlaBreachNotification(
           bestEffort: true,
         });
       }
-      const prefs = await loadTicketPushPrefs(assigneeId);
-      // Short-circuit deliberately: skip the permission round-trip when the
-      // preference already rules the push out.
-      const pushOwner =
-        prefs.slaScope !== 'off' &&
-        !!event.partnerId &&
-        (await isAuthorisedForTicket(assigneeId, event.partnerId, event.orgId));
-      await notify(assigneeId, { push: pushOwner });
     }
   }
 
@@ -426,7 +457,7 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
   // so fall back to the BullMQ job id (stable across that job's retries).
   const eventId = event.eventId ?? jobId ?? `legacy:${event.ticketId}:${event.type}`;
   let emailPayloads: EmailPayload[] = [];
-  let pushJobs: PushJob[] = [];
+  let pending: PendingPush[] = [];
 
   await runWithSystemDbAccess(async () => {
     switch (event.type) {
@@ -436,7 +467,7 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
         if (assigneeId) {
           const collected = await collectAssigneeNotification(event, assigneeId, eventId);
           emailPayloads = collected.emails;
-          pushJobs = collected.pushes;
+          pending = collected.pushes;
         }
         return;
       }
@@ -445,7 +476,7 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
         // to partner-wide ('any') SLA subscribers.
         const collected = await collectSlaBreachNotification(event);
         emailPayloads = collected.emails;
-        pushJobs = collected.pushes;
+        pending = collected.pushes;
         return;
       }
       case 'ticket.commented': {
@@ -522,9 +553,18 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
     }
   });
 
-  // Pushes — OUTSIDE the DB context (#1105). Best-effort; dispatchPushToTokens
-  // never throws. Deliberately BEFORE the email early-return below: a push-only
-  // recipient ('any' SLA subscriber) produces zero email payloads.
+  // Push materialisation and delivery — all OUTSIDE the collection context
+  // (#1105). The collection transaction above is now bounded to permission
+  // reads and notification inserts; the Redis throttle runs with no DB context
+  // open at all, and the device read gets its own SHORT, batched system context
+  // (the alertWorker pattern: one short context per DB read, never a blanket
+  // wrap around a fan-out loop). Deliberately BEFORE the email early-return
+  // below: a push-only recipient ('any' SLA subscriber) produces zero emails.
+  const admitted = await admitPush(pending);
+  const pushJobs = admitted.length > 0
+    ? await runWithSystemDbAccess(() => resolvePushJobs(admitted))
+    : [];
+
   for (const job of pushJobs) {
     const r = await dispatchPushToTokens(job.tokens, job.spec, 'ticket');
     if (r.errors > 0) {

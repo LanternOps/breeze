@@ -276,6 +276,52 @@ describe('ticket push fan-out — tenant boundary', () => {
     expect(allTruncated).toBe(false);
   });
 
+  /**
+   * REGRESSION (#4281 review): `getUserPushTargets`' device filter
+   * (notifications_enabled = true AND status = 'active') was pinned by NOTHING
+   * — the unit suite's chainable db mock ignores the WHERE and every fixture
+   * here took the column defaults. Tokens are deliberately left populated on
+   * the blocked/opted-out rows so this pins the QUERY, not the revoke route's
+   * token clearing.
+   */
+  runDb('a blocked device and a notifications-off device never receive a ticket push', async () => {
+    const fx = await seed();
+    await withSystemDbAccessContext(async () => {
+      await db.insert(mobileDevices).values({
+        userId: fx.owner.id,
+        deviceId: uniq('dev-blocked'),
+        platform: 'ios',
+        apnsToken: `tok-blocked-${fx.owner.id}`,
+        status: 'blocked',
+      });
+      await db.insert(mobileDevices).values({
+        userId: fx.owner.id,
+        deviceId: uniq('dev-muted'),
+        platform: 'ios',
+        apnsToken: `tok-muted-${fx.owner.id}`,
+        notificationsEnabled: false,
+      });
+    });
+
+    await handleTicketEvent({
+      type: 'ticket.assigned',
+      ticketId: fx.ticket.id,
+      orgId: fx.orgA.id,
+      partnerId: fx.p1.id,
+      actorUserId: fx.anyB.id,
+      eventId: 'e-devfilter',
+      payload: { assigneeId: fx.owner.id },
+    });
+
+    const calls = dispatch.mock.calls as unknown as Array<[{ token: string }[]]>;
+    const sent = calls.flatMap((c) => c[0].map((t) => t.token));
+    // Positive control: the active, notifications-enabled handset DID receive it,
+    // so an empty `sent` can never read as "the filter works".
+    expect(sent).toContain(`tok-${fx.owner.id}`);
+    expect(sent).not.toContain(`tok-blocked-${fx.owner.id}`);
+    expect(sent).not.toContain(`tok-muted-${fx.owner.id}`);
+  });
+
   runDb('the owner is notified from the assignee branch, never via the capped list', async () => {
     const fx = await seed();
     await handleTicketEvent({

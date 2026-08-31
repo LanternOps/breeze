@@ -237,8 +237,14 @@ export function buildTicketPush(args: {
     data,
     ttl: isSla ? TICKET_SLA_TTL_SECONDS : TICKET_ASSIGNED_TTL_SECONDS,
     channelId: 'tickets',
+    // KEEP THESE SHORT. APNs rejects an `apns-collapse-id` over 64 BYTES with
+    // 400 BadCollapseId, and `ticketId` is a 36-char uuid in production — the
+    // original `:sla_breached:` spelling produced 65/67 bytes, so every native
+    // SLA push was rejected while the in-app row and email still landed.
+    // Longest form today: `ticket:` + 36 + `:sla:resolution` = 58 bytes.
+    // buildApnsRequest clamps as a backstop; do not rely on it.
     collapseId: isSla
-      ? `ticket:${args.ticketId}:sla_breached:${args.target ?? 'response'}`
+      ? `ticket:${args.ticketId}:sla:${args.target ?? 'response'}`
       : `ticket:${args.ticketId}:assigned`,
     threadId: `ticket:${args.ticketId}`,
     category: 'BREEZE_TICKET',

@@ -23,7 +23,8 @@ const { insertValuesMock, selectMock, updateSetMock, sendEmailMock, getEmailServ
 vi.mock('bullmq', () => ({ Queue: vi.fn(() => ({ add: vi.fn() })), Worker: vi.fn() }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
 vi.mock('../services/email', () => ({ getEmailService: getEmailServiceMock }));
-vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+const sentry = vi.hoisted(() => ({ captureException: vi.fn() }));
+vi.mock('../services/sentry', () => ({ captureException: sentry.captureException }));
 // outboundThreading.ts reads TICKETS_INBOUND_DOMAIN via getConfig(). The specifier
 // from this file (in jobs/) is '../config/validate', which resolves to the same
 // apps/api/src/config/validate.ts that outboundThreading imports as '../../config/validate'.
@@ -70,7 +71,9 @@ const push = vi.hoisted(() => ({
   loadTicketPushPrefs: vi.fn(async () => ({ assignedEnabled: true, slaScope: 'owned' as 'off' | 'owned' | 'any' })),
   listAnySlaSubscribers: vi.fn(async () => ({ users: [] as unknown[], truncated: false })),
   isAuthorisedForTicket: vi.fn(async () => true),
-  collectTicketPush: vi.fn(async (_u: string, spec: unknown): Promise<{ tokens: { token: string; platform: string; provider: string }[]; spec: unknown } | null> => ({ tokens: [{ token: 'tok', platform: 'ios', provider: 'apns' }], spec })),
+  admitPush: vi.fn(async (pending: { userId: string; spec: unknown }[]) => pending),
+  resolvePushJobs: vi.fn(async (pending: { userId: string; spec: unknown }[]) =>
+    pending.map((p) => ({ tokens: [{ token: 'tok', platform: 'ios', provider: 'apns' }], spec: p.spec }))),
   dispatchPushToTokens: vi.fn(async () => ({ tokensFound: 1, dispatched: 1, errors: 0 })),
   order: [] as string[],
 }));
@@ -83,7 +86,8 @@ vi.mock('../services/ticketPush', async (orig) => {
     loadTicketPushPrefs: push.loadTicketPushPrefs,
     listAnySlaSubscribers: push.listAnySlaSubscribers,
     isAuthorisedForTicket: push.isAuthorisedForTicket,
-    collectTicketPush: (...a: [string, never]) => { push.order.push('collect'); return push.collectTicketPush(...a); },
+    admitPush: (...a: [never]) => { push.order.push('admit'); return push.admitPush(...a); },
+    resolvePushJobs: (...a: [never]) => { push.order.push('tokens'); return push.resolvePushJobs(...a); },
   };
 });
 vi.mock('../services/expoPush', async (orig) => {
@@ -600,7 +604,9 @@ function resetPushMocks(): void {
   push.loadTicketPushPrefs.mockResolvedValue({ assignedEnabled: true, slaScope: 'owned' });
   push.listAnySlaSubscribers.mockResolvedValue({ users: [], truncated: false });
   push.isAuthorisedForTicket.mockResolvedValue(true);
-  push.collectTicketPush.mockImplementation(async (_u: string, spec: unknown) => ({ tokens: [{ token: 'tok', platform: 'ios', provider: 'apns' }], spec }));
+  push.admitPush.mockImplementation(async (pending: { userId: string; spec: unknown }[]) => pending);
+  push.resolvePushJobs.mockImplementation(async (pending: { userId: string; spec: unknown }[]) =>
+    pending.map((p) => ({ tokens: [{ token: 'tok', platform: 'ios', provider: 'apns' }], spec: p.spec })));
   push.dispatchPushToTokens.mockResolvedValue({ tokensFound: 1, dispatched: 1, errors: 0 });
   withSystemDbAccessContextMock.mockImplementation(async (fn: () => unknown) => {
     push.order.push('ctx:enter');
@@ -628,7 +634,9 @@ describe('ticket push fan-out (W07)', () => {
       expect.objectContaining({ title: 'Ticket assigned to you', body: 'T-2026-0042 \u00b7 Acme' }),
       'ticket',
     );
-    expect(push.order).toEqual(['ctx:enter', 'collect', 'ctx:exit', 'dispatch']);
+    // #1105: the notification context closes BEFORE the Redis throttle
+    // admission; the device read runs in its own short second context.
+    expect(push.order).toEqual(['ctx:enter', 'ctx:exit', 'admit', 'ctx:enter', 'tokens', 'ctx:exit', 'dispatch']);
     expect(sendEmailMock).toHaveBeenCalled();
   });
 
@@ -659,18 +667,68 @@ describe('ticket push fan-out (W07)', () => {
     await handleTicketEvent(assigned() as never);
     expect(push.createNotification).toHaveBeenCalled();
     expect(sendEmailMock).toHaveBeenCalled();
-    expect(push.collectTicketPush).not.toHaveBeenCalled();
+    expect(push.admitPush).toHaveBeenCalledWith([]);
   });
 
   it('assignee lacking org access is not pushed (row still written)', async () => {
     push.isAuthorisedForTicket.mockResolvedValueOnce(false);
     await handleTicketEvent(assigned() as never);
     expect(push.createNotification).toHaveBeenCalled();
-    expect(push.collectTicketPush).not.toHaveBeenCalled();
+    expect(push.admitPush).toHaveBeenCalledWith([]);
   });
 
-  it('collectTicketPush null (throttled/quiet/apns-off): row + email, no dispatch', async () => {
-    push.collectTicketPush.mockResolvedValueOnce(null);
+  /**
+   * REGRESSION (#4281 review): `status !== 'active'` was a TERMINAL gate on the
+   * whole collector, so an invited (not-yet-onboarded) technician assigned a
+   * ticket silently lost the in-app row AND the assignment email that main sent
+   * unconditionally. Account status is a PUSH precondition (a device cannot be
+   * registered without a login), never a reason to withhold the inbox row.
+   */
+  it('invited assignee still gets the in-app row and the email — only the push is gated', async () => {
+    push.loadUserCandidate.mockResolvedValueOnce({ userId: 'u-2', partnerId: 'p-1', status: 'invited', email: 'invited@msp.example' });
+    await handleTicketEvent(assigned() as never);
+    expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-2' }));
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
+  });
+
+  /**
+   * REGRESSION (#4281 review): `tickets.partner_id` is deliberately NULLABLE
+   * (see 2026-06-09-a-native-ticketing-core.sql — "old API code may still
+   * insert tickets without it during a rolling deploy"), and both emitters
+   * propagate the null verbatim. `assertSamePartner(candidate, null)` returns
+   * false, which made the whole recipient terminal AND raised a Sentry error
+   * framed as a forgery signal. A missing event partner gates the PUSH (already
+   * conditional on event.partnerId) — never the row or the email.
+   */
+  it('legacy ticket with a null event partner: row + email still written, push withheld, nothing reported', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await handleTicketEvent({ ...assigned(), partnerId: null } as never);
+    expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-2' }));
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
+    expect(sentry.captureException).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  /**
+   * REGRESSION (#4281 review): the up-to-500-recipient fan-out held one pooled
+   * Postgres connection in an OPEN transaction across a Redis `multi()` and an
+   * N-query device read per recipient (the #1105 class the worker's own comment
+   * claims to avoid). The throttle admission is Redis-only and must run with no
+   * DB context open; the device read gets its own short, batched context.
+   */
+  it('the Redis throttle admission runs AFTER the notification context closes (#1105)', async () => {
+    await handleTicketEvent(assigned() as never);
+    const firstExit = push.order.indexOf('ctx:exit');
+    expect(firstExit).toBeGreaterThanOrEqual(0);
+    expect(push.order.slice(0, firstExit)).not.toContain('admit');
+    expect(push.order.slice(0, firstExit)).not.toContain('tokens');
+    expect(push.order.indexOf('admit')).toBeGreaterThan(firstExit);
+  });
+
+  it('throttled / quiet-hours / apns-off: row + email, no dispatch', async () => {
+    push.admitPush.mockResolvedValueOnce([]);
     await handleTicketEvent(assigned() as never);
     expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
     expect(sendEmailMock).toHaveBeenCalled();
@@ -699,7 +757,7 @@ describe('sla_breached fan-out (W07)', () => {
     await handleTicketEvent(breach('u-2') as never);
     expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-2', dedupeKey: 'ticket:t-1:sla:response:u-2' }));
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
-    expect(push.collectTicketPush).not.toHaveBeenCalled();
+    expect(push.admitPush).toHaveBeenCalledWith([]);
     expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
     // Short-circuit: 'off' must not cost a permission round-trip.
     expect(push.isAuthorisedForTicket).not.toHaveBeenCalled();
@@ -709,7 +767,7 @@ describe('sla_breached fan-out (W07)', () => {
     push.isAuthorisedForTicket.mockResolvedValueOnce(false);
     await handleTicketEvent(breach('u-2') as never);
     expect(push.createNotification).toHaveBeenCalledTimes(1);
-    expect(push.collectTicketPush).not.toHaveBeenCalled();
+    expect(push.admitPush).toHaveBeenCalledWith([]);
   });
 
   it("an unauthorised 'any' subscriber gets NO row at all (asymmetry with the owner is deliberate)", async () => {
@@ -746,10 +804,42 @@ describe('sla_breached fan-out (W07)', () => {
     expect(push.createNotification).not.toHaveBeenCalled();
   });
 
+  /**
+   * REGRESSION (#4281 review): the owner's SLA email was pushed onto `emails`
+   * BEFORE `notify()` ran the dedupe check, so a redelivered BullMQ job
+   * suppressed the duplicate row and the duplicate push but re-emailed the
+   * owner — contradicting the wave's stated invariant ("a retry re-pushes
+   * nothing and re-emails nobody"). The assigned branch already got this right.
+   */
+  it('replay (createNotification -> null) re-emails nobody and re-pushes nothing', async () => {
+    push.createNotification.mockResolvedValueOnce(null);
+    await handleTicketEvent(breach('u-2') as never);
+    expect(sendEmailMock).not.toHaveBeenCalled();
+    expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
+  });
+
+  it('invited owner keeps the in-app row and the SLA email; only the push is gated', async () => {
+    push.loadUserCandidate.mockResolvedValueOnce({ userId: 'u-2', partnerId: 'p-1', status: 'invited', email: 'tech@msp.example' });
+    await handleTicketEvent(breach('u-2') as never);
+    expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-2' }));
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
+  });
+
+  it('null event partner: the owner still gets the SLA row and email, push withheld, nothing reported', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await handleTicketEvent({ ...breach('u-2'), partnerId: null } as never);
+    expect(push.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u-2' }));
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    expect(push.dispatchPushToTokens).not.toHaveBeenCalled();
+    expect(sentry.captureException).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('every dispatch happens after the system context exits', async () => {
     push.listAnySlaSubscribers.mockResolvedValueOnce({ users: [{ userId: 'u-5', partnerId: 'p-1', status: 'active', email: null }], truncated: false });
     await handleTicketEvent(breach('u-2') as never);
-    const exitAt = push.order.indexOf('ctx:exit');
+    const exitAt = push.order.lastIndexOf('ctx:exit');
     expect(push.order.filter((x) => x === 'dispatch').length).toBe(2);
     expect(push.order.slice(0, exitAt)).not.toContain('dispatch');
   });

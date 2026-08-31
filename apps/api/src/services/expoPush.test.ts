@@ -421,8 +421,30 @@ describe('buildTicketPush', () => {
     expect(spec.title).toBe('SLA breached (response)');
     expect(spec.body).toBe('Ticket \u00b7 Acme');
     expect(spec.ttl).toBe(14400);
-    expect(spec.collapseId).toBe('ticket:t-1:sla_breached:response');
+    expect(spec.collapseId).toBe('ticket:t-1:sla:response');
     expect(spec.data).toEqual({ type: 'ticket', ticketId: 't-1', reason: 'sla_breached', target: 'response' });
+  });
+  /**
+   * REGRESSION (#4281 review, critical): APNs caps `apns-collapse-id` at 64
+   * BYTES and answers an over-long value with 400 `BadCollapseId`. Every
+   * fixture above uses the 3-character id `t-1`; the real `tickets.id` is a
+   * 36-char uuid, which made `ticket:<uuid>:sla_breached:resolution` 67 bytes
+   * — so every native-APNs SLA push was rejected while the in-app row and the
+   * email still landed. Pin the length with a REAL uuid, not a short fixture.
+   */
+  it('collapse ids stay inside the 64-byte apns-collapse-id limit for a real uuid ticket id', () => {
+    const uuid = '0f5a1c2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b';
+    const specs = [
+      buildTicketPush({ ticketId: uuid, reason: 'assigned', internalNumber: 'T-2026-0042', orgName: 'Acme' }),
+      buildTicketPush({ ticketId: uuid, reason: 'sla_breached', target: 'response', internalNumber: null, orgName: 'Acme' }),
+      buildTicketPush({ ticketId: uuid, reason: 'sla_breached', target: 'resolution', internalNumber: null, orgName: 'Acme' }),
+    ];
+    for (const spec of specs) {
+      expect(Buffer.byteLength(spec.collapseId!, 'utf8')).toBeLessThanOrEqual(64);
+    }
+    // Shortening must not collapse the two SLA targets onto one another.
+    expect(specs[1]!.collapseId).not.toBe(specs[2]!.collapseId);
+    expect(specs[0]!.collapseId).not.toBe(specs[1]!.collapseId);
   });
   it('truncates a long org name', () => {
     const spec = buildTicketPush({ ticketId: 't-1', reason: 'assigned', internalNumber: 'T-1', orgName: 'x'.repeat(200) });

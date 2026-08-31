@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import http2 from 'node:http2';
 import { importPKCS8, SignJWT } from 'jose';
 import { getConfig } from '../config/validate';
@@ -30,6 +31,9 @@ const DEFAULT_TTL_SECONDS = 60 * 60;
 // should be purged from our DB rather than retried. Mirrors the DeviceNotRegistered
 // handling in expoPush.ts.
 const UNREGISTERED_REASONS = new Set(['BadDeviceToken', 'Unregistered', 'DeviceTokenNotForTopic']);
+
+// APNs rejects an apns-collapse-id longer than 64 bytes with 400 BadCollapseId.
+const MAX_COLLAPSE_ID_BYTES = 64;
 
 const PROD_HOST = 'https://api.push.apple.com';
 const SANDBOX_HOST = 'https://api.sandbox.push.apple.com';
@@ -147,6 +151,19 @@ export function __resetApnsProviderTokenCacheForTests(): void {
 }
 
 /**
+ * Enforces Apple's 64-byte `apns-collapse-id` ceiling at the wire layer, so a
+ * caller can never silently lose every push of a category to 400
+ * BadCollapseId (#4281: `ticket:<uuid>:sla_breached:resolution` was 67 bytes).
+ * Over-long values collapse to a sha256 prefix: deterministic (coalescing still
+ * works across sends) and injective in practice (distinct notifications never
+ * merge). Values already inside the limit pass through byte-identical.
+ */
+export function clampCollapseId(value: string): string {
+  if (Buffer.byteLength(value, 'utf8') <= MAX_COLLAPSE_ID_BYTES) return value;
+  return createHash('sha256').update(value).digest('hex').slice(0, 32);
+}
+
+/**
  * Builds the HTTP/2 request (pseudo-headers + JSON body) for a single push.
  * PURE: no network, no config beyond the bundle id, deterministic given inputs
  * (except apns-expiration, which is now()+ttl). The signed provider JWT is
@@ -171,7 +188,7 @@ export function buildApnsRequest(deviceToken: string, payload: ApnsPayload, jwt:
     'apns-expiration': String(expiration),
   };
   if (payload.collapseId) {
-    headers['apns-collapse-id'] = payload.collapseId;
+    headers['apns-collapse-id'] = clampCollapseId(payload.collapseId);
   }
 
   // Optional keys are assigned conditionally so a payload without them stays

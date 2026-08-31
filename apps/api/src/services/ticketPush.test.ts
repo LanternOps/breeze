@@ -29,7 +29,7 @@ vi.mock('../db', () => ({
 
 import { db } from '../db';
 import {
-  assertSamePartner, isAuthorisedForTicket, collectTicketPush, __resetApnsWarnForTests,
+  admitPush, assertSamePartner, isAuthorisedForTicket, resolvePushJobs, __resetApnsWarnForTests,
 } from './ticketPush';
 import { buildTicketPush } from './expoPush';
 
@@ -71,27 +71,56 @@ describe('isAuthorisedForTicket', () => {
   });
 });
 
-describe('collectTicketPush', () => {
+/**
+ * Two-phase by design (#4281 review): `admitPush` is Redis-only so the worker
+ * can run it with NO DB context open, and `resolvePushJobs` does ONE batched
+ * device read inside a short system context. Previously both ran per-recipient
+ * inside the single open fan-out transaction (#1105 class).
+ */
+describe('admitPush', () => {
   beforeEach(() => { vi.clearAllMocks(); __resetApnsWarnForTests(); m.isApnsConfigured.mockReturnValue(true); m.checkNotificationThrottle.mockResolvedValue({ allowed: true, currentCount: 1, windowExpiresAt: 0 }); });
 
-  it('returns null without reading tokens when APNs is not configured (D8)', async () => {
+  it('admits nobody and reads no tokens when APNs is not configured (D8)', async () => {
     m.isApnsConfigured.mockReturnValue(false);
-    expect(await collectTicketPush('u-2', spec)).toBeNull();
+    expect(await admitPush([{ userId: 'u-2', spec }])).toEqual([]);
+    expect(m.checkNotificationThrottle).not.toHaveBeenCalled();
     expect(vi.mocked(db.select)).not.toHaveBeenCalled();
   });
-  it('returns null when throttled (D6) and still does not read tokens', async () => {
-    m.checkNotificationThrottle.mockResolvedValueOnce({ allowed: false, currentCount: 21, windowExpiresAt: 0 });
-    expect(await collectTicketPush('u-2', spec)).toBeNull();
+
+  it('drops a throttled recipient (D6), keeps the rest, and touches no DB at all', async () => {
+    m.checkNotificationThrottle
+      .mockResolvedValueOnce({ allowed: false, currentCount: 21, windowExpiresAt: 0 })
+      .mockResolvedValueOnce({ allowed: true, currentCount: 1, windowExpiresAt: 0 });
+    const out = await admitPush([{ userId: 'u-2', spec }, { userId: 'u-3', spec }]);
+    expect(out.map((p) => p.userId)).toEqual(['u-3']);
     expect(m.checkNotificationThrottle).toHaveBeenCalledWith('mobile-ticket', 'user:u-2', 20, 300);
     expect(vi.mocked(db.select)).not.toHaveBeenCalled();
   });
-  it('drops devices in quiet hours and returns null when none remain (D12)', async () => {
-    m.selectRows.mockResolvedValueOnce([{ apns: 'tok-1', fcm: null, platform: 'ios', quietHours: { start: '00:00', end: '00:00', timezone: 'UTC' } }]);
-    expect(await collectTicketPush('u-2', spec)).toBeNull();
+});
+
+describe('resolvePushJobs', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('returns no job for a recipient whose devices are all in quiet hours (D12)', async () => {
+    m.selectRows.mockResolvedValueOnce([{ userId: 'u-2', apns: 'tok-1', fcm: null, platform: 'ios', quietHours: { start: '00:00', end: '00:00', timezone: 'UTC' } }]);
+    expect(await resolvePushJobs([{ userId: 'u-2', spec }])).toEqual([]);
   });
-  it('returns a PushJob with the tagged tokens otherwise', async () => {
-    m.selectRows.mockResolvedValueOnce([{ apns: 'tok-1', fcm: null, platform: 'ios', quietHours: null }]);
-    const job = await collectTicketPush('u-2', spec);
-    expect(job).toEqual({ tokens: [{ token: 'tok-1', platform: 'ios', provider: 'apns' }], spec });
+
+  it('reads every recipient in ONE batched query and tags each job with its own tokens', async () => {
+    m.selectRows.mockResolvedValueOnce([
+      { userId: 'u-2', apns: 'tok-1', fcm: null, platform: 'ios', quietHours: null },
+      { userId: 'u-3', apns: null, fcm: 'tok-2', platform: 'android', quietHours: null },
+    ]);
+    const jobs = await resolvePushJobs([{ userId: 'u-2', spec }, { userId: 'u-3', spec }]);
+    expect(jobs).toEqual([
+      { tokens: [{ token: 'tok-1', platform: 'ios', provider: 'apns' }], spec },
+      { tokens: [{ token: 'tok-2', platform: 'android', provider: 'fcm' }], spec },
+    ]);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a no-op with no pending pushes', async () => {
+    expect(await resolvePushJobs([])).toEqual([]);
+    expect(vi.mocked(db.select)).not.toHaveBeenCalled();
   });
 });

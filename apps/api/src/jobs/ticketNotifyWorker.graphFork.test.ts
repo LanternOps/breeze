@@ -50,7 +50,8 @@ const gfPush = vi.hoisted(() => ({
   loadTicketPushPrefs: vi.fn(async () => ({ assignedEnabled: false, slaScope: 'off' as const })),
   listAnySlaSubscribers: vi.fn(async () => ({ users: [] as unknown[], truncated: false })),
   isAuthorisedForTicket: vi.fn(async () => false),
-  collectTicketPush: vi.fn(async () => null),
+  admitPush: vi.fn(async () => []),
+  resolvePushJobs: vi.fn(async () => []),
 }));
 vi.mock('../services/userNotifications', () => ({ createNotification: gfPush.createNotification }));
 vi.mock('../services/ticketPush', async (orig) => ({
@@ -59,7 +60,8 @@ vi.mock('../services/ticketPush', async (orig) => ({
   loadTicketPushPrefs: gfPush.loadTicketPushPrefs,
   listAnySlaSubscribers: gfPush.listAnySlaSubscribers,
   isAuthorisedForTicket: gfPush.isAuthorisedForTicket,
-  collectTicketPush: gfPush.collectTicketPush,
+  admitPush: gfPush.admitPush,
+  resolvePushJobs: gfPush.resolvePushJobs,
 }));
 vi.mock('../db/schema/mobile', () => ({
   mobileDevices: { userId: 'user_id', fcmToken: 'fcm_token', apnsToken: 'apns_token', platform: 'platform', status: 'status', notificationsEnabled: 'notifications_enabled', quietHours: 'quiet_hours' },

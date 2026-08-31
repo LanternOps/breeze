@@ -1,14 +1,24 @@
 /**
  * W07 (#3901): push fan-out helpers for ticket events.
  *
- * Everything here is called by ticketNotifyWorker INSIDE
+ * Recipient DISCOVERY (loadUserCandidate / listAnySlaSubscribers / prefs /
+ * isAuthorisedForTicket) is called by ticketNotifyWorker INSIDE
  * withSystemDbAccessContext, which bypasses RLS. That context is DISCOVERY
  * ONLY. Every recipient is re-authorised (spec D5): same partner as the event,
- * active, holds tickets:read, and can access the ticket's org. Network I/O
- * (dispatchPushToTokens) is NOT done here — the worker sends after the context
- * exits (#1105).
+ * holds tickets:read, and can access the ticket's org; account status gates the
+ * PUSH (see the worker) — never the in-app row or the email.
+ *
+ * Push materialisation is deliberately TWO-PHASE so no network round-trip ever
+ * happens inside the open fan-out transaction (#1105 class — the shape
+ * alertWorker was refactored away from):
+ *   1. `admitPush`      — Redis only (D8 APNs-configured + D6 throttle). The
+ *                         worker runs it with NO DB context open.
+ *   2. `resolvePushJobs` — ONE batched device read (D12 quiet hours), run by
+ *                         the worker in its own short system context.
+ * The APNs/Expo send itself (dispatchPushToTokens) happens after that context
+ * closes too.
  */
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { resolveTicketPushPrefs, type TicketPushPreferences } from '@breeze/shared';
 import { db } from '../db';
 import { mobileDevices, ticketPushPreferences, users } from '../db/schema';
@@ -21,6 +31,12 @@ import type { PushSpec, TaggedPushToken } from './expoPush';
 
 export interface PushJob {
   tokens: TaggedPushToken[];
+  spec: PushSpec;
+}
+
+/** A recipient the collectors decided SHOULD be pushed, before any transport gate. */
+export interface PendingPush {
+  userId: string;
   spec: PushSpec;
 }
 
@@ -146,18 +162,17 @@ export async function isAuthorisedForTicket(
 }
 
 /**
- * Active, notifications-enabled devices, minus those inside quiet hours (D12).
- *
- * Re-selects rather than wrapping getUserPushTokens because that helper does
- * not return quiet_hours; the three-line provider inference is duplicated
- * deliberately rather than exporting a shared helper.
+ * Unexecuted builder so the compiled SQL can be asserted
+ * (ticketPush.sql.test.ts). `notifications_enabled` is the ONLY guard for a
+ * technician who muted pushes in the app (the opt-out route does not clear
+ * tokens), and `status = 'active'` excludes a soft-blocked handset (lost-phone
+ * revocation / admin takeover — see db/schema/mobile.ts). Both are
+ * security-relevant, so neither may be asserted through a chainable db mock.
  */
-export async function getUserPushTargets(
-  userId: string,
-  now: Date = new Date()
-): Promise<TaggedPushToken[]> {
-  const rows = await db
+export function userPushTargetsQuery(userIds: string[]) {
+  return db
     .select({
+      userId: mobileDevices.userId,
       fcm: mobileDevices.fcmToken,
       apns: mobileDevices.apnsToken,
       platform: mobileDevices.platform,
@@ -166,55 +181,98 @@ export async function getUserPushTargets(
     .from(mobileDevices)
     .where(
       and(
-        eq(mobileDevices.userId, userId),
+        inArray(mobileDevices.userId, userIds),
         eq(mobileDevices.notificationsEnabled, true),
         eq(mobileDevices.status, 'active')
       )
     );
+}
 
+interface DeviceRow {
+  userId: string;
+  fcm: string | null;
+  apns: string | null;
+  /** `device_platform` pg enum — must stay narrowed, TaggedPushToken.platform is not `string`. */
+  platform: 'ios' | 'android';
+  quietHours: unknown;
+}
+
+function tagTokens(row: DeviceRow): TaggedPushToken[] {
   const out: TaggedPushToken[] = [];
-  for (const row of rows) {
-    if (isInQuietHours(row.quietHours as QuietHoursConfig | null, now)) continue;
-    for (const token of [row.fcm, row.apns]) {
-      if (!token) continue;
-      out.push({
-        token,
-        platform: row.platform,
-        provider: token.startsWith('ExponentPushToken')
-          ? 'expo'
-          : row.platform === 'ios'
-            ? 'apns'
-            : 'fcm',
-      });
-    }
+  for (const token of [row.fcm, row.apns]) {
+    if (!token) continue;
+    out.push({
+      token,
+      platform: row.platform,
+      provider: token.startsWith('ExponentPushToken')
+        ? 'expo'
+        : row.platform === 'ios'
+          ? 'apns'
+          : 'fcm',
+    });
   }
   return out;
 }
 
 /**
- * D8 (APNs configured?) -> D6 (throttle) -> tokens -> D12 (quiet hours).
- * Never throws; null means "nothing to send" and the caller writes the in-app
- * row and email regardless.
+ * Phase 1 — D8 (APNs configured?) then D6 (throttle). Redis ONLY: this must be
+ * safe to call with no DB access context open, which is exactly how the worker
+ * calls it. Never throws.
  */
-export async function collectTicketPush(userId: string, spec: PushSpec): Promise<PushJob | null> {
+export async function admitPush(pending: PendingPush[]): Promise<PendingPush[]> {
+  if (pending.length === 0) return [];
   if (!isApnsConfigured()) {
     if (!warnedApnsUnconfigured) {
       warnedApnsUnconfigured = true;
       console.info('[TicketPush] APNs not configured — ticket pushes skipped (in-app + email unaffected)');
     }
-    return null;
+    return [];
   }
-  const throttle = await checkNotificationThrottle(
-    THROTTLE_CHANNEL,
-    `user:${userId}`,
-    THROTTLE_MAX,
-    THROTTLE_WINDOW_S
-  );
-  if (!throttle.allowed) {
-    console.warn(`[TicketPush] throttled user=${userId} count=${throttle.currentCount}`);
-    return null;
+  const admitted: PendingPush[] = [];
+  for (const p of pending) {
+    const throttle = await checkNotificationThrottle(
+      THROTTLE_CHANNEL,
+      `user:${p.userId}`,
+      THROTTLE_MAX,
+      THROTTLE_WINDOW_S
+    );
+    if (!throttle.allowed) {
+      console.warn(`[TicketPush] throttled user=${p.userId} count=${throttle.currentCount}`);
+      continue;
+    }
+    admitted.push(p);
   }
-  const tokens = await getUserPushTargets(userId);
-  if (tokens.length === 0) return null;
-  return { tokens, spec };
+  return admitted;
+}
+
+/**
+ * Phase 2 — token resolution + D12 (quiet hours), in ONE batched query for the
+ * whole fan-out. Needs a DB access context (the worker opens a short system one
+ * for just this call). A recipient with no deliverable token yields no job.
+ */
+export async function resolvePushJobs(
+  pending: PendingPush[],
+  now: Date = new Date()
+): Promise<PushJob[]> {
+  if (pending.length === 0) return [];
+  const userIds = [...new Set(pending.map((p) => p.userId))];
+  const rows = (await userPushTargetsQuery(userIds)) as DeviceRow[];
+
+  const byUser = new Map<string, TaggedPushToken[]>();
+  for (const row of rows) {
+    if (isInQuietHours(row.quietHours as QuietHoursConfig | null, now)) continue;
+    const tokens = tagTokens(row);
+    if (tokens.length === 0) continue;
+    const existing = byUser.get(row.userId);
+    if (existing) existing.push(...tokens);
+    else byUser.set(row.userId, tokens);
+  }
+
+  const jobs: PushJob[] = [];
+  for (const p of pending) {
+    const tokens = byUser.get(p.userId);
+    if (!tokens || tokens.length === 0) continue;
+    jobs.push({ tokens, spec: p.spec });
+  }
+  return jobs;
 }
