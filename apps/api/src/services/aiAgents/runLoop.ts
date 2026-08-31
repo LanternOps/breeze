@@ -1399,6 +1399,10 @@ function ticketPromptContext(ticket: TicketRunContext): AgentRunTicketPromptCont
     tags: ticket.tags,
     dueDate: ticket.dueDate,
     comments: ticket.comments,
+    // P2-4 (#4191) Task 7 — both already sanitized/whitelist-filtered by
+    // `ticketContext.ts`'s `assembleTicketContext`; passed through as-is.
+    linkedDevice: ticket.linkedDevice,
+    similarResolvedTickets: ticket.similarResolvedTickets,
     truncated: ticket.truncated,
   };
 }

@@ -105,6 +105,8 @@ function ticketCtx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunProm
       comments: [
         { authorType: 'portal', content: 'Still broken after reboot.', createdAt: '2026-08-27T12:00:00.000Z' },
       ],
+      linkedDevice: null,
+      similarResolvedTickets: [],
       truncated: false,
     },
     ...overrides,
@@ -311,6 +313,52 @@ describe('buildAgentRunTaskPrompt', () => {
     expect(prompt).toContain('Still broken after reboot.');
   });
 
+  // P2-4 (#4191) Task 7 — the linked-device signal and similar-resolved-
+  // tickets sections `ticketContext.ts` assembles.
+  it('renders the linked device, its last-24h alerts, its verdict counts, and its open sweep findings', () => {
+    const prompt = buildAgentRunTaskPrompt(ticketCtx({
+      ticket: {
+        subject: 'Printer not working', description: null, status: 'open', priority: 'high',
+        category: 'hardware', tags: [], dueDate: null, comments: [],
+        linkedDevice: {
+          id: 'device-1',
+          hostname: 'WS-01',
+          displayName: 'Reception PC',
+          osType: 'windows',
+          alerts: [{ ruleName: 'Disk pressure', severity: 'high', count: 3 }],
+          verdicts: { actionable: 2, transient_self_healed: 0, recurring_pattern: 0, duplicate_of_group: 0, needs_human: 0 },
+          sweepFindings: [{ kind: 'disk_pressure', severity: 'high', title: 'C: drive at 96%' }],
+        },
+        similarResolvedTickets: [],
+        truncated: false,
+      },
+    }));
+    expect(prompt).toContain('WS-01');
+    expect(prompt).toContain('Reception PC');
+    expect(prompt).toContain('Disk pressure');
+    expect(prompt).toContain('actionable: 2');
+    expect(prompt).toContain('C: drive at 96%');
+  });
+
+  it('omits the linked-device section entirely when the ticket has no linked device', () => {
+    const prompt = buildAgentRunTaskPrompt(ticketCtx());
+    expect(prompt).not.toContain('Linked device');
+  });
+
+  it('renders similar resolved tickets with their resolution note', () => {
+    const prompt = buildAgentRunTaskPrompt(ticketCtx({
+      ticket: {
+        subject: 'Printer not working', description: null, status: 'open', priority: 'high',
+        category: 'hardware', tags: [], dueDate: null, comments: [],
+        linkedDevice: null,
+        similarResolvedTickets: [{ title: 'Printer offline after update', resolutionNote: 'Reinstalled the driver.' }],
+        truncated: false,
+      },
+    }));
+    expect(prompt).toContain('Printer offline after update');
+    expect(prompt).toContain('Reinstalled the driver.');
+  });
+
   it('never renders a comment author\'s identity — only the non-identifying authorType role label', () => {
     // Even if a raw author name somehow reached this layer, the prompt
     // context type carries only `authorType` — there is no name field to
@@ -325,6 +373,7 @@ describe('buildAgentRunTaskPrompt', () => {
         subject: 'Printer not working', description: null, status: 'open', priority: 'high',
         category: 'hardware', tags: [], dueDate: null,
         comments: [{ authorType: 'internal', content: 'Dispatched a tech.', createdAt: '2026-08-27T12:00:00.000Z' }],
+        linkedDevice: null, similarResolvedTickets: [],
         truncated: false,
       },
     }));
@@ -336,7 +385,9 @@ describe('buildAgentRunTaskPrompt', () => {
     const prompt = buildAgentRunTaskPrompt(ticketCtx({
       ticket: {
         subject: 'Cannot log in', description: null, status: 'new', priority: 'normal',
-        category: null, tags: [], dueDate: null, comments: [], truncated: false,
+        category: null, tags: [], dueDate: null, comments: [],
+        linkedDevice: null, similarResolvedTickets: [],
+        truncated: false,
       },
     }));
     expect(prompt).toContain('Cannot log in');
@@ -348,7 +399,9 @@ describe('buildAgentRunTaskPrompt', () => {
     const prompt = buildAgentRunTaskPrompt(ticketCtx({
       ticket: {
         subject: 'x', description: 'y', status: 'open', priority: 'low', category: null,
-        tags: [], dueDate: null, comments: [], truncated: true,
+        tags: [], dueDate: null, comments: [],
+        linkedDevice: null, similarResolvedTickets: [],
+        truncated: true,
       },
     }));
     expect(prompt.toLowerCase()).toContain('truncat');

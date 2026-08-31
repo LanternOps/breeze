@@ -23,7 +23,8 @@
  */
 import { TICKET_TRIAGE_CONFIDENCE_FLOOR, TICKET_TRIAGE_PRIORITIES } from '@breeze/shared';
 import type {
-  AiAgentKind, AiAgentMode, AiAgentRunProfile, AiAgentTriggerKind, AiSweepKind,
+  AiAgentKind, AiAgentMode, AiAgentRunProfile, AiAgentTriggerKind,
+  AiAlertVerdictClassification, AiSweepKind, AiSweepSeverity,
 } from '@breeze/shared';
 // Type-only (erased at compile time), so this module keeps its "no DB
 // dependency of its own" property — `sweepEvidence.ts` imports the db, but
@@ -122,6 +123,22 @@ const GUIDANCE_TAG_RE = /<\s*\/?\s*operator-guidance[^>]*>/gi;
  * module has no DB dependency of its own, and the caller (`runLoop.ts`) is
  * the one place that actually has both shapes to reconcile.
  */
+/**
+ * P2-4 (#4191) Task 7 — the ticket's linked device and its recent signal
+ * (`ticketContext.ts`'s `TicketContextLinkedDevice`), already sanitized and
+ * whitelist-filtered at assembly time — see that module's header. Structural
+ * twin, mirroring `AgentRunTicketPromptContext` itself.
+ */
+export interface AgentRunTicketLinkedDevicePromptContext {
+  id: string;
+  hostname: string;
+  displayName: string | null;
+  osType: string;
+  alerts: Array<{ ruleName: string; severity: string; count: number }>;
+  verdicts: Record<AiAlertVerdictClassification, number>;
+  sweepFindings: Array<{ kind: AiSweepKind; severity: AiSweepSeverity; title: string }>;
+}
+
 export interface AgentRunTicketPromptContext {
   subject: string;
   description: string | null;
@@ -135,7 +152,16 @@ export interface AgentRunTicketPromptContext {
    *  'internal'/...), never the commenter's name — see
    *  `ticketContext.ts`'s `TicketContextComment` for why. */
   comments: Array<{ authorType: string | null; content: string; createdAt: string }>;
-  /** True when `ticketContext.ts` cut comments/description to fit its byte ceiling. */
+  /** P2-4 (#4191) Task 7 — `null` when the ticket has no linked device or the
+   *  signal could not be loaded. See `ticketContext.ts`'s header on why
+   *  absence and failure share one shape. */
+  linkedDevice: AgentRunTicketLinkedDevicePromptContext | null;
+  /** P2-4 (#4191) Task 7 — up to `MAX_SIMILAR_RESOLVED_TICKETS`, most-
+   *  recently-resolved first. Empty when none were found or the signal could
+   *  not be loaded. */
+  similarResolvedTickets: Array<{ title: string; resolutionNote: string | null }>;
+  /** True when `ticketContext.ts` cut any section (comments, description, or
+   *  either P2-4 section) to fit its byte ceiling. */
   truncated: boolean;
 }
 
@@ -1039,6 +1065,39 @@ function ticketPromptLines(ticket: AgentRunTicketPromptContext): string[] {
     lines.push('Comment history (oldest first):');
     for (const comment of ticket.comments) {
       lines.push(`- [${comment.createdAt}] ${commentAuthorLabel(comment.authorType)}: ${comment.content}`);
+    }
+  }
+
+  // P2-4 (#4191) Task 7. Every string on `ticket.linkedDevice` was already
+  // HTML-stripped/sanitized/whitelist-filtered by `ticketContext.ts` at
+  // assembly time (see that module's header) — this is a plain render, no
+  // further neutralization needed, matching how `ticket.comments`/
+  // `ticket.description` above are rendered as-is.
+  if (ticket.linkedDevice) {
+    const device = ticket.linkedDevice;
+    lines.push('');
+    lines.push(`Linked device: ${device.hostname}${device.displayName ? ` (${device.displayName})` : ''} — ${device.osType}`);
+    if (device.alerts.length > 0) {
+      lines.push('Alerts on this device in the last 24h:');
+      for (const alert of device.alerts) lines.push(`- ${alert.ruleName} [${alert.severity}] x${alert.count}`);
+    } else {
+      lines.push('No alerts on this device in the last 24h.');
+    }
+    const verdictCounts = Object.entries(device.verdicts).filter(([, count]) => count > 0);
+    if (verdictCounts.length > 0) {
+      lines.push(`Alert verdicts for this device: ${verdictCounts.map(([classification, count]) => `${classification}: ${count}`).join(', ')}`);
+    }
+    if (device.sweepFindings.length > 0) {
+      lines.push('Open sweep findings for this device (from the most recent fleet sweep):');
+      for (const finding of device.sweepFindings) lines.push(`- [${finding.severity}] ${finding.kind}: ${finding.title}`);
+    }
+  }
+
+  if (ticket.similarResolvedTickets.length > 0) {
+    lines.push('');
+    lines.push('Other resolved tickets in the same category (most recent first):');
+    for (const similar of ticket.similarResolvedTickets) {
+      lines.push(`- ${similar.title}${similar.resolutionNote ? ` — resolution: ${similar.resolutionNote}` : ''}`);
     }
   }
 

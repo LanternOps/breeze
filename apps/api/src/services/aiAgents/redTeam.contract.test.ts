@@ -940,6 +940,8 @@ describe('K. hostile ticket content — bounded context and device-less shadow d
         category: 'security',
         tags: ['injection-attempt'],
         dueDate: null,
+        deviceId: null,
+        categoryId: null,
       },
       comments: humanVisible.map(({ authorType, content, createdAt }) => ({ authorType, content, createdAt })),
     });
