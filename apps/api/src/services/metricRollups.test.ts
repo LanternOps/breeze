@@ -308,6 +308,38 @@ describe('metric rollups service', () => {
       expect(openedLabels()).toEqual(['metricRollups.mlFeatureGate']);
       expect(shouldProduceMlOutputMock).toHaveBeenCalledTimes(1);
     });
+
+    // The split from one atomic transaction to per-statement commits is only
+    // safe because (a) a mid-pass throw PROPAGATES — a partial pass must fail
+    // the BullMQ job / backfill, never be reported as success — and (b) the
+    // already-committed statements stay committed and are re-covered by the
+    // next run's idempotent upserts. This pins (a) and the stop-at-failure
+    // shape; the committed-stays-committed half lives in the integration
+    // suite where real transactions exist.
+    it('propagates a mid-pass statement failure and stops — no later statements, no success result', async () => {
+      const boom = new Error('relation "metric_rollups" deadlocked');
+      executeMock.mockImplementation(async () => {
+        contextTrace.push({ type: 'execute' });
+        if (executeMock.mock.calls.length === 5) throw boom;
+        return [];
+      });
+
+      await expect(
+        rollupDeviceMetricsRange({
+          orgId: '11111111-1111-1111-1111-111111111111',
+          from: new Date('2026-06-18T12:00:00.000Z'),
+          to: new Date('2026-06-18T13:00:00.000Z'),
+        }),
+      ).rejects.toThrow(boom);
+
+      // Statements 1-4 ran (and, in production, committed); statement 5 threw;
+      // 6-24 never ran. Plus the ML gate context, that is exactly 6 opens —
+      // and every context still closed, so the failure cannot leak a held
+      // connection either.
+      expect(executeMock).toHaveBeenCalledTimes(5);
+      expect(openedLabels()).toHaveLength(6);
+      expect(contextTrace.filter((event) => event.type === 'close')).toHaveLength(6);
+    });
   });
 
   it('rejects invalid ranges before executing writes', async () => {
