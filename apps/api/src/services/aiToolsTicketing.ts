@@ -6,9 +6,9 @@
  * All mutations delegate to ticketService — this file is a thin adapter.
  */
 
-import { and, desc, eq, isNull, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { alerts, tickets } from '../db/schema';
+import { actionIntents, alerts, tickets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { deviceInSiteScope, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
 import type { AiTool, AiToolTier } from './aiTools';
@@ -665,6 +665,24 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Access to target organization denied' });
         }
         try {
+          // P2-4 (#4191): tombstone any LIVE ticket-scoped action_intents row
+          // for this ticket BEFORE the move — mirrors P2-2's device moveOrg
+          // detach (routes/devices/moveOrg.ts's `scope_device_id = NULL`
+          // UPDATE). The immutability trigger permits exactly this
+          // transition (non-null -> NULL is the ONE allowed change to
+          // scope_ticket_id; see actionIntents.ts's column comment), so this
+          // is the tombstone path, not a bypass. Scoped to the two LIVE
+          // pre-release statuses only — a terminal intent is a historical
+          // record of a decision already made and is left alone.
+          await db
+            .update(actionIntents)
+            .set({ scopeTicketId: null })
+            .where(
+              and(
+                eq(actionIntents.scopeTicketId, String(input.ticketId)),
+                inArray(actionIntents.status, ['pending_approval', 'approved']),
+              ),
+            );
           const ticket = await moveTicketOrg(String(input.ticketId), String(input.targetOrgId), actor);
           return JSON.stringify({ ticket });
         } catch (err) {

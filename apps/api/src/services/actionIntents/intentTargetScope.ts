@@ -55,18 +55,21 @@ export type IntentTargetDevice =
 
 /**
  * The scope projection every caller must select alongside the intent row.
- * Both fields are nullable in the DB. `scopeKind` is CHECK-constrained to
- * 'device' | 'ticket' | NULL (P2-2 + P2-4's action_intents_scope_kind_chk),
- * matching the wider real column type — but this resolver is PURELY about
- * the intent's target DEVICE, so 'ticket' is deliberately handled the same
- * as no explicit scope at all (falls through to the run's own device, which
- * may be null): a ticket-triage intent has no device target by construction,
- * and resolving one is a separate concern for the ticket-scope reader a
- * later P2-4 task adds (mirroring this module's shape, not extending it).
+ * All three fields are nullable in the DB. `scopeKind` is CHECK-constrained
+ * to 'device' | 'ticket' | NULL (P2-2 + P2-4's action_intents_scope_kind_chk)
+ * — but `resolveIntentTargetDevice` below is PURELY about the intent's
+ * target DEVICE, so 'ticket' is deliberately handled the same as no
+ * explicit scope at all there (falls through to the run's own device, which
+ * may be null): a ticket-triage intent has no device target by
+ * construction. `resolveIntentTargetTicket` (P2-4 Task A3, #4191) is the
+ * mirror-image resolver for the ticket target — same shape, not an
+ * extension of the device one, since a device-scoped or unscoped intent has
+ * no ticket target either.
  */
 export interface IntentScopeColumns {
   scopeKind: 'device' | 'ticket' | null;
   scopeDeviceId: string | null;
+  scopeTicketId: string | null;
 }
 
 /**
@@ -94,6 +97,37 @@ export function resolveIntentTargetDevice(
  */
 export function effectiveTargetDeviceId(target: IntentTargetDevice): string | null {
   return target.kind === 'tombstone' ? null : target.deviceId;
+}
+
+/**
+ * What an intent actually targets on the TICKET axis (P2-4 Task A3, #4191).
+ * Unlike `IntentTargetDevice`, there is no `'run'` fallback variant — a run
+ * has no run-level "own ticket" equivalent to `run.deviceId` that a reader
+ * should fall back to, so an intent with no ticket scope simply targets no
+ * ticket (`'none'`).
+ */
+export type IntentTargetTicket =
+  /** Explicit ticket scope, ticket still linked. */
+  | { kind: 'scope'; ticketId: string }
+  /** `scope_kind='ticket'` but `scope_ticket_id IS NULL` — fail closed,
+   *  same tombstone shape as the device resolver (produced by the
+   *  `manage_tickets:move_org` executor's detach — see that file). */
+  | { kind: 'tombstone' }
+  /** No ticket scope at all: `scopeKind` is `null` or `'device'`. */
+  | { kind: 'none' };
+
+/**
+ * Resolve the intent's target ticket. Pure and synchronous, same contract as
+ * `resolveIntentTargetDevice` — no DB, no run fallback (see the type's doc
+ * comment above for why there is nothing to fall back to).
+ */
+export function resolveIntentTargetTicket(intent: IntentScopeColumns): IntentTargetTicket {
+  if (intent.scopeKind !== 'ticket') {
+    return { kind: 'none' };
+  }
+  return intent.scopeTicketId === null || intent.scopeTicketId === undefined
+    ? { kind: 'tombstone' }
+    : { kind: 'scope', ticketId: intent.scopeTicketId };
 }
 
 /**

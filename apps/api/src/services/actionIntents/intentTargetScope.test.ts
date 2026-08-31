@@ -1,20 +1,44 @@
 import { describe, expect, it } from 'vitest';
-import { resolveIntentTargetDevice, effectiveTargetDeviceId, assertArgsMatchScope } from './intentTargetScope';
+import {
+  resolveIntentTargetDevice,
+  resolveIntentTargetTicket,
+  effectiveTargetDeviceId,
+  assertArgsMatchScope,
+} from './intentTargetScope';
 
 const D = '22222222-2222-4222-8222-222222222222';
+const T = '33333333-3333-4333-8333-333333333333';
 
 describe('resolveIntentTargetDevice', () => {
   it('falls back to the run device when no scope is set', () => {
-    expect(resolveIntentTargetDevice({ scopeKind: null, scopeDeviceId: null }, { deviceId: D })).toEqual({ kind: 'run', deviceId: D });
-    expect(resolveIntentTargetDevice({ scopeKind: null, scopeDeviceId: null }, { deviceId: null })).toEqual({ kind: 'run', deviceId: null });
+    expect(resolveIntentTargetDevice({ scopeKind: null, scopeDeviceId: null, scopeTicketId: null }, { deviceId: D })).toEqual({ kind: 'run', deviceId: D });
+    expect(resolveIntentTargetDevice({ scopeKind: null, scopeDeviceId: null, scopeTicketId: null }, { deviceId: null })).toEqual({ kind: 'run', deviceId: null });
   });
   it('prefers the explicit scope over the run device', () => {
-    expect(resolveIntentTargetDevice({ scopeKind: 'device', scopeDeviceId: D }, { deviceId: 'other' })).toEqual({ kind: 'scope', deviceId: D });
+    expect(resolveIntentTargetDevice({ scopeKind: 'device', scopeDeviceId: D, scopeTicketId: null }, { deviceId: 'other' })).toEqual({ kind: 'scope', deviceId: D });
   });
   it('reports a tombstone when the scoped device was deleted', () => {
-    const t = resolveIntentTargetDevice({ scopeKind: 'device', scopeDeviceId: null }, { deviceId: D });
+    const t = resolveIntentTargetDevice({ scopeKind: 'device', scopeDeviceId: null, scopeTicketId: null }, { deviceId: D });
     expect(t).toEqual({ kind: 'tombstone' });
     expect(effectiveTargetDeviceId(t)).toBeNull();
+  });
+  it('falls back to the run device for a ticket-scoped intent (ticket is not a device target)', () => {
+    expect(resolveIntentTargetDevice({ scopeKind: 'ticket', scopeDeviceId: null, scopeTicketId: T }, { deviceId: D })).toEqual({ kind: 'run', deviceId: D });
+  });
+});
+
+describe('resolveIntentTargetTicket', () => {
+  it('reports no ticket target when scopeKind is null', () => {
+    expect(resolveIntentTargetTicket({ scopeKind: null, scopeDeviceId: null, scopeTicketId: null })).toEqual({ kind: 'none' });
+  });
+  it('reports no ticket target for a device-scoped intent', () => {
+    expect(resolveIntentTargetTicket({ scopeKind: 'device', scopeDeviceId: D, scopeTicketId: null })).toEqual({ kind: 'none' });
+  });
+  it('resolves the explicit ticket scope', () => {
+    expect(resolveIntentTargetTicket({ scopeKind: 'ticket', scopeDeviceId: null, scopeTicketId: T })).toEqual({ kind: 'scope', ticketId: T });
+  });
+  it('reports a tombstone when scope_ticket_id was cleared', () => {
+    expect(resolveIntentTargetTicket({ scopeKind: 'ticket', scopeDeviceId: null, scopeTicketId: null })).toEqual({ kind: 'tombstone' });
   });
 });
 

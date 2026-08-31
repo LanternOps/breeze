@@ -141,7 +141,7 @@ async function loadRunAndAgent(
   orgId: string,
   // 'ticket' falls through resolveIntentTargetDevice the same as no scope
   // at all — see IntentScopeColumns' comment (intentTargetScope.ts).
-  scope: { scopeKind: 'device' | 'ticket' | null; scopeDeviceId: string | null },
+  scope: { scopeKind: 'device' | 'ticket' | null; scopeDeviceId: string | null; scopeTicketId: string | null },
 ): Promise<LoadedRunAndAgent | 'scope_lost' | null> {
   return inSystemDbContext(async () => {
     const [run] = await db
