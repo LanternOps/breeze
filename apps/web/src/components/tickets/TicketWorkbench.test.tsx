@@ -522,6 +522,142 @@ describe('TicketWorkbench ML triage suggestions', () => {
   });
 });
 
+describe('TicketWorkbench AI drafts (#4191, Task 11)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** Sets up fetchWithAuth: ticket GET, triage-suggestion GET (disabled), and
+   *  a stubbed ai-drafts GET returning `drafts`. Mutations return {success:true}
+   *  unless overridden by `extra`. */
+  function mockDraftsApi(drafts: unknown[], extra?: (url: string, init?: RequestInit) => Response | null) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (extra) {
+        const res = extra(url, init);
+        if (res) return res;
+      }
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1' }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ enabled: false, flagSource: 'default', suggestion: null });
+      }
+      if (url === '/tickets/tk-1/ai-drafts' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: drafts });
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  const replyDraft = {
+    id: 'draft-reply-1',
+    kind: 'reply',
+    content: 'Thanks for reaching out — please try rebooting the printer.',
+    createdAt: '2026-08-01T12:00:00.000Z',
+    runId: 'run-1',
+  };
+
+  const resolutionDraft = {
+    id: 'draft-note-1',
+    kind: 'resolution_note',
+    content: 'Replaced the fuser assembly; printer now prints cleanly.',
+    createdAt: '2026-08-01T12:00:00.000Z',
+    runId: 'run-2',
+  };
+
+  it('renders an AI draft card with the kind label and editable content', async () => {
+    mockDraftsApi([replyDraft]);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    const card = await screen.findByTestId('ticket-ai-draft');
+    expect(card).toBeInTheDocument();
+    const textarea = screen.getByTestId('ticket-ai-draft-content') as HTMLTextAreaElement;
+    expect(textarea.value).toBe(replyDraft.content);
+    expect(screen.getByTestId('ticket-ai-draft-send')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-ai-draft-discard')).toBeInTheDocument();
+  });
+
+  it('sends the (edited) draft content via runAction and removes the card', async () => {
+    mockDraftsApi([replyDraft]);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    const textarea = await screen.findByTestId('ticket-ai-draft-content');
+    fireEvent.change(textarea, { target: { value: 'Edited: please reboot the printer twice.' } });
+    fireEvent.click(screen.getByTestId('ticket-ai-draft-send'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/ai-drafts/draft-reply-1/send',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ content: 'Edited: please reboot the printer twice.' }),
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId('ticket-ai-draft')).toBeNull();
+    });
+  });
+
+  it('discards a draft via runAction without sending, and removes the card', async () => {
+    mockDraftsApi([replyDraft]);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-ai-draft');
+    fireEvent.click(screen.getByTestId('ticket-ai-draft-discard'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/ai-drafts/draft-reply-1/discard',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/tickets/tk-1/ai-drafts/draft-reply-1/send',
+      expect.anything(),
+    );
+    await waitFor(() => {
+      expect(screen.queryByTestId('ticket-ai-draft')).toBeNull();
+    });
+  });
+
+  it('prefills the resolve note from an active resolution_note draft and sends aiDraftId on resolve', async () => {
+    mockDraftsApi([resolutionDraft]);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    // Give the ai-drafts fetch a tick to land before opening the resolve form.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/tickets/tk-1/ai-drafts'));
+
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
+
+    const note = screen.getByTestId('ticket-workbench-resolve-note') as HTMLTextAreaElement;
+    expect(note.value).toBe(resolutionDraft.content);
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ status: 'resolved', resolutionNote: resolutionDraft.content, aiDraftId: 'draft-note-1' }),
+        }),
+      );
+    });
+  });
+
+  it('never renders a card for a draft the ai-drafts endpoint does not return (consumed/discarded)', async () => {
+    mockDraftsApi([]);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/tickets/tk-1/ai-drafts'));
+    expect(screen.queryByTestId('ticket-ai-draft')).toBeNull();
+  });
+});
+
 describe('TicketWorkbench pending/on_hold prompt', () => {
   beforeEach(() => {
     vi.clearAllMocks();
