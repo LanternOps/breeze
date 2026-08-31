@@ -264,6 +264,21 @@ const ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS: Readonly<
   },
 };
 
+/**
+ * Extracts the table name from a `table.trigger` map key (the format all
+ * three trigger-classification maps above are keyed in). A plain
+ * `key.split('.')[0]` types as `string | undefined` under this repo's
+ * `noUncheckedIndexedAccess`, even though every key here is guaranteed to
+ * contain a dot — this stays type-sound without asserting past the
+ * compiler, and throws loudly (rather than silently matching nothing) if
+ * that guarantee is ever violated.
+ */
+function tableOf(key: string): string {
+  const dot = key.indexOf('.');
+  if (dot === -1) throw new Error(`trigger-classification map key missing '.' separator: ${key}`);
+  return key.slice(0, dot);
+}
+
 describe('Org merge policy registry contract', () => {
   const policies = getOrgMergePolicies();
   const required = new Set([...getOrgCascadeDeleteOrder(), ...EXTRA_REQUIRED]);
@@ -513,7 +528,7 @@ describe('Org merge policy registry contract', () => {
     // ORG_ID_BLOCKING_TRIGGERS above (it lives only in the third map), so it
     // never reaches this check. Its safety is asserted separately, by the
     // discharge test below.
-    const blockingTables = [...new Set(Object.keys(ORG_ID_BLOCKING_TRIGGERS).map((key) => key.split('.')[0]))];
+    const blockingTables = [...new Set(Object.keys(ORG_ID_BLOCKING_TRIGGERS).map(tableOf))];
     const violations = blockingTables
       .filter((table) => {
         const kind = policies.get(table)?.kind;
