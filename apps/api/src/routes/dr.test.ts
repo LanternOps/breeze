@@ -220,6 +220,7 @@ describe('dr routes', () => {
       orgId: ORG_ID,
       executionType: 'rehearsal',
       initiatedBy: 'user-123',
+      auth: authState,
     });
   });
 

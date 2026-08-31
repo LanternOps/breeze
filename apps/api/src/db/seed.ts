@@ -108,6 +108,7 @@ export const DEFAULT_PERMISSIONS = [
   // Backup / recovery
   { resource: 'backup', action: 'read', description: 'View backup and recovery resources' },
   { resource: 'backup', action: 'write', description: 'Create and manage backup and recovery resources' },
+  { resource: 'backup', action: 'cross_site_restore', description: 'Restore backup data across sites' },
 
   // Devices
   { resource: 'devices', action: 'read', description: 'View devices and their details' },
@@ -288,7 +289,7 @@ export const SYSTEM_ROLES = [
     scope: 'organization' as const,
     description: 'Full access within organization',
     permissions: [
-      'backup:read', 'backup:write',
+      'backup:read', 'backup:write', 'backup:cross_site_restore',
       'devices:read', 'devices:write', 'devices:delete', 'devices:execute',
       'scripts:read', 'scripts:write', 'scripts:delete', 'scripts:execute',
       'alerts:read', 'alerts:write', 'alerts:acknowledge',

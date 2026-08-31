@@ -1,12 +1,13 @@
 /**
  * Hand-written org-merge executors (org-lifecycle Wave 2, Task 3).
  *
- * The registry (`orgMergeRegistry.ts`) classifies fourteen tables as `custom`.
+ * The registry (`orgMergeRegistry.ts`) classifies sixteen tables as `custom`.
  * Four were custom from the start (`contacts`, `backup_configs`,
- * `audit_baselines`, `pax8_orders`); nine were reclassified by review, in the
+ * `audit_baselines`, `pax8_orders`); ten were reclassified by review, in the
  * three groups below; `ai_agents` arrived with main's AI-agents work and hits
- * both of the last two at once. Each entry's registry note is this file's
- * spec — read them together.
+ * both of the last two at once; `automation_resource_bindings` was added when
+ * Track A met the exhaustive mainline registry. Each entry's registry note is
+ * this file's spec — read them together.
  *
  *   - spec compliance: `api_keys` and `enrollment_keys` must be REVOKED rather
  *     than repointed (controller ruling R2), which no generic policy expresses;
@@ -792,11 +793,34 @@ const mergeReports: CustomMergeExecutor = async (loser, survivor) => {
   };
 };
 
+// ---------------------------------------------------------------------------
+// automation_resource_bindings — the binding's org_id copies its parent
+// automation owner, while expected_resource_org_id records the referenced
+// resource owner observed at admission. Both must advance in the same merge
+// transaction. Updating only org_id leaves an out-of-tenant expected owner and
+// fails the deferred binding guard at commit; partner-owned and system
+// references carry NULL here and are intentionally untouched.
+// ---------------------------------------------------------------------------
+const mergeAutomationResourceBindings: CustomMergeExecutor = async (loser, survivor) => ({
+  moved: await run(sql`
+    UPDATE automation_resource_bindings
+       SET org_id = ${uuid(survivor)},
+           expected_resource_org_id = CASE
+             WHEN expected_resource_org_id = ${uuid(loser)} THEN ${uuid(survivor)}
+             ELSE expected_resource_org_id
+           END,
+           updated_at = now()
+     WHERE org_id = ${uuid(loser)}`),
+  dropped: 0,
+  notes: [],
+});
+
 /**
  * The `move`-phase half of every `custom` table (which, for all but one of
  * them, is the whole executor).
  */
 export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
+  automation_resource_bindings: mergeAutomationResourceBindings,
   contacts: mergeContacts,
   backup_configs: mergeBackupConfigs,
   audit_baselines: mergeAuditBaselines,

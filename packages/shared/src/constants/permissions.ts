@@ -15,6 +15,7 @@ export const PERMISSION_GRANTS = {
   // Backup / recovery
   BACKUP_READ: { resource: 'backup', action: 'read' },
   BACKUP_WRITE: { resource: 'backup', action: 'write' },
+  BACKUP_CROSS_SITE_RESTORE: { resource: 'backup', action: 'cross_site_restore' },
 
   // Devices
   DEVICES_READ: { resource: 'devices', action: 'read' },

@@ -12,9 +12,9 @@ import {
 import { createGuardedS3Client } from './guardedS3Client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl } from '@breeze/shared';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../db';
-import { recoveryMediaArtifacts, recoveryTokens } from '../db/schema';
+import { backupSnapshots, recoveryMediaArtifacts, recoveryTokens } from '../db/schema';
 import {
   asRecord,
   getStringValue,
@@ -33,6 +33,11 @@ import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
 import { getReleaseSourceRepository } from './releaseSource';
 import { getRecoverySigningKey, isRecoverySigningConfigured, signRecoveryArtifact } from './recoverySigning';
 import { safeFetchFollowingRedirects } from './urlSafety';
+import {
+  authorizeQueuedRecoveryWork,
+  RecoveryAuthorizationDeniedError,
+  type RecoveryAuthorizationSubjectRow,
+} from './recoveryAuthorizationSubject';
 
 const execFileAsync = promisify(execFile);
 
@@ -401,6 +406,145 @@ function normalizeRecoveryMediaStatus(row: {
   return row.status;
 }
 
+type RecoveryMediaAuthorizationArtifact = RecoveryAuthorizationSubjectRow & {
+  id: string;
+  orgId: string;
+};
+
+export interface RecoveryMediaAuthorizationDependencies {
+  loadArtifact(artifactId: string): Promise<RecoveryMediaAuthorizationArtifact | null>;
+  authorize(artifact: RecoveryMediaAuthorizationArtifact): Promise<unknown>;
+  claim(artifact: RecoveryMediaAuthorizationArtifact, checkedAt: Date): Promise<boolean>;
+  recordDenial(
+    artifact: RecoveryMediaAuthorizationArtifact,
+    state: 'denied' | 'quarantined_authorization_unknown',
+    code: string,
+    checkedAt: Date,
+  ): Promise<boolean>;
+  now(): Date;
+}
+
+function recoveryMediaSubjectPredicate(artifact: RecoveryMediaAuthorizationArtifact) {
+  return and(
+    eq(recoveryMediaArtifacts.id, artifact.id),
+    eq(recoveryMediaArtifacts.orgId, artifact.orgId),
+    eq(recoveryMediaArtifacts.authorizationPrincipalKind, artifact.authorizationPrincipalKind),
+    artifact.authorizationPrincipalId
+      ? eq(recoveryMediaArtifacts.authorizationPrincipalId, artifact.authorizationPrincipalId)
+      : isNull(recoveryMediaArtifacts.authorizationPrincipalId),
+    artifact.authorizationGrantRevision
+      ? eq(recoveryMediaArtifacts.authorizationGrantRevision, artifact.authorizationGrantRevision)
+      : isNull(recoveryMediaArtifacts.authorizationGrantRevision),
+  );
+}
+
+const defaultRecoveryMediaAuthorizationDependencies: RecoveryMediaAuthorizationDependencies = {
+  async loadArtifact(artifactId) {
+    const [artifact] = await db
+      .select()
+      .from(recoveryMediaArtifacts)
+      .where(eq(recoveryMediaArtifacts.id, artifactId))
+      .limit(1);
+    return artifact ?? null;
+  },
+  async authorize(artifact) {
+    return authorizeQueuedRecoveryWork(
+      artifact,
+      artifact.orgId,
+      [
+        { kind: 'media_artifact', id: artifact.id, role: 'source' },
+        { kind: 'media_artifact', id: artifact.id, role: 'target' },
+      ],
+      'media',
+    );
+  },
+  async claim(artifact, checkedAt) {
+    const [claimed] = await db
+      .update(recoveryMediaArtifacts)
+      .set({
+        status: 'building',
+        authorizationState: 'authorized',
+        authorizationDenialCode: null,
+        authorizationCheckedAt: checkedAt,
+      })
+      .where(and(
+        recoveryMediaSubjectPredicate(artifact),
+        inArray(recoveryMediaArtifacts.status, ['pending', 'failed']),
+      ))
+      .returning({ id: recoveryMediaArtifacts.id });
+    return Boolean(claimed);
+  },
+  async recordDenial(artifact, state, code, checkedAt) {
+    const [recorded] = await db
+      .update(recoveryMediaArtifacts)
+      .set({
+        authorizationState: state,
+        authorizationDenialCode: code,
+        authorizationCheckedAt: checkedAt,
+      })
+      .where(recoveryMediaSubjectPredicate(artifact))
+      .returning({ id: recoveryMediaArtifacts.id });
+    return Boolean(recorded);
+  },
+  now: () => new Date(),
+};
+
+export async function authorizeAndClaimRecoveryMediaArtifact(
+  artifactId: string,
+  deps: RecoveryMediaAuthorizationDependencies = defaultRecoveryMediaAuthorizationDependencies,
+): Promise<boolean> {
+  const artifact = await deps.loadArtifact(artifactId);
+  if (!artifact) throw new RecoveryAuthorizationDeniedError('resource_not_found');
+  const checkedAt = deps.now();
+
+  try {
+    await deps.authorize(artifact);
+  } catch (error) {
+    if (
+      error instanceof Error
+      && 'retriable' in error
+      && (error as { retriable?: unknown }).retriable === false
+    ) {
+      const code = 'code' in error && typeof error.code === 'string'
+        ? error.code
+        : 'authorization_subject_unknown';
+      const state = code === 'authorization_subject_unknown'
+        ? 'quarantined_authorization_unknown'
+        : 'denied';
+      const recorded = await deps.recordDenial(artifact, state, code, checkedAt);
+      if (!recorded) {
+        throw new Error(`Recovery media authorization subject changed for ${artifact.id}`);
+      }
+    }
+    throw error;
+  }
+
+  return deps.claim(artifact, checkedAt);
+}
+
+export async function recordRecoveryMediaBuildFailure(
+  artifactId: string,
+  error: unknown,
+): Promise<void> {
+  const [artifact] = await db
+    .select({ metadata: recoveryMediaArtifacts.metadata })
+    .from(recoveryMediaArtifacts)
+    .where(eq(recoveryMediaArtifacts.id, artifactId))
+    .limit(1);
+  if (!artifact) return;
+  await db
+    .update(recoveryMediaArtifacts)
+    .set({
+      status: 'failed',
+      metadata: {
+        ...asRecord(artifact.metadata),
+        error: error instanceof Error ? error.message : String(error),
+      },
+      completedAt: new Date(),
+    })
+    .where(eq(recoveryMediaArtifacts.id, artifactId));
+}
+
 export async function buildRecoveryMediaArtifact(artifactId: string, requestUrl?: string): Promise<void> {
   const [artifact] = await db
     .select()
@@ -436,11 +580,6 @@ export async function buildRecoveryMediaArtifact(artifactId: string, requestUrl?
       .where(eq(recoveryMediaArtifacts.id, artifact.id));
     return;
   }
-
-  await db
-    .update(recoveryMediaArtifacts)
-    .set({ status: 'building' })
-    .where(eq(recoveryMediaArtifacts.id, artifact.id));
 
   const workingDir = await mkdtemp(join(tmpdir(), 'bmr-bundle-'));
   try {
@@ -637,6 +776,7 @@ export async function listRecoveryMediaArtifacts(orgId: string, filters: {
   status?: string;
   limit: number;
   offset: number;
+  authorizedDeviceIds?: string[] | null;
 }) {
   const rows = await db
     .select({
@@ -661,12 +801,22 @@ export async function listRecoveryMediaArtifacts(orgId: string, filters: {
     })
     .from(recoveryMediaArtifacts)
     .innerJoin(recoveryTokens, eq(recoveryMediaArtifacts.tokenId, recoveryTokens.id))
+    .innerJoin(backupSnapshots, and(
+      eq(recoveryMediaArtifacts.snapshotId, backupSnapshots.id),
+      eq(recoveryMediaArtifacts.orgId, backupSnapshots.orgId),
+    ))
     .where(
       and(
         eq(recoveryMediaArtifacts.orgId, orgId),
         filters.tokenId ? eq(recoveryMediaArtifacts.tokenId, filters.tokenId) : undefined,
         filters.snapshotId ? eq(recoveryMediaArtifacts.snapshotId, filters.snapshotId) : undefined,
-        filters.status ? eq(recoveryMediaArtifacts.status, filters.status as never) : undefined
+        filters.status ? eq(recoveryMediaArtifacts.status, filters.status as never) : undefined,
+        filters.authorizedDeviceIds
+          ? inArray(recoveryTokens.deviceId, filters.authorizedDeviceIds)
+          : undefined,
+        filters.authorizedDeviceIds
+          ? inArray(backupSnapshots.deviceId, filters.authorizedDeviceIds)
+          : undefined
       )
     )
     .orderBy(desc(recoveryMediaArtifacts.createdAt), desc(recoveryMediaArtifacts.id))

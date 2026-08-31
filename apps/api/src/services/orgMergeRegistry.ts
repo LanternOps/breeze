@@ -84,6 +84,14 @@ function buildFollowsParentEntries(): Record<string, OrgMergePolicy> {
 const SPECIAL: Record<string, OrgMergePolicy> = {
   organizations: { kind: 'loser-shell' },
 
+  // Track A durable authorization bindings copy both the automation owner and
+  // the resource owner observed at admission. A plain org_id repoint leaves
+  // expected_resource_org_id naming the loser and the deferred
+  // automation_resource_bindings_expected_tenant_chk rejects the transaction.
+  // The custom executor advances both axes together; partner-owned/system
+  // bindings have a NULL expected_resource_org_id and remain unchanged.
+  automation_resource_bindings: { kind: 'custom', note: 'repoint org_id and an org-owned expected_resource_org_id together so the durable authorization binding remains valid after the parent automation moves' },
+
   // Append-only (BEFORE UPDATE triggers RAISE unconditionally; per-org hash chain):
   audit_logs: { kind: 'leave-for-erasure', note: 'append-only + per-org hash chain; rows die with the loser shell' },
   audit_log_chain: { kind: 'leave-for-erasure', note: 'genesis-row unique per org' },
