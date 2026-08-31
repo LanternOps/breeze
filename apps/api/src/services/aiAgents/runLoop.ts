@@ -141,6 +141,7 @@ import { loadNarrativeContext, type NarrativeContext } from './narrativeContext'
 import { NarrativePersistConflictError, persistNarrativeReport } from './narrativeReport';
 import { persistAlertVerdict, type AlertVerdictIntentInfo } from './alertVerdicts';
 import { persistSweepFindings, type SweepProposalRecord } from './sweepFindings';
+import { persistTicketTriage } from './ticketTriageFindings';
 
 /** `ai_agent_runs.summary` is `text`, but a reviewer reads the first screen. */
 const RUN_SUMMARY_MAX_CHARS = 2000;
@@ -1357,6 +1358,37 @@ export function dispositionForResultSubtype(subtype: string): ResultDisposition 
 }
 
 /**
+ * Phase 2 wave P2-4 (#4191), Task A8 — whether a run that created one or
+ * more intents still has a human decision pending. `true` iff at least one
+ * id in `intentIds` is NOT also in `decidedIntentIds`.
+ *
+ * Before this task, `executeAgentRun` used `intentIds.length > 0` directly:
+ * correct because every existing finalizer (`finalizeVerdict`/
+ * `finalizeSweep`) and every in-loop proposal path (`recordProposal`) only
+ * ever links a `pending_approval` intent id — a cancelled/errored one is
+ * never pushed (see `alertVerdicts.ts`'s header on why linking a cancelled
+ * id would be wrong). `finalizeTicketTriage` breaks that invariant on
+ * purpose: a creation-time `ticket_autonomy` grant produces a genuinely
+ * live intent whose status is ALREADY `approved` — nobody is waiting on it,
+ * so counting it toward `awaiting_approval` would leave the run in a status
+ * that reads as "needs a human" when it does not.
+ *
+ * `decidedIntentIds` defaults to empty, so for every other profile this is
+ * exactly `intentIds.length > 0` — unchanged behavior.
+ *
+ * Exported for direct unit coverage (same precedent as `computeRunVerdict`)
+ * rather than only reachable through the full SDK-loop harness.
+ */
+export function classifyIntentAwaitingApproval(
+  intentIds: string[],
+  decidedIntentIds: string[] | undefined,
+): boolean {
+  if (intentIds.length === 0) return false;
+  const decided = new Set(decidedIntentIds ?? []);
+  return intentIds.some((id) => !decided.has(id));
+}
+
+/**
  * Same precedence as `recordUsageFromSdkResult`: trust the SDK's self-reported
  * cost, and price the tokens ourselves only when it reports zero against a
  * non-zero token count (issue #1326 — the SDK cannot price a model id newer
@@ -1499,6 +1531,17 @@ interface LoopResult {
    * under-count real spend. Setup failures BEFORE any spend still throw.
    */
   failure?: { errorCode: string; message: string };
+  /**
+   * Phase 2 wave P2-4 (#4191), Task A8 — the SUBSET of `intentIds` that a
+   * creation-time `ticket_autonomy` grant already decided (status
+   * `approved`, no human fan-out ever happened — see `ticketAutonomy.ts`).
+   * Populated only by `finalizeTicketTriage`; every other profile's
+   * finalizer only ever links a `pending_approval` intent, so this stays
+   * empty (and every existing `intentIds.length > 0` reader is unaffected)
+   * for `verdict`/`sweep`/`narrative`/`full` runs. See
+   * `classifyIntentAwaitingApproval`'s own docstring for how this is used.
+   */
+  decidedIntentIds?: string[];
 }
 
 async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<LoopResult> {
@@ -1953,6 +1996,14 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // is exactly one of verdict / sweep / narrative, so at most one of the
     // three error codes below is ever non-null.
     const narrativeErrorCode = await finalizeNarrative(ctx, result);
+    // Task A8 (wave P2-4) — fourth in the same row, same reason: a triage
+    // run's proposal->intent conversion must happen BEFORE the
+    // awaiting_approval/completed decision below so a freshly created
+    // pending (or creation-time `ticket_autonomy`-approved) intent is
+    // counted correctly. A run is exactly one of verdict / sweep /
+    // narrative / triage, so at most one of the four error codes below is
+    // ever non-null.
+    const ticketTriageErrorCode = await finalizeTicketTriage(ctx, result);
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
@@ -2018,11 +2069,20 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // Awaiting approval is a REAL terminal-ish state for the run: the agent is
     // done thinking and a human now owns the decision. Release of an approved
     // intent is 3b's machinery, not a continuation of this run.
+    //
+    // Task A8 (wave P2-4): a plain `intentIds.length > 0` check is no longer
+    // sufficient — a triage run's `ticket_autonomy` grant can create intents
+    // that are ALREADY decided (`approved`, no human fan-out ever ran) at
+    // the moment they're minted. `classifyIntentAwaitingApproval` excludes
+    // those (`result.decidedIntentIds`) from the count; every other
+    // profile's finalizer only ever links a `pending_approval` id, so
+    // `decidedIntentIds` stays empty and this is behaviorally IDENTICAL to
+    // the old check for verdict/sweep/narrative/full runs.
     ledgerOutcome = 'completed';
     await finishRun(
       ctx,
-      intentIds.length > 0 ? 'awaiting_approval' : 'completed',
-      verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode,
+      classifyIntentAwaitingApproval(intentIds, result.decidedIntentIds) ? 'awaiting_approval' : 'completed',
+      verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode ?? ticketTriageErrorCode,
       result,
     );
   } catch (error) {
@@ -2302,6 +2362,95 @@ async function finalizeNarrative(ctx: RunContext, result: LoopResult): Promise<s
     }
     console.error('[aiAgentRunLoop] failed to persist the narrative report', { runId: ctx.run.id, error });
     return 'narrative_persist_failed';
+  }
+}
+
+/**
+ * Phase 2 wave P2-4 (ticket triage, #4191), Task A8 — the triage sibling of
+ * `finalizeVerdict`/`finalizeSweep`/`finalizeNarrative` above, called from
+ * the SAME place in `executeAgentRun` and outside any ambient DB context
+ * (`persistTicketTriage` inherits `createActionIntent`'s no-ambient-context
+ * precondition; see `sweepFindings.ts`/`alertVerdicts.ts` headers).
+ *
+ * Returns an errorCode override the caller applies ONLY on the
+ * normal-finish path, exactly as its three siblings do.
+ *
+ * A triage run that reached a normal finish without ever calling
+ * `submit_ticket_proposal` is treated like a verdict run's missing verdict,
+ * not like a sweep's legitimate "found nothing": the prompt tells the model
+ * to call its one outcome tool exactly once (`runnerPrompt.ts`), so a run
+ * that never did is a runner failure a human needs to see, not a silent
+ * `completed`.
+ */
+async function finalizeTicketTriage(ctx: RunContext, result: LoopResult): Promise<string | null> {
+  if (!isTriageProfile(ctx.run)) return null;
+  const { outcome } = result;
+
+  if (!outcome.ticketProposal) return 'ticket_proposal_missing';
+
+  // Defensive, mirroring `finalizeNarrative`'s `ctx.narrative?.scheduleId`
+  // check: a `triage`-profile run is admitted with `triggerKind: 'ticket'`
+  // and a `ticketId` by construction (wave 6 PR 3), but this is the one
+  // place a violated invariant would otherwise NPE deep inside
+  // `persistTicketTriage` instead of surfacing a clear error code.
+  if (ctx.run.triggerKind !== 'ticket' || !ctx.run.ticketId) {
+    console.warn('[aiAgentRunLoop] triage run carries no ticket scope — not persisting its proposal', {
+      runId: ctx.run.id, orgId: ctx.run.orgId, triggerKind: ctx.run.triggerKind,
+    });
+    return 'ticket_triage_scope_missing';
+  }
+
+  // Same IMPORTANT-4 re-read every sibling carries: the stall reaper
+  // (`reapStalledAgentRuns`) or a second executor may have moved this run
+  // out of `running` while the SDK loop was in flight. Skip persistence
+  // rather than mint live, human-or-autonomy-decided intents under a run
+  // nobody owns anymore.
+  const stillRunning = await isRunStillRunning(ctx.run.id, ctx.run.orgId);
+  if (!stillRunning) {
+    console.warn('[aiAgentRunLoop] skipped ticket-triage persistence — run left `running` before it could be persisted', {
+      runId: ctx.run.id,
+    });
+    return null;
+  }
+
+  try {
+    const { intentIds, autonomous, skipped } = await persistTicketTriage(
+      {
+        id: ctx.run.id,
+        orgId: ctx.run.orgId,
+        agentId: ctx.run.agentId,
+        ticketId: ctx.run.ticketId,
+        // The run's IMMUTABLE start-of-run snapshot — gate 2 of the
+        // advisory autonomy check (see `ticketTriageFindings.ts`'s header).
+        policySnapshot: ctx.run.policySnapshot,
+        // The AGENT's action cap — a triage run's ONE deliberate divergence
+        // from its siblings' hard-zeroed `maxActionsPerRun` (see
+        // `triageLimits`'s docstring): this is a POST-run minting cap, not
+        // an in-run tool-call budget. `??` tolerates a pre-v8 snapshot.
+        maxActionsPerRun:
+          ctx.run.policySnapshot.effective.limits.maxActionsPerRun
+          ?? AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun,
+      },
+      outcome.ticketProposal,
+      result.agentAuth,
+    );
+    for (const intentId of intentIds) result.intentIds.push(intentId);
+    // See `classifyIntentAwaitingApproval`'s docstring: an autonomous grant
+    // is applied UNIFORMLY to every intent this call created (the advisory
+    // check runs once, ahead of the loop), so every id it returned is
+    // treated as already-decided here too.
+    if (autonomous && intentIds.length > 0) {
+      result.decidedIntentIds = [...(result.decidedIntentIds ?? []), ...intentIds];
+    }
+    if (skipped.length > 0) {
+      console.info('[aiAgentRunLoop] ticket-triage proposal partially skipped', {
+        runId: ctx.run.id, skipped,
+      });
+    }
+    return null;
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to persist the ticket-triage proposal', { runId: ctx.run.id, error });
+    return 'ticket_triage_persist_failed';
   }
 }
 
