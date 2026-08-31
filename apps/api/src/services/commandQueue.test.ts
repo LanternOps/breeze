@@ -1018,6 +1018,247 @@ describe('command queue service', () => {
     });
   });
 
+  // ============================================================
+  // #4093 — artifact-edition gate on agent-binary update dispatch
+  // ============================================================
+  //
+  // #4072/#4091 taught the HEARTBEAT offer path to withhold an update from a
+  // build that would refuse the served artifact edition after download. The
+  // manual/AI dispatch door (`trigger_agent_upgrade` -> executeCommand with
+  // type 'update_agent') bypassed it entirely — the same failure class as
+  // "manual Remediate ignores enforceMode" (#3381).
+  //
+  // The gate lives here, at executeCommand, because that is the single point
+  // every agent-binary update dispatch funnels through; gating at the one
+  // known caller is how a third caller silently ships ungated.
+  describe('agent-binary update edition gate (#4093)', () => {
+    const ORIGINAL_EDITION = process.env.BINARY_EDITION;
+
+    function mockDevice(device: Record<string, unknown>) {
+      let pollCall = 0;
+      vi.mocked(db.select).mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockImplementation(() => {
+              pollCall += 1;
+              if (pollCall === 1) return Promise.resolve([device]);
+              return Promise.resolve([
+                { id: 'cmd-e', status: 'completed', result: { status: 'completed' } },
+              ]);
+            }),
+          }),
+        }),
+      }) as any);
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'cmd-e', type: 'update_agent' }]),
+        execute: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+      return insertValues;
+    }
+
+    // A device stranded in the 0.105.0-0.106.x band: it carries the client-side
+    // edition check but is a self-host build, and it predates edition
+    // reporting, so agent_edition is NULL.
+    const strandedDevice = {
+      id: 'dev-stranded',
+      status: 'online',
+      agentId: 'agent-stranded',
+      orgId: 'org-1',
+      hostname: 'stranded-pc',
+      watchdogLastSeen: new Date(),
+      agentEdition: null,
+      agentVersion: '0.105.1',
+      watchdogVersion: '0.105.1',
+    };
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+      process.env.BINARY_EDITION = 'hosted';
+    });
+
+    afterEach(() => {
+      if (ORIGINAL_EDITION === undefined) delete process.env.BINARY_EDITION;
+      else process.env.BINARY_EDITION = ORIGINAL_EDITION;
+    });
+
+    it('refuses update_agent for a build that would reject the served edition', async () => {
+      const insertValues = mockDevice(strandedDevice);
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toMatch(/edition/i);
+      // The command row must never be written — a dispatched command whose
+      // artifact the device refuses is a wasted one-shot the operator has to
+      // decode from a raw updater error.
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    it('refuses update_watchdog on the same grounds', async () => {
+      const insertValues = mockDevice(strandedDevice);
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_watchdog',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toMatch(/edition/i);
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    it('allows update_agent when the device reports its edition (transition-capable build)', async () => {
+      const insertValues = mockDevice({ ...strandedDevice, agentEdition: 'self-host', agentVersion: '0.108.0', watchdogVersion: '0.108.0' });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.109.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('completed');
+      expect(insertValues).toHaveBeenCalled();
+    });
+
+    it('allows update_agent for a pre-check build (< 0.105.0) with no reported edition', async () => {
+      const insertValues = mockDevice({ ...strandedDevice, agentVersion: '0.104.0', watchdogVersion: '0.104.0' });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('completed');
+      expect(insertValues).toHaveBeenCalled();
+    });
+
+    // The WATCHDOG performs the download for a targetRole:'watchdog' command
+    // (agent/cmd/breeze-watchdog handleFailoverCommand -> doUpdateAgent), so
+    // the band inference must key on the watchdog's version, not the main
+    // agent's. Same reasoning as heartbeat.ts's failover branch.
+    it('keys the version band on the WATCHDOG version for watchdog-targeted dispatch', async () => {
+      const insertValues = mockDevice({
+        ...strandedDevice,
+        agentVersion: '0.104.0', // main agent predates the check
+        watchdogVersion: '0.105.1', // but the downloading watchdog does not
+      });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toMatch(/edition/i);
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    it('allows a watchdog older than the check band even when the main agent is inside it', async () => {
+      // The watchdog is the downloader; a pre-0.105.0 watchdog has no edition
+      // check and applies the artifact fine, whatever the wedged main agent is.
+      const insertValues = mockDevice({
+        ...strandedDevice,
+        agentVersion: '0.105.1',
+        watchdogVersion: '0.104.0',
+      });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('completed');
+      expect(insertValues).toHaveBeenCalled();
+    });
+
+    // The main agent has no handler for update_agent/update_watchdog: an
+    // agent-targeted row is sent to the agent WebSocket and never picked up,
+    // so it is a dead command, not merely an ungated one.
+    it('refuses an agent-targeted agent-binary update outright', async () => {
+      const insertValues = mockDevice({
+        ...strandedDevice,
+        agentEdition: 'hosted',
+        agentVersion: '0.108.0',
+        watchdogVersion: '0.108.0',
+      });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.109.0' },
+        { userId: 'user-1' }, // default targetRole: 'agent'
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toMatch(/targetRole 'watchdog'/);
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    // A hosted build hard-refuses a self-host artifact by design (that
+    // direction would strip the host-policy allowlist), so a self-host server
+    // must not push one at a hosted-edition agent either.
+    it('refuses pushing a self-host artifact at a hosted-edition build', async () => {
+      process.env.BINARY_EDITION = 'self-host';
+      const insertValues = mockDevice({ ...strandedDevice, agentEdition: 'hosted', agentVersion: '0.108.0', watchdogVersion: '0.108.0' });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toMatch(/edition/i);
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    // The gate is scoped to agent-binary update types only. A watchdog RESTART
+    // downloads nothing, so an edition-incompatible build must still be able
+    // to receive it — that is the recovery path for the very devices the gate
+    // withholds updates from.
+    it('does not gate non-update commands (restart_agent still dispatches)', async () => {
+      const insertValues = mockDevice(strandedDevice);
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'restart_agent',
+        {},
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('completed');
+      expect(insertValues).toHaveBeenCalled();
+    });
+
+    // queueCommand is the SIBLING device_commands insert site. It has no
+    // device row (BullMQ workers call it with no DB context), so it cannot
+    // evaluate the gate — it must refuse these types outright rather than
+    // become an ungated back door.
+    it('queueCommand refuses agent-binary update types outright', async () => {
+      await expect(queueCommand('dev-stranded', 'update_agent', { version: '0.108.0' }))
+        .rejects.toThrow(/executeCommand/i);
+      await expect(queueCommand('dev-stranded', 'update_watchdog', { version: '0.108.0' }))
+        .rejects.toThrow(/executeCommand/i);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+  });
+
   describe('queueCommandForExecution expectedOrgId guard', () => {
     function mockDeviceLookup(device: unknown) {
       vi.mocked(db.select).mockReturnValue({

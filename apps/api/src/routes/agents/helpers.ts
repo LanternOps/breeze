@@ -291,111 +291,22 @@ export function inferPatchOsType(source: string, deviceOs: unknown): 'windows' |
 }
 
 // ============================================
-// Version Comparison
+// Version Comparison / artifact-edition compatibility
 // ============================================
-
-export function parseComparableVersion(raw: string): { core: number[]; prerelease: string | null } | null {
-  const trimmed = raw.trim().replace(/^v/i, '');
-  if (!trimmed) return null;
-
-  const [rawCorePart, prereleasePart] = trimmed.split('-', 2);
-  const corePart = rawCorePart ?? '';
-  if (!corePart) return null;
-  const coreTokens = corePart.split('.');
-  if (coreTokens.length === 0) return null;
-
-  const core: number[] = [];
-  for (const token of coreTokens) {
-    if (!/^\d+$/.test(token)) return null;
-    core.push(Number.parseInt(token, 10));
-  }
-
-  return {
-    core,
-    prerelease: prereleasePart ?? null,
-  };
-}
-
-export function compareAgentVersions(leftRaw: string, rightRaw: string): number {
-  const left = parseComparableVersion(leftRaw);
-  const right = parseComparableVersion(rightRaw);
-  if (!left || !right) return 0;
-
-  const maxLen = Math.max(left.core.length, right.core.length);
-  for (let i = 0; i < maxLen; i += 1) {
-    const leftPart = left.core[i] ?? 0;
-    const rightPart = right.core[i] ?? 0;
-    if (leftPart !== rightPart) {
-      return leftPart > rightPart ? 1 : -1;
-    }
-  }
-
-  if (left.prerelease === right.prerelease) return 0;
-  if (!left.prerelease) return 1;
-  if (!right.prerelease) return -1;
-  return left.prerelease.localeCompare(right.prerelease);
-}
-
-/**
- * The agent release that introduced the client-side artifact-edition check
- * (updater.editionAllowed, #3349). Builds older than this never consult the
- * manifest's edition field and can apply artifacts of either edition; builds
- * from this version on refuse a mismatched edition AFTER download, so the
- * server must not offer them one (#4072).
- */
-export const AGENT_EDITION_CHECK_INTRODUCED = '0.105.0';
-
-/**
- * Can the binary that would perform a download apply an artifact of THIS
- * server's edition (#4072)?
- *
- * The updater's edition check runs agent-side after the download, so offering
- * a version the build will refuse does not fail once — it wedges the device in
- * a permanent ~60s retry loop (`status='updating'`, never converges, no
- * server-side escape hatch). This predicate is the server-side gate: withhold
- * the offer instead, and the device idles quietly on its current version.
- *
- * Inference, in order:
- *  - A REPORTED agentEdition (either value) means the build both knows its
- *    edition and — because the heartbeat reporting and the one-way
- *    self-host → hosted allowance in updater.editionAllowed shipped in the
- *    same agent release — can apply a hosted artifact. So when serving hosted,
- *    any reporter is accepted; when serving self-host, a 'hosted' reporter is
- *    refused (hosted builds hard-refuse self-host artifacts by design — that
- *    direction would strip the host-policy allowlist and is never relaxed).
- *  - A SILENT agent (no reported edition) is either a pre-0.105.0 build (no
- *    edition check at all → accepts anything) or a self-host build without
- *    the transition allowance (the stranded 0.105.0–0.106.x band, plus any
- *    unfixed self-host build pointed at a hosted control plane → refuses
- *    hosted). Split on the version that introduced the check. A missing or
- *    unparseable version fails closed — the offer resumes on the next beat
- *    once the agent reports something usable.
- *
- * `reportedEdition`/`agentVersion` must describe the binary that DOWNLOADS
- * (this beat's payload values): the main agent for agent/helper/watchdog
- * offers on the main branch, the watchdog itself on the failover branch.
- */
-export function agentAcceptsServedEdition(args: {
-  reportedEdition: string | null | undefined;
-  agentVersion: string | null | undefined;
-}): boolean {
-  const served = getBinaryEdition();
-  if (served === 'self-host') {
-    return args.reportedEdition !== 'hosted';
-  }
-  if (args.reportedEdition === 'hosted' || args.reportedEdition === 'self-host') {
-    return true;
-  }
-  const version = args.agentVersion?.trim();
-  if (!version) return false;
-  // Compare the CORE version only: semver orders `0.105.0-rc.1` BELOW
-  // `0.105.0`, but a prerelease of the introducing version already carries
-  // the check. A prerelease of an older core (0.104.x-rc) predates it.
-  // (`dev-*` builds strip to an unparseable core and fail closed, same as
-  // any other unparseable version — compareAgentVersions returns 0.)
-  const core = version.split('-')[0] ?? version;
-  return compareAgentVersions(core, AGENT_EDITION_CHECK_INTRODUCED) < 0;
-}
+//
+// Moved to services/agentEditionCompat.ts (#4093) so the DISPATCH path
+// (services/commandQueue.ts) can gate on the same predicate the heartbeat
+// offer path uses. This module imports services/commandQueue, so a direct
+// import in the other direction would be a cycle. Re-exported here: every
+// existing import site (and the suites that mock `./helpers`) keeps working.
+export {
+  parseComparableVersion,
+  compareAgentVersions,
+  AGENT_EDITION_CHECK_INTRODUCED,
+  agentAcceptsServedEdition,
+  editionWithheldDetail,
+  type EditionWithheldContext,
+} from '../../services/agentEditionCompat';
 
 // ============================================
 // Policy Probe Processing

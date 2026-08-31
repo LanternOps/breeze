@@ -346,8 +346,13 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
   });
 
   it('an explicit targetVersion overrides any pin and is used verbatim', async () => {
-    // #1 verifyDeviceAccess, #2 org-wide check, #3 explicit-version existence.
-    mockSelectSequence([[onlineDeviceRow()], [{ id: DEVICE_ID }], [{ version: '0.90.0' }]]);
+    // #1 verifyDeviceAccess, #2 org-wide check, #3 explicit-version existence,
+    // #4 device→org+platform lookup (the explicit version is resolved per
+    // device too, #4093).
+    mockSelectSequence([
+      [onlineDeviceRow()], [{ id: DEVICE_ID }], [{ version: '0.90.0' }],
+      [deviceOrgRow(DEVICE_ID, ORG_ID)],
+    ]);
 
     const result = JSON.parse(
       await tool.handler({ deviceIds: [DEVICE_ID], targetVersion: '0.90.0' }, makeAuth()),
@@ -355,12 +360,69 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
 
     expect(result.queued).toBe(1);
     expect(result.targetVersion).toBe('0.90.0');
-    // The pin resolver is never consulted when a version is explicitly given.
+    // The org's pin config is never consulted when a version is explicitly given.
     expect(getOrgAgentUpdateConfig).not.toHaveBeenCalled();
     expect(executeCommand).toHaveBeenCalledWith(
       DEVICE_ID, 'update_agent', { version: '0.90.0' },
       expect.objectContaining({ targetRole: 'watchdog' }),
     );
+  });
+
+  // #4093 — before this, an explicit targetVersion only had to EXIST in
+  // agent_versions: no component, edition, platform or arch scoping. A version
+  // with no build for the device dispatched an update_agent that could only
+  // fail on the box (download-info 404), reported to the operator as `queued`.
+  it('explicit targetVersion: no build for THIS device is reported, not dispatched', async () => {
+    // The version exists (row #3) but has no build for this platform/arch.
+    vi.mocked(resolvePinnedUpgradeTarget).mockResolvedValue(null);
+    mockSelectSequence([
+      [onlineDeviceRow()], [{ id: DEVICE_ID }], [{ version: '0.90.0' }],
+      [deviceOrgRow(DEVICE_ID, ORG_ID)],
+    ]);
+
+    const result = JSON.parse(
+      await tool.handler({ deviceIds: [DEVICE_ID], targetVersion: '0.90.0' }, makeAuth()),
+    );
+
+    expect(result.errors[DEVICE_ID]).toMatch(/has no build for this device/i);
+    expect(executeCommand).not.toHaveBeenCalled();
+    // The explicit version IS resolved through the same fail-closed resolver
+    // the pinned path uses, with this device's platform/arch.
+    expect(resolvePinnedUpgradeTarget).toHaveBeenCalledWith(
+      expect.objectContaining({
+        component: 'agent', pin: '0.90.0', platform: 'windows', architecture: 'amd64',
+      }),
+    );
+  });
+
+  it('explicit targetVersion: a version with no agent build at all is rejected up front', async () => {
+    // #3 (the version existence probe) returns nothing → reject before any
+    // per-device work.
+    mockSelectSequence([[onlineDeviceRow()], [{ id: DEVICE_ID }], []]);
+
+    const result = JSON.parse(
+      await tool.handler({ deviceIds: [DEVICE_ID], targetVersion: '9.9.9' }, makeAuth()),
+    );
+
+    expect(result.error).toMatch(/not found/i);
+    expect(resolvePinnedUpgradeTarget).not.toHaveBeenCalled();
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  // The artifact-edition gate itself lives at the dispatch chokepoint
+  // (services/commandQueue.ts executeCommand, #4093). This asserts the tool
+  // surfaces its refusal per device instead of counting it as queued.
+  it('surfaces the dispatch-time edition refusal as a per-device error', async () => {
+    vi.mocked(executeCommand).mockResolvedValue({
+      status: 'failed',
+      error: 'Agent update withheld (#4072): this server serves hosted-edition artifacts …',
+    } as any);
+    mockSelectSequence([[onlineDeviceRow()], [{ id: DEVICE_ID }], [deviceOrgRow(DEVICE_ID, ORG_ID)]]);
+
+    const result = JSON.parse(await tool.handler({ deviceIds: [DEVICE_ID] }, makeAuth()));
+
+    expect(result.queued).toBe(0);
+    expect(result.errors[DEVICE_ID]).toMatch(/withheld/i);
   });
 
   // --- Multi-org batch isolation (the load-bearing new behavior) -------------

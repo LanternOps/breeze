@@ -50,7 +50,10 @@ import { decryptClaimedCommandsForDelivery } from '../../services/commandDeliver
 import { normalizeReportedScriptSecretEnvVersion } from '../../services/scriptSecretDelivery';
 import { redactSecretsDeep } from '../../services/secretRedaction';
 import { recordAgentHeartbeat, resolveResponseStatus } from '../metrics';
-import { getBinaryEdition } from '../../services/binaryEdition';
+import {
+  editionWithheldDetail,
+  type EditionWithheldContext as SharedEditionWithheldContext,
+} from '../../services/agentEditionCompat';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -99,28 +102,11 @@ export function __resetEditionWithheldWarnCacheForTests(): void {
   editionWithheldCaptured = false;
 }
 
-type EditionWithheldContext = {
-  deviceId: string;
-  reportedEdition: string | null | undefined;
-  agentVersion: string | null | undefined;
-};
-
-// The message states the OBSERVED facts and keeps every remediation
-// conditional — agentAcceptsServedEdition returns false for several distinct
-// states (silent post-cutover self-host build, hosted build on a self-host
-// server, unusable version) and asserting one cause for all of them sends an
-// operator down the wrong path.
-function editionWithheldDetail(args: EditionWithheldContext): string {
-  return (
-    `this server serves ${getBinaryEdition()}-edition artifacts and the downloading build ` +
-    `(reported edition=${args.reportedEdition ?? 'none'}, version=${args.agentVersion ?? 'unknown'}) ` +
-    `cannot be confirmed to accept them — the agent-side edition check refuses a mismatched ` +
-    `artifact AFTER download and retries every heartbeat forever, so the server withholds instead. ` +
-    `If the build is a silent ≥0.105.0 self-host agent, recover it with a ` +
-    `${getBinaryEdition()}-edition installer or an agent release that reports its edition; ` +
-    `if it reports the other edition, it is enrolled against a server of the wrong edition.`
-  );
-}
+// The withhold explanation is shared with the DISPATCH gate (#4093) so both
+// doors describe the same condition in the same words. Imported straight from
+// the leaf module rather than through `./helpers` (which suites mock) so the
+// real text is always what an operator reads.
+type EditionWithheldContext = SharedEditionWithheldContext & { deviceId: string };
 
 // Dedupe entries are keyed per (device, reporting role): the main-agent and
 // watchdog branches gate on DIFFERENT binaries' capabilities, and a device
