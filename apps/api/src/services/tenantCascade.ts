@@ -394,7 +394,6 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // pg_constraint read orders the actual DELETE. localeCompare sorts this
   // BEFORE 'ticket_email_links' ('d' < 'e').
   'ticket_drafts',
-  'ticket_email_links',
   // ticket_email_links (spec 2026-08-15, outlook-tech-addin): cross-channel
   // email<->ticket association + idempotency ledger. Shape 1 (direct org_id).
   // ticket_id FK is ON DELETE CASCADE (child of tickets, deleted well before
