@@ -40,7 +40,7 @@ Runs are triggered by an **alert**, an **anomaly**, a **schedule**, a **ticket**
 | `failed` | Stopped on an error. |
 | `cancelled` | Stopped by a person. |
 | `expired` | Exceeded its wall-clock budget. |
-| `skipped` | A run record was created but did not execute. |
+| `skipped` | A run record was created but stopped before executing, for example when the agent's policy was revoked between admission and start. |
 
 Admission checks happen before Breeze creates a run. If an agent policy filters out a trigger, no `skipped` run appears in the runs list. See [Why nothing happened](#why-nothing-happened) for the skip signals that are recorded instead.
 
@@ -118,13 +118,13 @@ If the underlying anomaly has already been promoted to an alert, the anomaly run
 
 The **Settings → AI Agents** form exposes alert severities and the maintenance-window toggle, but it does not show an anomaly control. First list agents and identify the organization-scoped triage agent for the customer:
 
-```http
+```bash
 GET /api/v1/ai/agents
 ```
 
 Then patch only the anomaly opt-in:
 
-```http
+```bash
 PATCH /api/v1/ai/agents/{agentId}
 Content-Type: application/json
 
@@ -137,7 +137,7 @@ The server merges the `triggers` object one level onto the stored policy. Fields
 
 Verify the effective policy for the organization:
 
-```http
+```bash
 GET /api/v1/ai/agents/effective?orgId={orgId}&kind=triage
 ```
 
@@ -145,13 +145,17 @@ Confirm that `triggers.anomalyEnabled` is `true` in the response.
 
 ## Why nothing happened
 
-When admission is refused, Breeze does not create a run row, so nothing new appears in the runs list. The API writes a `run skipped` log line with the reason, organization, agent, trigger kind, and device. It also publishes an `ai.agent.run.skipped` event.
+When admission is refused, Breeze does not create a run row, so nothing new appears in the runs list. The API always writes a `run skipped` log line carrying the reason, organization, agent, trigger kind, and device.
 
-| Skip reason | Meaning |
-|---|---|
-| `trigger_filter_mismatch` | The anomaly opt-in gate or a narrowing trigger filter did not match. |
-| `no_effective_agent` | The required partner baseline does not exist. |
-| `kill_switch_off` | `BREEZE_AI_AGENTS_ENABLED` is off. |
+| Skip reason | Meaning | Also published as an event |
+|---|---|---|
+| `trigger_filter_mismatch` | The anomaly opt-in gate or a narrowing trigger filter did not match. | Yes |
+| `no_effective_agent` | No enabled partner baseline agent of that kind exists. | No, log only |
+| `kill_switch_off` | `BREEZE_AI_AGENTS_ENABLED` is off. | No, log only |
+
+Only a skip that happens *after* the agent has been resolved publishes an `ai.agent.run.skipped` event. `kill_switch_off` and `no_effective_agent` are deliberately log-only: they fire on every trigger in every organization for as long as the condition holds, so publishing them would put a write on the hot alert path for a non-event. If you want to catch those two, alert on the log line rather than the event.
+
+A run that was already admitted can also stop before it starts. If the agent is disabled or its policy is revoked between admission and delivery, the run transitions to `skipped` with the reason `policy_revoked_before_start` and publishes `ai.agent.run.skipped`. Unlike the admission-time skips above, that case does leave a run record in the runs list.
 
 ## Durable delivery for agent triggers
 
