@@ -93,6 +93,80 @@ describe('disposition (wave 3b tri-state)', () => {
   });
 });
 
+// P2-4 (#4191): the ticket-scope exemption to the device-less-mutation deny.
+// Truth table: manage_tickets + scope.ticketId passes; manage_tickets with NO
+// scope still denies (unchanged); a non-ticket tool with scope set is NOT
+// exempted (scope is manage_tickets-specific, never a blanket carve-out).
+describe('manage_tickets ticket-scope exemption to the device-less-mutation deny (P2-4)', () => {
+  beforeEach(() => {
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('manage_tickets mutation WITH scope.ticketId is not denied for lack of device binding', () => {
+    const check = checkAgentGuardrails(
+      'manage_tickets',
+      { action: 'update_fields', ticketId: 'ticket-1', fields: { priority: 'high' } },
+      policyWith({
+        mode: 'shadow',
+        deviceId: null,
+        toolAllowlist: ['manage_tickets:update_fields'],
+        scope: { ticketId: 'ticket-1' },
+      }),
+    );
+    expect(check.disposition).not.toBe('deny');
+    expect(check.reason).not.toMatch(/device-bound/);
+  });
+
+  it('manage_tickets mutation WITHOUT scope still denies device-less (unchanged behavior)', () => {
+    const check = checkAgentGuardrails(
+      'manage_tickets',
+      { action: 'update_fields', ticketId: 'ticket-1', fields: { priority: 'high' } },
+      policyWith({
+        mode: 'shadow',
+        deviceId: null,
+        toolAllowlist: ['manage_tickets:update_fields'],
+      }),
+    );
+    expect(check.disposition).toBe('deny');
+    expect(check.reason).toMatch(/device-bound/);
+  });
+
+  it('scope.ticketId does NOT exempt a different tool from the device-less-mutation deny', () => {
+    const check = checkAgentGuardrails(
+      'manage_services',
+      { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' },
+      policyWith({
+        mode: 'shadow',
+        deviceId: null,
+        toolAllowlist: ['manage_services:restart'],
+        scope: { ticketId: 'ticket-1' },
+      }),
+    );
+    expect(check.disposition).toBe('deny');
+    expect(check.reason).toMatch(/device-bound/);
+  });
+
+  it('link_device and draft (new P2-4 actions) also pass the exemption with scope', () => {
+    for (const action of ['link_device', 'draft']) {
+      const check = checkAgentGuardrails(
+        'manage_tickets',
+        { action, ticketId: 'ticket-1', hostname: 'WKS-1', kind: 'reply', content: 'x' },
+        policyWith({
+          mode: 'shadow',
+          deviceId: null,
+          toolAllowlist: [`manage_tickets:${action}`],
+          scope: { ticketId: 'ticket-1' },
+        }),
+      );
+      expect(check.disposition).not.toBe('deny');
+    }
+  });
+});
+
 /**
  * Every tool an agent may call with NO allowlist entry. Deliberately a literal:
  * a tool arriving here must be a reviewed decision, not a side effect of a tier

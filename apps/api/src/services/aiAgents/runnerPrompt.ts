@@ -21,8 +21,10 @@
  *  - the task turn NEVER repeats the instructions — a second, undelimited copy
  *    would defeat the fence.
  */
+import { TICKET_TRIAGE_CONFIDENCE_FLOOR, TICKET_TRIAGE_PRIORITIES } from '@breeze/shared';
 import type {
-  AiAgentKind, AiAgentMode, AiAgentRunProfile, AiAgentTriggerKind, AiSweepKind,
+  AiAgentKind, AiAgentMode, AiAgentRunProfile, AiAgentTriggerKind,
+  AiAlertVerdictClassification, AiSweepKind, AiSweepSeverity,
 } from '@breeze/shared';
 // Type-only (erased at compile time), so this module keeps its "no DB
 // dependency of its own" property — `sweepEvidence.ts` imports the db, but
@@ -72,6 +74,30 @@ export const TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER =
   + 'themselves; it is never sent on your behalf.';
 
 /**
+ * Phase 2 wave P2-4 (#4191, ticket triage), task A6 — the `triage`-profile
+ * counterpart of `TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER` above. That text is
+ * no longer universally true once this wave's forced-shadow LIFT exists
+ * (spec §4.4 amendment, `runService.ts`): an agent with `mode: 'act'` AND
+ * `triggers.ticketAutonomousWrites: true` CAN have this run's proposal turned
+ * into real ticket writes without a human click first (task A8's `finishRun`
+ * + `evaluateTicketAutonomy`, `actionIntents/ticketAutonomy.ts`). Telling a
+ * triage run its output can NEVER be written automatically would be a lie on
+ * exactly the runs where it matters most. This disclaimer instead states the
+ * one thing that is unconditionally true regardless of autonomy: `summary`
+ * is a PRIVATE, internal-only note (never a customer-facing reply), and
+ * `draftReply`/`draftResolutionNote` are drafts a technician must explicitly
+ * review before anything reaches the requester — the model does not control,
+ * and should not assume, whether ITS other proposed fields apply immediately
+ * or wait for approval.
+ */
+export const TICKET_TRIAGE_PRIVATE_NOTE_DISCLAIMER =
+  'Your summary is recorded as a PRIVATE, internal-only note on this ticket — it is never shown to the '
+  + 'requester. draftReply and draftResolutionNote are drafts a technician must explicitly review and send '
+  + 'or apply themselves; nothing you write reaches the requester automatically. Whether your other '
+  + 'proposed fields apply immediately or wait for a human to approve them depends on how this agent is '
+  + 'configured — you do not control that, so write every proposal as if a human will read it first.';
+
+/**
  * Wave 6 PR 4 (#3828) — design authority: an anomaly-triggered run is a
  * PILOT signal, not a proven one, and is FORCED shadow regardless of the
  * agent's configured mode (`runService.ts`'s forced-shadow conditional).
@@ -97,6 +123,26 @@ const GUIDANCE_TAG_RE = /<\s*\/?\s*operator-guidance[^>]*>/gi;
  * module has no DB dependency of its own, and the caller (`runLoop.ts`) is
  * the one place that actually has both shapes to reconcile.
  */
+/**
+ * P2-4 (#4191) Task 7 — the ticket's linked device and its recent signal
+ * (`ticketContext.ts`'s `TicketContextLinkedDevice`), already sanitized and
+ * whitelist-filtered at assembly time — see that module's header. Structural
+ * twin, mirroring `AgentRunTicketPromptContext` itself.
+ */
+export interface AgentRunTicketLinkedDevicePromptContext {
+  // NOTE: no `id` field — nothing in this module reads it (`ticketPromptLines`
+  // never renders a device id, and no tool-call binding needs it here), so it
+  // was dead weight on this render-only twin. `ticketContext.ts`'s
+  // `TicketContextLinkedDevice` keeps its own `id` — that's the loader's
+  // source-of-truth shape, a different concern from what gets rendered.
+  hostname: string;
+  displayName: string | null;
+  osType: string;
+  alerts: Array<{ ruleName: string; severity: string; count: number }>;
+  verdicts: Record<AiAlertVerdictClassification, number>;
+  sweepFindings: Array<{ kind: AiSweepKind; severity: AiSweepSeverity; title: string }>;
+}
+
 export interface AgentRunTicketPromptContext {
   subject: string;
   description: string | null;
@@ -110,7 +156,26 @@ export interface AgentRunTicketPromptContext {
    *  'internal'/...), never the commenter's name — see
    *  `ticketContext.ts`'s `TicketContextComment` for why. */
   comments: Array<{ authorType: string | null; content: string; createdAt: string }>;
-  /** True when `ticketContext.ts` cut comments/description to fit its byte ceiling. */
+  /** P2-4 (#4191) Task 7 — `null` when the ticket has no linked device or the
+   *  signal could not be loaded; `linkedDeviceUnavailable` (below) tells the
+   *  two apart. See `ticketContext.ts`'s header. */
+  linkedDevice: AgentRunTicketLinkedDevicePromptContext | null;
+  /** P2-4 (#4191) Task 7 review follow-up — `true` ONLY when the ticket has a
+   *  linked device but that signal could not be loaded (never set when the
+   *  ticket simply has no linked device). `ticketPromptLines` renders a
+   *  one-line hedge when this is set so the model never reads `linkedDevice:
+   *  null` as "confirmed no device issues." */
+  linkedDeviceUnavailable?: true;
+  /** P2-4 (#4191) Task 7 — up to `MAX_SIMILAR_RESOLVED_TICKETS`, most-
+   *  recently-resolved first. Empty when none were found or the signal could
+   *  not be loaded; `similarResolvedTicketsUnavailable` (below) tells the two
+   *  apart. */
+  similarResolvedTickets: Array<{ title: string; resolutionNote: string | null }>;
+  /** P2-4 (#4191) Task 7 review follow-up — same contract as
+   *  `linkedDeviceUnavailable`, for the `categoryId` axis. */
+  similarResolvedTicketsUnavailable?: true;
+  /** True when `ticketContext.ts` cut any section (comments, description, or
+   *  either P2-4 section) to fit its byte ceiling. */
   truncated: boolean;
 }
 
@@ -284,6 +349,28 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
       + 'in the task message. Write the eight sections, then call submit_narrative exactly once. That '
       + 'call IS the output of this run.',
     );
+  } else if (ctx.profile === 'triage') {
+    // Phase 2 wave P2-4 (ticket triage, #4191), task A6. Sits with the
+    // verdict/sweep/narrative branches, AHEAD of shadow/act, for the same
+    // reason: a triage run's mode is a property of the profile, not of the
+    // agent's configured mode — its tool floor is EMPTY
+    // (`triageProfile.ts`'s `TRIAGE_TOOL_ALLOWLIST`), so describing it as
+    // "shadow" or "act" would promise a proposal/execution mechanism this
+    // run has no tools to reach. Unlike narrative, this run's whole job is
+    // producing a proposal about live ticket content — never state or imply
+    // that anything it writes is automatically applied (see
+    // `TICKET_TRIAGE_PRIVATE_NOTE_DISCLAIMER` below for the specific
+    // private-note framing).
+    sections.push(
+      '## Mode: triage\n'
+      + 'You are triaging ONE ticket for one organization, using only the ticket content below — you have '
+      + 'no tools on this run and nothing to look up. Never invent a device hostname or serial: copy one '
+      + 'ONLY if it appears verbatim in the ticket text, and omit the device field entirely otherwise. '
+      + 'For every field you propose, give your own honest confidence — proposals below '
+      + `${TICKET_TRIAGE_CONFIDENCE_FLOOR} are simply dropped and never written, so do not inflate a `
+      + 'number to get a field through. Finish by calling submit_ticket_proposal exactly once with your '
+      + 'proposal. That call IS the output of this run.',
+    );
   } else if (ctx.run.mode === 'shadow') {
     sections.push(
       '## Mode: shadow\n'
@@ -314,6 +401,12 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
     // A narrative run is org-wide, device-less AND tool-less: the
     // device-binding line below would name a device that does not exist, and
     // a blast radius it has no way to widen.
+    //
+    // A triage run is device-less too (tickets have no device axis in v1 —
+    // see runService.ts), and is ALSO tool-less like narrative — but unlike
+    // narrative it may still name a device the requester mentioned, so the
+    // instruction is "copy verbatim, never invent" rather than "there is no
+    // device" (wave P2-4, task A6).
     + (ctx.profile === 'narrative'
       ? '- You are reporting on ONE organization, using only the figures in the task message. There is '
         + 'nothing else available to you and no way to look anything up.\n'
@@ -321,12 +414,18 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
         ? '- You are bound to the single organization this sweep covers, and within it to the devices named in '
           + 'the evidence below. Do not attempt to widen the blast radius to other organizations, or to devices '
           + 'the evidence does not name.\n'
-        : '- You are bound to the single device and site this run targets. Do not attempt to widen '
-          + 'the blast radius to other devices, sites, or organizations.\n')
-    + (ctx.profile === 'narrative'
+        : ctx.profile === 'triage'
+          ? '- You are triaging ONE ticket; there is no device binding at all. If the ticket text names a '
+            + 'specific device, you may propose its hostname or serial EXACTLY as written — never invented, '
+            + 'guessed, or normalized. Omit the device field when none is named.\n'
+          : '- You are bound to the single device and site this run targets. Do not attempt to widen '
+            + 'the blast radius to other devices, sites, or organizations.\n')
+    + (ctx.profile === 'narrative' || ctx.profile === 'triage'
       // "Prefer a small number of reads" is incoherent advice for a run with
       // no read tools at all, and the contradiction is the kind a model
       // resolves by going looking for the tools it was told to use sparingly.
+      // A triage run has exactly the same empty tool floor as narrative
+      // (`TRIAGE_TOOL_ALLOWLIST`), so it gets the identical instruction.
       ? '- Write it in one pass. The run has a hard budget and a low turn limit; re-stating the same '
         + 'figures back to yourself before submitting costs the customer money and buys nothing.'
       : '- Prefer a small number of high-signal reads over exhaustive enumeration; every call '
@@ -342,14 +441,30 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
         + 'two plain-text sentences for the technician who will see this run in a list: what the week '
         + 'looked like and anything about the data itself they should know (for example, a figure that '
         + 'was not measured). Do not restate the whole narrative.'
-      : '## Output\n'
-        + 'Finish with a short plain-text summary (a few sentences, no markdown headings) stating '
-        + 'what you found, what you believe the cause is, and what you proposed. That final message '
-        + 'is what the human reviewer reads first.',
+      // Wave P2-4 (task A6) — the submit_ticket_proposal call is the output;
+      // this closing line is only the run-list summary, same split as narrative.
+      : ctx.profile === 'triage'
+        ? '## Output\n'
+          + 'The proposal you submit is the output of this run. After submitting it, finish with one short '
+          + 'plain-text sentence for the technician who will see this run in a list: what you found. Do not '
+          + 'restate your summary or draft text.'
+        : '## Output\n'
+          + 'Finish with a short plain-text summary (a few sentences, no markdown headings) stating '
+          + 'what you found, what you believe the cause is, and what you proposed. That final message '
+          + 'is what the human reviewer reads first.',
   );
 
   if (ctx.ticket) {
-    sections.push(`## Ticket\n${TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER}`);
+    // Wave P2-4 (task A6) — a triage run gets the private-note-tone
+    // disclaimer instead of the blanket "never posts anything automatically"
+    // one: see `TICKET_TRIAGE_PRIVATE_NOTE_DISCLAIMER`'s docstring for why
+    // that claim is no longer universally true once the forced-shadow LIFT
+    // exists.
+    sections.push(
+      ctx.profile === 'triage'
+        ? `## Ticket\n${TICKET_TRIAGE_PRIVATE_NOTE_DISCLAIMER}`
+        : `## Ticket\n${TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER}`,
+    );
   }
 
   if (ctx.anomaly) {
@@ -813,11 +928,76 @@ export function buildNarrativeTaskPrompt(ctx: AgentRunPromptContext): string {
 }
 
 /**
+ * Phase 2 wave P2-4 (#4191, ticket triage), task A6 — the task turn for a
+ * `triage`-profile run. Like `buildVerdictTaskPrompt`/`buildSweepTaskPrompt`/
+ * `buildNarrativeTaskPrompt`, this REPLACES the full-profile turn rather than
+ * layering on it: a triage run has no tools at all (`TRIAGE_TOOL_ALLOWLIST`
+ * is empty), so the generic "investigate, then summarize" instruction the
+ * fallback below gives — written for a run that CAN read things — does not
+ * apply.
+ *
+ * Renders the ticket via the same `ticketPromptLines` helper every other
+ * profile's ticket section uses, so the actual ticket content (subject,
+ * description, comment history) can never drift between a `full`-profile
+ * ticket run and a `triage`-profile one.
+ */
+export function buildTriageTaskPrompt(ctx: AgentRunPromptContext): string {
+  const lines: string[] = [];
+
+  lines.push(`Trigger: ${ctx.run.triggerKind}`);
+  lines.push(
+    'Triage this ticket: read the subject, description and comment history below, then propose what you '
+    + 'can support with what is actually there. Every field is OPTIONAL — omit anything you are not '
+    + 'confident about rather than guessing to fill it in.',
+  );
+
+  if (ctx.ticket) lines.push(...ticketPromptLines(ctx.ticket));
+
+  lines.push('');
+  lines.push('## Your proposal (submit_ticket_proposal)');
+  lines.push(
+    '- summary: what you found and why, for the technician alone — this becomes a private, internal-only '
+    + 'note (see the disclaimer above). 1 to 2000 characters.',
+  );
+  lines.push(
+    `- fields.priority: one of ${TICKET_TRIAGE_PRIORITIES.join(', ')}, only if the ticket content clearly `
+    + 'supports it, each with your own honest confidence.',
+  );
+  lines.push(
+    '- fields.categoryId: only when you can identify the EXACT categoryId shown in the ticket context above '
+    + '— never a category name, never a guessed id.',
+  );
+  lines.push(
+    '- device: hostname and/or serial ONLY if one appears verbatim in the ticket text — never invented, '
+    + 'guessed, or normalized. Omit entirely otherwise.',
+  );
+  lines.push(
+    '- draftReply: a customer-facing reply draft, only if you have something worth proposing. It is never '
+    + 'sent automatically — a technician must review and send it.',
+  );
+  lines.push(
+    '- draftResolutionNote: a resolution-note draft offered when the ticket closes. Never applied '
+    + 'automatically.',
+  );
+  lines.push('- notes: up to 5 short talking points folded into your summary. Display only.');
+  lines.push('');
+  lines.push(
+    `Give each field of "fields" its OWN honest confidence (0 to 1) — a proposal below `
+    + `${TICKET_TRIAGE_CONFIDENCE_FLOOR} is simply dropped and never written, so do not inflate a number to `
+    + 'force a field through.',
+  );
+  lines.push('Call submit_ticket_proposal exactly once, then stop.');
+
+  return lines.join('\n');
+}
+
+/**
  * The single user turn that starts the run. Facts only — the operator's
  * instructions deliberately do NOT appear here (see the module header).
  */
 export function buildAgentRunTaskPrompt(ctx: AgentRunPromptContext): string {
   if (ctx.profile === 'verdict') return buildVerdictTaskPrompt(ctx);
+  if (ctx.profile === 'triage') return buildTriageTaskPrompt(ctx);
   if (ctx.profile === 'sweep') return buildSweepTaskPrompt(ctx);
   if (ctx.profile === 'narrative') return buildNarrativeTaskPrompt(ctx);
 
@@ -900,6 +1080,52 @@ function ticketPromptLines(ticket: AgentRunTicketPromptContext): string[] {
     for (const comment of ticket.comments) {
       lines.push(`- [${comment.createdAt}] ${commentAuthorLabel(comment.authorType)}: ${comment.content}`);
     }
+  }
+
+  // P2-4 (#4191) Task 7. Every string on `ticket.linkedDevice` was already
+  // HTML-stripped/sanitized/whitelist-filtered by `ticketContext.ts` at
+  // assembly time (see that module's header) — this is a plain render, no
+  // further neutralization needed, matching how `ticket.comments`/
+  // `ticket.description` above are rendered as-is.
+  if (ticket.linkedDevice) {
+    const device = ticket.linkedDevice;
+    lines.push('');
+    lines.push(`Linked device: ${device.hostname}${device.displayName ? ` (${device.displayName})` : ''} — ${device.osType}`);
+    if (device.alerts.length > 0) {
+      lines.push('Alerts on this device in the last 24h:');
+      for (const alert of device.alerts) lines.push(`- ${alert.ruleName} [${alert.severity}] x${alert.count}`);
+    } else {
+      lines.push('No alerts on this device in the last 24h.');
+    }
+    const verdictCounts = Object.entries(device.verdicts).filter(([, count]) => count > 0);
+    if (verdictCounts.length > 0) {
+      lines.push(`Alert verdicts for this device: ${verdictCounts.map(([classification, count]) => `${classification}: ${count}`).join(', ')}`);
+    }
+    if (device.sweepFindings.length > 0) {
+      lines.push('Open sweep findings for this device (from the most recent fleet sweep):');
+      for (const finding of device.sweepFindings) lines.push(`- [${finding.severity}] ${finding.kind}: ${finding.title}`);
+    }
+  } else if (ticket.linkedDeviceUnavailable) {
+    // P2-4 (#4191) Task 7 review follow-up — distinct from "no linked
+    // device": the ticket HAS one, but its signal failed to load. Hedge
+    // rather than let the model read `linkedDevice: null` as a confirmed
+    // clean bill of health for the device.
+    lines.push('');
+    lines.push('Linked device signal unavailable — do not infer device health.');
+  }
+
+  if (ticket.similarResolvedTickets.length > 0) {
+    lines.push('');
+    lines.push('Other resolved tickets in the same category (most recent first):');
+    for (const similar of ticket.similarResolvedTickets) {
+      lines.push(`- ${similar.title}${similar.resolutionNote ? ` — resolution: ${similar.resolutionNote}` : ''}`);
+    }
+  } else if (ticket.similarResolvedTicketsUnavailable) {
+    // Same distinction as `linkedDeviceUnavailable` above, for the category
+    // axis — "no similar tickets" and "could not check" must not read the
+    // same to the model.
+    lines.push('');
+    lines.push('Similar-ticket history unavailable — do not infer none exist.');
   }
 
   if (ticket.truncated) {

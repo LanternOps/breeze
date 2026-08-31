@@ -129,6 +129,7 @@ type LiveAuthzIntent = Pick<
   // tombstoned scope means nobody is decide-authorized.
   | 'scopeKind'
   | 'scopeDeviceId'
+  | 'scopeTicketId'
 >;
 
 /** An approval row paired with its linked intent's scope (null when the row

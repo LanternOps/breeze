@@ -7,7 +7,7 @@ const COMMENT_ID = '00000000-0000-0000-0000-000000000004';
 const TARGET_ORG_ID = '00000000-0000-0000-0000-000000000005';
 const DEVICE_ID = '00000000-0000-0000-0000-000000000006';
 
-const { serviceMocks, mockLimit, mockSelect, permissionMocks, siteScopeMocks } = vi.hoisted(() => {
+const { serviceMocks, mockLimit, mockSelect, mockUpdateSet, mockUpdateWhere, mockUpdate, permissionMocks, siteScopeMocks } = vi.hoisted(() => {
   const serviceMocks = {
     createTicket: vi.fn(),
     changeTicketStatus: vi.fn(),
@@ -27,6 +27,10 @@ const { serviceMocks, mockLimit, mockSelect, permissionMocks, siteScopeMocks } =
       where: vi.fn(() => ({ limit: mockLimit })),
     })),
   }));
+  // P2-4 (#4191): the move_org executor's action_intents tombstone UPDATE.
+  const mockUpdateWhere = vi.fn(() => Promise.resolve(undefined));
+  const mockUpdateSet = vi.fn(() => ({ where: mockUpdateWhere }));
+  const mockUpdate = vi.fn(() => ({ set: mockUpdateSet }));
   const permissionMocks = {
     getUserPermissions: vi.fn(),
     hasPermission: vi.fn(),
@@ -35,15 +39,16 @@ const { serviceMocks, mockLimit, mockSelect, permissionMocks, siteScopeMocks } =
     deviceInSiteScope: vi.fn(),
     ticketSiteScopeCondition: vi.fn(),
   };
-  return { serviceMocks, mockLimit, mockSelect, permissionMocks, siteScopeMocks };
+  return { serviceMocks, mockLimit, mockSelect, mockUpdateSet, mockUpdateWhere, mockUpdate, permissionMocks, siteScopeMocks };
 });
 
 vi.mock('../db', () => ({
-  db: { select: mockSelect },
+  db: { select: mockSelect, update: mockUpdate },
 }));
 
 vi.mock('../middleware/auth', () => ({
   siteAccessCheck: (allowed: string[]) => (siteId?: string | null) => !!siteId && allowed.includes(siteId),
+  isAiAgentPrincipal: (auth: { principal?: { kind?: string } }) => auth?.principal?.kind === 'ai_agent',
 }));
 
 vi.mock('../routes/tickets/siteScope', () => ({
@@ -242,6 +247,45 @@ describe('manage_tickets write-gap actions', () => {
     // Three positional args only — the AI has no way to accept a mismatch.
     expect(serviceMocks.moveTicketOrg).toHaveBeenCalledTimes(1);
     expect(serviceMocks.moveTicketOrg.mock.calls[0]).toHaveLength(3);
+  });
+
+  // C1 (final review #4191): the scope_ticket_id tombstone AND the
+  // ticket_drafts cleanup now live INSIDE moveTicketOrg's own transaction
+  // (ticketService.ts) — the one path this AI-tool executor and the HTTP
+  // route (routes/tickets/moveOrg.ts, which calls moveTicketOrg directly and
+  // never ran the OLD tombstone that used to live here) both go through.
+  // This executor no longer touches action_intents/ticket_drafts at all;
+  // these tests now pin that (mockUpdate is never called from here) rather
+  // than the old tombstone-ordering assertion, which described dead code
+  // after this fix.
+  describe('move_org no longer tombstones from the AI-tool executor (C1, final review #4191)', () => {
+    it('calls moveTicketOrg without touching action_intents/ticket_drafts directly — that is moveTicketOrg\'s own responsibility now', async () => {
+      mockAccessibleTicket();
+      serviceMocks.moveTicketOrg.mockResolvedValueOnce({ id: TICKET_ID, orgId: TARGET_ORG_ID });
+
+      const out = await getTool().handler(
+        { action: 'move_org', ticketId: TICKET_ID, targetOrgId: TARGET_ORG_ID },
+        makeAuth()
+      );
+
+      expect(JSON.parse(out)).toEqual({ ticket: { id: TICKET_ID, orgId: TARGET_ORG_ID } });
+      expect(serviceMocks.moveTicketOrg).toHaveBeenCalledWith(TICKET_ID, TARGET_ORG_ID, expect.anything());
+      expect(mockUpdate).not.toHaveBeenCalled();
+      expect(mockUpdateSet).not.toHaveBeenCalled();
+      expect(mockUpdateWhere).not.toHaveBeenCalled();
+    });
+
+    it('a denied move (no target-org access) never calls moveTicketOrg or db.update', async () => {
+      mockAccessibleTicket();
+
+      await getTool().handler(
+        { action: 'move_org', ticketId: TICKET_ID, targetOrgId: TARGET_ORG_ID },
+        makeAuth(false)
+      );
+
+      expect(mockUpdate).not.toHaveBeenCalled();
+      expect(serviceMocks.moveTicketOrg).not.toHaveBeenCalled();
+    });
   });
 
   it('link_alert returns error and does not call service when ticket access is denied', async () => {

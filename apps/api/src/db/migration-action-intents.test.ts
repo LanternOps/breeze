@@ -116,6 +116,12 @@ describe('Action intents migration', () => {
     // list's job is drift detection, and the column genuinely is guarded.
     'scope_kind',
     'scope_device_id',
+    // 2026-09-25 (P2-4, #4191): same conditional-guard shape as
+    // scope_device_id above — `NEW.scope_ticket_id IS DISTINCT FROM
+    // OLD.scope_ticket_id AND NEW.scope_ticket_id IS NOT NULL` permits only
+    // the non-null->NULL tombstone transition (the ticket-delete FK's ON
+    // DELETE SET NULL, or a moveOrg detach step), never a retarget.
+    'scope_ticket_id',
   ] as const;
 
   // Deliberately MUTABLE. release_by is written by the approve fan-in
