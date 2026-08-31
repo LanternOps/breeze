@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, type TicketOutboxEvent } from '../db/schema';
+import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, actionIntents, type TicketOutboxEvent } from '../db/schema';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
@@ -1907,6 +1907,58 @@ export async function moveTicketOrg(
     // Present by construction: the metadata rows above resolved, so the locks did too.
     const sourceOrg = { ...sourceMeta, currencyCode: lockedOrgs.get(ticket.orgId)!.currencyCode };
     const targetOrg = { ...targetMeta, currencyCode: lockedOrgs.get(targetOrgId)!.currencyCode };
+    // C1 fix (#4191 final review): both statements below MUST run BEFORE the
+    // `tx.update(tickets)` UPDATE just below — not after, despite every
+    // other cleanup here (the child-table org_id rewrites) following it.
+    // Both composite FKs below are DEFERRABLE INITIALLY IMMEDIATE (checked
+    // at the end of EACH statement, not deferred to COMMIT — no
+    // `SET CONSTRAINTS ... DEFERRED` is issued in this transaction), and
+    // both reference `tickets(id, org_id)` — org_id is part of the key the
+    // ticket UPDATE below changes. Running the ticket UPDATE first (as a
+    // first attempt at this fix did) fails immediately with 23503 the
+    // instant that statement completes: a still-live ticket_drafts/
+    // action_intents row now points at (ticketId, OLD org_id), which no
+    // longer matches any row in `tickets` (there is only one row per id).
+    // These two must run first so no such row exists by the time the ticket
+    // UPDATE's own FK check runs.
+    //
+    // Both must live HERE (inside this transaction) rather than on either
+    // caller (the HTTP route at routes/tickets/moveOrg.ts, or the AI-tool
+    // executor at aiToolsTicketing.ts's move_org action) — this is the one
+    // path both call through, and the AI-tool path's own tombstone predates
+    // this fix and covered neither table nor every status (see below).
+    //
+    // 1. action_intents.scope_ticket_id: composite FK (scope_ticket_id,
+    // org_id) -> tickets(id, org_id) (action_intents_scope_ticket_org_fk,
+    // migrations/2026-09-25-ai-agents-ticket-triage.sql). action_intents rows
+    // keep the org_id of the actor who requested them — they do NOT move
+    // with the ticket — so once the ticket UPDATE below changes tickets.org_id,
+    // ANY remaining scope_ticket_id pointer (regardless of status) 23503s,
+    // and permanently: the composite pair (scope_ticket_id, targetOrgId)
+    // never resolves because the intent's own org_id never becomes
+    // targetOrgId. The immutability trigger
+    // (action_intents_block_content_update()) only special-cases a non-null
+    // -> NULL transition, so tombstoning is the only legal move, and it must
+    // cover every status, not just the live pre-release ones — a terminal
+    // (completed/failed/expired) intent still carries the same FK and would
+    // still 23503 on the next unrelated UPDATE to that row (audit backfills,
+    // moveOrg's own UPDATE below). All statuses, unconditionally.
+    await tx
+      .update(actionIntents)
+      .set({ scopeTicketId: null })
+      .where(eq(actionIntents.scopeTicketId, ticketId));
+    // 2. ticket_drafts: composite FK (ticket_id, org_id) -> tickets(id,
+    // org_id) (ticket_drafts_ticket_org_fk) would break the same way UNLESS
+    // we also repoint ticket_drafts.org_id — but ticket_drafts.run_id is
+    // ALSO composite-FK'd (run_id, org_id) -> ai_agent_runs(id, org_id)
+    // (ticket_drafts_run_org_fk), and the run stays behind in the source
+    // org, so repointing org_id would just trade one 23503 for another.
+    // Drafts are ephemeral (proposed content awaiting human
+    // consumption/discard, never itself the ticket_comments record — see
+    // ticketDrafts.ts's header comment), so deleting them on a cross-org
+    // move is the same accepted ruling used by the org-merge custom
+    // executor for the same run-pinning conflict.
+    await tx.delete(ticketDrafts).where(eq(ticketDrafts.ticketId, ticketId));
     // The UPDATE takes the ticket row lock; the currency guard then locks the
     // unbilled monetary children, and the org_id rewrites follow. A throw here
     // rolls this UPDATE back — nothing moves on a block.

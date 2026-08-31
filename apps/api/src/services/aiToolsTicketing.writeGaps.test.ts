@@ -249,11 +249,17 @@ describe('manage_tickets write-gap actions', () => {
     expect(serviceMocks.moveTicketOrg.mock.calls[0]).toHaveLength(3);
   });
 
-  // P2-4 (#4191): the move_org executor tombstones any live ticket-scoped
-  // action_intents row for this ticket BEFORE the move — mirroring P2-2's
-  // device moveOrg detach (routes/devices/moveOrg.ts).
-  describe('move_org tombstones ticket-scoped action_intents (P2-4, #4191)', () => {
-    it('tombstones live ticket-scoped intents before calling moveTicketOrg', async () => {
+  // C1 (final review #4191): the scope_ticket_id tombstone AND the
+  // ticket_drafts cleanup now live INSIDE moveTicketOrg's own transaction
+  // (ticketService.ts) — the one path this AI-tool executor and the HTTP
+  // route (routes/tickets/moveOrg.ts, which calls moveTicketOrg directly and
+  // never ran the OLD tombstone that used to live here) both go through.
+  // This executor no longer touches action_intents/ticket_drafts at all;
+  // these tests now pin that (mockUpdate is never called from here) rather
+  // than the old tombstone-ordering assertion, which described dead code
+  // after this fix.
+  describe('move_org no longer tombstones from the AI-tool executor (C1, final review #4191)', () => {
+    it('calls moveTicketOrg without touching action_intents/ticket_drafts directly — that is moveTicketOrg\'s own responsibility now', async () => {
       mockAccessibleTicket();
       serviceMocks.moveTicketOrg.mockResolvedValueOnce({ id: TICKET_ID, orgId: TARGET_ORG_ID });
 
@@ -263,20 +269,13 @@ describe('manage_tickets write-gap actions', () => {
       );
 
       expect(JSON.parse(out)).toEqual({ ticket: { id: TICKET_ID, orgId: TARGET_ORG_ID } });
-      expect(mockUpdate).toHaveBeenCalledTimes(1);
-      expect(mockUpdateSet).toHaveBeenCalledWith({ scopeTicketId: null });
-      // Ordering: the tombstone must land BEFORE the move, not after.
-      const tombstoneCallOrder = mockUpdateWhere.mock.invocationCallOrder[0];
-      const moveCallOrder = serviceMocks.moveTicketOrg.mock.invocationCallOrder[0];
-      expect(tombstoneCallOrder).toBeDefined();
-      expect(moveCallOrder).toBeDefined();
-      expect(tombstoneCallOrder as number).toBeLessThan(moveCallOrder as number);
+      expect(serviceMocks.moveTicketOrg).toHaveBeenCalledWith(TICKET_ID, TARGET_ORG_ID, expect.anything());
+      expect(mockUpdate).not.toHaveBeenCalled();
+      expect(mockUpdateSet).not.toHaveBeenCalled();
+      expect(mockUpdateWhere).not.toHaveBeenCalled();
     });
 
-    it('still tombstones even when the target-org access check would otherwise short-circuit an earlier action', async () => {
-      // Sanity: the tombstone is scoped to THIS ticket only — a denied
-      // move (no target-org access) must not call moveTicketOrg, and must
-      // not tombstone either (nothing moved, nothing to detach).
+    it('a denied move (no target-org access) never calls moveTicketOrg or db.update', async () => {
       mockAccessibleTicket();
 
       await getTool().handler(

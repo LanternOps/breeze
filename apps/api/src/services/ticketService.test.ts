@@ -7,6 +7,8 @@ const whereMock = vi.fn();
 const selectWhereMock = vi.fn();
 const orderByMock = vi.fn();
 const selectLimitMock = vi.fn();
+// C1 (final review #4191): recorder for tx.delete(ticketDrafts).where(w).
+const txDeleteWhereMock = vi.fn();
 
 const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, dbMocks, configMocks, formMocks } = vi.hoisted(() => {
   const insertReturning = vi.fn();
@@ -146,6 +148,14 @@ vi.mock('../db', () => ({
             return { returning: vi.fn(() => dbMocks.insertReturning()) };
           })
         })),
+        // C1 (final review #4191): moveTicketOrg's transaction deletes
+        // ticket_drafts rows for the moved ticket.
+        delete: vi.fn(() => ({
+          where: vi.fn((w) => {
+            txDeleteWhereMock(w);
+            return Promise.resolve(undefined);
+          })
+        })),
         execute: vi.fn((...args) => dbMocks.txExecuteMock(...args)),
         // #3778: moveTicketOrg reads the org SHARE barrier and the org metadata
         // INSIDE the transaction, so the tx stub needs a select chain that also
@@ -194,6 +204,9 @@ vi.mock('../db/schema', () => ({
   ticketAlertLinks: { ticketId: 'ticketId', alertId: 'alertId' },
   ticketParts: { ticketId: 'ticketId', orgId: 'orgId' },
   ticketOutbox: {},
+  // C1 (final review #4191): moveTicketOrg's transaction now tombstones
+  // scope_ticket_id on action_intents directly.
+  actionIntents: { id: 'id', orgId: 'orgId', scopeTicketId: 'scopeTicketId', status: 'status' },
   organizations: { id: 'id', partnerId: 'partnerId', name: 'name', currencyCode: 'currencyCode' },
   alerts: { id: 'id', orgId: 'orgId' },
   devices: { id: 'id', orgId: 'orgId' },
