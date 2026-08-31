@@ -184,6 +184,36 @@ for dockerfile in apps/api/Dockerfile apps/web/Dockerfile docker/Dockerfile.api 
     "$dockerfile must pin pnpm to 10.34.5"
 done
 
+# Swatinem/rust-cache sat on an untagged master HEAD for months while a trailing
+# `# v2` comment made it look pinned to a release (#3748). A bare major-version
+# comment gives Dependabot no tag to resolve against, so it tracks the default
+# branch and each weekly group PR carries the next branch head forward. Four of
+# the six call sites are release.yml jobs that build signed customer binaries,
+# so the restored cache feeds compiled output. Pin every site to the 2.9.2
+# release commit and require the precise `# vX.Y.Z` comment, so a re-drift fails
+# here rather than inside a signed release build.
+RUST_CACHE_PIN='Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2'
+for workflow in .github/workflows/ci.yml .github/workflows/release.yml; do
+  require_grep "uses: ${RUST_CACHE_PIN//./\\.}\$" "$workflow" \
+    "$workflow must pin Swatinem/rust-cache to the v2.9.2 release commit"
+done
+# require_grep only proves one good line exists; this proves no site deviates.
+# Capture the scan's own status rather than letting a trailing `|| true` absorb
+# it: grep exits 1 for "no matches" but 2 for "could not read", and a security
+# predicate must never answer "clean" about input it could not read (the rule
+# reject_unaudited_apk above is written to). Piping straight into the filter
+# would hide that, because pipefail reports the rightmost status and the filter
+# legitimately exits 1 once it removes every compliant line.
+rust_cache_status=0
+rust_cache_lines="$(grep -rn -i -- 'rust-cache@' .github/workflows/)" || rust_cache_status=$?
+((rust_cache_status <= 1)) || fail \
+  "rust-cache scan of .github/workflows/ failed (grep status $rust_cache_status)"
+# The filter is deliberately case-sensitive: the owner is `Swatinem` upstream,
+# so a lowercase re-drift is reported instead of silently accepted.
+rust_cache_offenders="$(printf '%s\n' "$rust_cache_lines" | grep -vF -- "$RUST_CACHE_PIN" || true)"
+[[ -z "$rust_cache_offenders" ]] || fail \
+  "every rust-cache pin must be ${RUST_CACHE_PIN}, found:"$'\n'"$rust_cache_offenders"
+
 # The customer-Graph-read credential boundary ships as a separately built
 # executor. Keep its image, CI/release coverage, and deployment boundary from
 # silently disappearing while the feature remains dark by default.
