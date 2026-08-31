@@ -1495,7 +1495,7 @@
       "supervisedActionKeysEmpty": "Nenhuma ação decidível por política está registrada.",
       "supervisedActionKeysFailed": "Não foi possível carregar a lista de ações decidíveis por política, então a autorização não supervisionada não pode ser alterada agora.",
       "ticketAutonomousWrites": "Gravações autônomas de chamados",
-      "ticketAutonomousWritesHint": "Somente substituição da organização — gravações autônomas de chamados exigem o modo de ação e esta ativação em nível de organização"
+      "ticketAutonomousWritesHint": "Somente substituição da organização — gravações autônomas de chamados exigem o modo de ação e a ativação neste nível de organização"
     },
     "loading": "Carregando agentes…",
     "runs": {
