@@ -198,9 +198,19 @@ for workflow in .github/workflows/ci.yml .github/workflows/release.yml; do
     "$workflow must pin Swatinem/rust-cache to the v2.9.2 release commit"
 done
 # require_grep only proves one good line exists; this proves no site deviates.
-rust_cache_offenders="$(
-  grep -rn -i -- 'rust-cache@' .github/workflows/ | grep -vF -- "$RUST_CACHE_PIN" || true
-)"
+# Capture the scan's own status rather than letting a trailing `|| true` absorb
+# it: grep exits 1 for "no matches" but 2 for "could not read", and a security
+# predicate must never answer "clean" about input it could not read (the rule
+# reject_unaudited_apk above is written to). Piping straight into the filter
+# would hide that, because pipefail reports the rightmost status and the filter
+# legitimately exits 1 once it removes every compliant line.
+rust_cache_status=0
+rust_cache_lines="$(grep -rn -i -- 'rust-cache@' .github/workflows/)" || rust_cache_status=$?
+((rust_cache_status <= 1)) || fail \
+  "rust-cache scan of .github/workflows/ failed (grep status $rust_cache_status)"
+# The filter is deliberately case-sensitive: the owner is `Swatinem` upstream,
+# so a lowercase re-drift is reported instead of silently accepted.
+rust_cache_offenders="$(printf '%s\n' "$rust_cache_lines" | grep -vF -- "$RUST_CACHE_PIN" || true)"
 [[ -z "$rust_cache_offenders" ]] || fail \
   "every rust-cache pin must be ${RUST_CACHE_PIN}, found:"$'\n'"$rust_cache_offenders"
 
