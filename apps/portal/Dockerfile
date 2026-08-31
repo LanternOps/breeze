@@ -20,6 +20,7 @@ WORKDIR /app
 # shared manifest must be present for lockfile workspace resolution here and the
 # shared source must be copied into the builder stage below — mirrors apps/web/Dockerfile.
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY patches ./patches
 COPY apps/portal/package.json ./apps/portal/
 COPY packages/shared/package.json ./packages/shared/
 

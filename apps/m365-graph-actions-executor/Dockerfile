@@ -6,6 +6,7 @@ RUN npm install -g pnpm@10.34.5
 WORKDIR /app
 
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.json ./
+COPY patches ./patches
 COPY apps/m365-graph-actions-executor/package.json ./apps/m365-graph-actions-executor/
 COPY packages/shared/package.json ./packages/shared/
 RUN pnpm install --frozen-lockfile --filter=@breeze/m365-graph-actions-executor...

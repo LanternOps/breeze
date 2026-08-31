@@ -14,6 +14,7 @@ WORKDIR /app
 
 # Copy workspace configuration
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY patches ./patches
 COPY apps/api/package.json ./apps/api/
 COPY packages/shared/package.json ./packages/shared/
 # apps/api and the built-in @breeze/ext-workspace extension depend on these
