@@ -129,6 +129,52 @@ export class MergeValidationError extends Error {
   }
 }
 
+export interface MergeBlocker {
+  table: string;
+  loserRows: number;
+}
+
+/** Operator-facing refusal text; also embedded in previews and audits. */
+export function buildMergeBlockedMessage(blockers: MergeBlocker[]): string {
+  const counts = blockers.map((b) => `${b.loserRows} ${b.table} row(s)`).join(', ');
+  return (
+    `merge blocked: the merged-away organization holds durable PAM lifecycle evidence (${counts}). `
+    + 'Privileged-access evidence is never re-tenanted, destroyed, or bypassed by a merge. '
+    + 'If the surviving organization is the one without PAM evidence, merge in the opposite direction; '
+    + 'otherwise these organizations cannot be merged. Audit-admin retention is not a merge mechanism.'
+  );
+}
+
+/** Refusal for a loser org whose rows a `blocks-merge` policy protects — a 422 at the route, `org.merge.failed` from the engine. Never an engine bug. */
+export class OrgMergeBlockedError extends Error {
+  readonly code = 'ORG_MERGE_BLOCKED';
+  constructor(readonly blockers: MergeBlocker[]) {
+    super(buildMergeBlockedMessage(blockers));
+    this.name = 'OrgMergeBlockedError';
+  }
+}
+
+/**
+ * Rows that FORBID the merge (policy kind 'blocks-merge'), counted per table.
+ * Called fail-closed at three points: preview (verdict 'blocked'),
+ * executeOrgMerge pre-fence (refuse without disrupting the loser), and inside
+ * the Phase-B transaction (TOCTOU guard). MUST run before the registry walk:
+ * the parents-first order repoints `devices` early, and
+ * devices_pam_history_move_guard would RAISE a raw 23514 before the walk ever
+ * reached pam_actuations — the typed refusal has to come first.
+ */
+export async function collectMergeBlockers(loserOrgId: string): Promise<MergeBlocker[]> {
+  const blockers: MergeBlocker[] = [];
+  for (const [table, policy] of getOrgMergePolicies()) {
+    if (policy.kind !== 'blocks-merge') continue;
+    const loserRows = await scalarCount(
+      sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${uuid(loserOrgId)}`,
+    );
+    if (loserRows > 0) blockers.push({ table, loserRows });
+  }
+  return blockers.sort((a, b) => a.table.localeCompare(b.table));
+}
+
 // ---------------------------------------------------------------------------
 // Constants / env
 // ---------------------------------------------------------------------------
@@ -683,6 +729,19 @@ export async function runPolicy(
         );
       }
       return executor(loserOrgId, survivorOrgId);
+    }
+
+    case 'blocks-merge': {
+      // Defense in depth only — executeOrgMerge refuses via
+      // collectMergeBlockers before the fence and again before the walk, so
+      // reaching this case with loser rows means that ordering broke.
+      if (phase === 'resolve') {
+        const rows = await scalarCount(
+          sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${uuid(loserOrgId)}`,
+        );
+        if (rows > 0) throw new OrgMergeBlockedError([{ table, loserRows: rows }]);
+      }
+      return noOpOutcome();
     }
 
     default: {

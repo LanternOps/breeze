@@ -416,7 +416,7 @@ describe('Org merge policy registry contract', () => {
   it('no org_id-mutating policy sits on a table whose org_id a trigger blocks', async () => {
     // Kinds that never issue an `UPDATE ... SET org_id`. Everything else does,
     // `custom` included — every custom executor ends in buildRepoint().
-    const NON_MUTATING = new Set(['leave-for-erasure', 'derived', 'follows-parent', 'loser-shell']);
+    const NON_MUTATING = new Set(['leave-for-erasure', 'derived', 'follows-parent', 'loser-shell', 'blocks-merge']);
 
     const rows = (await db.execute(sql`
       SELECT c.relname AS table_name, t.tgname AS trigger_name
