@@ -225,6 +225,29 @@ describe('RunsListPage', () => {
     expect(screen.queryByTestId('ai-agent-run-profile-narrative-run-2')).not.toBeInTheDocument();
   });
 
+  // P2-4 (#4191, Task 12) — a triage-profile run is a ticket outcome, not a
+  // device incident; the badge is what tells the two apart in a mixed list,
+  // same as the sweep/narrative badges above.
+  it('badges a triage-profile run beside its verdict', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, id: 'run-5', profile: 'triage' as const }] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-table')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-profile-triage-run-5')).toBeInTheDocument();
+    // The three profile badges are mutually exclusive.
+    expect(screen.queryByTestId('ai-agent-run-profile-sweep-run-5')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-run-profile-narrative-run-5')).not.toBeInTheDocument();
+  });
+
+  it('omits the triage badge for every other run profile', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, id: 'run-4', profile: 'sweep' as const }, RUN_2] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-table')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-profile-triage-run-4')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-run-profile-triage-run-2')).not.toBeInTheDocument();
+  });
+
   it('hides the Organization column when a single org is selected', async () => {
     mockEndpoints();
     render(<RunsListPage />);

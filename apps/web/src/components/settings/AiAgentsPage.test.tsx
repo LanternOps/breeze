@@ -62,6 +62,20 @@ const ORG_AGENT = {
   allOrgs: false,
 };
 
+// P2-4 (#4191) — an ORG-owned triage agent, the only ownership axis the
+// `ticketAutonomousWrites` toggle can ever take effect on (org-row-only
+// opt-in; see AiAgentTriggers.ticketAutonomousWrites's docstring).
+const ORG_TRIAGE_AGENT = {
+  ...PARTNER_AGENT,
+  id: 'a3',
+  kind: 'triage' as const,
+  name: 'Org triage',
+  orgId: 'org-1',
+  partnerId: null,
+  ownerScope: 'organization' as const,
+  allOrgs: false,
+};
+
 function mockEndpoints(agents: unknown[] = [PARTNER_AGENT]) {
   fetchMock.mockImplementation((url: string) => {
     // Registered BEFORE the generic '/ai/agents' prefix check below — that
@@ -523,5 +537,79 @@ describe('AiAgentsPage', () => {
         fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE'),
       ).toBe(true),
     );
+  });
+});
+
+// P2-4 (#4191, Task 12) — the `ticketAutonomousWrites` org-row-only opt-in
+// toggle. Same "org override only" posture as `anomalyEnabled` (never
+// surfaced on the web form at all): the partner baseline's own value is
+// never consulted in either direction (effectivePolicy.ts's merge), so a
+// partner-wide row must never let an operator believe toggling it does
+// anything.
+describe('AiAgentsPage ticketAutonomousWrites toggle (P2-4, #4191)', () => {
+  it('hides the toggle entirely for a non-triage agent kind', async () => {
+    mockEndpoints([ORG_AGENT]);
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a2'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a2'));
+
+    await screen.findByTestId('ai-agent-editor');
+    expect(screen.queryByTestId('ai-agent-ticket-autonomous-writes')).toBeNull();
+  });
+
+  it('renders the toggle DISABLED for a partner-wide triage agent — it can never take effect there', async () => {
+    mockEndpoints([PARTNER_AGENT]);
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
+
+    const checkbox = await screen.findByTestId('ai-agent-ticket-autonomous-writes');
+    expect(checkbox).toBeDisabled();
+  });
+
+  it('renders the toggle CHECKED when the stored org-owned agent already opted in', async () => {
+    const preset = {
+      ...ORG_TRIAGE_AGENT,
+      triggers: { alertSeverities: ['critical'], respectMaintenanceWindows: true, ticketAutonomousWrites: true },
+    };
+    mockEndpoints([preset]);
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a3'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a3'));
+
+    const checkbox = await screen.findByTestId('ai-agent-ticket-autonomous-writes');
+    expect(checkbox).not.toBeDisabled();
+    expect(checkbox).toBeChecked();
+  });
+
+  it('round-trips a toggle flip through to the PATCH body for an org-owned triage agent', async () => {
+    const orgAgent = { ...ORG_TRIAGE_AGENT, supportedModes: ['off', 'shadow', 'act'] as const };
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
+      if (url === '/ai/agents/a3' && init?.method === 'PATCH') return Promise.resolve(json({ data: orgAgent }));
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [orgAgent] }));
+      if (url === '/roles') return Promise.resolve(json({ data: [] }));
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a3'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a3'));
+
+    const checkbox = await screen.findByTestId('ai-agent-ticket-autonomous-writes');
+    expect(checkbox).not.toBeChecked();
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH')).toBe(true),
+    );
+    const patch = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH');
+    const body = JSON.parse((patch?.[1] as RequestInit).body as string);
+    expect(body.triggers.ticketAutonomousWrites).toBe(true);
   });
 });

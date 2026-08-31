@@ -1493,7 +1493,9 @@
       "recipientRolesFailed": "Couldn't load roles, so notification recipients can't be changed right now.",
       "supervisedActionKeysHint": "Operations this agent may execute WITHOUT a human clicking approve, when a matching policy exists and the org's exposure cap has room. Each one still passes live guardrails, the kill switch, and per-org caps at execution time.",
       "supervisedActionKeysEmpty": "No policy-decidable actions are registered.",
-      "supervisedActionKeysFailed": "Couldn't load the policy-decidable action list, so unattended authorization can't be changed right now."
+      "supervisedActionKeysFailed": "Couldn't load the policy-decidable action list, so unattended authorization can't be changed right now.",
+      "ticketAutonomousWrites": "Autonomous ticket writes",
+      "ticketAutonomousWritesHint": "Org override only — autonomous ticket writes require act mode and this org-level opt-in"
     },
     "loading": "Loading agents…",
     "runs": {
@@ -1540,7 +1542,8 @@
       },
       "profile": {
         "sweep": "Sweep",
-        "narrative": "Weekly report"
+        "narrative": "Weekly report",
+        "triage": "Ticket triage"
       },
       "sweep": {
         "title": "Sweep findings",
@@ -1678,6 +1681,26 @@
           "partialNote": "Partial accounting while unattended policy authorization is disabled — this may understate actual exposure.",
           "unavailable": "No active agent policy for this run's organization.",
           "loading": "Loading budget…"
+        }
+      },
+      "triage": {
+        "title": "Ticket triage",
+        "fieldsTitle": "Proposed fields",
+        "fields": {
+          "categoryId": "Category",
+          "priority": "Priority"
+        },
+        "confidence": "{{value}}% confidence",
+        "device": "Device match: {{value}}",
+        "draftReplyTitle": "Draft reply",
+        "draftResolutionTitle": "Draft resolution note",
+        "notesTitle": "Notes",
+        "intentsTitle": "Proposed ticket changes",
+        "intentUnknown": "Status unavailable",
+        "draftsWrittenTitle": "Drafts written",
+        "draftKinds": {
+          "reply": "Reply draft",
+          "resolutionNote": "Resolution-note draft"
         }
       }
     }

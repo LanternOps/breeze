@@ -1493,7 +1493,9 @@
       "recipientRolesFailed": "Não foi possível carregar as funções, então os destinatários das notificações não podem ser alterados agora.",
       "supervisedActionKeysHint": "Operações que este agente pode executar SEM um humano clicar em aprovar, quando existe uma política correspondente e o limite de exposição da organização tem espaço. Cada uma ainda passa pelas proteções em tempo real, pelo interruptor de interrupção e pelos limites por organização no momento da execução.",
       "supervisedActionKeysEmpty": "Nenhuma ação decidível por política está registrada.",
-      "supervisedActionKeysFailed": "Não foi possível carregar a lista de ações decidíveis por política, então a autorização não supervisionada não pode ser alterada agora."
+      "supervisedActionKeysFailed": "Não foi possível carregar a lista de ações decidíveis por política, então a autorização não supervisionada não pode ser alterada agora.",
+      "ticketAutonomousWrites": "Gravações autônomas de chamados",
+      "ticketAutonomousWritesHint": "Somente substituição da organização — gravações autônomas de chamados exigem o modo de ação e esta ativação em nível de organização"
     },
     "loading": "Carregando agentes…",
     "runs": {
@@ -1540,7 +1542,8 @@
       },
       "profile": {
         "sweep": "Varredura",
-        "narrative": "Relatório semanal"
+        "narrative": "Relatório semanal",
+        "triage": "Triagem de chamados"
       },
       "sweep": {
         "title": "Constatações da varredura",
@@ -1678,6 +1681,26 @@
           "partialNote": "Contabilização parcial enquanto a autorização de política não supervisionada está desativada — isso pode subestimar a exposição real.",
           "unavailable": "Nenhuma política de agente ativa para a organização desta execução.",
           "loading": "Carregando orçamento…"
+        }
+      },
+      "triage": {
+        "title": "Triagem de chamados",
+        "fieldsTitle": "Campos propostos",
+        "fields": {
+          "categoryId": "Categoria",
+          "priority": "Prioridade"
+        },
+        "confidence": "{{value}}% de confiança",
+        "device": "Dispositivo correspondente: {{value}}",
+        "draftReplyTitle": "Rascunho de resposta",
+        "draftResolutionTitle": "Rascunho da nota de resolução",
+        "notesTitle": "Notas",
+        "intentsTitle": "Alterações de chamado propostas",
+        "intentUnknown": "Status indisponível",
+        "draftsWrittenTitle": "Rascunhos criados",
+        "draftKinds": {
+          "reply": "Rascunho de resposta",
+          "resolutionNote": "Rascunho da nota de resolução"
         }
       }
     }

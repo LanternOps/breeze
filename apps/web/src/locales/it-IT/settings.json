@@ -1493,7 +1493,9 @@
       "recipientRolesFailed": "Impossibile caricare i ruoli: al momento i destinatari delle notifiche non possono essere modificati.",
       "supervisedActionKeysHint": "Operazioni che questo agente può eseguire SENZA che un essere umano clicchi su approva, quando esiste una policy corrispondente e il limite di esposizione dell'organizzazione ha margine. Ognuna passa comunque attraverso le protezioni live, l'interruttore di emergenza e i limiti per organizzazione al momento dell'esecuzione.",
       "supervisedActionKeysEmpty": "Nessuna azione decidibile tramite policy è registrata.",
-      "supervisedActionKeysFailed": "Impossibile caricare l'elenco delle azioni decidibili tramite policy, quindi l'autorizzazione non presidiata non può essere modificata al momento."
+      "supervisedActionKeysFailed": "Impossibile caricare l'elenco delle azioni decidibili tramite policy, quindi l'autorizzazione non presidiata non può essere modificata al momento.",
+      "ticketAutonomousWrites": "Scritture autonome dei ticket",
+      "ticketAutonomousWritesHint": "Solo override a livello di organizzazione — le scritture autonome dei ticket richiedono la modalità azione e questa attivazione a livello di organizzazione"
     },
     "loading": "Caricamento degli agenti…",
     "runs": {
@@ -1540,7 +1542,8 @@
       },
       "profile": {
         "sweep": "Scansione",
-        "narrative": "Report settimanale"
+        "narrative": "Report settimanale",
+        "triage": "Triage dei ticket"
       },
       "sweep": {
         "title": "Rilevazioni della scansione",
@@ -1678,6 +1681,26 @@
           "partialNote": "Contabilizzazione parziale finché l'autorizzazione delle policy non presidiate è disattivata — l'esposizione reale potrebbe essere sottostimata.",
           "unavailable": "Nessuna policy agente attiva per l'organizzazione di questa esecuzione.",
           "loading": "Caricamento del budget…"
+        }
+      },
+      "triage": {
+        "title": "Triage dei ticket",
+        "fieldsTitle": "Campi proposti",
+        "fields": {
+          "categoryId": "Categoria",
+          "priority": "Priorità"
+        },
+        "confidence": "{{value}}% di confidenza",
+        "device": "Dispositivo corrispondente: {{value}}",
+        "draftReplyTitle": "Bozza di risposta",
+        "draftResolutionTitle": "Bozza della nota di risoluzione",
+        "notesTitle": "Note",
+        "intentsTitle": "Modifiche al ticket proposte",
+        "intentUnknown": "Stato non disponibile",
+        "draftsWrittenTitle": "Bozze create",
+        "draftKinds": {
+          "reply": "Bozza di risposta",
+          "resolutionNote": "Bozza della nota di risoluzione"
         }
       }
     }
