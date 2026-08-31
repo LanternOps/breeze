@@ -265,6 +265,9 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
  */
 export const RESOLVABLE_ALERT_STATUSES = ['active', 'acknowledged', 'suppressed'] as const;
 
+/** The `alert_status` enum, as the column itself types it. */
+type AlertStatus = (typeof alerts.$inferSelect)['status'];
+
 /**
  * What a resolve path reports when it LOSES the compare-and-swap.
  *
@@ -294,9 +297,93 @@ export const ALERT_CAS_LOST_MESSAGE =
  *     it pins each row to the exact status its snapshot saw.
  */
 export function buildResolveAlertCas(alertId: string) {
+  return buildAlertStatusCas(alertId, RESOLVABLE_ALERT_STATUSES);
+}
+
+/**
+ * The one status an alert can be acknowledged FROM.
+ *
+ * Deliberately narrower than the resolvable set and not derivable from it: every
+ * acknowledge call site already refuses a non-active alert at its pre-read, and
+ * re-acknowledging an acknowledged alert is not a workflow anybody asked for. What
+ * the pre-read could never do is stop the write, which is the #4101 bug — see
+ * `buildAcknowledgeAlertCas`.
+ */
+export const ACKNOWLEDGEABLE_ALERT_STATUSES = ['active'] as const;
+
+/**
+ * The statuses an alert can be suppressed FROM: everything except the two terminal
+ * ones. `suppressed` is in the set on purpose — re-timing an existing mute
+ * (extending or shortening it) is a legitimate operation, unlike re-acknowledging.
+ *
+ * Textually identical to `RESOLVABLE_ALERT_STATUSES` today, and kept a separate
+ * constant anyway: the two express different invariants ("still silenceable" vs
+ * "still resolvable") and must be free to diverge when a status is added. Aliasing
+ * them would make a future non-terminal status silently inherit both answers.
+ * `alertService.ackCasSql.test.ts` derives both from the `alert_status` enum so a
+ * new value forces the classification instead of defaulting to one.
+ */
+export const SUPPRESSIBLE_ALERT_STATUSES = ['active', 'acknowledged', 'suppressed'] as const;
+
+/**
+ * What an acknowledge path reports when it LOSES the compare-and-swap.
+ *
+ * Same discipline as `ALERT_CAS_LOST_MESSAGE`: state only what the code can verify
+ * (the row is no longer active), never "another request acknowledged it" — an empty
+ * `RETURNING` is also what an RLS-invisible write produces, and naming the benign
+ * cause in user-visible text forecloses the hypothesis worth chasing when the cause
+ * is not benign.
+ */
+export const ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE =
+  'Alert is no longer acknowledgeable — its status is no longer active.';
+
+/** What a suppress path reports when it LOSES the compare-and-swap. */
+export const ALERT_SUPPRESS_CAS_LOST_MESSAGE =
+  'Alert is no longer suppressible — it already reached a terminal status (resolved or dismissed).';
+
+/**
+ * The compare-and-swap predicate for acknowledging ONE alert by id (#4101).
+ *
+ * The acknowledge handlers had the identical check-then-act shape the resolve paths
+ * carried before #4094/#4099: read the status, then UPDATE by id unconditionally.
+ * The damage is worse than a double-acknowledge. Tech A resolves — the resolve CAS
+ * wins, `alert.resolved` publishes, the escalation is cancelled. Tech B's stale list
+ * still shows the alert active and B clicks Acknowledge; B's id-only UPDATE stamps
+ * `status='acknowledged'` over the resolution, leaving a reopened alert that still
+ * carries `resolvedAt`/`resolvedBy` and whose escalation is already gone.
+ *
+ * Single definition for every single-alert acknowledge path: both HTTP routes
+ * (`routes/alerts/alerts.ts`, `routes/mobile.ts`) and the `manage_alerts` AI tool.
+ * The two multi-row acknowledge paths compose the status predicate directly because
+ * they need `inArray(alerts.id, ...)` rather than an id equality:
+ *   - the correlation-group acknowledge (`routes/alerts/correlations.ts`);
+ *   - the bulk alert action (`routes/alerts/alerts.ts`), stricter still — it pins
+ *     each row to the exact status its snapshot saw.
+ */
+export function buildAcknowledgeAlertCas(alertId: string) {
+  return buildAlertStatusCas(alertId, ACKNOWLEDGEABLE_ALERT_STATUSES);
+}
+
+/**
+ * The compare-and-swap predicate for suppressing ONE alert by id (#4101). Same
+ * check-then-act defect and the same fix shape as `buildAcknowledgeAlertCas`; a
+ * stale suppress landing on a just-resolved alert un-resolves it.
+ */
+export function buildSuppressAlertCas(alertId: string) {
+  return buildAlertStatusCas(alertId, SUPPRESSIBLE_ALERT_STATUSES);
+}
+
+/**
+ * The one place the CAS SHAPE lives. The three builders above differ only in which
+ * statuses they admit; funnelling them through here means a change to the shape
+ * (`and` → `or`, dropping the id equality) cannot land on one transition and miss
+ * the other two — which is exactly how a predicate and its compiled-SQL test have
+ * drifted apart in this file before.
+ */
+function buildAlertStatusCas(alertId: string, statuses: readonly AlertStatus[]) {
   return and(
     eq(alerts.id, alertId),
-    inArray(alerts.status, [...RESOLVABLE_ALERT_STATUSES]),
+    inArray(alerts.status, [...statuses]),
   );
 }
 
