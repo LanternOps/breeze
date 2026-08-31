@@ -399,7 +399,7 @@ export async function isAgentIntentDecideAuthorized(
   userId: string,
   intent: Pick<
     ActionIntent,
-    'id' | 'orgId' | 'actionName' | 'arguments' | 'requestingAgentRunId' | 'scopeKind' | 'scopeDeviceId'
+    'id' | 'orgId' | 'actionName' | 'arguments' | 'requestingAgentRunId' | 'scopeKind' | 'scopeDeviceId' | 'scopeTicketId'
   >,
 ): Promise<boolean> {
   const runId = intent.requestingAgentRunId;

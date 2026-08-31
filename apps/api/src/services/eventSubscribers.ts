@@ -106,10 +106,13 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
 
   registerEventSubscriber({
     id: 'ai-agent-ticket-helpdesk',
-    // v1 scope: admission is triggered on ticket.created only —
-    // ticket.commented/ticket.status_changed are on the bus for future
-    // context/admission use but not read here yet (see the plan's deferred
-    // items).
+    // Phase 2 wave P2-4 (#4187/#4191) Task 9 extends this subscriber (not a
+    // second id — same pattern as ai-agent-alert-verdict's task 13 note
+    // above) to admit a triage run on `ticket.commented` (the ticket's
+    // first genuinely-human comment) and `ticket.status_changed`
+    // (resolution) in addition to `ticket.created` — see
+    // ticketHelpdeskSubscriber.ts's header for the full per-event-type
+    // admission rules.
     //
     // Lazy, same reason and same pattern as automation-worker below:
     // ticketHelpdeskSubscriber.ts -> runService.ts's transitive closure
@@ -117,9 +120,15 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
     // caught this on the first attempt at a static import here) — a dynamic
     // import defers that cost to the first ticket.created delivery instead
     // of paying it at eventSubscribers.ts's module-eval time.
-    eventTypes: ['ticket.created'],
+    eventTypes: ['ticket.created', 'ticket.commented', 'ticket.status_changed'],
     handler: async (event: BreezeEvent) => {
-      const { handleTicketCreatedEvent } = await import('./aiAgents/ticketHelpdeskSubscriber');
+      const {
+        handleTicketCreatedEvent,
+        handleTicketCommentedEvent,
+        handleTicketStatusChangedEvent,
+      } = await import('./aiAgents/ticketHelpdeskSubscriber');
+      if (event.type === 'ticket.commented') return handleTicketCommentedEvent(event);
+      if (event.type === 'ticket.status_changed') return handleTicketStatusChangedEvent(event);
       return handleTicketCreatedEvent(event);
     },
     retry: { attempts: 5, backoffMs: 10_000 },

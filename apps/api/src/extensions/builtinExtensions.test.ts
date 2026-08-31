@@ -39,8 +39,9 @@ import type { RegisterableExtensionWebAsset } from './webAssets';
  * these tests need no database, no filesystem, and never import
  * `@breeze/ext-workspace` themselves:
  * the built-in LIST is itself a port, so a fixture extension stands in for the
- * real one. Only the last suite (`BUILTIN_EXTENSION_NAMES`) looks at the real
- * registration, and only at its name.
+ * real one. Only the `BUILTIN_EXTENSION_NAMES` suite looks at the real
+ * registration: it pins the static registry fields and resolves the manifest
+ * once to catch name drift.
  *
  * The in-memory state backend mirrors the Drizzle backend's semantics: a fresh
  * row is born `enabled: true` /
@@ -174,6 +175,7 @@ function fixtureModule(): BreezeExtensionV1 {
 function fixtureBuiltin(overrides: Partial<BuiltinExtension> = {}): BuiltinExtension {
   return {
     module: fixtureModule(),
+    name: NAME,
     manifest: fixtureManifest(),
     packageDir: 'ee/demo-builtin',
     packageName: '@breeze/ext-demo-builtin',
@@ -242,6 +244,7 @@ function createHarness(overrides: {
     runMigrations: async () => {},
     checkMigrationParity: async () => {},
     publishTenancy: (manifest) => { calls.push('tenancy'); publishedTenancy.push(manifest); },
+    builtinEverMigrated: async () => false,
     existingDeclaredTables: async () => { calls.push('probe'); return []; },
     ...(overrides.realStage ? {} : {
       stageExtension: async (_module: BreezeExtensionV1, manifest: ExtensionManifestV1) => {
@@ -805,6 +808,120 @@ describe('loadBuiltinExtensions — deployment enable flag', () => {
   });
 });
 
+describe('loadBuiltinExtensions — disabled built-in with an unreadable manifest (#3470)', () => {
+  afterEach(() => {
+    delete process.env[ENABLE_ENV_VAR];
+  });
+
+  function unreadableBuiltin(manifestError: Error): BuiltinExtension {
+    const builtin = fixtureBuiltin();
+    Object.defineProperty(builtin, 'manifest', {
+      get() {
+        throw manifestError;
+      },
+    });
+    return builtin;
+  }
+
+  function captureWarnings() {
+    return vi.spyOn(console, 'warn').mockImplementation(() => {});
+  }
+
+  it('continues when the ledger shows the disabled built-in never migrated', async () => {
+    const manifestError = new Error('manifest fixture is unreadable');
+    const builtinEverMigrated = vi.fn(async () => false);
+    const existingDeclaredTables = vi.fn(async () => []);
+    const warn = captureWarnings();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const h = createHarness({
+        builtins: [unreadableBuiltin(manifestError)],
+        ports: { builtinEverMigrated, existingDeclaredTables },
+      });
+
+      await expect(h.load()).resolves.toBeUndefined();
+
+      expect(h.publishedTenancy).toEqual([]);
+      expect(h.validatedTenancy).toEqual([]);
+      expect(existingDeclaredTables).not.toHaveBeenCalled();
+      expect(builtinEverMigrated).toHaveBeenCalledWith(NAME);
+
+      // The ordinary skip line still comes first, at warn.
+      const warnings = warn.mock.calls.map((args) => args.join(' '));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('builtin_extension_disabled');
+
+      // The continue-on-an-inference line is ERROR, not warn: it is the only
+      // branch here that proceeds without proof, so it must not sit at the same
+      // level as the routine "this built-in is switched off" line.
+      const errors = error.mock.calls.map((args) => args.join(' '));
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain('builtin_extension_manifest_unavailable');
+      expect(errors[0]).toContain(`"extension":"${NAME}"`);
+      expect(errors[0]).toContain(`"enableFlag":"${ENABLE_ENV_VAR}"`);
+      // The assumption the skip rests on is named in the line itself, so an
+      // operator reading it knows what would invalidate it.
+      expect(errors[0]).toContain('migration ledger is intact');
+    } finally {
+      error.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it('fails when the disabled built-in has applied migrations', async () => {
+    const manifestError = new Error('manifest fixture is unreadable');
+    const warn = captureWarnings();
+    try {
+      const h = createHarness({
+        builtins: [unreadableBuiltin(manifestError)],
+        ports: { builtinEverMigrated: async () => true },
+      });
+
+      const error = await h.load().then(() => null, (caught: unknown) => caught as Error);
+      expect(error?.message).toContain(NAME);
+      expect(error?.message).toContain(ENABLE_ENV_VAR);
+      expect(error?.message).toContain('tenancy');
+      expect(error?.message).toContain('cascades');
+      expect(error?.cause).toBe(manifestError);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('fails closed when the migration-ledger probe itself throws', async () => {
+    const manifestError = new Error('manifest fixture is unreadable');
+    const probeError = new Error('ledger connection refused');
+    const warn = captureWarnings();
+    try {
+      const h = createHarness({
+        builtins: [unreadableBuiltin(manifestError)],
+        ports: { builtinEverMigrated: async () => { throw probeError; } },
+      });
+
+      const error = await h.load().then(() => null, (caught: unknown) => caught as Error);
+      expect(error?.message).toContain(NAME);
+      expect(error?.message).toContain('manifest was also unavailable');
+      expect(error?.message).toContain('cannot decide whether it left tables behind');
+      expect(error?.cause).toBe(probeError);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('propagates the manifest error without a ledger probe when the built-in is enabled', async () => {
+    process.env[ENABLE_ENV_VAR] = 'true';
+    const manifestError = new Error('manifest fixture is unreadable');
+    const builtinEverMigrated = vi.fn(async () => false);
+    const h = createHarness({
+      builtins: [unreadableBuiltin(manifestError)],
+      ports: { builtinEverMigrated },
+    });
+
+    await expect(h.load()).rejects.toBe(manifestError);
+    expect(builtinEverMigrated).not.toHaveBeenCalled();
+  });
+});
+
 /**
  * Restores the `/helper/*` auth coverage that was dropped along with the
  * workspace legacy manifest: the gateway keys core helper auth off the
@@ -859,7 +976,7 @@ describe('BUILTIN_EXTENSION_NAMES', () => {
    * renaming it silently would leave every one of those switching nothing.
    */
   it('gates the workspace built-in on BREEZE_WORKSPACE_ENABLED, default off', () => {
-    const workspace = BUILTINS.find((builtin) => builtin.manifest.name === 'workspace');
+    const workspace = BUILTINS.find((builtin) => builtin.name === 'workspace');
     expect(workspace?.enableEnvVar).toBe('BREEZE_WORKSPACE_ENABLED');
 
     const previous = process.env.BREEZE_WORKSPACE_ENABLED;
@@ -884,8 +1001,27 @@ describe('BUILTIN_EXTENSION_NAMES', () => {
    * against the real registry entry, not a fixture.
    */
   it('keeps workspace /helper/* behind core helper auth', () => {
-    const workspace = BUILTINS.find((builtin) => builtin.manifest.name === 'workspace');
+    const workspace = BUILTINS.find((builtin) => builtin.name === 'workspace');
     expect(workspace?.helperRoutes).toBe(true);
+  });
+
+  /**
+   * The static `name` is what the disabled path probes the migration ledger
+   * with when the manifest cannot be read, so it MUST match the shipped
+   * `manifest.name`. `defineBuiltin` already enforces that at resolution time —
+   * which is exactly why the assertion here is `not.toThrow()` and not an
+   * equality check: an equality check could never observe a mismatch, because
+   * the getter throws before returning one. What this test contributes is
+   * FORCING that resolution against the REAL ee/workspace/manifest.json (every
+   * other suite in this file uses a fixture and never touches `.manifest` on
+   * the real registry), so a drift between the two lands here at test time
+   * instead of at boot.
+   */
+  it('resolves the real workspace manifest against the static registry name', () => {
+    const workspace = BUILTINS.find((builtin) => builtin.name === 'workspace');
+    expect(workspace).toBeDefined();
+    expect(() => workspace!.manifest).not.toThrow();
+    expect(workspace!.manifest.name).toBe('workspace');
   });
 });
 

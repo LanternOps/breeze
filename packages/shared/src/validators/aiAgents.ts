@@ -63,6 +63,12 @@ const limitsFields = z.object({
   maxNarrativeRunsPerHour: z.number().int().min(1).max(50),
   narrativeBudgetCentsPerRun: z.number().int().min(5).max(100),
   narrativeMaxTurns: z.number().int().min(2).max(8),
+  // Triage-profile admission caps (phase 2 P2-4) — see
+  // AiAgentLimits.maxConcurrentTriageRuns's docstring.
+  maxConcurrentTriageRuns: z.number().int().min(1).max(10),
+  maxTriageRunsPerHour: z.number().int().min(1).max(200),
+  triageBudgetCentsPerRun: z.number().int().min(1).max(50),
+  triageMaxTurns: z.number().int().min(2).max(12),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({
@@ -109,12 +115,19 @@ const triggersFields = z.object({
   // /aiAgents.ts) for the merge semantics — the org's own triggers must set
   // this; a partner-wide baseline can never silently opt an org in.
   anomalyEnabled: z.boolean(),
+  // Phase 2 wave P2-4 (#4191) — per-agent opt-in that lifts wave 6.3's
+  // forced shadow behavior for ticket-triggered runs. Same binary-safety-gate
+  // shape as anomalyEnabled above (default false, org-row-only merge — see
+  // AiAgentTriggers.ticketAutonomousWrites's docstring, packages/shared/src
+  // /types/aiAgents.ts).
+  ticketAutonomousWrites: z.boolean(),
 });
 export const aiAgentTriggersPatchSchema = triggersFields.partial();
 export const aiAgentTriggersSchema = aiAgentTriggersPatchSchema.transform((v) => ({
   alertSeverities: ['critical', 'high'] as Array<(typeof ALERT_SEVERITIES)[number]>,
   respectMaintenanceWindows: true,
   anomalyEnabled: false,
+  ticketAutonomousWrites: false,
   ...v,
 }));
 

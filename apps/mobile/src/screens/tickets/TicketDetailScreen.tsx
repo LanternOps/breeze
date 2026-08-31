@@ -14,8 +14,29 @@ import type { RouteProp } from '@react-navigation/native';
 import { useRoute } from '@react-navigation/native';
 
 import { palette, radii, spacing, type } from '../../theme';
-import { useAppDispatch } from '../../store';
+import { useAppDispatch, useAppSelector } from '../../store';
 import { applyStatusChange, syncTicketFromDetail } from '../../store/ticketsSlice';
+import {
+  needsAttentionChanged,
+  pendingWritesChanged,
+  runningTimerAdopted,
+  stoppedTimer,
+  timeAccessDenied,
+} from '../../store/timeSlice';
+import { startTimer, stopTimer } from '../../services/timeEntries';
+import {
+  enqueue,
+  parkNeedsAttention,
+  readNeedsAttention,
+  readQueue,
+} from '../../services/timeEntryQueue';
+import {
+  clearLocalTimer,
+  readLocalTimer,
+  stampNow,
+  writeLocalTimer,
+} from '../../services/localTimer';
+import { useNetworkConnected } from '../../lib/useNetworkConnected';
 import {
   addTicketComment,
   allowedQuickStatuses,
@@ -32,6 +53,8 @@ import { relativeTime } from '../../lib/relativeTime';
 import { reportInternalError } from '../../lib/errorReporting';
 
 import { priorityColor, priorityLabel, statusLabel, ticketRef } from './ticketCopy';
+import { startForTicket, stopRunningTimer } from './timerActions';
+import { startOutcomeEffects, stopOutcomeEffects } from './timerOutcomeEffects';
 
 type DetailRoute = RouteProp<TicketsStackParamList, 'TicketDetail'>;
 
@@ -56,6 +79,15 @@ export function TicketDetailScreen() {
   const [pendingStatus, setPendingStatus] = useState<TicketStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const [timerNotice, setTimerNotice] = useState<string | null>(null);
+  const [timerBusy, setTimerBusy] = useState(false);
+
+  const connected = useNetworkConnected();
+  const running = useAppSelector((state) => state.time.running);
+  // Sticky for the session: once the server has refused this account the
+  // control is withdrawn rather than re-offered and failing (see timeSlice).
+  const timeDenial = useAppSelector((state) => state.time.denial);
+  const timerInFlight = useRef(false);
 
   // `busy` is render-captured, so two taps before React commits can both see
   // false and fire duplicate requests. This ref is the synchronous lock.
@@ -208,6 +240,96 @@ export function TicketDetailScreen() {
     [resolutionNote, ticketId, dispatch, load]
   );
 
+  /**
+   * The queue is the source of truth for "how much is unsent", so the depth is
+   * re-read from storage rather than incremented locally. On a storage failure
+   * the previous depth is kept: reporting zero pending writes would tell a
+   * technician their billable minutes are safe when they may not be.
+   */
+  const refreshQueueDepth = useCallback(async () => {
+    try {
+      const queued = await readQueue();
+      if (mounted.current) dispatch(pendingWritesChanged(queued.length));
+    } catch {
+      // QueueStorageError — leave the last known depth in place.
+    }
+  }, [dispatch]);
+
+  const onStartTimer = useCallback(async () => {
+    if (timerInFlight.current) return;
+    timerInFlight.current = true;
+    setTimerBusy(true);
+    setTimerNotice(null);
+    try {
+      const outcome = await startForTicket(ticketId, {
+        startTimer,
+        writeLocalTimer,
+        clearLocalTimer,
+        isConnected: () => connected,
+        stamp: stampNow,
+      });
+      if (!mounted.current) return;
+      // One decision table, shared with the TimerBar — see timerOutcomeEffects.ts.
+      const effects = startOutcomeEffects(outcome);
+      // `startRunning` may carry a null id: a timer started offline exists only
+      // on this device until its span is created, and it still has to tick.
+      if (effects.startRunning !== null) dispatch(runningTimerAdopted(effects.startRunning));
+      if (effects.accountDenial !== null) dispatch(timeAccessDenied(effects.accountDenial));
+      if (effects.refreshQueueDepth) await refreshQueueDepth();
+      if (!mounted.current) return;
+      setTimerNotice(effects.notice);
+      setToast(effects.toast);
+    } finally {
+      timerInFlight.current = false;
+      if (mounted.current) setTimerBusy(false);
+    }
+  }, [ticketId, connected, dispatch, refreshQueueDepth]);
+
+  const onStopTimer = useCallback(async () => {
+    if (timerInFlight.current) return;
+    timerInFlight.current = true;
+    setTimerBusy(true);
+    setTimerNotice(null);
+    try {
+      const outcome = await stopRunningTimer(
+        { running },
+        {
+          stopTimer,
+          enqueue,
+          readLocalTimer,
+          clearLocalTimer,
+          parkNeedsAttention,
+          isConnected: () => connected,
+          stamp: stampNow,
+        }
+      );
+      if (!mounted.current) return;
+      const effects = stopOutcomeEffects(outcome);
+      // A QUEUED stop clears the local timer too: the technician has said the
+      // timer is over and the queued write is what makes the server agree.
+      if (effects.clearRunning) dispatch(stoppedTimer());
+      if (effects.accountDenial !== null) dispatch(timeAccessDenied(effects.accountDenial));
+      if (effects.reload) {
+        // The stop writes a time-entry activity comment server-side, so the
+        // activity list below is stale until this lands.
+        void load();
+      }
+      if (effects.refreshQueueDepth) await refreshQueueDepth();
+      // A stop whose clock ran backwards parks a row from THIS screen, so the
+      // standing count has to be updated here — not at the next reconnect.
+      if (effects.refreshNeedsAttention) {
+        const parked = await readNeedsAttention().catch(() => null);
+        if (parked !== null && mounted.current) dispatch(needsAttentionChanged(parked.length));
+      }
+      if (!mounted.current) return;
+      setTimerNotice(effects.notice);
+      setToast(effects.toast);
+    } finally {
+      timerInFlight.current = false;
+      if (mounted.current) setTimerBusy(false);
+    }
+  }, [connected, dispatch, refreshQueueDepth, load, running]);
+
   if (loading && !ticket) {
     return (
       <View style={styles.centered}>
@@ -303,6 +425,49 @@ export function TicketDetailScreen() {
             accessibilityLabel="Resolution note"
           />
         ) : null}
+
+        <Text style={styles.sectionHeader}>TIME</Text>
+        {timeDenial ? (
+          // Not a generic failure: the technician is told which wall they hit
+          // and whether an administrator can move it.
+          <Text style={styles.timeDenied} accessibilityRole="text">
+            {timeDenial.message}
+          </Text>
+        ) : (
+          <>
+            <Pressable
+              onPress={() => (running ? void onStopTimer() : void onStartTimer())}
+              disabled={timerBusy}
+              accessibilityRole="button"
+              accessibilityLabel={running ? 'Stop timer' : 'Start timer on this ticket'}
+              accessibilityState={{ disabled: timerBusy }}
+              style={[styles.timerButton, timerBusy && styles.submitDisabled]}
+            >
+              <Text style={styles.timerButtonText}>
+                {timerBusy ? 'Working…' : running ? 'Stop timer' : 'Start timer'}
+              </Text>
+            </Pressable>
+            {running && running.ticketId !== ticketId ? (
+              // `startTimer` auto-stops the caller's previous timer before
+              // inserting (timeEntryService.ts), so starting here silently
+              // closes the other ticket's entry. Say so before the tap.
+              <Text style={styles.metaDim}>
+                A timer is running on another ticket. Starting here stops that one.
+              </Text>
+            ) : null}
+            {running && running.ticketId === ticketId ? (
+              <Text style={styles.metaDim}>
+                {running.id === null
+                  ? 'Timer running on this ticket — not yet synced.'
+                  : 'Timer running on this ticket.'}
+              </Text>
+            ) : null}
+            {!connected ? (
+              <Text style={styles.metaDim}>Offline — time is saved and synced later.</Text>
+            ) : null}
+            {timerNotice ? <Text style={styles.timerNotice}>{timerNotice}</Text> : null}
+          </>
+        )}
 
         <Text style={styles.sectionHeader}>
           ACTIVITY{commentCount ? ` (${commentCount})` : ''}
@@ -451,6 +616,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   submitDisabled: { opacity: 0.5 },
+  timerButton: {
+    marginTop: spacing['2'],
+    paddingVertical: spacing['3'],
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: palette.brand.base,
+    backgroundColor: palette.brand.deep,
+    alignItems: 'center',
+  },
+  timerButtonText: { ...type.bodyMd, color: palette.dark.textHi },
+  timerNotice: { ...type.meta, color: palette.deny.base, marginTop: spacing['2'] },
+  timeDenied: { ...type.meta, color: palette.warning.base, marginTop: spacing['1'] },
   submitText: { ...type.bodyMd, color: palette.dark.textHi },
   error: { ...type.body, color: palette.deny.base, textAlign: 'center' },
   retry: {

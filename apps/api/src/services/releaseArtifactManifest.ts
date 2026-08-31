@@ -6,6 +6,7 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { assertDistributableReleaseAsset, isUnsignedSelfHostAsset } from './releaseAssetTrust';
+import { safeFetchFollowingRedirects } from './urlSafety';
 
 // Warn once per asset name per process. This fires on the normal, intended path
 // for a stock public release (#3504) — every self-hoster on BINARY_SOURCE=github
@@ -556,7 +557,14 @@ export function verifyReleaseArtifactManifestIntegrity(
 }
 
 async function fetchSmallBuffer(url: string, label: string): Promise<Buffer> {
-  const resp = await fetch(url, { redirect: "follow" });
+  // A naive `redirect: "follow"` on verification inputs was an SSRF bypass
+  // (#3649): a trusted URL could redirect into private space. The guarded
+  // helper re-validates and pins every hop before it is dialed. `maxBytes`
+  // makes the manifest ceiling a streaming one — the socket is torn down on
+  // overrun rather than the body being buffered and measured afterwards.
+  const resp = await safeFetchFollowingRedirects(url, {
+    maxBytes: MAX_MANIFEST_BYTES,
+  });
   if (!resp.ok) {
     throw new Error(`Failed to fetch ${label}: ${resp.status}`);
   }

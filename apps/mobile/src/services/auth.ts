@@ -4,6 +4,8 @@ import type { User } from './api';
 import { APPROVAL_CACHE_KEY, clearApprovalCacheOrThrow } from './approvalCache';
 import { APP_LOCK_STATE_KEY } from './appLockState';
 import { CSRF_TOKEN_KEY, clearCsrfToken } from './csrfToken';
+import { LOCAL_TIMER_KEY, clearLocalTimer } from './localTimer';
+import { QUEUE_KEY, clearQueueForSignOut } from './timeEntryQueue';
 import {
   AUTH_TOKEN_KEY,
   AUTH_USER_KEY,
@@ -96,6 +98,15 @@ export class SecureWipeError extends Error {
  * Clear all authentication data.
  *
  * Also clears the persistent approvals cache (`breeze.approvals.cache.v1`).
+ *
+ * `deliberate` distinguishes the technician tapping Sign out from an
+ * INVOLUNTARY session loss — a 401/403 on the cold-start revalidation, a locked
+ * keychain, a device block. Both land here, but only the former may discard
+ * unsent work: a technician who worked offline all day and whose token expired
+ * would otherwise lose the entire time-entry backlog on relaunch, through no
+ * action of their own. It defaults to FALSE so a new call site cannot destroy
+ * that backlog by omission; cross-account replay is prevented on every other
+ * path by `reconcileQueueOwner` at sign-in.
  * The in-memory Redux reset (store/resettable.ts) drops session state on
  * sign-out, but the approval queue is additionally persisted to SecureStore
  * for offline cold-open. Without clearing it here, the next account signing in
@@ -113,7 +124,9 @@ export class SecureWipeError extends Error {
  *   - throw a `SecureWipeError` naming the surviving keys so callers can react
  *     (e.g. retry on next keychain-unlock) instead of assuming a clean wipe.
  */
-export async function clearAuthData(): Promise<void> {
+export async function clearAuthData(
+  options: Readonly<{ deliberate?: boolean }> = {}
+): Promise<void> {
   const deletions: Array<{ key: string; run: () => Promise<unknown> }> = [
     { key: AUTH_TOKEN_KEY, run: () => SecureStore.deleteItemAsync(AUTH_TOKEN_KEY) },
     { key: AUTH_USER_KEY, run: () => SecureStore.deleteItemAsync(AUTH_USER_KEY) },
@@ -131,6 +144,18 @@ export async function clearAuthData(): Promise<void> {
     // The CSRF token is account-scoped: leaving it behind would hand the next
     // account a stale double-submit value that fails every write.
     { key: CSRF_TOKEN_KEY, run: () => clearCsrfToken() },
+    // A locally-ticking timer is session-owned: left behind, the next account's
+    // TimerBar ticks the previous technician's job and stopping it enqueues
+    // that work under the new identity. Safe to clear on ANY session end — it
+    // holds no unsent work, only an in-progress span the technician can restart.
+    { key: LOCAL_TIMER_KEY, run: () => clearLocalTimer() },
+    // Unsent time-entry writes ARE unsent work, so they are parked-and-cleared
+    // only on a deliberate sign-out (see the doc comment above). The park has
+    // to land first: `clearQueueForSignOut` rejects rather than delete rows it
+    // could not copy aside, and that reaches the user as a partial wipe.
+    ...(options.deliberate === true
+      ? [{ key: QUEUE_KEY, run: () => clearQueueForSignOut() }]
+      : []),
   ];
 
   const results = await Promise.allSettled(deletions.map((d) => d.run()));

@@ -76,7 +76,7 @@ export type IntentAttribution = Pick<
  */
 export type IntentTargetRef = Pick<
   ActionIntent,
-  'orgId' | 'scopeKind' | 'scopeDeviceId' | 'requestingAgentRunId'
+  'orgId' | 'scopeKind' | 'scopeDeviceId' | 'scopeTicketId' | 'requestingAgentRunId'
 >;
 
 /** Target-scope projection for `resolveTargetDevices` — null when there is no
@@ -88,6 +88,7 @@ export function toIntentTargetRef(intent: ActionIntent | null): IntentTargetRef 
     orgId: intent.orgId,
     scopeKind: intent.scopeKind,
     scopeDeviceId: intent.scopeDeviceId,
+    scopeTicketId: intent.scopeTicketId,
     requestingAgentRunId: intent.requestingAgentRunId,
   };
 }

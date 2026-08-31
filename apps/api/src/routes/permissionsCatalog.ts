@@ -42,6 +42,7 @@ const RESOURCE_LABELS: Record<string, string> = {
 const ACTION_LABELS: Record<string, string> = {
   read: 'Read',
   write: 'Write',
+  cross_site_restore: 'Cross-Site Restore',
   delete: 'Delete',
   execute: 'Execute',
   acknowledge: 'Acknowledge',

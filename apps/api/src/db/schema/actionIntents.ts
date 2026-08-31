@@ -11,6 +11,7 @@ import {
   smallint,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
@@ -21,6 +22,7 @@ import { apiKeys } from './apiKeys';
 import { aiAgentRuns } from './aiAgents';
 import { devices } from './devices';
 import { pamActuations } from './elevations';
+import { tickets } from './portal';
 
 // Action intents & durable approval layer (spec
 // docs/superpowers/specs/ai-mcp/2026-07-18-action-intents-approval-layer-design.md).
@@ -204,8 +206,26 @@ export const actionIntents = pgTable(
     // whose CURRENT org_id no longer matches the intent's org_id — the second
     // case is what a moveOrg landing between decide and release, or a bug in
     // the detach step above, would otherwise produce.
-    scopeKind: text('scope_kind').$type<'device'>(),
+    scopeKind: text('scope_kind').$type<'device' | 'ticket'>(),
     scopeDeviceId: uuid('scope_device_id').references(() => devices.id, { onDelete: 'set null' }),
+    /**
+     * P2-4 (#4191) typed target scope for a ticket-triage intent.
+     * `scopeKind = 'ticket'` pairs with this column
+     * (action_intents_scope_ticket_chk), same shape as scopeDeviceId's
+     * pairing with `scopeKind = 'device'`.
+     *
+     * Deliberately a COMPOSITE (scope_ticket_id, org_id) FK ->
+     * tickets(id, org_id) in the table-options block below — stronger than
+     * scopeDeviceId's plain single-column FK to devices(id) (a Task-2
+     * design choice per the P2-4 plan): a forged cross-tenant ticket
+     * pointer is 23503 even under system context, not just an app-layer
+     * check. ON DELETE SET NULL is the tombstone transition; the
+     * immutability trigger (action_intents_block_content_update(),
+     * migrations/2026-09-25-ai-agents-ticket-triage.sql) permits only the
+     * same non-null -> NULL transition it already permits for
+     * scopeDeviceId, never a retarget.
+     */
+    scopeTicketId: uuid('scope_ticket_id'),
     source: text('source').notNull().$type<ActionIntentSource>(),
     /**
      * The KIND of principal that created this intent, recorded as a durable
@@ -367,6 +387,29 @@ export const actionIntents = pgTable(
     // action_intents_scope_device_idx.
     scopeDeviceIdx: index('action_intents_scope_device_idx')
       .on(table.scopeDeviceId).where(sql`${table.scopeDeviceId} IS NOT NULL`),
+    // P2-4: composite-FK target for ticket_drafts.intent_id
+    // (ticketDrafts.ts) — action_intents had no unique(id, org_id) before
+    // this (ai_agent_runs already got one, as a named UNIQUE CONSTRAINT, in
+    // 2026-09-05-a-agent-originated-intents.sql). This one is a plain
+    // CREATE UNIQUE INDEX in the migration (not ADD CONSTRAINT), so it's
+    // modeled with `uniqueIndex()` here rather than `unique()` — either
+    // form satisfies Postgres's "FK needs a unique index over exactly its
+    // referenced columns" requirement identically; redundant with PRIMARY
+    // KEY(id) for lookups.
+    idOrgUq: uniqueIndex('action_intents_id_org_uq').on(table.id, table.orgId),
+    // P2-4: composite FK so a forged cross-tenant ticket pointer is 23503
+    // even under system context — see scopeTicketId's column comment above.
+    // Also DEFERRABLE INITIALLY IMMEDIATE in the migration (org-lifecycle
+    // contract) — drizzle-orm's foreignKey() builder has no deferrable
+    // option, so that detail lives in the migration only (same limitation as
+    // ticketDrafts.ts's composite FKs / deviceMtlsCertificates.ts).
+    scopeTicketOrgFk: foreignKey({
+      columns: [table.scopeTicketId, table.orgId],
+      foreignColumns: [tickets.id, tickets.orgId],
+      name: 'action_intents_scope_ticket_org_fk',
+    }).onDelete('set null'),
+    scopeTicketIdx: index('action_intents_scope_ticket_idx')
+      .on(table.scopeTicketId).where(sql`${table.scopeTicketId} IS NOT NULL`),
   }),
 );
 

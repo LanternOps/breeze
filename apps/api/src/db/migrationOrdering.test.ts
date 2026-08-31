@@ -67,6 +67,12 @@ describe('migration ordering', () => {
     expect(extractReferencedTables(`
       CREATE TRIGGER t AFTER UPDATE ON public.real_table EXECUTE FUNCTION f();
     `)).toContain('real_table');
+    expect(extractReferencedTables(`
+      GRANT SELECT, INSERT, UPDATE, DELETE, REFERENCES ON public.real_table TO breeze_app;
+    `)).toEqual([]);
+    expect(extractReferencedTables(`
+      ALTER TABLE child ADD CONSTRAINT child_parent_fk FOREIGN KEY (parent_id) REFERENCES parent(id);
+    `)).toContain('parent');
   });
 
   it('every referenced table is created in the same file or an earlier one', async () => {

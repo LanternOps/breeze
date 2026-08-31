@@ -23,6 +23,7 @@ WORKDIR /app
 # (v0.98.0 shipped without a web image this way: @breeze/extension-web-sdk was
 # absent here, so its `zod` never installed and Rolldown failed to resolve it.)
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY patches ./patches
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/extension-web-sdk/package.json ./packages/extension-web-sdk/
