@@ -20,7 +20,14 @@ import {
 } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { setCooldown, markConfigPolicyRuleCooldown } from '../../services/alertCooldown';
-import { ALERT_CAS_LOST_MESSAGE, buildResolveAlertCas } from '../../services/alertService';
+import {
+  ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE,
+  ALERT_CAS_LOST_MESSAGE,
+  ALERT_SUPPRESS_CAS_LOST_MESSAGE,
+  buildAcknowledgeAlertCas,
+  buildResolveAlertCas,
+  buildSuppressAlertCas,
+} from '../../services/alertService';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
 import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
@@ -842,11 +849,25 @@ alertsRoutes.post(
       return c.json({ error: 'Alert not found' }, 404);
     }
 
+    // Fast path with a specific message. It is NOT the concurrency control — the
+    // compare-and-swap below is. Two techs on the same alert both clear this check.
+    // `acknowledged` gets the same 409 the CAS loser gets: losing at the pre-read
+    // and losing at the write are the same real-world event (somebody acknowledged
+    // first), so they must not return two codes purely on timing (#4099 made
+    // exactly this change for resolve).
+    if (alert.status === 'acknowledged') {
+      return c.json({ error: 'Alert is already acknowledged' }, 409);
+    }
     if (alert.status !== 'active') {
       return c.json({ error: `Cannot acknowledge alert with status: ${alert.status}` }, 400);
     }
 
     const acknowledgedAt = new Date();
+    // Winner-takes-all (#4101). Updating by id alone let a stale client acknowledge
+    // an alert another tech had just resolved — stamping `status='acknowledged'`
+    // over the resolution, leaving `resolvedAt`/`resolvedBy` populated on a
+    // "reopened" alert whose escalation was already cancelled — and still publish
+    // `alert.acknowledged` for a transition that never legitimately happened.
     const [updated] = await db
       .update(alerts)
       .set({
@@ -854,10 +875,13 @@ alertsRoutes.post(
         acknowledgedAt,
         acknowledgedBy: auth.user.id
       })
-      .where(eq(alerts.id, alertId))
+      .where(buildAcknowledgeAlertCas(alertId))
       .returning();
     if (!updated) {
-      return c.json({ error: 'Failed to acknowledge alert' }, 500);
+      // The CAS matched nothing between the read above and this write: the alert
+      // left `active` first. Everything below (event, ML feedback, audit) belongs
+      // to whoever performed that transition, not to this caller.
+      return c.json({ error: ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE }, 409);
     }
 
     try {
@@ -1066,16 +1090,18 @@ alertsRoutes.post(
       }
     }
 
+    // Winner-takes-all (#4101) — same shape as the acknowledge handler above. A
+    // stale suppress landing on a just-resolved alert would un-resolve it.
     const [updated] = await db
       .update(alerts)
       .set({
         status: 'suppressed',
         suppressedUntil
       })
-      .where(eq(alerts.id, alertId))
+      .where(buildSuppressAlertCas(alertId))
       .returning();
     if (!updated) {
-      return c.json({ error: 'Failed to suppress alert' }, 500);
+      return c.json({ error: ALERT_SUPPRESS_CAS_LOST_MESSAGE }, 409);
     }
 
     await emitAlertStateFeedback({

@@ -253,6 +253,20 @@ describe('deleteDeviceCascade lock ordering', () => {
 
     expect(statements[statements.length - 1]).toBe('__DELETE_DEVICES_ROW__');
   });
+
+  it('uses the guarded audit-retention role only for append-only peripheral delivery events', async () => {
+    const { tx, statements } = captureTx();
+
+    await deleteDeviceCascade(tx, 'device-1');
+
+    const eventDelete = statements.findIndex((statement) =>
+      statement.includes('peripheral_policy_delivery_events') && statement.includes('DELETE FROM')
+    );
+    expect(eventDelete).toBeGreaterThan(0);
+    expect(statements[eventDelete - 2]).toContain('SET LOCAL ROLE breeze_audit_admin');
+    expect(statements[eventDelete - 1]).toContain('breeze.allow_audit_retention');
+    expect(statements[eventDelete + 1]).toContain('RESET ROLE');
+  });
 });
 
 

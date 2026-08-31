@@ -661,14 +661,37 @@ const runDetailResponseSchema = z.object({
       approvalScope: z.string(),
       decidedVia: z.string().nullable(),
     }).strict()),
-    // Wave 6 PR 3 (#3828, Task 4) — text-only; no args/toolInput/toolOutput
-    // field exists on this shape either (see AiAgentRunTicketProposalDto).
+    // Wave 6 PR 3 (#3828, Task 4); reshaped in P2-4 (#4191) onto the
+    // `TicketTriageProposal` outcome (@breeze/shared) — no args/toolInput/
+    // toolOutput field exists on this shape either (see
+    // AiAgentRunTicketProposalDto). `intentIds`/`draftsWritten` are the two
+    // DTO-only fields Task A10 wires in — the run's own `intent_ids` column
+    // and a live `ticket_drafts` read, respectively (see runTrace.ts).
     ticketProposal: z.object({
+      version: z.literal(1),
       summary: z.string(),
-      proposedReply: z.string().optional(),
-      proposedStatus: z.string().optional(),
-      proposedPriority: z.string().optional(),
-      notes: z.array(z.string()),
+      fields: z.object({
+        categoryId: z.object({
+          value: z.string(),
+          confidence: z.number(),
+        }).strict().optional(),
+        priority: z.object({
+          value: z.string(),
+          confidence: z.number(),
+        }).strict().optional(),
+      }).strict().optional(),
+      device: z.object({
+        hostname: z.string().optional(),
+        serial: z.string().optional(),
+      }).strict().optional(),
+      draftReply: z.string().optional(),
+      draftResolutionNote: z.string().optional(),
+      notes: z.array(z.string()).optional(),
+      intentIds: z.array(z.string()).optional(),
+      draftsWritten: z.array(z.object({
+        kind: z.enum(['reply', 'resolution_note']),
+        draftId: z.string(),
+      }).strict()).optional(),
     }).strict().nullable(),
     // Phase 2 wave P2-1 (alert verdicts): `null` for a full-profile run and
     // for a verdict run that hasn't produced one. `suggestedAction`'s
@@ -866,6 +889,62 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     }
     expect(json).not.toContain('do-not-leak-me');
     expect(json).not.toContain('scriptId');
+  });
+
+  // Phase 2 wave P2-4 (#4191), Task A10 — intentIds is the run's own
+  // intent_ids column (ground truth for a triage run, see
+  // RunTraceRunInput.intentIds's docstring), draftsWritten is a LIVE
+  // ticket_drafts query keyed on run_id, pinned to the run's own org.
+  it('projects intentIds + draftsWritten for a ticket-triage run', async () => {
+    const TRIAGE_INTENT_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const DRAFT_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    let draftWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        triggerKind: 'ticket',
+        sessionId: null,
+        intentIds: [TRIAGE_INTENT_ID],
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          ticketProposal: { version: 1, summary: 'Restart the spooler.', notes: [] },
+        },
+      })])) // run + agent + device join
+      .mockReturnValueOnce(selectChain([{
+        id: TRIAGE_INTENT_ID, status: 'approved', actionName: 'manage_tickets.comment',
+        approvalScope: 'auto', decidedVia: 'ticket_autonomy',
+      }])) // intents (sessionId is null, so the ledger read is skipped)
+      .mockReturnValueOnce(selectChain(
+        [{ id: DRAFT_ID, kind: 'reply' }],
+        (predicate) => { draftWhere = predicate; },
+      )); // draft rows
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runDetailResponseSchema.parse(body);
+
+    expect(parsed.data.ticketProposal?.intentIds).toEqual([TRIAGE_INTENT_ID]);
+    expect(parsed.data.ticketProposal?.draftsWritten).toEqual([{ kind: 'reply', draftId: DRAFT_ID }]);
+
+    // run row, intents, draft rows — no ledger (sessionId null), no sweep
+    // hostname read, no narrative artifact read (reportRunId null).
+    expect(selectMock).toHaveBeenCalledTimes(3);
+    const draftParams = sqlParams(draftWhere);
+    expect(draftParams).toContain(ORG_ID);
+    expect(draftParams).toContain(RUN_ID);
+  });
+
+  // Phase 2 wave P2-4 (#4191), Task A10.
+  it('skips the draft-rows read entirely for a non-ticket run', async () => {
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })])) // run + agent + device join
+    // No further selects expected — intentIds empty skips intents, sessionId
+    // null skips ledger, triggerKind !== 'ticket' skips draft rows.
+    ;
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
   // Phase 2 wave P2-2 (scheduled sweeps), Task A7.

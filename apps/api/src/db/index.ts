@@ -574,8 +574,41 @@ export async function withDbAccessContext<T>(
   });
 }
 
-export async function withSystemDbAccessContext<T>(fn: () => Promise<T>): Promise<T> {
-  return withDbAccessContext(SYSTEM_DB_ACCESS_CONTEXT, fn);
+/**
+ * The shared system context, optionally carrying a diagnostic `label`.
+ *
+ * Exported as its own function so the blank-label rule has ONE home and a unit
+ * test can pin it: a whitespace-only label must fall through to the shared
+ * constant rather than being stored, because `formatHeldContextWarning` treats
+ * a blank explicit label as "unlabelled" and would then suppress neither the
+ * tag nor the derived fallback consistently. Returns the shared frozen-by-
+ * convention constant when there is no label, so the common case allocates
+ * nothing.
+ */
+export function systemDbAccessContext(label?: string): DbAccessContext {
+  const normalized = label?.trim();
+  return normalized ? { ...SYSTEM_DB_ACCESS_CONTEXT, label: normalized } : SYSTEM_DB_ACCESS_CONTEXT;
+}
+
+/**
+ * Open (or join) a system-scoped RLS context.
+ *
+ * `label` is the optional #3218/#4276 diagnostic name for the code path opening
+ * this context — e.g. `metricRollups.scanOrgs`. It grants nothing and never
+ * reaches Postgres; it only names the context in the #1105 held-connection
+ * warning (message text + `dbContextLabel` tag). Pass one whenever the opener
+ * is an anonymous arrow, which is every BullMQ worker handler: under the tsup
+ * single-file bundle `parseOpenerFrame` collapses all of them to a bare
+ * `index`, so without a label the hold arrives in Sentry unattributed.
+ *
+ * Keep labels low-cardinality — they become part of the grouped Sentry message,
+ * so one per code path, never one per org/device/job id.
+ *
+ * System scope has no other knobs by construction; a caller that needs to vary
+ * anything else about the context should use `withDbAccessContext` directly.
+ */
+export async function withSystemDbAccessContext<T>(fn: () => Promise<T>, label?: string): Promise<T> {
+  return withDbAccessContext(systemDbAccessContext(label), fn);
 }
 
 /**

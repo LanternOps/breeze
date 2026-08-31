@@ -124,7 +124,7 @@ export type TerminalClassification = 'increment' | 'reset' | 'neutral';
  * profile" note on `classifyTerminal`.
  */
 const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
-  'verdict', 'sweep', 'narrative',
+  'verdict', 'sweep', 'narrative', 'triage',
 ]);
 
 /**
@@ -170,7 +170,15 @@ const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
  * profile-independent: a narrative run can hit `llm_unavailable` or blow the
  * turn/budget ceiling exactly like any other, and that is a real signal.
  *
- * NOTE for whoever adds the fifth profile: this function compares `profile`
+ * Phase 2 wave P2-4 (ticket triage, #4191): a `triage`-profile run gets the
+ * SAME `completed`/`awaiting_approval` -> `neutral` treatment, for the
+ * same-shaped reason as `narrative` — it does not read any live data (its
+ * whole input is the system-assembled ticket context) and its output is a
+ * PROPOSAL a human must still accept before anything changes, so a clean
+ * completion carries no information about the org's remediation health
+ * either. `failed` stays profile-independent here too.
+ *
+ * NOTE for whoever adds the sixth profile: this function compares `profile`
  * as a plain string and has NO exhaustive `never` guard (unlike
  * `profileCaps` in `runService.ts` or `outcomeToolsForProfile` in
  * `outcomeTools.ts`). Adding a value to `AI_AGENT_RUN_PROFILES` will NOT
