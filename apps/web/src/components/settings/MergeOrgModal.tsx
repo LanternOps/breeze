@@ -19,8 +19,13 @@ export interface OrgMergePreviewTable {
 export interface OrgMergePreview {
   tables: OrgMergePreviewTable[];
   totalMovableRows: number;
-  verdict: 'ok' | 'too-large';
+  verdict: 'ok' | 'too-large' | 'blocked';
   warnings: string[];
+  /** Non-empty iff `verdict === 'blocked'`. Unlike `too-large`, blocked is
+   *  not operator-retryable — the message explains why (durable PAM
+   *  lifecycle evidence on the loser side) rather than offering a retry
+   *  path, so no separate retry copy is rendered alongside it. */
+  blockers: string[];
 }
 
 export interface OrgMergeRunResult {
@@ -373,7 +378,17 @@ export default function MergeOrgModal({ loserOrg, orgs, onClose, onMerged, onDon
                   </div>
                 )}
 
-                {preview.verdict === 'too-large' ? (
+                {preview.verdict === 'blocked' ? (
+                  <div
+                    role="alert"
+                    data-testid="org-merge-blocked"
+                    className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+                  >
+                    {preview.blockers.map((blocker) => (
+                      <p key={blocker}>{blocker}</p>
+                    ))}
+                  </div>
+                ) : preview.verdict === 'too-large' ? (
                   <p data-testid="org-merge-too-large" className="text-destructive">
                     {t('organizationsPage.merge.tooLarge')}
                   </p>
