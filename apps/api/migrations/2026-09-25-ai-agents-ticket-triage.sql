@@ -43,6 +43,53 @@ CREATE UNIQUE INDEX IF NOT EXISTS tickets_id_org_uq ON tickets (id, org_id);
 -- what, not raw customer content.
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS field_provenance jsonb NOT NULL DEFAULT '{}';
 
+-- 1b. ai_agent_runs composite-FK target: rename away from the shipped name --
+-- ticket_drafts_run_org_fk below adds a SECOND FK dependent on
+-- ai_agent_runs(id, org_id)'s backing unique index — the first is
+-- action_intents_requesting_agent_run_id_org_id_fkey
+-- (2026-09-05-a-agent-originated-intents.sql, immutable/shipped, cannot be
+-- edited). That file manages its OWN dependent FK correctly (drops it before
+-- dropping+re-adding ai_agent_runs_id_org_id_key, re-adds after), but it was
+-- written before ticket_drafts existed and has no idea a second dependent
+-- shows up later. Replaying its raw SQL verbatim onto an already-migrated DB
+-- (agentIntentConstraints.integration.test.ts's idempotency proof, and in
+-- principle a post-mid-file-failure retry) hits 2BP01
+-- (dependent_objects_still_exist) at `DROP CONSTRAINT IF EXISTS
+-- ai_agent_runs_id_org_id_key` — ticket_drafts_run_org_fk still depends on
+-- it and that file never learned to pre-drop it.
+--
+-- Fix: RENAME (not drop+recreate) the constraint. Renaming is an O(1)
+-- catalog update on the SAME physical index (same OID) — every existing
+-- dependent FK, including action_intents' own, keeps working with zero
+-- rebuild and no lock beyond the rename itself. Once renamed,
+-- `ai_agent_runs_id_org_id_key` no longer exists under that name, so
+-- 2026-09-05-a's `DROP CONSTRAINT IF EXISTS ai_agent_runs_id_org_id_key`
+-- becomes a harmless no-op on replay (nothing to drop, nothing depends on
+-- anything about to be dropped) and its unconditional re-`ADD CONSTRAINT
+-- ai_agent_runs_id_org_id_key UNIQUE (id, org_id)` merely creates an unused,
+-- redundant twin index under the old name — wasteful in that specific
+-- artificial-replay path, but never an error, and it never receives new
+-- dependents (a new composite FK ambiguous between two same-column unique
+-- indexes binds to the OLDER one — verified empirically against this exact
+-- schema — i.e. our renamed original, never the fresh twin). This can only
+-- ever fire from an out-of-order manual replay of 2026-09-05-a's file text;
+-- normal boot-time migration ordering always fully commits 2026-09-05-a
+-- before this file (2026-09-25) ever runs, so the twin is never created in
+-- a real deploy.
+--
+-- No IF EXISTS variant for RENAME CONSTRAINT, so guard idempotency with an
+-- existence check instead: first run renames; every later run finds the old
+-- name already gone and skips.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'ai_agent_runs'::regclass AND conname = 'ai_agent_runs_id_org_id_key'
+  ) THEN
+    ALTER TABLE ai_agent_runs RENAME CONSTRAINT ai_agent_runs_id_org_id_key TO ai_agent_runs_id_org_uq;
+  END IF;
+END $$;
+
 -- 2. action_intents composite-FK target ------------------------------------
 -- Composite-FK target: unique on (id, org_id) so ticket_drafts.intent_id can
 -- reference it the same way action_intents.requesting_agent_run_id already
