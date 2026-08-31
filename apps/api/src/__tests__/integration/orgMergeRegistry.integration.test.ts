@@ -186,21 +186,31 @@ const PREDICATE_CHECK_EXCEPTIONS = new Set(['tenant_variables']);
  */
 const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // Conditional immutability guards: RAISE iff org_id changed.
-  action_intents: 'action_intents_immutable_trg',
-  ai_agent_runs: 'ai_agent_runs_immutable_trg',
+  'action_intents.action_intents_immutable_trg': 'action_intents_immutable_trg',
+  'ai_agent_runs.ai_agent_runs_immutable_trg': 'ai_agent_runs_immutable_trg',
   // Unconditional append-only guards: RAISE on any UPDATE (the retention job's
   // `breeze.allow_audit_retention` GUC is the only bypass, and it is DELETE-path
   // machinery, not something a merge may set).
-  audit_logs: 'audit_log_block_update',
-  audit_log_chain: 'audit_log_chain_block_update',
-  audit_chain_anchors: 'audit_chain_anchor_block_update',
-  ml_feedback_events: 'ml_feedback_events_block_update',
+  'audit_logs.audit_log_block_update': 'audit_log_block_update',
+  'audit_log_chain.audit_log_chain_block_update': 'audit_log_chain_block_update',
+  'audit_chain_anchors.audit_chain_anchor_block_update': 'audit_chain_anchor_block_update',
+  'ml_feedback_events.ml_feedback_events_block_update': 'ml_feedback_events_block_update',
   // Silent revert: `NEW.org_id := OLD.org_id` on every direct UPDATE. Scoped
   // to `WHEN (pg_trigger_depth() = 0)`, so the ON UPDATE CASCADE from
   // devices/sites still flows through — which is exactly why these two are
   // `derived` and the engine must never write them itself.
-  partner_export_device_material_state: 'breeze_partner_export_guard_direct_write',
-  partner_export_site_material_state: 'breeze_partner_export_guard_direct_write',
+  'partner_export_device_material_state.breeze_partner_export_guard_direct_write': 'breeze_partner_export_guard_direct_write',
+  'partner_export_site_material_state.breeze_partner_export_guard_direct_write': 'breeze_partner_export_guard_direct_write',
+  // PAM actuations: hardened to RAISE 42501 iff org_id changed (Track E
+  // §Hardening, apps/api/migrations/2026-09-25-pam-actuation-org-immutable.sql).
+  // Generation-decrease and cleanup-tombstone checks are unrelated to org_id
+  // and fire regardless.
+  'pam_actuations.pam_actuations_transition_guard':
+    'RAISEs 42501 iff org_id changed (apps/api/migrations/2026-09-25-pam-actuation-org-immutable.sql); generation/tombstone checks otherwise',
+  // PAM actuation results: unconditional append-only RAISE (42501) on UPDATE
+  // — no bypass exists for any app role.
+  'pam_actuation_results.pam_actuation_results_block_mutation':
+    'unconditional append-only RAISE (42501) on UPDATE — no bypass exists for any app role',
 };
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
@@ -210,22 +220,23 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // c2c_backup_configs.storage_config_id -> backup_configs(id) is a real FK, so
   // the parents-first topological walk repoints backup_configs first and the
   // check passes. If that FK ever goes away, this moves to BLOCKING.
-  c2c_backup_configs: 'cross-table org-match check; satisfied by parents-first ordering via a real FK to backup_configs',
+  'c2c_backup_configs.c2c_storage_config_org_guard':
+    'cross-table org-match check; satisfied by parents-first ordering via a real FK to backup_configs',
   // Partner-export watermark freezes — they pin partner_export_updated_at, and
   // touch no other column.
-  devices: 'partner-export watermark freeze',
-  sites: 'partner-export watermark freeze',
-  device_hardware: 'partner-export watermark freeze',
+  'devices.breeze_partner_export_guard_devices_watermark': 'partner-export watermark freeze',
+  'sites.breeze_partner_export_guard_sites_watermark': 'partner-export watermark freeze',
+  'device_hardware.breeze_partner_export_guard_hardware_watermark': 'partner-export watermark freeze',
   // Append-only evidence guards that explicitly admit an org_id-only
   // restamp after the authoritative device row has moved. All evidence
   // fields remain byte-for-byte unchanged.
-  agent_rollback_events: 'org_id-only device-owner restamp',
-  peripheral_policy_delivery_events: 'org_id-only device-owner restamp',
+  'agent_rollback_events.agent_rollback_events_block_update': 'org_id-only device-owner restamp',
+  'peripheral_policy_delivery_events.peripheral_policy_delivery_events_block_update': 'org_id-only device-owner restamp',
   // Plain updated_at bumps.
-  elevation_requests: 'updated_at bump',
-  incidents: 'updated_at bump',
-  ticket_parts: 'updated_at bump',
-  time_entries: 'updated_at bump',
+  'elevation_requests.trg_elevation_requests_updated_at': 'updated_at bump',
+  'incidents.trg_incidents_updated_at': 'updated_at bump',
+  'ticket_parts.trg_ticket_parts_updated_at': 'updated_at bump',
+  'time_entries.trg_time_entries_updated_at': 'updated_at bump',
   // NOTE: the three `config_policy_*_tenant_integrity` triggers (org lifecycle
   // wave 2, #4074) used to be classified here as benign cross-table org-match
   // checks satisfied by the parents-first repoint walk. They no longer exist:
@@ -235,6 +246,22 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // trigger that isn't there covers nothing. If a future migration reinstates
   // any of them, the unreviewed-trigger check below fails and forces a fresh
   // classification, which is the direction this contract is meant to run in.
+};
+
+/**
+ * BLOCKING in isolation, but unreachable during a merge: a `blocks-merge`
+ * policy refuses the merge before the guarded write can run. The discharge
+ * assertion keeps this honest — weaken the named policy and this
+ * classification reds with it.
+ */
+const ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS: Readonly<
+  Record<string, { dischargedBy: string; requiredPolicyKind: 'blocks-merge'; note: string }>
+> = {
+  'devices.devices_pam_history_move_guard': {
+    dischargedBy: 'pam_actuations',
+    requiredPolicyKind: 'blocks-merge',
+    note: 'RAISEs 23514 on any devices.org_id change while the device has a pam_actuations row; a loser org with such rows is refused by the blocks-merge policy before the devices repoint',
+  },
 };
 
 describe('Org merge policy registry contract', () => {
@@ -442,7 +469,14 @@ describe('Org merge policy registry contract', () => {
     // UPDATE trigger arriving from main forces a decision instead of silently
     // landing in whichever bucket a heuristic guessed.
     const unreviewed = rows
-      .filter((r) => !(r.table_name in ORG_ID_BLOCKING_TRIGGERS) && !(r.table_name in ORG_ID_BENIGN_TRIGGERS))
+      .filter((r) => {
+        const key = `${r.table_name}.${r.trigger_name}`;
+        return (
+          !(key in ORG_ID_BLOCKING_TRIGGERS) &&
+          !(key in ORG_ID_BENIGN_TRIGGERS) &&
+          !(key in ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS)
+        );
+      })
       .map((r) => `${r.table_name}.${r.trigger_name}`);
     expect(
       unreviewed,
@@ -462,26 +496,44 @@ describe('Org merge policy registry contract', () => {
     // contract test that reds on migration drift teaches people to distrust
     // it. Stale entries surface as a console.warn for the next reader to
     // prune; only a trigger nobody has classified stops the build.
-    const live = new Set(rows.map((r) => r.table_name));
-    const stale = [...Object.keys(ORG_ID_BLOCKING_TRIGGERS), ...Object.keys(ORG_ID_BENIGN_TRIGGERS)]
-      .filter((t) => !live.has(t));
+    const live = new Set(rows.map((r) => `${r.table_name}.${r.trigger_name}`));
+    const stale = [
+      ...Object.keys(ORG_ID_BLOCKING_TRIGGERS),
+      ...Object.keys(ORG_ID_BENIGN_TRIGGERS),
+      ...Object.keys(ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS),
+    ].filter((k) => !live.has(k));
     if (stale.length > 0) {
       console.warn(
         `[orgMergeRegistry] trigger classification entries with no live BEFORE UPDATE row trigger (safe to prune): ${stale.join(', ')}`,
       );
     }
 
-    const violations = Object.keys(ORG_ID_BLOCKING_TRIGGERS)
+    // discharged: see ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS — a
+    // conditionally-blocking table's trigger is deliberately absent from
+    // ORG_ID_BLOCKING_TRIGGERS above (it lives only in the third map), so it
+    // never reaches this check. Its safety is asserted separately, by the
+    // discharge test below.
+    const blockingTables = [...new Set(Object.keys(ORG_ID_BLOCKING_TRIGGERS).map((key) => key.split('.')[0]))];
+    const violations = blockingTables
       .filter((table) => {
         const kind = policies.get(table)?.kind;
         return kind !== undefined && !NON_MUTATING.has(kind);
       })
-      .map((table) => `${table} (${policies.get(table)?.kind}) blocked by ${ORG_ID_BLOCKING_TRIGGERS[table]}`);
+      .map((table) => {
+        const entry = Object.entries(ORG_ID_BLOCKING_TRIGGERS).find(([key]) => key.startsWith(`${table}.`))!;
+        return `${table} (${policies.get(table)?.kind}) blocked by ${entry[0]} (${entry[1]})`;
+      });
 
     expect(
       violations,
       'these tables are classified with a policy that UPDATEs org_id, but a BEFORE UPDATE trigger stops an org_id change — the merge would abort (or silently no-op) mid-walk. Reclassify them `leave-for-erasure`: there is no bypass available to breeze_app',
     ).toEqual([]);
+  });
+
+  it('every conditionally-blocking trigger is discharged by a live blocks-merge policy', () => {
+    for (const [key, cfg] of Object.entries(ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS)) {
+      expect(policies.get(cfg.dischargedBy)?.kind, `${key} dischargedBy ${cfg.dischargedBy}`).toBe(cfg.requiredPolicyKind);
+    }
   });
 
   it('every repoint-dedupe key matches a real unique index (columns and partial predicate)', async () => {
