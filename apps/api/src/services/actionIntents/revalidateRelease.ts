@@ -7,6 +7,7 @@ import { policyDecideEnabled } from '../../config/env';
 import { validateAuthorizationKeys } from './policyDecidable';
 import { buildAuthContextForIntent } from './actorContext';
 import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
+import { IntentScopeLostError } from './intentTargetScope';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 
 /**
@@ -112,6 +113,24 @@ function checkPolicyDecisionEvidence(
   return { ok: true };
 }
 
+/**
+ * P2-4 Task A3 (#4191) — a `decidedVia: 'ticket_autonomy'` row (creation-
+ * transaction ticket autonomy, `services/actionIntents/ticketAutonomy.ts`)
+ * shares the policy-decided row's defining shape: no `approval_requests`
+ * row by construction, no human ever reviewed it. Unlike a policy-decided
+ * row, it carries NONE of the five `policyAuthorizationKey`/
+ * `policySnapshotDigest`/`policyClassificationVersion`/`policyReservationId`/
+ * `policyKillEpoch` provenance columns — those are written ONLY by
+ * `runAuthorizeTransaction` (policyDecide.ts) — so `checkPolicyDecisionEvidence`
+ * (policy-specific: it re-validates the POLICY_DECIDABLE_TIER3 registry
+ * entry) must never run for one; release authority for it comes entirely
+ * from `checkAgentReleaseAuthority`'s own structural re-check below, same as
+ * every human-approved agent intent.
+ */
+function isSystemDecided(intent: ActionIntent): boolean {
+  return intent.decidedVia === 'policy' || intent.decidedVia === 'ticket_autonomy';
+}
+
 export async function revalidateApprovedIntentForRelease(
   intent: ActionIntent,
   winningApproval: { boundArgumentDigest: string | null } | null,
@@ -134,12 +153,33 @@ export async function revalidateApprovedIntentForRelease(
   // (e) skipped, since both of those only run inside
   // `if (intent.requestingAgentRunId)`, and fall through to plain user RBAC
   // with no approval row and no policy evidence at all.
+  //
+  // P2-4 Task A3 (#4191): widened to `isSystemDecided` (`decidedVia ===
+  // 'policy' || 'ticket_autonomy'`) — a ticket_autonomy row is the SAME
+  // "no human ever reviewed this, do not require an approval row" shape,
+  // just decided at creation time rather than by a post-commit attempt.
+  // `policyDecisionState === 'authorized'` is deliberately NOT required for
+  // the ticket_autonomy half: that column's three-value CHECK
+  // ('unattempted'|'authorized'|'human_required') is policy-decide's own
+  // lifecycle — a ticket_autonomy row stamps `policyDecisionState:
+  // 'human_required'` at creation (the `resolvePolicyDecisionState` stub
+  // forces it whenever a scope is present) and is never touched by
+  // `attemptPolicyDecision`, so requiring 'authorized' here would make this
+  // branch permanently unreachable for it.
   const isPolicyDecided = !winningApproval
     && !!intent.requestingAgentRunId
     && intent.decidedVia === 'policy'
     && intent.policyDecisionState === 'authorized';
+  // Widened via `isSystemDecided`: a ticket_autonomy row needs no
+  // `policyDecisionState` check at all (see the comment above) — the extra
+  // `intent.decidedVia !== 'policy'` clause keeps this OR from re-admitting
+  // an `authorized: false` policy row through the back door.
+  const noApprovalRowRequired = !winningApproval
+    && !!intent.requestingAgentRunId
+    && isSystemDecided(intent)
+    && (intent.decidedVia !== 'policy' || intent.policyDecisionState === 'authorized');
 
-  if (!isPolicyDecided) {
+  if (!noApprovalRowRequired) {
     // (a) UNCHANGED — the human-approval-row path, byte-identical to every
     // release before this wave. The winning approval row must still exist
     // and must have approved the SAME content the intent currently carries
@@ -176,7 +216,26 @@ export async function revalidateApprovedIntentForRelease(
 
   // (c) The actor must still be valid: rebuild the AuthContext from scratch,
   // re-checking the user is active and still has access to intent.orgId.
-  const auth = await buildAuthContextForIntent(intent);
+  //
+  // P2-2 (#4189): the rebuild runs BEFORE the agent-authority check in (e),
+  // so it — not `checkAgentReleaseAuthority` — is what actually observes a
+  // lost device scope first. `IntentScopeLostError` is the one typed
+  // exception it raises (everything else still collapses to `null` ⇒
+  // `actor_invalid`); mapping it here keeps the terminal errorCode
+  // `agent_scope_lost` rather than letting it escape as an unhandled throw
+  // that BullMQ would redeliver forever for a device that is never coming
+  // back. `checkAgentReleaseAuthority` returns the SAME code for the case
+  // where it gets there first (a policy-decided intent, or a future caller
+  // that skips this step).
+  let auth: AuthContext | null;
+  try {
+    auth = await buildAuthContextForIntent(intent);
+  } catch (error) {
+    if (error instanceof IntentScopeLostError) {
+      return { ok: false, errorCode: error.code, details: { reason: error.message } };
+    }
+    throw error;
+  }
   if (!auth) {
     return { ok: false, errorCode: 'actor_invalid' };
   }

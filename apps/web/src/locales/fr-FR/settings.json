@@ -1324,6 +1324,70 @@
     "billedToPartnerKeyViaEndpoint": "Facturé sur votre clé via {{name}} — l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze"
   },
   "aiAgentsPage": {
+    "schedules": {
+      "title": "Balayages planifiés",
+      "description": "Planifications cron qui exécutent le balayage de parc de cet agent. Les partenaires définissent la référence ; les organisations peuvent seulement la restreindre.",
+      "partnerOnly": "Les planifications de balayage ne peuvent être associées qu'à un agent valable pour tout le partenaire.",
+      "loading": "Chargement des planifications…",
+      "loadFailed": "Impossible de charger les planifications de balayage.",
+      "empty": "Aucune planification de balayage pour l'instant.",
+      "add": "Ajouter une planification",
+      "edit": "Modifier",
+      "save": "Enregistrer la planification",
+      "cancel": "Annuler",
+      "delete": "Supprimer la planification",
+      "deleteOverride": "Retirer la dérogation",
+      "confirmDelete": "Confirmer la suppression",
+      "cron": "Expression cron",
+      "cronHint": "Cinq champs : minute heure jour-du-mois mois jour-de-la-semaine. Par exemple, 0 3 * * * s'exécute chaque jour à 03h00.",
+      "cronInvalid": "Saisissez une expression cron valide à cinq champs avant d'enregistrer.",
+      "timezone": "Fuseau horaire",
+      "kinds": {
+        "sweep": "Balayage",
+        "narrative": "Rapport hebdomadaire"
+      },
+      "kindsLabel": "Contrôles à exécuter",
+      "kind": "Type de planification",
+      "weeklyOnlyHint": "Un rapport hebdomadaire se déclenche exactement une fois par semaine : une minute et une heure littérales, * pour le jour-du-mois et le mois, et un seul jour de la semaine de 0 à 6. Par exemple, 0 7 * * 1 s'exécute chaque lundi à 07h00.",
+      "kindsRequired": "Sélectionnez au moins un contrôle.",
+      "enabled": "Activé",
+      "override": "Déroger pour cette organisation",
+      "editOverride": "Modifier la dérogation de cette organisation",
+      "overrideHint": "La dérogation de cette organisation à la référence du partenaire. Elle suit toujours la cadence de la référence.",
+      "overrideSummary": "Cette organisation : {{state}} · {{kinds}}",
+      "overrideSummaryNarrative": "Cette organisation : {{state}}",
+      "tightenOnly": "Une dérogation ne peut que restreindre la référence : elle peut désactiver le balayage ou retirer des contrôles, jamais en ajouter.",
+      "noKinds": "Aucun contrôle",
+      "lastRun": "Dernière exécution {{at}} · {{admitted}} organisations balayées sur {{total}}, {{skipped}} ignorées.",
+      "kindLabels": {
+        "disk_pressure": "Pression disque",
+        "stale_agents": "Agents obsolètes",
+        "pending_reboots": "Redémarrages en attente",
+        "failed_backups": "Sauvegardes en échec",
+        "service_down": "Service arrêté",
+        "unpatched_critical": "Vulnérabilités critiques non corrigées"
+      },
+      "toasts": {
+        "saved": "Planification enregistrée",
+        "saveFailed": "Impossible d'enregistrer la planification.",
+        "deleted": "Planification supprimée",
+        "deleteFailed": "Impossible de supprimer la planification."
+      },
+      "errors": {
+        "invalidCron": "Cette expression cron n'est pas valide. Utilisez cinq champs, par exemple 0 3 * * *.",
+        "invalidTimezone": "Ce n'est pas un fuseau horaire IANA valide.",
+        "kindsNotSubset": "Une dérogation ne peut que restreindre la référence. Retirez les contrôles que la référence du partenaire n'exécute pas.",
+        "overrideExists": "Cette organisation déroge déjà à cette référence. Modifiez la dérogation existante.",
+        "baselineWrongPartner": "Cette référence appartient à un autre partenaire.",
+        "baselineIsOverride": "Cette planification est déjà une dérogation. Les dérogations ne peuvent pas être enchaînées.",
+        "baselineNotPartnerRow": "Cette référence n'a pas de propriétaire et ne peut pas faire l'objet d'une dérogation.",
+        "baselineAgentMismatch": "Cette référence appartient à un autre agent.",
+        "agentNotPartnerWide": "Les planifications de balayage exigent un agent valable pour tout le partenaire.",
+        "agentKindNotTriage": "Seul un agent de triage peut être planifié.",
+        "kindsNotEmpty": "Une planification de rapport hebdomadaire n'exécute aucun contrôle. Retirez les contrôles sélectionnés avant d'enregistrer.",
+        "invalidCronForKind": "Un rapport hebdomadaire doit se déclencher exactement une fois par semaine. Utilisez une minute et une heure littérales, * pour le jour-du-mois et le mois, et un seul jour de la semaine."
+      }
+    },
     "title": "Agents IA",
     "description": "Des travailleurs IA nommés, dotés d’une politique. Les partenaires définissent la référence ; les organisations peuvent seulement la restreindre.",
     "empty": "Aucun agent pour l’instant.",
@@ -1473,6 +1537,56 @@
         "schedule": "Planifié",
         "ticket": "Ticket",
         "anomaly": "Anomalie"
+      },
+      "profile": {
+        "sweep": "Balayage",
+        "narrative": "Rapport hebdomadaire"
+      },
+      "sweep": {
+        "title": "Constats du balayage",
+        "kindsLabel": "Vérifications : {{kinds}}",
+        "empty": "Aucun constat signalé.",
+        "evidenceTruncated": "Les éléments ont été tronqués : toutes les lignes correspondantes n’ont pas été présentées à l’agent.",
+        "proposalCreated": "Approbation demandée",
+        "columns": {
+          "kind": "Vérification",
+          "severity": "Gravité",
+          "device": "Appareil",
+          "title": "Constat",
+          "detail": "Détail",
+          "proposal": "Proposition"
+        },
+        "kinds": {
+          "disk_pressure": "Pression disque",
+          "stale_agents": "Agents inactifs",
+          "pending_reboots": "Redémarrages en attente",
+          "failed_backups": "Sauvegardes en échec",
+          "service_down": "Service arrêté",
+          "unpatched_critical": "Vulnérabilités critiques non corrigées"
+        },
+        "severities": {
+          "critical": "Critique",
+          "high": "Élevée",
+          "medium": "Moyenne",
+          "low": "Faible",
+          "info": "Information"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Appareil absent des éléments du balayage",
+          "device_not_in_org": "Appareil absent de cette organisation",
+          "not_allowlisted": "Outil non autorisé pour cet agent",
+          "no_eligible_approvers": "Aucun approbateur éligible",
+          "intent_error": "Impossible de créer l’approbation",
+          "max_actions_per_run": "Limite d’actions atteinte pour cette exécution"
+        }
+      },
+      "narrative": {
+        "title": "Synthèse hebdomadaire",
+        "period": "Couvre du {{start}} au {{end}}",
+        "truncatedNote": "Le contexte de l'agent a été tronqué : cette synthèse n'a pas vu la semaine entière.",
+        "openReport": "Ouvrir le rapport",
+        "download": "Télécharger le PDF",
+        "downloadFailed": "Impossible de télécharger le PDF."
       },
       "noAgent": "Agent inconnu",
       "loading": "Chargement des exécutions…",

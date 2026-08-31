@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { handleActionError, runAction } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type Binding = {
   id: string;
@@ -18,8 +19,7 @@ type Binding = {
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 function formatDate(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return formatDateTime(value);
 }
 
 /**

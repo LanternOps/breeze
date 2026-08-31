@@ -22,7 +22,10 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
-import { schedulePeripheralPolicyDistribution } from '../jobs/peripheralJobs';
+import {
+  resolvePeripheralPolicyDeviceIds,
+  schedulePeripheralPolicyDevices,
+} from '../jobs/peripheralJobs';
 import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -211,6 +214,7 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
           device_class: { type: 'string', enum: [...peripheralDeviceClassEnum.enumValues] },
           policy_action: { type: 'string', enum: [...peripheralPolicyActionEnum.enumValues] },
           target_type: { type: 'string', enum: [...peripheralPolicyTargetTypeEnum.enumValues] },
+          priority: { type: 'number', description: 'Safe integer priority from 0 (highest) through 1000' },
           target_ids: { type: 'object' },
           is_active: { type: 'boolean' },
           exception: { type: 'object' },
@@ -222,6 +226,15 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, auth) => {
       const action = String(input.action ?? '');
       const policyId = typeof input.policy_id === 'string' ? input.policy_id : undefined;
+      const requestedPriority = input.priority;
+      if (requestedPriority !== undefined && (
+        typeof requestedPriority !== 'number'
+        || !Number.isSafeInteger(requestedPriority)
+        || requestedPriority < 0
+        || requestedPriority > 1000
+      )) {
+        return JSON.stringify({ error: 'priority must be a safe integer between 0 and 1000' });
+      }
 
       const fetchPolicy = async () => {
         if (!policyId) return null;
@@ -269,25 +282,20 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
       // partner-wide fan-out. Returns a warning naming how many orgs failed.
       const fanOutPolicyChange = async (
         targetOrgIds: string[],
+        affectedDeviceIds: string[],
         distributedPolicyId: string,
         reason: string,
         eventPayload: Record<string, unknown>
       ): Promise<string | undefined> => {
         let warning: string | undefined;
 
-        const distributionFailures: string[] = [];
-        for (const targetOrgId of targetOrgIds) {
-          try {
-            await schedulePeripheralPolicyDistribution(targetOrgId, [distributedPolicyId], reason);
-          } catch (error) {
-            distributionFailures.push(targetOrgId);
-            console.error(`[aiTools] Failed to schedule peripheral policy distribution for policy ${distributedPolicyId} (org ${targetOrgId}):`, error);
-          }
-        }
-        if (distributionFailures.length > 0) {
+        try {
+          await schedulePeripheralPolicyDevices(affectedDeviceIds, reason);
+        } catch (error) {
+          console.error(`[aiTools] Failed to schedule peripheral policy reconciliation for policy ${distributedPolicyId}:`, error);
           warning = combineWarning(
             warning,
-            `policy distribution scheduling failed for ${distributionFailures.length}/${targetOrgIds.length} org(s): ${distributionFailures.join(', ')}`
+            `policy reconciliation scheduling failed for ${affectedDeviceIds.length} device(s)`
           );
         }
 
@@ -344,6 +352,7 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
             deviceClass: deviceClass as typeof peripheralPolicies.deviceClass.enumValues[number],
             action: policyAction as typeof peripheralPolicies.action.enumValues[number],
             targetType: targetType as typeof peripheralPolicies.targetType.enumValues[number],
+            priority: (requestedPriority as number | undefined) ?? 100,
             targetIds: (input.target_ids ?? {}) as {
               siteIds?: string[];
               groupIds?: string[];
@@ -362,7 +371,8 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         let warning: string | undefined;
         try {
           // AI-tool creates are always org-owned (resolveWritableToolOrgId).
-          await schedulePeripheralPolicyDistribution(orgResolved.orgId, [created.id], 'ai-tool-create');
+          const affectedDeviceIds = await resolvePeripheralPolicyDeviceIds(created);
+          await schedulePeripheralPolicyDevices(affectedDeviceIds, 'ai-tool-create');
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           warning = combineWarning(warning, `policy distribution scheduling failed: ${message}`);
@@ -395,6 +405,8 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Modifying a partner-wide peripheral policy requires full partner org access (orgAccess must be "all")' });
         }
 
+        const oldDeviceIds = await resolvePeripheralPolicyDeviceIds(policy);
+
         const [updated] = await db
           .update(peripheralPolicies)
           .set({
@@ -408,6 +420,7 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
             targetType: typeof input.target_type === 'string'
               ? input.target_type as typeof peripheralPolicies.targetType.enumValues[number]
               : policy.targetType,
+            priority: (requestedPriority as number | undefined) ?? policy.priority,
             targetIds: (input.target_ids ?? policy.targetIds ?? {}) as {
               siteIds?: string[];
               groupIds?: string[];
@@ -424,7 +437,8 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         }
 
         const updateTargetOrgIds = await policyTargetOrgIds(updated);
-        const warning = await fanOutPolicyChange(updateTargetOrgIds, updated.id, 'ai-tool-update',
+        const newDeviceIds = await resolvePeripheralPolicyDeviceIds(updated);
+        const warning = await fanOutPolicyChange(updateTargetOrgIds, [...new Set([...oldDeviceIds, ...newDeviceIds])], updated.id, 'ai-tool-update',
           { policyId: updated.id, action: 'updated', changedBy: auth.user.id });
 
         return JSON.stringify({ success: true, policyId: updated.id, action, ...(warning ? { warning } : {}) });
@@ -439,6 +453,8 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Modifying a partner-wide peripheral policy requires full partner org access (orgAccess must be "all")' });
         }
 
+        const disableDeviceIds = await resolvePeripheralPolicyDeviceIds(policy);
+
         const [disabled] = await db
           .update(peripheralPolicies)
           .set({ isActive: false, updatedAt: new Date() })
@@ -450,7 +466,7 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         }
 
         const disableTargetOrgIds = await policyTargetOrgIds(disabled);
-        const warning = await fanOutPolicyChange(disableTargetOrgIds, disabled.id, 'ai-tool-disable',
+        const warning = await fanOutPolicyChange(disableTargetOrgIds, disableDeviceIds, disabled.id, 'ai-tool-disable',
           { policyId: policy.id, action: 'disabled', changedBy: auth.user.id });
 
         return JSON.stringify({ success: true, policyId: policy.id, action, ...(warning ? { warning } : {}) });
@@ -520,7 +536,8 @@ export function registerPeripheralTools(aiTools: Map<string, AiTool>): void {
         }
 
         const exceptionTargetOrgIds = await policyTargetOrgIds(policy);
-        const warning = await fanOutPolicyChange(exceptionTargetOrgIds, policy.id, `ai-tool-${action}`,
+        const exceptionDeviceIds = await resolvePeripheralPolicyDeviceIds(updatedPolicy);
+        const warning = await fanOutPolicyChange(exceptionTargetOrgIds, exceptionDeviceIds, policy.id, `ai-tool-${action}`,
           { policyId: policy.id, action, changedBy: auth.user.id, changed });
 
         return JSON.stringify({ success: true, policyId: policy.id, action, changed, ...(warning ? { warning } : {}) });

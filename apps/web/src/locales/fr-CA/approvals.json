@@ -10,6 +10,12 @@
   },
   "requestedBy": "Demandé par {{client}}",
   "proposedByAgent": "Proposé par {{agent}} (agent d’IA)",
+  "targetDevice": "Appareil ciblé : {{hostname}}",
+  "batch": {
+    "approveAll": "Tout approuver ({{count}})",
+    "declineAll": "Tout refuser ({{count}})",
+    "groupTitle": "{{count}} demandes semblables · {{tool}}"
+  },
   "risk": {
     "low": "Risque faible",
     "medium": "Risque moyen",
@@ -29,7 +35,11 @@
     "noApproverDevice": "Enregistrez un appareil d’approbation dans votre profil, puis réessayez.",
     "notSoleApprover": "Une autre personne autorisée doit décider de cette demande.",
     "verificationFailed": "La vérification a été annulée ou a échoué. Réessayez.",
-    "decisionFailed": "Impossible d’envoyer la décision. Réessayez."
+    "alreadyDecided": "Cette demande a déjà été traitée.",
+    "expired": "Cette demande a expiré avant qu’une décision soit prise.",
+    "decisionFailed": "Impossible d’envoyer la décision. Réessayez.",
+    "batchStepUp": "Ce lot exige une connexion plus forte. Approuvez les demandes une à la fois.",
+    "batchNotHomogeneous": "Ces demandes ne peuvent plus être traitées ensemble."
   },
   "registerDevice": "Enregistrer l’appareil"
 }

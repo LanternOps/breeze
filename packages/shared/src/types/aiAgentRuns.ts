@@ -5,11 +5,15 @@ import type {
   AgentRunVerdict,
   AiAgentKind,
   AiAgentMode,
+  AiAgentRunProfile,
   AiAgentRunStatus,
   AiAgentTriggerKind,
   AiAlertVerdictClassification,
   AiAlertVerdictPattern,
 } from './aiAgents';
+import type { AiSweepKind, AiSweepSeverity } from './aiAgentSchedules';
+import type { AiAgentRunNarrativeDto } from './orgNarrativeReport';
+import type { TicketTriageProposal } from './ticketTriage';
 
 /**
  * Wave 6 PR 1 (#3828) — the execution-trace DTOs: what `GET /ai/agents/runs`
@@ -94,6 +98,15 @@ export interface AiAgentRunListItemDto {
   deviceId: string | null;
   status: AiAgentRunStatus;
   triggerKind: AiAgentTriggerKind;
+  /**
+   * Phase 2 wave P2-2 (scheduled sweeps), Task A7 — which run profile
+   * produced this row (`full` | `verdict` | `sweep`). The web runs list
+   * badges sweep/verdict rows off this rather than inferring one from
+   * `triggerKind`, which cannot distinguish a scheduled SWEEP from any other
+   * schedule-triggered run. Additive and always present, so it does NOT bump
+   * `AI_AGENT_RUN_DTO_SCHEMA_VERSION` (see the bump rule above).
+   */
+  profile: AiAgentRunProfile;
   /** Absent until `finishRun` computes it (services/aiAgents/runLoop.ts); null for any run that hasn't reached a terminal rollup yet. */
   runVerdict: AgentRunVerdict | null;
   queuedAt: string;
@@ -228,25 +241,28 @@ export interface ExposureBudgetDto {
 }
 
 /**
- * Wave 6 PR 3 (#3828 Task 4) — safe projection of `TicketProposalOutcome`
- * (services/aiAgents/runLoop.ts). Every field is model-authored TEXT — never
- * a tool call, an `args`/`input`/`output` blob, or anything that could carry
- * a raw payload — so this is a 1:1 mirror of the source shape rather than a
- * narrowing of it, kept as its own declared type (not a shared import from an
- * API-only module) for the same reason every other DTO in this file is
- * declared here: the wire contract must not drift with an internal-only type.
- *
- * `notes` are PROPOSED talking points for a human reviewer to read and
- * optionally act on — this DTO is display-only and is never the input to any
- * write. No autonomous note is ever posted by a ticket-triggered run (design
- * authority, wave-6 quorum 2026-08-28; see `ticketShadowGuardrail.contract.test.ts`).
+ * Phase 2 wave P2-4 (#4191) — replaces the wave 6 PR 3 shape (`summary` +
+ * `proposedReply`/`proposedStatus`/`proposedPriority` + `notes`), which had
+ * ZERO writers: no path ever turned a `proposedStatus`/`proposedPriority`
+ * into a write, and `submit_ticket_proposal` never accepted them as
+ * structured fields. No DTO version bump — this simply mirrors what
+ * `submit_ticket_proposal` actually produces now (`TicketTriageProposal`,
+ * `types/ticketTriage.ts`, imported rather than re-declared since it is
+ * already a shared, wire-safe type — not an API-only internal one), plus the
+ * outcome of turning it into writes: which Tier-2 `manage_tickets` intents
+ * `finishRun` created (`intentIds`) and which `ticket_drafts` rows it wrote
+ * (`draftsWritten`). Still text/identifier-only — no `args`/`input`/`output`
+ * blob, nothing a raw tool payload could carry.
  */
-export interface AiAgentRunTicketProposalDto {
-  summary: string;
-  proposedReply?: string;
-  proposedStatus?: string;
-  proposedPriority?: string;
-  notes: string[];
+export interface AiAgentRunTicketProposalDto extends TicketTriageProposal {
+  /** Tier-2 `manage_tickets` intent ids `finishRun` created from this
+   *  proposal's `fields`/`device`/`comment` writes (act + autonomousWrites,
+   *  or an inbox card — either way an intent id, never the raw args). */
+  intentIds?: string[];
+  /** `ticket_drafts` rows `finishRun` wrote from `draftReply`/
+   *  `draftResolutionNote` — never the draft's own content, which lives on
+   *  the ticket UI's "AI draft" surface, not this run-trace DTO. */
+  draftsWritten?: Array<{ kind: 'reply' | 'resolution_note'; draftId: string }>;
 }
 
 /**
@@ -309,6 +325,47 @@ export interface AiAgentRunAlertVerdictDto {
   } | null;
 }
 
+/**
+ * Phase 2 wave P2-2 (scheduled sweeps) — the safe projection of one
+ * `SweepFinding` for `GET /ai/agents/runs/:runId`'s detail DTO. Same
+ * leak-impossible convention as the rest of this file: `evidence` is the
+ * already-bounded scalar map the finding schema enforces (see
+ * `sweepFindingsOutcomeSchema`), never a raw tool payload, and `proposal`
+ * carries only the display-safe outcome of attempting the finding's
+ * `SweepProposedAction`, never the raw args.
+ */
+export interface AiAgentRunSweepFindingDto {
+  kind: AiSweepKind;
+  severity: AiSweepSeverity;
+  deviceId: string | null;
+  deviceHostname: string | null;
+  title: string;
+  detail: string;
+  evidence: Record<string, string | number | boolean | null>;
+  proposal: {
+    tool: string;
+    action: string | null;
+    disposition: 'intent_created' | 'refused' | 'cap_reached' | 'error';
+    reason: string | null;
+    intentId: string | null;
+  } | null;
+}
+
+/**
+ * Phase 2 wave P2-2 (scheduled sweeps) — the safe projection of a
+ * `sweep`-profile run's outcome for `GET /ai/agents/runs/:runId`'s detail
+ * DTO. `scheduleId`/`occurrenceKey` are null for a manually-triggered sweep
+ * run (not every sweep run originates from a schedule).
+ */
+export interface AiAgentRunSweepDto {
+  scheduleId: string | null;
+  occurrenceKey: string | null;
+  kinds: AiSweepKind[];
+  summary: string;
+  findings: AiAgentRunSweepFindingDto[];
+  evidenceTruncated: boolean;
+}
+
 export interface AiAgentRunDetailDto {
   schemaVersion: 1;
   id: string;
@@ -357,6 +414,33 @@ export interface AiAgentRunDetailDto {
    * caller before that lands sees `null` unconditionally.
    */
   alertVerdict: AiAgentRunAlertVerdictDto | null;
+  /**
+   * Phase 2 wave P2-2 (scheduled sweeps) — the findings this run produced,
+   * for a `sweep`-profile run that reached a sweep outcome. Null for every
+   * `full`/`verdict`-profile run and for a `sweep`-profile run that has not
+   * produced one. Additive nullable field — does NOT bump
+   * `AI_AGENT_RUN_DTO_SCHEMA_VERSION` (same rule as `alertVerdict` above: a
+   * caller that has never seen this key still gets `null`, not `undefined`).
+   */
+  sweep: AiAgentRunSweepDto | null;
+  /**
+   * Phase 2 wave P2-3 (weekly org narrative) — the narrative this run
+   * produced, for a `narrative`-profile run that reached a
+   * `submit_narrative` outcome. Null for every `full`/`verdict`/`sweep`
+   * run and for a narrative run that has not produced one. Additive nullable
+   * field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION` (same rule as
+   * `alertVerdict`/`sweep` above).
+   */
+  narrative: AiAgentRunNarrativeDto | null;
+  /**
+   * Phase 2 wave P2-3 — the `report_runs` row this run materialised its
+   * narrative into, when it did. Duplicated from `narrative.reportRunId` on
+   * purpose: the runs UI links straight to the generated report without
+   * having to reach through a nullable sub-object, and a run whose narrative
+   * projection was dropped (a legacy outcome row) can still carry the link.
+   * Additive nullable field — does NOT bump the DTO schema version.
+   */
+  reportRunId: string | null;
 }
 
 /**

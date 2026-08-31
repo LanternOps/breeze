@@ -3,6 +3,14 @@ import { Hono } from 'hono';
 import { createHmac } from 'crypto';
 import { automationRoutes, automationWebhookRoutes } from './automations';
 
+const {
+  resolveAutomationReferencesForOwnerMock,
+  replaceAutomationResourceBindingsMock,
+} = vi.hoisted(() => ({
+  resolveAutomationReferencesForOwnerMock: vi.fn(),
+  replaceAutomationResourceBindingsMock: vi.fn(),
+}));
+
 vi.mock('../jobs/automationWorker', () => ({
   enqueueAutomationRun: vi.fn(async () => ({ enqueued: true, jobId: 'job-1' }))
 }));
@@ -32,12 +40,27 @@ vi.mock('../services/automationRuntime', () => ({
   normalizeAutomationActions: vi.fn((actions) => actions),
   normalizeAutomationTrigger: vi.fn((trigger) => trigger),
   normalizeNotificationTargets: vi.fn((targets) => targets ?? {}),
+  resolveAutomationReferencesForOwner: resolveAutomationReferencesForOwnerMock,
+  replaceAutomationResourceBindings: replaceAutomationResourceBindingsMock,
   withWebhookDefaults: vi.fn((trigger) => trigger),
   checkAutomationTargetsWithinSiteScope: vi.fn(async () => ({
     ok: true,
     outOfScopeDeviceIds: [],
     unbounded: false,
   })),
+}));
+
+const { resolveOwnedAutomationReferencesMock } = vi.hoisted(() => ({
+  resolveOwnedAutomationReferencesMock: vi.fn(),
+}));
+vi.mock('../services/automationReferenceAuthorization', () => ({
+  AutomationReferenceAuthorizationError: class AutomationReferenceAuthorizationError extends Error {
+    readonly code = 'unknown_or_unauthorized_reference';
+    constructor() {
+      super('Unknown or unauthorized automation reference');
+    }
+  },
+  resolveOwnedAutomationReferences: resolveOwnedAutomationReferencesMock,
 }));
 
 vi.mock('../db', () => ({
@@ -63,7 +86,8 @@ vi.mock('../db', () => ({
     })),
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve())
-    }))
+    })),
+    transaction: vi.fn(),
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
@@ -169,6 +193,20 @@ describe('automations routes', () => {
 	    delete process.env.AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET;
 	    delete process.env.AUTOMATION_WEBHOOK_ALLOW_LOCAL_REPLAY_FALLBACK;
 	    vi.mocked(getRedis).mockReturnValue(null);
+	    resolveOwnedAutomationReferencesMock.mockReset().mockResolvedValue({
+	      scriptsById: new Map(),
+	      softwareCatalogsById: new Map(),
+	      softwareVersionsByCatalogId: new Map(),
+	      notificationChannelsById: new Map(),
+	    });
+	    resolveAutomationReferencesForOwnerMock.mockReset().mockResolvedValue({
+	      scriptsById: new Map(),
+	      softwareCatalogsById: new Map(),
+	      softwareVersionsByCatalogId: new Map(),
+	      notificationChannelsById: new Map(),
+	    });
+	    replaceAutomationResourceBindingsMock.mockReset().mockResolvedValue(undefined);
+	    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db as any));
 	    app = new Hono();
 	    app.route('/automations/webhooks', automationWebhookRoutes);
 	    app.route('/automations', automationRoutes);
@@ -352,6 +390,35 @@ describe('automations routes', () => {
     const body = await res.json();
     expect(body.id).toBe('11111111-1111-4111-8111-111111111111');
     expect(body.trigger.type).toBe('manual');
+  });
+
+  it('rejects a foreign standalone reference before storing the automation or bindings', async () => {
+    const insertSpy = vi.fn();
+    const tx = { insert: insertSpy };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    resolveAutomationReferencesForOwnerMock.mockRejectedValueOnce(
+      Object.assign(new Error('Unknown or unauthorized automation reference'), {
+        code: 'unknown_or_unauthorized_reference',
+      }),
+    );
+
+    const res = await app.request('/automations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        name: 'Foreign script automation',
+        trigger: { type: 'manual' },
+        actions: [{
+          type: 'run_script',
+          scriptId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        }],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Unknown or unauthorized automation reference' });
+    expect(insertSpy).toHaveBeenCalledTimes(0);
+    expect(vi.mocked(db.insert)).toHaveBeenCalledTimes(0);
   });
 
   it('rejects user-authored ai_triage wiring before inserting an automation', async () => {

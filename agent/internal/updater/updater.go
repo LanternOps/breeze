@@ -883,6 +883,17 @@ func (u *Updater) UpdateTo(version string) error {
 // Issue #816 / #845 follow-up (PR B): replaces UpdateToWithUserHelper and the
 // u.extras action-at-a-distance state with an explicit options parameter.
 func (u *Updater) UpdateToWithOptions(version string, opts UpdateOptions) error {
+	lease, ok := TryBeginProcessMutation("agent-update")
+	if !ok {
+		if opts.UserHelper != nil && opts.UserHelper.Temp != "" {
+			removeCleanup(opts.UserHelper.Temp)
+		}
+		if opts.Backup != nil && opts.Backup.Temp != "" {
+			removeCleanup(opts.Backup.Temp)
+		}
+		return ErrProcessMutationInProgress
+	}
+	defer lease.Release()
 	err := u.updateTo(version, opts)
 	if err != nil && opts.UserHelper != nil && opts.UserHelper.Temp != "" {
 		// Cleanup contract: see method doc. Preserved verbatim from
@@ -1265,6 +1276,99 @@ func (u *Updater) DownloadBinary(version string) (string, error) {
 	return tempPath, nil
 }
 
+// StageRollbackArtifacts verifies and downloads the complete component set
+// before any caller is allowed to cross a live-binary swap boundary.
+func (u *Updater) StageRollbackArtifacts(request RollbackStageRequest) (StagedRollbackSet, error) {
+	result := StagedRollbackSet{DirectiveID: request.DirectiveID}
+	fail := func(err error) (StagedRollbackSet, error) {
+		result.Cleanup()
+		return StagedRollbackSet{}, err
+	}
+	if u == nil || u.config == nil {
+		return fail(fmt.Errorf("updater configuration is required"))
+	}
+	if strings.TrimSpace(request.DirectiveID) == "" {
+		return fail(fmt.Errorf("rollback directive id is required"))
+	}
+	if request.Platform != manifestPlatform() {
+		return fail(fmt.Errorf("rollback platform mismatch: expected %s, got %s", manifestPlatform(), request.Platform))
+	}
+	if request.Architecture != runtime.GOARCH {
+		return fail(fmt.Errorf("rollback architecture mismatch: expected %s, got %s", runtime.GOARCH, request.Architecture))
+	}
+	if strings.TrimSpace(request.CurrentVersion) == "" || strings.TrimSpace(request.TargetVersion) == "" {
+		return fail(fmt.Errorf("rollback current and target versions are required"))
+	}
+	if len(request.Artifacts) == 0 || len(request.Artifacts) != len(request.ComponentVersions) {
+		return fail(fmt.Errorf("rollback artifact set does not match component versions"))
+	}
+	agentVersions, ok := request.ComponentVersions[RollbackComponentAgent]
+	if !ok || agentVersions.Current != request.CurrentVersion || agentVersions.Target != request.TargetVersion {
+		return fail(fmt.Errorf("rollback agent version binding mismatch"))
+	}
+
+	seen := make(map[RollbackComponent]struct{}, len(request.Artifacts))
+	for _, artifact := range request.Artifacts {
+		versions, ok := request.ComponentVersions[artifact.Component]
+		if !ok || versions.Current != artifact.CurrentVersion || versions.Target != artifact.TargetVersion || artifact.TargetVersion != request.TargetVersion {
+			return fail(fmt.Errorf("rollback artifact version binding mismatch for %s", artifact.Component))
+		}
+		if _, duplicate := seen[artifact.Component]; duplicate {
+			return fail(fmt.Errorf("duplicate rollback artifact component %s", artifact.Component))
+		}
+		seen[artifact.Component] = struct{}{}
+		if artifact.DownloadURL == "" || artifact.Size <= 0 || artifact.Size > maxUpdateBinaryBytes {
+			return fail(fmt.Errorf("invalid rollback artifact metadata for %s", artifact.Component))
+		}
+		if len(artifact.SHA256) != 64 {
+			return fail(fmt.Errorf("invalid rollback artifact checksum for %s", artifact.Component))
+		}
+		if _, err := hex.DecodeString(artifact.SHA256); err != nil {
+			return fail(fmt.Errorf("invalid rollback artifact checksum for %s: %w", artifact.Component, err))
+		}
+
+		cfg := *u.config
+		cfg.Component = string(artifact.Component)
+		componentUpdater := &Updater{config: &cfg, client: u.client, clientErr: u.clientErr}
+		info := downloadInfo{
+			URL: artifact.DownloadURL, Checksum: strings.ToLower(artifact.SHA256),
+			Manifest: request.ReleaseManifest, ManifestSignature: request.ManifestSignature,
+			SigningKeyID: request.ManifestSigningKeyID,
+		}
+		manifest, err := componentUpdater.verifyUpdateManifest(info, request.TargetVersion)
+		if err != nil {
+			return fail(fmt.Errorf("verify rollback artifact %s: %w", artifact.Component, err))
+		}
+		if manifest.Checksum != strings.ToLower(artifact.SHA256) || manifest.Size != artifact.Size || manifest.Component != string(artifact.Component) {
+			return fail(fmt.Errorf("signed manifest does not match rollback artifact %s", artifact.Component))
+		}
+		path, err := componentUpdater.downloadFromURL(artifact.DownloadURL)
+		if err != nil {
+			return fail(fmt.Errorf("download rollback artifact %s: %w", artifact.Component, err))
+		}
+		stat, err := os.Stat(path)
+		if err != nil || stat.Size() != artifact.Size {
+			removeCleanup(path)
+			if err != nil {
+				return fail(fmt.Errorf("stat rollback artifact %s: %w", artifact.Component, err))
+			}
+			return fail(fmt.Errorf("rollback artifact %s size mismatch: expected %d, got %d", artifact.Component, artifact.Size, stat.Size()))
+		}
+		if err := componentUpdater.verifyChecksum(path, strings.ToLower(artifact.SHA256)); err != nil {
+			removeCleanup(path)
+			return fail(fmt.Errorf("rollback artifact %s checksum verification failed: %w", artifact.Component, err))
+		}
+		result.Artifacts = append(result.Artifacts, StagedRollbackArtifact{RollbackArtifactMetadata: artifact, StagedPath: path})
+	}
+	return result, nil
+}
+
+// VerifySignedPayload verifies an arbitrary domain-separated payload against
+// the same exact keyed manifest trust set used for release artifacts.
+func (u *Updater) VerifySignedPayload(keyID string, payload, signature []byte) error {
+	return u.verifyManifestSignature(payload, signature, keyID)
+}
+
 // downloadBinary fetches download info from the API and then downloads the binary.
 // Supports both legacy redirect responses and JSON info responses.
 // downloadBinary returns the temp path of the downloaded binary, the verified
@@ -1475,6 +1579,11 @@ func (u *Updater) DownloadAndVerify(url, expectedChecksum string) (string, error
 // u.extras, which was a real footgun for any future dev-push surface that
 // shared an Updater instance with the heartbeat upgrade path.
 func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOptions) error {
+	lease, ok := TryBeginProcessMutation("agent-dev-update")
+	if !ok {
+		return ErrProcessMutationInProgress
+	}
+	defer lease.Release()
 	// Log only the host, never the full URL: dev_update's downloadUrl is
 	// operator/control-plane supplied and may legitimately carry a
 	// capability query string (e.g. a signed CDN asset URL), which must
