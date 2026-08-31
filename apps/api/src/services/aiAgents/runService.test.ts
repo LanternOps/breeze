@@ -1184,6 +1184,87 @@ describe('createAndEnqueueAgentRun — ticket-triggered admission (#3828 wave-6-
   });
 });
 
+// P2-4 Task A6 (#4191) — the forced-shadow LIFT. `triggers.ticketAutonomousWrites`
+// is the org's own explicit opt-in (see AiAgentTriggers.ticketAutonomousWrites's
+// docstring and effectivePolicy.ts's org-row-only merge): a ticket-triggered
+// run is admitted as `act` ONLY when both gates are open at once (agent
+// `mode: 'act'` AND `triggers.ticketAutonomousWrites: true`). Any other
+// combination — including the toggle set on an anomaly-triggered run — still
+// forces shadow, per the truth table in the task brief.
+describe('createAndEnqueueAgentRun — ticket-autonomy forced-shadow LIFT (P2-4 #4191 task A6)', () => {
+  function ticketInput(over: Partial<CreateAgentRunInput> = {}): CreateAgentRunInput {
+    return input({
+      kind: 'helpdesk',
+      triggerKind: 'ticket',
+      deviceId: null,
+      ticketId: TICKET_ID,
+      triggerRef: { ticketId: TICKET_ID },
+      dedupeKey: `ticket-created:${TICKET_ID}`,
+      ...over,
+    });
+  }
+
+  it('ticket + act + ticketAutonomousWrites:true -> modeAtStart is act (both gates open)', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(
+      snapshot({ mode: 'act', triggers: triggers({ ticketAutonomousWrites: true }) }),
+    );
+    seedAdmissionReads();
+    const result = await createAndEnqueueAgentRun(ticketInput());
+
+    expect(result.created).toBe(true);
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values).toMatchObject({ triggerKind: 'ticket', modeAtStart: 'act' });
+  });
+
+  it('ticket + act WITHOUT the toggle -> modeAtStart stays shadow (only one gate open)', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(
+      snapshot({ mode: 'act', triggers: triggers() }), // no ticketAutonomousWrites key at all
+    );
+    seedAdmissionReads();
+    const result = await createAndEnqueueAgentRun(ticketInput());
+
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values.modeAtStart).toBe('shadow');
+  });
+
+  it('ticket + shadow + ticketAutonomousWrites:true -> modeAtStart stays shadow (only one gate open)', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(
+      snapshot({ mode: 'shadow', triggers: triggers({ ticketAutonomousWrites: true }) }),
+    );
+    seedAdmissionReads();
+    const result = await createAndEnqueueAgentRun(ticketInput());
+
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values.modeAtStart).toBe('shadow');
+  });
+
+  // Regression: the lift is keyed on `triggerKind === 'ticket' || input.ticketId`
+  // specifically — an anomaly-triggered run must NEVER be lifted by this
+  // toggle, even when both of its own inputs happen to be set. The anomaly
+  // force (wave 6 PR 4, #3828) has no lift at all: an unproven detector must
+  // never drive act mode, full stop.
+  it('anomaly + act + ticketAutonomousWrites:true -> modeAtStart STILL shadow (anomaly force has no lift)', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(
+      snapshot({
+        mode: 'act',
+        triggers: triggers({ anomalyEnabled: true, ticketAutonomousWrites: true }),
+      }),
+    );
+    seedAdmissionReads();
+    const result = await createAndEnqueueAgentRun(input({
+      kind: 'triage',
+      triggerKind: 'anomaly',
+      anomalyIncidentId: ANOMALY_INCIDENT_ID,
+      triggerRef: { incidentId: ANOMALY_INCIDENT_ID },
+      dedupeKey: `anomaly:${ANOMALY_INCIDENT_ID}`,
+    }));
+
+    expect(result.created).toBe(true);
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values).toMatchObject({ triggerKind: 'anomaly', modeAtStart: 'shadow' });
+  });
+});
+
 // Wave 6 PR 4 (#3828 Task 3) — anomaly-shadow admission. Anomaly-triggered
 // runs ARE device-bound (unlike ticket runs), so device pinning, site scope,
 // and maintenance-window checks apply normally; the ONLY forced downgrade is

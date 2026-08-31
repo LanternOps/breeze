@@ -779,6 +779,7 @@ export * from './aiAgents';
 export * from './aiAgentRuns';
 export * from './aiAgentSchedules';
 export * from './orgNarrativeReport';
+export * from './ticketTriage';
 
 // ============================================
 // Billing Enum SSOT

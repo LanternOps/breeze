@@ -56,6 +56,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { handleActionError, runAction } from '@/lib/runAction';
 import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 interface Props {
   agentId: string;
@@ -699,7 +700,7 @@ export default function AiAgentSchedulesSection({
                         data-testid={`ai-agent-schedule-lastrun-${schedule.id}`}
                       >
                         {t('aiAgentsPage.schedules.lastRun', {
-                          at: new Date(schedule.lastRunSummary.enqueuedAt).toLocaleString(),
+                          at: formatDateTime(schedule.lastRunSummary.enqueuedAt),
                           admitted: schedule.lastRunSummary.runsAdmitted,
                           total: schedule.lastRunSummary.orgsTotal,
                           skipped: schedule.lastRunSummary.runsSkipped,

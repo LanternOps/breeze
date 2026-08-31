@@ -46,6 +46,14 @@ export default defineConfig({
       'src/services/vulnerabilityCorrelationPhase2.integration.test.ts',
       // Co-located real-DB integration test for the DisplayName→CPE resolution cache (#2290).
       'src/services/cpeResolution.integration.test.ts',
+      // Real-DB proof for dual-axis, per-device peripheral policy resolution.
+      'src/services/peripheralEffectivePolicy.integration.test.ts',
+      'src/services/peripheralPolicyState.integration.test.ts',
+      // Real PostgreSQL + Redis proof for atomic signed rollback creation.
+      'src/services/agentRollback.integration.test.ts',
+      // Real PostgreSQL proof for restart-safe rollback observation ingestion,
+      // append-only dedupe, and terminal projection truth.
+      'src/services/agentRollbackResult.integration.test.ts',
       // Co-located real-DB integration test for the curated CPE map seed loader.
       'src/services/cpeMap.integration.test.ts',
       // Co-located real-DB integration test for KEV + EPSS vulnerability enrichment.

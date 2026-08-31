@@ -1751,6 +1751,48 @@ describe('processIntentReleaseJob', () => {
     });
   });
 
+  // P2-4 Task A3 (#4191) — a ticket_autonomy-decided row's OWN recovery
+  // branch: `intent_created` must route straight to release, never call
+  // `attemptPolicyDecision` (that row's `policyDecisionState` is
+  // 'human_required', not 'unattempted', so the call would just be a wasted
+  // no-op transaction even if it were reached).
+  describe('intent_created — ticket_autonomy recovery (P2-4 Task A3, #4191)', () => {
+    it('routes a ticket_autonomy-decided row straight to release, never attemptPolicyDecision', async () => {
+      dbState.selectActionIntentsResults.push([{ decidedVia: 'ticket_autonomy' }]);
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(false); // lost race / already claimed — release path exits early, which is fine, we're proving ROUTING here
+
+      const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' });
+
+      expect(result).toEqual({ released: true });
+      expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith(
+        'intent-1', 'approved', 'executing',
+        expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
+        { requireNotExpired: 'release' },
+      );
+      expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
+    });
+
+    it('a policy-decided row (decidedVia: policy) still goes through attemptPolicyDecision, not a direct release', async () => {
+      dbState.selectActionIntentsResults.push([{ decidedVia: 'policy' }]);
+
+      const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' });
+
+      expect(result).toEqual({ released: false });
+      expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledWith('intent-1');
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    });
+
+    it('a missing/unreadable decidedVia falls through to attemptPolicyDecision (fail-open to the existing recovery path, not release)', async () => {
+      // No row pushed — the lookup returns [] / null, mirroring every
+      // pre-existing intent_created test above that never seeded this read.
+      const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' });
+
+      expect(result).toEqual({ released: false });
+      expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledWith('intent-1');
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    });
+  });
+
   it('THE LIE GUARD: an intent that did NOT run is never reported as running', async () => {
     // releaseApprovedIntent returns void and has ~12 early-return paths that
     // mean it did not execute — revalidation stopped it, the release_by

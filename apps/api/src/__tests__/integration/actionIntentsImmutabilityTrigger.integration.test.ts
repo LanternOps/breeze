@@ -223,6 +223,12 @@ describe('action_intents immutability trigger (live DB)', () => {
     // aiAgentSchedulesPartnerRls.integration.test.ts, which seeds a non-null
     // starting value.
     scope_device_id: { scopeDeviceId: randomUUID() },
+    // 2026-09-25 (P2-4, #4191): same conditional-guard shape as
+    // scope_device_id above. The fixture's seeded intent starts with
+    // scope_ticket_id NULL, so setting it to any UUID is the blocked
+    // direction; the allowed tombstone (non-null -> NULL) is exercised
+    // elsewhere once a Task A3/A6 fixture seeds a non-null starting value.
+    scope_ticket_id: { scopeTicketId: randomUUID() },
   };
 
   it('has a behavioral case for every column on the trigger deny-list', () => {
