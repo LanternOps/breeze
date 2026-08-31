@@ -13,8 +13,8 @@
  *      gets the same GDPR-grade cascade delete a manual erasure would run,
  *   3. audits `org.merge.erasure_enqueued`, and
  *   4. best-effort removes the loser from the partner's saved organization
- *      order (cosmetic — a stale id left there is merely ignored by
- *      `applyOrganizationOrder`, never a correctness bug).
+ *      order (cosmetic — a stale id left there is merely ignored by the list
+ *      endpoint's ordering, matching no row, never a correctness bug).
  *
  * Module shape mirrors `jobs/tenantErasure.ts` verbatim: a lazily-created
  * Queue/Worker singleton pair, `jobId = org-merge-<loserOrgId>` so a

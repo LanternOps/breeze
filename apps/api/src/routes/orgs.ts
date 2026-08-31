@@ -23,7 +23,8 @@ import {
   beginOrganizationOffboarding,
   beginPartnerOffboarding,
 } from '../services/tenantOffboarding';
-import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
+import { sanitizeOrganizationOrder } from '../services/orgOrdering';
+import { buildOrganizationListQuery } from './orgs.listQuery';
 import {
   listArchivedOrgs,
   loadArchivedOrg,
@@ -1351,30 +1352,18 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
         .where(conditions);
   const count = countResult[0]?.count ?? 0;
 
-  const data = noLiveOrgs ? [] : await db
-    .select()
-    .from(organizations)
-    .where(conditions)
-    .limit(limit)
-    .offset(offset)
-    // `id` is a mandatory tiebreaker, not a cosmetic nicety (#3462).
-    // `created_at` is `defaultNow()` and Postgres `now()` is the TRANSACTION
-    // timestamp, so every org written in one transaction (seed, bulk import,
-    // migration) shares a byte-identical value. Ordering on a tied key alone
-    // leaves row order undefined between two LIMIT/OFFSET queries, so the page
-    // walk in `apps/web/src/lib/fetchAllOrganizations.ts` would silently see
-    // some orgs twice and miss others.
-    .orderBy(organizations.createdAt, organizations.id);
-
-  // Apply the partner's preferred organization order, when one is set.
+  // Load the partner's preferred organization order BEFORE the page query.
+  // It has to be part of the ORDER BY that LIMIT/OFFSET walks — applying it to
+  // an already-selected page can only permute that page, so an org the partner
+  // dragged to the top could never leave page 2 (#4004).
   // - partner scope: load own partner settings.
   // - system scope: only when a partnerId filter is in the query.
   // (organization scope already returned above — at most one row anyway.)
-  let ordered = data;
+  let preferredOrder: string[] | undefined;
   let orderPartnerId: string | null = null;
   if (auth.scope === 'partner' && auth.partnerId) orderPartnerId = auth.partnerId;
   else if (auth.scope === 'system' && queryPartnerId) orderPartnerId = queryPartnerId;
-  // Nothing to order when the live query never ran (archived-only partner).
+  // Nothing to order when the live query never runs (archived-only partner).
   if (orderPartnerId && !noLiveOrgs) {
     try {
       const settingsRow = await withSystemDbAccessContext(async () => {
@@ -1385,9 +1374,8 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
           .limit(1);
         return row;
       });
-      const preferredOrder = (settingsRow?.settings as { organizationOrder?: string[] } | undefined)
+      preferredOrder = (settingsRow?.settings as { organizationOrder?: string[] } | undefined)
         ?.organizationOrder;
-      ordered = applyOrganizationOrder(data, preferredOrder);
     } catch (err) {
       // Soft-fail: if we can't load partner settings, fall back to createdAt
       // order so the list still renders. Surface the failure to stderr and
@@ -1400,6 +1388,14 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
       captureException(err, c);
     }
   }
+
+  // One statement: the preferred order is the leading sort key and
+  // `created_at, id` the tiebreaker, so LIMIT/OFFSET slices the intended
+  // sequence. `buildOrganizationListQuery` owns that shape and is pinned on the
+  // compiled SQL in `orgs.listQuery.test.ts`.
+  const ordered = noLiveOrgs
+    ? []
+    : await buildOrganizationListQuery({ conditions, limit, offset, preferredOrder });
 
   // Device count per organization. The list is where an MSP scans "how big is
   // each customer", and the web card renders `{{count}} devices` — with no
