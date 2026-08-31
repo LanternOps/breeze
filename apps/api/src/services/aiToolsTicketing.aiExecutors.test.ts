@@ -51,6 +51,7 @@ const txSelectForMock = vi.fn();
 const txInsertValuesMock = vi.fn();
 const txUpdateSetMock = vi.fn();
 const txUpdateWhereMock = vi.fn();
+const deviceSelectWhereMock = vi.fn();
 
 function awaitable(rows: unknown[], extra: Record<string, unknown> = {}) {
   return Object.assign(Promise.resolve(rows), extra);
@@ -61,9 +62,12 @@ vi.mock('../db', () => ({
     select: vi.fn(() => ({
       from: vi.fn((table: unknown) => ({
         leftJoin: vi.fn(() => ({
-          where: vi.fn(() => ({
-            limit: vi.fn(() => Promise.resolve((dbState.selectQueues.get(table) ?? []).shift() ?? [])),
-          })),
+          where: vi.fn((w: unknown) => {
+            deviceSelectWhereMock(w);
+            return {
+              limit: vi.fn(() => Promise.resolve((dbState.selectQueues.get(table) ?? []).shift() ?? [])),
+            };
+          }),
         })),
         where: vi.fn(() => ({
           limit: vi.fn(() => Promise.resolve((dbState.selectQueues.get(table) ?? []).shift() ?? [])),
@@ -105,7 +109,14 @@ vi.mock('../db', () => ({
               returning: vi.fn(() => {
                 const next = dbState.txInsertReturningQueue.shift();
                 if (next instanceof Error) return Promise.reject(next);
-                return Promise.resolve(next ?? []);
+                if (next) return Promise.resolve(next);
+                // No canned value queued: echo back the id actually passed to
+                // .values() — this is what lets a test prove the new row's id
+                // (client-generated) really is what got written as the old
+                // row's supersededBy, rather than a coincidentally-matching
+                // fixture value.
+                const insertedId = (v as { id?: string }).id;
+                return Promise.resolve(insertedId ? [{ id: insertedId }] : []);
               }),
             };
           }),
@@ -236,6 +247,15 @@ describe('link_device (P2-4, #4191)', () => {
     expect(provenanceSql.sql.toLowerCase()).toContain('||');
     const whereSql = sqlOf(topUpdateWhereMock.mock.calls[0]![0]);
     expect(whereSql.sql.toLowerCase()).toContain('"device_id" is null');
+
+    // The device-matching query itself excludes ephemeral AND decommissioned
+    // devices — never a sane link target (Minor fix, review round). Booleans
+    // are parameterized by drizzle too, so this asserts column + params, not
+    // a literal `= false` substring.
+    const deviceWhereSql = sqlOf(deviceSelectWhereMock.mock.calls[0]![0]);
+    expect(deviceWhereSql.sql.toLowerCase()).toContain('"is_ephemeral" = $');
+    expect(deviceWhereSql.sql.toLowerCase()).toContain('"status" <> $');
+    expect(deviceWhereSql.params).toEqual(expect.arrayContaining([false, 'decommissioned']));
   });
 
   it('is a no-op with reason "no_match" when zero devices match', async () => {
@@ -316,14 +336,16 @@ describe('draft (P2-4, #4191)', () => {
   it('supersedes an existing active draft of the same kind — serialized via SELECT ... FOR UPDATE', async () => {
     queueSelect(tickets, [accessibleTicket()]);
     queueTxSelect(ticketDrafts, [{ id: 'old-draft' }]);
-    dbState.txInsertReturningQueue.push([{ id: 'new-draft' }]);
+    // Deliberately NOT queuing a canned insert-returning value here: letting
+    // the mock's default echo-the-inserted-id behavior fire is what proves
+    // the id flowing into supersededBy is the REAL client-generated id, not
+    // a fixture value that only coincidentally matches (review round fix —
+    // the bug this catches: superseding AFTER insert instead of before).
 
     const out = await getTool().handler(
       { action: 'draft', ticketId: TICKET_ID, kind: 'resolution_note', content: 'Root cause: disk full.' },
       makeAgentAuth(),
     );
-
-    expect(JSON.parse(out)).toEqual({ draft: { id: 'new-draft' } });
 
     // The lock must be a real FOR UPDATE, not a plain read — never a
     // vacuous mock-echo (CLAUDE.md): assert the code actually calls
@@ -338,9 +360,26 @@ describe('draft (P2-4, #4191)', () => {
     expect(whereSql.sql.toLowerCase()).toContain("\"state\" = $");
     expect(whereSql.params).toEqual([TICKET_ID, 'resolution_note', 'active']);
 
-    // The old draft is superseded, pointing at the new one.
+    // ORDERING (the actual bug): the old row must be superseded BEFORE the
+    // new row is inserted, never the reverse — inserting first collides
+    // with ticket_drafts_active_uq (a plain, non-deferrable partial unique
+    // index) on every normal supersession, not just a genuine concurrent
+    // race.
+    expect(txUpdateSetMock).toHaveBeenCalledTimes(1);
+    expect(txInsertValuesMock).toHaveBeenCalledTimes(1);
+    const updateOrder = txUpdateSetMock.mock.invocationCallOrder[0]!;
+    const insertOrder = txInsertValuesMock.mock.invocationCallOrder[0]!;
+    expect(updateOrder).toBeLessThan(insertOrder);
+
+    // The old draft is superseded, pointing at the new one — and that new
+    // id is EXACTLY the id the INSERT actually wrote (not merely a fixture
+    // that happens to match), and exactly what the caller gets back.
     const updateSetArg = txUpdateSetMock.mock.calls[0]![0] as Record<string, unknown>;
-    expect(updateSetArg).toEqual({ state: 'superseded', supersededBy: 'new-draft' });
+    const insertValuesArg = txInsertValuesMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(updateSetArg.state).toBe('superseded');
+    expect(updateSetArg.supersededBy).toBe(insertValuesArg.id);
+    expect(JSON.parse(out)).toEqual({ draft: { id: insertValuesArg.id } });
+
     const updateWhereSql = sqlOf(txUpdateWhereMock.mock.calls[0]![0]);
     expect(updateWhereSql.sql.toLowerCase()).toContain('"id" = $');
     expect(updateWhereSql.params).toContain('old-draft');

@@ -6,7 +6,7 @@
  * All mutations delegate to ticketService — this file is a thin adapter.
  */
 
-import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { actionIntents, alerts, deviceHardware, devices, ticketDrafts, tickets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
@@ -786,9 +786,12 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (!found) return JSON.stringify({ error: 'Ticket not found' });
 
         // Resolve by exact hostname OR serial number, within the ticket's org,
-        // never an ephemeral (Quick Support) device. Zero or multiple matches
-        // is a completed no-op, never an error — the agent's proposal was
-        // ambiguous, not malformed.
+        // never an ephemeral (Quick Support) device, never decommissioned
+        // (devices carries no deleted_at — offboarding retires a device via
+        // status='decommissioned' rather than a soft-delete column, and a
+        // decommissioned device is not a sane link target). Zero or multiple
+        // matches is a completed no-op, never an error — the agent's
+        // proposal was ambiguous, not malformed.
         const identityConditions: SQL[] = [];
         if (hostname) identityConditions.push(eq(devices.hostname, hostname));
         if (serial) identityConditions.push(eq(deviceHardware.serialNumber, serial));
@@ -796,7 +799,12 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           .select({ id: devices.id })
           .from(devices)
           .leftJoin(deviceHardware, eq(deviceHardware.deviceId, devices.id))
-          .where(and(eq(devices.orgId, found.orgId), eq(devices.isEphemeral, false), or(...identityConditions)))
+          .where(and(
+            eq(devices.orgId, found.orgId),
+            eq(devices.isEphemeral, false),
+            ne(devices.status, 'decommissioned'),
+            or(...identityConditions)
+          ))
           .limit(2);
 
         if (matches.length === 0) return JSON.stringify({ linked: false, reason: 'no_match' });
@@ -838,8 +846,16 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
         // One transaction: SELECT ... FOR UPDATE the current active draft of
         // this kind (serializes concurrent writers on the SAME ticket+kind —
-        // ticket_drafts_active_uq is a partial unique on (ticket_id, kind)
-        // WHERE state='active'), supersede it, then insert the new active row.
+        // ticket_drafts_active_uq is a plain, non-deferrable partial unique on
+        // (ticket_id, kind) WHERE state='active'), SUPERSEDE it first, THEN
+        // insert the new active row — never the reverse. Superseding first is
+        // load-bearing: inserting the new active row before flipping the old
+        // one off 'active' collides with ticket_drafts_active_uq on every
+        // normal supersession (there would be TWO 'active' rows for an
+        // instant), not just the genuine concurrent race below. The new
+        // row's id is minted client-side (crypto.randomUUID(), matching the
+        // house pattern — see clientAiTools.ts/streamingSessionManager.ts)
+        // so the UPDATE can stamp `supersededBy` before the row exists.
         const insertDraft = async (): Promise<{ id: string }> =>
           db.transaction(async (tx) => {
             const [existingActive] = await tx
@@ -853,7 +869,16 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               .limit(1)
               .for('update');
 
+            const newDraftId = crypto.randomUUID();
+
+            if (existingActive) {
+              await tx.update(ticketDrafts)
+                .set({ state: 'superseded', supersededBy: newDraftId })
+                .where(eq(ticketDrafts.id, existingActive.id));
+            }
+
             const [inserted] = await tx.insert(ticketDrafts).values({
+              id: newDraftId,
               orgId: found.orgId,
               ticketId,
               runId,
@@ -862,11 +887,6 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             }).returning({ id: ticketDrafts.id });
             if (!inserted) throw new TicketServiceError('Failed to store draft', 500);
 
-            if (existingActive) {
-              await tx.update(ticketDrafts)
-                .set({ state: 'superseded', supersededBy: inserted.id })
-                .where(eq(ticketDrafts.id, existingActive.id));
-            }
             return inserted;
           });
 
