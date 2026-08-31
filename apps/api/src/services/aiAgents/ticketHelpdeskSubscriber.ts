@@ -44,6 +44,12 @@
  *  1. Origin-based loop guard (design authority: never `source`-string
  *     matching — see the migration header and `ticket_comments.origin_
  *     principal_kind`/`agent_run_id`, Task 1) — `ticketHasAgentOriginatedActivity`.
+ *     APPLIED to created/commented, SKIPPED for the resolved lane (I1, final
+ *     review #4191) — see `admitTriageRun`'s `applyLoopGuard` param doc:
+ *     every triage run posts an AI note, so applying this guard to the
+ *     resolved lane would permanently dead-end it after the ticket's first
+ *     triage pass ever. `isEligibleForResolvedAdmission`'s fresh re-read is
+ *     that lane's own anti-loop gate instead.
  *  2. Load the ticket's category/priority (`loadTicketFilterContext`) and
  *     pass them as `ticketContext` so `runService.ts`'s
  *     `evaluateTicketTriggerFilters` can enforce `policy.triggers.
@@ -240,14 +246,35 @@ async function isEligibleForResolvedAdmission(ticketId: string, orgId: string): 
  * call with `profile: 'triage'`. Only the two reads run under a system DB
  * context — the admission call itself must run with NONE active (see this
  * file's header and `runWithSystemDbAccess`'s comment below).
+ *
+ * `applyLoopGuard` (I1, final review #4191): defaults to `true` for the
+ * created/commented lanes, where `ticketHasAgentOriginatedActivity` guards
+ * against a real risk — an AI-authored comment re-triggering
+ * `ticket.commented` and admitting a second run off its own note. The
+ * `ticket.status_changed -> resolved` lane (its one caller passes `false`)
+ * has no such risk: every triage run posts an AI note as a side effect
+ * (Task 6), so with the guard applied the resolved lane could never admit —
+ * ANY prior triage pass on the ticket, no matter how old, permanently
+ * blocks it. Skipping the guard there is safe because
+ * `isEligibleForResolvedAdmission`'s fresh re-read (active resolution_note
+ * draft + no resolution note already present) is itself the anti-loop gate
+ * for that lane: a run this function admits either produces a draft
+ * (blocking the NEXT resolved event) or the ticket is no longer resolved,
+ * either of which already prevents readmission without help from the
+ * agent-origin check.
  */
-async function admitTriageRun(orgId: string, ticketId: string, dedupeKey: string): Promise<void> {
+async function admitTriageRun(
+  orgId: string,
+  ticketId: string,
+  dedupeKey: string,
+  applyLoopGuard = true,
+): Promise<void> {
   // Only the origin-guard probe and the ticket-filter-context read run under
   // a system context — see `runWithSystemDbAccess`'s header comment (#1105
   // pool-hold seam).
-  const hasAgentActivity = await runWithSystemDbAccess(() =>
-    ticketHasAgentOriginatedActivity(ticketId),
-  );
+  const hasAgentActivity = applyLoopGuard
+    ? await runWithSystemDbAccess(() => ticketHasAgentOriginatedActivity(ticketId))
+    : false;
   if (hasAgentActivity) {
     console.info(
       '[ticketHelpdeskSubscriber] skipping admission — ticket has agent-originated activity (loop guard)',
@@ -425,7 +452,10 @@ export async function handleTicketStatusChangedEvent(event: BreezeEvent): Promis
       return;
     }
 
-    await admitTriageRun(orgId, ticketId, `ticket-resolved:${ticketId}`);
+    // applyLoopGuard=false — see admitTriageRun's docstring: every triage
+    // run posts an AI note, so the standard loop guard would permanently
+    // block this lane after the ticket's first-ever triage pass.
+    await admitTriageRun(orgId, ticketId, `ticket-resolved:${ticketId}`, false);
   } catch (err) {
     console.error('[ticketHelpdeskSubscriber] handler failed', {
       ticketId,

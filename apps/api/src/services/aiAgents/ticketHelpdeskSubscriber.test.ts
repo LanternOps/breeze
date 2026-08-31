@@ -519,7 +519,12 @@ describe('handleTicketStatusChangedEvent', () => {
   it('admits a triage run when the ticket re-reads as resolved with no note and no active draft', async () => {
     mockResolvedTicketRead([{ status: 'resolved', resolutionNote: null }]);
     mockActiveResolutionDraftRead([]);
-    mockCleanTicket();
+    // I1 (final review #4191): the resolved lane skips the origin-guard
+    // probe (applyLoopGuard=false) — only the ticket-filter-context read
+    // remains, NOT `mockCleanTicket()`'s two-call shape (that would queue an
+    // origin-probe mock the handler never consumes, starving the real next
+    // call and making this assertion pass for the wrong reason).
+    mockTicketFilterRead([{ category: 'hardware', categoryId: null, priority: 'normal' }]);
 
     await handleTicketStatusChangedEvent(ticketStatusChangedEvent());
 
@@ -533,6 +538,16 @@ describe('handleTicketStatusChangedEvent', () => {
         profile: 'triage',
       }),
     );
+    // Exactly 3 db.select calls total: the resolved-eligibility ticket
+    // read, the active-draft read, and the ticket-filter-context read — NO
+    // origin-guard probe. If the guard were mistakenly re-applied to this
+    // lane, the handler would issue a 4th db.select() (the origin probe)
+    // BEFORE consuming the `mockTicketFilterRead` mock — starving it and
+    // either throwing (queue exhausted) or reading the wrong shape, so this
+    // count is itself the I1 regression assertion: prior agent-originated
+    // activity on the ticket (an earlier triage note) can no longer block
+    // this lane, because nothing here even asks the question.
+    expect(db.select).toHaveBeenCalledTimes(3);
   });
 
   it('cheap prefilter: skips with NO db reads at all when the payload\'s `to` is not resolved', async () => {
@@ -597,7 +612,10 @@ describe('handleTicketStatusChangedEvent', () => {
   it('uses its OWN dedupe key (ticket-resolved:<id>), distinct from ticket-created/commented', async () => {
     mockResolvedTicketRead([{ status: 'resolved', resolutionNote: null }]);
     mockActiveResolutionDraftRead([]);
-    mockCleanTicket();
+    // I1: single ticket-filter-context read only — see the earlier admission
+    // test's comment for why `mockCleanTicket()`'s origin-probe mock is not
+    // used here.
+    mockTicketFilterRead([{ category: 'hardware', categoryId: null, priority: 'normal' }]);
 
     await handleTicketStatusChangedEvent(ticketStatusChangedEvent());
 
