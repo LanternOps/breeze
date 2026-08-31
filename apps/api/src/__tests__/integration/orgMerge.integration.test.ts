@@ -668,6 +668,85 @@ async function seedFixture(): Promise<Fixture> {
 }
 
 // ---------------------------------------------------------------------------
+// blocks-merge (PAM) helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * `getTestDb().execute()` already returns the row array directly, not a
+ * `.rows`-wrapped result — this is the same identity-cast idiom
+ * `normalizedConfigPolicyRls.integration.test.ts` and several services use to
+ * give the array an explicit element type at the call site.
+ */
+function rows<T = Record<string, unknown>>(result: unknown): T[] {
+  return result as T[];
+}
+
+/**
+ * Seeds one elevation_request -> pam_actuation -> pam_actuation_result chain
+ * under `orgId` against `deviceId`. The elevation_request column list is
+ * copied from pamDeviceMoveGuard.integration.test.ts's `createMoveFixture`
+ * seed (~line 140-160) — the authoritative minimal-valid-row example for that
+ * table. Runs through the raw superuser test client, the same way that suite
+ * seeds its own PAM fixtures (no ambient db-access context required).
+ */
+async function seedPamEvidence(orgId: string, siteId: string, deviceId: string): Promise<void> {
+  const [request] = await getTestDb().execute<{ id: string }>(sql`
+    INSERT INTO elevation_requests (
+      org_id, site_id, device_id, flow_type,
+      subject_username, reason, target_executable_path,
+      target_executable_hash, status, approved_at
+    ) VALUES (
+      ${orgId}::uuid, ${siteId}::uuid, ${deviceId}::uuid, 'uac_intercept',
+      'fixture-user', 'PAM merge gauntlet fixture',
+      'C:\\Program Files\\Fixture\\fixture.exe', ${'a'.repeat(64)},
+      'approved', now()
+    )
+    RETURNING id`);
+  if (!request) throw new Error('seedPamEvidence: elevation_request insert failed');
+
+  const actuationId = randomUUID();
+  await getTestDb().execute(sql`
+    INSERT INTO pam_actuations (
+      id, org_id, device_id, elevation_request_id, request_revision, generation,
+      desired_state, observed_state, target_executable_path,
+      target_executable_hash, subject_username
+    ) VALUES (
+      ${actuationId}::uuid, ${orgId}::uuid, ${deviceId}::uuid, ${request.id}::uuid, 1, 1,
+      'active', 'verified_active', 'C:\\Program Files\\Fixture\\fixture.exe',
+      ${'a'.repeat(64)}, 'fixture-user'
+    )`);
+  await getTestDb().execute(sql`
+    INSERT INTO pam_actuation_results (
+      observation_id, org_id, device_id, actuation_id, generation,
+      result_kind, evidence, observed_at
+    ) VALUES (
+      gen_random_uuid(), ${orgId}::uuid, ${deviceId}::uuid, ${actuationId}::uuid, 1,
+      'received', '{}'::jsonb, now()
+    )`);
+}
+
+/**
+ * Durable-snapshot pattern from the PAM suites: a comparable read of
+ * everything the pre-fence blocks-merge refusal must leave untouched — the
+ * loser's own row (status/settings, so a stray fence or unfence shows up)
+ * plus its PAM evidence counts (so a partial walk that started moving rows
+ * before refusing would show up too).
+ */
+async function snapshotOrgState(orgId: string): Promise<unknown> {
+  const org = rows<{ status: string; settings: unknown }>(
+    await getTestDb().execute(sql`
+      SELECT status::text AS status, settings FROM organizations WHERE id = ${orgId}::uuid`),
+  )[0];
+  const pam = rows<{ pam_actuations: number; pam_actuation_results: number }>(
+    await getTestDb().execute(sql`
+      SELECT
+        (SELECT count(*)::int FROM pam_actuations WHERE org_id = ${orgId}::uuid) AS pam_actuations,
+        (SELECT count(*)::int FROM pam_actuation_results WHERE org_id = ${orgId}::uuid) AS pam_actuation_results`),
+  )[0];
+  return { org, pam };
+}
+
+// ---------------------------------------------------------------------------
 // suite
 // ---------------------------------------------------------------------------
 
@@ -1382,4 +1461,158 @@ describe('executeOrgMerge end-to-end against real Postgres', () => {
       SELECT count(*)::int AS n FROM audit_logs WHERE action = 'org.merge.unfenced_by_sweeper'`);
     expect(Number(unfenced[0]?.n)).toBe(0);
   }, 180_000);
+});
+
+// ---------------------------------------------------------------------------
+// blocks-merge: durable PAM evidence
+// ---------------------------------------------------------------------------
+
+describe('blocks-merge: durable PAM evidence refuses the merge', () => {
+  let f: Fixture;
+
+  beforeEach(async () => {
+    process.env.ORG_MERGE_FENCE_DRAIN_MS = '0';
+    f = await seedFixture();
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('preview verdict is blocked with per-table counts and the refusal text', async () => {
+    await seedPamEvidence(f.loser, f.siteL, f.deviceL);
+    const preview = await orgMergeModule.previewOrgMerge(f.loser, f.survivor, f.partner);
+    expect(preview.verdict).toBe('blocked');
+    expect(preview.tables).toEqual(
+      expect.arrayContaining([
+        { table: 'pam_actuations', policy: 'blocks-merge', loserRows: 1, wouldDrop: 0 },
+        { table: 'pam_actuation_results', policy: 'blocks-merge', loserRows: 1, wouldDrop: 0 },
+      ]),
+    );
+    expect(preview.blockers).toHaveLength(1);
+    expect(preview.blockers[0]).toContain('durable PAM lifecycle evidence');
+    expect(preview.blockers[0]).toContain('Audit-admin retention is not a merge mechanism');
+  });
+
+  it('executeOrgMerge refuses pre-fence: typed error, loser undisturbed, nothing merged, org.merge.failed audited', async () => {
+    await seedPamEvidence(f.loser, f.siteL, f.deviceL);
+    const before = await snapshotOrgState(f.loser);
+    await expect(
+      orgMergeModule.executeOrgMerge({
+        loserOrgId: f.loser, survivorOrgId: f.survivor, partnerId: f.partner,
+        performedBy: f.actor, performedByEmail: f.actorEmail,
+      }),
+    ).rejects.toMatchObject({ code: 'ORG_MERGE_BLOCKED', name: 'OrgMergeBlockedError' });
+    expect(await snapshotOrgState(f.loser)).toEqual(before); // status NOT 'merging' — never fenced
+    const events = await getTestDb().execute(sql`SELECT 1 FROM org_merge_events WHERE loser_org_id = ${f.loser}::uuid`);
+    expect(rows(events)).toHaveLength(0);
+
+    // Pre-fence refusal still writes the same org-less failure audit a
+    // Phase-B rollback would (see the big describe's in-tx-failure test
+    // above) — the offboarding sweeper and any operator tooling reading
+    // `org.merge.failed` must see this refusal too, not just a rolled-back
+    // one.
+    const failureAudits = await query<{ org_id: string | null; result: string; details: { error?: string } }>(sql`
+      SELECT org_id, result::text AS result, details FROM audit_logs WHERE action = 'org.merge.failed'`);
+    expect(failureAudits).toHaveLength(1);
+    expect(failureAudits[0]!.org_id).toBeNull();
+    expect(failureAudits[0]!.result).toBe('failure');
+    expect(failureAudits[0]!.details.error).toContain('durable PAM lifecycle evidence');
+  });
+
+  it("the refusal is the typed OrgMergeBlockedError, never the trigger's raw 23514", async () => {
+    await seedPamEvidence(f.loser, f.siteL, f.deviceL);
+    const caught: unknown = await orgMergeModule
+      .executeOrgMerge({
+        loserOrgId: f.loser, survivorOrgId: f.survivor, partnerId: f.partner,
+        performedBy: f.actor, performedByEmail: f.actorEmail,
+      })
+      .catch((err: unknown) => err);
+    expect(caught).toBeInstanceOf(orgMergeModule.OrgMergeBlockedError);
+    const asError = caught as { code?: string; cause?: { code?: string } };
+    expect(asError.code).toBe('ORG_MERGE_BLOCKED');
+    // devices_pam_history_move_guard's raw trigger error must never surface —
+    // that would mean the typed pre-fence refusal ran AFTER the registry walk
+    // reached the guard instead of before it (an ordering regression).
+    expect(asError.code).not.toBe('23514');
+    expect(asError.cause?.code).not.toBe('23514');
+  });
+
+  it('in-transaction recheck refuses, rolls back, and unfences (TOCTOU path)', async () => {
+    await seedPamEvidence(f.loser, f.siteL, f.deviceL);
+    // Let the pre-fence check pass so Phase B runs and the tx-internal copy refuses:
+    vi.spyOn(orgMergeModule, 'collectMergeBlockers').mockResolvedValueOnce([]);
+    await expect(
+      orgMergeModule.executeOrgMerge({
+        loserOrgId: f.loser, survivorOrgId: f.survivor, partnerId: f.partner,
+        performedBy: f.actor, performedByEmail: f.actorEmail,
+      }),
+    ).rejects.toMatchObject({ code: 'ORG_MERGE_BLOCKED' });
+    // rollback + unfence: status restored, no merge event, survivor untouched
+    const org = rows<{ status: string }>(
+      await getTestDb().execute(sql`SELECT status FROM organizations WHERE id = ${f.loser}::uuid`),
+    )[0];
+    expect(org?.status).toBe('active');
+    expect(
+      rows(await getTestDb().execute(sql`SELECT 1 FROM org_merge_events WHERE loser_org_id = ${f.loser}::uuid`)),
+    ).toHaveLength(0);
+  });
+
+  it('survivor-side PAM evidence never blocks and is never touched', async () => {
+    // Fixture has no survivor-side device (only `siteS`) — create one here
+    // rather than touch seedFixture or its assertions. A SURVIVOR device
+    // means devices_pam_history_move_guard never sees an org change for it.
+    const deviceS = randomUUID();
+    await getTestDb().execute(sql`
+      INSERT INTO devices (id, org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version)
+      VALUES (${deviceS}::uuid, ${f.survivor}::uuid, ${f.siteS}::uuid, ${`agent-pam-s-${f.suffix}`}, ${`host-pam-s-${f.suffix}`}, 'windows', '11', 'x64', '1.0.0')`);
+    await seedPamEvidence(f.survivor, f.siteS, deviceS);
+
+    const pamBefore = rows(await getTestDb().execute(sql`
+      SELECT id, org_id, device_id FROM pam_actuations WHERE org_id = ${f.survivor}::uuid ORDER BY id`));
+    const result = await orgMergeModule.executeOrgMerge({
+      loserOrgId: f.loser, survivorOrgId: f.survivor, partnerId: f.partner,
+      performedBy: f.actor, performedByEmail: f.actorEmail,
+    });
+    expect(result.mergeEventId).toBeTruthy();
+    const pamAfter = rows(await getTestDb().execute(sql`
+      SELECT id, org_id, device_id FROM pam_actuations WHERE org_id = ${f.survivor}::uuid ORDER BY id`));
+    expect(pamAfter).toEqual(pamBefore);
+  });
+
+  // Controller ruling (Task 1's review): a direct `runPolicy` blocks-merge
+  // test — the only test in the suite exercising the defense-in-depth
+  // resolve-phase branch itself. executeOrgMerge's pre-fence and in-tx
+  // recheck are meant to make this branch unreachable in practice; these two
+  // tests prove it still refuses (and still no-ops) correctly on its own.
+  it('runPolicy resolve phase rejects with OrgMergeBlockedError when loser rows exist (defense in depth)', async () => {
+    await seedPamEvidence(f.loser, f.siteL, f.deviceL);
+    await expect(
+      withSystemDbAccessContext(() =>
+        orgMergeModule.runPolicy(
+          'pam_actuations',
+          { kind: 'blocks-merge', note: 'test: durable PAM evidence' },
+          f.loser,
+          f.survivor,
+          'resolve',
+        ),
+      ),
+    ).rejects.toMatchObject({
+      name: 'OrgMergeBlockedError',
+      code: 'ORG_MERGE_BLOCKED',
+      blockers: [{ table: 'pam_actuations', loserRows: 1 }],
+    });
+  });
+
+  it('runPolicy resolve phase no-ops when there are zero loser rows', async () => {
+    await expect(
+      withSystemDbAccessContext(() =>
+        orgMergeModule.runPolicy(
+          'pam_actuations',
+          { kind: 'blocks-merge', note: 'test: durable PAM evidence' },
+          f.loser,
+          f.survivor,
+          'resolve',
+        ),
+      ),
+    ).resolves.toEqual({ moved: 0, dropped: 0, notes: [] });
+  });
 });
