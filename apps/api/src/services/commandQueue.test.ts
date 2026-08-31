@@ -1100,6 +1100,50 @@ describe('command queue service', () => {
       expect(insertValues).not.toHaveBeenCalled();
     });
 
+    // The refusal is the operator's only correlation signal when the dispatch
+    // came from an automated caller, so it must reach the logs, not just the
+    // return value.
+    it('logs the refusal with the device id so ops can correlate it', async () => {
+      mockDevice(strandedDevice);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      const logged = warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged).toContain('dev-stranded');
+      expect(logged).toContain('#4093');
+      warn.mockRestore();
+    });
+
+    // Ordering contract: the edition gate must be evaluated BEFORE the
+    // watchdog-liveness gate. An edition mismatch is a permanent property of
+    // the installed build; reporting the transient "watchdog is not reporting"
+    // instead would send the operator back to retry a dispatch that can never
+    // succeed. Swap the two blocks in executeCommand and this fails.
+    it('reports the permanent edition reason ahead of a stale-watchdog reason', async () => {
+      const insertValues = mockDevice({
+        ...strandedDevice,
+        watchdogLastSeen: new Date(Date.now() - 60 * 60 * 1000), // an hour stale
+      });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toMatch(/edition/i);
+      expect(result.error).not.toMatch(/not reporting/i);
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
     it('refuses update_watchdog on the same grounds', async () => {
       const insertValues = mockDevice(strandedDevice);
 
