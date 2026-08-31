@@ -67,7 +67,15 @@ export const ticketTriageProposalSchema: z.ZodType<TicketTriageProposal> = z.obj
   }).strict().optional(),
   device: z.object({
     hostname: sanitizedText(1, 255, 'device.hostname').optional(),
-    serial: sanitizedText(1, 255, 'device.serial').optional(),
+    // O1 (final review #4191): 100, NOT 255 — must stay coupled to the
+    // `link_device` AI-tool schema's own `serial: z.string().min(1).max(100)`
+    // bound (apps/api/src/services/aiToolSchemas.ts). A proposal serial
+    // longer than 100 but <=255 used to pass HERE and then get silently
+    // rejected as `intent_error` when the triage finisher fed it into
+    // `link_device` — the device link slot dropped with no user-visible
+    // signal. `hostname` has no such coupling (aiToolSchemas caps it at 255
+    // too), so it is left at 255.
+    serial: sanitizedText(1, 100, 'device.serial').optional(),
   }).strict().optional(),
   draftReply: sanitizedText(1, 4000, 'draftReply').optional(),
   draftResolutionNote: sanitizedText(1, 2000, 'draftResolutionNote').optional(),
