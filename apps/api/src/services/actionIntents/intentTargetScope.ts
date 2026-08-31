@@ -55,11 +55,17 @@ export type IntentTargetDevice =
 
 /**
  * The scope projection every caller must select alongside the intent row.
- * Both fields are nullable in the DB; `scopeKind` is only ever 'device' or
- * NULL (CHECK-constrained by the P2-2 migration).
+ * Both fields are nullable in the DB. `scopeKind` is CHECK-constrained to
+ * 'device' | 'ticket' | NULL (P2-2 + P2-4's action_intents_scope_kind_chk),
+ * matching the wider real column type — but this resolver is PURELY about
+ * the intent's target DEVICE, so 'ticket' is deliberately handled the same
+ * as no explicit scope at all (falls through to the run's own device, which
+ * may be null): a ticket-triage intent has no device target by construction,
+ * and resolving one is a separate concern for the ticket-scope reader a
+ * later P2-4 task adds (mirroring this module's shape, not extending it).
  */
 export interface IntentScopeColumns {
-  scopeKind: 'device' | null;
+  scopeKind: 'device' | 'ticket' | null;
   scopeDeviceId: string | null;
 }
 
