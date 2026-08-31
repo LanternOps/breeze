@@ -22,9 +22,19 @@
  * A proposal is turned into candidates in this FIXED order — deterministic
  * so a `maxActionsPerRun` cap always spends its budget the same way, and so
  * `idempotencyKey: triage:<runId>:<slot>` is stable across a redelivered
- * finalize call:
+ * finalize call. `note` is spent FIRST (controller ruling, review round on
+ * #4191 Task A8): spec §4.4 identifies the private note as THE triage
+ * deliverable ("comment ... the triage summary. Exactly one per run") — an
+ * agent whose cap is spent on optional field/link/draft candidates before
+ * ever reaching the one guaranteed slot would silently drop the run's core
+ * output. Reordering is safe precisely because idempotency keys are
+ * slot-name-based (`triage:<runId>:note`, never a positional index) —
+ * nothing about a redelivered finalize call depends on processing order.
  *
- *  1. `fields` (`update_fields`) — one field-patch intent covering every
+ *  1. `note` (`comment`) — ALWAYS attempted: `proposal.summary` is a
+ *     required field on the schema, so there is always something to post as
+ *     the run's one private note.
+ *  2. `fields` (`update_fields`) — one field-patch intent covering every
  *     `TicketTriageFieldProposal` that (a) meets `TICKET_TRIAGE_CONFIDENCE_FLOOR`
  *     and (b) is not already stamped `'user'` in the ticket's LIVE
  *     `field_provenance` (a human already touched it — never overwritten,
@@ -34,13 +44,10 @@
  *     skip exists so a human is never asked to approve a write that
  *     execution will silently no-op anyway. Skipped entirely (no intent)
  *     when nothing survives both filters.
- *  2. `link` (`link_device`) — only when the proposal named a device
+ *  3. `link` (`link_device`) — only when the proposal named a device
  *     (`hostname` and/or `serial`) AND the ticket does not already have one.
  *     Single-match resolution happens at EXECUTION, never here — the intent
  *     carries identifiers, not a resolved id (spec §4.4).
- *  3. `note` (`comment`) — ALWAYS attempted: `proposal.summary` is a
- *     required field on the schema, so there is always something to post as
- *     the run's one private note.
  *  4. `draft-reply` (`draft`, `kind: 'reply'`) — attempted whenever the
  *     model proposed one; never gated on ticket state (a reply draft can
  *     always be queued for a human "Send as me" decision).
@@ -50,8 +57,7 @@
  *     model's draft would just be noise).
  *
  * Every candidate that survives its own gate is still subject to the run's
- * `maxActionsPerRun` cap, spent in the slot order above — including `note`,
- * which is always PROPOSED but not exempt from the cap.
+ * `maxActionsPerRun` cap, spent in the slot order above.
  *
  * ## Creation-time autonomy is decided ONCE, cheaply, in advance
  *
@@ -66,6 +72,16 @@
  * a false-positive advisory result is harmless (the hook simply denies and
  * the intent falls back to `human_required`) while a false negative merely
  * costs an unnecessary human approval — never a security gap either way.
+ *
+ * IMPORTANT: `autonomous` is a single call-level flag — it says whether
+ * autonomy was REQUESTED uniformly, not whether it was GRANTED for every
+ * intent. The live gates inside `createActionIntent` can legitimately flip
+ * between two sequential calls within the same `persistTicketTriage`
+ * invocation (a kill-switch trip, a policy edit mid-loop), so the caller
+ * must never treat `autonomous` as a proxy for "every created intent is
+ * `approved`". `approvedIntentIds` below is the ground-truth signal:
+ * populated per-intent from that intent's OWN returned `status`, never from
+ * the advisory flag (review fix, #4191 Task A8 round 2).
  *
  * Mirrors gates 2-4 of `evaluateTicketAutonomy` (gate 1 — "was autonomy
  * requested" — and gate 5 — "is the scope a ticket" — are trivially true
@@ -299,8 +315,21 @@ export async function persistTicketTriage(
   run: TicketTriagePersistRunInput,
   proposal: TicketTriageProposal,
   agentAuth: AuthContext,
-): Promise<{ intentIds: string[]; autonomous: boolean; skipped: TicketTriageSkip[] }> {
-  const ALL_SLOTS: TicketTriageSlot[] = ['fields', 'link', 'note', 'draft-reply', 'draft-resolution'];
+): Promise<{
+  intentIds: string[];
+  /** GROUND TRUTH subset of `intentIds` whose returned `status` was
+   *  `'approved'` at creation (a granted `ticket_autonomy` decision — see
+   *  this file's header). Built per-intent from `createActionIntent`'s own
+   *  response, never from the call-level `autonomous` advisory flag: the
+   *  live gates can flip between two sequential calls in this same
+   *  invocation, so `autonomous` alone is not safe to use for run-status
+   *  classification. `finalizeTicketTriage` (runLoop.ts) feeds this
+   *  directly into `LoopResult.decidedIntentIds`. */
+  approvedIntentIds: string[];
+  autonomous: boolean;
+  skipped: TicketTriageSkip[];
+}> {
+  const ALL_SLOTS: TicketTriageSlot[] = ['note', 'fields', 'link', 'draft-reply', 'draft-resolution'];
 
   const ticket = await loadLiveTicket(run.ticketId, run.orgId);
   if (!ticket) {
@@ -309,6 +338,7 @@ export async function persistTicketTriage(
     });
     return {
       intentIds: [],
+      approvedIntentIds: [],
       autonomous: false,
       skipped: ALL_SLOTS.map((item) => ({ item, reason: 'ticket_not_found' as const })),
     };
@@ -319,7 +349,16 @@ export async function persistTicketTriage(
   const skipped: TicketTriageSkip[] = [];
   const candidates: Candidate[] = [];
 
-  // 1. fields
+  // 1. note — always attempted (`summary` is a required field on the
+  // schema), and processed FIRST: spec §4.4 names the private note as the
+  // triage deliverable, so it must never be starved by the cap (see this
+  // file's header).
+  candidates.push({
+    slot: 'note',
+    toolInput: { action: 'comment', ticketId: run.ticketId, content: noteContent(proposal) },
+  });
+
+  // 2. fields
   const fieldFilter = filterEligibleFields(proposal, ticket.fieldProvenance);
   if (Object.keys(fieldFilter.fields).length > 0) {
     candidates.push({
@@ -330,7 +369,7 @@ export async function persistTicketTriage(
     skipped.push({ item: 'fields', reason: fieldsSkipReason(fieldFilter) });
   }
 
-  // 2. link
+  // 3. link
   const device = proposal.device;
   const deviceIdentifier = device?.hostname || device?.serial;
   if (!deviceIdentifier) {
@@ -348,12 +387,6 @@ export async function persistTicketTriage(
       },
     });
   }
-
-  // 3. note — always attempted (`summary` is a required field on the schema).
-  candidates.push({
-    slot: 'note',
-    toolInput: { action: 'comment', ticketId: run.ticketId, content: noteContent(proposal) },
-  });
 
   // 4. draft-reply
   if (!proposal.draftReply) {
@@ -381,6 +414,7 @@ export async function persistTicketTriage(
 
   const reason = sanitizeSweepText(proposal.summary, 200);
   const intentIds: string[] = [];
+  const approvedIntentIds: string[] = [];
   let created = 0;
 
   for (const candidate of candidates) {
@@ -412,6 +446,12 @@ export async function persistTicketTriage(
       // genuinely live, human-or-system-owned intents worth reporting.
       if (intent.status === 'pending_approval' || intent.status === 'approved') {
         intentIds.push(intent.id);
+        // Ground truth, not the call-level advisory flag: this intent's OWN
+        // returned status is what `finalizeTicketTriage` needs to classify
+        // the run correctly, since the live gates inside `createActionIntent`
+        // can flip between two sequential calls in this same loop (see this
+        // file's header).
+        if (intent.status === 'approved') approvedIntentIds.push(intent.id);
         created += 1;
       } else {
         console.warn('[ticketTriageFindings] candidate intent was not left pending or approved', {
@@ -429,5 +469,5 @@ export async function persistTicketTriage(
     }
   }
 
-  return { intentIds, autonomous, skipped };
+  return { intentIds, approvedIntentIds, autonomous, skipped };
 }

@@ -207,7 +207,7 @@ describe('persistTicketTriage', () => {
     expect(draftCalls).toHaveLength(0);
   });
 
-  it('honors the action cap in deterministic slot order', async () => {
+  it('honors the action cap in deterministic slot order — note first (spec §4.4 deliverable)', async () => {
     let counter = 0;
     createActionIntent.mockImplementation(async () => ({ id: `intent-${++counter}`, status: 'pending_approval' }));
     state.selectQueue.push([ticketRow()]);
@@ -223,13 +223,14 @@ describe('persistTicketTriage', () => {
       agentAuth,
     );
 
-    // fields, then link — the first two slots in the deterministic order —
-    // get intents; note/draft-reply/draft-resolution are capped out.
+    // note, then fields — the first two slots in the deterministic order —
+    // get intents; link/draft-reply/draft-resolution are capped out. The
+    // note (the triage deliverable, spec §4.4) is NEVER starved by the cap.
     const calls = createActionIntent.mock.calls.map(([, input]) => (input as { idempotencyKey: string }).idempotencyKey);
-    expect(calls).toEqual([`triage:${RUN_ID}:fields`, `triage:${RUN_ID}:link`]);
+    expect(calls).toEqual([`triage:${RUN_ID}:note`, `triage:${RUN_ID}:fields`]);
     expect(result.intentIds).toHaveLength(2);
     expect(result.skipped).toEqual([
-      { item: 'note', reason: 'max_actions_per_run' },
+      { item: 'link', reason: 'max_actions_per_run' },
       { item: 'draft-reply', reason: 'max_actions_per_run' },
       { item: 'draft-resolution', reason: 'max_actions_per_run' },
     ]);
@@ -251,6 +252,9 @@ describe('persistTicketTriage', () => {
       expect((input as { autonomy?: unknown }).autonomy).toBeUndefined();
     }
     expect(result.intentIds.length).toBeGreaterThan(0);
+    // Ground truth, not the advisory flag: nothing landed `approved`, so
+    // nothing is reported as decided.
+    expect(result.approvedIntentIds).toEqual([]);
   });
 
   it('autonomy=true: every intent requests ticket_autonomy and lands approved', async () => {
@@ -270,6 +274,41 @@ describe('persistTicketTriage', () => {
       expect((input as { autonomy?: { kind: string } }).autonomy).toEqual({ kind: 'ticket_autonomy' });
     }
     expect(result.intentIds.length).toBe(createActionIntent.mock.calls.length);
+    // Ground truth here agrees with the advisory flag (every call actually
+    // resolved `approved`) — the mixed-status test below is what proves
+    // they are NOT the same signal.
+    expect(result.approvedIntentIds).toEqual(result.intentIds);
+  });
+
+  it('ground truth: a mid-loop status flip is reflected per-intent, never uniformly by the advisory flag', async () => {
+    // Autonomy was REQUESTED for both calls (the advisory flag is a
+    // call-level decision made once, up front) — but the live gate inside
+    // `createActionIntent` grants only the first and denies the second
+    // (e.g. a kill-switch trip between the two sequential calls). This is
+    // exactly the review-flagged race `approvedIntentIds` exists to survive:
+    // a naive "autonomous ⇒ every created id is decided" read would wrongly
+    // mark BOTH ids as decided.
+    state.selectQueue.push([ticketRow()]);
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot(autonomousPolicy()));
+    let call = 0;
+    createActionIntent.mockImplementation(async () => {
+      call += 1;
+      return call === 1
+        ? { id: 'intent-approved', status: 'approved' }
+        : { id: 'intent-pending', status: 'pending_approval' };
+    });
+
+    const result = await persistTicketTriage(
+      runInput({ policySnapshot: snapshot(autonomousPolicy()) }),
+      proposal({ draftReply: 'We are looking into this now.' }),
+      agentAuth,
+    );
+
+    expect(result.autonomous).toBe(true);
+    // note -> approved (call 1), fields -> N/A (no fields proposed), so the
+    // second createActionIntent call is draft-reply -> pending (call 2).
+    expect(result.intentIds).toEqual(['intent-approved', 'intent-pending']);
+    expect(result.approvedIntentIds).toEqual(['intent-approved']);
   });
 
   it('autonomy check that throws denies advisory autonomy rather than propagating', async () => {

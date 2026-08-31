@@ -2414,7 +2414,7 @@ async function finalizeTicketTriage(ctx: RunContext, result: LoopResult): Promis
   }
 
   try {
-    const { intentIds, autonomous, skipped } = await persistTicketTriage(
+    const { intentIds, approvedIntentIds, skipped } = await persistTicketTriage(
       {
         id: ctx.run.id,
         orgId: ctx.run.orgId,
@@ -2435,12 +2435,16 @@ async function finalizeTicketTriage(ctx: RunContext, result: LoopResult): Promis
       result.agentAuth,
     );
     for (const intentId of intentIds) result.intentIds.push(intentId);
-    // See `classifyIntentAwaitingApproval`'s docstring: an autonomous grant
-    // is applied UNIFORMLY to every intent this call created (the advisory
-    // check runs once, ahead of the loop), so every id it returned is
-    // treated as already-decided here too.
-    if (autonomous && intentIds.length > 0) {
-      result.decidedIntentIds = [...(result.decidedIntentIds ?? []), ...intentIds];
+    // GROUND TRUTH, not the call-level `autonomous` advisory flag (review
+    // fix, round 2): `approvedIntentIds` is built per-intent from each
+    // intent's OWN returned status inside `persistTicketTriage` — the live
+    // gates can flip between two sequential `createActionIntent` calls in
+    // that same invocation, so a uniform "autonomous ⇒ every id is decided"
+    // read would wrongly classify a run where one intent lands `approved`
+    // and the next lands `pending_approval`. See
+    // `classifyIntentAwaitingApproval`'s docstring for how this is used.
+    if (approvedIntentIds.length > 0) {
+      result.decidedIntentIds = [...(result.decidedIntentIds ?? []), ...approvedIntentIds];
     }
     if (skipped.length > 0) {
       console.info('[aiAgentRunLoop] ticket-triage proposal partially skipped', {

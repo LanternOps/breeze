@@ -418,6 +418,44 @@ describe('ticket-triage persistence at finish (P2-4, Task A8)', () => {
     expect(final.patch.intentIds).toEqual(['intent-triage-2']);
   });
 
+  it('a mid-loop status flip leaves the run awaiting_approval — ground truth, not the uniform advisory flag', async () => {
+    // Autonomy is REQUESTED for the whole run (act + ticketAutonomousWrites),
+    // but the two candidates this proposal mints (note, then draft-reply)
+    // resolve DIFFERENTLY: the first is granted (`approved`), the second is
+    // not (`pending_approval`) — e.g. a kill-switch trip between the two
+    // sequential createActionIntent calls. The review-flagged bug: reading
+    // the call-level `autonomous` flag uniformly would mark BOTH ids
+    // decided and wrongly finish `completed` with a human decision still
+    // outstanding on the second intent.
+    const effective = policy({
+      mode: 'act',
+      triggers: { ...policy().triggers, ticketAutonomousWrites: true },
+    });
+    seedRows({ effective });
+    dbMockState.rowQueues.tickets = [[{ deviceId: null, resolutionNote: null, fieldProvenance: {} }]];
+    let call = 0;
+    createActionIntent.mockImplementation(async () => {
+      call += 1;
+      return call === 1
+        ? { id: 'intent-triage-approved', status: 'approved' }
+        : { id: 'intent-triage-pending', status: 'pending_approval' };
+    });
+    scriptQuery({
+      toolCalls: [{
+        tool: 'submit_ticket_proposal',
+        input: { ...VALID_PROPOSAL, draftReply: 'We are looking into this now.' },
+      }],
+      assistantText: 'Proposal submitted.',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(createActionIntent).toHaveBeenCalledTimes(2);
+    const final = finalTransition()!;
+    expect(final.to).toBe('awaiting_approval');
+    expect(final.patch.intentIds).toEqual(['intent-triage-approved', 'intent-triage-pending']);
+  });
+
   it('a run that never calls submit_ticket_proposal finishes completed with ticket_proposal_missing', async () => {
     seedRows({ effective: policy({ mode: 'shadow' }) });
     scriptQuery({ assistantText: 'Nothing to report.' });
