@@ -57,6 +57,12 @@ export const SIGNAL_AXIS: Record<string, string> = {
   'rmm.remote_access_installer': 'script',
   'rmm.unbranded_installer': 'script',
   'rmm.shared_installer_host': 'script',
+  // Both origin-IP signals restate one observation — this partner works from
+  // infrastructure a suspended operator used — measured at two strengths
+  // (exact address vs /24). Counting them as two axes would let a single fact
+  // manufacture an alert, the same trap the ip_scatter pair is grouped for.
+  'fraud.suspended_console_ip': 'origin_ip',
+  'fraud.dead_account_probe_origin': 'origin_ip',
   'billing.cardholder_name_mismatch': 'billing_identity',
   'billing.card_testing': 'billing_identity',
   'billing.shared_card_fingerprint': 'billing_identity',
