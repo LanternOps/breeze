@@ -86,6 +86,55 @@ export const DEVICE_LINKED_DEVICE_ID_TABLES = [
 ] as const;
 
 /**
+ * Per-table columns that describe the LINK rather than the row, keyed by a
+ * table in {@link DEVICE_LINKED_DEVICE_ID_TABLES}. Each must be cleared in the
+ * SAME `UPDATE` that nulls `linked_device_id` (services/deviceDeletion.ts).
+ *
+ * #3952 — `discovered_assets.link_source` records HOW the asset came to be
+ * linked ('manual' | 'auto'), and 2026-06-27-discovered-asset-link-source.sql
+ * forbids the nonsensical "source without a link":
+ *
+ *   CHECK (link_source IS NULL OR linked_device_id IS NOT NULL)
+ *
+ * The cascade nulled `linked_device_id` alone, leaving `link_source = 'auto'`
+ * behind, so permanently deleting any AUTO-linked device raised 23514 and
+ * rolled the whole transaction back as a 500 — a self-hoster hit this on
+ * 0.107.0.
+ *
+ * The constraint draws NO manual/auto distinction: a manually-linked asset
+ * failed identically. 'auto' is simply what the bug report carried, and why no
+ * manual-link report arrived is NOT established — do not read the reported
+ * shape as the bug's boundary. (It is specifically not an API asymmetry:
+ * #3261/#3295 removed the manual-only rule from the unlink route on
+ * 2026-08-11, ten days before 0.107.0 was tagged, so by then that route
+ * unlinked both.) The integration test covers both link sources for this
+ * reason.
+ *
+ * Rows are DETACHED, never deleted: a discovered asset is a network-inventory
+ * record about an endpoint that exists whether or not Breeze manages it, and
+ * it carries operator-curated state (label, notes, tags, approval/dismissal,
+ * type classification, first_seen_at) that must outlive the device row. The
+ * table's membership in {@link DEVICE_LINKED_DEVICE_ID_TABLES} already encodes
+ * that decision — this registry only completes the detach.
+ *
+ * NOT every linked table belongs here, which is why this is per-table and not
+ * a flat column list: `network_change_events` has no `link_source`, and
+ * appending the assignment there would trade 23514 for 42703
+ * (undefined_column) — a 500 either way.
+ *
+ * `auto_link_suppressed_at` is deliberately ABSENT. It is a durable record of
+ * a human's "stop re-linking this" (#3261), not a property of the link, and
+ * the CHECK constraint does not cover it. Deleting a device says nothing about
+ * that preference, so the cascade must leave it alone.
+ *
+ * cascadeDelete.test.ts derives the required entries from the CHECK
+ * constraints in apps/api/migrations and fails CI when one is missing.
+ */
+export const DEVICE_LINK_DEPENDENT_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  discovered_assets: ['link_source'],
+};
+
+/**
  * Tables with a device_id FK to devices.id whose rows are tenant business
  * records — preserve history, detach the device (device_id SET NULL) instead
  * of cascade-deleting during permanent device deletion. Deviceless tickets
@@ -1796,6 +1845,19 @@ coreRoutes.delete(
           uninstallSent,
         }, 409);
       }
+      // Anything else is a server-side cascade defect, and it STAYS a 500 —
+      // #3952 was exactly this (a 23514 check violation), and mapping such a
+      // failure to a 409 would advertise "retry me" for something that fails
+      // identically forever. But the status code is not the reason to lose the
+      // context: the global onError logs a bare `Error:` with no deviceId and,
+      // in production, returns a sanitized body, so on this path the fact that
+      // an IRREVERSIBLE SELF_UNINSTALL was already dispatched vanishes
+      // entirely — the same "agent uninstalling itself while its device row
+      // survives" hazard the two branches above go out of their way to
+      // disclose. Log it here, where uninstallSent is still in scope, then
+      // rethrow unchanged so the response contract and Sentry reporting stay
+      // owned by onError.
+      console.error(`[devices] unhandled ${pgCode ?? 'non-postgres'} error during cascade delete of ${deviceId} (uninstallSent=${uninstallSent})`, err);
       throw err;
     }
 
