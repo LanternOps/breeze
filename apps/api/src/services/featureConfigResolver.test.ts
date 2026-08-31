@@ -473,6 +473,39 @@ describe('isInMaintenanceWindow', () => {
       warnSpy.mockRestore();
     });
 
+    // `migrateToConfigPolicies` stores `once` windows as `toISOString()`, so a
+    // policy later switched to a recurring cadence can still hold a Z-suffixed
+    // instant. Its digits are UTC, not wall-clock time in `settings.timezone` —
+    // reading them as local would shift the window by the zone's offset with
+    // nothing in the UI to show for it.
+    it('refuses to read a Z-suffixed instant as a local time of day', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const settings = makeSettings({
+        timezone: 'Europe/Warsaw',
+        windowStart: '2026-01-05T04:30:00.000Z',
+        durationHours: 2,
+      });
+      // 23:30Z is 00:30 Warsaw — inside the midnight fallback window, and
+      // outside the 04:30-06:30 window the naive digit read would produce.
+      expect(isInMaintenanceWindow(settings, new Date('2026-02-16T23:30:00Z')).active).toBe(true);
+      // 04:00Z is 05:00 Warsaw — inside that bogus window, outside midnight's.
+      expect(isInMaintenanceWindow(settings, new Date('2026-02-17T04:00:00Z')).active).toBe(false);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('2026-01-05T04:30:00.000Z'));
+      warnSpy.mockRestore();
+    });
+
+    it('refuses to read a datetime with a numeric UTC offset as a local time of day', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const settings = makeSettings({
+        timezone: 'Europe/Warsaw',
+        windowStart: '2026-01-05T04:30:00+02:00',
+        durationHours: 2,
+      });
+      expect(isInMaintenanceWindow(settings, new Date('2026-02-16T23:30:00Z')).active).toBe(true);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('+02:00'));
+      warnSpy.mockRestore();
+    });
+
     it('does not warn about windowStart for the `once` recurrence', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const settings = makeSettings({ recurrence: 'once', windowStart: 'not-a-date' });

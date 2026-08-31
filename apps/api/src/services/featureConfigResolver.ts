@@ -1933,8 +1933,14 @@ export interface MaintenanceWindowStatus {
 
 /** Bare time of day, e.g. "1:50", "01:50" or "01:50:00". */
 const TIME_OF_DAY_PATTERN = /^(\d{1,2}):(\d{2})(?::\d{2})?$/;
-/** Time component of an ISO-8601-ish datetime, e.g. "2026-03-15T02:00" or "...T02:00:00.000Z". */
+/** Time component of a naive (zoneless) ISO-8601-ish datetime, e.g. "2026-03-15T02:00". */
 const DATETIME_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}[T ](\d{1,2}):(\d{2})/;
+/**
+ * A trailing `Z` or `±HH:MM` offset. Such a value names an *instant*, so its
+ * digits are not wall-clock time in `settings.timezone` — `migrateToConfigPolicies`
+ * writes exactly this shape (`toISOString()`) for migrated `once` windows.
+ */
+const EXPLICIT_UTC_OFFSET_PATTERN = /(?:Z|[+-]\d{2}:?\d{2})$/i;
 
 /** The anchor recurring windows used before issue #4224, and the fallback still. */
 const MIDNIGHT_ANCHOR = { hours: 0, minutes: 0 } as const;
@@ -1945,12 +1951,17 @@ const MIDNIGHT_ANCHOR = { hours: 0, minutes: 0 } as const;
  *
  * That column is recurrence-discriminated: for `once` it holds a full
  * ISO-8601 local datetime, and for `daily`/`weekly`/`monthly` it holds an
- * "HH:MM" time of day. A full datetime is accepted for the recurring cadences
- * too, using only its time component, so a policy switched from `once` to a
- * recurring cadence keeps a sensible anchor instead of jumping to midnight.
+ * "HH:MM" time of day. A *naive* datetime is accepted for the recurring
+ * cadences too, using only its time component, so a policy switched from
+ * `once` keeps a sensible anchor instead of jumping to midnight.
  *
- * Returns `'invalid'` for a value that parses as neither — the caller warns
- * and falls back to midnight rather than treating the window as never open.
+ * A datetime carrying `Z` or a numeric offset is rejected rather than read
+ * digit-for-digit: it names an instant, and treating its UTC hour as local
+ * wall-clock time would shift the window by the zone's offset invisibly.
+ *
+ * Returns `'invalid'` for a value that parses as none of these — the caller
+ * warns and falls back to midnight rather than treating the window as never
+ * open.
  */
 function parseRecurringWindowAnchor(
   rawWindowStart: string | null
@@ -1959,6 +1970,7 @@ function parseRecurringWindowAnchor(
   // Absent is not a defect: every pre-#4224 recurring row has window_start
   // NULL and must keep the midnight schedule it has been running on.
   if (value === '') return MIDNIGHT_ANCHOR;
+  if (EXPLICIT_UTC_OFFSET_PATTERN.test(value)) return 'invalid';
 
   const match = TIME_OF_DAY_PATTERN.exec(value) ?? DATETIME_TIME_PATTERN.exec(value);
   if (!match) return 'invalid';

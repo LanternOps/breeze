@@ -42,11 +42,21 @@ const defaults: MaintenanceSettings = {
 };
 /** Anchor a recurring window inherits when nothing else is stored — matches the API fallback. */
 const DEFAULT_START_TIME = "00:00";
-const TIME_OF_DAY_PATTERN = /^(\d{1,2}):(\d{2})$/;
+// These three must stay in lockstep with `parseRecurringWindowAnchor` in
+// apps/api/src/services/featureConfigResolver.ts — if the form and the
+// evaluator disagree on a stored value, the UI shows one time and the window
+// opens at another.
+const TIME_OF_DAY_PATTERN = /^(\d{1,2}):(\d{2})(?::\d{2})?$/;
 const DATETIME_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}[T ](\d{1,2}):(\d{2})/;
+/** A trailing `Z` or `±HH:MM` offset — an instant, not local wall-clock time. */
+const EXPLICIT_UTC_OFFSET_PATTERN = /(?:Z|[+-]\d{2}:?\d{2})$/i;
 
 /** Extracts an "HH:MM" time of day from either shape `windowStart` can hold. */
 function toTimeOfDay(windowStart: string): string {
+  // A datetime naming an instant cannot be read digit-for-digit as a time of
+  // day in the policy's timezone — that would shift the window by the zone's
+  // offset. Fall back to the visible default and let the admin choose.
+  if (EXPLICIT_UTC_OFFSET_PATTERN.test(windowStart)) return DEFAULT_START_TIME;
   const match =
     TIME_OF_DAY_PATTERN.exec(windowStart) ??
     DATETIME_TIME_PATTERN.exec(windowStart);

@@ -146,6 +146,28 @@ describe('MaintenanceTab — recurring start time', () => {
     expect(savedSettings().windowStart).toBe('00:00');
   });
 
+  it('keeps a stored start time that carries seconds', async () => {
+    // The API's parser accepts "HH:MM:SS"; if the form did not, simply opening
+    // the tab and saving would silently downgrade such a policy to midnight.
+    renderTab({ recurrence: 'daily', windowStart: '02:45:00' });
+    expect((screen.getByTestId('maintenance-start-time') as HTMLInputElement).value).toBe('02:45');
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect(savedSettings().windowStart).toBe('02:45');
+  });
+
+  it('does not read a UTC instant as a local time of day when switching cadence', async () => {
+    // Policies migrated by migrateToConfigPolicies store `once` windows as
+    // toISOString(). Those digits are UTC, not wall-clock time in the policy's
+    // timezone, so carrying them across would silently shift the window by the
+    // zone's offset. Fall back to the visible midnight default instead.
+    renderTab({ recurrence: 'once', windowStart: '2026-03-15T02:45:00.000Z' });
+    fireEvent.change(screen.getByTestId('maintenance-recurrence'), { target: { value: 'daily' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect(savedSettings().windowStart).toBe('00:00');
+  });
+
   it('falls back to midnight when the start time is left half-entered', async () => {
     // `<input type="time">` reports "" until both segments are filled. The
     // control keeps that as typed so it does not fight the user mid-edit, so
