@@ -48,9 +48,9 @@ function invoice(over: Record<string, unknown>) {
   };
 }
 
-// #3277 — this file ran on a raised Testing Library `asyncUtilTimeout` (5000ms)
-// inside a raised per-test ceiling (15000ms) for six weeks. Both are gone, and
-// deliberately so: the diagnosis they were built on was wrong.
+// #3277 — this file ran on a raised Testing Library `asyncUtilTimeout` (5000ms,
+// added by #3284) inside a raised per-test ceiling (15000ms, added by #3956).
+// Both are gone, and deliberately so: the diagnosis they were built on was wrong.
 //
 // The theory was that the queued-Issue tests assert the end of a multi-hop
 // propagation chain (PATCH settles → editor reports → workspace clears
@@ -61,13 +61,19 @@ function invoice(over: Record<string, unknown>) {
 // `notesDirty`, so the following blur short-circuited and dispatched no PATCH at
 // all. `savePending` never went true, so `invoice-issue-saving-hint` could never
 // render — no timeout is large enough for a condition that never becomes true,
-// which is why raising it three times (#3284, #3956) never held and the flake
-// came back as #3980 and #4033.
+// which is why enlarging the budget twice — #3284 raised the `waitFor` timeout,
+// #3956 added the per-test ceiling above it — never held, and the flake came
+// back as #3980 and #4033.
 //
 // With the race removed at source the hint is present SYNCHRONOUSLY inside the
-// blur's own act() flush — measured present-before-any-poll on 200/200 runs
-// under load — so the default budget is not merely sufficient, it is unused.
-// Keeping the inflation would only buy a slower, less legible failure for every
+// blur's own act() flush, for a reason you can check by reading the code rather
+// than trusting this comment: `runScoped` marks the key pending BEFORE it awaits
+// the request, and `fetchWithAuth` is a bare `vi.fn()` here, so nothing suspends
+// before the commit. (That is also what a 200-iteration loaded-CPU harness
+// measured while the fix was being developed; the counts are recorded in PR
+// #4294 rather than asserted here, since the harness was not committed.)
+// The default budget is therefore not merely sufficient, it is unused, and
+// keeping the inflation would only buy a slower, less legible failure for every
 // genuine future breakage in this file.
 describe('InvoiceWorkspace', () => {
   beforeEach(() => {

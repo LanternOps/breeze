@@ -472,12 +472,14 @@ describe('InvoiceEditor', () => {
   // never saw and overwrite it with the pre-edit value, silently clearing the
   // dirty flag; `saveNotes`/`saveTerms` then short-circuit on `!dirty` and no
   // PATCH is sent at all. That is what made the InvoiceWorkspace queued-Issue
-  // tests flaky for six weeks across #2925/#3219/#3277/#3980/#4033.
+  // tests flaky, filed five times from 2026-07-29 on, across
+  // #2925/#3219/#3277/#3980/#4033.
   //
   // The ordering hazard itself is only reachable by out-racing React's
   // scheduler, so these cases pin the observable contract instead: a re-render
   // whose server value is UNCHANGED after normalisation must never touch the
-  // draft, and one whose server value genuinely changed must replace it. The
+  // draft — and must leave it SAVEABLE, which is the part that actually broke —
+  // while one whose server value genuinely changed must replace it. The
   // null → '' case is the deterministic discriminator — the old
   // `useEffect(..., [invoice.notes])` compared the RAW prop, so that round-trip
   // re-ran the effect and discarded the draft.
@@ -493,6 +495,18 @@ describe('InvoiceEditor', () => {
       // Nothing the user cares about changed, so the draft must survive.
       rerender(<InvoiceEditor detail={draft([manualLine], { notes: '' })} onChanged={vi.fn()} />);
       expect(screen.getByTestId('invoice-notes')).toHaveValue('Half-typed note');
+
+      // …and it must still be SAVEABLE. The visible text is only a proxy: the
+      // damage in #3277 was the silently-cleared `notesDirty`, which makes
+      // `saveNotes()` short-circuit so the blur sends nothing at all. Asserting
+      // the text alone would pass for a regression that clears the flag without
+      // touching the value, which is the same silent data loss wearing a
+      // different hat — so assert the PATCH actually goes out.
+      fireEvent.blur(screen.getByTestId('invoice-notes'));
+      await waitFor(() => expect(fetchMock.mock.calls.some(
+        (c) => (c[1] as RequestInit)?.method === 'PATCH'
+          && String((c[1] as RequestInit)?.body).includes('Half-typed note'),
+      )).toBe(true));
     });
 
     it('keeps a dirty terms draft across the same null → "" round-trip', async () => {
@@ -504,6 +518,14 @@ describe('InvoiceEditor', () => {
 
       rerender(<InvoiceEditor detail={draft([manualLine], { termsAndConditions: '' })} onChanged={vi.fn()} />);
       expect(screen.getByTestId('invoice-terms')).toHaveValue('Net 15');
+
+      // Same reason as the notes case: prove the edit is still saveable, not
+      // merely still visible.
+      fireEvent.blur(screen.getByTestId('invoice-terms'));
+      await waitFor(() => expect(fetchMock.mock.calls.some(
+        (c) => (c[1] as RequestInit)?.method === 'PATCH'
+          && String((c[1] as RequestInit)?.body).includes('Net 15'),
+      )).toBe(true));
     });
 
     it('DOES replace the draft when the server value genuinely changes', async () => {

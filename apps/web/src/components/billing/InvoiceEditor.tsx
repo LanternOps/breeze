@@ -220,12 +220,13 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
   // short-circuits on `!notesDirty`, the following blur then dispatches NO PATCH
   // at all: the edit is discarded with no request, no error and no "unsaved" cue.
   //
-  // That is what made the InvoiceWorkspace queued-Issue tests flaky for six weeks
-  // (#2925 → #3219 → #3277 → #3980 → #4033). Under load the passive-effect flush
-  // slipped past the commit that Testing Library was waiting on, the PATCH was
-  // never sent, so `savePending` never went true and `invoice-issue-saving-hint`
-  // never rendered — a condition that could never become true, which is why three
-  // successive rounds of raising the `waitFor` budget could not fix it.
+  // That is what made the InvoiceWorkspace queued-Issue tests flaky, filed five
+  // times from 2026-07-29 on (#2925 → #3219 → #3277 → #3980 → #4033). Under load
+  // the passive-effect flush slipped past the commit that Testing Library was
+  // waiting on, the PATCH was never sent, so `savePending` never went true and
+  // `invoice-issue-saving-hint` never rendered — a condition that could never
+  // become true, which is why both attempts to fix it by enlarging the timeout
+  // budget (#3284, #3956) could not hold.
   //
   // Evaluating the same condition during render removes the window entirely:
   // there is no deferred write that can land after a local edit, and the mount
