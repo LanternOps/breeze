@@ -269,6 +269,22 @@ export const heartbeatSchema = z.object({
     // Each malformed field drops independently without rejecting the beat.
     peripheralPolicyProtocolVersion: z.number().int().optional().catch(undefined),
     rollbackProtocolVersion: z.number().int().optional().catch(undefined),
+    pamLifetimeProtocolVersion: z.number().int().optional().catch(undefined),
+    pamReconciliation: z.object({
+      unresolvedCount: z.number().int().nonnegative(),
+      quarantinedCount: z.number().int().nonnegative(),
+      awaitingAcknowledgementCount: z.number().int().nonnegative(),
+      receivedObservationPendingCount: z.number().int().nonnegative().optional(),
+      blockingReason: z.enum([
+        'resolver_unavailable',
+        'binding_unresolved',
+        'enqueue_failed',
+        'acknowledgement_unavailable',
+        'quarantined',
+        'outbox_unreadable',
+        'received_observation_transport',
+      ]).refine((value) => value.length <= 64).optional(),
+    }).optional().catch(undefined),
   }).optional().catch(undefined),
   // Signed rollback progress is informational and restart-resend safe. A
   // malformed optional observation must never take the ordinary heartbeat

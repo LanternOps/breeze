@@ -244,6 +244,11 @@ export function normalizeRollbackProtocolVersion(value: unknown): 0 | 1 {
   return value === 1 ? 1 : 0;
 }
 
+/** Normalize the only PAM lifetime protocol version implemented here. */
+export function normalizePamLifetimeProtocolVersion(value: unknown): 0 | 2 {
+  return value === 2 ? 2 : 0;
+}
+
 export const heartbeatRoutes = new Hono();
 
 /**
@@ -780,6 +785,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     rollbackProtocolVersion: normalizeRollbackProtocolVersion(
       data.securityCapabilities?.rollbackProtocolVersion,
     ),
+    pamLifetimeProtocolVersion: normalizePamLifetimeProtocolVersion(
+      data.securityCapabilities?.pamLifetimeProtocolVersion,
+    ),
     // Migration-banner Task 2 — self-reported install edition + migration
     // flag. Written UNCONDITIONALLY every heartbeat, mirroring
     // outboundNetworkPolicyVersion above: an agent that stops reporting these
@@ -1188,6 +1196,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       ),
       rollbackProtocolVersion: normalizeRollbackProtocolVersion(
         data.securityCapabilities?.rollbackProtocolVersion,
+      ),
+      pamLifetimeProtocolVersion: normalizePamLifetimeProtocolVersion(
+        data.securityCapabilities?.pamLifetimeProtocolVersion,
       ),
     },
   );

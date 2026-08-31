@@ -41,6 +41,15 @@ import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 // while the REST path rejected at 1 MB. The byte-accurate one wins.
 import { commandResultSchema } from '../routes/agents/schemas';
 import { handlePeripheralPolicyResultV2 } from './peripheralPolicyState';
+import {
+  pamAgentResultV2Schema,
+  recordPamActuationResult,
+  type PamActuationResultClassification,
+} from './pamActuationResult';
+
+export type CommandResultHandlerOutcome =
+  | { kind: 'pam'; classification: PamActuationResultClassification }
+  | void;
 
 export type CommandResultHandler = (params: {
   agentId: string;
@@ -59,7 +68,7 @@ export type CommandResultHandler = (params: {
   result: z.infer<typeof commandResultSchema>;
   resolvedDeviceId: string;
   stdout: string | undefined;
-}) => Promise<void>;
+}) => Promise<CommandResultHandlerOutcome>;
 
 // ---------------------------------------------------------------------------
 // Per-command-type result handlers (used by the dispatch map in processCommandResult)
@@ -572,6 +581,26 @@ async function handlePeripheralPolicyV2Result({
   await handlePeripheralPolicyResultV2(resolvedDeviceId, commandId, parsed.data);
 }
 
+async function handlePamActuationV2Result({
+  agentId,
+  commandId,
+  result,
+  resolvedDeviceId,
+}: Parameters<CommandResultHandler>[0]): Promise<CommandResultHandlerOutcome> {
+  const parsed = pamAgentResultV2Schema.safeParse(result.result);
+  if (!parsed.success) {
+    console.warn(`[AgentWs] Ignoring malformed PAM v2 result for command ${commandId}`);
+    return;
+  }
+  const classification = await recordPamActuationResult({
+    agentId,
+    deviceId: resolvedDeviceId,
+    commandId,
+    result: parsed.data,
+  });
+  return { kind: 'pam', classification };
+}
+
 export const commandResultHandlers: Record<string, CommandResultHandler> = {
   network_discovery: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,
@@ -592,4 +621,6 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   cis_benchmark: handleCisResult,
   apply_cis_remediation: handleCisResult,
   peripheral_policy_sync_v2: handlePeripheralPolicyV2Result,
+  pam_apply_v2: handlePamActuationV2Result,
+  pam_cleanup_v2: handlePamActuationV2Result,
 };

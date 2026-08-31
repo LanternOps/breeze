@@ -37,7 +37,8 @@ export type BodyLimitRule =
   // never returns them — the route's own gate is the one that answers. They
   // share this namespace so all body-limit 413s group on one tag.
   | 'agent-logs'
-  | 'agent-process-sample';
+  | 'agent-process-sample'
+  | 'agent-pam-observation';
 
 export interface BodyLimitPolicy {
   rule: BodyLimitRule;

@@ -137,7 +137,11 @@ vi.mock('../services/permissions', () => ({
 }));
 
 vi.mock('../db/schema/elevations', () => ({
-  elevationRequests: { id: 'id', orgId: 'org_id', status: 'status' },
+  elevationRequests: {
+    id: 'id', orgId: 'org_id', deviceId: 'device_id', status: 'status',
+    revision: 'revision', targetExecutablePath: 'target_executable_path',
+    targetExecutableHash: 'target_executable_hash', subjectUsername: 'subject_username',
+  },
   elevationAudit: { id: 'id', orgId: 'org_id', elevationRequestId: 'elevation_request_id' },
 }));
 
@@ -170,6 +174,16 @@ vi.mock('./lifecycle', () => ({
   // Not used by approvals.ts but exported from lifecycle.ts; mocked to avoid
   // pulling in the full lifecycle module-init chain in this test surface.
   isOauthClientBlockedForOrg: vi.fn(async () => false),
+}));
+
+const pamLifecycleMocks = vi.hoisted(() => ({ createPamDecisionIntent: vi.fn() }));
+vi.mock('../services/pamActuationLifecycle', () => pamLifecycleMocks);
+pamLifecycleMocks.createPamDecisionIntent.mockImplementation(async (_tx, input) => ({
+  actuationId: 'actuation-1',
+  elevationRequestId: input.request.id,
+  requestRevision: input.requestRevision,
+  generation: 1,
+  desiredState: input.decision === 'denied' ? 'cleanup' : 'active',
 }));
 
 // Phase 2: the decide path now resolves assurance through assertApprovalAssurance
@@ -1543,24 +1557,14 @@ describe('POST /approvals/:id/deny', () => {
 });
 
 describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
-  // Builds a tx stub for the SECOND db.transaction(fn) call — the elevation
-  // mirror tx, which runs AFTER the Task 6 atomic decide-write tx (registered
-  // by mockDecideWithElevation below, consumed first via mockImplementationOnce
-  // ordering). `elevationUpdateRows` is what the elevation CAS returns ([] =
-  // lost the race). The tx does ONLY the elevation CAS (.update) + the audit
-  // insert (.values) — the sibling-expiry runs post-commit as a separate,
-  // system-scoped db.update (see mockDecideWithElevation's siblingExpireSet).
-  // Captures the elevation .set arg and the elevationAudit .values arg.
+  let elevationSet = vi.fn();
+  let auditValues = vi.fn();
+
   function mockElevationTx(elevationUpdateRows: unknown[]) {
-    const elevationSet = vi.fn().mockReturnValue({
+    elevationSet = vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(elevationUpdateRows) }),
     });
-    const auditValues = vi.fn().mockResolvedValue(undefined);
-    const tx = {
-      update: vi.fn(() => ({ set: elevationSet } as any)),
-      insert: vi.fn(() => ({ values: auditValues } as any)),
-    };
-    vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(tx));
+    auditValues = vi.fn().mockResolvedValue(undefined);
     return { elevationSet, auditValues };
   }
 
@@ -1596,14 +1600,22 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
         where: vi.fn().mockResolvedValue([{ ...updatedRow, status: 'pending' }]),
       }),
     } as any);
-    // 1) the atomic decide-write tx — ONE tx.update call (approval_requests CAS)
+    // One transaction owns approval CAS, elevation CAS, PAM lifecycle/outbox,
+    // audit, and sibling expiry.
     const casReturning = vi.fn().mockResolvedValue([updatedRow]);
     const casSet = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: casReturning }) });
-    const mainTx = { update: vi.fn(() => ({ set: casSet } as any)) };
-    vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(mainTx));
-    // 2) post-commit sibling-expiry (system scope) — a terminal .set().where()
     const siblingExpireSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
-    vi.mocked(db.update).mockReturnValueOnce({ set: siblingExpireSet } as any);
+    let updateCall = 0;
+    const mainTx = {
+      update: vi.fn(() => {
+        updateCall += 1;
+        if (updateCall === 1) return { set: casSet } as any;
+        if (updateCall === 2) return { set: elevationSet } as any;
+        return { set: siblingExpireSet } as any;
+      }),
+      insert: vi.fn(() => ({ values: auditValues } as any)),
+    };
+    vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(mainTx));
     return { updatedRow, casSet, siblingExpireSet };
   }
 
@@ -1613,7 +1625,7 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
     expect(res.status).toBe(200);
-    expect(db.transaction).toHaveBeenCalledTimes(2);
+    expect(db.transaction).toHaveBeenCalledTimes(1);
     expect(tx.elevationSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'approved', approvedByUserId: TEST_USER.id }),
     );
@@ -1629,7 +1641,8 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
     // db.update), not as a second tx.update — proving the RLS-fix structure:
     // the Shape-6 sibling rows belong to OTHER approvers, invisible to this
     // user's request context, so the write must be system-scoped.
-    expect(siblingExpireSet).toHaveBeenCalledWith({ status: 'expired' });
+    expect(siblingExpireSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'expired' }));
+    expect(pamLifecycleMocks.createPamDecisionIntent).toHaveBeenCalledOnce();
   });
 
   it('deny mirrors elevation to denied', async () => {
@@ -1674,12 +1687,14 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
     expect(db.transaction).toHaveBeenCalledTimes(1);
   });
 
-  it('mirror failure is non-fatal: decide still returns 200', async () => {
+  it('mirror failure rolls the whole decision back and returns retryable 500', async () => {
     mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
-    vi.mocked(db.transaction).mockRejectedValue(new Error('tx blew up'));
+    vi.mocked(db.transaction).mockReset();
+    vi.mocked(db.transaction).mockRejectedValueOnce(new Error('tx blew up'));
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: 'decide_failed', retryable: true });
   });
 });
 

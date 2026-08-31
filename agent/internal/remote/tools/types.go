@@ -243,6 +243,8 @@ const (
 	// Server-pushed only; handled by internal/pamactuator on Windows and
 	// a no-op stub on other platforms.
 	CmdActuateElevation = "actuate_elevation"
+	CmdPamApplyV2       = "pam_apply_v2"
+	CmdPamCleanupV2     = "pam_cleanup_v2"
 )
 
 // CommandResult represents the result of a command execution

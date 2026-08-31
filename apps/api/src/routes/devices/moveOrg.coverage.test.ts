@@ -45,6 +45,11 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // which itself never follows a device move (ai_agent_runs above) — see
   // the CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
   'ai_agent_fix_watches',
+  // Durable PAM ownership history is frozen in its source org. A device with
+  // any actuation is non-transferable, so neither table participates in an
+  // organization-move rewrite.
+  'pam_actuations',
+  'pam_actuation_results',
   'automation_policy_compliance',
   'deployment_devices',
   'deployment_results',

@@ -27,7 +27,8 @@ export type OrgMergePolicy =
   | { kind: 'leave-for-erasure'; note: string }
   | { kind: 'derived'; note: string } // trigger-maintained; never written directly
   | { kind: 'follows-parent'; note: string } // no org_id column; rows travel with their parent
-  | { kind: 'loser-shell' }; // organizations itself
+  | { kind: 'loser-shell' } // organizations itself
+  | { kind: 'blocks-merge'; note: string }; // rows FORBID the merge outright; engine refuses pre-walk — see specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md
 
 // device_commands / user_sso_identities / sso_sessions / psa_ticket_mappings /
 // deployment_results / software_versions / report_runs have no org_id column
@@ -208,6 +209,20 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // FK to organizations, so a bare org_id UPDATE breaks the moment the two
   // orgs' partners differ. No writer exists yet in this PR either way.
   ai_unattended_exposure: { kind: 'leave-for-erasure', note: 'unattended-exposure history is per-org (like llm_egress_events); composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
+
+  // Durable PAM actuation evidence (Track E org-merge contract,
+  // specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md): never
+  // re-tenanted, never destroyed, never bypassed — a loser org holding ANY
+  // row is refused outright. Repoint is physically unreachable
+  // (pam_actuation_results: UPDATE revoked from breeze_app + unconditional
+  // 42501 trigger; the composite (id, org_id) FK chain has no ON UPDATE
+  // CASCADE), and leave-for-erasure would break
+  // pam_actuations(device_id, org_id) -> devices(id, org_id) the moment the
+  // devices repoint runs — which devices_pam_history_move_guard RAISEs 23514
+  // on anyway. The engine refuses BEFORE the walk (collectMergeBlockers), so
+  // neither trigger can fire mid-merge.
+  pam_actuations: { kind: 'blocks-merge', note: 'durable PAM lifecycle evidence is source-frozen; any loser row refuses the merge — devices_pam_history_move_guard applied at org granularity' },
+  pam_actuation_results: { kind: 'blocks-merge', note: 'append-only PAM evidence (UPDATE revoked + unconditional RAISE); cannot exist without a pam_actuations parent — listed for registry completeness and preview counting' },
 
   // partner_export_configuration_org_state is trigger-maintained (SECURITY
   // DEFINER triggers on the policy tables regenerate it — verified in

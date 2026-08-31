@@ -41,6 +41,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/netcache"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/onedrivehelper"
+	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/peripheral"
 	"github.com/breeze-rmm/agent/internal/privilege"
@@ -198,8 +199,18 @@ type SecurityCapabilities struct {
 	// Device-control protocols are independently versioned and intentionally
 	// omitted when unsupported. The API treats omission, zero, malformed, and
 	// unknown values as capability 0 on every heartbeat.
-	PeripheralPolicyProtocolVersion int `json:"peripheralPolicyProtocolVersion,omitempty"`
-	RollbackProtocolVersion         int `json:"rollbackProtocolVersion,omitempty"`
+	PeripheralPolicyProtocolVersion int                      `json:"peripheralPolicyProtocolVersion,omitempty"`
+	RollbackProtocolVersion         int                      `json:"rollbackProtocolVersion,omitempty"`
+	PamLifetimeProtocolVersion      int                      `json:"pamLifetimeProtocolVersion,omitempty"`
+	PamReconciliation               *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
+}
+
+type PamReconciliationStatus struct {
+	UnresolvedCount                 int    `json:"unresolvedCount"`
+	QuarantinedCount                int    `json:"quarantinedCount"`
+	AwaitingAcknowledgementCount    int    `json:"awaitingAcknowledgementCount"`
+	ReceivedObservationPendingCount int    `json:"receivedObservationPendingCount,omitempty"`
+	BlockingReason                  string `json:"blockingReason,omitempty"`
 }
 
 type DesktopAccessState struct {
@@ -563,7 +574,34 @@ type Heartbeat struct {
 	untrustedReleaseAt  time.Time
 
 	// Path to the agent state file, set by main after startup.
-	statePath string
+	statePath                   string
+	pamLifetimeManager          pamlifetime.Manager
+	pamReconciled               atomic.Bool
+	pamReceivedObservationReady atomic.Bool
+	pamVerificationAvailable    atomic.Bool
+	// PAM startup reconciliation has a separate, non-expiring REST outbox.
+	// pamReconciliationMu protects only the small in-memory staged set and
+	// availability/error markers; it is never held across disk or network I/O.
+	pamReconciliationOutbox                     *pamReconciliationOutbox
+	pamReconciliationMu                         sync.Mutex
+	pamReconciliationStaged                     map[string]pamlifetime.Result
+	pamReconciliationStagedReasons              map[string]string
+	pamReconciliationBlocked                    map[string]struct{}
+	pamReconciliationIdentityFailures           int
+	pamReconciliationManagerAvailable           bool
+	pamReconciliationWake                       chan struct{}
+	pamReconciliationRetryOnce                  sync.Once
+	pamReconciliationPassRunning                atomic.Bool
+	pamLocalReconcileRunning                    atomic.Bool
+	pamReconciliationResolverUnavailable        bool
+	pamReconciliationAcknowledgementUnavailable bool
+	pamReconciliationLogInitialized             bool
+	pamReconciliationLastLogSignature           string
+	// Test seams. Production uses resolvePamBindings and
+	// submitPamReconciliationResult when these are nil.
+	pamResolveBindingsFn   func(context.Context, []pamBindingCandidate) ([]pamBindingDisposition, error)
+	pamSubmitResultFn      func(context.Context, string, pamlifetime.Result) (pamResultAcknowledgement, error)
+	pamReconciliationLogFn func(PamReconciliationStatus, string, pamReconciliationLogSample)
 
 	// sendHeartbeatFn is an optional override used by tests to replace the
 	// real sendHeartbeat call inside sendHeartbeatWithWatchdog. nil in
@@ -773,6 +811,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// Build HTTP client with optional mTLS transport
 	httpClient := newHeartbeatHTTPClient(tlsCfg)
 
+	outboxRoot := backupResultOutboxDir()
 	h := &Heartbeat{
 		config:       cfg,
 		secureToken:  secToken,
@@ -786,27 +825,32 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		changeTrackerCol: collectors.NewChangeTrackerCollector(
 			filepath.Join(config.GetDataDir(), "change_tracker_snapshot.json"),
 		),
-		sessionCol:      collectors.NewSessionCollector(),
-		policyStateCol:  collectors.NewPolicyStateCollector(),
-		patchCol:        collectors.NewPatchCollector(),
-		patchMgr:        patching.NewDefaultManager(cfg),
-		connectionsCol:  collectors.NewConnectionsCollector(),
-		eventLogCol:     collectors.NewEventLogCollector(),
-		bootCol:         collectors.NewBootPerformanceCollector(),
-		reliabilityCol:  collectors.NewReliabilityCollector(),
-		agentVersion:    version,
-		executor:        executor.New(cfg),
-		desktopMgr:      desktop.NewSessionManager(),
-		wsDesktopMgr:    desktop.NewWsSessionManager(),
-		terminalMgr:     terminal.NewManager(),
-		tunnelMgr:       tunnel.NewManager(false),
-		securityScanner: &security.SecurityScanner{Config: cfg},
-		pool:            workerpool.New(cfg.MaxConcurrentCommands, cfg.CommandQueueSize),
-		healthMon:       health.NewMonitor(),
-		retryCfg:        httputil.DefaultRetryConfig(),
-		seenCommands:    make(map[string]time.Time),
-		backupOutbox:    newBackupResultOutbox(backupResultOutboxDir()),
-		desktopTargets:  make(map[string]string),
+		sessionCol:                     collectors.NewSessionCollector(),
+		policyStateCol:                 collectors.NewPolicyStateCollector(),
+		patchCol:                       collectors.NewPatchCollector(),
+		patchMgr:                       patching.NewDefaultManager(cfg),
+		connectionsCol:                 collectors.NewConnectionsCollector(),
+		eventLogCol:                    collectors.NewEventLogCollector(),
+		bootCol:                        collectors.NewBootPerformanceCollector(),
+		reliabilityCol:                 collectors.NewReliabilityCollector(),
+		agentVersion:                   version,
+		executor:                       executor.New(cfg),
+		desktopMgr:                     desktop.NewSessionManager(),
+		wsDesktopMgr:                   desktop.NewWsSessionManager(),
+		terminalMgr:                    terminal.NewManager(),
+		tunnelMgr:                      tunnel.NewManager(false),
+		securityScanner:                &security.SecurityScanner{Config: cfg},
+		pool:                           workerpool.New(cfg.MaxConcurrentCommands, cfg.CommandQueueSize),
+		healthMon:                      health.NewMonitor(),
+		retryCfg:                       httputil.DefaultRetryConfig(),
+		seenCommands:                   make(map[string]time.Time),
+		backupOutbox:                   newBackupResultOutbox(outboxRoot),
+		pamReconciliationOutbox:        newPamReconciliationOutbox(outboxRoot),
+		pamReconciliationStaged:        make(map[string]pamlifetime.Result),
+		pamReconciliationStagedReasons: make(map[string]string),
+		pamReconciliationBlocked:       make(map[string]struct{}),
+		pamReconciliationWake:          make(chan struct{}, 1),
+		desktopTargets:                 make(map[string]string),
 	}
 	h.accepting.Store(true)
 	h.isService = cfg.IsService
@@ -1044,6 +1088,54 @@ func (h *Heartbeat) SetAuthMonitor(m *authstate.Monitor) {
 // SetStatePath sets the path to the agent state file for heartbeat updates.
 func (h *Heartbeat) SetStatePath(path string) {
 	h.statePath = path
+	h.pamReconciled.Store(false)
+	h.pamReceivedObservationReady.Store(false)
+	h.pamVerificationAvailable.Store(false)
+	if path != "" && h.pamLifetimeManager == nil {
+		h.pamLifetimeManager = pamlifetime.NewManager(pamlifetime.NewStore(filepath.Join(filepath.Dir(path), "pam-lifetime-ledger.json")))
+	}
+}
+
+func (h *Heartbeat) ReconcilePAMLifetime(ctx context.Context) []pamlifetime.Result {
+	h.pamReconciled.Store(false)
+	h.pamReceivedObservationReady.Store(false)
+	h.pamVerificationAvailable.Store(false)
+	h.pamLocalReconcileRunning.Store(true)
+	defer h.pamLocalReconcileRunning.Store(false)
+	if h.pamLifetimeManager == nil {
+		h.setPamReconciliationManagerAvailable(false)
+		return nil
+	}
+	results := h.pamLifetimeManager.Reconcile(ctx)
+	h.setPamReconciliationManagerAvailable(h.refreshPamLifetimeAvailability())
+	results = h.stagePamReconciliationResults(results)
+	h.pamLocalReconcileRunning.Store(false)
+	h.reconcilePamEvidence(ctx)
+	h.signalPamReconciliationWork()
+	return results
+}
+
+func (h *Heartbeat) refreshPamLifetimeAvailability() bool {
+	available := false
+	if h != nil && h.pamLifetimeManager != nil {
+		if state, ok := h.pamLifetimeManager.(interface{ Available() bool }); ok {
+			available = state.Available()
+		}
+	}
+	if h != nil {
+		h.pamVerificationAvailable.Store(available)
+	}
+	return available
+}
+
+func (h *Heartbeat) pamLifetimeProtocolVersion() int {
+	if !h.pamReconciled.Load() || !h.pamReceivedObservationReady.Load() || !h.pamVerificationAvailable.Load() {
+		return 0
+	}
+	if capability, ok := h.pamLifetimeManager.(interface{ ProtocolVersion() int }); ok {
+		return capability.ProtocolVersion()
+	}
+	return 0
 }
 
 func (h *Heartbeat) httpClient() *http.Client {
@@ -1351,6 +1443,8 @@ func bootstrapThenListenWithRetry(ctx context.Context, bootstrap func() error, l
 }
 
 func (h *Heartbeat) Start() {
+	h.startPamReconciliationRetryLoop()
+
 	// Issue #2621 — before the first heartbeat, finish any credential rotation
 	// that was interrupted between the durable disk write and the server
 	// confirmation. This runs first on purpose: if the agent was offline long
@@ -3937,6 +4031,9 @@ func (h *Heartbeat) sendHeartbeat() {
 			RollbackProtocolVersion:         1,
 		},
 	}
+	payload.SecurityCapabilities.PamLifetimeProtocolVersion = h.pamLifetimeProtocolVersion()
+	pamReconciliation := h.pamReconciliationStatus()
+	payload.SecurityCapabilities.PamReconciliation = &pamReconciliation
 	if componentVersions, complete := h.rollbackComponentVersions(); complete {
 		payload.RollbackComponentVersions = componentVersions
 	}
@@ -4341,6 +4438,11 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	if len(response.ConfigUpdate) > 0 {
 		h.applyConfigUpdate(response.ConfigUpdate)
 	}
+	// PAM policy must close capture/admission and finish verified cleanup before
+	// any commands from this same response are submitted to the worker pool.
+	// Enabling also precedes command admission so the first v2 apply is not
+	// falsely rejected merely because the policy and command arrived together.
+	h.handleUACInterception(response.UacInterceptionEnabled)
 
 	// Pin per-deployment manifest trust keys delivered by the server (#625).
 	// TOFU: PinManifestKeys rejects a *changed* pubkey for an already-pinned
@@ -4509,7 +4611,6 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 
 	// Update helper enabled state and apply full settings
 	h.handleHelperEnabled(response.HelperEnabled)
-	h.handleUACInterception(response.UacInterceptionEnabled)
 	if response.HelperSettings != nil {
 		h.helperMgr.Apply(&helper.Settings{
 			Enabled:            response.HelperSettings.Enabled,
@@ -4561,13 +4662,43 @@ func (h *Heartbeat) IsUACInterceptionEnabled() bool {
 // true.
 func (h *Heartbeat) handleUACInterception(enabled *bool) {
 	on := enabled != nil && *enabled
-	prev := h.uacInterceptionEnabled.Swap(on)
-	if prev != on {
-		if on {
-			log.Info("UAC interception enabled by configuration policy")
-		} else {
+	if !on {
+		prev := h.uacInterceptionEnabled.Swap(false)
+		if h.pamLifetimeManager != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), pamLifecycleOperationTimeout)
+			err := h.pamLifetimeManager.SetEnabled(ctx, false)
+			cancel()
+			if err != nil {
+				h.pamVerificationAvailable.Store(false)
+				log.Error("PAM disable cleanup could not be verified", "error", err.Error())
+				return
+			}
+			h.refreshPamLifetimeAvailability()
+		}
+		if prev {
 			log.Info("UAC interception disabled by configuration policy")
 		}
+		return
+	}
+	if !h.pamReconciled.Load() || !h.pamVerificationAvailable.Load() || h.pamLifetimeManager == nil {
+		log.Error("refusing to enable UAC interception before PAM reconciliation is verified")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pamLifecycleOperationTimeout)
+	err := h.pamLifetimeManager.SetEnabled(ctx, true)
+	cancel()
+	if err != nil {
+		h.pamVerificationAvailable.Store(false)
+		log.Error("PAM enable rejected", "error", err.Error())
+		return
+	}
+	if !h.refreshPamLifetimeAvailability() {
+		log.Error("PAM enable rejected because lifecycle verification remains unavailable")
+		return
+	}
+	prev := h.uacInterceptionEnabled.Swap(true)
+	if prev != on {
+		log.Info("UAC interception enabled by configuration policy")
 	}
 }
 

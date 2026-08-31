@@ -21,6 +21,7 @@ import { users } from './users';
 import { apiKeys } from './apiKeys';
 import { aiAgentRuns } from './aiAgents';
 import { devices } from './devices';
+import { pamActuations } from './elevations';
 import { tickets } from './portal';
 
 // Action intents & durable approval layer (spec
@@ -91,6 +92,7 @@ export const intentOutboxEventEnum = [
   'intent_approved',
   'intent_rejected',
   'intent_expired',
+  'pam.desired_state_changed',
 ] as const;
 export type IntentOutboxEvent = (typeof intentOutboxEventEnum)[number];
 
@@ -424,7 +426,10 @@ export const intentOutbox = pgTable(
   'intent_outbox',
   {
     id: bigserial('id', { mode: 'number' }).primaryKey(),
-    intentId: uuid('intent_id').notNull().references(() => actionIntents.id, {
+    intentId: uuid('intent_id').references(() => actionIntents.id, {
+      onDelete: 'cascade',
+    }),
+    pamActuationId: uuid('pam_actuation_id').references(() => pamActuations.id, {
       onDelete: 'cascade',
     }),
     eventType: text('event_type').notNull().$type<IntentOutboxEvent>(),
@@ -435,6 +440,7 @@ export const intentOutbox = pgTable(
   },
   (table) => ({
     intentIdIdx: index('intent_outbox_intent_id_idx').on(table.intentId),
+    pamActuationIdIdx: index('intent_outbox_pam_actuation_id_idx').on(table.pamActuationId),
     // Note: the partial index intent_outbox_unpublished_idx (WHERE
     // published_at IS NULL) is declared in the SQL migration only — Drizzle's
     // index DSL doesn't model partial indexes cleanly (same precedent as
