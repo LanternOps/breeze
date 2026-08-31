@@ -4,7 +4,13 @@ import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { db, withDbAccessContext, type DbAccessContext } from '../../db';
+import {
+  db,
+  withDbAccessContext,
+  runOutsideDbContext,
+  withSystemDbAccessContext,
+  type DbAccessContext,
+} from '../../db';
 import { getAppDb, getTestDb } from './setup';
 import { createOrganization, createPartner } from './db-utils';
 import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegistry';
@@ -177,6 +183,37 @@ describe('PAM actuation lifecycle schema governance', () => {
         'received', '{}'::jsonb, now()
       )
     `)))).toMatchObject({ code: '42501' });
+  });
+
+  it('keeps actuation tenancy immutable even under system scope', async () => {
+    const actuationId = await insertActuation(fixtureA);
+    // System scope bypasses org RLS scoping entirely, so this UPDATE is not
+    // blocked by breeze_org_isolation_update — only the transition guard
+    // trigger can stop it before the (already-deferred) composite
+    // (device_id, org_id) / (elevation_request_id, org_id) FKs ever get a
+    // chance to. Without the guard, this exact UPDATE (org_id changes,
+    // device_id does not) still fails — but only at COMMIT, with 23503 from
+    // pam_actuations_device_id_org_id_fkey, since the row no longer satisfies
+    // (device_id, org_id) -> devices(id, org_id). SET CONSTRAINTS ALL
+    // DEFERRED is asserted here for parity with that COMMIT-time check (both
+    // composite FKs are already DEFERRABLE INITIALLY DEFERRED by default);
+    // it is the trigger firing BEFORE ROW, ahead of any FK evaluation, that
+    // is load-bearing for observing 42501 instead of 23503. Uses
+    // captureSqlState (like every other case in this file) because
+    // drizzle wraps a mid-statement failure in DrizzleQueryError with the
+    // driver's code on `.cause.code`, while a COMMIT-time failure surfaces
+    // the raw PostgresError with `.code` at the top level — captureSqlState
+    // normalizes both shapes.
+    expect(await captureSqlState(() =>
+      runOutsideDbContext(() =>
+        withSystemDbAccessContext(async () => {
+          await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+          await db.execute(
+            sql`UPDATE pam_actuations SET org_id = ${fixtureB.orgId}::uuid WHERE id = ${actuationId}::uuid`,
+          );
+        }),
+      ),
+    )).toMatchObject({ code: '42501' });
   });
 
   it('enforces generation bounds, request-revision identity, result idempotency, and outbox XOR', async () => {
