@@ -496,20 +496,36 @@ const INTERACTIVE_COMMAND_TYPES: Set<string> = new Set([
  *     OR id = breeze_current_user_id()
  *
  * `withSystemDbAccessContext` alone is NOT enough: `withDbAccessContext`
- * short-circuits when a context store already exists, so inside a caller's
- * context the probe would silently run under the CALLER's scope. Every BullMQ
- * worker and every agent run dispatches under an org-scoped context with
- * `userId: null` (see `agentDbAccessContext`), where a partner-level user
- * (`org_id IS NULL`) matches no branch of that policy — and a contextless
- * worker call matches none at all. Probing there would read zero rows and
- * degrade a REAL human to NULL, silently destroying attribution. So exit the
- * caller's context first: `runOutsideDbContext` clears both stores, which is
- * exactly what lets the nested `withSystemDbAccessContext` open a genuinely
+ * short-circuits when a context store already exists (`db/index.ts`, "if
+ * (dbContextStorage.getStore()) return fn()"), so inside a caller's context the
+ * probe would silently run under the CALLER's scope instead of system scope.
+ *
+ * The shape that actually breaks is an already-open **org-scoped** context. The
+ * AI-tool handlers run under exactly that: `dbAccessContextFromAuth`
+ * (`middleware/auth.ts`) keeps `scope: 'organization'` while forcing
+ * `userId: null` for an `ai_agent` principal. A partner-level user
+ * (`users.org_id IS NULL`) then matches NO branch of the policy above —
+ * partner access is not granted to an org-scoped caller, the org branch is
+ * skipped on a NULL `org_id`, and `breeze_current_user_id()` is null. The probe
+ * reads zero rows and degrades a REAL human to NULL, silently destroying
+ * attribution while an agent-only test suite still passes.
+ *
+ * (The other two caller shapes happen to be safe on their own — a contextless
+ * call opens a genuine system context, and most BullMQ workers already wrap
+ * their dispatch in `withSystemDbAccessContext` — but that is incidental, not a
+ * guarantee any caller is obliged to preserve.)
+ *
+ * So exit the caller's context first: `runOutsideDbContext` clears both stores,
+ * which is what lets the nested `withSystemDbAccessContext` open a genuinely
  * fresh system-scoped transaction. This mirrors the audit block below, which
  * escapes the caller's context for the same reason.
  *
- * This is the single source of truth for both insert sites (`queueCommand` and
- * `executeCommand`) so a third site cannot drift back to a verbatim stamp.
+ * This is the one probe for both `device_commands` insert sites (`queueCommand`
+ * and `executeCommand`) so neither can drift back to a verbatim stamp. Note
+ * `services/scriptDispatch.ts` still carries its own independent copy of this
+ * probe for `script_executions.triggered_by`/`created_by`; it is FK-safe today
+ * but is NOT wired to this helper, so a new synthetic-principal class added here
+ * must be mirrored there until the two are converged.
  */
 export async function resolveCommandCreatedBy(
   deviceId: string,
@@ -527,6 +543,17 @@ export async function resolveCommandCreatedBy(
         .from(users)
         .where(eq(users.id, candidateUserId))
         .limit(1);
+      if (!userRow) {
+        // Deliberate degrade, but never a silent one. Expected for `ai_agent`
+        // and other synthetic principals; unexpected for anything else (a
+        // stale or deleted user id), and the two are indistinguishable here —
+        // so leave a breadcrumb rather than dropping attribution with no trace
+        // in logs, Sentry or metrics.
+        console.warn(
+          '[commandQueue] created_by degraded to NULL: id is not a users row',
+          { deviceId, candidateUserId },
+        );
+      }
       return userRow ? candidateUserId : null;
     })
   );

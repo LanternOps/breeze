@@ -245,10 +245,13 @@ describe('command queue service', () => {
     })) as any);
 
     await queueCommand('dev-1', CommandTypes.KILL_PROCESS, { pid: 1234 }, 'user-1');
-    // Audit block is fire-and-forget; drain microtasks so the inner chain runs.
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    // The audit block is fire-and-forget, so it settles AFTER queueCommand
+    // resolves. Poll for the full sequence instead of draining a fixed number
+    // of microtasks: this test queues two single-use impls per wrapper (probe +
+    // audit block), and a fixed drain that returns early would both fail here
+    // and leak the unconsumed mockImplementationOnce entries into later tests
+    // in this file.
+    await vi.waitFor(() => expect(callOrder).toHaveLength(11));
 
     // Two wrapped blocks: the created_by probe, then the audit block.
     expect(dbModule.runOutsideDbContext).toHaveBeenCalledTimes(2);

@@ -14,8 +14,9 @@
  * unit suite can assert the value handed to `.values()` but can never observe
  * the 23503 the guard exists to prevent. Hence this suite.
  *
- * The `human attribution` tests are not padding — they are the discriminating
- * half. The probe reads `users`, which is RLS-protected:
+ * The `human attribution` tests guard the OTHER failure mode — a fix that stops
+ * the 23503 but silently destroys real attribution. The probe reads `users`,
+ * which is RLS-protected:
  *
  *   breeze_has_partner_access(partner_id)
  *   OR (org_id IS NOT NULL AND breeze_has_org_access(org_id))
@@ -24,10 +25,21 @@
  * A guard that probes inside the CALLER's context (the obvious fix —
  * `withSystemDbAccessContext` alone is a no-op when a context is already open,
  * because `withDbAccessContext` short-circuits on an existing store) sees zero
- * rows for a partner-level user (`org_id IS NULL`) whenever the caller context
- * is org-scoped with `userId: null` — exactly the shape every BullMQ worker and
- * agent run uses. That fix would silently degrade a REAL human to
- * `created_by NULL` and pass an agent-only test suite.
+ * rows for a partner-level user (`org_id IS NULL`) when the caller context is
+ * org-scoped with `userId: null` — the shape `dbAccessContextFromAuth` builds
+ * for an `ai_agent` principal. That fix would degrade a REAL human to
+ * `created_by NULL` and still pass an agent-only test suite.
+ *
+ * BE PRECISE ABOUT WHICH TEST CATCHES THAT. Measured against a naive
+ * `withSystemDbAccessContext`-only implementation, 8 of these 9 tests still
+ * pass; the ONLY one that fails is
+ *   'a partner-level human keeps their id when queued inside an org-scoped,
+ *    user-less context'
+ * because it is the only case that opens an org-scoped caller context AND uses
+ * a user invisible within it. The sibling contextless-dispatch test does NOT
+ * cover this (with no ambient store, `withSystemDbAccessContext` opens a real
+ * system context and behaves correctly). Do not prune that test as redundant —
+ * it is the whole regression guard for the context-escape half of the fix.
  *
  * Run:
  *   pnpm test-stack up            # from repo root
@@ -221,9 +233,13 @@ describe('queueCommand created_by attribution (#3978)', () => {
     });
 
     it('a partner-level human keeps their id when queued inside an org-scoped, user-less context', async () => {
-      // The discriminating case: `withSystemDbAccessContext` alone short-circuits
-      // to the caller's org-scoped context here, and this user has org_id NULL
-      // with no breeze.user_id set — so a naive guard silently returns NULL.
+      // LOAD-BEARING — the single test in this file that fails against a naive
+      // `withSystemDbAccessContext`-without-`runOutsideDbContext` guard (see the
+      // file header). `withSystemDbAccessContext` alone short-circuits to the
+      // caller's org-scoped context here, and this user has org_id NULL with no
+      // breeze.user_id set, so a naive guard silently returns NULL. If this test
+      // is ever deleted as "duplicate" of the contextless case, the context
+      // escape becomes untested.
       const command = await withDbAccessContext(orgScopedWorkerContext(fx), () =>
         queueCommand(fx.deviceId, UNAUDITED_TYPE, {}, fx.partnerUserId),
       );
