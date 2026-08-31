@@ -468,6 +468,71 @@ const INTERACTIVE_COMMAND_TYPES: Set<string> = new Set([
 ]);
 
 /**
+ * Resolve the value to stamp into `device_commands.created_by`.
+ *
+ * `created_by` carries a FK to `users(id)`, but several synthetic-auth classes
+ * reach the command-queue insert sites with an `auth.user.id` that is NOT a
+ * `users` row:
+ *
+ *  - **Helper sessions** — `auth.user.id` IS the device id (settled by the
+ *    equality check below, no DB read needed).
+ *  - **`ai_agent` principals** (wave 3b, #3824) — `buildAgentAuthContext` sets
+ *    `auth.user.id` to the agent's `ai_agents` id. The intent release worker
+ *    executes approved agent intents through the same tool handlers every human
+ *    path uses, and they all pass `auth.user.id` verbatim.
+ *
+ * The handlers cannot cheaply know which ids resolve to users, so it is settled
+ * here: one indexed PK probe per dispatch, and any id that is not a `users` row
+ * degrades to `created_by NULL` rather than raising a 23503 FK violation. For an
+ * agent-released intent that violation would land AFTER a human approved the
+ * action, at execution time — the worst possible moment (#3978). Attribution for
+ * agent commands lives on the intent/run (`requesting_agent_run_id`), not this
+ * column.
+ *
+ * **Why the probe must open its own system context.** `users` is RLS-protected:
+ *
+ *     breeze_has_partner_access(partner_id)
+ *     OR (org_id IS NOT NULL AND breeze_has_org_access(org_id))
+ *     OR id = breeze_current_user_id()
+ *
+ * `withSystemDbAccessContext` alone is NOT enough: `withDbAccessContext`
+ * short-circuits when a context store already exists, so inside a caller's
+ * context the probe would silently run under the CALLER's scope. Every BullMQ
+ * worker and every agent run dispatches under an org-scoped context with
+ * `userId: null` (see `agentDbAccessContext`), where a partner-level user
+ * (`org_id IS NULL`) matches no branch of that policy — and a contextless
+ * worker call matches none at all. Probing there would read zero rows and
+ * degrade a REAL human to NULL, silently destroying attribution. So exit the
+ * caller's context first: `runOutsideDbContext` clears both stores, which is
+ * exactly what lets the nested `withSystemDbAccessContext` open a genuinely
+ * fresh system-scoped transaction. This mirrors the audit block below, which
+ * escapes the caller's context for the same reason.
+ *
+ * This is the single source of truth for both insert sites (`queueCommand` and
+ * `executeCommand`) so a third site cannot drift back to a verbatim stamp.
+ */
+export async function resolveCommandCreatedBy(
+  deviceId: string,
+  userId?: string | null
+): Promise<string | null> {
+  const candidateUserId = userId && userId !== deviceId ? userId : null;
+  if (!candidateUserId) {
+    return null;
+  }
+
+  return runOutsideDbContextSafe(() =>
+    withSystemDbAccessContext(async () => {
+      const [userRow] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, candidateUserId))
+        .limit(1);
+      return userRow ? candidateUserId : null;
+    })
+  );
+}
+
+/**
  * Queue a command for execution on a device
  */
 export async function queueCommand(
@@ -481,6 +546,10 @@ export async function queueCommand(
   // default. Never accept a client-supplied value.
   options: { commandId?: string } = {}
 ): Promise<QueuedCommand> {
+  // Never stamp `userId` verbatim — it may be a synthetic-auth id with no
+  // `users` row, which would fail the created_by FK with 23503 (#3978).
+  const safeUserId = await resolveCommandCreatedBy(deviceId, userId);
+
   const [command] = await db
     .insert(deviceCommands)
     .values({
@@ -489,7 +558,7 @@ export async function queueCommand(
       type,
       payload,
       status: 'pending',
-      createdBy: userId || null,
+      createdBy: safeUserId,
     })
     .returning();
 
@@ -507,7 +576,10 @@ export async function queueCommand(
   // in the audited block below (where the device's org is already loaded) to
   // avoid adding a devices lookup to the dispatch hot path. Non-audited
   // dispatches are still counted, just with an unattributed tenant label.
-  const dispatchActor: 'user' | 'system' = userId ? 'user' : 'system';
+  // Keyed on the RESOLVED id, matching executeCommand: an id that is not a
+  // users row is not a human actor, so labelling it 'user' would misreport the
+  // dispatch (and, below, write an audit row claiming a user acted).
+  const dispatchActor: 'user' | 'system' = safeUserId ? 'user' : 'system';
   if (!AUDITED_COMMANDS.has(type)) {
     recordCommandDispatch(type, dispatchActor);
   }
@@ -531,8 +603,8 @@ export async function queueCommand(
 
         await db.insert(auditLogs).values({
           orgId: device.orgId,
-          actorType: userId ? 'user' : 'system',
-          actorId: userId || '00000000-0000-0000-0000-000000000000',
+          actorType: safeUserId ? 'user' : 'system',
+          actorId: safeUserId || '00000000-0000-0000-0000-000000000000',
           action: `agent.command.${type}`,
           resourceType: 'device',
           resourceId: deviceId,
@@ -857,37 +929,13 @@ export async function executeCommand(
   // 2. Queue, dispatch, and poll OUTSIDE the auth transaction so the
   //    INSERT commits immediately and is visible to the WS handler.
   return runOutsideDbContextSafe(async () => {
-    // Validate userId for FK constraint: device_commands.created_by references users.id.
-    // Two synthetic-auth classes reach here with a userId that is NOT a users row:
-    //  - Helper sessions: auth.user.id is actually the device ID (detected by
-    //    the equality check below — no DB read needed).
-    //  - ai_agent principals (wave 3b, #3824): auth.user.id is the agent's
-    //    ai_agents id. The intent release worker executes approved agent
-    //    intents through the same tool handlers every human path uses, and
-    //    they all pass auth.user.id verbatim — before this probe, the first
-    //    agent-released device command died on the created_by FK (23503)
-    //    AFTER approval, at execution time (caught by
-    //    agentIntentLifecycle.integration.test.ts).
-    // The handlers cannot cheaply know which ids resolve to users, so settle it
-    // here at executeCommand's own insert: one indexed PK probe per dispatch,
-    // and any id that is not a users row degrades to created_by NULL
-    // (attribution for agent commands lives on the intent/run —
-    // requesting_agent_run_id — not this column). NOTE for PR 3c: queueCommand/
-    // queueCommandForExecution is a SIBLING insert site with the same verbatim
-    // created_by stamp; tools that dispatch through it (hyperv, backup, vault,
-    // mssql, incident, agent-logs) will need the same treatment before the
-    // runner releases agent intents for them.
-    const candidateUserId = userId && userId !== deviceId ? userId : null;
-    const safeUserId = candidateUserId
-      ? await withSystemDbAccessContext(async () => {
-          const [userRow] = await db
-            .select({ id: users.id })
-            .from(users)
-            .where(eq(users.id, candidateUserId))
-            .limit(1);
-          return userRow ? candidateUserId : null;
-        })
-      : null;
+    // Validate userId for the created_by FK. Shared with queueCommand — see
+    // `resolveCommandCreatedBy` for why synthetic-auth ids degrade to NULL and
+    // why the probe opens its own system context. The sibling drift this used
+    // to warn about (queueCommand/queueCommandForExecution stamping verbatim,
+    // breaking the hyperv/backup/vault/mssql/incident/agent-logs tools) is
+    // closed: both insert sites now go through that one helper (#3978).
+    const safeUserId = await resolveCommandCreatedBy(deviceId, userId);
 
     // #3112: the caller's budget has to travel WITH the command, not merely bound
     // the server-side wait below. The agent's helper-IPC path used a hardcoded
