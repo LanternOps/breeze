@@ -120,12 +120,12 @@ export function createMetricRollupsWorker(): Worker<MetricRollupJobData> {
       }
       const data = job.data;
       // No worker-level system context here (#4276): rollupDeviceMetricsRange
-      // owns one short-lived labeled context PER statement. Re-wrapping it
-      // would make withDbAccessContext short-circuit into the ambient
-      // transaction and silently restore the single 26-statement hold that
-      // made this worker the top db_context_held_too_long offender. The
-      // runOutsideDbContext escape is kept as belt-and-braces against a future
-      // ambient context on this path.
+      // owns one short-lived labeled context PER statement, each preceded by
+      // its own runOutsideDbContext escape. A wrap here would not be joined —
+      // the escape defeats it — it would just pin an idle-in-transaction
+      // connection for the whole pass (an unlabeled hold, plus a second pool
+      // slot). This outer runOutsideDbContext is belt-and-braces against a
+      // future ambient context on this path.
       return runOutsideDbContext(() => processRollupOrgRange(data));
     },
     {

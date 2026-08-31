@@ -154,12 +154,15 @@ function normalizeRange(from: Date, to: Date): { from: Date; to: Date } {
  * derived passes read rows the raw passes just wrote, and across transactions
  * they read them COMMITTED instead of from the writer's own snapshot.
  *
- * `runOutsideDbContext` is not decoration. `withDbAccessContext` short-circuits
- * to an ambient context when one is open, so without the escape any caller that
- * wrapped this function (the backfill script and the integration suite both
- * did) would silently collapse all 24 contexts back into its single transaction
- * and restore the hold — the same trap documented on `processEvaluateAll`
- * (jobs/alertWorker.ts, #3216).
+ * `runOutsideDbContext` is not decoration. Without it, a caller that wrapped
+ * this function in its own context would make `withDbAccessContext`
+ * short-circuit into that ambient transaction, silently collapsing all the
+ * per-statement contexts back into one long hold — the alertWorker/#3216 trap.
+ * WITH the escape, an outer wrap is instead defeated: it does no work and just
+ * pins an idle-in-transaction connection for the whole pass (an unlabeled
+ * #3218-shape hold, plus a second pool slot). So callers must not wrap this
+ * function at all — the worker, backfill script and integration suite all call
+ * it bare.
  *
  * `label` is REQUIRED here, not optional: under the tsup single-file bundle
  * every opener in this file is an anonymous arrow that `parseOpenerFrame`
