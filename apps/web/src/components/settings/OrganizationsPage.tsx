@@ -684,11 +684,14 @@ export default function OrganizationsPage() {
       //     chasing. Two reorders from SEPARATE TABS can still interleave;
       //     that one needs a revision or compare-and-swap on the endpoint,
       //     which has neither.
-      //   - The list endpoint pages by `created_at, id` and applies the
-      //     partner's preferred order only WITHIN each page, so past the first
-      //     page it cannot report a cross-page order at all. Reconciliation is
-      //     therefore authoritative only up to that pre-existing server-side
-      //     limit, which this change does not introduce or fix.
+      //   - Reconciliation used to be authoritative only up to the FIRST page:
+      //     the list endpoint paged by `created_at, id` and applied the
+      //     partner's preferred order only WITHIN each page, so a drag that
+      //     crossed a page boundary could not survive the refetch. Fixed
+      //     server-side in #4004 — the preferred order is now the leading
+      //     ORDER BY term of the paginated query, so the page walk returns the
+      //     stored order end to end and this GET is authoritative for the whole
+      //     list.
       //
       // The refetch was previously unsafe purely because fetchOrganizations
       // answered its own 401 with a bare navigateTo('/login'), which raced the
