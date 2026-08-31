@@ -94,7 +94,7 @@ function upgradesOpenssl(bodies: string[]): boolean {
       // `apk upgrade libcrypto3 && apk add libssl3-dev` — the `-dev` is a
       // *different*, still-vulnerable package — and a bare `echo "...libssl3"`.
       for (const match of line.matchAll(/\bapk\s+upgrade\b(.*?)(?=&&|[;|]|$)/g)) {
-        const args = match[1];
+        const args = match[1] ?? '';
         for (const pkg of REQUIRED_PACKAGES) {
           if (new RegExp(`(?:^|\\s)${pkg}(?=\\s|$)`).test(args)) upgraded.add(pkg);
         }
