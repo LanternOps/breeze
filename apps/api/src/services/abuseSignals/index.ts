@@ -7,6 +7,7 @@ import { computeInvariantSignals } from './invariants';
 import { loadPartnerAggregates, computeHeuristicSignals, loadHostnameIndicators } from './heuristics';
 import { loadScriptFindings, computeScriptSignals, loadScriptIndicators } from './scriptContent';
 import { loadBillingIdentityAggregates, computeBillingIdentitySignals } from './billingIdentity';
+import { loadOriginIpAggregates, computeOriginIpSignals } from './originIp';
 import { computeCorroborationSignals } from './corroboration';
 import { persistSignals, markDelivered } from './persistence';
 import type { ComputedSignal } from './types';
@@ -48,12 +49,15 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
   const cfg = loadSignalConfig();
   const now = new Date();
 
-  const { invariants, aggregates, scriptFindings, billingIdentity } = await runSystemDbCompute(async () => ({
-    invariants: await computeInvariantSignals(),
-    aggregates: await loadPartnerAggregates(),
-    scriptFindings: await loadScriptFindings(now),
-    billingIdentity: await loadBillingIdentityAggregates(),
-  }));
+  const { invariants, aggregates, scriptFindings, billingIdentity, originIp } = await runSystemDbCompute(
+    async () => ({
+      invariants: await computeInvariantSignals(),
+      aggregates: await loadPartnerAggregates(),
+      scriptFindings: await loadScriptFindings(now),
+      billingIdentity: await loadBillingIdentityAggregates(),
+      originIp: await loadOriginIpAggregates(),
+    }),
+  );
 
   const computed = [
     ...invariants,
@@ -67,6 +71,10 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
     // scorer takes no clock at all; card-testing is scored on the span the
     // billing service recorded, not on how recently the sweep ran.
     ...computeBillingIdentitySignals(billingIdentity.aggregates, billingIdentity.sharedFingerprints, cfg),
+    // Origin-IP recidivism is likewise never age-decayed — a pre-positioned
+    // account sits dormant for weeks by design, so weighting it by account age
+    // would silence it exactly when it matures into a live operator.
+    ...computeOriginIpSignals(originIp.aggregates, originIp.corpus, cfg, now),
   ];
   // Corroboration runs LAST and reads only what the detectors above produced —
   // no extra queries. It promotes a partner whose evidence spans two or more
@@ -84,6 +92,7 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
     ...aggregates.map((a) => a.partnerId),
     ...scriptFindings.scannedPartnerIds,
     ...billingIdentity.scannedPartnerIds,
+    ...originIp.scannedPartnerIds,
   ]);
   const { toNotify } = await runSystemDbCompute(() => persistSignals(computed, now, evaluatedPartnerIds));
 

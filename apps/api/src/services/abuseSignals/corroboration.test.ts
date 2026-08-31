@@ -22,6 +22,37 @@ function watch(partnerId: string, signalKey: string, score: number): ComputedSig
 }
 
 describe('computeCorroborationSignals', () => {
+  it('counts the two origin-IP signals as ONE axis', () => {
+    // They restate one observation — this partner works from infrastructure a
+    // suspended operator used — measured at two strengths. The scorer today
+    // suppresses the weaker row when the exact match fires, so this pair
+    // cannot co-occur in practice; the mapping exists so that relaxing that
+    // suppression can never silently manufacture an alert from a single fact.
+    const out = computeCorroborationSignals(
+      [
+        watch('p1', 'fraud.suspended_console_ip', 65),
+        watch('p1', 'fraud.dead_account_probe_origin', 55),
+      ],
+      cfg,
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('lets an origin-IP signal corroborate a billing signal', () => {
+    // The pair that would have caught the 08-31 re-establishment: an
+    // infrastructure axis and an identity axis are genuinely independent.
+    const out = computeCorroborationSignals(
+      [
+        watch('p1', 'fraud.dead_account_probe_origin', 55),
+        watch('p1', 'billing.cardholder_name_mismatch', 55),
+      ],
+      cfg,
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.severity).toBe('alert');
+    expect(out[0]!.evidence.axisCount).toBe(2);
+  });
+
   it('promotes two capped watch signals on independent axes to an alert', () => {
     // The onlineAccount-Statement shape: session_intensity 65 was the only
     // signal anyone looked at, and cardholder_name_mismatch 55 sat beside it.
@@ -312,6 +343,8 @@ describe('SIGNAL_AXIS coverage', () => {
     'billing.cardholder_name_mismatch',
     'billing.shared_card_fingerprint',
     'billing.card_testing',
+    'fraud.suspended_console_ip',
+    'fraud.dead_account_probe_origin',
     'fraud.failed_login_cluster',
     'resource.enrollment_denied',
     'resource.volume_outlier',

@@ -119,6 +119,28 @@ export const SIGNAL_DEFAULTS = {
   'billing.card_testing.base_score': 50,
   'billing.card_testing.per_extra_method': 15,
   'billing.card_testing.per_failed_attempt': 5,
+  // Origin-IP recidivism (originIp.ts). NOT age-decayed — an address shared
+  // with a suspended operator is evidence about infrastructure, and
+  // pre-positioned accounts sit dormant for weeks precisely to age out of
+  // young-account weighting.
+  //
+  // base_score is set to meet severity.alert_score exactly, so ONE exact
+  // address shared with a suspended partner pages. That equality is an intent,
+  // not an invariant — both numbers are independently overridable — and it
+  // mirrors the confidence the signup gate already assigns to an exact
+  // signup-IP match, whose every production hold has been a true positive.
+  // There is deliberately no cap on how many suspended partners may share an
+  // address; see the note in originIp.ts on why that guard was removed.
+  'fraud.suspended_console_ip.base_score': 70,
+  'fraud.suspended_console_ip.per_extra_ip': 10,
+  // The /24 (IPv6 /64) sibling. A network is a weaker tie than an address, so
+  // this caps BELOW severity.alert_score and corroborates instead — same rule
+  // as session_intensity and cardholder_name_mismatch. Its looseness is
+  // bounded on two sides: the counterparty must be a failed login against an
+  // ALREADY-SUSPENDED account, and it must fall inside window_hours. Do not
+  // raise it past the alert threshold; widen the evidence instead.
+  'fraud.dead_account_probe_origin.window_hours': 24,
+  'fraud.dead_account_probe_origin.score': 55,
   // Cross-signal corroboration (corroboration.ts). This is the "second signal"
   // that the capped scores above (session_intensity, cardholder_name_mismatch,
   // provider_default_hostname generic) have always referred to — it did not
