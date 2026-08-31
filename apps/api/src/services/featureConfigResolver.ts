@@ -1931,16 +1931,61 @@ export interface MaintenanceWindowStatus {
   rebootIfPending: boolean;
 }
 
+/** Bare time of day, e.g. "1:50", "01:50" or "01:50:00". */
+const TIME_OF_DAY_PATTERN = /^(\d{1,2}):(\d{2})(?::\d{2})?$/;
+/** Time component of an ISO-8601-ish datetime, e.g. "2026-03-15T02:00" or "...T02:00:00.000Z". */
+const DATETIME_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}[T ](\d{1,2}):(\d{2})/;
+
+/** The anchor recurring windows used before issue #4224, and the fallback still. */
+const MIDNIGHT_ANCHOR = { hours: 0, minutes: 0 } as const;
+
+/**
+ * Reads the time-of-day anchor for a recurring maintenance window out of
+ * `config_policy_maintenance_settings.window_start`.
+ *
+ * That column is recurrence-discriminated: for `once` it holds a full
+ * ISO-8601 local datetime, and for `daily`/`weekly`/`monthly` it holds an
+ * "HH:MM" time of day. A full datetime is accepted for the recurring cadences
+ * too, using only its time component, so a policy switched from `once` to a
+ * recurring cadence keeps a sensible anchor instead of jumping to midnight.
+ *
+ * Returns `'invalid'` for a value that parses as neither — the caller warns
+ * and falls back to midnight rather than treating the window as never open.
+ */
+function parseRecurringWindowAnchor(
+  rawWindowStart: string | null
+): { hours: number; minutes: number } | 'invalid' {
+  const value = (rawWindowStart ?? '').trim();
+  // Absent is not a defect: every pre-#4224 recurring row has window_start
+  // NULL and must keep the midnight schedule it has been running on.
+  if (value === '') return MIDNIGHT_ANCHOR;
+
+  const match = TIME_OF_DAY_PATTERN.exec(value) ?? DATETIME_TIME_PATTERN.exec(value);
+  if (!match) return 'invalid';
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return 'invalid';
+  return { hours, minutes };
+}
+
 /**
  * Determines whether a maintenance window is currently active based on
  * the recurrence pattern, duration, and timezone.
  *
- * Recurrence values:
- *   - 'daily'   — window starts every day at 00:00 in the configured timezone
- *   - 'weekly'  — window starts every Sunday at 00:00 in the configured timezone
- *   - 'monthly' — window starts on the 1st of each month at 00:00 in the configured timezone
+ * Recurrence values (all times in the configured timezone):
+ *   - 'once'    — window starts at the `windowStart` datetime
+ *   - 'daily'   — window starts every day at the `windowStart` time of day
+ *   - 'weekly'  — window starts every Sunday at the `windowStart` time of day
+ *   - 'monthly' — window starts on the 1st of each month at the `windowStart` time of day
  *
- * The window lasts for `durationHours` from the start time.
+ * Recurring cadences fall back to 00:00 when no `windowStart` is stored, which
+ * is what every recurring window did before issue #4224.
+ *
+ * The window lasts for `durationHours` from the start time. Because the start
+ * time may sit late in its period, the evaluated occurrence is the most recent
+ * one at or before `now` — a 23:00 daily window is still open at 00:30 the
+ * next morning.
  */
 export function isInMaintenanceWindow(
   settings: typeof configPolicyMaintenanceSettings.$inferSelect,
@@ -1983,6 +2028,20 @@ export function isInMaintenanceWindow(
 
   const durationMs = settings.durationHours * 60 * 60 * 1000;
 
+  // Lazily resolved so the `once` branch — which reads windowStart as a full
+  // datetime — never warns about a value that is valid for its own recurrence.
+  const resolveRecurringAnchor = (): { hours: number; minutes: number } => {
+    const anchor = parseRecurringWindowAnchor(settings.windowStart);
+    if (anchor === 'invalid') {
+      console.warn(
+        `[FeatureConfigResolver] Unparseable maintenance windowStart "${settings.windowStart}" for ` +
+          `'${settings.recurrence}' recurrence; anchoring the window to midnight`
+      );
+      return MIDNIGHT_ANCHOR;
+    }
+    return anchor;
+  };
+
   // Compute potential window start based on recurrence
   let windowStart: Date;
 
@@ -2004,24 +2063,40 @@ export function isInMaintenanceWindow(
       break;
     }
     case 'daily': {
-      // Window starts at midnight local time each day
+      // Window starts at the configured time of day, every day. If today's
+      // occurrence has not begun yet, yesterday's may still be running.
+      const { hours, minutes } = resolveRecurringAnchor();
       windowStart = new Date(localNow);
-      windowStart.setHours(0, 0, 0, 0);
+      windowStart.setHours(hours, minutes, 0, 0);
+      if (windowStart > localNow) {
+        windowStart.setDate(windowStart.getDate() - 1);
+      }
       break;
     }
     case 'weekly': {
-      // Window starts at midnight on the most recent Sunday
+      // Window starts at the configured time of day on Sunday. If this
+      // Sunday's occurrence has not begun yet, last Sunday's may still run.
+      const { hours, minutes } = resolveRecurringAnchor();
       windowStart = new Date(localNow);
-      const dayOfWeek = windowStart.getDay(); // 0 = Sunday
-      windowStart.setDate(windowStart.getDate() - dayOfWeek);
-      windowStart.setHours(0, 0, 0, 0);
+      windowStart.setDate(windowStart.getDate() - windowStart.getDay()); // 0 = Sunday
+      windowStart.setHours(hours, minutes, 0, 0);
+      if (windowStart > localNow) {
+        windowStart.setDate(windowStart.getDate() - 7);
+      }
       break;
     }
     case 'monthly': {
-      // Window starts at midnight on the 1st of the current month
+      // Window starts at the configured time of day on the 1st. If this
+      // month's occurrence has not begun yet, last month's may still run.
+      const { hours, minutes } = resolveRecurringAnchor();
       windowStart = new Date(localNow);
       windowStart.setDate(1);
-      windowStart.setHours(0, 0, 0, 0);
+      windowStart.setHours(hours, minutes, 0, 0);
+      if (windowStart > localNow) {
+        // Safe to roll the month back: the day is pinned to the 1st, so there
+        // is no short-month overflow.
+        windowStart.setMonth(windowStart.getMonth() - 1);
+      }
       break;
     }
     default: {
