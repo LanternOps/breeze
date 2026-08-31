@@ -120,6 +120,19 @@ describe('SYSTEM_ROLES ⊆ DEFAULT_PERMISSIONS', () => {
   });
 });
 
+describe('agent rollback RBAC', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((role) => role.name === name);
+
+  it('seeds agent_rollback:create and grants it explicitly only to Org Admin', () => {
+    expect(DEFAULT_PERMISSIONS).toContainEqual(expect.objectContaining({ resource: 'agent_rollback', action: 'create' }));
+    expect(byName('Partner Admin')?.permissions).toContain('*:*');
+    expect(byName('Org Admin')?.permissions).toContain('agent_rollback:create');
+    for (const role of SYSTEM_ROLES.filter((candidate) => !['Partner Admin', 'Org Admin'].includes(candidate.name))) {
+      expect(role.permissions).not.toContain('agent_rollback:create');
+    }
+  });
+});
+
 describe('ticket mailbox permissions', () => {
   it('registers and seeds the ticket mailbox permissions', () => {
     expect(PERMISSION_GRANTS.TICKET_MAILBOX_READ).toEqual({ resource: 'ticket_mailbox', action: 'read' });
@@ -210,6 +223,36 @@ describe('approvals:decide permission (action intents approval layer, §4)', () 
     const role = byName('Partner Admin');
     expect(role?.permissions).toContain('*:*');
     expect(role?.permissions).not.toContain('approvals:decide');
+  });
+});
+
+describe('backup:cross_site_restore permission', () => {
+  const byName = (name: string) => SYSTEM_ROLES.find((role) => role.name === name);
+
+  it('registers and seeds the distinct cross-site restore capability', () => {
+    expect(PERMISSION_GRANTS.BACKUP_CROSS_SITE_RESTORE).toEqual({
+      resource: 'backup',
+      action: 'cross_site_restore',
+    });
+    expect(DEFAULT_PERMISSIONS).toEqual(expect.arrayContaining([
+      expect.objectContaining({ resource: 'backup', action: 'cross_site_restore' }),
+    ]));
+  });
+
+  it('grants cross-site restore only to recovery administrators by default', () => {
+    expect(byName('Partner Admin')?.permissions).toContain('*:*');
+    expect(byName('Org Admin')?.permissions).toContain('backup:cross_site_restore');
+
+    for (const role of SYSTEM_ROLES) {
+      if (role.name === 'Partner Admin' || role.name === 'Org Admin') continue;
+      expect(role.permissions).not.toContain('backup:cross_site_restore');
+    }
+  });
+
+  it('does not broaden ordinary backup:write into cross-site recovery', () => {
+    const technician = byName('Partner Technician');
+    expect(technician?.permissions).toContain('backup:write');
+    expect(technician?.permissions).not.toContain('backup:cross_site_restore');
   });
 });
 

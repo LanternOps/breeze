@@ -7,6 +7,7 @@ const selectMock = vi.fn();
 const updateMock = vi.fn();
 const insertMock = vi.fn();
 const runOutsideDbContextMock = vi.fn(async (fn: () => unknown) => fn());
+const ingestRollbackObservationMock = vi.hoisted(() => vi.fn());
 
 // Records the order of key lifecycle events so a test can assert the
 // manifest-trust-keyset fetch happens AFTER the org DB context closes
@@ -200,6 +201,10 @@ vi.mock('../../services/commandDispatch', () => ({
 
 vi.mock('../../services/eventBus', () => ({
   publishEvent: vi.fn(async () => undefined),
+}));
+
+vi.mock('../../services/agentRollbackResult', () => ({
+  ingestRollbackObservation: ingestRollbackObservationMock,
 }));
 
 vi.mock('../../middleware/agentAuth', () => ({
@@ -465,6 +470,36 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as Record<string, unknown>;
     expect(body.manifestTrustKeys).toEqual([]);
+  });
+
+  it('acknowledges a durably ingested rollback observation after the device update commits', async () => {
+    const rollbackObservation = {
+      schemaVersion: 1,
+      observationId: 'a'.repeat(64),
+      rollbackId: '10000000-0000-4000-8000-000000000001',
+      deviceId: 'device-1',
+      phase: 'restart_requested',
+      currentVersion: '2.0.0',
+      componentVersions: { agent: '1.9.0' },
+      observedAt: '2026-08-25T12:00:00Z',
+    };
+    ingestRollbackObservationMock.mockResolvedValueOnce({
+      acknowledgedObservationId: rollbackObservation.observationId,
+    });
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, rollbackObservation }),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(ingestRollbackObservationMock).toHaveBeenCalledWith('device-1', rollbackObservation);
+    expect(callOrder.indexOf('dbContext:released')).toBeLessThan(callOrder.lastIndexOf('dbContext:opened'));
+    await expect(resp.json()).resolves.toMatchObject({
+      acknowledgedRollbackObservationId: rollbackObservation.observationId,
+    });
   });
 
   it('always includes backup_server_url in configUpdate — value when env set', async () => {
@@ -2279,6 +2314,66 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(updateArg.scriptSecretEnvVersion).toBe(0);
   });
+
+  it.each([
+    {
+      name: 'recognized exact integers',
+      capabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1 },
+      expectedPeripheral: 2,
+      expectedRollback: 1,
+    },
+    {
+      name: 'omitted capability object',
+      capabilities: undefined,
+      expectedPeripheral: 0,
+      expectedRollback: 0,
+    },
+    {
+      name: 'explicit zero downgrade',
+      capabilities: { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0 },
+      expectedPeripheral: 0,
+      expectedRollback: 0,
+    },
+    {
+      name: 'unknown integer versions',
+      capabilities: { peripheralPolicyProtocolVersion: 3, rollbackProtocolVersion: 2 },
+      expectedPeripheral: 0,
+      expectedRollback: 0,
+    },
+    {
+      name: 'fractional versions',
+      capabilities: { peripheralPolicyProtocolVersion: 2.5, rollbackProtocolVersion: 1.5 },
+      expectedPeripheral: 0,
+      expectedRollback: 0,
+    },
+    {
+      name: 'string versions',
+      capabilities: { peripheralPolicyProtocolVersion: '2', rollbackProtocolVersion: '1' },
+      expectedPeripheral: 0,
+      expectedRollback: 0,
+    },
+  ])('persists tolerant non-sticky control protocol capabilities: $name', async ({
+    capabilities,
+    expectedPeripheral,
+    expectedRollback,
+  }) => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const body = capabilities === undefined
+      ? minimalHeartbeatBody
+      : { ...minimalHeartbeatBody, securityCapabilities: capabilities };
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.peripheralPolicyProtocolVersion).toBe(expectedPeripheral);
+    expect(updateArg.rollbackProtocolVersion).toBe(expectedRollback);
+  });
 });
 
 // ---------------------------------------------------------------------
@@ -3320,6 +3415,57 @@ describe('POST /agents/:id/heartbeat — backupVersion telemetry', () => {
   });
 });
 
+describe('POST /agents/:id/heartbeat — rollback component inventory', () => {
+  const deviceRow = {
+    id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host',
+    osType: 'windows', architecture: 'amd64', agentVersion: '0.66.0',
+    deviceRoleSource: 'auto', lastSeenAt: new Date(), mainAgentSilentSince: null,
+  };
+
+  function arrange(setSpy: ReturnType<typeof vi.fn>) {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  }
+
+  async function post(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', metrics: minimalHeartbeatBody.metrics, ...body }),
+    });
+  }
+
+  it('persists the complete claimed inventory', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    arrange(setSpy);
+    const inventory = { agent: '0.66.0', helper: '0.66.0', 'user-helper': '0.66.0' };
+    const resp = await post({
+      agentVersion: '0.66.0',
+      securityCapabilities: { rollbackProtocolVersion: 1 },
+      rollbackComponentVersions: inventory,
+    });
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.rollbackComponentVersions).toEqual(inventory);
+  });
+
+  it('clears stale inventory when a protocol-v1 agent cannot prove completeness', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    arrange(setSpy);
+    const resp = await post({
+      agentVersion: '0.66.0',
+      securityCapabilities: { rollbackProtocolVersion: 1 },
+    });
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.rollbackComponentVersions).toBeNull();
+  });
+});
+
 // ---------------------------------------------------------------------
 // #2288 — active control-plane URL persistence
 // ---------------------------------------------------------------------
@@ -4063,7 +4209,10 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     const resp = await buildApp().request('/agents/device-1/heartbeat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(minimalHeartbeatBody),
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        securityCapabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1 },
+      }),
     });
 
     expect(resp.status).toBe(200);
@@ -4072,6 +4221,10 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
       { id: 'cmd-good', type: 'run_script', payload: { scriptId: 'script-1' } },
     ]);
     expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
+      'device-1', 10, 'agent', undefined,
+      { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1 },
+    );
   });
 
   // #2774 — the heartbeat is the PRIMARY command carrier (the GET poll is
@@ -4104,9 +4257,13 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     });
 
     expect(resp.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', [
-      'self_uninstall',
-    ]);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
+      'device-1',
+      10,
+      'agent',
+      ['self_uninstall'],
+      { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0 },
+    );
   });
 
   // #3409 PR4c-2 Amendment A — the claim gate trusts the capability THIS

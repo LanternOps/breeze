@@ -14,6 +14,8 @@ const { dbState, policyState } = vi.hoisted(() => ({
     selectAgentsResults: [] as unknown[][],
     selectOrgsResults: [] as unknown[][],
     selectDevicesResults: [] as unknown[][],
+    // P2-4 (#4191): ticket-scope resolution's own select branch.
+    selectTicketsResults: [] as unknown[][],
     // Wave-5A review fix (#3827): `ai_kill_state` table branch for the (real,
     // unmocked) `readAiKillState()` this suite's release lane now calls
     // directly — see the "kill-derived denial" describe block below.
@@ -31,6 +33,7 @@ vi.mock('../../db', async () => {
   const { aiAgentRuns, aiAgents } = await import('../../db/schema/aiAgents');
   const { organizations } = await import('../../db/schema/orgs');
   const { devices } = await import('../../db/schema/devices');
+  const { tickets } = await import('../../db/schema/portal');
   const { aiKillState } = await import('../../db/schema/aiKillState');
   const resultBox = (getResult: () => unknown) => ({
     limit: vi.fn(() => Promise.resolve(getResult())),
@@ -44,6 +47,8 @@ vi.mock('../../db', async () => {
             if (table === aiAgents) return resultBox(() => dbState.selectAgentsResults.shift() ?? []);
             if (table === organizations) return resultBox(() => dbState.selectOrgsResults.shift() ?? []);
             if (table === devices) return resultBox(() => dbState.selectDevicesResults.shift() ?? []);
+            // P2-4 (#4191): ticket-scope resolution mirror of the device branch.
+            if (table === tickets) return resultBox(() => dbState.selectTicketsResults.shift() ?? []);
             if (table === aiKillState) {
               return resultBox(() => {
                 if (dbState.killStateShouldThrow) throw new Error('ai_kill_state read failed (test)');
@@ -154,6 +159,7 @@ beforeEach(() => {
   dbState.selectAgentsResults.length = 0;
   dbState.selectOrgsResults.length = 0;
   dbState.selectDevicesResults.length = 0;
+  dbState.selectTicketsResults.length = 0;
   dbState.killStateRows = [{ killed: false, epoch: 0 }];
   dbState.killStateShouldThrow = false;
   // A prior test's kill state must never leak into the next one via
@@ -546,6 +552,191 @@ describe('checkAgentReleaseAuthority', () => {
       const result = await checkAgentReleaseAuthority(policyIntent({ policyKillEpoch: 4 }));
 
       expect(result).toEqual({ ok: true });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // P2-2 (Task A3, #4189): explicit device scope
+  // -------------------------------------------------------------------------
+
+  /** A SWEEP-minted intent: the run is device-less, the target comes from the
+   *  intent's own `scope_device_id`. */
+  const scopedIntent = (overrides: Partial<ActionIntent> = {}) =>
+    intentFixture({
+      arguments: { deviceId: 'dev-scope', action: 'restart', serviceName: 'spooler', siteId: 'site-a' },
+      scopeKind: 'device',
+      scopeDeviceId: 'dev-scope',
+      ...overrides,
+    } as Partial<ActionIntent>);
+
+  /** run/agent/org rows for a DEVICE-LESS run, plus one scoped-device row
+   *  (which the scope branch projects `org_id` from, unlike the run-device
+   *  read that only ever needed `site_id`). */
+  function seedScopedRows(device: unknown[] | undefined = [{ orgId: 'org-1', siteId: 'site-a' }]) {
+    dbState.selectAgentRunsResults.push([{ ...runRow(), deviceId: null }]);
+    dbState.selectAgentsResults.push([agentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+    dbState.selectDevicesResults.push(device ?? []);
+  }
+
+  describe('device scope (P2-2)', () => {
+    it('pins the rebuilt agent context to the SCOPE device, not the run (which has none)', async () => {
+      seedScopedRows();
+
+      const result = await checkAgentReleaseAuthority(scopedIntent());
+
+      expect(result).toEqual({ ok: true });
+      // Without the scope substitution `checkAgentGuardrails` would deny at
+      // its device-less-mutation gate and this would never reach ok:true —
+      // and the context resolveEffectiveAgent is authorized against must be
+      // narrowed to the scope device, never left org-wide.
+      const [auth] = policyState.resolveEffectiveAgent.mock.calls[0]!;
+      expect(auth.allowedDeviceIds).toEqual(['dev-scope']);
+      expect(auth.allowedSiteIds).toEqual(['site-a']);
+    });
+
+    it('fails agent_scope_lost when the scope was tombstoned (device deleted / moveOrg detach)', async () => {
+      seedScopedRows();
+
+      const result = await checkAgentReleaseAuthority(scopedIntent({ scopeDeviceId: null } as Partial<ActionIntent>));
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'agent_scope_lost' });
+      // Terminal, and never mislabeled as a broken run.
+      expect(policyState.resolveEffectiveAgent).not.toHaveBeenCalled();
+    });
+
+    it('fails agent_scope_lost when the scoped device no longer exists', async () => {
+      seedScopedRows([]);
+
+      const result = await checkAgentReleaseAuthority(scopedIntent());
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'agent_scope_lost' });
+    });
+
+    it('fails agent_scope_lost when the scoped device now belongs to another org', async () => {
+      // Controller ruling: a device org-move that landed through the DB-side
+      // cascade (not the HTTP moveOrg route, which detaches the scope) leaves
+      // scope_device_id live — release is the backstop.
+      seedScopedRows([{ orgId: 'org-2', siteId: 'site-a' }]);
+
+      const result = await checkAgentReleaseAuthority(scopedIntent());
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'agent_scope_lost' });
+      expect(policyState.resolveEffectiveAgent).not.toHaveBeenCalled();
+    });
+
+    it('leaves an UNSCOPED intent on the run device (no behavior change)', async () => {
+      seedHappyRows();
+
+      const result = await checkAgentReleaseAuthority(intentFixture());
+
+      expect(result).toEqual({ ok: true });
+      const [auth] = policyState.resolveEffectiveAgent.mock.calls[0]!;
+      expect(auth.allowedDeviceIds).toEqual(['dev-1']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // P2-4 (Task A4/A5, #4191): explicit ticket scope — the mirror of P2-2's
+  // device scope above. This is what actually lets checkAgentGuardrails's
+  // ticket-scope exemption fire at RELEASE time, not just at creation time
+  // (intentService.ts already threaded `scope.ticketId` there).
+  // -------------------------------------------------------------------------
+
+  const ticketTriagePolicy = effectivePolicy({ toolAllowlist: ['manage_tickets:draft'] });
+
+  /** A ticket-triage-minted intent: the run is device-less, the target comes
+   *  from the intent's own `scope_ticket_id`. */
+  const ticketScopedIntent = (overrides: Partial<ActionIntent> = {}) =>
+    intentFixture({
+      actionName: 'manage_tickets',
+      arguments: { action: 'draft', ticketId: 'ticket-scope', kind: 'reply', content: 'proposed reply' },
+      scopeKind: 'ticket',
+      scopeTicketId: 'ticket-scope',
+      ...overrides,
+    } as Partial<ActionIntent>);
+
+  function seedTicketScopedRows(ticket: unknown[] = [{ id: 'ticket-scope', orgId: 'org-1', status: 'open', deletedAt: null }]) {
+    dbState.selectAgentRunsResults.push([{ ...runRow(ticketTriagePolicy), deviceId: null }]);
+    dbState.selectAgentsResults.push([agentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+    dbState.selectTicketsResults.push(ticket);
+    policyState.resolveEffectiveAgent.mockResolvedValue(resolvedAgent(ticketTriagePolicy));
+  }
+
+  describe('ticket scope (P2-4, #4191)', () => {
+    it('passes via the ticket-scope exemption even though the run is device-less', async () => {
+      seedTicketScopedRows();
+
+      const result = await checkAgentReleaseAuthority(ticketScopedIntent());
+
+      expect(result).toEqual({ ok: true });
+    });
+
+    it('fails agent_scope_lost when the ticket scope was tombstoned (scope_ticket_id NULL)', async () => {
+      // No ticket select is even reached — tombstone short-circuits first.
+      dbState.selectAgentRunsResults.push([{ ...runRow(ticketTriagePolicy), deviceId: null }]);
+      dbState.selectAgentsResults.push([agentRow]);
+      dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+
+      const result = await checkAgentReleaseAuthority(ticketScopedIntent({ scopeTicketId: null } as Partial<ActionIntent>));
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'agent_scope_lost' });
+      expect(policyState.resolveEffectiveAgent).not.toHaveBeenCalled();
+    });
+
+    it('fails agent_scope_lost when the scoped ticket no longer exists', async () => {
+      seedTicketScopedRows([]);
+
+      const result = await checkAgentReleaseAuthority(ticketScopedIntent());
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'agent_scope_lost' });
+    });
+
+    it('fails agent_scope_lost when the scoped ticket is soft-deleted', async () => {
+      seedTicketScopedRows([{ id: 'ticket-scope', orgId: 'org-1', status: 'open', deletedAt: new Date() }]);
+
+      const result = await checkAgentReleaseAuthority(ticketScopedIntent());
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'agent_scope_lost' });
+    });
+
+    it('fails agent_scope_lost when the scoped ticket moved to another org', async () => {
+      seedTicketScopedRows([{ id: 'ticket-scope', orgId: 'org-2', status: 'open', deletedAt: null }]);
+
+      const result = await checkAgentReleaseAuthority(ticketScopedIntent());
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'agent_scope_lost' });
+    });
+
+    it('fails agent_scope_lost when the scoped ticket is closed', async () => {
+      seedTicketScopedRows([{ id: 'ticket-scope', orgId: 'org-1', status: 'closed', deletedAt: null }]);
+
+      const result = await checkAgentReleaseAuthority(ticketScopedIntent());
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'agent_scope_lost' });
+    });
+
+    it('allows a RESOLVED (not closed) ticket — resolution-note drafts are the motivating case', async () => {
+      seedTicketScopedRows([{ id: 'ticket-scope', orgId: 'org-1', status: 'resolved', deletedAt: null }]);
+
+      const result = await checkAgentReleaseAuthority(ticketScopedIntent());
+
+      expect(result).toEqual({ ok: true });
+    });
+
+    it('WITHOUT ticket scope, a device-less manage_tickets intent still denies (regression guard on the exemption)', async () => {
+      dbState.selectAgentRunsResults.push([{ ...runRow(ticketTriagePolicy), deviceId: null }]);
+      dbState.selectAgentsResults.push([agentRow]);
+      dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+      policyState.resolveEffectiveAgent.mockResolvedValue(resolvedAgent(ticketTriagePolicy));
+
+      const result = await checkAgentReleaseAuthority(intentFixture({
+        actionName: 'manage_tickets',
+        arguments: { action: 'draft', ticketId: 'ticket-scope', kind: 'reply', content: 'x' },
+      } as Partial<ActionIntent>));
+
+      expect(result).toMatchObject({ ok: false, errorCode: 'agent_policy_denied' });
     });
   });
 });

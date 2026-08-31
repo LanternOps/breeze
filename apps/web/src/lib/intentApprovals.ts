@@ -1,9 +1,32 @@
 import { fetchWithAuth } from '../stores/auth';
-import { getApprovalAssertion } from '../stores/authenticator';
+import {
+  AssertionChallengeError,
+  getApprovalAssertion,
+  getBatchApprovalAssertion,
+} from '../stores/authenticator';
 import { i18n } from './i18n';
 import { ActionError, runAction } from './runAction';
 
 export type IntentDecisionOutcome = 'decided' | 'needs_device' | 'not_sole_approver';
+
+/** One row's outcome inside a batch decide. `httpStatus < 300` means that row
+ *  was actually decided; anything else is a per-row failure (409 lost race,
+ *  410 expired, 403 lost authority) that did NOT stop the others. */
+export interface BatchRowResult {
+  id: string;
+  httpStatus: number;
+  body?: { error?: unknown } | null;
+}
+
+/**
+ * Outcome of a batch decide. The three non-`decided` variants are WHOLE-batch
+ * refusals: nothing was decided, so the caller must leave every row in place.
+ */
+export type IntentBatchOutcome =
+  | { outcome: 'decided'; results: BatchRowResult[] }
+  | { outcome: 'needs_device' }
+  | { outcome: 'batch_step_up' }
+  | { outcome: 'batch_not_homogeneous'; offending: string[] };
 
 /**
  * Wraps any failure of the WebAuthn (Touch ID / Windows Hello) ceremony.
@@ -74,6 +97,44 @@ export function decideErrorCopy(token: string): string | undefined {
   if (token === 'step_up_required') return i18n.t('ai:aiApprovalDialog.noApproverDevice');
   if (token === 'not_sole_approver') return i18n.t('ai:aiApprovalDialog.notSoleApprover');
   return undefined;
+}
+
+/** The server's whole-batch refusal (422): the set is no longer one decision.
+ *  Terminal for the batch, but NOT for the cards — each can still be decided
+ *  on its own, so the caller must leave every row on screen. */
+export function isBatchNotHomogeneous(err: unknown): boolean {
+  return errorToken(err) === 'batch_not_homogeneous';
+}
+
+/**
+ * The batch route's 401 `reauth_required`. On the SINGLE-card path this is a
+ * WebAuthn proof rejection ("your scan failed, try again"); on the batch path
+ * it is structural and permanent: `decideApprovalBatch` deliberately does not
+ * plumb `reauthVerified`, so a set whose highest tier demands re-auth can never
+ * clear the ladder no matter how many times it is retried. Same remedy as
+ * `step_up_required` — decide the cards one at a time, where the re-auth is
+ * collected per decision — so it maps to the same outcome and the same copy.
+ * Without this it surfaced as "Verification was canceled or failed. Try again."
+ * on a batch that can only ever fail: wrong blame, and a dead end.
+ */
+export function isBatchReauthRequired(err: unknown): boolean {
+  return (
+    err instanceof ActionError && err.status === 401 && errorToken(err) === 'reauth_required'
+  );
+}
+
+/** Batch copy for the two whole-batch refusals, falling back to the single-card
+ *  map. `step_up_required` MUST NOT reuse the single-card "register a device"
+ *  copy: a batch 403s because the highest tier in the set outranks what one
+ *  ceremony can clear, and the remedy is to decide the cards one at a time. */
+export function batchDecideErrorCopy(token: string): string | undefined {
+  // `reauth_required` shares the copy because it shares the remedy — see
+  // isBatchReauthRequired.
+  if (token === 'step_up_required' || token === 'reauth_required') {
+    return i18n.t('approvals:errors.batchStepUp');
+  }
+  if (token === 'batch_not_homogeneous') return i18n.t('approvals:errors.batchNotHomogeneous');
+  return decideErrorCopy(token);
 }
 
 /**
@@ -158,4 +219,128 @@ export async function decideIntentApproval(
   }
 
   return 'decided';
+}
+
+/**
+ * Decide MANY approval cards with ONE WebAuthn ceremony (P2-2, #4189).
+ *
+ * A scheduled sweep proposes one intent — and one card — per device, so a
+ * fleet-wide finding lands in the inbox as N identical cards. Approving them
+ * one at a time means N Touch ID / Windows Hello prompts for what is, to the
+ * human, a single decision.
+ *
+ * Safety rests entirely on the server's homogeneity rule
+ * (`services/approvals/batchDecide.ts`): every row must still be pending,
+ * fanned out to this user, linked to a SUPERVISED agent-originated intent, and
+ * in the same `(orgId, actionToolName, action)` group. The caller must only
+ * ever offer a batch the server would accept — the UI grouping predicate
+ * mirrors that rule — but the server re-derives it from fresh rows regardless,
+ * and answers 422 for the whole set rather than partially deciding one the
+ * approver may have misread.
+ *
+ * Returns per-row outcomes on a 200; the three refusal variants mean NOTHING
+ * was decided:
+ *   - `needs_device`      — no registered approver device (no POST happened)
+ *   - `batch_step_up`     — 403 `step_up_required` OR 401 `reauth_required`:
+ *                           the tier ceiling this batch would have to clear is
+ *                           above what one ceremony can, so these cards must be
+ *                           decided individually (where re-auth is collected
+ *                           per decision)
+ *   - `batch_not_homogeneous` — 422: the set drifted (a row was decided
+ *                           elsewhere, an intent settled); the cards remain
+ *                           individually decidable
+ *
+ * Deny skips the ceremony (no proof required) and carries the ONE reason the
+ * group collected. Throws CeremonyError on a cancelled/failed ceremony (nothing
+ * was POSTed) and ActionError on any other server rejection.
+ */
+export async function decideIntentApprovalBatch(
+  approvalRequestIds: string[],
+  decision: 'approve' | 'deny',
+  reason?: string,
+): Promise<IntentBatchOutcome> {
+  // The server's spelling: the decision is part of what the batch challenge is
+  // cryptographically bound to, not a UI label.
+  const serverDecision = decision === 'approve' ? 'approved' : 'denied';
+  const body: Record<string, unknown> = {
+    approvalRequestIds,
+    decision: serverDecision,
+  };
+
+  if (decision === 'approve') {
+    try {
+      body.proof = await getBatchApprovalAssertion(
+        '/mobile/approvals',
+        approvalRequestIds,
+        serverDecision,
+      );
+    } catch (err) {
+      // Same CTA signal as the single-card path — the self-approve gate
+      // requires an L3 proof, so we never POST a proofless approve.
+      if (isNoApproverDeviceError(err)) return { outcome: 'needs_device' };
+      // The batch challenge route re-validates the set BEFORE minting, so a
+      // drifted set is refused here rather than at the decide call. Reporting
+      // it as a ceremony failure would tell the approver their fingerprint
+      // scan failed when in fact the cards moved.
+      if (err instanceof AssertionChallengeError) {
+        if (err.token === 'batch_not_homogeneous') {
+          return { outcome: 'batch_not_homogeneous', offending: [] };
+        }
+        if (err.token === 'step_up_required') return { outcome: 'batch_step_up' };
+      }
+      throw new CeremonyError(err);
+    }
+  } else if (reason?.trim()) {
+    body.reason = reason.trim();
+  }
+
+  try {
+    const data = await runAction<{ results?: BatchRowResult[] } | null>({
+      // Inline, not hoisted: the no-silent-mutations guard walks parents for an
+      // enclosing runAction call, so a hoisted thunk reads as an unwrapped
+      // mutation even when passed straight in.
+      request: () =>
+        fetchWithAuth('/mobile/approvals/batch/decide', {
+          method: 'POST',
+          body: JSON.stringify(body),
+          skipUnauthorizedRetry: true,
+        }),
+      errorFallback: i18n.t('ai:aiApprovalDialog.decideFailed'),
+      // Same reasoning as the single-card decide: this route answers 401 for
+      // `assertion_failed` / `reauth_required`, which are proof rejections, not
+      // session expiry — a /login redirect here would bounce a user out of the
+      // app because their fingerprint scan failed.
+      treatUnauthorizedAsError: true,
+      friendly: batchDecideErrorCopy,
+      // A 200 can still carry per-row failures, and those are reported INLINE
+      // on the rows that survived. Toasting "Approved" over a partial result
+      // would overstate what happened, so the toast fires only when every row
+      // was decided; an empty string is runAction's own "no toast" signal.
+      successMessage: (result) => {
+        const rows = result?.results ?? [];
+        if (rows.length === 0 || rows.some((row) => row.httpStatus >= 300)) return '';
+        return decision === 'approve'
+          ? i18n.t('ai:aiApprovalDialog.approvedToast')
+          : i18n.t('ai:aiApprovalDialog.deniedToast');
+      },
+    });
+    return {
+      outcome: 'decided',
+      results: Array.isArray(data?.results) ? data.results : [],
+    };
+  } catch (err) {
+    if (isBatchNotHomogeneous(err)) {
+      const offending = (err as ActionError).body as { offending?: unknown } | null | undefined;
+      return {
+        outcome: 'batch_not_homogeneous',
+        offending: Array.isArray(offending?.offending)
+          ? offending.offending.filter((id): id is string => typeof id === 'string')
+          : [],
+      };
+    }
+    if (isStepUpRequired(err) || isBatchReauthRequired(err)) {
+      return { outcome: 'batch_step_up' };
+    }
+    throw err;
+  }
 }

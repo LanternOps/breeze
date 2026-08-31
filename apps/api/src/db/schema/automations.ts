@@ -1,4 +1,5 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, index, uniqueIndex, check } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { scripts } from './scripts';
@@ -8,6 +9,8 @@ import { aiAgents } from './aiAgents';
 export const automationTriggerTypeEnum = pgEnum('automation_trigger_type', ['schedule', 'event', 'webhook', 'manual']);
 export const automationOnFailureEnum = pgEnum('automation_on_failure', ['stop', 'continue', 'notify']);
 export const automationRunStatusEnum = pgEnum('automation_run_status', ['running', 'completed', 'failed', 'partial']);
+export const automationResourceKindEnum = pgEnum('automation_resource_kind', ['script', 'software_catalog', 'notification_channel']);
+export const automationResourceBindingStateEnum = pgEnum('automation_resource_binding_state', ['active', 'quarantined']);
 // Per-device outcome within a single automation run (#2023). `pending` = row
 // seeded before the device is processed; `running` = actively executing;
 // terminal states are success/failed/skipped.
@@ -49,6 +52,48 @@ export const automations = pgTable('automations', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
   partnerIdIdx: index('automations_partner_id_idx').on(table.partnerId),
+}));
+
+// Durable ownership snapshot for every resource referenced by a standalone
+// automation. The binding copies the automation's dual owner axes; a database
+// constraint trigger in 2026-09-25-a-automation-resource-bindings.sql rejects
+// owner drift from the parent and expected resource owners outside that tenant.
+// Task 3 consumes only active bindings at run admission and dispatch.
+export const automationResourceBindings = pgTable('automation_resource_bindings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  automationId: uuid('automation_id').notNull().references(() => automations.id, { onDelete: 'cascade' }),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
+  resourceKind: automationResourceKindEnum('resource_kind').notNull(),
+  // Kept as text so malformed legacy JSON can be quarantined durably rather
+  // than disappearing during the bounded migration backfill.
+  resourceId: text('resource_id').notNull(),
+  expectedResourceOrgId: uuid('expected_resource_org_id').references(() => organizations.id),
+  expectedResourcePartnerId: uuid('expected_resource_partner_id').references(() => partners.id),
+  expectedResourceIsSystem: boolean('expected_resource_is_system').notNull().default(false),
+  state: automationResourceBindingStateEnum('state').notNull().default('active'),
+  reason: varchar('reason', { length: 100 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  oneOwnerCheck: check(
+    'automation_resource_bindings_one_owner_chk',
+    sql`(${table.orgId} IS NULL) <> (${table.partnerId} IS NULL)`,
+  ),
+  expectedOwnerCheck: check(
+    'automation_resource_bindings_expected_owner_chk',
+    sql`(
+      (${table.expectedResourceIsSystem} = true AND ${table.expectedResourceOrgId} IS NULL AND ${table.expectedResourcePartnerId} IS NULL)
+      OR
+      (${table.expectedResourceIsSystem} = false AND (${table.expectedResourceOrgId} IS NOT NULL OR ${table.expectedResourcePartnerId} IS NOT NULL))
+    )`,
+  ),
+  automationIdx: index('automation_resource_bindings_automation_idx').on(table.automationId),
+  orgIdx: index('automation_resource_bindings_org_idx').on(table.orgId),
+  partnerIdx: index('automation_resource_bindings_partner_idx').on(table.partnerId),
+  stateIdx: index('automation_resource_bindings_state_idx').on(table.state),
+  automationResourceUnique: uniqueIndex('automation_resource_bindings_identity_uniq')
+    .on(table.automationId, table.resourceKind, table.resourceId),
 }));
 
 export const automationRuns = pgTable('automation_runs', {
