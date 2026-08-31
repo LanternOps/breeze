@@ -18,6 +18,7 @@ import {
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { setCooldown, markConfigPolicyRuleCooldown } from '../services/alertCooldown';
+import { ALERT_CAS_LOST_MESSAGE, buildResolveAlertCas } from '../services/alertService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { publishEvent } from '../services/eventBus';
 import { escapeLike } from '../utils/sql';
@@ -977,8 +978,10 @@ mobileRoutes.post(
       return c.json({ error: 'Alert not found' }, 404);
     }
 
+    // Fast path with a specific message. It is NOT the concurrency control — the
+    // compare-and-swap below is. A tech racing the auto-resolve sweep clears this.
     if (alert.status === 'resolved') {
-      return c.json({ error: 'Alert is already resolved' }, 400);
+      return c.json({ error: 'Alert is already resolved' }, 409);
     }
     if (alert.status === 'dismissed') {
       // Dismissed is terminal (matches POST /alerts/:id/resolve): resolving it
@@ -987,6 +990,8 @@ mobileRoutes.post(
     }
 
     const resolvedAt = new Date();
+    // Winner-takes-all (#4094) — same predicate as `resolveAlert`. See the twin
+    // handler in routes/alerts/alerts.ts for the full rationale.
     const [updated] = await db
       .update(alerts)
       .set({
@@ -995,8 +1000,13 @@ mobileRoutes.post(
         resolvedBy: auth.user.id,
         resolutionNote: data.note
       })
-      .where(eq(alerts.id, alertId))
+      .where(buildResolveAlertCas(alertId))
       .returning();
+    if (!updated) {
+      // Lost the race: another request reached a terminal status first. The
+      // cooldown/event/feedback/audit fan-out below belongs to that caller only.
+      return c.json({ error: ALERT_CAS_LOST_MESSAGE }, 409);
+    }
 
     try {
       if (alert.ruleId) {
@@ -1032,11 +1042,13 @@ mobileRoutes.post(
         'alert.resolved',
         alert.orgId,
         {
-          alertId: updated?.id ?? alertId,
+          alertId: updated.id,
           ruleId: alert.ruleId,
           deviceId: alert.deviceId,
           resolvedBy: auth.user.id,
-          resolutionNote: data.note
+          resolutionNote: data.note,
+          resolvedAt: resolvedAt.toISOString(),
+          triggeredAt: alert.triggeredAt.toISOString(),
         },
         'mobile-routes',
         { userId: auth.user.id }
@@ -1047,7 +1059,7 @@ mobileRoutes.post(
 
     await emitAlertStateFeedback({
       orgId: alert.orgId,
-      alertId: updated?.id ?? alertId,
+      alertId: updated.id,
       eventType: 'alert.resolved',
       outcome: 'resolved',
       actorUserId: auth.user.id,
@@ -1063,8 +1075,8 @@ mobileRoutes.post(
       orgId: alert.orgId,
       action: 'mobile.alert.resolve',
       resourceType: 'alert',
-      resourceId: updated?.id ?? alertId,
-      resourceName: updated?.title ?? alert.title,
+      resourceId: updated.id,
+      resourceName: updated.title,
       details: { hasNote: Boolean(data.note) }
     });
 

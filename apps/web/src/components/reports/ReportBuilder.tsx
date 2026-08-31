@@ -27,6 +27,8 @@ import { formatNumber } from '@/lib/i18n/format';
 import type { ReportFormat, ReportSchedule, ReportType as LegacyReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { runAction, ActionError } from '@/lib/runAction';
+import { navigateTo } from '@/lib/navigation';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
 import { FilterPreview } from '../filters/FilterPreview';
@@ -157,7 +159,14 @@ const legacyToBuilderType: Record<LegacyReportType, BuilderReportType> = {
   executive_summary: 'activity',
   // Posture is delivered via a curated template, not the freeform builder; map to
   // the closest builder data-source so the legacy builder degrades gracefully.
-  security_compliance_posture: 'compliance'
+  security_compliance_posture: 'compliance',
+  // The AI schedule owns `ai_org_narrative` end to end — the builder never
+  // offers it (it is absent from `reportTypeOptions`, so no create-flow tile
+  // exists) and the API refuses every mutation on it with a 409. The entry
+  // exists only to keep this Record exhaustive and to make
+  // `reportTypeSurvivesBuilder('ai_org_narrative')` false, so any code path
+  // that did reach the builder degrades to a data source rather than crashing.
+  ai_org_narrative: 'activity'
 };
 
 const scheduleOptions: { value: ReportSchedule; label: string; description: string }[] = [
@@ -878,6 +887,9 @@ export default function ReportBuilder({
           config.filters = inheritedFilters;
         }
 
+        // runaction-exempt: live-preview refresh, not a create/update mutation —
+        // it feeds the on-screen preview panel and already surfaces failures
+        // inline via livePreviewError below.
         const response = await fetchWithAuth('/reports/generate', {
           method: 'POST',
           body: JSON.stringify({
@@ -1278,10 +1290,11 @@ export default function ReportBuilder({
 
     setSaving(true);
     try {
-      let response: Response | undefined;
-
       if (mode === 'adhoc') {
-        response = await fetchWithAuth('/reports/generate', {
+        // runaction-exempt: ad-hoc generation, not a create/update mutation —
+        // onSubmit chains into ReportBuilderPage's own preview/error handling
+        // (ReportPreview renders the inline error state).
+        const response = await fetchWithAuth('/reports/generate', {
           method: 'POST',
           body: JSON.stringify({
             type: payload.type,
@@ -1290,25 +1303,46 @@ export default function ReportBuilder({
             ...(currentOrgId ? { orgId: currentOrgId } : {})
           })
         });
-      } else if (mode === 'edit' && reportId) {
-        response = await fetchWithAuth(`/reports/${reportId}`, {
-          method: 'PUT',
-          body: JSON.stringify(payload)
-        });
+
+        if (!response.ok) {
+          throw new Error(t('reports.reportBuilder.errors.saveReport'));
+        }
+
+        onSubmit?.(values);
       } else {
-        response = await fetchWithAuth('/reports', {
-          method: 'POST',
-          body: JSON.stringify(payload)
+        const isEdit = mode === 'edit' && Boolean(reportId);
+
+        await runAction({
+          request: () =>
+            isEdit
+              ? fetchWithAuth(`/reports/${reportId}`, {
+                  method: 'PUT',
+                  body: JSON.stringify(payload)
+                })
+              : fetchWithAuth('/reports', {
+                  method: 'POST',
+                  body: JSON.stringify(payload)
+                }),
+          errorFallback: t('reports.reportBuilder.errors.saveReport'),
+          successMessage: isEdit
+            ? t('reports.reportBuilder.success.updated', { name: payload.name })
+            : t('reports.reportBuilder.success.created', { name: payload.name }),
+          onUnauthorized: () => {
+            void navigateTo('/login', { replace: true });
+          }
         });
-      }
 
-      if (!response.ok) {
-        throw new Error(t('reports.reportBuilder.errors.saveReport'));
+        if (onSubmit) {
+          await onSubmit(values);
+        } else {
+          void navigateTo('/reports');
+        }
       }
-
-      onSubmit?.(values);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('reports.reportBuilder.errors.generic'));
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        setError(err instanceof Error ? err.message : t('reports.reportBuilder.errors.generic'));
+      }
     } finally {
       setSaving(false);
     }

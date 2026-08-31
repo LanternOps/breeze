@@ -47,6 +47,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/desktop/x11"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
+	rollbackstate "github.com/breeze-rmm/agent/internal/rollback"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/security"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
@@ -79,26 +80,28 @@ const pendingActivationClockSkew = 10 * time.Minute
 const selfInitiatedRenewalLeadTime = 24 * time.Hour
 
 type HeartbeatPayload struct {
-	Metrics          *collectors.SystemMetrics `json:"metrics,omitempty"`
-	MetricsAvailable *bool                     `json:"metricsAvailable,omitempty"`
-	Status           string                    `json:"status"`
-	AgentVersion     string                    `json:"agentVersion"`
-	IPHistoryUpdate  *IPHistoryUpdate          `json:"ipHistoryUpdate,omitempty"`
-	PendingReboot    bool                      `json:"pendingReboot"`
-	LastUser         string                    `json:"lastUser,omitempty"`
-	UptimeSeconds    int64                     `json:"uptime,omitempty"`
-	DeviceRole       string                    `json:"deviceRole,omitempty"`
+	Metrics             *collectors.SystemMetrics  `json:"metrics,omitempty"`
+	MetricsAvailable    *bool                      `json:"metricsAvailable,omitempty"`
+	Status              string                     `json:"status"`
+	AgentVersion        string                     `json:"agentVersion"`
+	RollbackObservation *rollbackstate.Observation `json:"rollbackObservation,omitempty"`
+	IPHistoryUpdate     *IPHistoryUpdate           `json:"ipHistoryUpdate,omitempty"`
+	PendingReboot       bool                       `json:"pendingReboot"`
+	LastUser            string                     `json:"lastUser,omitempty"`
+	UptimeSeconds       int64                      `json:"uptime,omitempty"`
+	DeviceRole          string                     `json:"deviceRole,omitempty"`
 	// Orthogonal virtualization attribute (issue #1387). IsVirtual is a
 	// pointer so an old-agent omission (nil) is distinguishable from a
 	// genuine "physical" report (false) — the server only overwrites the
 	// stored value when the agent actually sends one.
-	IsVirtual              *bool          `json:"isVirtual,omitempty"`
-	VirtualizationPlatform string         `json:"virtualizationPlatform,omitempty"`
-	HealthStatus           map[string]any `json:"healthStatus,omitempty"`
-	DroppedLogs            int64          `json:"droppedLogs,omitempty"`
-	HelperVersion          string         `json:"helperVersion,omitempty"`
-	WatchdogVersion        string         `json:"watchdogVersion,omitempty"`
-	BackupVersion          string         `json:"backupVersion,omitempty"`
+	IsVirtual                 *bool             `json:"isVirtual,omitempty"`
+	VirtualizationPlatform    string            `json:"virtualizationPlatform,omitempty"`
+	HealthStatus              map[string]any    `json:"healthStatus,omitempty"`
+	DroppedLogs               int64             `json:"droppedLogs,omitempty"`
+	HelperVersion             string            `json:"helperVersion,omitempty"`
+	WatchdogVersion           string            `json:"watchdogVersion,omitempty"`
+	BackupVersion             string            `json:"backupVersion,omitempty"`
+	RollbackComponentVersions map[string]string `json:"rollbackComponentVersions,omitempty"`
 	// ServerURL is the control-plane base URL this heartbeat is POSTed to
 	// (#2288). Set per-attempt in postHeartbeat, so a backup probe reports
 	// the backup URL and the device row shows real fleet position.
@@ -137,9 +140,11 @@ type HeartbeatPayload struct {
 	// written unconditionally server-side (the outboundNetworkPolicyVersion
 	// self-healing pattern, NOT the sticky isVirtual pattern) so a resolved
 	// condition clears a dashboard migration banner on the next beat.
-	// omitempty on both: a self-host build (the only build in this repo
-	// today) reports "" / false — both omitempty fields drop out — so the
-	// wire payload is byte-identical to pre-Task-8 agents.
+	// Since #4072 BOTH build editions report a value ("self-host"/"hosted") —
+	// a reported edition doubles as the server's signal that this build can
+	// accept hosted-edition update artifacts (see migrationSignal). omitempty
+	// is retained so MigrationRequired=false stays off the wire; AgentEdition
+	// is never empty from this build.
 	AgentEdition      string `json:"agentEdition,omitempty"`
 	MigrationRequired bool   `json:"migrationRequired,omitempty"`
 }
@@ -150,12 +155,19 @@ type HeartbeatPayload struct {
 // nothing is persisted to violate the allowlist when there is no backup.
 // Pure; independent of hostpolicy.Strict() — reporting is telemetry, not
 // enforcement, so it fires the same in gap and strict hosted builds.
-// Self-host returns ("", false) — NOT "self-host" — because the
-// AgentEdition field is omitempty: only the empty string drops out of the
-// wire payload, preserving byte-identity with pre-Task-8 agents.
+//
+// Self-host builds report "self-host" explicitly (#4072). This is the
+// server's edition-transition capability signal: a build that reports an
+// edition — either value — also carries the one-way self-host → hosted
+// allowance in updater.editionAllowed (both shipped in the same binary),
+// while a silent build ≥0.105.0 is a self-host build that hard-refuses
+// hosted-edition artifacts, so the server withholds those offers rather
+// than wedging it in a permanent retry loop. Regressing this to the empty
+// string would re-strand every future self-host agent that migrates to a
+// hosted control plane.
 func migrationSignal(server, backup string) (edition string, migrationRequired bool) {
 	if !hostpolicy.Enforced() {
-		return "", false
+		return "self-host", false
 	}
 	if hostpolicy.AllowedURL(server) != nil {
 		return "hosted", true
@@ -183,6 +195,11 @@ type SecurityCapabilities struct {
 	// every beat, so a DOWNGRADE to an older agent reports back down to 0 and
 	// the PR4c dispatch gate stops trusting a stale claim.
 	ScriptSecretEnvVersion int `json:"scriptSecretEnvVersion"`
+	// Device-control protocols are independently versioned and intentionally
+	// omitted when unsupported. The API treats omission, zero, malformed, and
+	// unknown values as capability 0 on every heartbeat.
+	PeripheralPolicyProtocolVersion int `json:"peripheralPolicyProtocolVersion,omitempty"`
+	RollbackProtocolVersion         int `json:"rollbackProtocolVersion,omitempty"`
 }
 
 type DesktopAccessState struct {
@@ -213,7 +230,8 @@ type HeartbeatResponse struct {
 	// Wave 6 Task 7 — signed authorisations to add an unseen manifest signing
 	// key. Nothing here is trusted on receipt; every record is verified
 	// against the currently-pinned key it names.
-	ManifestKeyDelegations []api.ManifestKeyDelegation `json:"manifestKeyDelegations,omitempty"`
+	ManifestKeyDelegations            []api.ManifestKeyDelegation `json:"manifestKeyDelegations,omitempty"`
+	AcknowledgedRollbackObservationID string                      `json:"acknowledgedRollbackObservationId,omitempty"`
 }
 
 type HelperSettings struct {
@@ -275,35 +293,36 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
-	config           *config.Config
-	secureToken      *secmem.SecureString
-	client           *http.Client
-	clientMu         sync.RWMutex
-	stopChan         chan struct{}
-	metricsCol       *collectors.MetricsCollector
-	hardwareCol      *collectors.HardwareCollector
-	softwareCol      *collectors.SoftwareCollector
-	inventoryCol     *collectors.InventoryCollector
-	vpnCol           *collectors.VPNCollector
-	changeTrackerCol *collectors.ChangeTrackerCollector
-	sessionCol       *collectors.SessionCollector
-	policyStateCol   *collectors.PolicyStateCollector
-	patchCol         *collectors.PatchCollector
-	patchMgr         *patching.PatchManager
-	connectionsCol   *collectors.ConnectionsCollector
-	eventLogCol      *collectors.EventLogCollector
-	bootCol          *collectors.BootPerformanceCollector
-	reliabilityCol   *collectors.ReliabilityCollector
-	agentVersion     string
-	desktopMgr       *desktop.SessionManager
-	wsDesktopMgr     *desktop.WsSessionManager
-	terminalMgr      *terminal.Manager
-	tunnelMgr        *tunnel.Manager
-	executor         *executor.Executor
-	backupBinaryPath string
-	rebootMgr        *patching.RebootManager
-	securityScanner  *security.SecurityScanner
-	wsClient         *websocket.Client
+	config             *config.Config
+	secureToken        *secmem.SecureString
+	client             *http.Client
+	clientMu           sync.RWMutex
+	stopChan           chan struct{}
+	metricsCol         *collectors.MetricsCollector
+	hardwareCol        *collectors.HardwareCollector
+	softwareCol        *collectors.SoftwareCollector
+	inventoryCol       *collectors.InventoryCollector
+	vpnCol             *collectors.VPNCollector
+	changeTrackerCol   *collectors.ChangeTrackerCollector
+	sessionCol         *collectors.SessionCollector
+	policyStateCol     *collectors.PolicyStateCollector
+	patchCol           *collectors.PatchCollector
+	patchMgr           *patching.PatchManager
+	connectionsCol     *collectors.ConnectionsCollector
+	eventLogCol        *collectors.EventLogCollector
+	bootCol            *collectors.BootPerformanceCollector
+	reliabilityCol     *collectors.ReliabilityCollector
+	agentVersion       string
+	desktopMgr         *desktop.SessionManager
+	wsDesktopMgr       *desktop.WsSessionManager
+	terminalMgr        *terminal.Manager
+	tunnelMgr          *tunnel.Manager
+	executor           *executor.Executor
+	backupBinaryPath   string
+	rollbackController rollbackController
+	rebootMgr          *patching.RebootManager
+	securityScanner    *security.SecurityScanner
+	wsClient           *websocket.Client
 	// backupOutbox persists terminal backup results that failed to send over
 	// the WS connection, so a transient blip doesn't orphan the job
 	// server-side. Flushed on WS reconnect (see SetWebSocketClient). Never
@@ -718,6 +737,14 @@ type Heartbeat struct {
 	hbConsecutiveFailures int // guarded by h.mu
 }
 
+type rollbackController interface {
+	Execute(context.Context, rollbackstate.Directive) error
+	Reconcile(context.Context) error
+	Active() bool
+	PendingObservation() (*rollbackstate.Observation, error)
+	Acknowledge(string) error
+}
+
 func New(cfg *config.Config) *Heartbeat {
 	return NewWithVersion(cfg, "0.1.0", nil, nil)
 }
@@ -956,6 +983,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 
 	// Clean up any orphaned Screen Sharing left running from a previous crash.
 	h.tunnelMgr.CleanupOrphanedVNC()
+	h.initializeRollbackController()
 
 	return h
 }
@@ -3903,9 +3931,21 @@ func (h *Heartbeat) sendHeartbeat() {
 		// runtime check): the enforcement is compiled in, not a runtime
 		// toggle.
 		SecurityCapabilities: SecurityCapabilities{
-			OutboundNetworkPolicyVersion: 1,
-			ScriptSecretEnvVersion:       1,
+			OutboundNetworkPolicyVersion:    1,
+			ScriptSecretEnvVersion:          1,
+			PeripheralPolicyProtocolVersion: 2,
+			RollbackProtocolVersion:         1,
 		},
+	}
+	if componentVersions, complete := h.rollbackComponentVersions(); complete {
+		payload.RollbackComponentVersions = componentVersions
+	}
+	if h.rollbackController != nil {
+		if observation, err := h.rollbackController.PendingObservation(); err != nil {
+			log.Warn("failed to load pending rollback observation", "error", err.Error())
+		} else {
+			payload.RollbackObservation = observation
+		}
 	}
 	// Hosted/self-host build-edition + migration-needed telemetry (Task 8).
 	// Independent of hostpolicy.Strict() — see migrationSignal doc comment.
@@ -4287,7 +4327,17 @@ func (h *Heartbeat) applyManifestKeyDelegations(delivered []api.ManifestKeyDeleg
 // already made the response's origin the current server URL (the regular
 // path trivially has; the probe path promotes first) so that command results
 // and rotation requests go back to the control plane that issued them.
+func (h *Heartbeat) acknowledgeRollbackObservation(id string) {
+	if h.rollbackController == nil || id == "" {
+		return
+	}
+	if err := h.rollbackController.Acknowledge(id); err != nil {
+		log.Warn("failed to persist rollback observation acknowledgement", "error", err.Error())
+	}
+}
+
 func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
+	h.acknowledgeRollbackObservation(response.AcknowledgedRollbackObservationID)
 	if len(response.ConfigUpdate) > 0 {
 		h.applyConfigUpdate(response.ConfigUpdate)
 	}
@@ -4360,8 +4410,12 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// be verified.
 	h.applyManifestKeyDelegations(response.ManifestKeyDelegations)
 
+	rollbackActive := h.rollbackController != nil && h.rollbackController.Active()
 	// Process any commands via worker pool
 	for _, cmd := range response.Commands {
+		if cmd.Type == tools.CmdAgentRollbackV1 {
+			rollbackActive = true
+		}
 		if !h.accepting.Load() {
 			log.Warn("rejecting command, agent shutting down", logging.KeyCommandID, cmd.ID)
 			break
@@ -4373,7 +4427,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	}
 
 	// Handle upgrade if requested and auto-update is enabled
-	if response.UpgradeTo != "" && response.UpgradeTo != h.agentVersion {
+	if !rollbackActive && response.UpgradeTo != "" && response.UpgradeTo != h.agentVersion {
 		if decision := mainAgentUpgradeDecision(response.UpgradeTo, h.agentVersion); !decision.Allowed {
 			// SECURITY: never auto-downgrade, and never accept a malformed or
 			// prerelease-mis-ordered target. A compromised/MITM'd control
@@ -4419,7 +4473,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	}
 
 	// Handle helper upgrade if requested
-	if response.HelperUpgradeTo != "" {
+	if !rollbackActive && response.HelperUpgradeTo != "" {
 		installedHelper := h.helperMgr.InstalledVersion()
 		if allowed, reason := helperUpgradeAllowed(response.HelperUpgradeTo, installedHelper, h.helperMgr.IsInstalled()); !allowed {
 			// SECURITY: never auto-downgrade the helper. The signed manifest
@@ -4446,7 +4500,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// WatchdogUpgradeTo), so a HEALTHY watchdog would never self-heal. The
 	// reliably-updating agent drives it instead, recovering already-stuck fleets
 	// whose watchdog is frozen at install-time version.
-	if response.WatchdogUpgradeTo != "" {
+	if !rollbackActive && response.WatchdogUpgradeTo != "" {
 		go h.handleWatchdogUpgrade(response.WatchdogUpgradeTo)
 	}
 
@@ -6285,6 +6339,12 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 		return
 	}
 	defer h.watchdogUpgradeInProgress.Store(false)
+	lease, acquired := updater.TryBeginProcessMutation("watchdog-update")
+	if !acquired {
+		log.Debug("watchdog upgrade deferred, another component mutation is active", "targetVersion", targetVersion)
+		return
+	}
+	defer lease.Release()
 
 	install := h.watchdogInstaller
 	if install == nil {

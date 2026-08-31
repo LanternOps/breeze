@@ -79,6 +79,7 @@ tenantErasureRoutes.post(
       orgId,
       performedBy: auth.user.id,
       performedByEmail: auth.user.email,
+      source: 'platform_admin',
     });
 
     // Audit the enqueue event explicitly. The cascade worker will write

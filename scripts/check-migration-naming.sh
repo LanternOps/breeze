@@ -26,6 +26,32 @@
 #      infix", so taking the next free letter is the natural reading. Nothing
 #      at authoring time said the letters stopped. Now something does. (#3016)
 #
+#   3. A newly added migration must SORT STRICTLY AFTER every migration that
+#      is already committed. This is the invariant that actually matters:
+#      autoMigrate applies files in `localeCompare` order, so a new file that
+#      sorts into the middle replays before migrations it may depend on, and
+#      fails on a fresh database while passing on every already-migrated one.
+#
+#      This rule replaces the old advice that "today's date already sorts
+#      last". That stopped being true around 2026-06-12 and is now off by more
+#      than two weeks: shipped filenames ran ahead of their commit dates in a
+#      compounding ratchet (each author picked one day past the highest
+#      existing filename to guarantee sort-last, which raised the ceiling for
+#      the next author). 169 of 466 dated migrations are named ahead of the day
+#      they landed, the furthest by 16 days. Shipped migrations are content-hash
+#      immutable and cannot be renamed to fix it, so the ceiling stands until
+#      real time catches up — and until then a file named for today sorts
+#      BEFORE the newest shipped ones. Hence: compare against the files, not
+#      against the calendar.
+#
+#      Only checked in --staged mode. The whole-directory pass cannot enforce
+#      it, because the existing set violates it by construction.
+#
+# Filename format: YYYY-MM-DD-HHMMSS-<slug>.sql is preferred for new work — the
+# time component orders same-day migrations natively and removes the need for
+# the `-a-`/`-b-` infix, whose hand-assigned letters are what produced the
+# closed-block confusion in rule 2. Date-only names remain valid.
+#
 # Usage:
 #   check-migration-naming.sh --staged   # newly ADDED staged files (pre-commit)
 #   check-migration-naming.sh            # every file in the migrations dir (CI)
@@ -66,6 +92,31 @@ is_reserved_block_member() {
   return 1
 }
 
+# Greatest already-committed migration basename, by the SAME comparator the
+# runner uses. Deliberately `node`, not `sort`: autoMigrate orders with
+# String.prototype.localeCompare, and shell `sort` (byte or locale collation)
+# disagrees with it on exactly the punctuation these filenames are full of.
+# A guard that ordered differently from the runner would bless files that then
+# replay in a different order than it checked.
+committed_max_migration() {
+  git ls-tree --name-only HEAD "$MIGRATIONS_DIR/" 2>/dev/null \
+    | sed 's#.*/##' \
+    | grep -E '^[0-9]{4}-.*\.sql$' \
+    | node -e '
+        const names = require("fs").readFileSync(0, "utf8").split("\n").filter(Boolean);
+        if (!names.length) process.exit(0);
+        process.stdout.write(names.sort((a, b) => a.localeCompare(b)).pop());
+      '
+}
+
+# Exit 0 when `candidate` sorts strictly after `reference`.
+sorts_strictly_after() {
+  BREEZE_CANDIDATE="$1" BREEZE_REFERENCE="$2" node -e '
+    const a = process.env.BREEZE_CANDIDATE, b = process.env.BREEZE_REFERENCE;
+    process.exit(a.localeCompare(b) > 0 ? 0 : 1);
+  '
+}
+
 violations=0
 
 check_filename() {
@@ -82,9 +133,10 @@ check_filename() {
   if [[ "$base" == "$RESERVED_DATE"* ]] && ! is_reserved_block_member "$base"; then
     echo "  VIOLATION  $base — the ${RESERVED_DATE%-} date block is CLOSED." >&2
     echo "             It is not a free namespace and its slot letters do not" >&2
-    echo "             run past the shipped set. Use a date AFTER the block —" >&2
-    echo "             a plain YYYY-MM-DD-<slug>.sql on today's date already" >&2
-    echo "             sorts last, which is normally the property you want." >&2
+    echo "             run past the shipped set. Use a plain" >&2
+    echo "             YYYY-MM-DD-HHMMSS-<slug>.sql that sorts AFTER every" >&2
+    echo "             shipped migration — note that is not necessarily" >&2
+    echo "             today's date; see rule 3." >&2
     violations=$((violations + 1))
     return
   fi
@@ -101,6 +153,8 @@ if [ "${1:-}" = "--staged" ]; then
     echo "check-migration-naming: 'git diff --cached' failed; refusing to pass." >&2
     exit 1
   fi
+  max_committed="$(committed_max_migration)"
+
   while IFS= read -r file; do
     [ -n "$file" ] || continue
     case "$file" in
@@ -108,7 +162,21 @@ if [ "${1:-}" = "--staged" ]; then
       "$MIGRATIONS_DIR"/*.sql) ;;                # only .sql is a migration
       *) continue ;;                             # README.md etc. are not
     esac
-    check_filename "$(basename "$file")"
+    base="$(basename "$file")"
+    check_filename "$base"
+    if [ -n "$max_committed" ] && ! sorts_strictly_after "$base" "$max_committed"; then
+      echo "  VIOLATION  $base — sorts BEFORE an already-committed migration." >&2
+      echo "             Newest committed: $max_committed" >&2
+      echo "             autoMigrate applies files in localeCompare order, so" >&2
+      echo "             this replays before migrations that already shipped —" >&2
+      echo "             fine on your already-migrated database, a failure on a" >&2
+      echo "             fresh one if it depends on anything newer." >&2
+      echo "             NOTE: today's date is NOT guaranteed to sort last."  >&2
+      echo "             Shipped filenames ran ahead of real time and cannot be" >&2
+      echo "             renamed. Pick a name after the one above, e.g." >&2
+      echo "             YYYY-MM-DD-HHMMSS-<slug>.sql dated past it." >&2
+      violations=$((violations + 1))
+    fi
   done <<< "$staged_added"
 else
   # Without nullglob an unmatched glob expands to the literal pattern, `[ -f ]`

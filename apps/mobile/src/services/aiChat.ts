@@ -6,6 +6,7 @@ import { fetchWithTimeout } from './fetchWithTimeout';
 import type { ApiError } from './api';
 import { refreshToken } from './api';
 import { storeToken } from './auth';
+import { commitIfCurrent, currentSessionGeneration } from './sessionGeneration';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_CORE_PREFIX = '/api/v1';
@@ -49,10 +50,15 @@ let refreshInFlight: Promise<string | null> | null = null;
 async function refreshAccessToken(): Promise<string | null> {
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
+      const generation = currentSessionGeneration();
       try {
         const { token } = await refreshToken();
         try {
-          await storeToken(token);
+          const committed = await commitIfCurrent(generation, async () => {
+            await storeToken(token);
+            return token;
+          });
+          if (committed === undefined) return null;
         } catch (e) {
           // Persisting failed (locked keychain, etc.) — the in-memory token is
           // still valid for the retry, so don't turn a usable refresh into a
@@ -64,7 +70,9 @@ async function refreshAccessToken(): Promise<string | null> {
             tags: { area: 'aichat-token-refresh' },
             extra: { stage: 'persist' },
           });
+          if (generation !== currentSessionGeneration()) return null;
         }
+        if (generation !== currentSessionGeneration()) return null;
         return token;
       } catch (e) {
         // Refresh failed — expired refresh cookie, offline, or a

@@ -12,8 +12,78 @@ import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
+import { captureException, captureMessage } from './sentry';
+import { getCatalogEntryName } from './llmProviderCatalog';
 
 export type AiBillingSource = 'platform' | 'partner_key';
+
+export interface CatalogPricingSnapshot {
+  catalogEntryId: string;
+  revisionId: string;
+  inputCentsPerM: number;
+  outputCentsPerM: number;
+  cacheReadCentsPerM: number;
+  cacheWriteCentsPerM: number;
+}
+
+/**
+ * Why an org was refused AI spend.
+ *
+ * The split that matters to a retrying caller is `permanent`, not the reason
+ * label: a daily/monthly cap rolls over and prepaid credits can be topped up,
+ * while an org with AI switched off — or a partner on a plan that has no AI —
+ * stays refused until a human changes something. Collapsing both into one
+ * retryable shape is what let a tenant's own "AI off" setting burn every
+ * workspace ingest attempt and stall indexing behind it.
+ */
+export type AiDenialReason =
+  | 'plan_gate'
+  | 'credits_exhausted'
+  | 'ai_disabled'
+  | 'daily_budget'
+  | 'monthly_budget';
+
+export interface AiAccessDenial {
+  /** The user-facing message; identical to what the legacy string API returns. */
+  message: string;
+  reason: AiDenialReason;
+  /** True when retrying cannot clear it — only a config/plan/budget change can. */
+  permanent: boolean;
+}
+
+const PERMANENT_DENIAL_REASONS: ReadonlySet<AiDenialReason> = new Set<AiDenialReason>([
+  'plan_gate',
+  'ai_disabled',
+]);
+
+function denial(reason: AiDenialReason, message: string): AiAccessDenial {
+  return { message, reason, permanent: PERMANENT_DENIAL_REASONS.has(reason) };
+}
+
+// Sentry throttle for the fail-open billing paths below. A billing outage
+// affects EVERY org at once, so an uncapped report would ship one event per AI
+// call across the whole fleet; one per key per hour is enough to alert on.
+// Same shape (and same rationale) as llmConfigResolver's local copy —
+// deliberately duplicated rather than shared, per the repo's helper guidance.
+const BILLING_SENTRY_THROTTLE_MS = 60 * 60 * 1000;
+const billingSentryTimestamps = new Map<string, number>();
+
+/**
+ * Report at most once per key per hour, and NEVER throw: every call site below
+ * sits on a path whose whole contract is that it degrades quietly rather than
+ * failing the caller's AI request.
+ */
+function reportBillingIssueAtMostHourly(key: string, capture: () => void): void {
+  try {
+    const now = Date.now();
+    const last = billingSentryTimestamps.get(key);
+    if (last !== undefined && now - last < BILLING_SENTRY_THROTTLE_MS) return;
+    billingSentryTimestamps.set(key, now);
+    capture();
+  } catch {
+    // Telemetry must never break the fail-open billing path it observes.
+  }
+}
 
 // Cost per million tokens, expressed in cents (USD * 100).
 // Source: official Anthropic pricing — https://platform.claude.com/docs/en/about-claude/models/overview
@@ -32,6 +102,10 @@ const MODEL_PRICING: Record<string, { inputPerMillion: number; outputPerMillion:
   'claude-sonnet-4-5': { inputPerMillion: 300, outputPerMillion: 1500 },
   'claude-sonnet-4-5-20250929': { inputPerMillion: 300, outputPerMillion: 1500 }
 };
+
+export function isPricedModel(model: string): boolean {
+  return model in MODEL_PRICING;
+}
 
 // Models a partner may pin as their BYOK default. MODEL_PRICING keeps legacy
 // snapshot ids for cost attribution on old sessions; those must not be offered
@@ -57,12 +131,26 @@ const DEFAULT_PRICING = { inputPerMillion: 500, outputPerMillion: 2500 };
 const CACHE_READ_INPUT_MULTIPLIER = 0.1;
 const CACHE_WRITE_INPUT_MULTIPLIER = 1.25;
 
+/**
+ * Legacy string-or-null facade over {@link checkBillingCreditsDetailed}, kept
+ * because a dozen call sites branch on `if (creditError) return 402`. New
+ * callers that must decide whether RETRYING can help want the detailed form.
+ */
 export async function checkBillingCredits(
   orgId: string,
   billingSource: AiBillingSource,
 ): Promise<string | null> {
+  return (await checkBillingCreditsDetailed(orgId, billingSource))?.message ?? null;
+}
+
+export async function checkBillingCreditsDetailed(
+  orgId: string,
+  billingSource: AiBillingSource,
+): Promise<AiAccessDenial | null> {
   const billingUrl = process.env.BILLING_SERVICE_URL;
   const billingKey = process.env.BILLING_SERVICE_API_KEY;
+  // No billing service is the self-hosted default, not a failure — deliberately
+  // NOT reported, or every self-hosted instance would ship this hourly forever.
   if (!billingUrl || !billingKey) return null;
 
   // #2190 — self-context this read (and every other DB op in this module's
@@ -81,33 +169,83 @@ export async function checkBillingCredits(
     .where(eq(organizations.id, orgId))
     .limit(1));
 
-  if (!org?.partnerId) return null;
+  // `organizations.partner_id` is NOT NULL, so a falsy value here means the row
+  // was not found at all — a deleted org still being billed against, or a read
+  // that got RLS-filtered to zero rows. Either way the gate silently falls open
+  // for that org, which is worth one event an hour.
+  if (!org?.partnerId) {
+    reportBillingIssueAtMostHourly(`credits-no-partner:${orgId}`, () => {
+      captureMessage('AI credit check skipped: no organization row to bill', {
+        eventCode: 'ai_billing_org_partner_missing',
+        tags: { org_id: orgId, ai_billing_http_status: 'none' },
+      });
+    });
+    return null;
+  }
 
   try {
     const res = await fetch(`${billingUrl}/api/internal/partners/${org.partnerId}/ai-credits`, {
       headers: { 'Authorization': `Bearer ${billingKey}` },
     });
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // Fail OPEN on purpose (a billing outage must not take AI down for every
+      // tenant) — but no longer fail SILENT: this branch also swallows a 401
+      // from a rotated BILLING_SERVICE_API_KEY, which looks exactly like
+      // "everyone has credits" from here.
+      console.error(
+        `[AI] Billing credit check returned HTTP ${res.status} for org=${orgId} — allowing the request (fail-open)`,
+      );
+      reportBillingIssueAtMostHourly(`credits-http:${orgId}`, () => {
+        captureMessage('AI credit check failed; gate fell open', {
+          eventCode: 'ai_billing_credits_check_failed',
+          tags: { org_id: orgId, ai_billing_http_status: String(res.status) },
+        });
+      });
+      return null;
+    }
 
     const data = await res.json() as { allowed: boolean; remainingCredits: number; plan: string };
 
     if (!data.allowed) {
       if (['free', 'starter'].includes(data.plan)) {
-        return 'AI assistant requires the Community plan.';
+        // A plan gate, not a spend cap: nothing about waiting changes it.
+        return denial('plan_gate', 'AI assistant requires the Community plan.');
       }
       if (billingSource === 'platform') {
-        return 'You are out of AI credits. Purchase more credits to continue.';
+        return denial(
+          'credits_exhausted',
+          'You are out of AI credits. Purchase more credits to continue.',
+        );
       }
     }
 
     return null;
-  } catch {
+  } catch (err) {
+    console.error(
+      `[AI] Billing credit check failed for org=${orgId} — allowing the request (fail-open):`,
+      err instanceof Error ? err.message : String(err),
+    );
+    reportBillingIssueAtMostHourly(`credits-throw:${orgId}`, () => {
+      captureException(err, undefined, {
+        org_id: orgId,
+        ai_billing_http_status: 'transport_error',
+      });
+    });
     return null;
   }
 }
 
-async function deductBillingCredits(orgId: string, costCents: number): Promise<void> {
+/**
+ * Draw platform-funded spend down from the org's prepaid AI credit balance.
+ *
+ * Exported for callers that record usage through `recordUsage` (which does NOT
+ * deduct — see the note on `recordSessionlessSdkUsage`) and therefore have to
+ * make the deduction themselves. Only ever call this for
+ * `billingSource === 'platform'`: partner BYOK spend is billed by Anthropic to
+ * the partner, not against our credits.
+ */
+export async function deductBillingCredits(orgId: string, costCents: number): Promise<void> {
   const billingUrl = process.env.BILLING_SERVICE_URL;
   const billingKey = process.env.BILLING_SERVICE_API_KEY;
   if (!billingUrl || !billingKey) return;
@@ -125,10 +263,20 @@ async function deductBillingCredits(orgId: string, costCents: number): Promise<v
     .where(eq(organizations.id, orgId))
     .limit(1));
 
-  if (!org?.partnerId) return;
+  // NOT NULL column (see checkBillingCreditsDetailed): falsy means no org row
+  // came back, so this spend is about to go unbilled with nothing said.
+  if (!org?.partnerId) {
+    reportBillingIssueAtMostHourly(`deduct-no-partner:${orgId}`, () => {
+      captureMessage('AI credit deduction skipped: no organization row to bill', {
+        eventCode: 'ai_billing_org_partner_missing',
+        tags: { org_id: orgId, ai_billing_http_status: 'none' },
+      });
+    });
+    return;
+  }
 
   try {
-    await fetch(`${billingUrl}/api/internal/partners/${org.partnerId}/ai-credits/deduct`, {
+    const res = await fetch(`${billingUrl}/api/internal/partners/${org.partnerId}/ai-credits/deduct`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${billingKey}`,
@@ -136,8 +284,31 @@ async function deductBillingCredits(orgId: string, costCents: number): Promise<v
       },
       body: JSON.stringify({ costCents }),
     });
+
+    // The status was previously discarded entirely: a 4xx/5xx from the billing
+    // service dropped this platform-funded spend on the floor with no log line
+    // and no event, so the credit balance both budget gates read silently
+    // drifted above what was actually consumed. Still non-throwing — usage is
+    // already recorded and the caller's AI response must not fail over billing.
+    if (!res.ok) {
+      console.error(
+        `[AI] Billing credit deduction returned HTTP ${res.status} for org=${orgId}, cost=${costCents} cents — spend not deducted`,
+      );
+      reportBillingIssueAtMostHourly(`deduct-http:${orgId}`, () => {
+        captureMessage('AI credit deduction rejected; platform spend went unbilled', {
+          eventCode: 'ai_billing_credits_deduct_failed',
+          tags: { org_id: orgId, ai_billing_http_status: String(res.status) },
+        });
+      });
+    }
   } catch (err) {
     console.error('[AI] Failed to deduct billing credits:', err instanceof Error ? err.message : String(err));
+    reportBillingIssueAtMostHourly(`deduct-throw:${orgId}`, () => {
+      captureException(err, undefined, {
+        org_id: orgId,
+        ai_billing_http_status: 'transport_error',
+      });
+    });
   }
 }
 
@@ -227,6 +398,22 @@ export function calculateCostCents(
   return Math.round((inputCost + outputCost + cacheReadCost + cacheWriteCost) * 100) / 100;
 }
 
+export function calculateCatalogCostCents(
+  catalogPricing: CatalogPricingSnapshot,
+  inputTokens: number,
+  outputTokens: number,
+  cacheReadInputTokens = 0,
+  cacheCreationInputTokens = 0,
+): number {
+  const inputCost = (inputTokens / 1_000_000) * catalogPricing.inputCentsPerM;
+  const outputCost = (outputTokens / 1_000_000) * catalogPricing.outputCentsPerM;
+  const cacheReadCost =
+    (cacheReadInputTokens / 1_000_000) * catalogPricing.cacheReadCentsPerM;
+  const cacheWriteCost =
+    (cacheCreationInputTokens / 1_000_000) * catalogPricing.cacheWriteCentsPerM;
+  return Math.round((inputCost + outputCost + cacheReadCost + cacheWriteCost) * 100) / 100;
+}
+
 /**
  * Check if the org is within budget limits before sending a message.
  * Returns null if allowed, or an error message if blocked.
@@ -235,7 +422,20 @@ export async function checkBudget(
   orgId: string,
   billingSource: AiBillingSource,
 ): Promise<string | null> {
-  const creditError = await checkBillingCredits(orgId, billingSource);
+  return (await checkBudgetDetailed(orgId, billingSource))?.message ?? null;
+}
+
+/**
+ * As {@link checkBudget}, but says WHY — and in particular whether retrying can
+ * ever help. Non-interactive callers (ingest job phases, background sweeps)
+ * must use this form: a permanent denial has to degrade the feature, while a
+ * transient one should back off and come back.
+ */
+export async function checkBudgetDetailed(
+  orgId: string,
+  billingSource: AiBillingSource,
+): Promise<AiAccessDenial | null> {
+  const creditError = await checkBillingCreditsDetailed(orgId, billingSource);
   if (creditError) return creditError;
 
   // #2190 — getEffectiveAiBudget reads organizations/partners/aiBudgets; run
@@ -244,7 +444,11 @@ export async function checkBudget(
   // Self-context it; the wrapper reuses any active ambient context (see the
   // rationale on checkBillingCredits above).
   const budget = await withSystemDbAccessContext(() => getEffectiveAiBudget(orgId));
-  if (!budget.enabled) return 'AI features are disabled for this organization';
+  // PERMANENT: the tenant (or their partner) switched AI off. No retry, no
+  // clock rollover and no top-up changes it — only someone flipping it back.
+  if (!budget.enabled) {
+    return denial('ai_disabled', 'AI features are disabled for this organization');
+  }
 
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
@@ -267,7 +471,11 @@ export async function checkBudget(
       .limit(1));
 
     if (dailyUsage && dailyUsage.totalCostCents >= budget.dailyBudgetCents) {
-      return `Daily AI budget exceeded ($${(budget.dailyBudgetCents / 100).toFixed(2)})`;
+      // Transient: the daily period key rolls at UTC midnight.
+      return denial(
+        'daily_budget',
+        `Daily AI budget exceeded ($${(budget.dailyBudgetCents / 100).toFixed(2)})`,
+      );
     }
   }
 
@@ -287,7 +495,11 @@ export async function checkBudget(
       .limit(1));
 
     if (monthlyUsage && monthlyUsage.totalCostCents >= budget.monthlyBudgetCents) {
-      return `Monthly AI budget exceeded ($${(budget.monthlyBudgetCents / 100).toFixed(2)})`;
+      // Transient: the monthly period key rolls at the start of the next month.
+      return denial(
+        'monthly_budget',
+        `Monthly AI budget exceeded ($${(budget.monthlyBudgetCents / 100).toFixed(2)})`,
+      );
     }
   }
 
@@ -345,6 +557,31 @@ export async function checkUserAiRateLimit(userId: string): Promise<string | nul
 }
 
 /**
+ * Org-scoped rate limit for non-interactive AI work driven by a SYSTEM
+ * principal (no acting user) — e.g. an extension's bulk enrichment batch.
+ *
+ * Deliberately skips `checkAiRateLimit`'s per-USER bucket. That bucket is keyed
+ * `ai:msg:user:<id>` with no org component, so a synthetic actor id ("this
+ * surface") would put every tenant's automation in ONE deployment-wide bucket —
+ * one partner's batch would rate-limit everybody else's. Keying the synthetic
+ * actor per org fixes the coupling but still caps automation at the
+ * interactive-chat 20/min, which a legitimate 100-file batch trips. The per-org
+ * HOURLY ceiling is the meaningful bound here, and `checkBudget` bounds spend.
+ */
+export async function checkSystemAiRateLimit(orgId: string): Promise<string | null> {
+  const redis = getRedis();
+  // Self-contexted for the same reason as checkAiRateLimit (#2190).
+  const budget = await withSystemDbAccessContext(() => getEffectiveAiBudget(orgId));
+  const msgsPerHour = budget?.messagesPerHourPerOrg ?? 200;
+
+  const orgResult = await rateLimiter(redis, `ai:msg:org:${orgId}`, msgsPerHour, 3600);
+  if (!orgResult.allowed) {
+    return `Organization rate limit exceeded. Try again at ${orgResult.resetAt.toISOString()}`;
+  }
+  return null;
+}
+
+/**
  * Record token usage for a message and update aggregates.
  *
  * `sessionId` is `null` for sessionless flows (e.g. the one-shot catalog AI
@@ -363,8 +600,11 @@ export async function recordUsage(
   outputTokens: number,
   isToolExecution: boolean,
   billingSource: AiBillingSource,
+  catalogPricing?: CatalogPricingSnapshot,
 ): Promise<void> {
-  const costCents = calculateCostCents(model, inputTokens, outputTokens);
+  const costCents = catalogPricing
+    ? calculateCatalogCostCents(catalogPricing, inputTokens, outputTokens)
+    : calculateCostCents(model, inputTokens, outputTokens);
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
   const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -447,9 +687,10 @@ export async function recordUsage(
 /**
  * Record usage from the Claude Agent SDK result message.
  *
- * Cost comes from the SDK's self-reported `total_cost_usd` when it is present and
- * non-zero. The SDK computes that from its own bundled model→price table, so a
- * model id newer than that table makes it report `total_cost_usd: 0`. To avoid
+ * Catalog-backed sessions are always priced from their immutable pricing snapshot.
+ * Otherwise, cost comes from the SDK's self-reported `total_cost_usd` when it is
+ * present and non-zero. The SDK computes that from its own bundled model→price table,
+ * so a model id newer than that table makes it report `total_cost_usd: 0`. To avoid
  * silently recording $0.00 in that case (issue #1326), we fall back to pricing the
  * reported `input_tokens`/`output_tokens` ourselves via MODEL_PRICING. The model id
  * is taken from `result.model` when available, otherwise looked up from the session row.
@@ -479,6 +720,7 @@ export async function recordUsageFromSdkResult(
     toolExecutionCount?: number;
   },
   billingSource: AiBillingSource,
+  catalogPricing?: CatalogPricingSnapshot,
 ): Promise<void> {
   if (!orgId) {
     console.warn(`[AI] Skipping recordUsageFromSdkResult — empty orgId for session=${sessionId}`);
@@ -496,38 +738,49 @@ export async function recordUsageFromSdkResult(
   // variables above, which stay split because each is billed at its own rate.
   const recordedInputTokens = sumInputTokens(result.usage);
 
-  // Prefer the SDK's self-reported cost. Fall back to token-based pricing only when
-  // the SDK reports 0/missing cost but actually consumed tokens — this is the case
-  // that was silently producing $0.00 sessions (the SDK can't price a model id newer
-  // than its bundled table).
-  let costCents = Math.round(result.total_cost_usd * 100 * 100) / 100; // USD → cents, 2 decimal places
-  if (
-    costCents <= 0 &&
-    (inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0 || cacheCreationTokens > 0)
-  ) {
-    const model = result.model ?? (await getSessionModel(sessionId));
-    if (model) {
-      // Include cache read/creation tokens — pricing only input+output here would
-      // systematically undercount cost for cached requests (issue #1326 follow-up).
-      costCents = calculateCostCents(
-        model,
-        inputTokens,
-        outputTokens,
-        cacheReadTokens,
-        cacheCreationTokens
-      );
-      console.warn(
-        `[AI] SDK reported total_cost_usd=${result.total_cost_usd} for session=${sessionId} ` +
-        `(${inputTokens} in / ${outputTokens} out / ${cacheReadTokens} cache-read / ` +
-        `${cacheCreationTokens} cache-write tokens). Priced from MODEL_PRICING ` +
-        `for model "${model}" → ${costCents} cents.`
-      );
-    } else {
-      console.warn(
-        `[AI] SDK reported total_cost_usd=${result.total_cost_usd} for session=${sessionId} ` +
-        `with ${inputTokens} in / ${outputTokens} out tokens but no model id available — ` +
-        `cannot price tokens, recording 0 cents.`
-      );
+  let costCents: number;
+  if (catalogPricing) {
+    costCents = calculateCatalogCostCents(
+      catalogPricing,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+    );
+  } else {
+    // Prefer the SDK's self-reported cost. Fall back to token-based pricing only when
+    // the SDK reports 0/missing cost but actually consumed tokens — this is the case
+    // that was silently producing $0.00 sessions (the SDK can't price a model id newer
+    // than its bundled table).
+    costCents = Math.round(result.total_cost_usd * 100 * 100) / 100; // USD → cents, 2 decimal places
+    if (
+      costCents <= 0 &&
+      (inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0 || cacheCreationTokens > 0)
+    ) {
+      const model = result.model ?? (await getSessionModel(sessionId));
+      if (model) {
+        // Include cache read/creation tokens — pricing only input+output here would
+        // systematically undercount cost for cached requests (issue #1326 follow-up).
+        costCents = calculateCostCents(
+          model,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheCreationTokens
+        );
+        console.warn(
+          `[AI] SDK reported total_cost_usd=${result.total_cost_usd} for session=${sessionId} ` +
+          `(${inputTokens} in / ${outputTokens} out / ${cacheReadTokens} cache-read / ` +
+          `${cacheCreationTokens} cache-write tokens). Priced from MODEL_PRICING ` +
+          `for model "${model}" → ${costCents} cents.`
+        );
+      } else {
+        console.warn(
+          `[AI] SDK reported total_cost_usd=${result.total_cost_usd} for session=${sessionId} ` +
+          `with ${inputTokens} in / ${outputTokens} out tokens but no model id available — ` +
+          `cannot price tokens, recording 0 cents.`
+        );
+      }
     }
   }
   const now = new Date();
@@ -991,6 +1244,31 @@ export async function getSessionHistory(orgId: string, options: { limit?: number
 }
 
 /**
+ * The catalog entry the org's MOST RECENT session used, or null when that
+ * session ran direct (or the org has no sessions at all) (#3922 W4). Reads the
+ * raw `catalog_entry_id` stamped on session create
+ * ({@link streamingSessionManager.ts}) — independent of the entry's current
+ * listing status, since a delisted-but-previously-used endpoint should still
+ * be nameable on the usage page.
+ *
+ * Deliberately NOT filtered to sessions that have a catalog entry: the usage
+ * page renders this in the present tense ("Billed to your key via <name>"), so
+ * narrowing to catalog-routed sessions would pin the note to the last endpoint
+ * ever used and keep asserting it after the partner switched back to Anthropic
+ * (direct) or to a different endpoint — a misstatement that never self-corrects
+ * on the exact surface this wave designates for routing provenance.
+ */
+async function getRecentCatalogEntryIdForOrg(orgId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ catalogEntryId: aiSessions.catalogEntryId })
+    .from(aiSessions)
+    .where(eq(aiSessions.orgId, orgId))
+    .orderBy(desc(aiSessions.lastActivityAt))
+    .limit(1);
+  return row?.catalogEntryId ?? null;
+}
+
+/**
  * Get usage summary for an org.
  */
 export async function getUsageSummary(orgId: string): Promise<{
@@ -1005,6 +1283,9 @@ export async function getUsageSummary(orgId: string): Promise<{
     approvalMode: string;
   } | null;
   billedTo: AiBillingSource;
+  /** Name of the catalog endpoint the org's most recent session used, or null
+   *  for direct-Anthropic / platform-key traffic (#3922 W4). */
+  catalogEndpointName: string | null;
 }> {
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
@@ -1030,6 +1311,14 @@ export async function getUsageSummary(orgId: string): Promise<{
 
   const billedTo = await getLlmBillingSourceForOrg(orgId);
 
+  // Only worth a lookup when traffic is actually billed to the partner's own
+  // key — platform-key orgs never stamp a catalog_entry_id on their sessions.
+  let catalogEndpointName: string | null = null;
+  if (billedTo === 'partner_key') {
+    const entryId = await getRecentCatalogEntryIdForOrg(orgId);
+    if (entryId) catalogEndpointName = await getCatalogEntryName(entryId);
+  }
+
   return {
     daily: {
       inputTokens: dailyUsage?.inputTokens ?? 0,
@@ -1052,5 +1341,6 @@ export async function getUsageSummary(orgId: string): Promise<{
       approvalMode: budget.approvalMode ?? 'per_step',
     } : null,
     billedTo,
+    catalogEndpointName,
   };
 }

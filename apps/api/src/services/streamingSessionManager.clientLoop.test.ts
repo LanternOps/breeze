@@ -87,6 +87,7 @@ const PARTNER_CONFIG = {
   model: 'claude-sonnet-4-6',
   configId: '2b2b2b2b-2222-4222-8222-222222222222',
   configVersion: 1,
+  endpoint: { kind: 'anthropic' as const },
 };
 
 const RESULT_MSG = {
@@ -367,6 +368,8 @@ describe('result handling — usage-bearing done + recordExtraUsage', () => {
       ORG, // session.orgId (dbSession.orgId) — NOT auth.orgId, which is null here
       expect.objectContaining({ total_cost_usd: 0.03 }),
       'platform',
+      // 5th arg: catalog pricing snapshot (#3922 W3) — absent off the catalog path.
+      undefined,
     );
   });
 });

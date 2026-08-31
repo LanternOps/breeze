@@ -265,6 +265,7 @@
       },
       "refresh": "Atualizar",
       "reportTypes": {
+        "ai_org_narrative": "Narrativa Semanal de Operações com IA",
         "alert_summary": "Resumo de Alertas",
         "compliance": "Relatório de Conformidade",
         "device_inventory": "Inventario de Dispositivos",
@@ -290,6 +291,10 @@
         "generateNow": "Gerar agora"
       },
       "adhocReport": "Relatório avulso",
+      "aiNarrative": {
+        "managedBySchedule": "Gerenciado pela programação de IA",
+        "openLatest": "Abrir a mais recente"
+      },
       "confirmDelete": "Tem certeza de que deseja excluir \"{{name}}\"?",
       "createReport": "Criar Relatório",
       "description": "Gere e agende relatórios para sua infraestrutura.",
@@ -304,7 +309,8 @@
         "downloadFailed": "Falha no download",
         "fetchReports": "Falha ao buscar relatórios",
         "generateReport": "Falha ao gerar relatório",
-        "generic": "Ocorreu um erro"
+        "generic": "Ocorreu um erro",
+        "noCompletedRun": "Ainda não há narrativa concluída para abrir"
       },
       "formats": {
         "csv": "CSV",
@@ -316,6 +322,7 @@
       "newReport": "Novo Relatório",
       "nextOccurrence": "Proximo: {{next}}",
       "reportTypes": {
+        "ai_org_narrative": "Narrativa Semanal de Operações com IA",
         "alert_summary": "Resumo de Alertas",
         "compliance": "Relatório de Conformidade",
         "device_inventory": "Inventario de Dispositivos",
@@ -770,6 +777,10 @@
         }
       },
       "selectedFields": "Campos selecionados",
+      "success": {
+        "created": "Relatório \"{{name}}\" salvo.",
+        "updated": "Relatório \"{{name}}\" atualizado."
+      },
       "values": {
         "enabled": "Habilitado",
         "off": "Desligado",
@@ -805,6 +816,7 @@
       "previewAlt": "Pre-visualização de {{name}}",
       "reportTypes": {
         "activity": "Atividade",
+        "ai_org_narrative": "Narrativa Semanal de Operações com IA",
         "alert_summary": "Resumo de Alertas",
         "alerts": "Alertas",
         "compliance": "Relatório de Conformidade",

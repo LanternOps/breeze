@@ -19,6 +19,8 @@ import { getRedis } from './redis';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import type { AuthContext } from '../middleware/auth';
 import { envFlag } from '../config/env';
+import { resolveActOperation } from './aiAgents/actManifest';
+import { getCachedAiKillStateSnapshot } from './aiKillState';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -1190,7 +1192,14 @@ export type GuardrailCheck =
       approvalScope: AiApprovalScope;
     });
 
-export type GuardrailDisposition = 'allow' | 'propose' | 'deny';
+/**
+ * `'act'` (wave 4 Part B): a manifest-matched, rule-equivalent mutation under
+ * a live `mode: 'act'` policy. Distinct from `'allow'` — `'act'` additionally
+ * signals the run-loop pre-hook to revalidate (live policy + guardrail
+ * re-run + device/asset pinning) and reserve a `maxActionsPerRun` slot before
+ * dispatch (actRevalidation.ts, Task 3); `'allow'` never does either.
+ */
+export type GuardrailDisposition = 'allow' | 'propose' | 'deny' | 'act';
 
 /**
  * checkAgentGuardrails' verdict. `allowed` stays false for 'propose' on
@@ -1198,6 +1207,26 @@ export type GuardrailDisposition = 'allow' | 'propose' | 'deny';
  * fails CLOSED rather than executing a proposal.
  */
 export type AgentGuardrailCheck = GuardrailCheck & { disposition: GuardrailDisposition };
+
+/**
+ * The sub-operation discriminator for a tool call, resolved EXACTLY the way
+ * `checkGuardrails` and `checkAgentGuardrails` each used to do inline (two
+ * byte-identical copies, now one). `TOOL_ACTION_INPUT_KEYS` overrides the
+ * default `action` key for a multiplexer keyed on something else
+ * (`execute_command`'s `commandType`, #3088). A non-string value at that key
+ * resolves to `undefined`, not a coerced string — callers fall back to
+ * whatever "no action" means for them (checkGuardrails: the tool's base
+ * tier; checkAgentGuardrails: a hard deny on a multiplexed tool;
+ * policyDecide.ts: no `tool:action` key, so a bare-tool registry lookup).
+ *
+ * Exported so `policyDecide.ts`'s canonical-key derivation reuses this
+ * instead of a third inline copy (wave 5 Part B, #3827).
+ */
+export function resolveActionForTool(toolName: string, input: Record<string, unknown>): string | undefined {
+  const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
+  const actionValue = input[actionKey];
+  return typeof actionValue === 'string' ? actionValue : undefined;
+}
 
 /**
  * Check guardrails for a tool invocation.
@@ -1227,13 +1256,9 @@ export function checkGuardrails(
     };
   }
 
-  // Check for action-based tier escalation. The discriminator is `action` for
-  // most tools; a TOOL_ACTION_INPUT_KEYS entry overrides the key (#3088 —
-  // execute_command multiplexes on `commandType`). Non-string values resolve
-  // to undefined, which falls through to the base tier (fail-closed).
-  const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
-  const actionValue = input[actionKey];
-  const action = typeof actionValue === 'string' ? actionValue : undefined;
+  // Check for action-based tier escalation. Non-string values resolve to
+  // undefined, which falls through to the base tier (fail-closed).
+  const action = resolveActionForTool(toolName, input);
 
   // Tier 1 downgrade: read-only actions on otherwise-high-tier tools
   if (action && TIER1_ACTIONS[toolName]?.includes(action)) {
@@ -1550,6 +1575,17 @@ export function checkAgentGuardrails(
   if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) {
     return deny('Autonomous AI agents are disabled');
   }
+  // Wave 5A Task 2 (#3827): DB-backed kill switch, ADDITIONAL to the env
+  // flag above, not a replacement for it — the two need not agree, and
+  // either alone denies. `getCachedAiKillStateSnapshot` is a pure sync read
+  // of a module-level cache (see `aiKillState.ts`'s header for the ≤5s
+  // staleness bound and why its default is not-killed); this function stays
+  // synchronous, unable to await a fresh DB read on every dispatch, exactly
+  // like the env-flag check above it.
+  const killState = getCachedAiKillStateSnapshot();
+  if (killState.killed) {
+    return deny(`Autonomous AI agents are kill-switched (epoch ${killState.epoch})`);
+  }
   if (!isAgentGuardrailPolicy(policy)) {
     return deny('AI agent run policy snapshot is missing or invalid');
   }
@@ -1570,8 +1606,7 @@ export function checkAgentGuardrails(
   if (policy.mode === 'off') return deny('Agent mode is off');
 
   const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
-  const actionValue = input[actionKey];
-  const action = typeof actionValue === 'string' ? actionValue : undefined;
+  const action = resolveActionForTool(toolName, input);
 
   // A non-string action (`action: ['write']`) makes checkGuardrails skip its
   // TIER3_ACTIONS escalation and fall back to the tool's REGISTERED BASE TIER —
@@ -1580,7 +1615,7 @@ export function checkAgentGuardrails(
   // allowlist entirely. An unresolvable action on a multiplexed tool denies.
   if (action === undefined && isActionMultiplexedTool(toolName)) {
     return deny(
-      `Tool "${toolName}" requires a string "${actionKey}"; got ${describeType(actionValue)}`,
+      `Tool "${toolName}" requires a string "${actionKey}"; got ${describeType(input[actionKey])}`,
     );
   }
 
@@ -1603,6 +1638,39 @@ export function checkAgentGuardrails(
 
   const protectedHit = touchesProtected(input, policy.protectedResources);
   if (protectedHit) return deny(`Denied: ${protectedHit}`);
+
+  // Act mode (wave 4 Part B): a manifest-matched, rule-equivalent mutation
+  // executes (through the normal tool path — the pre/post hooks in
+  // runLoop.ts do the actual revalidate/reserve/verify work); everything
+  // else that mutates records a proposal, exactly like shadow. This branch
+  // sits AFTER the allowlist and protected checks (same placement rule as
+  // shadow below), so both outcomes are only reachable for a call the agent
+  // could legitimately make in the first place — every structural deny above
+  // (kill switch, tier 4, secret-bearing, site scope, disabled/off, device-
+  // less mutation, allowlist, protected resources) is untouched and sits
+  // strictly upstream of this branch, never the reverse.
+  if (policy.mode === 'act' && !readOnly) {
+    const op = resolveActOperation(toolName, input);
+    if (op) {
+      return {
+        ...base,
+        allowed: true,
+        requiresApproval: false,
+        disposition: 'act',
+        reason: `Rule-equivalent operation "${op.key}" — act mode executes with verification`,
+      };
+    }
+    // Unmatched mutation under act: identical semantics to shadow — propose,
+    // never auto-approve-and-execute. There is no "act mode but not manifest
+    // -matched" execution path; the manifest IS the entire act-eligible surface.
+    return {
+      ...base,
+      allowed: false,
+      requiresApproval: false,
+      disposition: 'propose',
+      reason: `Tool "${toolName}" is not act-eligible; recorded as a proposal`,
+    };
+  }
 
   // Shadow proposes; it never mutates — and this branch now sits AFTER the
   // allowlist and protected checks so 'propose' is only reachable for a call

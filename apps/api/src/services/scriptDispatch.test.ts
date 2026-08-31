@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SQL, Param } from 'drizzle-orm';
 
-vi.mock('../db', () => ({ db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() } }));
+vi.mock('../db', () => ({
+  db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
 vi.mock('./commandQueue', () => ({ queueCommand: vi.fn() }));
 vi.mock('./commandDispatch', () => ({
   claimPendingCommandForDelivery: vi.fn().mockResolvedValue(null),
@@ -118,6 +121,21 @@ const mockLiveDeviceStatus = (status: string | undefined) => {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue(status === undefined ? [] : [{ status }]),
+      }),
+    }),
+  } as any);
+};
+
+// Mocks the users-row existence probe (#3826 Wave 4A Task 3): a single
+// `db.select({id}).from(users).where(eq(users.id, candidate)).limit(1)`
+// query. Pass `found: true` to model a real users row (real-user path,
+// unchanged behavior) or `found: false` to model an agent-shaped id that
+// does not resolve to any users row (degrade path).
+const mockUsersProbe = (found: boolean) => {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(found ? [{ id: 'probed' }] : []),
       }),
     }),
   } as any);
@@ -266,6 +284,7 @@ describe('dispatchScriptToDevice — invariants', () => {
 
 describe('dispatchScriptToDevice — rows and payload', () => {
   it('saved: creates an execution row with the DEVICE org and passes executionId in payload', async () => {
+    mockUsersProbe(true); // 'user-1' resolves to a real users row — real-user path.
     const r = await dispatchScriptToDevice({
       device: device(), source: { kind: 'saved', script: savedScript(), automationRunId: null },
       parameters: { a: '1' }, triggeredBy: 'user-1', triggerType: 'manual',
@@ -273,6 +292,8 @@ describe('dispatchScriptToDevice — rows and payload', () => {
     expect(r.ok).toBe(true);
     const execValues = vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0]![0];
     expect(execValues).toMatchObject({ scriptId: 'script-1', deviceId: 'device-1', orgId: 'org-a', triggeredBy: 'user-1', status: 'pending' });
+    // Real-user path must stay byte-identical: no $actor sidecar.
+    expect(execValues.parameters).not.toHaveProperty('$actor');
     const [, , payload] = vi.mocked(queueCommand).mock.calls[0]!;
     expect(payload).toMatchObject({ scriptId: 'script-1', executionId: 'exec-1', language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' });
   });
@@ -395,6 +416,86 @@ describe('dispatchScriptToDevice — rows and payload', () => {
     await expect(dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } })).rejects.toThrow('payload boom');
     expect(db.delete).toHaveBeenCalled();
     expect(queueCommand).not.toHaveBeenCalled();
+  });
+});
+
+// #3826 Wave 4A Task 3: agent principals reach dispatchScriptToDevice through
+// the same handlers humans use (auth.user.id is an ai_agents id, not a
+// users.id, for an ai_agent principal — see agentAuthContext.ts). Both
+// `script_executions.triggered_by` and (via queueCommand) `device_commands
+// .created_by` FK-reference users.id, so an agent-shaped id must degrade to
+// NULL before either insert — mirrors the shipped commandQueue.ts:855-889
+// precedent exactly.
+describe('dispatchScriptToDevice — users-FK probe-and-degrade (#3826)', () => {
+  it('degrades an agent-shaped triggeredBy/createdBy to null on BOTH columns and stashes actor metadata', async () => {
+    mockUsersProbe(false); // agent id does not resolve to a users row
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript() },
+      triggeredBy: 'agent-shaped-id-1',
+      createdBy: 'agent-shaped-id-1',
+    });
+    expect(r.ok).toBe(true);
+    const execValues = vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0]![0];
+    expect(execValues.triggeredBy).toBeNull();
+    expect(execValues.parameters).toMatchObject({
+      $actor: { actorType: 'ai_agent', actorId: 'agent-shaped-id-1' },
+    });
+    const [, , , userId] = vi.mocked(queueCommand).mock.calls[0]!;
+    expect(userId).toBeUndefined();
+  });
+
+  it('single probe covers BOTH columns: exactly one users select when triggeredBy === createdBy', async () => {
+    mockUsersProbe(true);
+    await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript() },
+      triggeredBy: 'user-1',
+      createdBy: 'user-1',
+    });
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('real-user path stays byte-identical: createdBy passes through to queueCommand verbatim', async () => {
+    mockUsersProbe(true);
+    await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript() },
+      triggeredBy: 'user-1',
+      createdBy: 'user-1',
+    });
+    const [, , , userId] = vi.mocked(queueCommand).mock.calls[0]!;
+    expect(userId).toBe('user-1');
+  });
+
+  it('does not probe at all when neither triggeredBy nor createdBy is supplied (no behavior change)', async () => {
+    await dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('raw source: degrades an agent-shaped createdBy for queueCommand (no execution row to stash metadata in)', async () => {
+    mockUsersProbe(false);
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'raw', content: 'ipconfig', language: 'powershell', provenance: 'automation:auto-1' },
+      createdBy: 'agent-shaped-id-2',
+    });
+    expect(r.ok).toBe(true);
+    expect(db.insert).not.toHaveBeenCalled();
+    const [, , , userId] = vi.mocked(queueCommand).mock.calls[0]!;
+    expect(userId).toBeUndefined();
+  });
+
+  it('does not add an $actor key when the script has no bound parameters and the actor IS real', async () => {
+    mockUsersProbe(true);
+    await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript() },
+      triggeredBy: 'user-1',
+      createdBy: 'user-1',
+    });
+    const execValues = vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0]![0];
+    expect(execValues.parameters).not.toHaveProperty('$actor');
   });
 });
 

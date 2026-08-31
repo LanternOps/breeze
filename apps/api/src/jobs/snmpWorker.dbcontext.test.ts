@@ -12,7 +12,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockDb, ctxState, queueMock, agentWsMock } = vi.hoisted(() => ({
+const { mockDb, ctxState, queueMock, agentRelayMock } = vi.hoisted(() => ({
   mockDb: {
     select: vi.fn(),
     insert: vi.fn(),
@@ -29,9 +29,9 @@ const { mockDb, ctxState, queueMock, agentWsMock } = vi.hoisted(() => ({
     removeRepeatableByKey: vi.fn(async () => undefined),
     close: vi.fn(async () => undefined),
   },
-  agentWsMock: {
-    isAgentConnected: vi.fn(() => true),
-    sendCommandToAgent: vi.fn(() => true),
+  agentRelayMock: {
+    isAgentConnectedAnywhere: vi.fn(async () => true),
+    dispatchCommandToAgent: vi.fn(async () => ({ status: 'sent', via: 'local' })),
   },
 }));
 
@@ -105,9 +105,9 @@ vi.mock('../services/redis', () => ({
   getBullMQConnection: vi.fn(() => ({ host: 'localhost', port: 6379 })),
 }));
 
-vi.mock('../routes/agentWs', () => ({
-  isAgentConnected: agentWsMock.isAgentConnected,
-  sendCommandToAgent: agentWsMock.sendCommandToAgent,
+vi.mock('../services/agentCommandRelay', () => ({
+  isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
+  dispatchCommandToAgent: agentRelayMock.dispatchCommandToAgent,
 }));
 
 vi.mock('../services/snmpSecrets', () => ({
@@ -188,13 +188,13 @@ describe('snmpWorker DB-context scoping (#3215)', () => {
       ctxState.events.push(`enqueue@depth${ctxState.depth}`);
       return { id: 'job-1' };
     });
-    agentWsMock.isAgentConnected.mockImplementation(() => {
+    agentRelayMock.isAgentConnectedAnywhere.mockImplementation(async () => {
       ctxState.events.push(`isAgentConnected@depth${ctxState.depth}`);
       return true;
     });
-    agentWsMock.sendCommandToAgent.mockImplementation(() => {
+    agentRelayMock.dispatchCommandToAgent.mockImplementation(async () => {
       ctxState.events.push(`wsDispatch@depth${ctxState.depth}`);
-      return true;
+      return { status: 'sent', via: 'local' };
     });
     mockDb.update.mockImplementation(updateChain as never);
 
@@ -300,7 +300,7 @@ describe('snmpWorker DB-context scoping (#3215)', () => {
     const result = await runJob({ type: 'poll-device', deviceId: 'gone', orgId: 'o1' });
 
     expect(result).toEqual({ dispatched: false, agentId: null });
-    expect(agentWsMock.sendCommandToAgent).not.toHaveBeenCalled();
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
     // The attempt is still stamped (#3217 — an undispatchable device that stays
     // NULL is re-selected on every 60s tick), but no dispatch count is taken and
     // no second context opens.

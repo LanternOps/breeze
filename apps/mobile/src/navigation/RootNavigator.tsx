@@ -12,7 +12,7 @@ import {
   setApproverRegistration,
   clearAuthenticatorRegisterGrant,
 } from '../store/authSlice';
-import { getStoredToken, getStoredUser, clearAuthData, SecureWipeError } from '../services/auth';
+import { getStoredToken, getStoredUser } from '../services/auth';
 import { getCurrentUser, onDeviceBlocked } from '../services/api';
 import { resetTruncationTracking } from '../services/truncationReporting';
 import { spacing, type } from '../theme';
@@ -28,27 +28,6 @@ import { ApprovalGate } from './ApprovalGate';
 import { OnboardingScreen } from '../screens/onboarding/OnboardingScreen';
 import { Spinner } from '../components/Spinner';
 import { palette } from '../theme';
-
-/**
- * Clear local auth state, tolerating a partial secure-wipe failure.
- *
- * A `SecureWipeError` is already reported to Sentry inside `clearAuthData`, so
- * we swallow only that specific error here — it must not abort the redux logout
- * that follows. Any *other* throw (a genuinely novel failure) is re-reported and
- * re-thrown rather than silently dropped, so we don't reintroduce a silent
- * failure of an unrelated kind (the exact trap #1625 fixed).
- */
-async function clearAuthDataTolerant(): Promise<void> {
-  try {
-    await clearAuthData();
-  } catch (err) {
-    if (err instanceof SecureWipeError || (err as { name?: string } | null)?.name === 'SecureWipeError') {
-      return; // already reported to Sentry inside clearAuthData
-    }
-    Sentry.captureException(err, { tags: { area: 'auth-teardown-nav' } });
-    throw err;
-  }
-}
 
 /**
  * Upper bound on how long the native splash may stay up waiting for boot.
@@ -161,12 +140,8 @@ export function RootNavigator() {
       } catch (err) {
         const status = (err as { statusCode?: number } | null)?.statusCode;
         if (status === 401 || status === 403) {
-          // A failed secure wipe (SecureWipeError) is already reported to
-          // Sentry inside clearAuthData; clearAuthDataTolerant swallows only
-          // that so it can't abort the redux logout. Other failures still
-          // surface — but this runs detached, so catch them here rather than
-          // leaving an unhandled rejection.
-          await clearAuthDataTolerant().catch(() => {});
+          // The synchronous logout action advances generation and enqueues the
+          // complete secure wipe before publishing signed-out Redux state.
           dispatch(logout());
         }
         // Other failures (network down, 5xx) intentionally leave the
@@ -200,7 +175,6 @@ export function RootNavigator() {
         void revalidate(storedToken);
       } catch (error) {
         console.error('Error checking auth:', error);
-        await clearAuthDataTolerant();
         dispatch(logout());
       } finally {
         setIsCheckingAuth(false);

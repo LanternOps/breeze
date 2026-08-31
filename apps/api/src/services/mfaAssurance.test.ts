@@ -48,8 +48,8 @@ describe('invalidateMfaAssuranceAfterFactorChange', () => {
     terminateUserRemoteSessionsMock.mockResolvedValue(3);
   });
 
-  // (a) mutate runs inside the tx before advanceUserEpochs/revokeAllRefreshFamilies.
-  it('runs mutate(tx) inside the transaction before advancing epochs and revoking families, then post-commit cleanup + teardown', async () => {
+  // (a) User/family authority is acquired before route-specific factor rows.
+  it('advances epochs and revokes families before mutate(tx), then runs post-commit cleanup + teardown', async () => {
     const callOrder: string[] = [];
     const mutate = vi.fn(async (tx: unknown) => {
       expect(tx).toBe(fakeTx);
@@ -76,9 +76,9 @@ describe('invalidateMfaAssuranceAfterFactorChange', () => {
     // (b) post-commit cleanup AND remote-session teardown both run, strictly
     // after the durable commit (mutate + epoch advance + family revoke).
     expect(callOrder).toEqual([
-      'mutate',
       'advanceUserEpochs',
       'revokeAllRefreshFamilies',
+      'mutate',
       'runPostCommitCleanup',
       'terminateUserRemoteSessions',
     ]);
@@ -115,10 +115,9 @@ describe('invalidateMfaAssuranceAfterFactorChange', () => {
     expect(revokeAllRefreshFamiliesMock).toHaveBeenCalled();
   });
 
-  // (d) A throw inside mutate rejects the whole tx: no epoch bump, no revoke,
-  // and — because db.transaction rejects before ever returning — no
-  // post-commit step runs either. Proves the rollback invariant with mocks;
-  // real-PG atomicity is Task 9.
+  // (d) A throw inside mutate rejects the whole tx. Authority statements have
+  // executed first to preserve global lock order, but the DB transaction rolls
+  // them back and no post-commit step runs.
   it('rejects the whole operation and skips post-commit steps when mutate throws (transaction rollback)', async () => {
     const boom = new Error('factor write failed');
     const mutate = vi.fn(async () => {
@@ -127,8 +126,8 @@ describe('invalidateMfaAssuranceAfterFactorChange', () => {
 
     await expect(invalidateMfaAssuranceAfterFactorChange(userId, 'will-fail', mutate)).rejects.toThrow(boom);
 
-    expect(advanceUserEpochsMock).not.toHaveBeenCalled();
-    expect(revokeAllRefreshFamiliesMock).not.toHaveBeenCalled();
+    expect(advanceUserEpochsMock).toHaveBeenCalledWith(fakeTx, userId, { mfa: true });
+    expect(revokeAllRefreshFamiliesMock).toHaveBeenCalledWith(fakeTx, userId, 'will-fail');
     expect(runPostCommitCleanupMock).not.toHaveBeenCalled();
     expect(terminateUserRemoteSessionsMock).not.toHaveBeenCalled();
   });

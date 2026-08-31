@@ -31,6 +31,7 @@ import {
   TicketMoveCurrencyBlockedError,
   type MoveCurrencyGuardDetails,
 } from '../../services/ticketMoveCurrencyGuard';
+import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 
 /**
  * An organization that passed the pre-transaction existence check was gone at
@@ -233,14 +234,50 @@ moveOrgRoutes.post(
         // runs are not re-stamped (org_id is trigger-immutable, and re-stamping
         // would 23503 against the action_intents composite tenant FK the moment an
         // agent proposal exists). Sever ALL device-lineage links, not just
-        // device_id: alerts and ai_sessions ARE re-stamped to the target org by
-        // the loop below, so a retained source-org run keeping alert_id/session_id
-        // would point across tenants (and /ai-agents/:id/runs would serve those
-        // foreign ids to the source org). All three FKs are ON DELETE SET NULL —
+        // device_id: alerts, ai_sessions, and metric_anomaly_incidents ARE
+        // re-stamped to the target org by the loop below, so a retained
+        // source-org run keeping alert_id/session_id/anomaly_incident_id would
+        // point across tenants (and /ai-agents/:id/runs would serve those
+        // foreign ids to the source org). All four FKs are ON DELETE SET NULL —
         // nullable by design.
         await tx.execute(
-          sql`UPDATE ai_agent_runs SET device_id = NULL, alert_id = NULL, session_id = NULL
+          sql`UPDATE ai_agent_runs SET device_id = NULL, alert_id = NULL, session_id = NULL, anomaly_incident_id = NULL
               WHERE device_id = ${deviceId}::uuid`,
+        );
+
+        // Reverse pointer: metric_anomaly_incidents.agent_run_id (no FK) must
+        // not keep naming a source-org run once the incident row itself is
+        // re-stamped to the target org by the denormalized-table loop below —
+        // same cross-tenant-pointer class as the ai_agent_runs detach above,
+        // just the other direction of the link. Must run BEFORE that loop so
+        // it targets the incident by its still-source device_id.
+        await tx.execute(
+          sql`UPDATE metric_anomaly_incidents SET agent_run_id = NULL WHERE device_id = ${deviceId}::uuid`,
+        );
+
+        // action_intents.scope_device_id (P2-2, #4189): same cross-tenant-
+        // pointer class as the two detaches above — an intent whose target
+        // device just moved to a different org must not keep pointing at it.
+        // The immutability trigger (action_intents_block_content_update())
+        // permits exactly this transition (non-null -> NULL is the ONE
+        // allowed change to scope_device_id; see actionIntents.ts's column
+        // comment), so this UPDATE is the tombstone path, not a bypass.
+        //
+        // Scoped to LIVE statuses only (pending_approval/approved/executing):
+        // a terminal-status intent (completed/failed/rejected/expired/
+        // cancelled) is a historical record of an action already decided —
+        // its target device at decision time is a fact, not something a
+        // future release path re-validates, so leaving it alone matches how
+        // ai_agent_runs' org_id is left un-restamped for the same reason
+        // above. Only a LIVE intent can still reach the release path
+        // (intentTargetScope.ts, Task A3), which fails closed on a NULL
+        // scope_device_id (tombstone) or an org mismatch — this UPDATE is
+        // what produces that tombstone instead of leaving a dangling
+        // cross-tenant device id for release to silently act on.
+        await tx.execute(
+          sql`UPDATE action_intents SET scope_device_id = NULL
+              WHERE scope_device_id = ${deviceId}::uuid
+                AND status IN ('pending_approval', 'approved', 'executing')`,
         );
 
         // Rewrite the denormalized org_id on every device-scoped table.
@@ -337,6 +374,10 @@ moveOrgRoutes.post(
       });
       return c.json({ error: 'Failed to move device between organizations' }, 500);
     }
+
+    await schedulePeripheralPolicyDevice(deviceId, 'device_org_changed').catch((error) => {
+      console.error(`[devices.moveOrg] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+    });
 
     // Force-close any active WS so the agent reconnects with a fresh
     // handshake on the new org_id. Without this, createAgentWsHandlers

@@ -60,6 +60,28 @@ function anomalyUpsertAssignments(): SQL {
   `;
 }
 
+/**
+ * Wave 6 PR 4 (#3828) Task 2 — the incident row IS the transactional dispatch
+ * outbox (see `metricAnomalyIncidents.ts`'s file header): `dispatched_at`,
+ * `dispatch_attempts`, and `agent_run_id` ARE the dispatch marker, and this
+ * SET list deliberately never assigns any of them. That omission — not
+ * publisher-side bookkeeping — is what makes a bulk detector re-upsert
+ * publish-inert by construction: the marker set by the Task 2 publisher can
+ * never be clobbered back to NULL by this statement, no matter how many
+ * times the same org/range is re-detected (the 10-min schedule over a
+ * 30-min lookback revisits every row ~3x by design). `first_seen_at` is
+ * likewise never refreshed, so it stays pinned to the incident's original
+ * first-detected timestamp across every subsequent pass.
+ */
+function incidentUpsertAssignments(): SQL {
+  return sql`
+    last_seen_at = EXCLUDED.last_seen_at,
+    peak_score = GREATEST(metric_anomaly_incidents.peak_score, EXCLUDED.peak_score),
+    row_count = EXCLUDED.row_count,
+    metric_names = EXCLUDED.metric_names
+  `;
+}
+
 function candidateUpsertAssignments(): SQL {
   return sql`
     observed_value = EXCLUDED.observed_value,
@@ -552,6 +574,85 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
   `);
 }
 
+/**
+ * Wave 6 PR 4 (#3828) Task 2 — after the three per-row detectors above have
+ * run for this org/range, collapse the `metric_anomalies` rows they just
+ * touched into their canonical `metric_anomaly_incidents` row(s).
+ *
+ * Collapsing key matches `metric_anomaly_incidents`' unique index exactly:
+ * `(org_id, device_id, anomaly_type, bucket_seconds, window_start)` —
+ * `metric_name` deliberately excluded from GROUP BY and the conflict target,
+ * mirroring `metricAnomalyPromotion.ts`'s `findDedupeSiblings` (it still
+ * appears folded into `array_agg(DISTINCT metric_name)`, listing every
+ * sibling metric name the incident collapses).
+ *
+ * Filtered on `ma.window_end >= $1`, NOT `ma.window_start` — a growth-trend
+ * row's `window_start` is the START of its multi-bucket trend window and can
+ * predate this pass's `from` (the trend CTE looks up to `MIN_TREND_BUCKETS`
+ * buckets before its anchor), so filtering on `window_start >= from` would
+ * exclude every growth-trend row whose anchor lands in the first
+ * `MIN_TREND_BUCKETS * RAW_BUCKET_SECONDS` of the range — which, given the
+ * cron's `to - from` spacing, is every anchor except the single bucket
+ * nearest `to`. `window_end` (`last_bucket_start + RAW_BUCKET_SECONDS` for
+ * growth trends, always `bucket_start + RAW_BUCKET_SECONDS` for the other
+ * two detectors) is always `>= from` for any row this pass just wrote, since
+ * every detector's own bucket-selection CTE already requires
+ * `bucket_start >= from`. There is deliberately no upper bound against `to`:
+ * an incident can keep collapsing across later revisit passes rather than
+ * falling out of range once its window_end ages past a subsequent pass's
+ * `from`.
+ *
+ * `metric_anomalies.window_start`/`detected_at` are naive `timestamp` (no
+ * tz) — always written in UTC by the rollup pipeline (see the detectors
+ * above). `metric_anomaly_incidents`'s corresponding columns are
+ * `timestamptz`. `AT TIME ZONE 'UTC'` converts explicitly rather than
+ * relying on an implicit cast, which would reinterpret the naive value using
+ * the session's `TimeZone` setting — silently wrong were that setting ever
+ * not UTC.
+ *
+ * See `incidentUpsertAssignments()` above for why `dispatched_at` /
+ * `dispatch_attempts` / `agent_run_id` never appear in this statement at
+ * all — not in the INSERT column list, not in SELECT, not in the ON
+ * CONFLICT SET list. That is the re-publish guard.
+ */
+async function upsertMetricAnomalyIncidents(options: MetricAnomalyRange): Promise<void> {
+  const { from } = normalizeRange(options.from, options.to);
+  const fromIso = from.toISOString();
+
+  await db.execute(sql`
+    INSERT INTO metric_anomaly_incidents (
+      org_id,
+      device_id,
+      anomaly_type,
+      bucket_seconds,
+      window_start,
+      first_seen_at,
+      last_seen_at,
+      peak_score,
+      row_count,
+      metric_names
+    )
+    SELECT
+      ma.org_id,
+      ma.device_id,
+      ma.anomaly_type,
+      ma.bucket_seconds,
+      (ma.window_start AT TIME ZONE 'UTC'),
+      (min(ma.detected_at) AT TIME ZONE 'UTC'),
+      (max(ma.detected_at) AT TIME ZONE 'UTC'),
+      max(ma.score),
+      count(*)::integer,
+      array_agg(DISTINCT ma.metric_name ORDER BY ma.metric_name)
+    FROM metric_anomalies ma
+    WHERE ma.org_id = ${options.orgId}
+      AND ma.status = 'open'
+      AND ma.window_end >= ${fromIso}::timestamp
+    GROUP BY ma.org_id, ma.device_id, ma.anomaly_type, ma.bucket_seconds, ma.window_start
+    ON CONFLICT (org_id, device_id, anomaly_type, bucket_seconds, window_start)
+    DO UPDATE SET ${incidentUpsertAssignments()}
+  `);
+}
+
 async function detectSeasonalRobustCandidates(options: MetricAnomalyRange): Promise<void> {
   const { from, to } = normalizeRange(options.from, options.to);
   const fromIso = from.toISOString();
@@ -855,6 +956,12 @@ export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): P
   await detectBaselineDeviations(options);
   await detectGrowthTrends(options);
   await detectProcessSampleRunaways(options);
+  // Task 2 (#3828): collapse the rows the three detectors above just
+  // touched into their canonical incident row. Always runs (gated only by
+  // the same ml.anomalies.enabled flag as the rest of this function, via the
+  // early return above) — independent of the v1 shadow flag below, since it
+  // reads from metric_anomalies, never metric_anomaly_candidates.
+  await upsertMetricAnomalyIncidents(options);
 
   const runV1Shadow = await shouldProduceMlOutput(options.orgId, 'ml.anomalies.v1_shadow.enabled');
   if (runV1Shadow) {
@@ -865,7 +972,7 @@ export async function detectMetricAnomaliesRange(options: MetricAnomalyRange): P
     orgId: options.orgId,
     from: from.toISOString(),
     to: to.toISOString(),
-    statements: 3,
+    statements: 4,
     v1ShadowStatements: runV1Shadow ? 1 : 0,
     v1ShadowSkipped: !runV1Shadow,
     skipped: false,

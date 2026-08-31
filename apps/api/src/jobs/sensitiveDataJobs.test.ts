@@ -45,11 +45,11 @@ vi.mock('../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn(),
 }));
 
-vi.mock('../services/automationRuntime', () => ({
+vi.mock('../services/cronDue', () => ({
   isCronDue: vi.fn(),
 }));
 
-import { isCronDue } from '../services/automationRuntime';
+import { isCronDue } from '../services/cronDue';
 import {
   enqueueSensitiveDataScan,
   shouldSchedulePolicy,

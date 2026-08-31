@@ -23,7 +23,8 @@ import {
   formatNextOccurrence,
   type ScheduleCadence,
   type ScheduleConfig,
-  type ExecutiveSummary
+  type ExecutiveSummary,
+  type OrgNarrativeReportSummary
 } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 
@@ -34,7 +35,23 @@ export type ReportType =
   | 'compliance'
   | 'performance'
   | 'executive_summary'
-  | 'security_compliance_posture';
+  | 'security_compliance_posture'
+  | 'ai_org_narrative';
+
+/**
+ * Report types the API owns end to end: the AI schedule creates the definition,
+ * fires the run, and stores the snapshot, so every mutating route
+ * (create/update/delete/generate/reauthorize) answers
+ * `409 { error: 'system_managed_report' }`. Offering Generate/Edit/Delete on
+ * such a row could only ever produce that 409, so the list shows a single read
+ * action instead. Mirrors `isSystemManagedReportDefinition` in
+ * `apps/api/src/routes/reports/helpers.ts` — keep the two in sync.
+ */
+const SYSTEM_MANAGED_REPORT_TYPES = new Set<ReportType>(['ai_org_narrative']);
+
+export function isSystemManagedReportType(type: ReportType): boolean {
+  return SYSTEM_MANAGED_REPORT_TYPES.has(type);
+}
 
 export type ReportSchedule = 'one_time' | 'daily' | 'weekly' | 'monthly';
 
@@ -199,6 +216,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
   };
 
   const [downloadingRunId, setDownloadingRunId] = useState<string | null>(null);
+  const [openingReportId, setOpeningReportId] = useState<string | null>(null);
 
   const getReportTypeLabel = (type: ReportType) => t(/* i18n-dynamic */ `reports.reportsList.reportTypes.${type}`);
   const getScheduleLabel = (schedule: ReportSchedule) => t(/* i18n-dynamic */ `reports.reportsList.schedules.${schedule}`);
@@ -233,9 +251,13 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
           format: 'pdf',
           reportType: payload.type ?? run.reportType ?? 'report',
           timezone: effectiveTimezone,
-          // The posture and executive-summary covers consume this snapshot to
-          // render their designed cover pages; ignored by other report types.
-          summary: data?.summary as PostureSummary | ExecutiveSummary | undefined,
+          // The posture / executive-summary covers and the AI org narrative
+          // body consume this snapshot; ignored by other report types.
+          summary: data?.summary as
+            | PostureSummary
+            | ExecutiveSummary
+            | OrgNarrativeReportSummary
+            | undefined,
           // Drives the scorecard trend chip ("79, up from 74 last month")
           // when the stored run snapshot captured a prior baseline.
           previous: data?.previous,
@@ -253,6 +275,36 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
       setError(err instanceof Error ? err.message : t('reports.reportsList.errors.downloadFailed'));
     } finally {
       setDownloadingRunId(null);
+    }
+  };
+
+  /**
+   * The only list action a system-managed report offers: resolve its newest
+   * completed run and hand it to the shared download path, which renders the
+   * stored snapshot client-side. `GET /reports/runs` orders newest-first, so
+   * `limit=1` is the latest. Read-only, so no `runAction` wrapper — failures
+   * surface through the same inline error banner the download path uses.
+   */
+  const handleOpenLatest = async (report: Report) => {
+    setOpeningReportId(report.id);
+    try {
+      const res = await fetchWithAuth(
+        `/reports/runs?reportId=${encodeURIComponent(report.id)}&status=completed&limit=1`
+      );
+      if (!res.ok) {
+        throw new Error(t('reports.reportsList.errors.downloadFailed'));
+      }
+      const payload = await res.json();
+      const latest = (payload.data ?? [])[0] as ReportRun | undefined;
+      if (!latest) {
+        throw new Error(t('reports.reportsList.errors.noCompletedRun'));
+      }
+      // handleDownload swallows its own failures into `error`; nothing to catch.
+      await handleDownload({ ...latest, reportType: latest.reportType ?? report.type });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('reports.reportsList.errors.downloadFailed'));
+    } finally {
+      setOpeningReportId(null);
     }
   };
 
@@ -424,20 +476,24 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                         {report.schedule !== 'one_time' && (
                           /* Computed in the viewer's timezone; the worker fires in the
                              org's timezone, so this is a close approximation shown to
-                             the user, not a contract for when the run actually fires. */
+                             the user, not a contract for when the run actually fires.
+                             System-managed rows are fired by the AI schedule, not by
+                             this definition's cadence, so no occurrence is computed. */
                           <p className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
                             <span>
-                              {t('reports.reportsList.nextOccurrence', {
-                                next: formatNextOccurrence(
-                                  nextOccurrence(
-                                    new Date(),
-                                    report.schedule as ScheduleCadence,
-                                    scheduleConfigOf(report.config),
-                                    effectiveTimezone
-                                  ),
-                                  { weekday: report.schedule === 'weekly' }
-                                )
-                              })}
+                              {isSystemManagedReportType(report.type)
+                                ? t('reports.reportsList.aiNarrative.managedBySchedule')
+                                : t('reports.reportsList.nextOccurrence', {
+                                    next: formatNextOccurrence(
+                                      nextOccurrence(
+                                        new Date(),
+                                        report.schedule as ScheduleCadence,
+                                        scheduleConfigOf(report.config),
+                                        effectiveTimezone
+                                      ),
+                                      { weekday: report.schedule === 'weekly' }
+                                    )
+                                  })}
                             </span>
                             {recipientCountOf(report.config) > 0 && (
                               <span className="inline-flex items-center gap-1" title={t('reports.reportsList.emailRecipients')}>
@@ -456,40 +512,60 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
-                          <button
-                            type="button"
-                            onClick={() => handleGenerate(report)}
-                            disabled={generatingIds.has(report.id)}
-                            className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50"
-                            title={t('reports.reportsList.actions.generateNow')}
-                          >
-                            {generatingIds.has(report.id) ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <Play className="h-4 w-4" />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onEdit?.(report)}
-                            className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                            title={t('reports.reportsList.actions.edit')}
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDelete(report)}
-                            disabled={deletingId === report.id}
-                            className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted text-destructive disabled:opacity-50"
-                            title={t('reports.reportsList.actions.delete')}
-                          >
-                            {deletingId === report.id ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <Trash2 className="h-4 w-4" />
-                            )}
-                          </button>
+                          {isSystemManagedReportType(report.type) ? (
+                            /* Generate/Edit/Delete all return 409 for these,
+                               so the row offers reading the newest run only. */
+                            <button
+                              type="button"
+                              onClick={() => handleOpenLatest(report)}
+                              disabled={openingReportId === report.id}
+                              className="flex h-8 items-center gap-1 rounded-md border px-3 text-sm hover:bg-muted disabled:opacity-50"
+                            >
+                              {openingReportId === report.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Download className="h-4 w-4" />
+                              )}
+                              {t('reports.reportsList.aiNarrative.openLatest')}
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleGenerate(report)}
+                                disabled={generatingIds.has(report.id)}
+                                className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50"
+                                title={t('reports.reportsList.actions.generateNow')}
+                              >
+                                {generatingIds.has(report.id) ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Play className="h-4 w-4" />
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => onEdit?.(report)}
+                                className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
+                                title={t('reports.reportsList.actions.edit')}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDelete(report)}
+                                disabled={deletingId === report.id}
+                                className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted text-destructive disabled:opacity-50"
+                                title={t('reports.reportsList.actions.delete')}
+                              >
+                                {deletingId === report.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Trash2 className="h-4 w-4" />
+                                )}
+                              </button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>

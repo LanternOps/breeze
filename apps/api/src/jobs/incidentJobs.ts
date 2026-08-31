@@ -1,4 +1,4 @@
-import { and, eq, lt, ne, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { incidents, type IncidentTimelineEntry } from '../db/schema';
 import { publishEvent } from '../services/eventBus';
@@ -45,6 +45,23 @@ async function runExclusivePass(
   }
 }
 
+/**
+ * The two cross-process winner predicates, extracted so tests can assert the
+ * COMPILED SQL. A mocked-drizzle assertion can only substring-match column
+ * names, which cannot tell `and` from `or`, cannot notice a dropped `id`
+ * predicate, and cannot see the `FOR UPDATE SKIP LOCKED` tail at all — every
+ * one of those mutations passed green before these existed, and each turns a
+ * per-incident claim into a fleet-wide one.
+ */
+export function buildEscalationCas(incidentId: string) {
+  return and(eq(incidents.id, incidentId), isNull(incidents.escalatedAt));
+}
+
+/** Rows the enricher is allowed to claim: open, and not already claimed. */
+export function buildEnrichmentClaimScope() {
+  return and(ne(incidents.status, 'closed'), isNull(incidents.timelineEnrichedAt));
+}
+
 function toTimeline(value: unknown): IncidentTimelineEntry[] {
   if (!Array.isArray(value)) {
     return [];
@@ -67,20 +84,33 @@ async function runIncidentCorrelationPass(): Promise<void> {
 
 async function runIncidentTimelineEnrichmentPass(): Promise<void> {
   await runWithSystemDbAccess(async () => {
+    // Claim-then-work. Selecting un-enriched incidents and updating them by id
+    // lets a second process select the SAME rows before either marks them —
+    // check-then-act, and both would append a timeline_enriched entry.
+    //
+    // The claim is the marker column, not the timeline array: appending to a
+    // jsonb array cannot be made atomic with a predicate, and `timeline` is the
+    // rendering surface. `FOR UPDATE SKIP LOCKED` is the established idiom here
+    // (jobs/oauthRevocationRetryWorker.ts).
     const rows = await db
-      .select({
+      .update(incidents)
+      .set({ timelineEnrichedAt: new Date() })
+      .where(
+        inArray(
+          incidents.id,
+          db
+            .select({ id: incidents.id })
+            .from(incidents)
+            .where(buildEnrichmentClaimScope())
+            .limit(100)
+            .for('update', { skipLocked: true })
+        )
+      )
+      .returning({
         id: incidents.id,
         status: incidents.status,
         timeline: incidents.timeline,
-      })
-      .from(incidents)
-      .where(
-        and(
-          ne(incidents.status, 'closed'),
-          sql`NOT (${incidents.timeline}::jsonb @> '[{"type":"timeline_enriched"}]'::jsonb)`
-        )
-      )
-      .limit(100);
+      });
 
     if (rows.length === 0) {
       return;
@@ -132,6 +162,13 @@ async function runIncidentSlaMonitorPass(): Promise<void> {
       .where(
         and(
           ne(incidents.status, 'closed'),
+          // Exclude rows already escalated. Without this the LIMIT 100 window
+          // fills with incidents that lose the CAS on every pass — they are
+          // never re-paged (the CAS sees to that), but they permanently occupy
+          // the scan budget, so a NEW breach beyond the hundredth stale row is
+          // never looked at. This is also what makes incidents_unescalated_idx
+          // (2026-09-11-b) an index the query planner can actually use.
+          isNull(incidents.escalatedAt),
           or(
             and(eq(incidents.severity, 'p1'), lt(incidents.detectedAt, staleP1At)),
             and(eq(incidents.severity, 'p2'), lt(incidents.detectedAt, staleP2At))
@@ -141,13 +178,23 @@ async function runIncidentSlaMonitorPass(): Promise<void> {
       .limit(100);
 
     for (const row of staleIncidents) {
-      const timeline = toTimeline(row.timeline);
-      const alreadyEscalated = timeline.some((entry) => entry.type === 'incident_escalated');
-      if (alreadyEscalated) {
+      const escalationAt = new Date();
+
+      // The UPDATE is the lock. `alreadyEscalated` computed from the array this
+      // process just read is per-process belief, not a fact: two processes both
+      // read an un-escalated timeline and both publish incident.escalated,
+      // paging on-call twice for one breach.
+      const [won] = await db
+        .update(incidents)
+        .set({ escalatedAt: escalationAt })
+        .where(buildEscalationCas(row.id))
+        .returning({ id: incidents.id });
+
+      if (!won) {
         continue;
       }
 
-      const escalationAt = new Date();
+      const timeline = toTimeline(row.timeline);
       const nextTimeline = [
         ...timeline,
         {
@@ -185,7 +232,34 @@ async function runIncidentSlaMonitorPass(): Promise<void> {
           'incident-sla-monitor'
         );
       } catch (error) {
-        console.error('[IncidentJobs] Failed to publish incident.escalated event:', error);
+        // Un-claim, or this breach is NEVER paged. `escalated_at` is now the
+        // sole gate (line ~183), so a swallowed publish would leave the row
+        // claimed forever while no incident.escalated ever reached anyone —
+        // the timeline would read "exceeded SLA threshold" and on-call would
+        // hear nothing. Releasing the marker lets the next pass (60s) retry.
+        //
+        // Scoped to `escalationAt` so we only release the claim THIS iteration
+        // took: if a concurrent pass has since re-claimed the row, its marker
+        // differs and we leave it alone.
+        try {
+          await db
+            .update(incidents)
+            .set({ escalatedAt: null })
+            .where(and(eq(incidents.id, row.id), eq(incidents.escalatedAt, escalationAt)));
+        } catch (releaseError) {
+          captureException(releaseError instanceof Error ? releaseError : new Error(String(releaseError)));
+        }
+        // captureException as well as the log: a dropped page is the failure
+        // this codebase treats as worse than a duplicate one, and pass-level
+        // failures already reach Sentry while this one never did.
+        captureException(error instanceof Error ? error : new Error(String(error)));
+        console.error('[IncidentJobs] incident-escalation-publish-failed', JSON.stringify({
+          errorId: 'INCIDENT_ESCALATION_PUBLISH_FAILED',
+          incidentId: row.id,
+          orgId: row.orgId,
+          severity: row.severity,
+          error: error instanceof Error ? error.message : String(error),
+        }));
       }
     }
 
@@ -269,3 +343,12 @@ export async function shutdownIncidentSlaMonitor(): Promise<void> {
   }
   slaPassState.running = false;
 }
+
+/**
+ * The two passes that carry cross-process winner logic. Exported for tests
+ * only — production drives them through the initialize/shutdown pairs above.
+ */
+export const __testOnly = {
+  runIncidentTimelineEnrichmentPass,
+  runIncidentSlaMonitorPass,
+};

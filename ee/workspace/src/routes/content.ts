@@ -161,6 +161,26 @@ export function createContentRoutes(deps: ContentRouteDeps): Hono<WorkspaceRoute
       }
       throw e;
     }
+    if (result.aiUnavailable) {
+      // The run degraded on a permanent AI failure — no provider on this
+      // deployment (no platform key, no partner BYOK key), AI switched off for
+      // the org, a partner plan without AI, or an unpriced model id. The
+      // ingest pipeline treats that as a drained phase, but a caller who
+      // explicitly asked to enrich gets the same 503 the pre-BYOK
+      // missing-credentials guard returned above — and, like ingest-run's
+      // failure path, an audit row: an admin action that produced nothing must
+      // still leave a trail, not vanish.
+      await deps.audit({
+        actorType: 'user',
+        actorId: auth.user.id,
+        orgId,
+        action: 'workspace.content.enrich_run',
+        resourceType: 'workspace_source',
+        result: 'failure',
+        errorMessage: 'enrichment unavailable (no usable AI provider for this organization)',
+      });
+      return c.json({ error: 'enrichment unavailable (no model credentials configured)' }, 503);
+    }
     await deps.audit({
       actorType: 'user',
       actorId: auth.user.id,

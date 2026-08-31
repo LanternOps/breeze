@@ -62,7 +62,7 @@ describe('emitTicketEvent', () => {
       ticketId: 't',
       orgId: 'o',
       partnerId: null,
-      payload: { internalNumber: 'T-0001', subject: 'Test', assigneeId: null, source: 'manual' }
+      payload: { internalNumber: 'T-0001', assigneeId: null, source: 'manual' }
     })).resolves.toBeUndefined();
   });
 
@@ -74,7 +74,7 @@ describe('emitTicketEvent', () => {
       ticketId: 'failing-ticket',
       orgId: 'org-123',
       partnerId: null,
-      payload: { internalNumber: 'T-0002', subject: 'Test', assigneeId: null, source: 'manual' }
+      payload: { internalNumber: 'T-0002', assigneeId: null, source: 'manual' }
     });
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     expect(captureExceptionMock).toHaveBeenCalledWith(err);

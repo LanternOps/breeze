@@ -8,7 +8,7 @@ import type { Reducer, UnknownAction } from '@reduxjs/toolkit';
  *   - `auth/logout/fulfilled`  — `logoutAsync` thunk, API logout succeeded
  *   - `auth/logout/rejected`   — `logoutAsync` thunk, API logout FAILED but the
  *                                rejected reducer still nulls user/token (and
- *                                `clearAuthData()` runs in the catch), so the user
+ *                                queued secure wipe still runs), so the user
  *                                is signed out — e.g. the `device_blocked` /
  *                                network-failure path dispatched from RootNavigator.
  *

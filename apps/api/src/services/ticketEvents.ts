@@ -17,8 +17,14 @@ interface TicketEventEnvelope {
 }
 
 export type TicketEvent = TicketEventEnvelope & (
-  | { type: 'ticket.created'; payload: { internalNumber: string; subject: string; assigneeId: string | null; source: TicketSource } }
-  | { type: 'ticket.status_changed'; payload: { from: TicketStatus; to: TicketStatus; resolutionNote: string | null } }
+  // #3828 wave-6-3 task 2: subject dropped from the payload — the notify
+  // worker's ticket.created/ticket.assigned branch (collectAssigneeNotification)
+  // already fetches ticket.subject from the DB and never read the payload field.
+  | { type: 'ticket.created'; payload: { internalNumber: string; assigneeId: string | null; source: TicketSource } }
+  // #3828 wave-6-3 task 2: resolutionNote dropped from the payload (it is
+  // free-text ticket content, same reasoning as `subject` above) — the notify
+  // worker's resolved-email branch now reads it from the ticket row instead.
+  | { type: 'ticket.status_changed'; payload: { from: TicketStatus; to: TicketStatus } }
   | { type: 'ticket.assigned'; payload: { assigneeId: string | null } }
   // `inbound` marks a comment that originated from an inbound customer email. The
   // notify worker's ticket.commented branch skips the requester echo when

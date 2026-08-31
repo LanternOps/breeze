@@ -56,7 +56,7 @@ export const automations = pgTable('automations', {
 
 // Durable ownership snapshot for every resource referenced by a standalone
 // automation. The binding copies the automation's dual owner axes; a database
-// constraint trigger in 2026-09-11-a-automation-resource-bindings.sql rejects
+// constraint trigger in 2026-09-25-a-automation-resource-bindings.sql rejects
 // owner drift from the parent and expected resource owners outside that tenant.
 // Task 3 consumes only active bindings at run admission and dispatch.
 export const automationResourceBindings = pgTable('automation_resource_bindings', {

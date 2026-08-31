@@ -391,6 +391,127 @@
         "blocking": "Blocage...",
         "blockDevice": "Bloquer l’appareil"
       }
+    },
+    "llmProviderCatalog": {
+      "title": "Catalogue des fournisseurs LLM",
+      "description": "Points de terminaison validés par la plateforme vers lesquels les partenaires peuvent router leur trafic IA.",
+      "totalEntries": "Total des entrées :",
+      "refresh": "Actualiser",
+      "addEntry": "Ajouter un fournisseur",
+      "loading": "Chargement du catalogue…",
+      "empty": "Aucune entrée de catalogue pour le moment.",
+      "dismiss": "Ignorer",
+      "platformAdmin": {
+        "title": "Accès administrateur plateforme requis",
+        "prefix": "Le catalogue des fournisseurs LLM est géré par les administrateurs de la plateforme Breeze. Votre compte",
+        "role": "un administrateur d'organisation/partenaire",
+        "suffix": "ne peut pas le consulter ni le modifier directement."
+      },
+      "errors": {
+        "load": "Échec du chargement du catalogue",
+        "generic": "Une erreur s'est produite",
+        "createEntry": "Échec de la création du fournisseur",
+        "createRevision": "Échec de la création de la révision",
+        "activate": "Échec de l'activation de la révision",
+        "setStatus": "Échec de la mise à jour du statut",
+        "verify": "La demande de vérification a échoué"
+      },
+      "notice": {
+        "entryCreated": "Fournisseur « {{name}} » créé.",
+        "revisionCreated": "Nouvelle révision créée pour « {{name}} ».",
+        "activated": "Révision activée.",
+        "statusUpdated": "Statut mis à jour vers {{status}}."
+      },
+      "status": {
+        "draft": "Brouillon",
+        "listed": "Répertorié",
+        "delisted": "Retiré"
+      },
+      "table": {
+        "slug": "Slug",
+        "name": "Nom",
+        "status": "Statut",
+        "activeRevision": "Révision active",
+        "revisions": "Révisions",
+        "actions": "Actions"
+      },
+      "actions": {
+        "expand": "Afficher les révisions",
+        "collapse": "Masquer les révisions",
+        "addRevision": "Ajouter une révision",
+        "activate": "Activer",
+        "list": "Répertorier",
+        "delist": "Retirer",
+        "verify": "Lancer la vérification"
+      },
+      "confirmDelist": "Retirer « {{name}} » ? Les partenaires qui l'utilisent déjà continuent de fonctionner, mais il disparaît de la sélection pour les nouvelles configurations.",
+      "revision": {
+        "baseUrl": "URL de base",
+        "authMode": "Mode d'authentification",
+        "dataNote": "Note sur le traitement des données",
+        "createdAt": "Créée",
+        "notVerified": "Non vérifiée",
+        "verified": "Vérifiée",
+        "activateBlocked": "Chaque modèle mappé doit réussir sa vérification avant que cette révision puisse être activée.",
+        "listBlocked": "Chaque modèle mappé de la révision active doit réussir sa vérification avant que ce fournisseur puisse être répertorié."
+      },
+      "authModeOptions": {
+        "x-api-key": "En-tête de clé API",
+        "bearer": "Jeton porteur"
+      },
+      "entryForm": {
+        "title": "Ajouter un fournisseur",
+        "fields": {
+          "slug": "Slug",
+          "name": "Nom",
+          "notes": "Notes"
+        },
+        "placeholders": {
+          "slug": "openrouter",
+          "name": "OpenRouter",
+          "notes": "Notes internes sur ce fournisseur…"
+        },
+        "submit": "Créer le fournisseur",
+        "cancel": "Annuler"
+      },
+      "revisionForm": {
+        "title": "Ajouter une révision pour « {{name}} »",
+        "fields": {
+          "baseUrl": "URL de base",
+          "authMode": "Mode d'authentification",
+          "dataNote": "Note sur le traitement des données"
+        },
+        "placeholders": {
+          "baseUrl": "https://openrouter.ai/api/anthropic",
+          "dataNote": "Ce que cet endpoint fait des données de la requête…"
+        },
+        "modelMap": {
+          "title": "Mappage des modèles et tarification",
+          "description": "Seuls les modèles mappés sont sélectionnables par les partenaires. Prix en cents par million de jetons.",
+          "included": "Inclure ce modèle",
+          "providerModel": "ID du modèle chez le fournisseur",
+          "inputPrice": "Entrée",
+          "outputPrice": "Sortie",
+          "cacheReadPrice": "Lecture cache",
+          "cacheWritePrice": "Écriture cache"
+        },
+        "submit": "Créer la révision",
+        "cancel": "Annuler",
+        "errors": {
+          "noModelsMapped": "Mappez au moins un modèle avant de créer une révision."
+        }
+      },
+      "verifyForm": {
+        "title": "Lancer la vérification — {{model}}",
+        "description": "La clé n'est utilisée que pour cette requête et n'est jamais stockée.",
+        "apiKeyLabel": "Clé API de test",
+        "apiKeyPlaceholder": "Collez une clé de test temporaire",
+        "submit": "Lancer",
+        "cancel": "Annuler",
+        "running": "En cours…",
+        "passed": "Réussie",
+        "failed": "Échouée"
+      }
     }
   },
   "audit": {

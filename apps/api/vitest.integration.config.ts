@@ -46,6 +46,14 @@ export default defineConfig({
       'src/services/vulnerabilityCorrelationPhase2.integration.test.ts',
       // Co-located real-DB integration test for the DisplayName→CPE resolution cache (#2290).
       'src/services/cpeResolution.integration.test.ts',
+      // Real-DB proof for dual-axis, per-device peripheral policy resolution.
+      'src/services/peripheralEffectivePolicy.integration.test.ts',
+      'src/services/peripheralPolicyState.integration.test.ts',
+      // Real PostgreSQL + Redis proof for atomic signed rollback creation.
+      'src/services/agentRollback.integration.test.ts',
+      // Real PostgreSQL proof for restart-safe rollback observation ingestion,
+      // append-only dedupe, and terminal projection truth.
+      'src/services/agentRollbackResult.integration.test.ts',
       // Co-located real-DB integration test for the curated CPE map seed loader.
       'src/services/cpeMap.integration.test.ts',
       // Co-located real-DB integration test for KEV + EPSS vulnerability enrichment.
@@ -252,6 +260,30 @@ export default defineConfig({
       // persistence and the draft-preview-doesn't-persist rule.
       'src/services/invoiceService.issue.integration.test.ts',
       'src/services/invoicePdf.integration.test.ts',
+      // Wave 3.5c (#4085): real-Postgres + real-Redis/BullMQ coverage for the
+      // durable event-dispatch pipeline (enqueueRouteEvent, eventDispatchProcessor,
+      // the event_delivery_receipts state machine) — a real Worker draining a
+      // real queue, receipt idempotent-skip, retry/backoff outcomes, shadow-mode
+      // writes, and the RLS forge on event_delivery_receipts. Lives under
+      // src/__tests__/integration/**, already covered by the shared glob above;
+      // named here for discoverability only (same pattern
+      // staleBackupReaper.integration.test.ts uses).
+      'src/__tests__/integration/eventDispatchQueue.integration.test.ts',
+      // Wave 3.5c (#4085): real-Postgres coverage for the alert_notifications
+      // send-identity unique index (alert_id, channel_id, escalation_step) and
+      // the migration's loser-renumbering dedupe (2026-09-11-f), replayed by
+      // path against seeded dirty data. Lives under src/__tests__/integration/**,
+      // already covered by the shared glob above; named here for discoverability
+      // only.
+      'src/__tests__/integration/alertNotificationSendIdentity.integration.test.ts',
+      // Wave 3.5b (#4084): real-Redis coverage for the socket-affinity command
+      // relay — fenced presence leases, the sealed AAD-bound envelope, the
+      // at-most-once send claim, owner/expiry fencing, and the
+      // dispatchCommandToAgent local-vs-relay facade. No Postgres fixtures;
+      // lives under src/__tests__/integration/** so it's already covered by
+      // the shared glob above; named here for discoverability only (same
+      // pattern staleBackupReaper.integration.test.ts uses).
+      'src/__tests__/integration/agentCommandRelay.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;
