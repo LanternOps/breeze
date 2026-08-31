@@ -589,9 +589,33 @@ describe('initializeEventDispatchWorker / shutdownEventDispatchWorker', () => {
     const boom = new Error('redis unreachable during repeatable registration');
     queueGetRepeatableJobsMock.mockRejectedValue(boom);
 
-    await expect(initializeEventDispatchWorker()).resolves.toBeUndefined();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(initializeEventDispatchWorker()).resolves.toBeUndefined();
 
-    expect(captureExceptionMock).toHaveBeenCalledWith(boom);
+      // This suppression is swallowed BY DESIGN (a housekeeping job must never
+      // pin /ready), and since #4124 it runs on the default mode='off' boot —
+      // i.e. on every instance in the fleet, not just the opt-in rollout
+      // population. The Sentry report is therefore the ONLY operator-visible
+      // trace that retention never got scheduled, so it has to carry the
+      // `worker` tag (the triage axis attachWorkerObservability gives every
+      // other failure on this worker) and a greppable errorId in the log line.
+      expect(captureExceptionMock).toHaveBeenCalledWith(boom, undefined, {
+        worker: 'eventDispatchMaintenance'
+      });
+      expect(
+        consoleError.mock.calls.some((call) =>
+          call.some(
+            (arg) =>
+              typeof arg === 'string' &&
+              arg.includes('EVENT_DISPATCH_MAINTENANCE_REGISTRATION_FAILED')
+          )
+        )
+      ).toBe(true);
+    } finally {
+      consoleError.mockRestore();
+    }
+
     // The maintenance worker + queue this path opened are both closed. No main
     // worker exists on this path, so the subsequent shutdown (afterEach) has
     // nothing further to close.
@@ -657,7 +681,12 @@ describe('initializeEventDispatchWorker / shutdownEventDispatchWorker', () => {
     await expect(initializeEventDispatchWorker()).resolves.toBeUndefined();
 
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
-    expect(captureExceptionMock).toHaveBeenCalledWith(boom);
+    // Tagged `worker` so the report is attributable in Sentry — see the
+    // mode='off' sibling case above for why this tag carries the whole triage
+    // burden for a failure that is otherwise swallowed.
+    expect(captureExceptionMock).toHaveBeenCalledWith(boom, undefined, {
+      worker: 'eventDispatchMaintenance'
+    });
 
     // Cleanup closed the maintenance worker (Worker#close, shared mock with
     // the main worker's — see below) and the maintenance queue: one call

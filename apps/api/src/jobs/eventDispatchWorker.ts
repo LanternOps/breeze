@@ -925,8 +925,28 @@ export async function initializeEventDispatchWorker(): Promise<void> {
       await maintenanceQueue.close().catch(() => {});
       maintenanceQueue = null;
     }
-    console.error('[EventDispatchWorker] Failed to register maintenance repeatables (main worker unaffected):', error);
-    captureException(error instanceof Error ? error : new Error(String(error)));
+    //
+    // Because it IS swallowed, this report is the only operator-visible trace
+    // that retention never got scheduled — `workerStatus` deliberately gets no
+    // `eventDispatchMaintenance` key, since `readiness.ts` fails readiness on
+    // `outcomes.every(Boolean)` and a `false` there would pin `/ready` exactly
+    // as this block exists to prevent. So it has to be findable on its own:
+    // a greppable `errorId` in the log line (the convention this file already
+    // uses for EVENT_DISPATCH_RECEIPTS_ABANDONED / _SHADOW_MISMATCH) and the
+    // `worker` Sentry tag — the same triage axis `attachWorkerObservability`
+    // puts on every job-level failure from this worker, and one of the few
+    // tag names that survives the sentry.ts scrubber allowlist.
+    console.error(
+      `[EventDispatchWorker] maintenance-registration-failed ${JSON.stringify({
+        errorId: 'EVENT_DISPATCH_MAINTENANCE_REGISTRATION_FAILED',
+        mainWorkerStarted: startMainWorker,
+        mode
+      })}`,
+      error
+    );
+    captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+      worker: 'eventDispatchMaintenance'
+    });
   }
 }
 
