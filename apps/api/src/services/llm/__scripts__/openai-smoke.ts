@@ -18,6 +18,10 @@ import type { ChatMessage } from '../types';
 import { envFloat } from '../../../utils/envFloat';
 import { envStr } from '../../../utils/envStr';
 
+// The provider dials through the SSRF-guarded `safeFetch` (#4121), which
+// refuses loopback even with the self-host private-network opt-in. So this
+// default no longer connects to anything: set MCP_LLM_BASE_URL to the model
+// host's LAN address or container service name (RFC1918/ULA) before running.
 const BASE_URL = envStr('MCP_LLM_BASE_URL', 'http://localhost:8000/v1');
 const API_KEY = envStr('MCP_LLM_API_KEY', 'changeme');
 const MODEL = envStr('MCP_LLM_MODEL', 'qwen3.6-27b');

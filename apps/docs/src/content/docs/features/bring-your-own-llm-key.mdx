@@ -111,6 +111,11 @@ Use this path for a chat-only backend that implements the OpenAI API dialect. To
 
 The API validates the base URL and requires the model and API key when `MCP_LLM_PROVIDER=openai-compatible`. Both price values must be zero or greater.
 
+Requests to this endpoint go through Breeze's SSRF egress guard, which pins DNS at connect time and refuses to follow redirects. Two consequences for where you can host the model:
+
+- **Loopback is never reachable.** `http://localhost:8000/v1` and `http://127.0.0.1:8000/v1` are refused. Point `MCP_LLM_BASE_URL` at the model host's container service name or LAN address instead — in a Compose deployment that is the service name, which resolves to a private address.
+- **Private (RFC1918/ULA) addresses require `IS_HOSTED=false`.** The opt-in that lets Breeze reach an on-LAN model is only active on a self-hosted install that has explicitly set `IS_HOSTED` to `false`. A cleartext `http://` endpoint is additionally restricted to private addresses, so the API key is never sent unencrypted over the open internet.
+
 <Aside type="note">
   Provider precedence is **partner BYOK configuration → instance environment**. A partner-owned Anthropic key always overrides these instance settings. The instance environment applies only when Breeze resolves the request as platform-keyed usage.
 </Aside>

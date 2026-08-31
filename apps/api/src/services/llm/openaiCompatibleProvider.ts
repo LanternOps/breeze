@@ -169,7 +169,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
     // SSRF bypass and would replay the bearer token at whatever the Location says.
     if (response.status >= 300 && response.status < 400) {
       // Release the socket before disarming the timeout that protects it.
-      void response.body?.cancel();
+      // `cancel()` cannot reject with today's stream teardown, but a floating
+      // promise here would become an unhandled rejection if that ever changed.
+      void response.body?.cancel().catch(() => { /* socket is going away anyway */ });
       clearTimeout(timeoutId);
       yield {
         type: 'error',
@@ -189,7 +191,14 @@ export class OpenAICompatibleProvider implements LLMProvider {
         // error headers and then stalls hang the turn forever.
         const text = await response.text();
         detail += `: ${text.slice(0, 300)}`;
-      } catch { /* ignore */ } finally {
+      } catch (readErr) {
+        // The status still reaches the user; only the extra detail is lost. Say
+        // why, so a transport failure while reading an error page (or a
+        // maxBytes truncation) leaves a trail instead of looking like an
+        // endpoint that returned an empty error body.
+        const why = readErr instanceof Error ? readErr.message : String(readErr);
+        console.warn(`openaiCompatibleProvider: could not read the error body for ${detail}: ${why}`);
+      } finally {
         clearTimeout(timeoutId);
       }
       yield { type: 'error', message: `LLM endpoint error: ${detail}` };

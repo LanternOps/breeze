@@ -446,10 +446,12 @@ function toResponseHeaders(raw: http.IncomingHttpHeaders): Headers {
  * Wrap a live `IncomingMessage` as a web `ReadableStream`, enforcing `maxBytes`
  * as the bytes flow and tearing the socket down on cancel/overrun.
  *
- * `onTransportError` is handed back to the caller so a socket failure raised on
- * the REQUEST after the promise already resolved (an abort, a timeout, a reset
- * mid-stream) can be surfaced on the body instead of vanishing — a swallowed
- * error there would hang the consumer forever on a stream that never ends.
+ * `registerFailer` hands the caller a way to fail this body, so a socket error
+ * raised on the REQUEST after the promise already resolved (an abort, a
+ * timeout, a reset mid-stream) can be surfaced here instead of vanishing into
+ * an inert `reject` — a swallowed error there would leave the consumer waiting
+ * forever on a stream that never ends. It is invoked synchronously during
+ * construction, so the hook is in place before the `Response` is handed out.
  */
 function streamedResponseBody(
   req: http.ClientRequest,
@@ -693,6 +695,21 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
         // 204/304 and friends may not carry a body at all; draining is the only
         // correct thing to do with the (empty) stream.
         if (NULL_BODY_STATUSES.has(status)) {
+          // There is no body to hand back and the promise is about to settle,
+          // so a later socket error has nowhere to be reported TO — but it
+          // must still have a listener. An 'error' emitted on an EventEmitter
+          // with none throws synchronously and takes the whole process down,
+          // and this is the one response path with neither a stream nor a live
+          // `reject` to absorb it. Route both the response's and the request's
+          // late errors here so they leave a trace instead of vanishing.
+          const noteLateError = (err: Error): void => {
+            console.warn(
+              `safeFetch: ignoring a late error on an already-returned ${status} response `
+                + `from ${hostname}: ${err.message}`
+            );
+          };
+          res.on('error', noteLateError);
+          failStream = noteLateError;
           res.resume();
           resolve(new Response(null, { status, statusText: res.statusMessage ?? '', headers }));
           return;

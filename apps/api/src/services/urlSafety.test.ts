@@ -981,6 +981,24 @@ describe('safeFetch — streamResponse', () => {
     expect((await reader.read()).done).toBe(true);
   });
 
+  it('pauses the socket when the consumer stops reading and resumes on pull', async () => {
+    primeLookupPublic();
+    const h = spyStreamingRequest();
+
+    const res = await safeFetch('http://sse.example.test/v1', { streamResponse: true });
+    const reader = res.body!.getReader();
+    const resumesAfterStart = h.res.resume.mock.calls.length;
+
+    // Nobody is reading. The default queuing strategy has a highWaterMark of 1,
+    // so one un-read chunk drives desiredSize to 0 and the socket must stop.
+    h.res.emit('data', Buffer.from('chunk-one'));
+    expect(h.res.pause).toHaveBeenCalled();
+
+    // Reading drains the queue, which triggers `pull` and restarts the socket.
+    expect(decode((await reader.read()).value)).toBe('chunk-one');
+    expect(h.res.resume.mock.calls.length).toBeGreaterThan(resumesAfterStart);
+  });
+
   it('enforces maxBytes as bytes flow, destroying the socket and erroring the body', async () => {
     primeLookupPublic();
     const h = spyStreamingRequest();
@@ -1066,6 +1084,19 @@ describe('safeFetch — streamResponse', () => {
 
     expect(res.status).toBe(204);
     expect(res.body).toBeNull();
+  });
+
+  it('does not crash the process when a null-body response errors afterwards', async () => {
+    primeLookupPublic();
+    const h = spyStreamingRequest({ statusCode: 204, headers: {} });
+
+    const res = await safeFetch('http://empty.example.test/v1', { streamResponse: true });
+    expect(res.status).toBe(204);
+
+    // This branch has no stream to absorb the failure and an already-settled
+    // promise, but the emitter still needs a listener: an 'error' with none
+    // throws synchronously and takes the whole API process down.
+    expect(() => h.res.emit('error', new Error('socket reset after headers'))).not.toThrow();
   });
 
   it('still applies the SSRF policy before any socket is opened', async () => {
