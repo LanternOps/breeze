@@ -49,6 +49,20 @@ const limitsFields = z.object({
   maxVerdictRunsPerHour: z.number().int().min(1).max(2000),
   maxConcurrentVerdictRuns: z.number().int().min(1).max(20),
   verdictBudgetCentsPerRun: z.number().int().min(1).max(50),
+  // Sweep-profile admission caps (phase 2 P2-2) — see
+  // AiAgentLimits.maxConcurrentSweepRuns's docstring.
+  maxConcurrentSweepRuns: z.number().int().min(1).max(10),
+  maxSweepRunsPerHour: z.number().int().min(1).max(200),
+  sweepBudgetCentsPerRun: z.number().int().min(5).max(100),
+  sweepMaxTurns: z.number().int().min(3).max(20),
+  // Narrative-profile admission caps (phase 2 P2-3) — see
+  // AiAgentLimits.maxConcurrentNarrativeRuns's docstring. Bounded tighter
+  // than the sweep caps on purpose: a narrative run is once-a-week and
+  // one-per-org, so anything above a handful an hour is a re-fire, not load.
+  maxConcurrentNarrativeRuns: z.number().int().min(1).max(5),
+  maxNarrativeRunsPerHour: z.number().int().min(1).max(50),
+  narrativeBudgetCentsPerRun: z.number().int().min(5).max(100),
+  narrativeMaxTurns: z.number().int().min(2).max(8),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({

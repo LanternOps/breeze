@@ -9,14 +9,20 @@ const {
   siteDenied,
   guardMock,
   captureExceptionMock,
+  schedulePeripheralPolicyDeviceMock,
 } = vi.hoisted(() => ({
   guardMock: vi.fn(),
   captureExceptionMock: vi.fn(),
+  schedulePeripheralPolicyDeviceMock: vi.fn().mockResolvedValue('job-id'),
   authMiddlewareMock: vi.fn(),
   requireScopeMock: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermissionMock: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfaMock: vi.fn(() => async (_c: any, next: any) => next()),
   siteDenied: Symbol('SITE_ACCESS_DENIED'),
+}));
+
+vi.mock('../../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice: schedulePeripheralPolicyDeviceMock,
 }));
 
 vi.mock('../../db', () => ({
@@ -313,6 +319,10 @@ describe('POST /devices/:id/move-org', () => {
       expect(body.success).toBe(true);
       expect(body.device.orgId).toBe(TARGET_ORG);
       expect(body.device.siteId).toBe(TARGET_SITE);
+      expect(schedulePeripheralPolicyDeviceMock).toHaveBeenCalledWith(
+        DEVICE_ID,
+        'device_org_changed',
+      );
 
       // devices.set() must include both orgId and siteId flips, and MUST
       // unlink the device from any multi-boot group (#2138) — the composite

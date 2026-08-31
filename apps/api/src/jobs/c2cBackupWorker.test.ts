@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const shared = vi.hoisted(() => ({
   processorRef: undefined as any,
   closeMock: vi.fn(),
+  processC2cMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -70,8 +71,14 @@ vi.mock('../services/c2cJobCreation', () => ({
   createC2cSyncJobIfIdle: vi.fn(),
 }));
 
+vi.mock('../services/c2cQueuedAuthorization', () => ({
+  authorizeAndFinalizeC2cQueuedWork: (...args: unknown[]) => shared.processC2cMock(...args),
+}));
+
 import { db } from '../db';
-import { createC2cWorker } from './c2cBackupWorker';
+import { createC2cWorker, processC2cQueuedJob } from './c2cBackupWorker';
+import { createC2cSyncJobIfIdle } from '../services/c2cJobCreation';
+import { enqueueC2cSync } from './c2cEnqueue';
 
 function createSelectLimitChain(rows: any[] = []) {
   const chain: any = {};
@@ -100,129 +107,66 @@ describe('c2c backup worker queue validation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     shared.processorRef = undefined;
+    shared.processC2cMock.mockResolvedValue({ synced: false });
   });
 
-  it('treats forged or replayed sync jobs as no-ops unless org/config/status match', async () => {
-    vi.mocked(db.update).mockImplementationOnce(() => createUpdateChain([]) as any);
+  it('exports a direct subject-free C2C processor seam and delegates the exact queue envelope', async () => {
+    const data = {
+      type: 'run-sync' as const,
+      jobId: 'job-1',
+      configId: 'config-1',
+      orgId: 'org-1',
+    };
 
-    createC2cWorker();
-    const result = await shared.processorRef({
-      data: {
-        type: 'run-sync',
-        jobId: 'job-1',
-        configId: 'config-1',
-        orgId: 'org-1',
-      },
-    });
-
-    expect(result).toEqual({
-      synced: false,
-      skipped: true,
-      reason: 'Job not pending for queued org/config',
-    });
-    expect(db.update).toHaveBeenCalledTimes(1);
+    await expect(processC2cQueuedJob(data)).resolves.toEqual({ synced: false });
+    expect(shared.processC2cMock).toHaveBeenCalledWith(data, undefined);
   });
 
-  it('does not claim restore jobs when queued item IDs do not match the job org/config', async () => {
-    vi.mocked(db.select)
-      .mockImplementationOnce(() => createSelectLimitChain([{ id: 'job-1', configId: 'config-1' }]) as any)
-      .mockImplementationOnce(() => createSelectWhereChain([{ count: 1 }]) as any);
+  it('classifies scheduled sync with the private c2c-sync-scheduler subject', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-24T12:01:00.000Z'));
+    vi.mocked(db.select).mockImplementationOnce(() => createSelectWhereChain([{
+      id: 'config-1',
+      orgId: 'org-1',
+      isActive: true,
+      schedule: { frequency: 'hourly' },
+    }]) as any);
+    vi.mocked(createC2cSyncJobIfIdle).mockResolvedValue({
+      job: { id: 'job-1' } as any,
+      created: true,
+    });
 
     createC2cWorker();
-    const result = await shared.processorRef({
-      data: {
-        type: 'process-restore',
-        restoreJobId: 'job-1',
-        orgId: 'org-1',
-        itemIds: ['11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222'],
-        targetConnectionId: null,
-      },
-    });
+    await shared.processorRef({ data: { type: 'check-schedules' } });
 
-    expect(result).toEqual({
-      restored: false,
-      skipped: true,
-      reason: 'Queued restore items do not match restore job org/config',
-    });
-    expect(db.update).not.toHaveBeenCalled();
+    expect(createC2cSyncJobIfIdle).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'org-1',
+      configId: 'config-1',
+      auth: expect.objectContaining({
+        principal: { kind: 'system', reason: 'c2c-sync-scheduler' },
+      }),
+    }));
+    expect(enqueueC2cSync).toHaveBeenCalledWith('job-1', 'config-1', 'org-1');
+    vi.useRealTimers();
   });
 
-  it('claims restore jobs by pending org and writes processed count from validated unique items', async () => {
-    const claimUpdate = createUpdateChain([{ id: 'job-1' }]);
-    const finalUpdate = createUpdateChain();
-
-    vi.mocked(db.select)
-      .mockImplementationOnce(() => createSelectLimitChain([{ id: 'job-1', configId: 'config-1' }]) as any)
-      .mockImplementationOnce(() => createSelectWhereChain([{ count: 2 }]) as any);
-    vi.mocked(db.update)
-      .mockImplementationOnce(() => claimUpdate as any)
-      .mockImplementationOnce(() => finalUpdate as any);
-
+  it.each([
+    { type: 'run-sync', jobId: 'job-1', configId: 'config-1', orgId: 'org-1' },
+    {
+      type: 'process-restore',
+      restoreJobId: 'job-1',
+      orgId: 'org-1',
+      itemIds: ['item-1'],
+      targetConnectionId: null,
+    },
+  ])('passes $type work to the authorization processor unchanged', async (data) => {
+    shared.processC2cMock.mockResolvedValueOnce(
+      data.type === 'run-sync' ? { synced: false } : { restored: false },
+    );
     createC2cWorker();
-    const result = await shared.processorRef({
-      data: {
-        type: 'process-restore',
-        restoreJobId: 'job-1',
-        orgId: 'org-1',
-        itemIds: [
-          '11111111-1111-1111-1111-111111111111',
-          '11111111-1111-1111-1111-111111111111',
-          '22222222-2222-2222-2222-222222222222',
-        ],
-        targetConnectionId: null,
-      },
-    });
 
-    expect(result).toEqual({ restored: false });
-    expect(claimUpdate.returning).toHaveBeenCalledWith({ id: 'c2cBackupJobs.id' });
-    expect(claimUpdate.where).toHaveBeenCalledWith({
-      op: 'and',
-      conditions: [
-        { op: 'eq', left: 'c2cBackupJobs.id', right: 'job-1' },
-        { op: 'eq', left: 'c2cBackupJobs.orgId', right: 'org-1' },
-        { op: 'eq', left: 'c2cBackupJobs.configId', right: 'config-1' },
-        { op: 'eq', left: 'c2cBackupJobs.status', right: 'pending' },
-      ],
-    });
-    expect(finalUpdate.set).toHaveBeenCalledWith(expect.objectContaining({ itemsProcessed: 2 }));
-    expect(finalUpdate.where).toHaveBeenCalledWith({
-      op: 'and',
-      conditions: [
-        { op: 'eq', left: 'c2cBackupJobs.id', right: 'job-1' },
-        { op: 'eq', left: 'c2cBackupJobs.orgId', right: 'org-1' },
-        { op: 'eq', left: 'c2cBackupJobs.configId', right: 'config-1' },
-        { op: 'eq', left: 'c2cBackupJobs.status', right: 'running' },
-      ],
-    });
-  });
+    await shared.processorRef({ data });
 
-  it('finishes sync jobs only through the claimed org/config/running row', async () => {
-    const claimUpdate = createUpdateChain([{ id: 'job-1' }]);
-    const finalUpdate = createUpdateChain();
-
-    vi.mocked(db.update)
-      .mockImplementationOnce(() => claimUpdate as any)
-      .mockImplementationOnce(() => finalUpdate as any);
-
-    createC2cWorker();
-    const result = await shared.processorRef({
-      data: {
-        type: 'run-sync',
-        jobId: 'job-1',
-        configId: 'config-1',
-        orgId: 'org-1',
-      },
-    });
-
-    expect(result).toEqual({ synced: false });
-    expect(finalUpdate.where).toHaveBeenCalledWith({
-      op: 'and',
-      conditions: [
-        { op: 'eq', left: 'c2cBackupJobs.id', right: 'job-1' },
-        { op: 'eq', left: 'c2cBackupJobs.orgId', right: 'org-1' },
-        { op: 'eq', left: 'c2cBackupJobs.configId', right: 'config-1' },
-        { op: 'eq', left: 'c2cBackupJobs.status', right: 'running' },
-      ],
-    });
+    expect(shared.processC2cMock).toHaveBeenCalledWith(data, undefined);
   });
 });

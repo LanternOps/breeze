@@ -45,6 +45,7 @@ import {
 } from '../../db';
 // Direct module imports, not the schema barrel — same note as runLoop.ts.
 import { aiAgents, aiAgentRuns } from '../../db/schema/aiAgents';
+import { organizations } from '../../db/schema/orgs';
 import { createNotification } from '../userNotifications';
 import { resolveRecipientUserIds } from './recipients';
 
@@ -88,6 +89,107 @@ function readActSummaries(outcome: Record<string, unknown>): ActSummary[] {
   return summaries;
 }
 
+/**
+ * Phase 2 wave P2-2 (scheduled sweeps), Task A7 — the sweep digest read off
+ * `run.outcome.sweepFindings`. Nobody is watching a 06:00 cron occurrence and
+ * a sweep leaves no badge on an alert row a technician was already looking at,
+ * so this notification IS the surface for it (see `finishRun`'s notify/
+ * fix-watch split). `null` for every run that produced no findings outcome,
+ * which falls back to the generic title.
+ *
+ * `kinds` is the distinct set of kinds that actually PRODUCED a finding
+ * (sorted, so the list is stable regardless of the order the model emitted
+ * them) — not the kinds the schedule swept. Everything else on this
+ * digest is an outcome count, and "what was found" is what a recipient acts
+ * on; "what was checked" stays on the run-detail trace, which reads it off
+ * `trigger_ref` (`projectSweep`).
+ *
+ * Read defensively at every step: `outcome` is jsonb with no compile-time
+ * shape, and a pre-A7 row simply lacks these keys.
+ */
+interface SweepDigest {
+  findings: number;
+  critical: number;
+  kinds: string[];
+  summaryFirstLine: string;
+}
+
+function readSweepDigest(outcome: Record<string, unknown>): SweepDigest | null {
+  const sweep = outcome.sweepFindings;
+  if (!sweep || typeof sweep !== 'object') return null;
+  const entry = sweep as Record<string, unknown>;
+  const findings = Array.isArray(entry.findings) ? entry.findings : [];
+
+  let critical = 0;
+  const kinds = new Set<string>();
+  for (const raw of findings) {
+    if (!raw || typeof raw !== 'object') continue;
+    const finding = raw as Record<string, unknown>;
+    if (finding.severity === 'critical') critical += 1;
+    if (typeof finding.kind === 'string') kinds.add(finding.kind);
+  }
+
+  const summary = typeof entry.summary === 'string' ? entry.summary : '';
+  return {
+    findings: findings.length,
+    critical,
+    kinds: [...kinds].sort(),
+    summaryFirstLine: summary.split('\n')[0]?.trim() ?? '',
+  };
+}
+
+/**
+ * Phase 2 wave P2-3 (weekly org narrative), Task A7 — the narrative digest.
+ * `null` unless the run BOTH produced a narrative and had it persisted as a
+ * report artifact (`finalizeNarrative` writes `outcome.narrativeReport` only
+ * after the transaction committed).
+ *
+ * That conjunction is the point: this notification's entire payload is a
+ * pointer at a stored document. A narrative run whose persistence lost the CAS
+ * or failed has nothing to point at, and falls back to the generic
+ * run-finished copy — which links to the RUN, where the reviewer can read the
+ * `narrative_persist_*` error code. Announcing a report that does not exist is
+ * worse than announcing nothing.
+ *
+ * `headline` is the only model-authored string that reaches the notification,
+ * and it arrives already flattened and length-bounded by
+ * `narrativeSubmissionSchema` (160 chars, no control characters). It is
+ * re-flattened here anyway, for the same reason the org name is: this reads
+ * jsonb, which carries no compile-time shape and no guarantee about who wrote
+ * it.
+ */
+interface NarrativeDigest {
+  headline: string;
+  reportId: string;
+  reportRunId: string;
+}
+
+function readNarrativeDigest(outcome: Record<string, unknown>): NarrativeDigest | null {
+  const link = outcome.narrativeReport;
+  if (!link || typeof link !== 'object') return null;
+  const { reportId, reportRunId } = link as Record<string, unknown>;
+  if (typeof reportId !== 'string' || typeof reportRunId !== 'string') return null;
+  const narrative = outcome.narrative;
+  const headline = narrative && typeof narrative === 'object'
+    ? flattenNotificationLine((narrative as Record<string, unknown>).headline)
+    : '';
+  return { headline, reportId, reportRunId };
+}
+
+/**
+ * Collapses a DB- or model-sourced string to one line for display in a
+ * notification title/message: every control/format codepoint (C0, DEL, C1, and
+ * the bidi overrides that can visually reorder a line) becomes a space, runs of
+ * whitespace collapse, and the result is bounded. Same treatment
+ * `flattenNarrativeLine` (validators/orgNarrative.ts) gives a bullet — an org
+ * name is not model-authored, but it is customer-supplied text rendered into a
+ * line-oriented surface.
+ */
+function flattenNotificationLine(value: unknown, maxChars = 200): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/\p{C}/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, maxChars);
+}
+
 /** Only the two verdicts the plan names get a distinct title; `partial` and
  *  `no_action`/null keep the existing generic title (still carry `verdict`
  *  in metadata) — most orgs are not act-mode, and this keeps their
@@ -107,6 +209,11 @@ interface FinishedRunRow {
   id: string;
   orgId: string;
   agentId: string;
+  /** Phase 2 wave P2-2, Task A7 — gates the sweep digest below. Optional
+   *  because it can be absent on a row read back through an older
+   *  mock/fixture; an absent value simply never matches `'sweep'` and keeps
+   *  the generic copy. */
+  profile?: string;
   status: string;
   summary: string | null;
   outcome: Record<string, unknown>;
@@ -141,6 +248,7 @@ async function loadFinishedRun(
         id: aiAgentRuns.id,
         orgId: aiAgentRuns.orgId,
         agentId: aiAgentRuns.agentId,
+        profile: aiAgentRuns.profile,
         status: aiAgentRuns.status,
         summary: aiAgentRuns.summary,
         outcome: aiAgentRuns.outcome,
@@ -169,6 +277,29 @@ async function loadFinishedRun(
 }
 
 /**
+ * The run org's display name, for the narrative title. Read ONLY on the
+ * narrative path (one extra round trip per weekly occurrence, never on the
+ * hot full-profile path) and never fatal: an unreadable org row drops the
+ * title's suffix rather than failing a notification whose document is already
+ * stored.
+ */
+async function loadOrgName(orgId: string): Promise<string> {
+  try {
+    const [row] = await inSystemDbContext(() => db
+      .select({ name: organizations.name })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1));
+    return flattenNotificationLine(row?.name);
+  } catch (error) {
+    console.warn('[runFinishedNotify] could not read the org name for a narrative notification', {
+      orgId, error,
+    });
+    return '';
+  }
+}
+
+/**
  * Delivers the "agent run finished" notification to every resolved recipient
  * of the given run, re-reading the run/agent/policy snapshot from the DB.
  *
@@ -191,6 +322,29 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
       runId, status: run.status,
     });
     return;
+  }
+
+  // Task A7 / review fix (#4189): a CLEAN sweep is silent. A sweep is a
+  // recurring, unattended job — a daily baseline across a 40-org partner that
+  // finds nothing would otherwise manufacture 40 notifications every morning,
+  // per recipient, and that steady noise is exactly what makes the ONE
+  // morning with a critical finding invisible. Suppressed BEFORE recipient
+  // resolution: nothing downstream of here is needed to decide it, and the
+  // resolution is a DB round trip per run.
+  //
+  // Narrow on purpose — `readSweepDigest` returns null when the outcome
+  // carries no `sweepFindings` at all, and that case (a sweep that failed, or
+  // a pre-A7 row) keeps its generic run-finished notification. Only a sweep
+  // that actually ran and produced an EMPTY finding list is silent. The run
+  // row itself is untouched and still readable on the run-detail page.
+  if (run.profile === 'sweep') {
+    const digest = readSweepDigest(run.outcome ?? {});
+    if (digest && digest.findings === 0) {
+      console.info('[runFinishedNotify] sweep found nothing — no digest notification', {
+        runId, orgId: run.orgId, status: run.status,
+      });
+      return;
+    }
   }
 
   // The run's immutable snapshot, NOT the agent row's raw `recipients`
@@ -216,6 +370,34 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
     typeof run.outcome?.toolExecutionCount === 'number' ? (run.outcome.toolExecutionCount as number) : 0;
   const verdict = readRunVerdict(run.outcome ?? {});
   const actSummary = readActSummaries(run.outcome ?? {});
+  // Task A7 — a sweep run gets its own digest copy; every other profile (and
+  // a sweep run that never produced findings) keeps the generic verdict-aware
+  // title untouched.
+  const sweep = run.profile === 'sweep' ? readSweepDigest(run.outcome ?? {}) : null;
+  // Task A7 (wave P2-3) — a narrative run that actually produced an artifact
+  // gets its own copy; everything else (including a narrative run whose
+  // persistence failed) keeps the branch above.
+  const narrative = run.profile === 'narrative' ? readNarrativeDigest(run.outcome ?? {}) : null;
+  const orgName = narrative ? await loadOrgName(run.orgId) : '';
+  const title = narrative
+    ? `Weekly narrative ready${orgName ? ` — ${orgName}` : ''}`
+    : sweep
+      ? `Sweep finished: ${sweep.findings} finding(s)`
+        + `${sweep.critical > 0 ? ` (${sweep.critical} critical)` : ''} — ${agent.name}`
+      : verdictAwareTitle(agent.name, verdict);
+  const message = narrative
+    ? narrative.headline || `${agent.name}: ${firstLine || run.status}`
+    : sweep
+      ? sweep.summaryFirstLine || `${agent.name}: ${firstLine || run.status}`
+      : `${agent.name}: ${firstLine || run.status}`;
+  // Anything critical escalates, exactly as `needs_attention` does for a
+  // full-profile run — the two are mutually exclusive here (a sweep run never
+  // produces a run verdict of its own).
+  // A narrative is a scheduled deliverable, never an escalation — it stays at
+  // the default priority whatever the week contained.
+  const priority = narrative
+    ? null
+    : sweep ? (sweep.critical > 0 ? 'high' : null) : (verdict === 'needs_attention' ? 'high' : null);
 
   // AFTER the status commit and outside any held transaction (#1105).
   await inSystemDbContext(async () => {
@@ -224,16 +406,25 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
         userId,
         orgId: run.orgId,
         type: 'ai',
-        title: verdictAwareTitle(agent.name, verdict),
-        message: `${agent.name}: ${firstLine || run.status}`,
+        title,
+        message,
         // The run-detail page (wave 6.1) surfaces pending approvals itself,
         // so every run-finished notification links there unconditionally —
         // no more branching to '/approvals'.
-        link: `/ai-agents/runs/${run.id}`,
-        // Only 'needs_attention' escalates priority — every other verdict
-        // (including null, the pre-Part-B/non-act-mode default) keeps the
-        // existing 'normal' default createNotification already applies.
-        ...(verdict === 'needs_attention' ? { priority: 'high' as const } : {}),
+        //
+        // DELIBERATE DEVIATION for a narrative (wave P2-3, Task A7): '/reports'.
+        // The deliverable is the stored, downloadable report artifact; the
+        // recipient of a weekly narrative wants the document, not the agent's
+        // execution trace. This is the one profile whose "what finished" and
+        // "what to look at" are different objects. A narrative run WITHOUT an
+        // artifact keeps the unconditional run link above — see
+        // `readNarrativeDigest`'s docstring.
+        link: narrative ? '/reports' : `/ai-agents/runs/${run.id}`,
+        // Only 'needs_attention' (or, for a sweep, any critical finding)
+        // escalates priority — every other verdict, including null, the
+        // pre-Part-B/non-act-mode default, keeps the existing 'normal'
+        // default createNotification already applies.
+        ...(priority ? { priority: 'high' as const } : {}),
         metadata: {
           runId: run.id,
           agentId: agent.id,
@@ -242,6 +433,28 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
           executedActionCount,
           verdict,
           ...(actSummary.length > 0 ? { actSummary } : {}),
+          // `proposals` is the run's own pending-intent count: for a sweep
+          // run every entry in `intent_ids` came from a converted proposal
+          // (a sweep executes nothing and proposes nothing through the run
+          // loop's own tool gate — `sweepLimits` pins `maxActionsPerRun: 0`).
+          ...(sweep
+            ? {
+              sweep: {
+                findings: sweep.findings,
+                critical: sweep.critical,
+                proposals: run.intentIds.length,
+                kinds: sweep.kinds,
+              },
+            }
+            : {}),
+          // TWO ids and nothing else. The narrative itself — sections,
+          // bullets, derived markdown — lives in the report artifact and on
+          // the run row; a notification row is neither the place to duplicate
+          // a customer-facing document nor a surface with the artifact's
+          // access controls.
+          ...(narrative
+            ? { narrative: { reportRunId: narrative.reportRunId, reportId: narrative.reportId } }
+            : {}),
         },
         dedupeKey: `agent-run:${run.id}`,
       });

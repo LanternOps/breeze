@@ -5,12 +5,36 @@
  * and are exposed only to a headless run whose profile asks for them. The
  * runner's post-tool hook (runLoop.ts) captures the validated input into the
  * outcome; this module never touches the database.
+ *
+ * One outcome tool per non-`full` profile, mapped by `outcomeToolsForProfile`
+ * — that function is the SINGLE source of truth the run loop uses for the
+ * pre-hook gate, the post-hook capture, the SDK `allowedTools` exposure and
+ * the MCP `extraTools` registration, so a verdict run can never be handed the
+ * sweep tool (or vice versa) by one of those four sites drifting.
  */
 import { tool, type SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { alertVerdictOutcomeSchema, AI_ALERT_VERDICT_CLASSIFICATIONS, type AlertVerdictOutcome } from '@breeze/shared';
+import {
+  AI_ALERT_VERDICT_CLASSIFICATIONS,
+  AI_SWEEP_KINDS,
+  AI_SWEEP_SEVERITIES,
+  NARRATIVE_BULLETS_PER_SECTION_MAX,
+  NARRATIVE_BULLET_MAX_CHARS,
+  NARRATIVE_HEADLINE_MAX_CHARS,
+  NARRATIVE_SECTION_KEYS,
+  alertVerdictOutcomeSchema,
+  narrativeOutcomeFromSubmission,
+  narrativeSubmissionSchema,
+  sweepFindingsOutcomeSchema,
+  type AiAgentRunProfile,
+  type AlertVerdictOutcome,
+  type NarrativeOutcome,
+  type SweepFindingsOutcome,
+} from '@breeze/shared';
 
-export const OUTCOME_TOOL_NAMES = ['submit_alert_verdict'] as const;
+export const OUTCOME_TOOL_NAMES = [
+  'submit_alert_verdict', 'submit_sweep_findings', 'submit_narrative',
+] as const;
 export type OutcomeToolName = (typeof OUTCOME_TOOL_NAMES)[number];
 // `ReturnType<typeof tool>` does not resolve usefully here: `tool` is generic
 // over the Zod raw shape, so TypeScript instantiates the return type at the
@@ -22,16 +46,78 @@ export type SdkTool = SdkMcpToolDefinition<any>;
 
 export const OUTCOME_MCP_TOOL_NAMES: Record<OutcomeToolName, string> = {
   submit_alert_verdict: 'mcp__breeze__submit_alert_verdict',
+  submit_sweep_findings: 'mcp__breeze__submit_sweep_findings',
+  submit_narrative: 'mcp__breeze__submit_narrative',
 };
 
 export function isOutcomeTool(toolName: string): toolName is OutcomeToolName {
   return (OUTCOME_TOOL_NAMES as readonly string[]).includes(toolName);
 }
 
-export function validateOutcomeToolInput(toolName: OutcomeToolName, input: unknown): AlertVerdictOutcome {
+/**
+ * Which outcome tool(s) a run profile may see — exposure AND authority. A
+ * `full` run gets none: it has the whole registry and its output channel is
+ * the free-text summary, not a structured outcome.
+ *
+ * Exhaustive on `AiAgentRunProfile` by construction (the `never` default): a
+ * fifth profile added to `AI_AGENT_RUN_PROFILES` without a decision here is
+ * a compile error, not a run that silently exposes nothing (or, worse,
+ * everything).
+ */
+export function outcomeToolsForProfile(profile: AiAgentRunProfile): OutcomeToolName[] {
+  switch (profile) {
+    case 'full':
+      return [];
+    case 'verdict':
+      return ['submit_alert_verdict'];
+    case 'sweep':
+      return ['submit_sweep_findings'];
+    // Phase 2 wave P2-3 (weekly org narrative). This is the ONLY tool a
+    // narrative run ever sees: its drill-down floor is empty by design
+    // (`narrativeProfile.ts`'s `NARRATIVE_TOOL_ALLOWLIST`), so the exposure
+    // this function grants IS the run's entire tool surface.
+    case 'narrative':
+      return ['submit_narrative'];
+    default: {
+      const exhaustive: never = profile;
+      throw new Error(`[outcomeToolsForProfile] Unknown run profile: ${String(exhaustive)}`);
+    }
+  }
+}
+
+export function validateOutcomeToolInput(toolName: 'submit_alert_verdict', input: unknown): AlertVerdictOutcome;
+export function validateOutcomeToolInput(toolName: 'submit_sweep_findings', input: unknown): SweepFindingsOutcome;
+/**
+ * `submit_narrative` is the one outcome tool whose stored outcome is NOT the
+ * validated tool input: the model submits `{ headline, sections: [{ key,
+ * bullets }] }` and the SERVER owns the section titles, the section order and
+ * the derived markdown (see `orgNarrativeReport.ts`'s file docstring for why
+ * a model that could author markdown could author arbitrary document
+ * structure into a customer-facing report). So this overload returns the
+ * BUILT `NarrativeOutcome`, and `narrativeOutcomeFromSubmission` is reached
+ * through here and nowhere else on the run path.
+ */
+export function validateOutcomeToolInput(toolName: 'submit_narrative', input: unknown): NarrativeOutcome;
+// The union overload the run loop's hooks call through: `toolName` there is
+// the `OutcomeToolName` the SDK handed them, not a literal, so none of the
+// three narrow overloads above would apply. Callers that need the concrete
+// type narrow on the name first (see the post-hook's switch).
+export function validateOutcomeToolInput(
+  toolName: OutcomeToolName, input: unknown,
+): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome;
+export function validateOutcomeToolInput(
+  toolName: OutcomeToolName, input: unknown,
+): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome {
   switch (toolName) {
     case 'submit_alert_verdict':
       return alertVerdictOutcomeSchema.parse(input);
+    case 'submit_sweep_findings':
+      return sweepFindingsOutcomeSchema.parse(input);
+    case 'submit_narrative':
+      // `.parse` first (throws a message naming the missing/duplicated
+      // section key, which the model reads back as the tool error), then the
+      // server-owned build. Never the other way round.
+      return narrativeOutcomeFromSubmission(narrativeSubmissionSchema.parse(input));
     default: {
       const exhaustive: never = toolName;
       throw new Error(`[validateOutcomeToolInput] Unknown outcome tool: ${String(exhaustive)}`);
@@ -62,6 +148,113 @@ const SUBMIT_ALERT_VERDICT_SHAPE = {
   ]).optional().describe('Optional. Becomes a proposal a human approves; never applied directly.'),
 };
 
+/**
+ * The one mutation a sweep finding may propose — the model-facing mirror of
+ * `sweepProposedActionSchema` (packages/shared/src/validators/aiAgentSchedules.ts).
+ * A closed two-variant union on purpose: everything else a sweep might want
+ * done is a human's call, and there is no run-loop path that executes either
+ * of these anyway (a sweep run's `maxActionsPerRun` is 0 — see
+ * `sweepProfile.ts`). Task A7 turns an accepted proposal into a supervised,
+ * device-bound action intent.
+ */
+const SWEEP_PROPOSED_ACTION = z.discriminatedUnion('tool', [
+  z.object({
+    tool: z.literal('manage_services'),
+    action: z.literal('restart'),
+    deviceId: z.string().uuid().describe('Must be the deviceId of a row shown in the evidence.'),
+    serviceName: z.string().min(1).max(255).describe('The service name exactly as it appears in the evidence row.'),
+  }),
+  z.object({
+    tool: z.literal('remediate_vulnerability'),
+    deviceId: z.string().uuid().describe('Must be the deviceId of a row shown in the evidence.'),
+    deviceVulnerabilityIds: z.array(z.string().uuid()).min(1).max(100).describe(
+      'Copy these from the evidence row\'s deviceVulnerabilityIds field — never invent or reformat an id.',
+    ),
+  }),
+]);
+
+const SWEEP_FINDING = z.object({
+  kind: z.enum(AI_SWEEP_KINDS).describe('Which sweep check this finding came from — the evidence section it appeared under.'),
+  severity: z.enum(AI_SWEEP_SEVERITIES).describe(
+    'critical = customer impact now or imminent data loss; high = needs work this week; medium = schedule it; '
+    + 'low = worth noting; info = context only, no action expected.',
+  ),
+  deviceId: z.string().uuid().nullable().optional().describe(
+    'The device this finding is about, copied verbatim from the evidence row. Omit or null ONLY for a '
+    + 'fleet-wide observation that names no single machine.',
+  ),
+  title: z.string().min(1).max(120).describe('One short line a technician scans in a list, e.g. "C: is 96% full".'),
+  detail: z.string().min(1).max(600).describe(
+    'What is wrong, on which machine, and why it matters. State only what the evidence (or a read tool you '
+    + 'called) actually shows — never guess a cause you did not confirm.',
+  ),
+  evidence: z
+    .record(z.string().max(40), z.union([z.string().max(200), z.number(), z.boolean(), z.null()]))
+    .describe('The evidence-row fields that justify this finding, copied verbatim. Scalars only; at most 20 keys.'),
+  proposedAction: SWEEP_PROPOSED_ACTION.optional().describe(
+    'Optional. Becomes a proposal a human approves; never applied directly, and only valid for a device that '
+    + 'appears in the evidence.',
+  ),
+});
+
+const SUBMIT_SWEEP_FINDINGS_SHAPE = {
+  summary: z.string().min(1).max(400).describe(
+    'Two or three sentences a technician reads first: what this sweep looked at and what stood out. Say so '
+    + 'plainly when nothing needs attention.',
+  ),
+  findings: z.array(SWEEP_FINDING).max(50).describe(
+    'One entry per real problem, deduplicated — never one entry per evidence row. An empty array is a valid, '
+    + 'expected result for a healthy org.',
+  ),
+};
+
+/**
+ * Phase 2 wave P2-3 (weekly org narrative) — the model-facing mirror of
+ * `narrativeSubmissionSchema` (packages/shared/src/validators/orgNarrative.ts).
+ *
+ * Two rules the SHARED schema enforces but a raw Zod shape structurally
+ * cannot (there is no object-level `superRefine` on a `tool()` shape) have to
+ * be stated in prose here, because the tool definition is the only place the
+ * model reads before its first attempt and a rejected first attempt costs one
+ * of a narrative run's three turns:
+ *
+ *   1. **all eight keys, exactly once** — a missing or repeated key is a hard
+ *      reject naming the offending key;
+ *   2. **a bullet is one plain-text line** — the schema rejects any control
+ *      or format codepoint (so a bullet cannot contain a newline) and rejects
+ *      a bullet that is content-free once leading markdown markers are
+ *      stripped (`'#'`, `'- '`, `'>'`).
+ *
+ * The per-field bounds below are the same constants the shared schema uses,
+ * so what the model is told and what it is held to cannot drift.
+ */
+const SUBMIT_NARRATIVE_SHAPE = {
+  headline: z.string().min(1).max(NARRATIVE_HEADLINE_MAX_CHARS).describe(
+    'One plain-text sentence naming the single most important thing about this week for this customer, '
+    + 'e.g. "A quiet week: alert volume down, one server still failing its backups". No markdown, no '
+    + 'newlines, no identifiers.',
+  ),
+  sections: z.array(z.object({
+    key: z.enum(NARRATIVE_SECTION_KEYS).describe(
+      `Which section this is. Submit all ${NARRATIVE_SECTION_KEYS.length} of `
+      + `${NARRATIVE_SECTION_KEYS.join(', ')} exactly once — a missing or repeated key is rejected and `
+      + 'the whole submission has to be resent. Section titles and section order are added by the '
+      + 'system; do not send them.',
+    ),
+    bullets: z.array(z.string().min(1).max(NARRATIVE_BULLET_MAX_CHARS)).min(1)
+      .max(NARRATIVE_BULLETS_PER_SECTION_MAX)
+      .describe(
+        `1 to ${NARRATIVE_BULLETS_PER_SECTION_MAX} bullets, each ONE single sentence on ONE line of plain `
+        + 'text: no newlines, no control characters, and no markdown markers (#, -, *, +, >) — a bullet '
+        + 'containing any of those is rejected, as is a bullet with no words left once markers are '
+        + 'stripped. Every section needs at least one bullet; when there is nothing to report, say that '
+        + 'plainly in one bullet rather than omitting the section.',
+      ),
+  })).min(NARRATIVE_SECTION_KEYS.length).max(NARRATIVE_SECTION_KEYS.length).describe(
+    `Exactly ${NARRATIVE_SECTION_KEYS.length} entries — one per section key, in any order.`,
+  ),
+};
+
 export function buildOutcomeSdkTools(names: readonly OutcomeToolName[]): SdkTool[] {
   return names.map((name) => {
     switch (name) {
@@ -77,6 +270,30 @@ export function buildOutcomeSdkTools(names: readonly OutcomeToolName[]): SdkTool
           SUBMIT_ALERT_VERDICT_SHAPE,
           async (input) => {
             validateOutcomeToolInput('submit_alert_verdict', input); // throws → model retries
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
+          },
+        ) as SdkTool;
+      case 'submit_sweep_findings':
+        // Same construction-site cast as above, same reason.
+        return tool(
+          'submit_sweep_findings',
+          'Record the findings of this scheduled sweep. Call exactly once, as your last action.',
+          SUBMIT_SWEEP_FINDINGS_SHAPE,
+          async (input) => {
+            validateOutcomeToolInput('submit_sweep_findings', input); // throws → model retries
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
+          },
+        ) as SdkTool;
+      case 'submit_narrative':
+        // Same construction-site cast as above, same reason.
+        return tool(
+          'submit_narrative',
+          'Record the weekly narrative for this organization. Submit all eight sections exactly once, '
+          + 'bullets only — the system owns the section titles, the order and the rendered document. '
+          + 'Call exactly once, as your last action.',
+          SUBMIT_NARRATIVE_SHAPE,
+          async (input) => {
+            validateOutcomeToolInput('submit_narrative', input); // throws → model retries
             return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
           },
         ) as SdkTool;

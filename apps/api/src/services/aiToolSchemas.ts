@@ -120,8 +120,14 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.string().trim().transform((v) => v.toLowerCase()).pipe(z.enum(['open', 'patched', 'mitigated', 'accepted', 'all'])).optional(),
   }),
 
+  // `deviceId` (optional) pins the batch to ONE device: the handler refuses
+  // the whole call when any finding belongs to a different machine (P2-2 task
+  // 5, #4189). A scheduled sweep proposes remediation from its own per-device
+  // evidence row, so it always has the id to pin with; interactive chat may
+  // still omit it and remediate across devices as before.
   remediate_vulnerability: z.object({
     deviceVulnerabilityIds: z.array(uuid).min(1).max(100),
+    deviceId: uuid.optional(),
   }),
 
   // PAM Brain elevation tools (#1160). durationMinutes/limit are intentionally

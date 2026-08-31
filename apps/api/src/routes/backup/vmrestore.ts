@@ -1,6 +1,6 @@
-import { Hono, type Context } from 'hono';
+import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { eq, and, or, sql } from 'drizzle-orm';
+import { eq, and, or, sql, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
 import {
   backupSnapshots,
@@ -11,12 +11,16 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { writeRouteAudit } from '../../services/auditEvents';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { queueCommandForExecution, CommandTypes } from '../../services/commandQueue';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import {
   bmrVmRestoreSchema,
   instantBootSchema,
 } from './schemas';
+import {
+  authorizeRouteResilienceResources,
+  resolveRouteAuthorizedDeviceIds,
+} from './resilienceAuthorization';
 
 export const vmRestoreRoutes = new Hono();
 
@@ -46,11 +50,6 @@ type VmRestoreDispatchResult = {
 
 function mapDispatchErrorStatus(error: string): number {
   return error.startsWith('Device is ') ? 409 : 502;
-}
-
-function isDeviceSiteDenied(c: Context, siteId: string | null | undefined): boolean {
-  const permissions = c.get('permissions') as UserPermissions | undefined;
-  return Boolean(permissions?.allowedSiteIds && (typeof siteId !== 'string' || !canAccessSite(permissions, siteId)));
 }
 
 function dispatchFailureReason(error: string): string {
@@ -130,6 +129,12 @@ vmRestoreRoutes.post(
 
     const payload = c.req.valid('json');
 
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'snapshot', id: payload.snapshotId, role: 'source' },
+      { kind: 'device', id: payload.targetDeviceId, role: 'target' },
+    ], 'restore');
+    if (!authorization.ok) return authorization.response;
+
     // Verify snapshot.
     const [snapshot] = await db
       .select()
@@ -158,10 +163,6 @@ vmRestoreRoutes.post(
     if (!targetDevice) {
       return c.json({ error: 'Target device not found' }, 404);
     }
-    if (isDeviceSiteDenied(c, targetDevice.siteId)) {
-      return c.json({ error: 'Access to this site denied' }, 403);
-    }
-
     if (targetDevice.status !== 'online') {
       recordBackupDispatchFailure('manual_restore', 'device_offline');
       return c.json({ error: `Device is ${targetDevice.status}, cannot execute command` }, 409);
@@ -282,6 +283,12 @@ vmRestoreRoutes.post(
 
     const payload = c.req.valid('json');
 
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'snapshot', id: payload.snapshotId, role: 'source' },
+      { kind: 'device', id: payload.targetDeviceId, role: 'target' },
+    ], 'restore');
+    if (!authorization.ok) return authorization.response;
+
     // Verify snapshot.
     const [snapshot] = await db
       .select()
@@ -310,10 +317,6 @@ vmRestoreRoutes.post(
     if (!targetDevice) {
       return c.json({ error: 'Target device not found' }, 404);
     }
-    if (isDeviceSiteDenied(c, targetDevice.siteId)) {
-      return c.json({ error: 'Access to this site denied' }, 403);
-    }
-
     if (targetDevice.status !== 'online') {
       recordBackupDispatchFailure('manual_restore', 'device_offline');
       return c.json({ error: `Device is ${targetDevice.status}, cannot execute command` }, 409);
@@ -425,6 +428,11 @@ vmRestoreRoutes.get(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
+    const allowedDeviceIds = await resolveRouteAuthorizedDeviceIds(c, orgId);
+    if (allowedDeviceIds && allowedDeviceIds.length === 0) {
+      return c.json([]);
+    }
+
     const rows = await db
       .select({
         id: restoreJobs.id,
@@ -442,6 +450,16 @@ vmRestoreRoutes.get(
       .where(
         and(
           eq(restoreJobs.orgId, orgId),
+          allowedDeviceIds ? inArray(restoreJobs.deviceId, allowedDeviceIds) : undefined,
+          allowedDeviceIds
+            ? sql`exists (
+                select 1
+                from ${backupSnapshots}
+                where ${backupSnapshots.id} = ${restoreJobs.snapshotId}
+                  and ${backupSnapshots.orgId} = ${restoreJobs.orgId}
+                  and ${inArray(backupSnapshots.deviceId, allowedDeviceIds)}
+              )`
+            : undefined,
           sql`${restoreJobs.targetConfig} ->> 'mode' = 'instant_boot'`,
           or(
             sql`${restoreJobs.status} in ('pending', 'running')`,
@@ -450,10 +468,8 @@ vmRestoreRoutes.get(
         )
       );
 
-    const visibleRows = rows.filter((row) => !isDeviceSiteDenied(c, row.hostDeviceSiteId));
-
     return c.json(
-      visibleRows.map((row) => {
+      rows.map((row) => {
         const config = (row.targetConfig ?? {}) as {
           vmName?: string;
           result?: { syncProgress?: number | null; backgroundSyncActive?: boolean };
@@ -490,6 +506,11 @@ vmRestoreRoutes.get('/backup/restore/as-vm/estimate/:snapshotId', requirePermiss
   }
 
   const snapshotId = c.req.param('snapshotId')!;
+  const authorization = await authorizeRouteResilienceResources(c, orgId, [
+    { kind: 'snapshot', id: snapshotId, role: 'source' },
+  ], 'read');
+  if (!authorization.ok) return authorization.response;
+
   const [snapshot] = await db
     .select()
     .from(backupSnapshots)

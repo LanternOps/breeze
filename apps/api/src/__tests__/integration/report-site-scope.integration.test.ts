@@ -39,7 +39,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { and, eq, sql } from 'drizzle-orm';
 
@@ -67,6 +67,10 @@ import {
   users,
 } from '../../db/schema';
 import { reportRoutes } from '../../routes/reports';
+import {
+  reportDefinitionMetadataProjection,
+  reportRunMetadataProjection,
+} from '../../routes/reports/helpers';
 import type { AuthContext } from '../../middleware/auth';
 import {
   decodeSiteScope,
@@ -106,6 +110,17 @@ const REPORT_PERMS = [
   { resource: 'reports', action: 'delete' },
 ];
 const MIGRATION_FILE = '2026-08-06-a-report-site-scope.sql';
+// Replaying MIGRATION_FILE re-runs its `DROP CONSTRAINT IF EXISTS ... ADD
+// CONSTRAINT reports_execution_scope_shape_chk` (and the report_runs twin),
+// which REVERTS every later redefinition of those two CHECKs for the rest of
+// the process — a real cross-file hazard, because the integration runner
+// shares one database across the files in a shard. 2026-09-24-b (wave P2-3,
+// #4190) widens exactly those CHECKs so a system-principal report may carry a
+// NULL execution_scope_user_id; without the restore below, whichever suite
+// happens to run after this one sees the pre-P2-3 shape. Every successor that
+// redefines a constraint owned by MIGRATION_FILE belongs in this list, newest
+// last; each is idempotent, so re-applying is a no-op beyond the restore.
+const SUCCESSOR_MIGRATION_FILES = ['2026-09-24-b-ai-agents-org-narrative.sql'] as const;
 
 function buildApp(): Hono {
   const app = new Hono();
@@ -190,6 +205,11 @@ async function withoutSelectPrivilege<T>(
   }
 }
 
+// Mirrors the CURRENT shape CHECK — i.e. 2026-09-24-b's widening (P2-3, #4190),
+// not the original 2026-08-06-a body. `withoutScopeShapeConstraints` restores
+// from this string, so an out-of-date copy would silently re-impose the
+// pre-P2-3 rule (no system principal) on the shared database for every suite
+// that runs afterwards in the same shard.
 const SCOPE_SHAPE_CHECK = () => `((
   (
     execution_scope_version IS NULL
@@ -198,6 +218,7 @@ const SCOPE_SHAPE_CHECK = () => `((
     AND execution_scope_user_id IS NULL
     AND execution_scope_fingerprint IS NULL
     AND execution_scope_captured_at IS NULL
+    AND execution_scope_principal_kind IS NULL
   )
   OR
   (
@@ -205,9 +226,9 @@ const SCOPE_SHAPE_CHECK = () => `((
     AND execution_scope_fingerprint IS NOT NULL
     AND execution_scope_captured_at IS NOT NULL
     AND (
-      (execution_scope_kind = 'restricted' AND execution_scope_site_ids IS NOT NULL AND execution_scope_user_id IS NOT NULL)
-      OR (execution_scope_kind = 'unrestricted' AND execution_scope_site_ids IS NULL AND execution_scope_user_id IS NOT NULL)
-      OR (execution_scope_kind = 'legacy_unscoped' AND execution_scope_site_ids IS NULL)
+      (execution_scope_kind = 'restricted' AND execution_scope_site_ids IS NOT NULL AND execution_scope_user_id IS NOT NULL AND execution_scope_principal_kind IS DISTINCT FROM 'system')
+      OR (execution_scope_kind = 'unrestricted' AND execution_scope_site_ids IS NULL AND ((execution_scope_principal_kind = 'system' AND execution_scope_user_id IS NULL) OR (execution_scope_principal_kind IS DISTINCT FROM 'system' AND execution_scope_user_id IS NOT NULL)))
+      OR (execution_scope_kind = 'legacy_unscoped' AND execution_scope_site_ids IS NULL AND execution_scope_principal_kind IS DISTINCT FROM 'system')
     )
   )
 ) IS TRUE)`.replace(/\s+/g, ' ');
@@ -275,6 +296,8 @@ type ScopeShape =
   | { kind: 'unrestricted'; userId: string }
   | { kind: 'restricted'; userId: string; siteIds: string[] }
   | { kind: 'legacy'; userId?: string | null }
+  // P2-3 (#4190): platform-authored — org-wide unrestricted, NO acting user.
+  | { kind: 'system' }
   | { kind: 'null' };
 
 function provenanceValues(orgId: string, shape: ScopeShape) {
@@ -292,6 +315,21 @@ function provenanceValues(orgId: string, shape: ScopeShape) {
           orgId,
         }),
         executionScopeCapturedAt: capturedAt,
+        executionScopePrincipalKind: 'user' as const,
+      };
+    case 'system':
+      return {
+        executionScopeVersion: 1,
+        executionScopeKind: 'unrestricted' as const,
+        executionScopeSiteIds: null,
+        executionScopeUserId: null,
+        executionScopeFingerprint: siteScopeFingerprint({
+          version: 1,
+          kind: 'unrestricted',
+          orgId,
+        }),
+        executionScopeCapturedAt: capturedAt,
+        executionScopePrincipalKind: 'system' as const,
       };
     case 'restricted': {
       const siteIds = [...new Set(shape.siteIds)].sort((a, b) => a.localeCompare(b));
@@ -307,6 +345,7 @@ function provenanceValues(orgId: string, shape: ScopeShape) {
           siteIds,
         }),
         executionScopeCapturedAt: capturedAt,
+        executionScopePrincipalKind: 'user' as const,
       };
     }
     case 'legacy':
@@ -321,6 +360,7 @@ function provenanceValues(orgId: string, shape: ScopeShape) {
           orgId,
         }),
         executionScopeCapturedAt: capturedAt,
+        executionScopePrincipalKind: 'user' as const,
       };
     case 'null':
       return {
@@ -330,6 +370,7 @@ function provenanceValues(orgId: string, shape: ScopeShape) {
         executionScopeUserId: null,
         executionScopeFingerprint: null,
         executionScopeCapturedAt: null,
+        executionScopePrincipalKind: null,
       };
   }
 }
@@ -2313,7 +2354,8 @@ describe('Wave 2 · scheduled execution fails closed before any side effect', ()
              execution_scope_site_ids AS "executionScopeSiteIds",
              execution_scope_user_id AS "executionScopeUserId",
              execution_scope_fingerprint AS "executionScopeFingerprint",
-             execution_scope_captured_at AS "executionScopeCapturedAt"
+             execution_scope_captured_at AS "executionScopeCapturedAt",
+             execution_scope_principal_kind AS "executionScopePrincipalKind"
         FROM reports WHERE id = ${oldWriterId}::uuid
     `);
     expect(decodeSiteScope(oldWriterRow[0]!, f.orgA)).toEqual({
@@ -2371,9 +2413,18 @@ describe('Wave 2 · scheduled execution fails closed before any side effect', ()
     const updated = (await res.json()) as {
       executionScopeKind: string;
       executionScopeUserId: string;
+      executionScopePrincipalKind: string | null;
     };
     expect(updated.executionScopeKind).toBe('unrestricted');
     expect(updated.executionScopeUserId).toBe(f.unrestrictedUser.id);
+    // P2-3 (#4190): the user write path now stamps its principal explicitly,
+    // and the row survives the widened shape CHECK with it.
+    expect(updated.executionScopePrincipalKind).toBe('user');
+    expect(
+      await scalar<string>(sql`
+        SELECT execution_scope_principal_kind FROM reports WHERE id = ${legacyId}::uuid
+      `),
+    ).toBe('user');
 
     const due = await withSystemDbAccessContext(() =>
       findDueReports(new Date('2026-07-21T12:00:00.000Z')),
@@ -2392,7 +2443,29 @@ describe('Wave 2 · scheduled execution fails closed before any side effect', ()
 // 12. Migration + mixed-version invariants
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * Re-apply every migration that redefines a constraint MIGRATION_FILE owns, so
+ * a replay of MIGRATION_FILE cannot leave the shared database on the pre-P2-3
+ * shape. Each successor is idempotent, so this is a no-op beyond the restore.
+ *
+ * NOTE: `ADD CONSTRAINT` VALIDATES existing rows, so any row written while the
+ * reverted CHECK was in force must be gone first — the file-level beforeEach
+ * TRUNCATE handles that between tests.
+ */
+async function restoreSuccessorMigrations(): Promise<void> {
+  if (!process.env.DATABASE_URL) return;
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  for (const file of SUCCESSOR_MIGRATION_FILES) {
+    const successorSql = await readFile(path.resolve(here, '../../../migrations', file), 'utf8');
+    await getTestDb().execute(sql.raw(successorSql));
+  }
+}
+
 describe('Wave 2 · migration is idempotent and the shape CHECK holds', () => {
+  // Runs even when a test above threw mid-replay, so the shared database never
+  // leaves this file with a reverted shape CHECK. See SUCCESSOR_MIGRATION_FILES.
+  afterAll(restoreSuccessorMigrations);
+
   runDb('reapplying the expansion migration changes neither schema nor rows', async () => {
     const f = await buildFixture();
     await seedReport({
@@ -2485,5 +2558,309 @@ describe('Wave 2 · migration is idempotent and the shape CHECK holds', () => {
     expect(
       await scalar<number>(sql`SELECT count(*)::int FROM reports WHERE name LIKE 'p_'`),
     ).toBe(0);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 13. System report principal (P2-3, #4190)
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('Wave P2-3 · a system-authored report carries no acting user', () => {
+  // Independent of hook order: the block above replays MIGRATION_FILE, which
+  // reverts the shape CHECK to its pre-P2-3 body. Restoring here means these
+  // tests hold whether or not that block ran (or ran to completion) first.
+  beforeAll(restoreSuccessorMigrations);
+
+  runDb('the shape CHECK rejects every forged system-principal combination', async () => {
+    const f = await buildFixture();
+    // Positive control: the legal shape (unrestricted, NULL user) is accepted,
+    // so the rejections below are about the forgery, not a broken statement.
+    await getTestDb().execute(sql`
+      INSERT INTO reports (org_id, name, type, execution_scope_version, execution_scope_kind, execution_scope_user_id, execution_scope_fingerprint, execution_scope_captured_at, execution_scope_principal_kind)
+      VALUES (${f.orgA}::uuid, 'ok', 'device_inventory', 1, 'unrestricted', NULL, repeat('a', 64), now(), 'system')
+    `);
+
+    const forbidden = [
+      // 'restricted' is never a system principal.
+      sql`INSERT INTO reports (org_id, name, type, execution_scope_version, execution_scope_kind, execution_scope_site_ids, execution_scope_user_id, execution_scope_fingerprint, execution_scope_captured_at, execution_scope_principal_kind) VALUES (${f.orgA}::uuid, 'q1', 'device_inventory', 1, 'restricted', ARRAY[${f.siteA1}::uuid], ${f.siteAUser.id}::uuid, repeat('a', 64), now(), 'system')`,
+      // A system principal may not also name an acting user.
+      sql`INSERT INTO reports (org_id, name, type, execution_scope_version, execution_scope_kind, execution_scope_user_id, execution_scope_fingerprint, execution_scope_captured_at, execution_scope_principal_kind) VALUES (${f.orgA}::uuid, 'q2', 'device_inventory', 1, 'unrestricted', ${f.siteAUser.id}::uuid, repeat('a', 64), now(), 'system')`,
+      // An all-NULL scope may not carry a principal at all.
+      sql`INSERT INTO reports (org_id, name, type, execution_scope_principal_kind) VALUES (${f.orgA}::uuid, 'q3', 'device_inventory', 'system')`,
+      // 'legacy_unscoped' is never a system principal.
+      sql`INSERT INTO reports (org_id, name, type, execution_scope_version, execution_scope_kind, execution_scope_fingerprint, execution_scope_captured_at, execution_scope_principal_kind) VALUES (${f.orgA}::uuid, 'q4', 'device_inventory', 1, 'legacy_unscoped', repeat('a', 64), now(), 'system')`,
+      // A user principal still requires an acting user.
+      sql`INSERT INTO reports (org_id, name, type, execution_scope_version, execution_scope_kind, execution_scope_user_id, execution_scope_fingerprint, execution_scope_captured_at, execution_scope_principal_kind) VALUES (${f.orgA}::uuid, 'q5', 'device_inventory', 1, 'unrestricted', NULL, repeat('a', 64), now(), 'user')`,
+    ];
+    for (const statement of forbidden) {
+      await expect(getTestDb().execute(statement)).rejects.toThrow();
+    }
+    expect(
+      await scalar<number>(sql`SELECT count(*)::int FROM reports WHERE name LIKE 'q_'`),
+    ).toBe(0);
+  });
+
+  runDb('the route projection decodes a system-principal definition and run', async () => {
+    const f = await buildFixture();
+    const reportId = await seedReport({
+      orgId: f.orgA,
+      name: 'weekly narrative',
+      scope: { kind: 'system' },
+      createdBy: null,
+    });
+    const runId = await seedRun({
+      reportId,
+      orgId: f.orgA,
+      scope: { kind: 'system' },
+    });
+
+    // Non-vacuity: the rows really are system-principal with a NULL user.
+    expect(
+      await scalar<number>(sql`
+        SELECT count(*)::int FROM reports
+         WHERE id = ${reportId}::uuid
+           AND execution_scope_principal_kind = 'system'
+           AND execution_scope_user_id IS NULL
+      `),
+    ).toBe(1);
+
+    const [definition] = await getTestDb()
+      .select(reportDefinitionMetadataProjection)
+      .from(reports)
+      .where(eq(reports.id, reportId))
+      .limit(1);
+    expect(definition!.executionScopePrincipalKind).toBe('system');
+    expect(definition!.executionScopeUserId).toBeNull();
+    expect(
+      decodeSiteScope(definition as unknown as PersistedSiteScopeColumns, f.orgA),
+    ).toEqual({ version: 1, kind: 'unrestricted', orgId: f.orgA });
+
+    const [runMetadata] = await getTestDb()
+      .select(reportRunMetadataProjection)
+      .from(reportRuns)
+      .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+      .where(eq(reportRuns.id, runId))
+      .limit(1);
+    expect(runMetadata!.executionScopePrincipalKind).toBe('system');
+    expect(
+      decodeSiteScope(runMetadata as unknown as PersistedSiteScopeColumns, f.orgA),
+    ).toEqual({ version: 1, kind: 'unrestricted', orgId: f.orgA });
+  });
+
+  runDb('an unrestricted reader downloads it; a site-restricted reader gets 404', async () => {
+    const f = await buildFixture();
+    const reportId = await seedReport({
+      orgId: f.orgA,
+      name: 'weekly narrative',
+      scope: { kind: 'system' },
+      createdBy: null,
+    });
+    const systemRunId = await seedRun({
+      reportId,
+      orgId: f.orgA,
+      scope: { kind: 'system' },
+    });
+    const app = buildApp();
+
+    // Positive control: the SAME reader can download a user-authored run, so a
+    // 404 below would be about the principal, not about broken fixtures.
+    const userReportId = await seedReport({
+      orgId: f.orgA,
+      name: 'user authored',
+      scope: { kind: 'unrestricted', userId: f.unrestrictedUser.id },
+      createdBy: f.unrestrictedUser.id,
+    });
+    const userRunId = await seedRun({
+      reportId: userReportId,
+      orgId: f.orgA,
+      scope: { kind: 'unrestricted', userId: f.unrestrictedUser.id },
+    });
+    expect(
+      (await app.request(
+        `/reports/runs/${userRunId}/download?format=json`,
+        authed(f.unrestrictedUser.token),
+      )).status,
+    ).toBe(200);
+
+    const allowed = await app.request(
+      `/reports/runs/${systemRunId}/download?format=json`,
+      authed(f.unrestrictedUser.token),
+    );
+    expect(allowed.status).toBe(200);
+    expect(await allowed.json()).toMatchObject({
+      data: { rows: [{ hostname: 'seeded' }] },
+    });
+
+    // A site-restricted reader may not read an org-wide system artifact.
+    const denied = await app.request(
+      `/reports/runs/${systemRunId}/download?format=json`,
+      authed(f.siteAUser.token),
+    );
+    expect(denied.status).toBe(404);
+
+    // Nor may a reader from another partner's organization.
+    expect(
+      (await app.request(
+        `/reports/runs/${systemRunId}/download?format=json`,
+        authed(f.foreignUser.token),
+      )).status,
+    ).toBe(404);
+  });
+
+  /**
+   * Task A7 (#4190). `GET /reports/runs` has NO per-row `decodeSiteScope`
+   * pass — unlike the known-ID detail and download routes, which re-decode the
+   * row they fetched. Its SQL predicate is therefore the ONLY gate, and the
+   * widening that lets an org-wide reader see a system-authored artifact must
+   * not spill onto a site-restricted one.
+   */
+  runDb('the run LIST predicate hides a system-authored run from a site-restricted reader', async () => {
+    const f = await buildFixture();
+    const reportId = await seedReport({
+      orgId: f.orgA,
+      name: 'listed narrative',
+      scope: { kind: 'system' },
+      createdBy: null,
+    });
+    const systemRunId = await seedRun({ reportId, orgId: f.orgA, scope: { kind: 'system' } });
+    // A run the site-restricted reader CAN see, so an empty list would not
+    // pass this test by accident.
+    const visibleReportId = await seedReport({
+      orgId: f.orgA,
+      name: 'listed site report',
+      scope: { kind: 'restricted', userId: f.siteAUser.id, siteIds: [f.siteA1] },
+      createdBy: f.siteAUser.id,
+    });
+    const visibleRunId = await seedRun({
+      reportId: visibleReportId,
+      orgId: f.orgA,
+      scope: { kind: 'restricted', userId: f.siteAUser.id, siteIds: [f.siteA1] },
+    });
+    const app = buildApp();
+
+    // Non-vacuity: the pre-wave org-only join reaches BOTH rows.
+    expect(
+      await scalar<number>(sql`
+        SELECT count(*)::int FROM report_runs r
+          JOIN reports p ON p.id = r.report_id
+         WHERE p.org_id = ${f.orgA}::uuid
+      `),
+    ).toBe(2);
+
+    const restricted = await app.request('/reports/runs?limit=50', authed(f.siteAUser.token));
+    expect(restricted.status).toBe(200);
+    const restrictedBody = (await restricted.json()) as {
+      data: Array<{ id: string }>; pagination: { total: number };
+    };
+    const restrictedIds = restrictedBody.data.map((row) => row.id);
+    expect(restrictedIds).toContain(visibleRunId);
+    expect(restrictedIds).not.toContain(systemRunId);
+    // The paging total must agree with the rows — a count query that forgot
+    // the predicate would leak the row's existence even while hiding it.
+    expect(restrictedBody.pagination.total).toBe(1);
+
+    // Control: the org-wide reader DOES get it, so the exclusion above is the
+    // site restriction and not a blanket hide.
+    const unrestricted = await app.request('/reports/runs?limit=50', authed(f.unrestrictedUser.token));
+    expect(unrestricted.status).toBe(200);
+    const unrestrictedIds = ((await unrestricted.json()) as { data: Array<{ id: string }> })
+      .data.map((row) => row.id);
+    expect(unrestrictedIds).toContain(systemRunId);
+  });
+
+  runDb('breeze_app cannot forge a system-principal report into another organization', async () => {
+    const f = await buildFixture();
+    const appDb = getAppDb();
+    const capturedAt = naiveUtc(new Date('2026-07-01T00:00:00.000Z'));
+    const fingerprintA = siteScopeFingerprint({
+      version: 1,
+      kind: 'unrestricted',
+      orgId: f.orgA,
+    });
+    const fingerprintB = siteScopeFingerprint({
+      version: 1,
+      kind: 'unrestricted',
+      orgId: f.orgB,
+    });
+
+    // Positive control: breeze_app CAN write a system-principal definition into
+    // its own organization, so the widened shape CHECK is not the thing failing.
+    const own = await appDb.transaction(async (tx) => {
+      await tx.execute(sql`select set_config('breeze.scope', 'organization', true)`);
+      await tx.execute(sql`select set_config('breeze.org_id', ${f.orgB}, true)`);
+      await tx.execute(sql`select set_config('breeze.accessible_org_ids', ${f.orgB}, true)`);
+      const rows = await tx.execute(sql`
+        INSERT INTO reports (org_id, name, type, config, schedule, format,
+          execution_scope_version, execution_scope_kind, execution_scope_site_ids,
+          execution_scope_user_id, execution_scope_fingerprint,
+          execution_scope_captured_at, execution_scope_principal_kind)
+        VALUES (${f.orgB}::uuid, 'own system narrative', 'device_inventory', '{}'::jsonb, 'weekly', 'csv',
+          1, 'unrestricted', NULL, NULL, ${fingerprintB}, ${capturedAt}::timestamptz, 'system')
+        RETURNING id
+      `);
+      return rows as unknown as Array<{ id: string }>;
+    });
+    expect(own).toHaveLength(1);
+
+    let forgeError: unknown;
+    try {
+      await appDb.transaction(async (tx) => {
+        await tx.execute(sql`select set_config('breeze.scope', 'organization', true)`);
+        await tx.execute(sql`select set_config('breeze.org_id', ${f.orgB}, true)`);
+        await tx.execute(sql`select set_config('breeze.accessible_org_ids', ${f.orgB}, true)`);
+        await tx.execute(sql`
+          INSERT INTO reports (org_id, name, type, config, schedule, format,
+            execution_scope_version, execution_scope_kind, execution_scope_site_ids,
+            execution_scope_user_id, execution_scope_fingerprint,
+            execution_scope_captured_at, execution_scope_principal_kind)
+          VALUES (${f.orgA}::uuid, 'forged system narrative', 'device_inventory', '{}'::jsonb, 'weekly', 'csv',
+            1, 'unrestricted', NULL, NULL, ${fingerprintA}, ${capturedAt}::timestamptz, 'system')
+        `);
+      });
+    } catch (err) {
+      forgeError = err;
+    }
+    const forgeMessage =
+      (forgeError as { cause?: { message?: string; code?: string }; message?: string; code?: string })?.cause?.message ??
+      (forgeError as { message?: string })?.message ??
+      '';
+    const forgeCode =
+      (forgeError as { cause?: { code?: string }; code?: string })?.cause?.code ??
+      (forgeError as { code?: string })?.code;
+    expect(forgeMessage).toContain('new row violates row-level security policy');
+    expect(forgeCode).toBe('42501');
+    expect(
+      await scalar<number>(
+        sql`SELECT count(*)::int FROM reports WHERE name = 'forged system narrative'`,
+      ),
+    ).toBe(0);
+  });
+
+  runDb('the report scheduler refuses a system-principal definition', async () => {
+    const f = await buildFixture();
+    const reportId = await seedReport({
+      orgId: f.orgA,
+      name: 'scheduled system narrative',
+      schedule: 'weekly',
+      scope: { kind: 'system' },
+      createdBy: null,
+    });
+
+    // It is never even marked due (no acting user to reauthorize against)...
+    const due = await withSystemDbAccessContext(() =>
+      findDueReports(new Date('2026-07-21T12:00:00.000Z')),
+    );
+    expect(due.map((d) => d.id)).not.toContain(reportId);
+
+    // ...and forcing the job in still produces no output, only a failed run.
+    await runScheduled(reportId);
+    const runs = await rawRows<{ status: string; error_message: string | null; result: unknown }>(sql`
+      SELECT status, error_message, result FROM report_runs WHERE report_id = ${reportId}::uuid
+    `);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.status).toBe('failed');
+    expect(runs[0]!.error_message).toBe('system_principal_definition');
+    expect(runs[0]!.result).toBeNull();
+    expect(emailProbe.calls).toBe(0);
   });
 });
