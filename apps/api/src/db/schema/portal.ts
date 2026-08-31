@@ -171,6 +171,13 @@ export const ticketComments = pgTable('ticket_comments', {
   // (ON DELETE SET NULL) is declared in the SQL migration only — same
   // established pattern as this table's own categoryId/statusId columns
   // above, for the identical reason.
+  //
+  // P2-4 (#4191, 2026-09-25-ai-agents-ticket-triage.sql): also carries a
+  // partial unique index, `ticket_comments_one_ai_note_per_run_uq` ON
+  // ticket_comments (agent_run_id) WHERE agent_run_id IS NOT NULL AND
+  // origin_principal_kind = 'ai_agent' — at most one AI-authored comment per
+  // run. Not modeled in Drizzle for the same "partial index" reason as
+  // ticketDrafts.ts's ticket_drafts_active_uq.
   agentRunId: uuid('agent_run_id')
 });
 

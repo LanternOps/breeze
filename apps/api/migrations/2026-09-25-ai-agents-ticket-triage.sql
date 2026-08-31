@@ -20,6 +20,14 @@
 --      REFERENCES ...` — verified via \d ticket_comments below; no need to
 --      re-declare it here).
 --
+-- All four new composite (x, org_id) FKs above (ticket_drafts_ticket_org_fk,
+-- ticket_drafts_run_org_fk, ticket_drafts_intent_org_fk,
+-- action_intents_scope_ticket_org_fk) are DEFERRABLE INITIALLY IMMEDIATE, per
+-- the org-lifecycle contract (2026-09-12-100001-org-lifecycle-foundations.sql
+-- / orgLifecycleFoundations.integration.test.ts) — see the inline comment
+-- above ticket_drafts_ticket_org_fk for why DROP + re-ADD rather than a
+-- duplicate_object guard.
+--
 -- Idempotent; no inner BEGIN/COMMIT (autoMigrate wraps the file).
 
 -- 1. tickets --------------------------------------------------------------
@@ -57,25 +65,44 @@ CREATE TABLE IF NOT EXISTS ticket_drafts (
   consumed_by uuid REFERENCES users(id) ON DELETE SET NULL,
   consumed_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT ticket_drafts_ticket_org_fk FOREIGN KEY (ticket_id, org_id) REFERENCES tickets (id, org_id) ON DELETE CASCADE,
   CONSTRAINT ticket_drafts_consumed_chk CHECK (state <> 'consumed' OR (consumed_by IS NOT NULL AND consumed_at IS NOT NULL))
 );
 
--- run/intent composite FKs mirror action_intents.requestingAgentRunOrgFk
--- (actionIntents.ts:325-345 / 2026-09-05-a-agent-originated-intents.sql)
+-- Composite FKs, all DEFERRABLE INITIALLY IMMEDIATE per the org-lifecycle
+-- contract (2026-09-12-100001-org-lifecycle-foundations.sql: "New composite
+-- (x, org_id) FKs MUST be declared DEFERRABLE INITIALLY IMMEDIATE" —
+-- enforced by orgLifecycleFoundations.integration.test.ts). This migration
+-- predates that contract chronologically but ships after it, so the
+-- lifecycle migration's one-time dynamic sweep (which only walks
+-- constraints that already existed when IT ran) never saw these four.
+-- DROP + re-ADD (rather than a duplicate_object guard, and rather than the
+-- lighter ALTER CONSTRAINT ... DEFERRABLE the sweep itself uses) so that a
+-- DB that already applied an earlier, non-deferrable cut of this same file
+-- gets corrected in place on re-apply — re-running this migration must fix
+-- drift, not just skip past it once the constraint name already exists.
+--
+-- ticket_drafts_ticket_org_fk mirrors action_intents.requestingAgentRunOrgFk
+-- (actionIntents.ts:325-345 / 2026-09-05-a-agent-originated-intents.sql) in
+-- spirit; ticket_drafts_run_org_fk / ticket_drafts_intent_org_fk mirror it
 -- EXACTLY, including ON DELETE RESTRICT: runs and intents are never
 -- hard-deleted (ai-agents spec §2), so this is a safety net, not an active
 -- cascade path. MATCH SIMPLE (the default) means a NULL run_id/intent_id
 -- trivially satisfies the constraint — both columns are optional (a draft
 -- need not originate from a run/intent).
-DO $$ BEGIN
-  ALTER TABLE ticket_drafts ADD CONSTRAINT ticket_drafts_run_org_fk
-    FOREIGN KEY (run_id, org_id) REFERENCES ai_agent_runs (id, org_id) ON DELETE RESTRICT;
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN
-  ALTER TABLE ticket_drafts ADD CONSTRAINT ticket_drafts_intent_org_fk
-    FOREIGN KEY (intent_id, org_id) REFERENCES action_intents (id, org_id) ON DELETE RESTRICT;
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+ALTER TABLE ticket_drafts DROP CONSTRAINT IF EXISTS ticket_drafts_ticket_org_fk;
+ALTER TABLE ticket_drafts ADD CONSTRAINT ticket_drafts_ticket_org_fk
+  FOREIGN KEY (ticket_id, org_id) REFERENCES tickets (id, org_id) ON DELETE CASCADE
+  DEFERRABLE INITIALLY IMMEDIATE;
+
+ALTER TABLE ticket_drafts DROP CONSTRAINT IF EXISTS ticket_drafts_run_org_fk;
+ALTER TABLE ticket_drafts ADD CONSTRAINT ticket_drafts_run_org_fk
+  FOREIGN KEY (run_id, org_id) REFERENCES ai_agent_runs (id, org_id) ON DELETE RESTRICT
+  DEFERRABLE INITIALLY IMMEDIATE;
+
+ALTER TABLE ticket_drafts DROP CONSTRAINT IF EXISTS ticket_drafts_intent_org_fk;
+ALTER TABLE ticket_drafts ADD CONSTRAINT ticket_drafts_intent_org_fk
+  FOREIGN KEY (intent_id, org_id) REFERENCES action_intents (id, org_id) ON DELETE RESTRICT
+  DEFERRABLE INITIALLY IMMEDIATE;
 
 -- One active draft per (ticket, kind) — a fresh proposal supersedes the
 -- prior one (state -> 'superseded') rather than coexisting with it.
@@ -135,10 +162,14 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- SET NULL matches scope_device_id's tombstone treatment: the ticket's
 -- eventual delete (or a moveOrg detach step in Task A3) resolves to the
 -- same non-null -> NULL transition the immutability trigger below permits.
-DO $$ BEGIN
-  ALTER TABLE action_intents ADD CONSTRAINT action_intents_scope_ticket_org_fk
-    FOREIGN KEY (scope_ticket_id, org_id) REFERENCES tickets (id, org_id) ON DELETE SET NULL;
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- DEFERRABLE INITIALLY IMMEDIATE per the org-lifecycle contract (see the
+-- ticket_drafts composite-FK comment above for the full rationale);
+-- DROP + re-ADD so a DB holding an earlier non-deferrable cut of this
+-- migration is corrected on re-apply, not skipped.
+ALTER TABLE action_intents DROP CONSTRAINT IF EXISTS action_intents_scope_ticket_org_fk;
+ALTER TABLE action_intents ADD CONSTRAINT action_intents_scope_ticket_org_fk
+  FOREIGN KEY (scope_ticket_id, org_id) REFERENCES tickets (id, org_id) ON DELETE SET NULL
+  DEFERRABLE INITIALLY IMMEDIATE;
 
 CREATE INDEX IF NOT EXISTS action_intents_scope_ticket_idx ON action_intents (scope_ticket_id) WHERE scope_ticket_id IS NOT NULL;
 

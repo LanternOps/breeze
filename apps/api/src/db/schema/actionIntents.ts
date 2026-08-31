@@ -397,6 +397,10 @@ export const actionIntents = pgTable(
     idOrgUq: uniqueIndex('action_intents_id_org_uq').on(table.id, table.orgId),
     // P2-4: composite FK so a forged cross-tenant ticket pointer is 23503
     // even under system context — see scopeTicketId's column comment above.
+    // Also DEFERRABLE INITIALLY IMMEDIATE in the migration (org-lifecycle
+    // contract) — drizzle-orm's foreignKey() builder has no deferrable
+    // option, so that detail lives in the migration only (same limitation as
+    // ticketDrafts.ts's composite FKs / deviceMtlsCertificates.ts).
     scopeTicketOrgFk: foreignKey({
       columns: [table.scopeTicketId, table.orgId],
       foreignColumns: [tickets.id, tickets.orgId],

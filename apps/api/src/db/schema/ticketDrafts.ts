@@ -72,6 +72,13 @@ export const ticketDrafts = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    // All three composite FKs below are also DEFERRABLE INITIALLY IMMEDIATE
+    // in the migration (org-lifecycle contract,
+    // 2026-09-12-100001-org-lifecycle-foundations.sql) — drizzle-orm's
+    // foreignKey() builder has no deferrable option, so that detail lives in
+    // the migration only (same documented limitation as
+    // deviceMtlsCertificates.ts's device_org_fkey; db:check-drift does not
+    // compare FK options against the DB).
     ticketOrgFk: foreignKey({
       columns: [table.ticketId, table.orgId],
       foreignColumns: [tickets.id, tickets.orgId],
