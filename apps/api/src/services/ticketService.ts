@@ -63,6 +63,18 @@ export interface TicketActor {
   email?: string;
   triageFeedbackSource?: 'manual' | 'suggestion';
   triageFeedbackMetadata?: Record<string, unknown>;
+  /**
+   * P2-4 (#4191): who is actually behind this write, for `tickets.field_provenance`
+   * stamping in `updateTicketFields`. Defaults to 'user' — every existing caller
+   * (human staff, attended chat auto-executing under the caller's own session)
+   * is unaffected. An 'ai_agent'/'system' actor is never routed through
+   * `updateTicketFields` today (the AI ticket-triage release path uses the
+   * dedicated `applyAiFieldUpdates`, which is CAS-guarded and never overwrites
+   * a 'user' stamp) — this field exists so `updateTicketFields` stamps
+   * correctly if a future caller ever does pass a non-human actor here,
+   * without that caller having to know the stamping mechanics.
+   */
+  principalKind?: 'user' | 'ai_agent' | 'system';
 }
 
 // Legacy display identifier (NOT NULL UNIQUE), retry loop dropped when creation
@@ -850,6 +862,21 @@ export async function updateTicketFields(
   }
   if (requesterChanged) Object.assign(patch, requesterPatch);
 
+  // P2-4 (#4191): stamp field_provenance, in the SAME transaction/statement
+  // as the field write itself — the human-set-field authority the release-
+  // time CAS in applyAiFieldUpdates relies on. A human write here (the only
+  // caller today; principalKind defaults 'user') ALWAYS overwrites whatever
+  // was there before, including an 'ai_agent' stamp — humans always win, no
+  // CAS needed on this path (unlike applyAiFieldUpdates, which is the one
+  // that must never overwrite a 'user' stamp).
+  if (changed.length > 0) {
+    const provenanceStamp = Object.fromEntries(
+      changed.map((field) => [field, actor.principalKind ?? 'user']),
+    );
+    (patch as Record<string, unknown>).fieldProvenance =
+      sql`${tickets.fieldProvenance} || ${JSON.stringify(provenanceStamp)}::jsonb`;
+  }
+
   const updated = await db
     .update(tickets)
     .set(patch)
@@ -1041,6 +1068,196 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
   });
 
   return { comment, firstResponseStamped };
+}
+
+/** Postgres unique-violation, however the driver happens to wrap it (mirrors tenantVariables.ts's isUniqueViolation). */
+function isUniqueViolation(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = (err as { code?: unknown }).code;
+  if (code === '23505') return true;
+  return isUniqueViolation((err as { cause?: unknown }).cause);
+}
+
+/**
+ * P2-4 (#4191): the first real writer of the 6.3 loop-guard columns
+ * (`originPrincipalKind` / `agentRunId`) — an AI-authored INTERNAL ticket
+ * note. `userId`/`portalUserId` are deliberately null: an ai_agent's identity
+ * (`aiAgents.id`) is not a `users.id` row, so writing it into
+ * `ticket_comments.user_id` (an FK to `users`) would violate the FK — the
+ * agent's display name goes into `authorName` for attribution instead
+ * (mirrors `remediationActResolver.ts`'s "never a synthetic users-FK id for
+ * an agent actor" precedent).
+ *
+ * Emits the SAME `ticket.commented` event/outbox row `addTicketComment`
+ * does — this does NOT re-trigger the 6.3 helpdesk subscriber's admission
+ * loop: the subscriber's own loop guard filters on
+ * `originPrincipalKind !== 'user'` (`ticketHelpdeskSubscriber.ts`), which
+ * this row satisfies by construction.
+ *
+ * Idempotent per run via `ticket_comments_one_ai_note_per_run_uq` (partial
+ * unique on `agent_run_id` WHERE `agent_run_id IS NOT NULL AND
+ * origin_principal_kind = 'ai_agent'`): a retry after a partial failure (the
+ * caller observed an error but the insert actually committed) returns the
+ * EXISTING row rather than erroring or duplicating the note.
+ */
+export async function addAiTriageNote(
+  ticketId: string,
+  runId: string,
+  content: string,
+  orgId: string,
+  agentName = 'AI Agent'
+): Promise<{ comment: { id: string } }> {
+  const ticket = await getTicketOrThrow(ticketId);
+  if (ticket.orgId !== orgId) {
+    throw new TicketServiceError('Ticket not found', 404);
+  }
+
+  try {
+    const inserted = await db.insert(ticketComments).values({
+      ticketId,
+      userId: null,
+      portalUserId: null,
+      authorName: agentName,
+      authorType: 'ai_agent',
+      commentType: 'internal',
+      content,
+      isPublic: false,
+      originPrincipalKind: 'ai_agent',
+      agentRunId: runId
+    }).returning({ id: ticketComments.id });
+    const comment = inserted[0];
+    if (!comment) throw new TicketServiceError('Failed to add AI triage note', 500);
+
+    await emitTicketEvent({
+      type: 'ticket.commented',
+      ticketId,
+      orgId: ticket.orgId,
+      partnerId: ticket.partnerId ?? null,
+      actorUserId: null,
+      payload: { commentId: comment.id, isPublic: false }
+    });
+    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false });
+
+    return { comment };
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      const existing = await db
+        .select({ id: ticketComments.id })
+        .from(ticketComments)
+        .where(and(eq(ticketComments.agentRunId, runId), eq(ticketComments.originPrincipalKind, 'ai_agent')))
+        .limit(1);
+      const row = existing[0];
+      if (row) return { comment: row };
+    }
+    throw err;
+  }
+}
+
+export interface AiFieldUpdateSpec<T> {
+  value: T;
+  /** The value the caller last observed — the CAS predicate's comparison target. */
+  expectedCurrent: T | null;
+}
+
+export interface ApplyAiFieldUpdatesInput {
+  categoryId?: AiFieldUpdateSpec<string>;
+  priority?: AiFieldUpdateSpec<'low' | 'normal' | 'high' | 'urgent'>;
+}
+
+export type AiFieldUpdateOutcome =
+  | { applied: true }
+  | { applied: false; skipped: 'human_set' | 'concurrent_change' };
+
+/**
+ * P2-4 (#4191): the AI-triage release-path counterpart to `updateTicketFields`
+ * — CAS-guarded so an autonomous write can never clobber a field a human has
+ * since touched, or one that changed concurrently since the caller last
+ * observed it. One UPDATE, per-field `CASE WHEN <value unchanged since
+ * expectedCurrent> AND <no human stamp on this field> THEN <new value> ELSE
+ * <current value> END` — the CAS predicate is evaluated by Postgres against
+ * the row under the UPDATE's own row lock, so this is atomic without a
+ * separate `SELECT ... FOR UPDATE`. `field_provenance` is stamped to
+ * 'ai_agent' with the SAME predicate, so a skipped field's provenance is left
+ * exactly as it was (see `updateTicketFields`'s "AI writes never overwrite a
+ * 'user' stamp" contract this implements).
+ *
+ * `categoryId`'s value is validated against `ticket_categories` for the
+ * ticket's PARTNER before the UPDATE runs — a cross-partner categoryId must
+ * fail closed exactly like the human `update_fields` path
+ * (`assertCategoryInPartner`), not silently write an orphaned id.
+ */
+export async function applyAiFieldUpdates(
+  ticketId: string,
+  orgId: string,
+  updates: ApplyAiFieldUpdatesInput,
+  runId: string
+): Promise<Partial<Record<'categoryId' | 'priority', AiFieldUpdateOutcome>>> {
+  // Reserved for forthcoming audit/observability wiring — not written
+  // anywhere yet (no brief-specified writer, and attributing an audit row
+  // correctly needs the run's agentId, which this signature doesn't carry;
+  // see the task report's Concerns).
+  void runId;
+
+  if (!updates.categoryId && !updates.priority) return {};
+
+  const [ticket] = await db
+    .select({ id: tickets.id, orgId: tickets.orgId, partnerId: tickets.partnerId })
+    .from(tickets)
+    .where(and(eq(tickets.id, ticketId), eq(tickets.orgId, orgId)))
+    .limit(1);
+  if (!ticket) {
+    throw new TicketServiceError('Ticket not found', 404);
+  }
+
+  if (updates.categoryId) {
+    await assertCategoryInPartner(updates.categoryId.value, await resolveTicketPartnerId(ticket));
+  }
+
+  const categoryCond = updates.categoryId
+    ? sql`(${tickets.categoryId} IS NOT DISTINCT FROM ${updates.categoryId.expectedCurrent} AND COALESCE(${tickets.fieldProvenance}->>'categoryId', '') <> 'user')`
+    : null;
+  const priorityCond = updates.priority
+    ? sql`(${tickets.priority} IS NOT DISTINCT FROM ${updates.priority.expectedCurrent} AND COALESCE(${tickets.fieldProvenance}->>'priority', '') <> 'user')`
+    : null;
+
+  const setClause: Record<string, unknown> = { updatedAt: new Date() };
+  if (categoryCond) {
+    setClause.categoryId = sql`CASE WHEN ${categoryCond} THEN ${updates.categoryId!.value}::uuid ELSE ${tickets.categoryId} END`;
+  }
+  if (priorityCond) {
+    setClause.priority = sql`CASE WHEN ${priorityCond} THEN ${updates.priority!.value}::ticket_priority ELSE ${tickets.priority} END`;
+  }
+
+  const provenanceParts = [
+    categoryCond ? sql`CASE WHEN ${categoryCond} THEN '{"categoryId":"ai_agent"}'::jsonb ELSE '{}'::jsonb END` : null,
+    priorityCond ? sql`CASE WHEN ${priorityCond} THEN '{"priority":"ai_agent"}'::jsonb ELSE '{}'::jsonb END` : null,
+  ].filter((part): part is NonNullable<typeof part> => part !== null);
+  if (provenanceParts.length > 0) {
+    setClause.fieldProvenance = sql.join([sql`${tickets.fieldProvenance}`, ...provenanceParts], sql` || `);
+  }
+
+  const [after] = await db
+    .update(tickets)
+    .set(setClause)
+    .where(and(eq(tickets.id, ticketId), eq(tickets.orgId, orgId)))
+    .returning({ categoryId: tickets.categoryId, priority: tickets.priority, fieldProvenance: tickets.fieldProvenance });
+
+  if (!after) {
+    throw new TicketServiceError('Ticket was modified concurrently', 409, 'CONCURRENT_MODIFICATION');
+  }
+
+  const result: Partial<Record<'categoryId' | 'priority', AiFieldUpdateOutcome>> = {};
+  if (updates.categoryId) {
+    result.categoryId = after.categoryId === updates.categoryId.value
+      ? { applied: true }
+      : { applied: false, skipped: after.fieldProvenance?.categoryId === 'user' ? 'human_set' : 'concurrent_change' };
+  }
+  if (updates.priority) {
+    result.priority = after.priority === updates.priority.value
+      ? { applied: true }
+      : { applied: false, skipped: after.fieldProvenance?.priority === 'user' ? 'human_set' : 'concurrent_change' };
+  }
+  return result;
 }
 
 // Task 8 — Alert linking

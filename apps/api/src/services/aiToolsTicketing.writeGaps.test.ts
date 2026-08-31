@@ -48,6 +48,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../middleware/auth', () => ({
   siteAccessCheck: (allowed: string[]) => (siteId?: string | null) => !!siteId && allowed.includes(siteId),
+  isAiAgentPrincipal: (auth: { principal?: { kind?: string } }) => auth?.principal?.kind === 'ai_agent',
 }));
 
 vi.mock('../routes/tickets/siteScope', () => ({
