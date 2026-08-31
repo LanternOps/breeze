@@ -64,7 +64,13 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
     // create/comment above. move_org stays Tier 3 (tenant-shape mutation).
     'log_time_entry',
     'start_timer',
-    'stop_timer'
+    'stop_timer',
+    // P2-4 (#4191) ticket triage: same family as update_fields — low-risk,
+    // ticket-scoped mutations an autonomous triage run makes. link_device
+    // only sets a currently-null device_id (never overwrites); draft only
+    // writes an internal ticket_drafts row, never a customer-visible comment.
+    'link_device',
+    'draft'
   ],
   manage_services: ['list'],
   // SR5-01 partial relaxation (2026-07-20): directory LISTING is recon-only —
@@ -531,6 +537,16 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     log_time_entry: { resource: 'time_entries', action: 'write' },
     start_timer: { resource: 'time_entries', action: 'write' },
     stop_timer: { resource: 'time_entries', action: 'write' },
+    // P2-4 (#4191): deliberately 'update', not 'write' — no seeded role
+    // grants `tickets:update` (seed.ts only ever grants tickets:read/write/
+    // manage), so this fails CLOSED for `checkToolPermission`'s interactive
+    // path. link_device/draft are agent-only ticket-triage executors, never
+    // reachable from a live chat/MCP session; the only path that can execute
+    // them is the ai_agent-principal release path, which never consults RBAC
+    // at all (`checkAgentGuardrails`'s doc comment). A future human-facing
+    // caller of these two actions needs a real permission grant added first.
+    link_device: { resource: 'tickets', action: 'update' },
+    draft: { resource: 'tickets', action: 'update' },
   },
   list_invoices: { resource: 'invoices', action: 'read' },
   get_invoice: { resource: 'invoices', action: 'read' },
@@ -1343,6 +1359,19 @@ export interface AgentGuardrailPolicy {
    * bound the blast radius.
    */
   deviceId: string | null;
+  /**
+   * P2-4 (#4191): the intent's resolved TICKET target, populated by the
+   * release path (`agentReleaseAuthority.ts`'s ticket mirror of its own
+   * device-target resolution, `resolveIntentTargetTicket` in
+   * `intentTargetScope.ts`) — never from tool input. Ticket-triage runs are
+   * device-less by construction (one run walks the ticket queue, not a
+   * device fleet), so without this a mutating `manage_tickets` call would
+   * always trip the device-less-mutation deny below. Deliberately NOT a
+   * general "any tool with a ticket" escape hatch: only `manage_tickets`
+   * itself consults it (see the deny below) — no run-profile literal
+   * anywhere in this file, keyed off tool name + scope alone.
+   */
+  scope?: { ticketId: string };
 }
 
 const SERVICE_INPUT_KEYS = ['serviceName', 'service', 'name'];
@@ -1626,7 +1655,17 @@ export function checkAgentGuardrails(
   // allowedSiteIds only when a device exists), so a mutation from it would be
   // org-wide. Deny rather than propose: a human approving it could not see
   // what it is bounded to.
-  if (!readOnly && policy.deviceId === null) {
+  //
+  // P2-4 (#4191) exemption: a `manage_tickets` call carrying an explicit
+  // ticket binding (`policy.scope.ticketId`, populated only by the release
+  // path from the intent's own scope — see AgentGuardrailPolicy.scope's doc
+  // comment) satisfies the same "the mutation is bounded to something a
+  // human can see" requirement the device/site scope exists to prove, just
+  // on the ticket axis instead of the device axis. Every other tool, and
+  // every OTHER `manage_tickets` call with no ticket scope, still denies
+  // exactly as before — this is not a blanket device-less carve-out.
+  const ticketScoped = toolName === 'manage_tickets' && !!policy.scope?.ticketId;
+  if (!readOnly && policy.deviceId === null && !ticketScoped) {
     return deny(`Tool "${toolName}" mutates and the run is not device-bound`);
   }
 
@@ -1899,6 +1938,37 @@ function buildApprovalDescription(
       parts.push(`${action?.toUpperCase()} service "${input.serviceName}"`);
       if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
       break;
+
+    // P2-4 (#4191): ticket-triage actions get real copy; every other
+    // manage_tickets action (create/assign/update_status/link_alert/...)
+    // falls through to the SAME generic `${toolName}: ${action}` shape the
+    // top-level default produced before this case existed — no regression
+    // for actions this case doesn't special-case. Deliberately NEVER
+    // includes ticket subject/description/comment content — only ids,
+    // hostnames, and field NAMES (never field VALUES, which is what elides
+    // a categoryId's opaque uuid along with everything else).
+    case 'manage_tickets': {
+      const shortTicketId = typeof input.ticketId === 'string' ? `${input.ticketId.slice(0, 8)}...` : 'unknown';
+      if (action === 'update_fields') {
+        const fieldNames = input.fields && typeof input.fields === 'object'
+          ? Object.keys(input.fields as Record<string, unknown>)
+          : [];
+        parts.push(`Update ticket #${shortTicketId} fields (${fieldNames.join(', ') || 'none'})`);
+      } else if (action === 'link_device') {
+        const target = typeof input.hostname === 'string'
+          ? input.hostname
+          : (typeof input.serial === 'string' ? input.serial : 'unknown device');
+        parts.push(`Link device ${target} to ticket #${shortTicketId}`);
+      } else if (action === 'comment') {
+        parts.push(`Post private AI triage note on ticket #${shortTicketId}`);
+      } else if (action === 'draft') {
+        const kindLabel = input.kind === 'resolution_note' ? 'resolution note' : 'reply';
+        parts.push(`Store AI ${kindLabel} draft on ticket #${shortTicketId}`);
+      } else {
+        parts.push(`${toolName}${action ? `: ${action}` : ''}`);
+      }
+      break;
+    }
 
     case 'security_scan':
       parts.push(`Security: ${action}`);

@@ -40,6 +40,7 @@ import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 // websocket path accepted roughly 3x the intended budget for CJK-heavy output
 // while the REST path rejected at 1 MB. The byte-accurate one wins.
 import { commandResultSchema } from '../routes/agents/schemas';
+import { handlePeripheralPolicyResultV2 } from './peripheralPolicyState';
 
 export type CommandResultHandler = (params: {
   agentId: string;
@@ -540,6 +541,37 @@ async function handleCisResult({ agentId, command, result, stdout }: Parameters<
   }
 }
 
+const peripheralPolicyResultV2Schema = z.object({
+  schemaVersion: z.literal(2),
+  phase: z.enum(['clear_legacy', 'enforce']),
+  revision: z.number().int().positive(),
+  digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  outcome: z.enum(['applied', 'rejected']),
+  reasonCode: z.enum([
+    'wrong_identity',
+    'lower_revision',
+    'revision_digest_conflict',
+    'malformed_digest',
+    'invalid_payload',
+    'detection_failed',
+    'enforcement_failed',
+    'persistence_failed',
+  ]).optional(),
+});
+
+async function handlePeripheralPolicyV2Result({
+  commandId,
+  result,
+  resolvedDeviceId,
+}: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const parsed = peripheralPolicyResultV2Schema.safeParse(result.result);
+  if (!parsed.success) {
+    console.warn(`[AgentWs] Ignoring malformed peripheral v2 result for command ${commandId}`);
+    return;
+  }
+  await handlePeripheralPolicyResultV2(resolvedDeviceId, commandId, parsed.data);
+}
+
 export const commandResultHandlers: Record<string, CommandResultHandler> = {
   network_discovery: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,
@@ -559,4 +591,5 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   quarantine_file: handleSensitiveDataResult,
   cis_benchmark: handleCisResult,
   apply_cis_remediation: handleCisResult,
+  peripheral_policy_sync_v2: handlePeripheralPolicyV2Result,
 };

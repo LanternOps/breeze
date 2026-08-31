@@ -1003,6 +1003,20 @@ export async function processIntentReleaseJob(data: IntentReleaseJobData): Promi
   // not something retrying here can fix — so it stays logged-and-acked
   // rather than retried forever.
   if (data.eventType === 'intent_created') {
+    // P2-4 Task A3 (#4191): a `decidedVia: 'ticket_autonomy'` row was
+    // ALREADY approved inside `createActionIntent`'s own transaction — its
+    // `policyDecisionState` is 'human_required' (the `resolvePolicyDecisionState`
+    // stub forces that for every scoped intent), never 'unattempted', so
+    // `attemptPolicyDecision`'s own precondition would silently no-op it
+    // regardless. Route it straight to release instead: this `intent_created`
+    // delivery is a SECOND, independent recovery path alongside the
+    // `intent_approved` outbox row `createActionIntent` also wrote for it
+    // (see that module's header) — a backstop for the case where that
+    // sibling row's own publish is the one that gets stuck.
+    const decidedVia = await loadIntentDecidedVia(data.intentId);
+    if (decidedVia === 'ticket_autonomy') {
+      return releaseAndNotify(data.intentId);
+    }
     try {
       await attemptPolicyDecision(data.intentId);
     } catch (err) {
@@ -1023,16 +1037,45 @@ export async function processIntentReleaseJob(data: IntentReleaseJobData): Promi
     return { released: false };
   }
 
-  await releaseApprovedIntent(data.intentId);
+  return releaseAndNotify(data.intentId);
+}
+
+/**
+ * Narrow, defensive read used ONLY to route the `intent_created` recovery
+ * branch above — `null` (missing row, or any read fault) falls through to
+ * the ordinary `attemptPolicyDecision` call, which is itself a safe no-op
+ * for a row it does not recognize as `unattempted`.
+ */
+async function loadIntentDecidedVia(intentId: string): Promise<string | null> {
+  const [row] = await withSystemDbAccessContext(() =>
+    db
+      .select({ decidedVia: actionIntents.decidedVia })
+      .from(actionIntents)
+      .where(eq(actionIntents.id, intentId))
+      .limit(1),
+  );
+  return row?.decidedVia ?? null;
+}
+
+/**
+ * Shared release + best-effort outcome notification, extracted so the
+ * `intent_approved` release trigger and the `ticket_autonomy` `intent_created`
+ * recovery branch above run the IDENTICAL sequence. `releaseApprovedIntent`
+ * is itself CAS-guarded (`approved -> executing`), so calling this twice for
+ * the same intent (once from each event) is safe — the loser finds the
+ * intent already claimed and returns without executing anything twice.
+ */
+async function releaseAndNotify(intentId: string): Promise<{ released: boolean }> {
+  await releaseApprovedIntent(intentId);
 
   // AFTER the release, and deliberately not allowed to undo it. The release
   // already committed; throwing here would retry the whole job and re-run
   // releaseApprovedIntent, which is why the notification is swallowed and the
   // CAS inside the release path is what makes a retry safe.
   try {
-    await notifyRequesterOfOutcome(data.intentId, 'intent_approved');
+    await notifyRequesterOfOutcome(intentId, 'intent_approved');
   } catch (err) {
-    console.error(`[IntentReleaseWorker] outcome notification failed for intent ${data.intentId}:`, err);
+    console.error(`[IntentReleaseWorker] outcome notification failed for intent ${intentId}:`, err);
     captureException(err instanceof Error ? err : new Error(String(err)));
   }
 

@@ -298,3 +298,67 @@ describe('revalidateApprovedIntentForRelease policy-evidence branch (wave 5b, #3
     expect(checkAgentReleaseAuthority).not.toHaveBeenCalled();
   });
 });
+
+describe('revalidateApprovedIntentForRelease ticket-autonomy branch (P2-4 Task A3, #4191)', () => {
+  const args = { action: 'draft', ticketId: 'ticket-1', kind: 'draftReply', body: 'hi' };
+  const digest = computeArgumentDigest(canonicalizeArguments(args));
+
+  const ticketAutonomyIntent = (overrides: Record<string, unknown> = {}) => intentFixture({
+    requestedByUserId: null,
+    requestingAgentRunId: 'run-1',
+    originPrincipalKind: 'ai_agent',
+    originPrincipalId: 'agent-1',
+    source: 'ai_agent',
+    actionName: 'manage_tickets',
+    arguments: args,
+    argumentDigest: digest,
+    decidedVia: 'ticket_autonomy',
+    // Deliberately NO policy* provenance columns — a ticket_autonomy row is
+    // never produced by `runAuthorizeTransaction` (policyDecide.ts), so it
+    // never carries them. checkPolicyDecisionEvidence must never run for it.
+    policyDecisionState: 'human_required',
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    vi.mocked(policyDecideEnabled).mockReturnValue(true);
+    vi.mocked(validateAuthorizationKeys).mockImplementation((keys: string[]) => ({ ok: keys, rejected: [] }));
+  });
+
+  it('routes a ticket_autonomy-decided intent (no winning approval row) to checkAgentReleaseAuthority instead of digest_mismatch', async () => {
+    const result = await revalidateApprovedIntentForRelease(ticketAutonomyIntent(), null);
+
+    expect(result.ok).toBe(true);
+    expect(checkAgentReleaseAuthority).toHaveBeenCalledTimes(1);
+  });
+
+  it('never runs the policy-evidence check for a ticket_autonomy row — absent policy* columns do not fail policy_authorization_revoked', async () => {
+    const result = await revalidateApprovedIntentForRelease(
+      ticketAutonomyIntent({
+        policyAuthorizationKey: null,
+        policySnapshotDigest: null,
+        policyClassificationVersion: null,
+        policyReservationId: null,
+        policyKillEpoch: null,
+      }),
+      null,
+    );
+    expect(result.ok).toBe(true);
+    expect(checkAgentReleaseAuthority).toHaveBeenCalledTimes(1);
+  });
+
+  it('a ticket_autonomy row with a winning approval row present takes the ordinary human path (defense-in-depth: never both)', async () => {
+    const result = await revalidateApprovedIntentForRelease(ticketAutonomyIntent(), { boundArgumentDigest: digest });
+    expect(result.ok).toBe(true);
+    expect(checkAgentReleaseAuthority).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails digest_mismatch — NOT the ticket-autonomy branch — when requestingAgentRunId is null despite decidedVia ticket_autonomy', async () => {
+    const result = await revalidateApprovedIntentForRelease(
+      ticketAutonomyIntent({ requestingAgentRunId: null, originPrincipalKind: 'user_session' }),
+      null,
+    );
+    expect(result).toEqual({ ok: false, errorCode: 'digest_mismatch' });
+    expect(checkAgentReleaseAuthority).not.toHaveBeenCalled();
+  });
+});

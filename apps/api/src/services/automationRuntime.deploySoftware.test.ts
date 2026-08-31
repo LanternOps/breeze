@@ -8,6 +8,14 @@ const { createDeploymentMock, latestMapMock, isCurrentMock } = vi.hoisted(() => 
 vi.mock('./softwareDeployment', () => ({ createSoftwareDeployment: createDeploymentMock }));
 vi.mock('./softwareCurrency', () => ({
   resolveLatestVersionsByCatalogId: latestMapMock,
+  latestVersionsFromResolvedAutomationReferences: vi.fn((resolved: any) => {
+    const result = new Map();
+    for (const [catalogId, version] of resolved.softwareVersionsByCatalogId) {
+      const catalog = resolved.softwareCatalogsById.get(catalogId);
+      if (catalog) result.set(catalogId, { version, catalogName: catalog.name });
+    }
+    return result;
+  }),
   isDeviceSoftwareCurrent: isCurrentMock,
 }));
 
@@ -95,6 +103,34 @@ describe('normalizeAutomationActions — deploy_software', () => {
 });
 
 describe('executeDeploySoftwareActions', () => {
+  it('dispatches from ownership-resolved catalog/version rows without a bare-ID reload', async () => {
+    const args = {
+      actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],
+      devices: [WIN],
+      createdBy: null,
+      runId: 'run-1',
+      resolvedReferences: {
+        scriptsById: new Map(),
+        softwareCatalogsById: new Map([['cat-1', { id: 'cat-1', name: 'Resolved Chrome' }]]),
+        softwareVersionsByCatalogId: new Map([['cat-1', {
+          id: 'ver-resolved',
+          catalogId: 'cat-1',
+          version: '127.0.0',
+          supportedOs: ['windows'],
+        }]]),
+        notificationChannelsById: new Map(),
+      },
+    } as any;
+
+    const result = await executeDeploySoftwareActions(args);
+
+    expect(latestMapMock).toHaveBeenCalledTimes(0);
+    expect(createDeploymentMock).toHaveBeenCalledWith(
+      expect.objectContaining({ softwareVersionId: 'ver-resolved' }),
+    );
+    expect(result.failed).toBe(false);
+  });
+
   it('deploys to an eligible Windows device and records a deployed log', async () => {
     const res = await executeDeploySoftwareActions({
       actions: [{ type: 'deploy_software', catalogId: 'cat-1' }],

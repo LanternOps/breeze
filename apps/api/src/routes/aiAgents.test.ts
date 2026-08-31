@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { AI_AGENT_LIMIT_DEFAULTS, AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
 
 const {
@@ -560,12 +562,16 @@ describe('GET /ai-agents/exposure-budget (recorded exposure readout, #3828)', ()
  * runsListCursor.ts/runTrace.ts's own suites and by the RLS/integration
  * contract tests.
  */
-function selectChain<T>(rows: T) {
+function selectChain<T>(rows: T, onWhere?: (predicate: unknown) => void) {
   const chain = {
     from: () => chain,
     innerJoin: () => chain,
     leftJoin: () => chain,
-    where: () => chain,
+    // `onWhere` (P2-2 Task A7, review round 1) lets a test compile the
+    // predicate a route actually built and assert on its BOUND PARAMS — the
+    // only way to prove a tenancy pin binds the right org id rather than
+    // merely naming the `org_id` column.
+    where: (predicate: unknown) => { onWhere?.(predicate); return chain; },
     orderBy: () => chain,
     limit: () => chain,
     offset: () => chain,
@@ -573,6 +579,12 @@ function selectChain<T>(rows: T) {
       Promise.resolve(rows).then(resolve, reject),
   };
   return chain;
+}
+
+const dialect = new PgDialect();
+/** Bound parameters of a compiled predicate — see `selectChain`'s `onWhere`. */
+function sqlParams(predicate: unknown): unknown[] {
+  return dialect.sqlToQuery(predicate as SQL).params;
 }
 
 // Strict response-shape schemas (DTO rule, Global Constraints): a route that
@@ -649,14 +661,37 @@ const runDetailResponseSchema = z.object({
       approvalScope: z.string(),
       decidedVia: z.string().nullable(),
     }).strict()),
-    // Wave 6 PR 3 (#3828, Task 4) — text-only; no args/toolInput/toolOutput
-    // field exists on this shape either (see AiAgentRunTicketProposalDto).
+    // Wave 6 PR 3 (#3828, Task 4); reshaped in P2-4 (#4191) onto the
+    // `TicketTriageProposal` outcome (@breeze/shared) — no args/toolInput/
+    // toolOutput field exists on this shape either (see
+    // AiAgentRunTicketProposalDto). `intentIds`/`draftsWritten` are the two
+    // DTO-only fields Task A10 wires in — the run's own `intent_ids` column
+    // and a live `ticket_drafts` read, respectively (see runTrace.ts).
     ticketProposal: z.object({
+      version: z.literal(1),
       summary: z.string(),
-      proposedReply: z.string().optional(),
-      proposedStatus: z.string().optional(),
-      proposedPriority: z.string().optional(),
-      notes: z.array(z.string()),
+      fields: z.object({
+        categoryId: z.object({
+          value: z.string(),
+          confidence: z.number(),
+        }).strict().optional(),
+        priority: z.object({
+          value: z.string(),
+          confidence: z.number(),
+        }).strict().optional(),
+      }).strict().optional(),
+      device: z.object({
+        hostname: z.string().optional(),
+        serial: z.string().optional(),
+      }).strict().optional(),
+      draftReply: z.string().optional(),
+      draftResolutionNote: z.string().optional(),
+      notes: z.array(z.string()).optional(),
+      intentIds: z.array(z.string()).optional(),
+      draftsWritten: z.array(z.object({
+        kind: z.enum(['reply', 'resolution_note']),
+        draftId: z.string(),
+      }).strict()).optional(),
     }).strict().nullable(),
     // Phase 2 wave P2-1 (alert verdicts): `null` for a full-profile run and
     // for a verdict run that hasn't produced one. `suggestedAction`'s
@@ -678,6 +713,52 @@ const runDetailResponseSchema = z.object({
         ]).nullable(),
       }).strict().nullable(),
     }).strict().nullable(),
+    // Phase 2 wave P2-2 (scheduled sweeps), Task A7: `null` for every
+    // full/verdict-profile run. Strict all the way down — a finding carries
+    // its bounded scalar `evidence` map and the DISPOSITION of its proposal,
+    // never the raw `proposedAction` args the model wrote.
+    sweep: z.object({
+      scheduleId: z.string().nullable(),
+      occurrenceKey: z.string().nullable(),
+      kinds: z.array(z.string()),
+      summary: z.string(),
+      evidenceTruncated: z.boolean(),
+      findings: z.array(z.object({
+        kind: z.string(),
+        severity: z.string(),
+        deviceId: z.string().nullable(),
+        deviceHostname: z.string().nullable(),
+        title: z.string(),
+        detail: z.string(),
+        evidence: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])),
+        proposal: z.object({
+          tool: z.string(),
+          action: z.string().nullable(),
+          disposition: z.enum(['intent_created', 'refused', 'cap_reached', 'error']),
+          reason: z.string().nullable(),
+          intentId: z.string().nullable(),
+        }).strict().nullable(),
+      }).strict()),
+    }).strict().nullable(),
+    // Phase 2 wave P2-3 (weekly org narrative), Task A7: `null` for every
+    // non-narrative run. Strict all the way down — the STRUCTURED sections
+    // reach the wire; the derived markdown and the weekly `NarrativeContext`
+    // the run was built from never do.
+    narrative: z.object({
+      headline: z.string(),
+      sections: z.array(z.object({
+        key: z.string(),
+        title: z.string(),
+        bullets: z.array(z.string()),
+      }).strict()),
+      reportRunId: z.string().nullable(),
+      reportId: z.string().nullable(),
+      downloadPath: z.string().nullable(),
+      periodStart: z.string().nullable(),
+      periodEnd: z.string().nullable(),
+      contextTruncated: z.boolean(),
+    }).strict().nullable(),
+    reportRunId: z.string().nullable(),
   }).strict(),
 }).strict();
 
@@ -692,6 +773,9 @@ const runListResponseSchema = z.object({
     deviceId: z.string().nullable(),
     status: z.string(),
     triggerKind: z.string(),
+    // Phase 2 wave P2-2, Task A7 — the web list badge reads this; a
+    // schedule-triggered SWEEP is not distinguishable from `triggerKind`.
+    profile: z.enum(['full', 'verdict', 'sweep']),
     runVerdict: z.string().nullable(),
     queuedAt: z.string(),
     finishedAt: z.string().nullable(),
@@ -712,6 +796,9 @@ function runRow(overrides: Record<string, unknown> = {}) {
     modeAtStart: 'shadow',
     status: 'completed',
     summary: 'Restarted the print spooler.',
+    // Phase 2 wave P2-3, Task A7 — the narrative artifact link; null for every
+    // non-narrative run.
+    reportRunId: null,
     outcome: {
       findings: [],
       executedActions: [{
@@ -802,6 +889,309 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     }
     expect(json).not.toContain('do-not-leak-me');
     expect(json).not.toContain('scriptId');
+  });
+
+  // Phase 2 wave P2-4 (#4191), Task A10 — intentIds is the run's own
+  // intent_ids column (ground truth for a triage run, see
+  // RunTraceRunInput.intentIds's docstring), draftsWritten is a LIVE
+  // ticket_drafts query keyed on run_id, pinned to the run's own org.
+  it('projects intentIds + draftsWritten for a ticket-triage run', async () => {
+    const TRIAGE_INTENT_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const DRAFT_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    let draftWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        triggerKind: 'ticket',
+        sessionId: null,
+        intentIds: [TRIAGE_INTENT_ID],
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          ticketProposal: { version: 1, summary: 'Restart the spooler.', notes: [] },
+        },
+      })])) // run + agent + device join
+      .mockReturnValueOnce(selectChain([{
+        id: TRIAGE_INTENT_ID, status: 'approved', actionName: 'manage_tickets.comment',
+        approvalScope: 'auto', decidedVia: 'ticket_autonomy',
+      }])) // intents (sessionId is null, so the ledger read is skipped)
+      .mockReturnValueOnce(selectChain(
+        [{ id: DRAFT_ID, kind: 'reply' }],
+        (predicate) => { draftWhere = predicate; },
+      )); // draft rows
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runDetailResponseSchema.parse(body);
+
+    expect(parsed.data.ticketProposal?.intentIds).toEqual([TRIAGE_INTENT_ID]);
+    expect(parsed.data.ticketProposal?.draftsWritten).toEqual([{ kind: 'reply', draftId: DRAFT_ID }]);
+
+    // run row, intents, draft rows — no ledger (sessionId null), no sweep
+    // hostname read, no narrative artifact read (reportRunId null).
+    expect(selectMock).toHaveBeenCalledTimes(3);
+    const draftParams = sqlParams(draftWhere);
+    expect(draftParams).toContain(ORG_ID);
+    expect(draftParams).toContain(RUN_ID);
+  });
+
+  // Phase 2 wave P2-4 (#4191), Task A10.
+  it('skips the draft-rows read entirely for a non-ticket run', async () => {
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })])) // run + agent + device join
+    // No further selects expected — intentIds empty skips intents, sessionId
+    // null skips ledger, triggerKind !== 'ticket' skips draft rows.
+    ;
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Phase 2 wave P2-2 (scheduled sweeps), Task A7.
+  it('resolves sweep finding hostnames with ONE batched org-pinned read and leaks no raw proposal args', async () => {
+    const OTHER_DEVICE_ID = '99999999-9999-4999-8999-999999999999';
+    let hostnameWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        scheduleId: '88888888-8888-4888-8888-888888888888',
+        triggerRef: {
+          scheduleId: '88888888-8888-4888-8888-888888888888',
+          occurrenceKey: '2026-08-29T06:00:00Z',
+          sweepKinds: ['service_down'],
+        },
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          sweepFindings: {
+            summary: 'One service is down on two machines.',
+            findings: [
+              {
+                kind: 'service_down', severity: 'critical', deviceId: DEVICE_ID,
+                title: 'Spooler is stopped', detail: 'Stopped for 3 days.',
+                evidence: { state: 'stopped' },
+                proposedAction: {
+                  tool: 'manage_services', action: 'restart',
+                  deviceId: DEVICE_ID, serviceName: 'DoNotLeakSpooler',
+                },
+              },
+              {
+                kind: 'service_down', severity: 'high', deviceId: OTHER_DEVICE_ID,
+                title: 'W32Time is stopped', detail: 'Stopped for 1 day.',
+                evidence: { state: 'stopped' },
+              },
+            ],
+          },
+          sweepProposals: [{
+            findingIndex: 0, tool: 'manage_services', action: 'restart',
+            deviceId: DEVICE_ID, disposition: 'intent_created',
+            intentId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          }],
+          sweepEvidenceTruncated: true,
+        },
+      })]))
+      // The ONE batched hostname read (no session, no intent ids, so this is
+      // the only other query the route makes).
+      .mockReturnValueOnce(selectChain(
+        [{ id: DEVICE_ID, hostname: 'WKS-042' }],
+        (predicate) => { hostnameWhere = predicate; },
+      ));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runDetailResponseSchema.parse(body);
+
+    // Two selects total: the run row and ONE batched device read for BOTH
+    // findings — never a lookup per finding.
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    // Review round 1, IMPORTANT 1: the hostname read is pinned to the RUN's
+    // own org, not just the caller's accessible set — `sweepDeviceIds` come
+    // out of MODEL-AUTHORED outcome jsonb, so a partner-scoped caller must
+    // not be able to have a sibling org's hostname rendered inside this run.
+    // Asserting the bound params (not the `org_id` column name) is what makes
+    // this non-vacuous: binding some OTHER org's id would still print
+    // `org_id` in the SQL text.
+    const hostnameParams = sqlParams(hostnameWhere);
+    expect(hostnameParams).toContain(ORG_ID);
+    expect(hostnameParams).toContain(DEVICE_ID);
+    expect(hostnameParams).toContain(OTHER_DEVICE_ID);
+    expect(parsed.data.sweep).toEqual({
+      scheduleId: '88888888-8888-4888-8888-888888888888',
+      occurrenceKey: '2026-08-29T06:00:00Z',
+      kinds: ['service_down'],
+      summary: 'One service is down on two machines.',
+      evidenceTruncated: true,
+      findings: [
+        {
+          kind: 'service_down', severity: 'critical', deviceId: DEVICE_ID,
+          deviceHostname: 'WKS-042', title: 'Spooler is stopped', detail: 'Stopped for 3 days.',
+          evidence: { state: 'stopped' },
+          proposal: {
+            tool: 'manage_services', action: 'restart', disposition: 'intent_created',
+            reason: null, intentId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          },
+        },
+        {
+          kind: 'service_down', severity: 'high', deviceId: OTHER_DEVICE_ID,
+          // Not in the batched read's result (deleted, or RLS-invisible) —
+          // the finding still projects, with a null hostname.
+          deviceHostname: null, title: 'W32Time is stopped', detail: 'Stopped for 1 day.',
+          evidence: { state: 'stopped' }, proposal: null,
+        },
+      ],
+    });
+
+    const json = JSON.stringify(body);
+    for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+      expect(json).not.toContain(`"${forbidden}"`);
+    }
+    expect(json).not.toContain('proposedAction');
+    expect(json).not.toContain('DoNotLeakSpooler');
+  });
+
+  // #4189 bug fix: the model omitted `finding.deviceId` while
+  // `proposedAction.deviceId` correctly named an evidence device — the
+  // batched hostname read must resolve THAT device (via `sweepProposals`,
+  // not just `sweepFindings`), or the finding renders a null hostname even
+  // though `projectSweep` now falls back to the proposal's device.
+  /**
+   * Phase 2 wave P2-3 (weekly org narrative), Task A7 — the artifact read.
+   *
+   * `report_runs` has no `org_id` of its own, so the tenancy pin lives on the
+   * join to `reports`. Asserting the BOUND params (not just that `org_id`
+   * appears in the SQL) is what makes this non-vacuous: binding some other
+   * org's id would still print the column name.
+   */
+  it('reads the linked narrative artifact through an org-pinned join and projects only its scalars', async () => {
+    const NARRATIVE_SCHEDULE_ID = '88888888-8888-4888-8888-888888888888';
+    const REPORT_ID = '77777777-7777-4777-8777-777777777777';
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    let artifactWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        scheduleId: NARRATIVE_SCHEDULE_ID,
+        triggerRef: { scheduleId: NARRATIVE_SCHEDULE_ID, occurrenceKey: '2026-08-31T07:00:00+02:00' },
+        reportRunId: REPORT_RUN_ID,
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          narrative: {
+            version: 1,
+            headline: 'A quiet week.',
+            sections: [{ key: 'overview', title: 'Overview', bullets: ['Nothing needed a person.'] }],
+            markdown: '# A quiet week.',
+          },
+          narrativeReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+        },
+      })]))
+      .mockReturnValueOnce(selectChain(
+        [{
+          reportRunId: REPORT_RUN_ID,
+          reportId: REPORT_ID,
+          periodStart: '2026-08-24T07:00:00+02:00',
+          periodEnd: '2026-08-31T07:00:00+02:00',
+          contextTruncated: true,
+        }],
+        (predicate) => { artifactWhere = predicate; },
+      ));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+
+    // Two selects: the run row and the artifact. No session, no intent ids and
+    // no sweep findings, so nothing else is queried.
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    const params = sqlParams(artifactWhere);
+    expect(params).toContain(ORG_ID);
+    expect(params).toContain(REPORT_RUN_ID);
+
+    expect(parsed.data.reportRunId).toBe(REPORT_RUN_ID);
+    expect(parsed.data.narrative).toEqual({
+      headline: 'A quiet week.',
+      sections: [{ key: 'overview', title: 'Overview', bullets: ['Nothing needed a person.'] }],
+      reportRunId: REPORT_RUN_ID,
+      reportId: REPORT_ID,
+      downloadPath: `/api/reports/runs/${REPORT_RUN_ID}/download`,
+      periodStart: '2026-08-24T07:00:00+02:00',
+      periodEnd: '2026-08-31T07:00:00+02:00',
+      contextTruncated: true,
+    });
+  });
+
+  it('skips the artifact read entirely for a run that links none', async () => {
+    selectMock.mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(selectMock).toHaveBeenCalledTimes(1);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+    expect(parsed.data.narrative).toBeNull();
+    expect(parsed.data.reportRunId).toBeNull();
+  });
+
+  it('resolves a finding\'s hostname from its proposal device when the finding omitted deviceId', async () => {
+    let hostnameWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        scheduleId: '88888888-8888-4888-8888-888888888888',
+        triggerRef: {
+          scheduleId: '88888888-8888-4888-8888-888888888888',
+          sweepKinds: ['service_down'],
+        },
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          sweepFindings: {
+            summary: 'One service is down.',
+            findings: [{
+              kind: 'service_down', severity: 'critical',
+              // deviceId intentionally omitted — only the proposal names it.
+              title: 'Spooler is stopped', detail: 'Stopped for 3 days.',
+              evidence: { state: 'stopped' },
+              proposedAction: {
+                tool: 'manage_services', action: 'restart',
+                deviceId: DEVICE_ID, serviceName: 'Spooler',
+              },
+            }],
+          },
+          sweepProposals: [{
+            findingIndex: 0, tool: 'manage_services', action: 'restart',
+            deviceId: DEVICE_ID, disposition: 'intent_created',
+            intentId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          }],
+          sweepEvidenceTruncated: false,
+        },
+      })]))
+      .mockReturnValueOnce(selectChain(
+        [{ id: DEVICE_ID, hostname: 'WKS-042' }],
+        (predicate) => { hostnameWhere = predicate; },
+      ));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runDetailResponseSchema.parse(body);
+
+    const hostnameParams = sqlParams(hostnameWhere);
+    expect(hostnameParams).toContain(DEVICE_ID);
+    expect(parsed.data.sweep?.findings[0]).toMatchObject({
+      deviceId: DEVICE_ID,
+      deviceHostname: 'WKS-042',
+    });
   });
 
   it('skips the ledger/intents queries when the run has no session and no intent ids', async () => {
@@ -975,7 +1365,7 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
       {
         id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp',
         deviceId: DEVICE_ID,
-        status: 'completed', triggerKind: 'manual', runVerdict: 'remediated',
+        status: 'completed', triggerKind: 'manual', profile: 'full', runVerdict: 'remediated',
         queuedAt: new Date('2026-08-28T10:00:00.000Z'),
         queuedAtRaw: '2026-08-28T10:00:00.000000Z',
         finishedAt: new Date('2026-08-28T10:00:30.000Z'),
@@ -998,7 +1388,7 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
     const makeRow = (i: number) => ({
       id: `cccccccc-cccc-4ccc-8ccc-${String(i).padStart(12, '0')}`,
       agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp', deviceId: null,
-      status: 'completed', triggerKind: 'schedule', runVerdict: null,
+      status: 'completed', triggerKind: 'schedule', profile: 'full', runVerdict: null,
       queuedAt: new Date(Date.UTC(2026, 7, 28, 10, 0, i)),
       queuedAtRaw: `2026-08-28T10:00:${String(i).padStart(2, '0')}.000000Z`,
       finishedAt: null, costCents: 0,
@@ -1023,7 +1413,7 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
     const makeRow = (i: number) => ({
       id: `dddddddd-dddd-4ddd-8ddd-${String(i).padStart(12, '0')}`,
       agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp', deviceId: null,
-      status: 'completed', triggerKind: 'schedule', runVerdict: null,
+      status: 'completed', triggerKind: 'schedule', profile: 'full', runVerdict: null,
       // Every row shares the same millisecond-truncated Date — the last
       // (limit+1-th, trimmed) row's true value differs only in microseconds.
       queuedAt: new Date('2026-08-28T10:00:00.123Z'),
@@ -1053,7 +1443,7 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
       {
         id: RUN_ID, agentId: AGENT_ID, agentName: null, orgId: ORG_ID, orgName: 'Acme Corp',
         deviceId: DEVICE_ID,
-        status: 'completed', triggerKind: 'schedule', runVerdict: 'remediated',
+        status: 'completed', triggerKind: 'schedule', profile: 'full', runVerdict: 'remediated',
         queuedAt: new Date('2026-08-28T10:00:00.000Z'),
         queuedAtRaw: '2026-08-28T10:00:00.000000Z',
         finishedAt: new Date('2026-08-28T10:00:30.000Z'),
@@ -1096,7 +1486,7 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
       {
         id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp',
         deviceId: DEVICE_ID,
-        status: 'completed', triggerKind: 'manual', runVerdict: 'remediated',
+        status: 'completed', triggerKind: 'manual', profile: 'full', runVerdict: 'remediated',
         queuedAt: new Date('2026-08-28T10:00:00.000Z'),
         queuedAtRaw: '2026-08-28T10:00:00.000000Z',
         finishedAt: new Date('2026-08-28T10:00:30.000Z'),
@@ -1141,7 +1531,7 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
       {
         id: RUN_ID, agentId: AGENT_ID, agentName: 'Triage', orgId: ORG_ID, orgName: 'Acme Corp',
         deviceId: DEVICE_ID,
-        status: 'completed', triggerKind: 'manual', runVerdict: 'remediated',
+        status: 'completed', triggerKind: 'manual', profile: 'full', runVerdict: 'remediated',
         queuedAt: new Date('2026-08-28T10:00:00.000Z'),
         finishedAt: new Date('2026-08-28T10:00:30.000Z'),
         costCents: 12,
@@ -1300,6 +1690,62 @@ describe('POST /ai-agents/:id/circuit/reset', () => {
         details: expect.objectContaining({ reason: 'confirmed false positive, patch was unrelated' }),
       }),
     );
+  });
+});
+
+// Final-review fix (#4189, item 8). The 409 mapping used to read `err.code`
+// off the TOP-LEVEL error, which every Drizzle-issued insert defeats:
+// DrizzleQueryError's own `.code` is undefined and the real SQLSTATE lives on
+// `.cause`. The create race therefore surfaced as an unactionable 500 in
+// exactly the situation the mapping exists for. It is also now pinned to the
+// two `ai_agents` kind indexes — an unrelated 23505 from some other statement
+// in the same handler must not be reported as "an agent of this kind already
+// exists".
+describe('mapError — agent-kind unique violation (#4189)', () => {
+  const pgErr = (constraint: string) =>
+    Object.assign(new Error(`duplicate key value violates unique constraint "${constraint}"`), {
+      code: '23505',
+      constraint_name: constraint,
+    });
+  const drizzleWrap = (cause: unknown) =>
+    Object.assign(new Error('Failed query: insert into "ai_agents" ...'), { cause });
+
+  const ctxWith = (jsonMock: ReturnType<typeof vi.fn>) =>
+    ({ json: jsonMock }) as unknown as Parameters<typeof mapError>[0];
+
+  it('maps a DrizzleQueryError-WRAPPED 23505 on either kind index to 409', async () => {
+    for (const constraint of ['ai_agents_partner_kind_uq', 'ai_agents_org_kind_uq']) {
+      const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
+
+      mapError(ctxWith(jsonMock), drizzleWrap(pgErr(constraint)));
+
+      expect(jsonMock).toHaveBeenCalledWith(
+        { error: 'An agent of this kind already exists', code: 'agent_kind_exists' },
+        409,
+      );
+    }
+  });
+
+  it('still maps an UNWRAPPED 23505 (the pre-Drizzle shape) to 409', async () => {
+    const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
+
+    mapError(ctxWith(jsonMock), pgErr('ai_agents_org_kind_uq'));
+
+    expect(jsonMock).toHaveBeenCalledWith(expect.objectContaining({ code: 'agent_kind_exists' }), 409);
+  });
+
+  it('rethrows a 23505 from an UNRELATED constraint rather than claiming a kind conflict', async () => {
+    // Unwrapped on purpose: this is the shape the old top-level `err.code`
+    // check DID catch, and mis-reported as an agent-kind conflict.
+    for (const err of [
+      pgErr('ai_agent_runs_org_dedupe_key_uq'),
+      drizzleWrap(pgErr('ai_agent_runs_org_dedupe_key_uq')),
+    ]) {
+      const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
+
+      expect(() => mapError(ctxWith(jsonMock), err)).toThrow();
+      expect(jsonMock).not.toHaveBeenCalled();
+    }
   });
 });
 

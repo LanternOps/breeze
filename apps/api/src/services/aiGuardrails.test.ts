@@ -553,6 +553,78 @@ describe('checkGuardrails — manage_tickets tier escalation', () => {
     expect(result.tier).toBe(3);
     expect(result.requiresApproval).toBe(true);
   });
+
+  // P2-4 (#4191): new ticket-triage actions, same family as update_fields.
+  it('link_device and draft resolve to Tier 2 (auto-execute + audit)', () => {
+    for (const action of ['link_device', 'draft']) {
+      const result = checkGuardrails('manage_tickets', { action });
+      expect(result.tier).toBe(2);
+      expect(result.allowed).toBe(true);
+      expect(result.requiresApproval).toBe(false);
+    }
+  });
+});
+
+describe('buildApprovalDescription — manage_tickets copy (P2-4, #4191)', () => {
+  const TICKET_ID = '11111111-2222-3333-4444-555555555555';
+
+  it('update_fields lists field names only, never values (category ids elided along with everything else)', () => {
+    const result = checkGuardrails('manage_tickets', {
+      action: 'update_fields',
+      ticketId: TICKET_ID,
+      fields: { categoryId: 'cat-secret-uuid', priority: 'urgent' },
+    });
+    expect(result.description).toBe(`Update ticket #${TICKET_ID.slice(0, 8)}... fields (categoryId, priority)`);
+    expect(result.description).not.toContain('cat-secret-uuid');
+    expect(result.description).not.toContain('urgent');
+  });
+
+  it('link_device names the hostname being linked', () => {
+    const result = checkGuardrails('manage_tickets', {
+      action: 'link_device',
+      ticketId: TICKET_ID,
+      hostname: 'WKS-042',
+    });
+    expect(result.description).toBe(`Link device WKS-042 to ticket #${TICKET_ID.slice(0, 8)}...`);
+  });
+
+  it('comment (AI triage note) never echoes note content', () => {
+    const result = checkGuardrails('manage_tickets', {
+      action: 'comment',
+      ticketId: TICKET_ID,
+      content: 'the secret triage note body',
+    });
+    expect(result.description).toBe(`Post private AI triage note on ticket #${TICKET_ID.slice(0, 8)}...`);
+    expect(result.description).not.toContain('secret triage note body');
+  });
+
+  it('draft names the kind (reply vs resolution note) and never echoes content', () => {
+    const reply = checkGuardrails('manage_tickets', {
+      action: 'draft', ticketId: TICKET_ID, kind: 'reply', content: 'secret draft body',
+    });
+    expect(reply.description).toBe(`Store AI reply draft on ticket #${TICKET_ID.slice(0, 8)}...`);
+    expect(reply.description).not.toContain('secret draft body');
+
+    const resolution = checkGuardrails('manage_tickets', {
+      action: 'draft', ticketId: TICKET_ID, kind: 'resolution_note',
+    });
+    expect(resolution.description).toBe(`Store AI resolution note draft on ticket #${TICKET_ID.slice(0, 8)}...`);
+  });
+
+  it('never includes ticket subject or description text for any action', () => {
+    const result = checkGuardrails('manage_tickets', {
+      action: 'update_fields',
+      ticketId: TICKET_ID,
+      fields: { subject: 'super secret subject', description: 'super secret body' },
+    });
+    expect(result.description).not.toContain('super secret subject');
+    expect(result.description).not.toContain('super secret body');
+  });
+
+  it('other manage_tickets actions keep the pre-existing generic description shape (no regression)', () => {
+    const result = checkGuardrails('manage_tickets', { action: 'assign', ticketId: TICKET_ID });
+    expect(result.description).toBe('manage_tickets: assign');
+  });
 });
 
 describe('checkGuardrails — billing and proposal action tier escalation', () => {
@@ -621,6 +693,28 @@ describe('checkToolPermission — manage_tickets RBAC map', () => {
     const result = await checkToolPermission('manage_tickets', {}, auth);
     expect(result).toBe('Missing required "action" argument for tool "manage_tickets"');
     expect(hasPermission).not.toHaveBeenCalled();
+  });
+
+  // P2-4 (#4191): deliberately 'tickets.update', not 'tickets.write' — no
+  // seeded role grants tickets:update, so these two agent-only executors
+  // fail closed for the interactive/RBAC path even if hasPermission is (by
+  // test double) told to allow everything else.
+  it('requires tickets.update for link_device action', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockReturnValue(false);
+
+    const result = await checkToolPermission('manage_tickets', { action: 'link_device' }, auth);
+    expect(result).toContain('requires tickets.update');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'tickets', 'update');
+  });
+
+  it('requires tickets.update for draft action', async () => {
+    vi.mocked(getUserPermissions).mockResolvedValue({ roleId: 'operator' } as any);
+    vi.mocked(hasPermission).mockReturnValue(false);
+
+    const result = await checkToolPermission('manage_tickets', { action: 'draft' }, auth);
+    expect(result).toContain('requires tickets.update');
+    expect(hasPermission).toHaveBeenCalledWith(expect.anything(), 'tickets', 'update');
   });
 });
 

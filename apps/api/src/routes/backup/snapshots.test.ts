@@ -18,7 +18,9 @@ function chainMock(resolvedValue: unknown = []) {
 
 const selectMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
+const authorizeResilienceResourcesMock = vi.fn();
 let authState = {
+  principal: { kind: 'user_session' as const },
   user: { id: '11111111-1111-4111-8111-111111111111', email: 'test@example.com', name: 'Test User' },
   scope: 'organization' as const,
   partnerId: null,
@@ -89,6 +91,14 @@ vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: (...args: unknown[]) => writeRouteAuditMock(...(args as [])),
 }));
 
+vi.mock('../../services/resilienceSiteAuthorization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/resilienceSiteAuthorization')>();
+  return {
+    ...actual,
+    authorizeResilienceResources: (...args: unknown[]) => authorizeResilienceResourcesMock(...args),
+  };
+});
+
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', authState);
@@ -103,6 +113,7 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 import { authMiddleware } from '../../middleware/auth';
+import { ResilienceAuthorizationError } from '../../services/resilienceSiteAuthorization';
 
 function makeSnapshot(overrides: Record<string, unknown> = {}) {
   return {
@@ -140,6 +151,7 @@ describe('snapshot routes', () => {
     updateMock.mockReset();
     updateMock.mockImplementation(() => chainMock([]));
     permissionsState = undefined;
+    authorizeResilienceResourcesMock.mockResolvedValue({ resources: [] });
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', authState);
       if (permissionsState) {
@@ -164,7 +176,7 @@ describe('snapshot routes', () => {
     });
 
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+    expect(await res.json()).toEqual({ error: 'site_access_denied' });
     expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
@@ -206,9 +218,9 @@ describe('snapshot routes', () => {
 
   it('denies GET /snapshots/:id for a site-restricted caller when the source device is out-of-site', async () => {
     permissionsState = { allowedSiteIds: [SITE_A] };
-    selectMock
-      .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-out' })]))
-      .mockReturnValueOnce(chainMock([{ siteId: SITE_B }]));
+    authorizeResilienceResourcesMock.mockRejectedValueOnce(
+      new ResilienceAuthorizationError(403, 'site_access_denied')
+    );
 
     const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}`, {
       method: 'GET',
@@ -218,14 +230,12 @@ describe('snapshot routes', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body).not.toHaveProperty('configId');
-    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(selectMock).not.toHaveBeenCalled();
   });
 
   it('returns GET /snapshots/:id for a site-restricted caller when the source device is in an allowed site', async () => {
     permissionsState = { allowedSiteIds: [SITE_A] };
-    selectMock
-      .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-in' })]))
-      .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]));
+    selectMock.mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-in' })]));
 
     const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}`, {
       method: 'GET',
@@ -251,9 +261,9 @@ describe('snapshot routes', () => {
 
   it('denies GET /snapshots/:id/browse for a site-restricted caller when the source device is out-of-site', async () => {
     permissionsState = { allowedSiteIds: [SITE_A] };
-    selectMock
-      .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-out' })]))
-      .mockReturnValueOnce(chainMock([{ siteId: SITE_B }]));
+    authorizeResilienceResourcesMock.mockRejectedValueOnce(
+      new ResilienceAuthorizationError(403, 'site_access_denied')
+    );
 
     const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/browse`, {
       method: 'GET',
@@ -263,14 +273,13 @@ describe('snapshot routes', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body).not.toHaveProperty('data');
-    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(selectMock).not.toHaveBeenCalled();
   });
 
   it('returns GET /snapshots/:id/browse for a site-restricted caller when the source device is in an allowed site', async () => {
     permissionsState = { allowedSiteIds: [SITE_A] };
     selectMock
       .mockReturnValueOnce(chainMock([makeSnapshot({ deviceId: 'device-in' })]))
-      .mockReturnValueOnce(chainMock([{ siteId: SITE_A }]))
       .mockReturnValueOnce(chainMock([{ sourcePath: 'C:/data/file.txt', size: 10, modifiedAt: null }]));
 
     const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/browse`, {
