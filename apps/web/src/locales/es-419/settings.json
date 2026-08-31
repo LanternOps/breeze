@@ -3941,7 +3941,7 @@
   },
   "timeTrackingSettingsCard": {
     "heading": "Entradas de tiempo sugeridas",
-    "subheading": "Cuando termina una sesión remota, se ofrece en la hoja de horas del técnico como una entrada de tiempo de un toque. Nada se registra sin ese toque.",
+    "subheading": "Cuando termina una sesión remota, se ofrece en la app móvil de Breeze como una entrada de tiempo de un toque. Nada se registra sin ese toque. La hoja de horas web no muestra una lista de sugerencias.",
     "enabledLabel": "Sugerir entradas de tiempo a partir de sesiones remotas",
     "minSessionLabel": "Duración mínima de la sesión (segundos)",
     "mergeGapLabel": "Intervalo de fusión (minutos)",

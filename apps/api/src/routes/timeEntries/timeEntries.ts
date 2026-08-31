@@ -134,9 +134,11 @@ export function handleServiceError(c: { json: (b: unknown, s: number) => Respons
 
 // Literal paths BEFORE /:id (Hono matching is registration-ordered).
 
-// W06 (#3900). MUST stay above the `/:id` registrations — Hono matches in
-// registration order, so a later mount would let PATCH /:id swallow
-// /suggestions/confirm.
+// W06 (#3900). Kept above the `/:id` registrations because Hono matches in
+// registration order. It is not load-bearing at TODAY's route shape (there is
+// no GET /:id, and `/suggestions/confirm` is two segments so no one-segment
+// `/:id` can match it) — it becomes load-bearing the moment a one-segment
+// GET/POST `/:id` is added. Keep the mount here rather than relying on that.
 timeEntriesApiRoutes.route('/suggestions', timeSuggestionRoutes);
 
 timeEntriesApiRoutes.get('/running', scopes, readPerm, async (c) => {

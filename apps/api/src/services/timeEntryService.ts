@@ -32,6 +32,10 @@ export type TimeEntryServiceErrorCode =
   | 'SIGNAL_NOT_FOUND'
   | 'SIGNAL_NOT_ENDED'
   | 'SUGGESTION_DISMISSED'
+  // Distinct from SUGGESTION_DISMISSED: SOME members of a merged suggestion
+  // are already confirmed to a different entry. `code` is the machine-readable
+  // half of the contract, so the two 409s must not share one (review W06A).
+  | 'SUGGESTION_PARTIALLY_LOGGED'
   | 'SUGGESTION_ENTRY_DELETED'
   | 'ORG_MISMATCH'
   | 'ENDED_AT_REQUIRED'

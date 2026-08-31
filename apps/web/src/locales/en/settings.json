@@ -3941,7 +3941,7 @@
   },
   "timeTrackingSettingsCard": {
     "heading": "Suggested time entries",
-    "subheading": "When a remote session ends, offer it on the technician’s timesheet as a one-tap time entry. Nothing is logged without the tap.",
+    "subheading": "When a remote session ends, offer it in the Breeze mobile app as a one-tap time entry. Nothing is logged without the tap. The web timesheet shows no suggestion list.",
     "enabledLabel": "Suggest time entries from remote sessions",
     "minSessionLabel": "Minimum session length (seconds)",
     "mergeGapLabel": "Merge gap (minutes)",

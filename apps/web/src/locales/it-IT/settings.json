@@ -3941,7 +3941,7 @@
   },
   "timeTrackingSettingsCard": {
     "heading": "Voci di tempo suggerite",
-    "subheading": "Quando una sessione remota termina, viene proposta nel foglio ore del tecnico come voce di tempo con un solo tocco. Nulla viene registrato senza quel tocco.",
+    "subheading": "Quando una sessione remota termina, viene proposta nell’app mobile Breeze come voce di tempo con un solo tocco. Nulla viene registrato senza quel tocco. Il foglio ore web non mostra alcun elenco di suggerimenti.",
     "enabledLabel": "Suggerisci voci di tempo dalle sessioni remote",
     "minSessionLabel": "Durata minima della sessione (secondi)",
     "mergeGapLabel": "Intervallo di unione (minuti)",

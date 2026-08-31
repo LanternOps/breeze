@@ -73,13 +73,23 @@ export function mergeSignals<T extends SignalRow>(rows: T[], mergeGapMinutes: nu
   const sorted = [...rows].sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime());
   const gapMs = mergeGapMinutes * 60_000;
   const groups: T[][] = [];
+  // The gap is measured against the group's running MAX ended_at, never the
+  // last row appended. Concurrent sessions on one device (terminal + desktop)
+  // mean a short row can follow a long one; comparing against that short row
+  // would walk the comparison point backwards and let a session NESTED inside
+  // the group's own envelope open a second group — two overlapping suggestions,
+  // both confirmable from one loaded list, i.e. double-billed minutes.
+  let groupDeviceId: string | null = null;
+  let groupEnd = -Infinity;
   for (const row of sorted) {
     const last = groups[groups.length - 1];
-    const tail = last?.[last.length - 1];
-    if (last && tail && tail.deviceId === row.deviceId && row.startedAt.getTime() - tail.endedAt.getTime() <= gapMs) {
+    if (last && groupDeviceId === row.deviceId && row.startedAt.getTime() - groupEnd <= gapMs) {
       last.push(row);
+      groupEnd = Math.max(groupEnd, row.endedAt.getTime());
     } else {
       groups.push([row]);
+      groupDeviceId = row.deviceId;
+      groupEnd = row.endedAt.getTime();
     }
   }
   return groups;

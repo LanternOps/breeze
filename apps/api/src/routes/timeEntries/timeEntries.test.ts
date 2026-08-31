@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { serviceMocks, authRef, permsRef, auditMock } = vi.hoisted(() => ({
+const { serviceMocks, authRef, permsRef, auditMock, suggestionMocks } = vi.hoisted(() => ({
   serviceMocks: {
     createTimeEntry: vi.fn(),
     startTimer: vi.fn(),
@@ -26,11 +26,25 @@ const { serviceMocks, authRef, permsRef, auditMock } = vi.hoisted(() => ({
   // wildcard permission present => manageAll admin
   permsRef: { current: { permissions: [{ resource: 'time_entries', action: 'write' }, { resource: 'time_entries', action: 'read' }] } },
   auditMock: vi.fn(),
+  suggestionMocks: {
+    listTimeSuggestions: vi.fn(),
+    confirmTimeSuggestion: vi.fn(),
+    dismissTimeSuggestions: vi.fn(),
+    undismissTimeSuggestions: vi.fn(),
+  },
 }));
 
 vi.mock('../../services/timeEntryService', async () => {
   const actual = await vi.importActual<typeof import('../../services/timeEntryService')>('../../services/timeEntryService');
   return { ...actual, ...serviceMocks };
+});
+
+// The suggestion sub-router is mounted on this hub; stub its service so the
+// registration-order guard below can assert a POSITIVE outcome (200 + the
+// suggestion handler ran) instead of merely "not 404".
+vi.mock('../../services/timeSuggestionService', async () => {
+  const actual = await vi.importActual<typeof import('../../services/timeSuggestionService')>('../../services/timeSuggestionService');
+  return { ...actual, ...suggestionMocks };
 });
 
 vi.mock('../../middleware/auth', async () => ({
@@ -356,13 +370,41 @@ describe('explicit time-entry mutation audits', () => {
     }));
   });
 
-  // W06 (#3900): the regression a future refactor breaks. /suggestions is a
-  // literal path registered ABOVE /:id; if it ever slips below, PATCH/GET /:id
-  // swallows it and the entry handler runs with id === 'suggestions'.
-  it('/suggestions is registered before /:id and never reaches the entry handler', async () => {
+  // W06 (#3900). These assert the suggestion sub-router is MOUNTED on this hub
+  // and dispatches to its own handlers — verified by mutation: deleting the
+  // `route('/suggestions', …)` line reddens both.
+  // They deliberately do NOT claim to guard registration ORDER: moving the
+  // mount below `/:id` keeps them green, because at today's route shape
+  // nothing can swallow either path (no GET /:id exists, and
+  // `/suggestions/confirm` is two segments). The old "status !== 404 and
+  // updateTimeEntry not called" form asserted the order hazard but could not
+  // fail at all — a 500 from the unmocked service satisfied it (review W06A).
+  it('GET /suggestions reaches the suggestion handler, not an entry handler', async () => {
+    suggestionMocks.listTimeSuggestions.mockResolvedValue({
+      enabled: true, date: '2026-08-29', timezone: 'UTC', suggestions: [], unloggedCount: 0,
+    });
     const res = await timeEntriesRoutes.request('/suggestions?date=2026-08-29');
-    expect(serviceMocks.updateTimeEntry).not.toHaveBeenCalled();
-    expect(res.status).not.toBe(404);
+    expect(res.status).toBe(200);
+    expect(suggestionMocks.listTimeSuggestions).toHaveBeenCalled();
+    expect(await res.json()).toMatchObject({ data: { enabled: true, unloggedCount: 0 } });
+  });
+
+  // The real hazard the comment names: POST /:id-shaped writes vs the two-segment
+  // suggestion paths. Pin that confirm reaches confirmTimeSuggestion and never
+  // createTimeEntry.
+  it('POST /suggestions/confirm reaches the confirm handler, never createTimeEntry', async () => {
+    suggestionMocks.confirmTimeSuggestion.mockResolvedValue({ entry: { id: ENTRY_A, orgId: ORG_A }, replay: false });
+    const res = await timeEntriesRoutes.request('/suggestions/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        signals: [{ kind: 'remote_session', id: '1f2f1d8e-0002-4000-8000-000000000002' }],
+        startedAt: '2026-08-29T14:02:00Z', endedAt: '2026-08-29T14:40:00Z',
+      }),
+    });
+    expect(res.status).toBe(201);
+    expect(suggestionMocks.confirmTimeSuggestion).toHaveBeenCalled();
+    expect(serviceMocks.createTimeEntry).not.toHaveBeenCalled();
   });
 
   it('emits one audit per affected entry for start auto-stop ownership', async () => {

@@ -162,7 +162,7 @@ describe('POST /suggestions/confirm', () => {
   it('maps every service error code to its status', async () => {
     const cases: Array<[string, number]> = [
       ['SUGGESTIONS_DISABLED', 403], ['SIGNAL_NOT_FOUND', 404], ['SIGNAL_NOT_ENDED', 409],
-      ['SUGGESTION_DISMISSED', 409], ['SUGGESTION_ENTRY_DELETED', 410], ['ORG_MISMATCH', 422],
+      ['SUGGESTION_DISMISSED', 409], ['SUGGESTION_PARTIALLY_LOGGED', 409], ['SUGGESTION_ENTRY_DELETED', 410], ['ORG_MISMATCH', 422],
       ['ENDED_AT_REQUIRED', 400], ['RANGE_OUTSIDE_SIGNAL', 400], ['TICKET_NOT_FOUND', 404],
     ];
     for (const [code, status] of cases) {

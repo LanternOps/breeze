@@ -3941,7 +3941,7 @@
   },
   "timeTrackingSettingsCard": {
     "heading": "Entrées de temps suggérées",
-    "subheading": "Lorsqu’une session à distance se termine, elle est proposée dans la feuille de temps du technicien comme entrée de temps en un seul geste. Rien n’est enregistré sans ce geste.",
+    "subheading": "Lorsqu’une session à distance se termine, elle est proposée dans l’application mobile Breeze comme entrée de temps en un seul geste. Rien n’est enregistré sans ce geste. La feuille de temps Web n’affiche aucune liste de suggestions.",
     "enabledLabel": "Suggérer des entrées de temps à partir des sessions à distance",
     "minSessionLabel": "Durée minimale de session (secondes)",
     "mergeGapLabel": "Intervalle de fusion (minutes)",

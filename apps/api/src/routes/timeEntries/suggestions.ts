@@ -26,10 +26,11 @@ const writePerm = requirePermission(PERMISSIONS.TIME_ENTRIES_WRITE.resource, PER
 type SuggestionCtx = Parameters<typeof timeActorFrom>[0];
 
 /**
- * The service wants the auth scope on the actor (it decides whether the
- * partner-axis DB context can see the signal rows at all); `timeActorFrom`
- * does not carry it. requireScope has already narrowed the value to the two
- * members of the union before any handler runs.
+ * Carries the auth scope onto the actor (`timeActorFrom` does not). The scope
+ * NARROWING is done here at the router by `requireScope('partner','system')`
+ * plus the service's explicit `o.partner_id = $n` / `rs.user_id = $n`
+ * predicates — the service does not read `actor.scope`, so this field is
+ * descriptive metadata for logs and future callers, not a tenancy gate.
  */
 function suggestionActor(
   c: SuggestionCtx,

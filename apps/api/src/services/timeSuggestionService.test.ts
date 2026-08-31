@@ -251,6 +251,11 @@ describe('listTimeSuggestions', () => {
     await listTimeSuggestions(actor, { date: '2026-08-29', userId: 'u-other' });
     expect(compiled(0).params).toEqual(expect.arrayContaining(['u-other']));
     expect(compiled(0).params).not.toEqual(expect.arrayContaining(['u1']));
+    // …and the F19 already-logged query must follow the SAME technician. If it
+    // bound the actor instead, a dispatcher's own logged day would subtract
+    // from the technician's sessions and silently empty the list (review W06A).
+    expect(compiled(1).params).toEqual(expect.arrayContaining(['u-other']));
+    expect(compiled(1).params).not.toEqual(expect.arrayContaining(['u1']));
   });
 });
 
@@ -304,6 +309,22 @@ describe('confirmTimeSuggestion', () => {
     // The lock key must be per (user, signal) — never a bare signal id, or two
     // technicians confirming different sessions would serialise on each other.
     expect(compiled(0).params).toEqual(expect.arrayContaining(['u1:remote_session:s1']));
+  });
+
+  it('locks a merged suggestion in SORTED id order regardless of request order (deadlock guard)', async () => {
+    // Two overlapping merged suggestions that acquire the same ids in opposite
+    // orders would deadlock. The fixture is deliberately UNSORTED — a sorted
+    // one cannot discriminate the `[...ids].sort()`.
+    enabled();
+    execResults.push([]);   // lock s1
+    execResults.push([]);   // lock s2
+    execResults.push([]);   // loadSignals -> nothing visible, we only want the locks
+    await expect(confirmTimeSuggestion(
+      { ...confirmBody, signals: [{ kind: 'remote_session' as const, id: 's2' }, { kind: 'remote_session' as const, id: 's1' }] },
+      actor,
+    )).rejects.toMatchObject({ code: 'SIGNAL_NOT_FOUND' });
+    expect(compiled(0).params).toEqual(expect.arrayContaining(['u1:remote_session:s1']));
+    expect(compiled(1).params).toEqual(expect.arrayContaining(['u1:remote_session:s2']));
   });
 
   it('re-reads signals under the caller RLS + org allowlist (a forged id can only 404)', async () => {
@@ -389,6 +410,24 @@ describe('confirmTimeSuggestion', () => {
     );
   });
 
+  it('Quick Support WITH a ticket: support_session provenance and no org-agreement check (the QS org is hidden)', async () => {
+    // A QS session has no real org, so the F3 `ticket.org_id !== head.orgId`
+    // guard is deliberately skipped — a ticket in any org the caller can see
+    // under RLS is accepted, and createTimeEntry's own ticket path is what
+    // authorises the org. Pin both halves so neither becomes incidental.
+    enabled();
+    execResults.push([], [sessionRow({ org_type: 'quick_support', org_id: 'o-hidden-qs', attribution_label: 'Bob @ ACME' })], []);
+    execResults.push([{ org_id: 'o-different' }]);          // ticket org probe — must NOT raise ORG_MISMATCH
+    createEntryMock.mockResolvedValue({ id: 'e7', orgId: 'o-different', ticketId: 't-1' });
+    await confirmTimeSuggestion({ ...confirmBody, ticketId: 't-1' }, actor);
+    expect(orgLinkMock).not.toHaveBeenCalled();
+    expect(createEntryMock).toHaveBeenCalledWith(
+      expect.objectContaining({ ticketId: 't-1' }),
+      expect.anything(),
+      { source: 'support_session', orgLink: null }
+    );
+  });
+
   it('replay: every signal already confirmed to one entry -> 200 same entry, no new writes (F4)', async () => {
     enabled();
     execResults.push([], [sessionRow()]);
@@ -461,8 +500,11 @@ describe('confirmTimeSuggestion', () => {
     execResults.push([], []);
     execResults.push([sessionRow({ id: 's1' }), sessionRow({ id: 's2' })]);
     execResults.push([{ signal_id: 's1', decision: 'confirmed', time_entry_id: 'e1' }]);
+    // Assert the CODE, not just the 409: a client branching on `code` must be
+    // able to tell this from a genuinely dismissed suggestion, whose remediation
+    // (restore it first) cannot work here (review W06A).
     await expect(confirmTimeSuggestion({ ...confirmBody, signals: [SIG1, { kind: 'remote_session', id: 's2' }] }, actor))
-      .rejects.toMatchObject({ status: 409 });
+      .rejects.toMatchObject({ status: 409, code: 'SUGGESTION_PARTIALLY_LOGGED' });
     expect(createEntryMock).not.toHaveBeenCalled();
   });
 });
@@ -476,6 +518,17 @@ describe('dismiss / undismiss', () => {
     expect(compiled(0).sql).toMatch(/rs\.user_id = \$\d/);
     expect(inserted[0]).toEqual([expect.objectContaining({ decision: 'dismissed', timeEntryId: null, userId: 'u1', partnerId: 'p1' })]);
     expect(recordAuditMutation).toHaveBeenCalledWith(expect.objectContaining({ action: 'time_suggestion.dismissed' }));
+  });
+  it('a MERGED dismiss records one audit mutation per signal, each with a bare id (review W06A)', async () => {
+    // `writeAuditEventAsync` keeps `resource_id` only when the value is a uuid.
+    // A joined "<uuidA>+<uuidB>" would land resource_id NULL and an entryIds
+    // array whose one element is not an id — forensically dead rows.
+    enabled();
+    execResults.push([sessionRow({ id: 's1' }), sessionRow({ id: 's2' })]);
+    const recordAuditMutation = vi.fn();
+    await dismissTimeSuggestions([SIG1, { kind: 'remote_session', id: 's2' }], { ...actor, recordAuditMutation });
+    expect(recordAuditMutation).toHaveBeenCalledTimes(2);
+    expect(recordAuditMutation.mock.calls.map((c) => (c[0] as { entryId: string }).entryId)).toEqual(['s1', 's2']);
   });
   it('dismiss 404s a signal the caller cannot see', async () => {
     enabled();

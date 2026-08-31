@@ -3941,7 +3941,7 @@
   },
   "timeTrackingSettingsCard": {
     "heading": "Lançamentos de tempo sugeridos",
-    "subheading": "Quando uma sessão remota termina, ela é oferecida na folha de horas do técnico como um lançamento de tempo de um toque. Nada é registrado sem esse toque.",
+    "subheading": "Quando uma sessão remota termina, ela é oferecida no aplicativo móvel Breeze como um lançamento de tempo de um toque. Nada é registrado sem esse toque. A folha de horas na web não mostra lista de sugestões.",
     "enabledLabel": "Sugerir lançamentos de tempo a partir de sessões remotas",
     "minSessionLabel": "Duração mínima da sessão (segundos)",
     "mergeGapLabel": "Intervalo de mesclagem (minutos)",

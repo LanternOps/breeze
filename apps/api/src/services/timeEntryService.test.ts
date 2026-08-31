@@ -1640,6 +1640,24 @@ describe('provenance (W06 #3900)', () => {
     expect(dbMocks.insertedValues[0]).toMatchObject({ source: 'remote_session', orgId: 'o1', currencyCode: 'EUR' });
   });
 
+  it('an org-linked create WITH a rate keeps the ORG currency — the partner fallback stays gated (review W06A)', async () => {
+    // The confirm path forwards a technician-entered hourlyRate alongside the
+    // org link, so this branch is reachable from POST /suggestions/confirm.
+    // Queue a partners read returning USD: if the `currencyCode == null` guard
+    // on the standalone-money fallback ever regresses, it is consumed and the
+    // row lands org_id=<EUR org> with currency_code='USD' — money denominated
+    // in a currency that customer never uses, then invoiced.
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]); // must NOT be consumed
+    dbMocks.insertResult = [{ id: 'e6', ticketId: null, durationMinutes: 38, isBillable: false, orgId: 'o1', source: 'remote_session' }];
+    await createTimeEntry(
+      { startedAt: new Date('2026-08-29T14:02:00Z'), endedAt: new Date('2026-08-29T14:40:00Z'), hourlyRate: 90 },
+      ACTOR,
+      { source: 'remote_session', orgLink: { orgId: 'o1', currencyCode: 'EUR' } }
+    );
+    expect(dbMocks.insertedValues[0]).toMatchObject({ orgId: 'o1', currencyCode: 'EUR', hourlyRate: '90.00', source: 'remote_session' });
+    expect(dbMocks.selectResults).toHaveLength(1); // getPartnerCurrency was never consulted
+  });
+
   it('support_session provenance with no org link lands org_id NULL and currency NULL (D6)', async () => {
     dbMocks.insertResult = [{ id: 'e4', ticketId: null, durationMinutes: 10, isBillable: false, orgId: null, source: 'support_session' }];
     await createTimeEntry(

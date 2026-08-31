@@ -124,6 +124,13 @@ export type SuggestionSignal = z.infer<typeof timeSuggestionSignalSchema>;
 const signalsField = z.array(timeSuggestionSignalSchema).min(1).max(20)
   .refine((s) => new Set(s.map((x) => `${x.kind}:${x.id}`)).size === s.length, { message: 'signals must be unique' });
 
+/**
+ * `.strict()` is deliberate (a typo'd param must 400, never silently widen the
+ * day). Web callers therefore MUST pass `skipOrgIdInjection` to `fetchWithAuth`
+ * — it appends `?orgId=<uuid>` to every request otherwise, which this schema
+ * rejects. Suggestions are user-scoped, never org-scoped, so there is no
+ * `orgId` to honour.
+ */
 export const suggestionsQuerySchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
   // IANA zone; validated with Intl in the service (400 INVALID_TZ) so the

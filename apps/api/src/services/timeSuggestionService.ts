@@ -363,9 +363,20 @@ export async function listTimeSuggestions(
 }
 
 /**
- * W07 hook — same grouping as list, number only. Safe under system context
- * because `o.partner_id = :partner` and `rs.user_id = :user` are explicit
- * predicates, not RLS side-effects. Dispatch, quiet hours and dedupe are W07.
+ * W07 hook — same grouping as list, number only. Dispatch, quiet hours and
+ * dedupe are W07.
+ *
+ * System context caveats for the W07 caller — read before wiring this up:
+ * - `loadSignals` is safe here: `o.partner_id = :partner` and
+ *   `rs.user_id = :user` are explicit predicates, not RLS side-effects.
+ * - `loadLoggedRanges` is NOT partner-re-authorised — its only predicate is
+ *   `te.user_id = :user`. With RLS bypassed it leans on `users` being
+ *   single-partner, an invariant of another table. Keep it that way, or add an
+ *   explicit partner predicate before this runs for a multi-partner user.
+ * - Call this from a BACKGROUND path only. Per CLAUDE.md the wrap must be
+ *   preceded by `runOutsideDbContext` when a request context may be open;
+ *   inside a request `withSystemDbAccessContext` early-returns, so RLS stays
+ *   ON while `accessibleOrgIds: null` below still assumes it is off.
  */
 export async function countUnloggedSuggestions(args: { userId: string; partnerId: string; date: string; tz?: string }): Promise<number> {
   return withSystemDbAccessContext(async () => {
@@ -473,7 +484,7 @@ export async function confirmTimeSuggestion(
     // A partial ledger: some members already belong to another entry. Logging
     // the rest would double-bill the overlap, so refuse and let the client
     // refetch.
-    throw new TimeEntryServiceError('Some sessions are already logged to a different entry', 409, 'SUGGESTION_DISMISSED');
+    throw new TimeEntryServiceError('Some sessions are already logged to a different entry', 409, 'SUGGESTION_PARTIALLY_LOGGED');
   }
 
   const orgIds = new Set(signals.map((s) => s.orgId));
@@ -555,11 +566,13 @@ export async function dismissTimeSuggestions(signals: SuggestionSignalRef[], act
     })))
     .onConflictDoNothing()
     .returning();
-  actor.recordAuditMutation?.({
-    action: 'time_suggestion.dismissed',
-    entryId: signals.map((s) => s.id).join('+'),
-    orgId: null,
-  });
+  // One mutation PER signal, never a joined id string: `writeAuditEventAsync`
+  // only stores `resource_id` when the value parses as a uuid, so a merged
+  // suggestion's "<uuidA>+<uuidB>" would land resource_id NULL and a
+  // details.entryIds array whose single element is not an id (review W06A).
+  for (const s of signals) {
+    actor.recordAuditMutation?.({ action: 'time_suggestion.dismissed', entryId: s.id, orgId: null });
+  }
 }
 
 /**
@@ -578,9 +591,7 @@ export async function undismissTimeSuggestions(signals: SuggestionSignalRef[], a
       and(eq(timeSuggestionDecisions.decision, 'confirmed'), isNull(timeSuggestionDecisions.timeEntryId)),
     ),
   ));
-  actor.recordAuditMutation?.({
-    action: 'time_suggestion.undismissed',
-    entryId: signals.map((s) => s.id).join('+'),
-    orgId: null,
-  });
+  for (const s of signals) {
+    actor.recordAuditMutation?.({ action: 'time_suggestion.undismissed', entryId: s.id, orgId: null });
+  }
 }

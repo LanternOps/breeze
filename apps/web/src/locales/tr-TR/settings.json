@@ -3941,7 +3941,7 @@
   },
   "timeTrackingSettingsCard": {
     "heading": "Önerilen zaman kayıtları",
-    "subheading": "Bir uzak oturum sona erdiğinde, teknisyenin zaman çizelgesinde tek dokunuşluk bir zaman kaydı olarak sunulur. Bu dokunuş olmadan hiçbir şey kaydedilmez.",
+    "subheading": "Bir uzak oturum sona erdiğinde, Breeze mobil uygulamasında tek dokunuşluk bir zaman kaydı olarak sunulur. Bu dokunuş olmadan hiçbir şey kaydedilmez. Web zaman çizelgesinde öneri listesi görünmez.",
     "enabledLabel": "Uzak oturumlardan zaman kayıtları öner",
     "minSessionLabel": "Minimum oturum süresi (saniye)",
     "mergeGapLabel": "Birleştirme aralığı (dakika)",

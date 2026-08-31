@@ -3941,7 +3941,7 @@
   },
   "timeTrackingSettingsCard": {
     "heading": "Vorgeschlagene Zeiteinträge",
-    "subheading": "Wenn eine Remote-Sitzung endet, wird sie im Stundenzettel des Technikers als Zeiteintrag mit einem Tippen angeboten. Ohne dieses Tippen wird nichts erfasst.",
+    "subheading": "Wenn eine Remote-Sitzung endet, wird sie in der mobilen Breeze-App als Zeiteintrag mit einem Tippen angeboten. Ohne dieses Tippen wird nichts erfasst. Der Stundenzettel im Web zeigt keine Vorschlagsliste.",
     "enabledLabel": "Zeiteinträge aus Remote-Sitzungen vorschlagen",
     "minSessionLabel": "Mindestdauer der Sitzung (Sekunden)",
     "mergeGapLabel": "Zusammenführungsintervall (Minuten)",

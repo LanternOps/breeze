@@ -72,6 +72,32 @@ describe('mergeSignals', () => {
     const c = sig({ id: 'c', startedAt: d('2026-08-29T15:00:01Z'), endedAt: d('2026-08-29T15:10:00Z') });
     expect(mergeSignals([a, b, c], 0)).toHaveLength(2);
   });
+  it('a short nested session does not walk the comparison point backwards (review W06A)', () => {
+    // A concurrent terminal + desktop pair on one device is ordinary. A short
+    // member appended after a long one must NOT become the group's end: the
+    // group's running MAX ended_at is what the next row is measured against.
+    // Otherwise C — which lies entirely inside A's window — opens a second
+    // group and we emit two OVERLAPPING suggestions, i.e. double-billed minutes.
+    const a = sig({ id: 'a', type: 'terminal', startedAt: d('2026-08-29T10:00:00Z'), endedAt: d('2026-08-29T12:00:00Z'), durationSeconds: 7200 });
+    const b = sig({ id: 'b', startedAt: d('2026-08-29T10:05:00Z'), endedAt: d('2026-08-29T10:10:00Z'), durationSeconds: 300 });
+    const c = sig({ id: 'c', startedAt: d('2026-08-29T10:30:00Z'), endedAt: d('2026-08-29T10:40:00Z'), durationSeconds: 600 });
+    expect(mergeSignals([a, b, c], 10).map((g) => g.map((s) => s.id))).toEqual([['a', 'b', 'c']]);
+  });
+  it('the running max also carries a later row that is only reachable via an earlier long member', () => {
+    // A 10:00–12:00, B 10:05–10:10, D 12:05–12:20. D is 5 min after A's end
+    // (inside the 10-min gap) but nearly 2h after B's — the last appended row.
+    const a = sig({ id: 'a', startedAt: d('2026-08-29T10:00:00Z'), endedAt: d('2026-08-29T12:00:00Z'), durationSeconds: 7200 });
+    const b = sig({ id: 'b', startedAt: d('2026-08-29T10:05:00Z'), endedAt: d('2026-08-29T10:10:00Z'), durationSeconds: 300 });
+    const dd = sig({ id: 'd', startedAt: d('2026-08-29T12:05:00Z'), endedAt: d('2026-08-29T12:20:00Z'), durationSeconds: 900 });
+    expect(mergeSignals([dd, b, a], 10).map((g) => g.map((s) => s.id))).toEqual([['a', 'b', 'd']]);
+  });
+  it('still splits when the true group end is beyond the gap', () => {
+    // Guard against over-merging: E starts 11 min after the group's max end.
+    const a = sig({ id: 'a', startedAt: d('2026-08-29T10:00:00Z'), endedAt: d('2026-08-29T12:00:00Z'), durationSeconds: 7200 });
+    const b = sig({ id: 'b', startedAt: d('2026-08-29T10:05:00Z'), endedAt: d('2026-08-29T10:10:00Z'), durationSeconds: 300 });
+    const e = sig({ id: 'e', startedAt: d('2026-08-29T12:11:00Z'), endedAt: d('2026-08-29T12:20:00Z'), durationSeconds: 540 });
+    expect(mergeSignals([a, b, e], 10).map((g) => g.map((s) => s.id))).toEqual([['a', 'b'], ['e']]);
+  });
 });
 
 describe('suggestionKey / envelopeOf', () => {
