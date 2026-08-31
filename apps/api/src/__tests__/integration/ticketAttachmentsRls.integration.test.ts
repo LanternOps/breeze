@@ -2,7 +2,7 @@
  * ticket_attachments — RLS, org-move re-stamp, erasure order and db-backend
  * round-trip against real Postgres (W08 #3902).
  *
- * Migration under test: 2026-09-25-ticket-attachments.sql
+ * Migration under test: 2026-09-26-ticket-attachments.sql
  *
  * Shape 1 (direct org_id, RLS auto-discovered by rls-coverage). Everything
  * here runs through the REAL postgres.js driver as `breeze_app`

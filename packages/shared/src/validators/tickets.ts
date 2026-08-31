@@ -83,7 +83,14 @@ export const changeTicketStatusSchema = z.object({
   status: ticketStatusSchema.optional(),
   statusId: z.string().guid().optional(),
   resolutionNote: z.string().min(1).max(10_000).optional(),
-  pendingReason: z.string().max(500).optional()
+  pendingReason: z.string().max(500).optional(),
+  // P2-4 (#4191), Task A10: an active `resolution_note`-kind ticket_drafts row
+  // to apply as the resolution note (the web resolve modal's AI-draft
+  // prefill, PR B) — the service reads its content and consumes it in the
+  // same transaction as the status change. Only meaningful alongside a
+  // resolve; the service rejects it otherwise. Supplying this relaxes the
+  // resolutionNote-required rule below since the draft supplies the text.
+  aiDraftId: z.string().guid().optional()
 }).superRefine((v, ctx) => {
   const hasStatus = v.status !== undefined;
   const hasStatusId = v.statusId !== undefined;
@@ -93,7 +100,7 @@ export const changeTicketStatusSchema = z.object({
   if (!hasStatus && !hasStatusId) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Either status or statusId is required', path: [] });
   }
-  if (hasStatus && v.status === 'resolved' && (!v.resolutionNote || v.resolutionNote.length === 0)) {
+  if (hasStatus && v.status === 'resolved' && !v.aiDraftId && (!v.resolutionNote || v.resolutionNote.length === 0)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'resolutionNote is required when resolving', path: ['resolutionNote'] });
   }
 });

@@ -315,6 +315,15 @@ describe('organization routes', () => {
             where: vi.fn().mockResolvedValue([{ count: 1 }])
           })
         } as any)
+        // partner-settings read for the preferred org order — runs BEFORE the
+        // page query since #4004, because it supplies the leading ORDER BY term
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -323,14 +332,6 @@ describe('organization routes', () => {
                   orderBy: vi.fn().mockResolvedValue(organizations)
                 })
               })
-            })
-          })
-        } as any)
-        // partner-settings read for the preferred org order
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([])
             })
           })
         } as any)

@@ -91,6 +91,20 @@ describe('ticket validators', () => {
     }
   });
 
+  // P2-4 (#4191), Task A10: aiDraftId relaxes the resolutionNote requirement —
+  // the draft supplies the text server-side.
+  it('changeTicketStatusSchema: status=resolved with aiDraftId (no resolutionNote) → valid', () => {
+    const r = changeTicketStatusSchema.safeParse({
+      status: 'resolved',
+      aiDraftId: '3f2f1d8e-1111-4222-8333-444455556666',
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('changeTicketStatusSchema: aiDraftId must be a uuid', () => {
+    expect(changeTicketStatusSchema.safeParse({ status: 'resolved', aiDraftId: 'not-a-uuid' }).success).toBe(false);
+  });
+
   it('assign accepts a uuid or null (unassign)', () => {
     expect(assignTicketSchema.safeParse({ assigneeId: null }).success).toBe(true);
     expect(assignTicketSchema.safeParse({ assigneeId: '3f2f1d8e-1111-4222-8333-444455556666' }).success).toBe(true);

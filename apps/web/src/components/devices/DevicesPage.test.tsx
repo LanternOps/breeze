@@ -63,10 +63,32 @@ vi.mock('../shared/Toast', () => ({
   showToast: vi.fn(),
 }));
 
+// Selector-AWARE on purpose: useOrgScope (which now gates the list fetch, #4147)
+// subscribes per-field via `useOrgStore(s => s.currentOrgId)`. A mock that
+// ignored the selector handed each of those calls the whole state object — every
+// field read back truthy, so the scope derived "resolved" by accident and any
+// future gating change would have gone unnoticed here.
+//
+// The default scope is the EXPLICIT All-organizations one: it is resolved (so
+// these tests, which are about the list itself, still fetch on mount) while
+// keeping `organizations` empty and `currentOrgId` null exactly as before — the
+// run-script confirm dialog names orgs from that same list. The unresolved
+// first-load-after-login race has its own suite in DevicesPage.orgScope.test.tsx.
+const orgStoreState = vi.hoisted(() => ({
+  currentOrgId: null as string | null,
+  currentPartnerId: null as string | null,
+  allOrgs: true,
+  lastOrgId: null as string | null,
+  organizations: [] as Array<{ id: string; name: string }>,
+  organizationsLoaded: true,
+  error: null as string | null,
+}));
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: Object.assign(() => ({ currentOrgId: null, organizations: [] }), {
-    getState: () => ({ currentOrgId: null, organizations: [] })
-  })
+  useOrgStore: Object.assign(
+    (selector?: (s: typeof orgStoreState) => unknown) =>
+      selector ? selector(orgStoreState) : orgStoreState,
+    { getState: () => orgStoreState }
+  )
 }));
 
 // The advanced filter is seeded from the URL hash; stub it to an active filter

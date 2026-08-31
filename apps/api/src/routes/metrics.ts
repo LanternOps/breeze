@@ -1304,9 +1304,12 @@ function timeoutAfter(ms: number): { promise: Promise<never>; cancel: () => void
  * per-gauge transaction on every scrape is real pressure from the endpoint whose
  * whole job is to observe that pressure.
  *
- * Ephemeral Quick Support devices and decommissioned records are excluded, the
- * same exclusions `GET /metrics/` applies, so the gauge and the dashboard count
- * the same fleet.
+ * Ephemeral Quick Support devices and decommissioned records are excluded from
+ * BOTH queries — the device counts and the low-readiness count — which is the
+ * same exclusion pair `GET /metrics/` applies, so the gauges and the dashboard
+ * count the same fleet. The readiness query has to join `devices` to say that;
+ * it originally shipped as a bare count that contradicted this paragraph
+ * (#3969). Keep the two in step: an exclusion added to one belongs on the other.
  */
 async function readFleetGauges(nowMs: number): Promise<void> {
   const activeSince = new Date(
@@ -1334,10 +1337,28 @@ async function readFleetGauges(nowMs: number): Promise<void> {
     // and lands in the failure counter below.
     if (!fleetRow) throw new Error('[metrics] fleet gauge query returned no rows');
 
+    // Joined to `devices` so the SAME exclusion pair the fleet query above uses
+    // applies here too (#3969). Without the join this was a bare count over
+    // `recovery_readiness`, and since decommissioning is a soft delete the row
+    // for a device retired 16 days earlier still scored 0 and still pinned the
+    // BreezeBackupLowReadinessDevices warning — while the doc comment on this
+    // function promised the opposite.
+    //
+    // INNER is the right join: `recovery_readiness.device_id` is NOT NULL with
+    // an FK to `devices.id`, and the row is removed with the device by
+    // `deleteDeviceCascade` (app-level — the FK itself is NO ACTION, so don't go
+    // looking for an ON DELETE CASCADE in the DDL). A readiness row therefore
+    // never outlives its device, and this join can never drop one that should
+    // have been counted.
     const [readinessRow] = await db
       .select({ count: sql<number>`count(*)` })
       .from(recoveryReadinessTable)
-      .where(sql`${recoveryReadinessTable.readinessScore} < ${BACKUP_LOW_READINESS_THRESHOLD}`);
+      .innerJoin(devices, eq(devices.id, recoveryReadinessTable.deviceId))
+      .where(
+        sql`${recoveryReadinessTable.readinessScore} < ${BACKUP_LOW_READINESS_THRESHOLD}
+            AND ${devices.isEphemeral} = false
+            AND ${devices.status} <> 'decommissioned'`
+      );
     if (!readinessRow) throw new Error('[metrics] readiness gauge query returned no rows');
 
     updateBusinessMetrics({

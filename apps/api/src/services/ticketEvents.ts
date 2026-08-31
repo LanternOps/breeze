@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { Queue } from 'bullmq';
 import { getBullMQConnection } from './redis';
 import { captureException } from './sentry';
@@ -14,6 +15,14 @@ interface TicketEventEnvelope {
   orgId: string;
   partnerId: string | null;
   actorUserId?: string | null;
+  /**
+   * W07 (#3901): unique per emitted event; the notify worker uses it in the
+   * user_notifications dedupe key so a BullMQ retry never re-pushes while a
+   * genuine A->B->A reassignment does. Stamped by emitTicketEvent — emitters
+   * never set it. Jobs queued before this shipped lack it; the worker falls
+   * back to job.id.
+   */
+  eventId: string;
 }
 
 export type TicketEvent = TicketEventEnvelope & (
@@ -42,6 +51,11 @@ export type TicketEvent = TicketEventEnvelope & (
 
 export type TicketEventType = TicketEvent['type'];
 
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+/** What emitters pass: eventId is optional and normally omitted. */
+export type TicketEventInput = DistributiveOmit<TicketEvent, 'eventId'> & { eventId?: string };
+
 let queue: Queue | null = null;
 
 export function getTicketEventsQueue(): Queue {
@@ -53,7 +67,8 @@ export function getTicketEventsQueue(): Queue {
 
 // Fire-and-forget by design: a Redis outage must never fail the user-facing
 // mutation that emitted the event. Consumers (notifications) are best-effort.
-export async function emitTicketEvent(event: TicketEvent): Promise<void> {
+export async function emitTicketEvent(input: TicketEventInput): Promise<void> {
+  const event = { ...input, eventId: input.eventId ?? randomUUID() } as TicketEvent;
   try {
     await getTicketEventsQueue().add(event.type, event, {
       removeOnComplete: { count: 100 },

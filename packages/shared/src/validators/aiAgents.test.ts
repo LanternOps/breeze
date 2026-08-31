@@ -105,8 +105,32 @@ describe('aiAgents validators', () => {
     expect(aiAgentLimitsSchema.safeParse({ narrativeMaxTurns: 9 }).success).toBe(false);
   });
 
-  it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 7 (phase 2 P2-3 bump)', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(7);
+  it('maxConcurrentTriageRuns/maxTriageRunsPerHour/triageBudgetCentsPerRun/triageMaxTurns default-fill and clamp (phase 2 P2-4)', () => {
+    const parsed = aiAgentLimitsSchema.parse({});
+    expect(parsed.maxConcurrentTriageRuns).toBe(2);
+    expect(parsed.maxTriageRunsPerHour).toBe(30);
+    expect(parsed.triageBudgetCentsPerRun).toBe(10);
+    expect(parsed.triageMaxTurns).toBe(6);
+    expect(aiAgentLimitsSchema.safeParse({ maxConcurrentTriageRuns: 0 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxConcurrentTriageRuns: 1 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxConcurrentTriageRuns: 10 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxConcurrentTriageRuns: 11 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxTriageRunsPerHour: 0 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxTriageRunsPerHour: 1 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxTriageRunsPerHour: 200 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxTriageRunsPerHour: 201 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ triageBudgetCentsPerRun: 0 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ triageBudgetCentsPerRun: 1 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ triageBudgetCentsPerRun: 50 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ triageBudgetCentsPerRun: 51 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ triageMaxTurns: 1 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ triageMaxTurns: 2 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ triageMaxTurns: 12 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ triageMaxTurns: 13 }).success).toBe(false);
+  });
+
+  it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 8 (phase 2 P2-4 bump)', () => {
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(8);
   });
 
   it('rejects instructions over 2000 chars and unknown allowlist shapes', () => {
@@ -238,6 +262,30 @@ describe('aiAgents validators', () => {
     });
   });
 
+  describe('triggers.ticketAutonomousWrites — conservative per-agent opt-in (phase 2 P2-4, #4191)', () => {
+    it('defaults to false — NOT the "absent = unrestricted" convention every other narrowing filter uses', () => {
+      const created = createAiAgentSchema.parse({ kind: 'helpdesk', name: 'Helpdesk' });
+      expect(created.triggers.ticketAutonomousWrites).toBe(false);
+    });
+
+    it('a patch omitting ticketAutonomousWrites leaves it unset (no invented default on the patch variant)', () => {
+      const parsed = aiAgentTriggersPatchSchema.parse({});
+      expect(parsed.ticketAutonomousWrites).toBeUndefined();
+    });
+
+    it('accepts an explicit true/false', () => {
+      expect(aiAgentPolicyFieldsSchema.parse({ triggers: { ticketAutonomousWrites: true } })
+        .triggers.ticketAutonomousWrites).toBe(true);
+      expect(aiAgentPolicyFieldsSchema.parse({ triggers: { ticketAutonomousWrites: false } })
+        .triggers.ticketAutonomousWrites).toBe(false);
+    });
+
+    it('rejects a non-boolean value', () => {
+      expect(aiAgentPolicyFieldsSchema.safeParse({ triggers: { ticketAutonomousWrites: 'true' } }).success)
+        .toBe(false);
+    });
+  });
+
   it('minAgentMode picks the stricter mode', () => {
     expect(minAgentMode('act', 'shadow')).toBe('shadow');
     expect(minAgentMode('off', 'act')).toBe('off');
@@ -357,7 +405,7 @@ describe('limits v6', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour).toBe(20);
     expect(AI_AGENT_LIMIT_DEFAULTS.sweepBudgetCentsPerRun).toBe(30);
     expect(AI_AGENT_LIMIT_DEFAULTS.sweepMaxTurns).toBe(8);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(7);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(8);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentSweepRuns: 11 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxSweepRunsPerHour: 201 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, sweepBudgetCentsPerRun: 4 }).success).toBe(false);
@@ -371,12 +419,30 @@ describe('limits v7', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour).toBe(5);
     expect(AI_AGENT_LIMIT_DEFAULTS.narrativeBudgetCentsPerRun).toBe(20);
     expect(AI_AGENT_LIMIT_DEFAULTS.narrativeMaxTurns).toBe(3);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(7);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(8);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentNarrativeRuns: 6 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxNarrativeRunsPerHour: 51 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, narrativeBudgetCentsPerRun: 4 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, narrativeMaxTurns: 9 }).success).toBe(false);
     // The v7 default object must itself round-trip through the schema — a
+    // default outside its own bound is the classic way a limits bump ships
+    // broken (the parse below fails if any of the four is out of range).
+    expect(aiAgentLimitsSchema.parse({ ...AI_AGENT_LIMIT_DEFAULTS })).toEqual(AI_AGENT_LIMIT_DEFAULTS);
+  });
+});
+
+describe('limits v8', () => {
+  it('has triage-profile defaults and bounds (phase 2 P2-4, #4191)', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxConcurrentTriageRuns).toBe(2);
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxTriageRunsPerHour).toBe(30);
+    expect(AI_AGENT_LIMIT_DEFAULTS.triageBudgetCentsPerRun).toBe(10);
+    expect(AI_AGENT_LIMIT_DEFAULTS.triageMaxTurns).toBe(6);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(8);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentTriageRuns: 11 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxTriageRunsPerHour: 201 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, triageBudgetCentsPerRun: 51 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, triageMaxTurns: 13 }).success).toBe(false);
+    // The v8 default object must itself round-trip through the schema — a
     // default outside its own bound is the classic way a limits bump ships
     // broken (the parse below fails if any of the four is out of range).
     expect(aiAgentLimitsSchema.parse({ ...AI_AGENT_LIMIT_DEFAULTS })).toEqual(AI_AGENT_LIMIT_DEFAULTS);

@@ -77,7 +77,7 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
 // scoped by design) — see apps/api/src/db/schema/devices.ts.
 const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'device_commands', // Agent WS path: system-scoped command queue, no tenant isolation needed.
-  'intent_outbox', // Action intents transactional outbox (spec 2026-07-18): system-scoped, workers-only queue, no tenant isolation needed. FK-cascades from action_intents (org-scoped, RLS shape 1). Mirrors device_commands.
+  'intent_outbox', // Generalized transactional outbox: system-scoped workers-only queue. Its XOR parent FK cascades from either action_intents or pam_actuations (both direct-org, forced RLS). Mirrors device_commands.
   'manifest_signing_keys', // System-scoped: per-deployment agent-update signing key. Forced RLS, no policies → only system context.
   'manifest_signing_key_delegations', // System-scoped: signed authorisation to add ONE unseen agent-update signing key (Wave 6 Task 7). No tenant column — per-deployment agent-update infrastructure. Forced RLS, single system-only policy (USING + WITH CHECK) → only system context. No org_id/device_id, so no cascade-list registration applies.
   'm365_consent_sessions', // OAuth consent state: forced RLS, system-only policies; tenant scopes must never read verifier/nonce material.
@@ -426,6 +426,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // cross-partner forge + evaluation fan-out proof:
   // automationPoliciesPartnerRls.integration.test.ts.
   'automation_policies',
+  // automation_resource_bindings (S0 Track A): copies the standalone
+  // automation's org XOR partner owner axes. The parent-owner constraint
+  // trigger rejects drift, and automationResourceBindings.integration.test.ts
+  // proves both org and partner forge paths through the real app role.
+  'automation_resource_bindings',
   // automations (#2133, epic #2135): org-scoped OR partner-wide standalone
   // automation ("on device.offline run diagnostic script" across all orgs).
   // automation_runs stays parent-join (its EXISTS policies gained the partner
@@ -660,6 +665,11 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   'user_sso_identities',
   'push_notifications',
   'mobile_devices',
+  // ticket_push_preferences: W07 (#3901) per-user ticket push preferences.
+  // Pure Shape 6 — user_id PK, no org/partner axis. Behavioural proof is
+  // ticketPushPreferencesRls.integration.test.ts; this entry only pins that
+  // the policy references breeze_current_user_id.
+  'ticket_push_preferences',
   // ticket_comments: Shape 6 on the author axis, PLUS an extra permissive
   // SELECT policy (breeze_ticket_parent_select, 2026-06-10-a migration)
   // that ORs in visibility when the parent ticket is org-accessible —
@@ -1928,7 +1938,11 @@ describe('manifest_signing_keys RLS — system-only enforcement (#639)', () => {
           keyId: seededKeyId,
           publicKeyB64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
           privateKeyEnc: 'enc:v1:forge',
-          status: 'active',
+          // Visibility is independent of lifecycle status. Use a retired row
+          // so this suite remains isolated when a preceding signing/rollback
+          // suite has legitimately created the deployment's one active key.
+          status: 'retired',
+          retiredAt: new Date(),
         });
       });
       insertedKeyIds.push(seededKeyId);

@@ -1,5 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const { resolveOwnedAutomationReferencesMock } = vi.hoisted(() => ({
+  resolveOwnedAutomationReferencesMock: vi.fn(),
+}));
+
+vi.mock('./automationReferenceAuthorization', () => ({
+  AutomationReferenceAuthorizationError: class AutomationReferenceAuthorizationError extends Error {
+    readonly code = 'unknown_or_unauthorized_reference';
+  },
+  resolveOwnedAutomationReferences: resolveOwnedAutomationReferencesMock,
+}));
+
 // Mock DB and dependencies before importing
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -9,6 +20,7 @@ vi.mock('../db', () => ({
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
+    transaction: vi.fn(),
   },
 }));
 
@@ -16,7 +28,9 @@ vi.mock('../db/schema', () => ({
   automationRuns: { id: 'id', automationId: 'automationId', status: 'status' },
   configPolicyAutomations: { featureLinkId: 'featureLinkId' },
   configPolicyFeatureLinks: { id: 'id', configPolicyId: 'configPolicyId' },
-  configurationPolicies: { id: 'id', orgId: 'orgId' },
+  configurationPolicies: { id: 'id', orgId: 'orgId', partnerId: 'partnerId' },
+  organizations: { id: 'id', partnerId: 'partnerId', type: 'type' },
+  automationResourceBindings: { automationId: 'automationId' },
   devices: { id: 'id', hostname: 'hostname', osType: 'osType', status: 'status' },
   scripts: { id: 'id', deletedAt: 'deletedAt' },
   notificationChannels: { id: 'id', orgId: 'orgId' },
@@ -56,6 +70,34 @@ import { createConfigPolicyAutomationRun, executeConfigPolicyAutomationRun } fro
 import { dispatchScriptToDevice } from './scriptDispatch';
 import { publishEvent } from './eventBus';
 import { loadTenantVariableScope } from './tenantVariableResolution';
+
+function emptyResolvedReferences() {
+  return {
+    scriptsById: new Map(),
+    softwareCatalogsById: new Map(),
+    softwareVersionsByCatalogId: new Map(),
+    notificationChannelsById: new Map(),
+  };
+}
+
+function installTransactionMock() {
+  const tx = {
+    ...db,
+    select: vi.fn((selection?: Record<string, unknown>) => {
+      if (selection && Object.keys(selection).join(',') === 'partnerId') {
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-1' }]),
+            }),
+          }),
+        };
+      }
+      return selection ? db.select(selection as any) : db.select();
+    }),
+  };
+  vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+}
 
 function makeConfigPolicyAutomation(overrides: Record<string, unknown> = {}): any {
   return {
@@ -117,10 +159,14 @@ function mockSelectChain(result: unknown[]) {
 function mockResolveConfigPolicyId(configPolicyId: string | null) {
   vi.mocked(db.select).mockReturnValue({
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(
-          configPolicyId === null ? [] : [{ configPolicyId }],
-        ),
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(
+            configPolicyId === null
+              ? []
+              : [{ configPolicyId, orgId: 'org-1', partnerId: null }],
+          ),
+        }),
       }),
     }),
   } as any);
@@ -129,6 +175,8 @@ function mockResolveConfigPolicyId(configPolicyId: string | null) {
 describe('createConfigPolicyAutomationRun', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    installTransactionMock();
+    resolveOwnedAutomationReferencesMock.mockResolvedValue(emptyResolvedReferences());
   });
 
   it('creates a run record with automationId=null and the resolved configPolicyId', async () => {
@@ -305,13 +353,15 @@ describe('createConfigPolicyAutomationRun', () => {
 describe('executeConfigPolicyAutomationRun', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    installTransactionMock();
+    resolveOwnedAutomationReferencesMock.mockResolvedValue(emptyResolvedReferences());
   });
 
   it('throws when orgId cannot be resolved', async () => {
     // resolveConfigPolicyOrgId does a dynamic import of ../db/schema and then
     // db.select().from(...).innerJoin(...).where(...).limit(1)
-    // Mock it to return empty → orgId = null → throws
-    mockSelectChain([]);
+    // The feature link resolves, but its parent policy has no org owner.
+    mockSelectChain([{ configPolicyId: 'cp-1', orgId: null, partnerId: 'partner-1' }]);
 
     await expect(
       executeConfigPolicyAutomationRun(
@@ -337,16 +387,6 @@ describe('executeConfigPolicyAutomationRun', () => {
               where: vi.fn().mockReturnValue({
                 limit: vi.fn().mockResolvedValue([{ orgId: 'org-1' }]),
               }),
-            }),
-          }),
-        } as any;
-      }
-      if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
             }),
           }),
         } as any;
@@ -405,16 +445,6 @@ describe('executeConfigPolicyAutomationRun', () => {
         } as any;
       }
       if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
-            }),
-          }),
-        } as any;
-      }
-      if (selectCallCount === 3) {
         // Load devices
         return {
           from: vi.fn().mockReturnValue({
@@ -496,16 +526,6 @@ describe('executeConfigPolicyAutomationRun', () => {
         } as any;
       }
       if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
-            }),
-          }),
-        } as any;
-      }
-      if (selectCallCount === 3) {
         return {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([
@@ -567,16 +587,6 @@ describe('executeConfigPolicyAutomationRun', () => {
         } as any;
       }
       if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
-            }),
-          }),
-        } as any;
-      }
-      if (selectCallCount === 3) {
         return {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([
@@ -654,6 +664,10 @@ describe('executeConfigPolicyAutomationRun', () => {
     const scriptRows = [
       { id: 'script-1', orgId: null, osTypes: ['linux'], runAs: 'system', content: 'curl {{var.repo_url}}', language: 'bash', timeoutSeconds: 60 },
     ];
+    resolveOwnedAutomationReferencesMock.mockResolvedValue({
+      ...emptyResolvedReferences(),
+      scriptsById: new Map(scriptRows.map((script) => [script.id, script])),
+    });
 
     let selectCallCount = 0;
     vi.mocked(db.select).mockImplementation(() => {
@@ -671,16 +685,6 @@ describe('executeConfigPolicyAutomationRun', () => {
         } as any;
       }
       if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: 'cp-1' }]),
-            }),
-          }),
-        } as any;
-      }
-      if (selectCallCount === 3) {
         return {
           from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(deviceRows) }),
         } as any;
@@ -746,16 +750,6 @@ describe('executeConfigPolicyAutomationRun', () => {
         } as any;
       }
       if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
-            }),
-          }),
-        } as any;
-      }
-      if (selectCallCount === 3) {
         return {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([
@@ -821,16 +815,6 @@ describe('executeConfigPolicyAutomationRun', () => {
         } as any;
       }
       if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
-            }),
-          }),
-        } as any;
-      }
-      if (selectCallCount === 3) {
         return {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([
@@ -895,16 +879,6 @@ describe('executeConfigPolicyAutomationRun', () => {
           }),
         } as any;
       }
-      if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
-            }),
-          }),
-        } as any;
-      }
       return {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockResolvedValue([]),
@@ -953,16 +927,6 @@ describe('executeConfigPolicyAutomationRun', () => {
         } as any;
       }
       if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
-            }),
-          }),
-        } as any;
-      }
-      if (selectCallCount === 3) {
         return {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([

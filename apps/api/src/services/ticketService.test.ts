@@ -7,6 +7,8 @@ const whereMock = vi.fn();
 const selectWhereMock = vi.fn();
 const orderByMock = vi.fn();
 const selectLimitMock = vi.fn();
+// C1 (final review #4191): recorder for tx.delete(ticketDrafts).where(w).
+const txDeleteWhereMock = vi.fn();
 
 const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, dbMocks, configMocks, formMocks } = vi.hoisted(() => {
   const insertReturning = vi.fn();
@@ -75,9 +77,17 @@ vi.mock('../db', () => ({
         where: vi.fn((w) => {
           selectWhereMock(w);
           return {
+            // `.for('update')` chained onto `.limit(...)` — P2-4 (#4191) Task
+            // A10's draft-lock reads (sendTicketDraft/discardTicketDraft/
+            // changeTicketStatus's aiDraftId branch). The returned value is a
+            // real Promise (so every EXISTING caller that just `await`s
+            // `.limit(n)` directly is unaffected) with a `.for()` method
+            // attached that resolves to the SAME result — mirrors the
+            // tx-select stub below (`.for('share')`, #3778).
             limit: vi.fn((l) => {
               selectLimitMock(l);
-              return dbMocks.selectResult();
+              const r = dbMocks.selectResult();
+              return Object.assign(Promise.resolve(r), { for: vi.fn(() => Promise.resolve(r)) });
             }),
             orderBy: vi.fn((o) => {
               orderByMock(o);
@@ -138,6 +148,14 @@ vi.mock('../db', () => ({
             return { returning: vi.fn(() => dbMocks.insertReturning()) };
           })
         })),
+        // C1 (final review #4191): moveTicketOrg's transaction deletes
+        // ticket_drafts rows for the moved ticket.
+        delete: vi.fn(() => ({
+          where: vi.fn((w) => {
+            txDeleteWhereMock(w);
+            return Promise.resolve(undefined);
+          })
+        })),
         execute: vi.fn((...args) => dbMocks.txExecuteMock(...args)),
         // #3778: moveTicketOrg reads the org SHARE barrier and the org metadata
         // INSIDE the transaction, so the tx stub needs a select chain that also
@@ -178,9 +196,17 @@ vi.mock('../db/schema', () => ({
     deletedAt: 'deletedAt'
   },
   ticketComments: {},
+  ticketDrafts: {
+    id: 'id', ticketId: 'ticketId', orgId: 'orgId', runId: 'runId', intentId: 'intentId',
+    kind: 'kind', content: 'content', state: 'state', supersededBy: 'supersededBy',
+    consumedBy: 'consumedBy', consumedAt: 'consumedAt', createdAt: 'createdAt'
+  },
   ticketAlertLinks: { ticketId: 'ticketId', alertId: 'alertId' },
   ticketParts: { ticketId: 'ticketId', orgId: 'orgId' },
   ticketOutbox: {},
+  // C1 (final review #4191): moveTicketOrg's transaction now tombstones
+  // scope_ticket_id on action_intents directly.
+  actionIntents: { id: 'id', orgId: 'orgId', scopeTicketId: 'scopeTicketId', status: 'status' },
   organizations: { id: 'id', partnerId: 'partnerId', name: 'name', currencyCode: 'currencyCode' },
   alerts: { id: 'id', orgId: 'orgId' },
   devices: { id: 'id', orgId: 'orgId' },
@@ -196,6 +222,7 @@ import {
   linkAlertToTicket, unlinkAlertFromTicket, createTicketFromAlert,
   updateTicketFields, editTicketComment, deleteTicketComment, portalCommentMutable,
   moveTicketOrg, softDeleteTicket, restoreTicket, listOrgTicketsForAddin,
+  listActiveTicketDrafts, sendTicketDraft, discardTicketDraft,
   TicketServiceError, TICKET_STATUS_TRANSITIONS, SYSTEM_COMMENT_TYPES
 } from './ticketService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
@@ -875,6 +902,251 @@ describe('changeTicketStatus', () => {
     expect(valuesMock).not.toHaveBeenCalled();
     // No event either
     expect(emitMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('changeTicketStatus — aiDraftId (P2-4, #4191, Task A10)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+  });
+
+  it('applies the resolution_note draft content as the resolution note and consumes it', async () => {
+    // Call order: getTicketOrThrow, then the draft SELECT ... FOR UPDATE.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }])
+      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'resolution_note', state: 'active', content: 'AI-drafted note' }]);
+    dbMocks.updateReturning
+      .mockResolvedValueOnce([{ id: 't-1', status: 'resolved' }]) // ticket CAS
+      .mockResolvedValueOnce([{ id: 'draft-1' }]); // draft consume CAS
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'resolved' }, { aiDraftId: 'draft-1' }, actor);
+
+    const ticketUpdatePayload = setMock.mock.calls[0]![0];
+    expect(ticketUpdatePayload).toMatchObject({ status: 'resolved', resolutionNote: 'AI-drafted note' });
+
+    const draftUpdatePayload = setMock.mock.calls[1]![0];
+    expect(draftUpdatePayload).toMatchObject({ state: 'consumed', consumedBy: 'u-1' });
+    expect(draftUpdatePayload.consumedAt).toBeInstanceOf(Date);
+  });
+
+  it('404s when the draft does not exist', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }])
+      .mockResolvedValueOnce([]);
+
+    const err = await changeTicketStatus('t-1', { status: 'resolved' }, { aiDraftId: 'draft-1' }, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+  });
+
+  it('409s on a reply-kind draft — only resolution_note drafts are accepted here', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }])
+      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'reply', state: 'active', content: 'Hi' }]);
+
+    const err = await changeTicketStatus('t-1', { status: 'resolved' }, { aiDraftId: 'draft-1' }, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(409);
+  });
+
+  it('409s when the draft is no longer active', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }])
+      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'resolution_note', state: 'consumed', content: 'x' }]);
+
+    const err = await changeTicketStatus('t-1', { status: 'resolved' }, { aiDraftId: 'draft-1' }, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(409);
+  });
+
+  it('rejects aiDraftId on a non-resolve transition with 400', async () => {
+    dbMocks.selectResult.mockResolvedValue([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', resolvedAt: null }]);
+
+    const err = await changeTicketStatus('t-1', { status: 'open' }, { aiDraftId: 'draft-1' }, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+  });
+
+  it('does not require a resolutionNote body when aiDraftId is supplied', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }])
+      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'resolution_note', state: 'active', content: 'AI note' }]);
+    dbMocks.updateReturning
+      .mockResolvedValueOnce([{ id: 't-1', status: 'resolved' }])
+      .mockResolvedValueOnce([{ id: 'draft-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    const result = await changeTicketStatus('t-1', { status: 'resolved' }, { aiDraftId: 'draft-1' }, actor).catch(e => e);
+    expect(result).not.toBeInstanceOf(TicketServiceError);
+  });
+
+  // Review fix (#4191): the same-core-status branches (no-op / statusId-only
+  // relabel) used to return BEFORE aiDraftId was ever looked at, silently
+  // dropping it. These two cover that class of bug directly.
+  it('applies aiDraftId on the same-status resolve fast path (fromStatus=resolved, toStatus=resolved via statusId relabel)', async () => {
+    const ticket = { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'resolved', statusId: 'old-status-id', resolvedAt: new Date('2026-08-01') };
+    // Call order: getTicketOrThrow, then the draft SELECT ... FOR UPDATE.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([ticket])
+      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'resolution_note', state: 'active', content: 'AI relabel note' }]);
+    configMocks.getTicketStatusById.mockResolvedValueOnce({
+      id: 'new-status-id', partnerId: 'p-1', coreStatus: 'resolved', name: 'Resolved - Verified', isActive: true
+    });
+    dbMocks.updateReturning
+      .mockResolvedValueOnce([{ ...ticket, statusId: 'new-status-id', resolutionNote: 'AI relabel note' }]) // ticket CAS (fast path)
+      .mockResolvedValueOnce([{ id: 'draft-1' }]); // draft consume CAS
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    const result = await changeTicketStatus('t-1', { statusId: 'new-status-id' }, { aiDraftId: 'draft-1' }, actor);
+    expect(result).not.toBeInstanceOf(TicketServiceError);
+
+    // The fast-path ticket UPDATE payload carries the draft's content.
+    const ticketUpdatePayload = setMock.mock.calls[0]![0];
+    expect(ticketUpdatePayload).toMatchObject({ statusId: 'new-status-id', resolutionNote: 'AI relabel note' });
+
+    // The draft was actually consumed — not silently dropped.
+    const draftUpdatePayload = setMock.mock.calls[1]![0];
+    expect(draftUpdatePayload).toMatchObject({ state: 'consumed', consumedBy: 'u-1' });
+    expect(draftUpdatePayload.consumedAt).toBeInstanceOf(Date);
+  });
+
+  it('rejects aiDraftId on a non-resolve same-status fast-path transition (different statusId, same core status) with 400', async () => {
+    const ticket = { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', statusId: 'old-status-id' };
+    dbMocks.selectResult.mockResolvedValue([ticket]);
+    configMocks.getTicketStatusById.mockResolvedValueOnce({
+      id: 'new-status-id', partnerId: 'p-1', coreStatus: 'open', name: 'Waiting on Customer', isActive: true
+    });
+
+    const err = await changeTicketStatus('t-1', { statusId: 'new-status-id' }, { aiDraftId: 'draft-1' }, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+    // Never reached the fast path's update — no ticket/draft write attempted.
+    expect(setMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('sendTicketDraft (P2-4, #4191, Task A10)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+  });
+
+  it('posts the draft as a PUBLIC comment under the calling technician and consumes the draft', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', firstResponseAt: new Date() }])
+      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'reply', state: 'active', content: 'Draft body' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 'draft-1' }]);
+
+    const result = await sendTicketDraft('t-1', 'draft-1', undefined, actor);
+
+    expect(result.comment).toEqual({ id: 'c-1' });
+    const commentPayload = valuesMock.mock.calls[0]![0];
+    expect(commentPayload).toMatchObject({
+      userId: 'u-1',
+      content: 'Draft body',
+      isPublic: true,
+      originPrincipalKind: 'user',
+    });
+    const draftUpdatePayload = setMock.mock.calls[0]![0];
+    expect(draftUpdatePayload).toMatchObject({ state: 'consumed', consumedBy: 'u-1' });
+  });
+
+  it('uses the edited content over the draft content when provided', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', firstResponseAt: new Date() }])
+      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'reply', state: 'active', content: 'Draft body' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 'draft-1' }]);
+
+    await sendTicketDraft('t-1', 'draft-1', 'Edited body', actor);
+
+    const commentPayload = valuesMock.mock.calls[0]![0];
+    expect(commentPayload.content).toBe('Edited body');
+  });
+
+  it('404s when the draft does not exist', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', firstResponseAt: null }])
+      .mockResolvedValueOnce([]);
+
+    const err = await sendTicketDraft('t-1', 'draft-1', undefined, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+  });
+
+  it('409s on a resolution_note-kind draft — only reply drafts can be sent', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', firstResponseAt: null }])
+      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'resolution_note', state: 'active', content: 'x' }]);
+
+    const err = await sendTicketDraft('t-1', 'draft-1', undefined, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(409);
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
+
+  it('409s on a concurrent double-send (draft already consumed) — no duplicate comment', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', firstResponseAt: null }])
+      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'reply', state: 'consumed', content: 'x' }]);
+
+    const err = await sendTicketDraft('t-1', 'draft-1', undefined, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(409);
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('discardTicketDraft (P2-4, #4191, Task A10)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+  });
+
+  it('discards an active draft', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([{ id: 'draft-1', state: 'active' }]);
+    dbMocks.updateReturning.mockResolvedValueOnce([{ id: 'draft-1' }]);
+
+    const result = await discardTicketDraft('t-1', 'draft-1');
+    expect(result).toEqual({ id: 'draft-1' });
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ state: 'discarded' }));
+  });
+
+  it('404s when the draft does not exist', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([]);
+
+    const err = await discardTicketDraft('t-1', 'draft-1').catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+  });
+
+  it('409s when the draft is already consumed', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([{ id: 'draft-1', state: 'consumed' }]);
+
+    const err = await discardTicketDraft('t-1', 'draft-1').catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(409);
+  });
+});
+
+describe('listActiveTicketDrafts (P2-4, #4191, Task A10)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns the active drafts ordered newest-first', async () => {
+    const rows = [{ id: 'draft-1', kind: 'reply', content: 'Hi', createdAt: new Date(), runId: 'run-1' }];
+    dbMocks.selectResult.mockResolvedValueOnce(rows);
+
+    const result = await listActiveTicketDrafts('t-1');
+    expect(result).toEqual(rows);
+    expect(orderByMock).toHaveBeenCalled();
   });
 });
 

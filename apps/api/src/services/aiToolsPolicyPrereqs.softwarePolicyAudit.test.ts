@@ -25,6 +25,10 @@ vi.mock('../db/schema/softwarePolicies', () => ({ softwarePolicies: {} }));
 vi.mock('../db/schema/peripheralControl', () => ({ peripheralPolicies: {} }));
 vi.mock('../db/schema/backup', () => ({ backupConfigs: {}, backupProfiles: {} }));
 vi.mock('../db/schema/configurationPolicies', () => ({ configPolicyBackupSettings: {} }));
+vi.mock('../jobs/peripheralJobs', () => ({
+  resolvePeripheralPolicyDeviceIds: vi.fn(async () => []),
+  schedulePeripheralPolicyDevices: vi.fn(async () => undefined),
+}));
 
 // Spy the two audit stores at their real module boundaries so the shared
 // aiToolsSoftwarePolicyAudit helper is exercised for real.

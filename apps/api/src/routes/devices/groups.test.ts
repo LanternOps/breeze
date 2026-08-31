@@ -10,12 +10,14 @@ const {
   mockUpdate,
   mockDelete,
   mockTransaction,
+  mockSchedulePeripheralPolicyDevice,
 } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
   mockUpdate: vi.fn(),
   mockDelete: vi.fn(),
   mockTransaction: vi.fn(),
+  mockSchedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id'),
 }));
 
 // ---------------------------------------------------------------------------
@@ -65,6 +67,10 @@ vi.mock('../../services/auditEvents', () => ({
 
 vi.mock('../../services/groupMembership', () => ({
   pruneGroupMembershipsOutsideSite: vi.fn().mockResolvedValue({ removed: 0 }),
+}));
+
+vi.mock('../../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice: mockSchedulePeripheralPolicyDevice,
 }));
 
 // Let ensureOrgAccess run for real; only mock getPagination
@@ -174,7 +180,12 @@ function chainSelect(rows: any[]) {
 
 function chainInsert(rows: any[]) {
   const returning = vi.fn().mockResolvedValue(rows);
-  const onConflictDoNothing = vi.fn().mockResolvedValue(undefined);
+  const onConflictResult: any = {
+    returning,
+    then: (resolve: (value: undefined) => unknown, reject?: (error: unknown) => unknown) =>
+      Promise.resolve(undefined).then(resolve, reject),
+  };
+  const onConflictDoNothing = vi.fn().mockReturnValue(onConflictResult);
   const values = vi.fn().mockReturnValue({ returning, onConflictDoNothing });
   return { values };
 }
@@ -186,8 +197,14 @@ function chainUpdate(rows: any[]) {
   return { set };
 }
 
-function chainDelete() {
-  const where = vi.fn().mockResolvedValue(undefined);
+function chainDelete(rows: any[] = []) {
+  const returning = vi.fn().mockResolvedValue(rows);
+  const result: any = {
+    returning,
+    then: (resolve: (value: undefined) => unknown, reject?: (error: unknown) => unknown) =>
+      Promise.resolve(undefined).then(resolve, reject),
+  };
+  const where = vi.fn().mockReturnValue(result);
   return { where };
 }
 
@@ -536,6 +553,10 @@ describe('Device Groups routes — multi-tenant isolation', () => {
         .mockReturnValueOnce(chainSelect([group]))
         .mockReturnValueOnce(chainSelect([{ id: SITE_ID }]));
       mockUpdate.mockReturnValue(chainUpdate([{ ...group, siteId: SITE_ID }]));
+      vi.mocked(pruneGroupMembershipsOutsideSite).mockResolvedValueOnce({
+        removed: 1,
+        deviceIds: [DEVICE_1],
+      });
 
       const res = await app.request(`/devices/groups/${GROUP_ID}`, {
         method: 'PATCH',
@@ -550,6 +571,11 @@ describe('Device Groups routes — multi-tenant isolation', () => {
         SITE_ID,
         ORG_A,
         expect.anything(),
+        { deferPeripheralReconciliation: true },
+      );
+      expect(mockSchedulePeripheralPolicyDevice).toHaveBeenCalledWith(
+        DEVICE_1,
+        'dynamic_membership_changed',
       );
     });
 
@@ -694,7 +720,9 @@ describe('Device Groups routes — multi-tenant isolation', () => {
     const groupInOrgA = { id: GROUP_ID, orgId: ORG_A, name: 'Delete Me', type: 'static' };
 
     it('deletes a group the authed user owns (happy path)', async () => {
-      mockSelect.mockReturnValue(chainSelect([groupInOrgA]));
+      mockSelect
+        .mockReturnValueOnce(chainSelect([groupInOrgA]))
+        .mockReturnValueOnce(chainSelect([{ deviceId: DEVICE_1 }]));
       mockDelete.mockReturnValue(chainDelete());
 
       const res = await app.request(`/devices/groups/${GROUP_ID}`, {
@@ -707,6 +735,10 @@ describe('Device Groups routes — multi-tenant isolation', () => {
       expect(writeRouteAudit).toHaveBeenCalled();
       // delete called twice: memberships first, then group
       expect(mockDelete).toHaveBeenCalledTimes(2);
+      expect(mockSchedulePeripheralPolicyDevice).toHaveBeenCalledWith(
+        DEVICE_1,
+        'group_deleted',
+      );
     });
 
     it('returns 404 when group does not exist', async () => {
@@ -778,7 +810,10 @@ describe('Device Groups routes — multi-tenant isolation', () => {
         return chainSelect([{ id: DEVICE_1 }, { id: DEVICE_2 }]);
       });
 
-      mockInsert.mockReturnValue(chainInsert([]));
+      mockInsert.mockReturnValue(chainInsert([
+        { deviceId: DEVICE_1 },
+        { deviceId: DEVICE_2 },
+      ]));
 
       const res = await app.request(`/devices/groups/${GROUP_ID}/members`, {
         method: 'POST',
@@ -791,6 +826,10 @@ describe('Device Groups routes — multi-tenant isolation', () => {
       expect(json.success).toBe(true);
       expect(json.added).toBe(2);
       expect(writeRouteAudit).toHaveBeenCalled();
+      expect(mockSchedulePeripheralPolicyDevice.mock.calls).toEqual([
+        [DEVICE_1, 'manual_membership_changed'],
+        [DEVICE_2, 'manual_membership_changed'],
+      ]);
     });
 
     it('rejects a mixed group-site batch before inserting any membership', async () => {
@@ -924,7 +963,7 @@ describe('Device Groups routes — multi-tenant isolation', () => {
 
     it('removes devices from a group (happy path)', async () => {
       mockSelect.mockReturnValue(chainSelect([groupInOrgA]));
-      mockDelete.mockReturnValue(chainDelete());
+      mockDelete.mockReturnValue(chainDelete([{ deviceId: DEVICE_1 }]));
 
       const res = await app.request(`/devices/groups/${GROUP_ID}/members`, {
         method: 'DELETE',
@@ -936,6 +975,10 @@ describe('Device Groups routes — multi-tenant isolation', () => {
       const json = await res.json();
       expect(json.success).toBe(true);
       expect(writeRouteAudit).toHaveBeenCalled();
+      expect(mockSchedulePeripheralPolicyDevice).toHaveBeenCalledWith(
+        DEVICE_1,
+        'manual_membership_changed',
+      );
     });
 
     it('rejects a mixed group-site batch before deleting any membership', async () => {

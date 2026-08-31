@@ -613,7 +613,7 @@ The following are always hashed or encrypted before persistence:
 
 - **RTO**: < 1 hour
 - **RPO**: < 15 minutes (with WAL archiving) or last backup interval
-- **Components**: PostgreSQL, object storage (MinIO/S3), encrypted configuration
+- **Components**: PostgreSQL, object storage (MinIO/S3), encrypted configuration, and the `api_data` volume (patch compliance report files, backed up manually -- no script flag)
 - **Encryption**: Config backups encrypted at rest using OpenSSL
 
 Full procedures: [BACKUP_RESTORE.md](BACKUP_RESTORE.md)

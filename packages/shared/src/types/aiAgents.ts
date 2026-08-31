@@ -95,6 +95,22 @@ export interface AiAgentLimits {
   maxNarrativeRunsPerHour: number;
   narrativeBudgetCentsPerRun: number;
   narrativeMaxTurns: number;
+  /**
+   * v8 (P2-4) — the `triage`-profile admission caps, split from
+   * `full`/`verdict`/`sweep`/`narrative` for the same reason those four are
+   * split from each other: a burst of ticket-triggered triage runs (one per
+   * ticket create / first human comment / `status_changed → resolved`) must
+   * never starve any other profile's admission budget, and vice versa.
+   * `triageMaxTurns` is deliberately tight (6): the profile's whole job is
+   * one bounded context read (linked device's last 24h alerts/verdicts, open
+   * sweep findings, last 3 resolved same-category tickets) followed by one
+   * `submit_ticket_proposal` call — a run needing many more turns than that
+   * is not converging and should end.
+   */
+  maxConcurrentTriageRuns: number;
+  maxTriageRunsPerHour: number;
+  triageBudgetCentsPerRun: number;
+  triageMaxTurns: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -129,6 +145,12 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   maxNarrativeRunsPerHour: 5,
   narrativeBudgetCentsPerRun: 20,
   narrativeMaxTurns: 3,
+  // Triage-profile admission caps (phase 2 P2-4) — see
+  // AiAgentLimits.maxConcurrentTriageRuns's docstring.
+  maxConcurrentTriageRuns: 2,
+  maxTriageRunsPerHour: 30,
+  triageBudgetCentsPerRun: 10,
+  triageMaxTurns: 6,
 });
 
 export interface AiAgentTriggers {
@@ -225,6 +247,42 @@ export interface AiAgentTriggers {
    * missing trigger-filter key as its default (unrestricted, or here, off).
    */
   anomalyEnabled?: boolean;
+  /**
+   * Phase 2 wave P2-4 (#4191) — per-agent opt-in that lifts wave 6.3's forced
+   * shadow behavior for `triggerKind: 'ticket'` runs. Default `false` (see
+   * the validator's `aiAgentTriggersSchema` transform): without this, an
+   * agent in `mode: 'act'` would start writing ticket fields, linking
+   * devices, and creating drafts unattended the moment `act` was flipped on
+   * — a second, independent gate is required (spec §4.4: "lifts the shadow
+   * force ONLY when both gates are open: agent `mode = 'act'` AND
+   * `triggers.ticketAutonomousWrites`").
+   *
+   * Deliberately NOT this interface's usual "undefined means unrestricted"
+   * convention: like `anomalyEnabled`, this is a binary safety gate for
+   * unattended writes, not a narrowing filter, so its default must be the
+   * closed (off) state.
+   *
+   * **Merge semantics (deliberately NOT the tighten-only intersection every
+   * narrowing trigger field uses):** same shape as `anomalyEnabled` — a
+   * partner-wide baseline row can never blanket-enable autonomous ticket
+   * writes for every org under it. This field reads ONLY the org's own
+   * trigger override: `effective.triggers.ticketAutonomousWrites` is `true`
+   * iff the ORG-level `ai_agents` row for this agent has
+   * `triggers.ticketAutonomousWrites: true` set explicitly. The partner
+   * baseline's own value is never consulted, in either direction. See
+   * `mergeAgentPolicies` (effectivePolicy.ts) for the implementation, and
+   * consult this flag in BOTH the live effective policy (at intent-creation
+   * time — decided inside the same transaction that creates the Tier-2
+   * intent, spec §4.4 amendment) and the run's start-of-run policy snapshot.
+   *
+   * Not part of a versioned snapshot-shape bump: like `anomalyEnabled`
+   * before it, this is a new OPTIONAL field on `triggers`, not on `limits`
+   * — every `AI_AGENT_POLICY_SNAPSHOT_VERSION` bump to date was for a
+   * `limits` field specifically (see the version history below). Nothing
+   * branches on `schemaVersion` for `triggers` fields; every read site
+   * already treats a missing trigger-filter key as its default (here, off).
+   */
+  ticketAutonomousWrites?: boolean;
 }
 
 export interface AiAgentRecipients {
@@ -340,19 +398,28 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * snapshot. Every site that switches on `schemaVersion` must tolerate 1
  * through 6.
  *
- * v7 (this bump, P2-3): narrative-profile counters/budget/turns —
+ * v7 (P2-3): narrative-profile counters/budget/turns —
  * `effective.limits` gained `maxConcurrentNarrativeRuns`,
  * `maxNarrativeRunsPerHour`, `narrativeBudgetCentsPerRun`,
  * `narrativeMaxTurns`. Same rule as every prior bump: a v1-v6 in-flight
  * run's snapshot lacks these fields and MUST still execute; read sites fall
  * back to `AI_AGENT_LIMIT_DEFAULTS` for a pre-v7 snapshot. Every site that
  * switches on `schemaVersion` must tolerate 1 through 7.
+ *
+ * v8 (this bump, P2-4): triage-profile counters/budget/turns —
+ * `effective.limits` gained `maxConcurrentTriageRuns`, `maxTriageRunsPerHour`,
+ * `triageBudgetCentsPerRun`, `triageMaxTurns`. Same rule as every prior bump:
+ * a v1-v7 in-flight run's snapshot lacks these fields and MUST still
+ * execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS` for a pre-v8
+ * snapshot. Every site that switches on `schemaVersion` must tolerate 1
+ * through 8. (`triggers.ticketAutonomousWrites`, added the same wave, does
+ * NOT bump this version — see that field's own docstring.)
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 7 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 8 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), or 7 (current). Read sites must tolerate all seven. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), or 8 (current). Read sites must tolerate all eight. */
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;
@@ -477,8 +544,17 @@ export type AgentRunVerdict = 'remediated' | 'needs_attention' | 'partial' | 'no
  * context and produces a `NarrativeOutcome` (see `orgNarrativeReport.ts`)
  * instead of findings or a verdict. Admission is counted against
  * `AiAgentLimits.maxConcurrentNarrativeRuns`/`maxNarrativeRunsPerHour`.
+ *
+ * Phase 2 wave P2-4 (ticket triage, act) added `triage`: a
+ * `ticket`-triggered run profile (create / first human comment /
+ * `status_changed → resolved`) with an empty tool floor plus
+ * `submit_ticket_proposal` as its only outcome tool — a `full`-profile run
+ * cannot reach an outcome tool. Produces a `TicketTriageProposal`
+ * (`types/ticketTriage.ts`) instead of findings, a verdict, or a narrative.
+ * Admission is counted against
+ * `AiAgentLimits.maxConcurrentTriageRuns`/`maxTriageRunsPerHour`.
  */
-export const AI_AGENT_RUN_PROFILES = ['full', 'verdict', 'sweep', 'narrative'] as const;
+export const AI_AGENT_RUN_PROFILES = ['full', 'verdict', 'sweep', 'narrative', 'triage'] as const;
 export type AiAgentRunProfile = (typeof AI_AGENT_RUN_PROFILES)[number];
 
 /**

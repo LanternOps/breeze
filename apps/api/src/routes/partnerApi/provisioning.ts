@@ -26,6 +26,12 @@ import { isValidIanaTimezone } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { enrollmentKeys, organizations, partners, sites } from '../../db/schema';
+// Concrete module, not the barrel — see the note in routes/orgs.ts.
+import { ORG_SLUG_UNIQUE_INDEX } from '../../db/schema/orgs';
+// The canonical SQLSTATE helpers — see their JSDoc for why a hand-rolled
+// top-level `err.code === '23505'` check is dead for every Drizzle-issued
+// statement. Related sightings of that bug class: #3998, #4020, #4245.
+import { isPgUniqueViolation, pgErrorNode } from '../../utils/pgErrors';
 import {
   requirePartnerApiScope,
   type PartnerApiPrincipalContext,
@@ -122,14 +128,6 @@ class OrgQuotaExceededError extends Error {
     super('partner organization quota exceeded');
     this.name = 'OrgQuotaExceededError';
   }
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const code = (error as { code?: unknown }).code;
-  if (code === '23505') return true;
-  const cause = (error as { cause?: unknown }).cause;
-  return !!cause && typeof cause === 'object' && (cause as { code?: unknown }).code === '23505';
 }
 
 function iso(value: Date | string): string {
@@ -279,12 +277,49 @@ partnerProvisioningRoutes.post(
       if (error instanceof OrgQuotaExceededError) {
         // The transaction (including the over-cap insert) has rolled back.
         outcome = { kind: 'quota', cap: error.cap };
-      } else if (isUniqueViolation(error)) {
+      } else if (isPgUniqueViolation(error, ORG_SLUG_UNIQUE_INDEX)) {
+        // #3982 — pinned to the slug index BY NAME, not to "some 23505".
+        // Before #3967 there was no unique index on (partner_id, lower(slug)),
+        // so an unconstrained check was dead for slugs and nothing exercised
+        // how wrong it was; #3967 made it live.
+        //
+        // The slug index is not the only unique index this INSERT is subject
+        // to: `organizations` also carries organizations_id_partner_id_unique
+        // on (id, partner_id) — practically unreachable today, since `id`
+        // defaults to a random UUID — and the set of indexes on this table is
+        // not fixed. (The AFTER triggers are NOT a source: the only one that
+        // writes another table inserts into partner_export_configuration_org_state
+        // with ON CONFLICT DO NOTHING, so it cannot raise 23505.) The argument
+        // for naming the index is therefore about construction, not about a
+        // failure that is imminent: a check that answers
+        // `partner_provisioning_slug_conflict` for a constraint it never
+        // verified tells an unattended provisioning client — confidently — to
+        // go fix a slug that was never the problem, which is worse than no
+        // diagnosis because it sends the retry loop somewhere it can never
+        // succeed. Anything that is not this index falls through to the
+        // generic error path and surfaces as a 500: the honest answer for a
+        // unique violation this route does not model.
         return c.json({
           error: 'An organization with this slug already exists.',
           code: 'partner_provisioning_slug_conflict',
         }, 409);
       } else {
+        // A 23505 that is NOT the slug index lands here. `app.onError` does log
+        // it and capture it to Sentry, so it is not silent — but it captures the
+        // `DrizzleQueryError`, whose SQLSTATE and constraint sit on `.cause`,
+        // leaving triage to unwrap them by hand. Name the constraint once, here,
+        // at the only point that still knows this was a unique violation the
+        // route deliberately declined to call a slug conflict. Warn-level, not
+        // error: onError owns the error-level report.
+        const pgNode = pgErrorNode(error);
+        if (pgNode?.code === '23505') {
+          const constraint = pgNode.constraint_name ?? pgNode.constraint;
+          console.warn(
+            '[partner-provisioning] organization create raised an unmodelled unique violation ' +
+            `(constraint=${typeof constraint === 'string' ? constraint : 'unknown'}); ` +
+            'answering 500, NOT partner_provisioning_slug_conflict',
+          );
+        }
         throw error;
       }
     }

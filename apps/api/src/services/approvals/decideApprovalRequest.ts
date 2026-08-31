@@ -35,6 +35,7 @@ import { devices } from '../../db/schema/devices';
 import { checkToolPermission } from '../aiGuardrails';
 import { loadPartnerPolicy, isEnforcing } from '../authenticatorPolicy';
 import { getUserPermissions, userCanDecideApprovals, canAccessOrg } from '../permissions';
+import { createPamDecisionIntent } from '../pamActuationLifecycle';
 import type { RiskTier, ApprovalProof } from '@breeze/shared';
 
 /**
@@ -75,7 +76,7 @@ export type IntentAttribution = Pick<
  */
 export type IntentTargetRef = Pick<
   ActionIntent,
-  'orgId' | 'scopeKind' | 'scopeDeviceId' | 'requestingAgentRunId'
+  'orgId' | 'scopeKind' | 'scopeDeviceId' | 'scopeTicketId' | 'requestingAgentRunId'
 >;
 
 /** Target-scope projection for `resolveTargetDevices` — null when there is no
@@ -87,6 +88,7 @@ export function toIntentTargetRef(intent: ActionIntent | null): IntentTargetRef 
     orgId: intent.orgId,
     scopeKind: intent.scopeKind,
     scopeDeviceId: intent.scopeDeviceId,
+    scopeTicketId: intent.scopeTicketId,
     requestingAgentRunId: intent.requestingAgentRunId,
   };
 }
@@ -749,7 +751,12 @@ export async function decideApprovalRequest(
   // (#1105 — never hold a txn across network I/O); there is none in this path.
   type DecideWriteResult =
     | { lostRace: true }
-    | { lostRace: false; updated: typeof approvalRequests.$inferSelect; wonIntent: boolean };
+    | {
+        lostRace: false;
+        updated: typeof approvalRequests.$inferSelect;
+        wonIntent: boolean;
+        enforcementStatus: 'pending_dispatch' | 'cleanup_pending' | null;
+      };
 
   let writeResult: DecideWriteResult;
   try {
@@ -804,6 +811,93 @@ export async function decideApprovalRequest(
             return { lostRace: true };
           }
           const updated = casRows[0]!;
+
+          let enforcementStatus: 'pending_dispatch' | 'cleanup_pending' | null = null;
+          if (updated.elevationRequestId) {
+            const now = new Date();
+            const expiresAt = status === 'approved'
+              ? new Date(now.getTime() + PAM_ELEVATION_GRANT_MINUTES * 60_000)
+              : null;
+            const elevationRows = await tx
+              .update(elevationRequests)
+              .set(
+                status === 'approved'
+                  ? {
+                      status: 'approved',
+                      approvedByUserId: userId,
+                      approvedAt: now,
+                      expiresAt,
+                      updatedAt: now,
+                      decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+                      decidedVia: assurance.decidedVia,
+                      authenticatorDeviceId: assurance.authenticatorDeviceId,
+                    }
+                  : {
+                      status: 'denied',
+                      deniedByUserId: userId,
+                      denialReason: reason ?? null,
+                      updatedAt: now,
+                      decidedAssuranceLevel: assurance.decidedAssuranceLevel,
+                      decidedVia: assurance.decidedVia,
+                      authenticatorDeviceId: assurance.authenticatorDeviceId,
+                    },
+              )
+              .where(and(
+                eq(elevationRequests.id, updated.elevationRequestId),
+                eq(elevationRequests.status, 'pending'),
+              ))
+              .returning({
+                id: elevationRequests.id,
+                orgId: elevationRequests.orgId,
+                deviceId: elevationRequests.deviceId,
+                revision: elevationRequests.revision,
+                targetExecutablePath: elevationRequests.targetExecutablePath,
+                targetExecutableHash: elevationRequests.targetExecutableHash,
+                subjectUsername: elevationRequests.subjectUsername,
+              });
+
+            if (elevationRows.length > 0) {
+              const elevation = elevationRows[0]!;
+              await tx.insert(elevationAudit).values({
+                orgId: elevation.orgId,
+                elevationRequestId: elevation.id,
+                eventType: status === 'approved' ? 'approved' : 'denied',
+                actor: 'technician',
+                actorUserId: userId,
+                details: {
+                  source: 'mobile_approval',
+                  approval_request_id: updated.id,
+                  ...(status === 'denied' && reason ? { reason } : {}),
+                },
+                occurredAt: now,
+              });
+              const actuation = await createPamDecisionIntent(tx, {
+                request: {
+                  id: elevation.id,
+                  orgId: elevation.orgId,
+                  deviceId: elevation.deviceId,
+                  targetExecutablePath: elevation.targetExecutablePath ?? '',
+                  targetExecutableHash: elevation.targetExecutableHash,
+                  subjectUsername: elevation.subjectUsername,
+                },
+                requestRevision: elevation.revision,
+                decision: status,
+                expiresAt,
+              });
+              enforcementStatus = actuation.desiredState === 'active'
+                ? 'pending_dispatch'
+                : 'cleanup_pending';
+
+              await tx
+                .update(approvalRequests)
+                .set({ status: 'expired', decidedAt: now })
+                .where(and(
+                  eq(approvalRequests.elevationRequestId, elevation.id),
+                  eq(approvalRequests.status, 'pending'),
+                  ne(approvalRequests.id, updated.id),
+                ));
+            }
+          }
 
           // If this approval row was created by the AI agent SDK (Breeze AI /
           // chat), it carries an `executionId` linking back to the
@@ -930,7 +1024,7 @@ export async function decideApprovalRequest(
             }
           }
 
-          return { lostRace: false, updated, wonIntent };
+          return { lostRace: false, updated, wonIntent, enforcementStatus };
         }),
       ),
     );
@@ -943,108 +1037,7 @@ export async function decideApprovalRequest(
     return { httpStatus: 409, body: { error: 'Already decided', finalStatus: 'expired' } };
   }
 
-  const { updated, wonIntent } = writeResult;
-
-  // #1254: PAM mobile bridge. If this approval was fanned out from a pending
-  // uac_intercept elevation, mirror the decision back onto the elevation and
-  // expire the sibling approval rows. First-wins: the CAS only fires while the
-  // elevation is still 'pending', so a second approver (or the web respond
-  // path) that already decided it is a clean no-op. No actuate command is
-  // enqueued on approve — parity with pam.ts respond, deferred to #1150.
-  // Best-effort (same posture as the executionId mirror): the approval_requests
-  // row is the source of truth for the mobile UI, so a mirror failure must not
-  // fail the user's decide call.
-  if (updated?.elevationRequestId) {
-    const elevationId = updated.elevationRequestId;
-    let wonElevation = false;
-    try {
-      await db.transaction(async (tx) => {
-        const now = new Date();
-        const elevationUpdate = await tx
-          .update(elevationRequests)
-          .set(
-            status === 'approved'
-              ? {
-                  status: 'approved',
-                  approvedByUserId: userId,
-                  approvedAt: now,
-                  expiresAt: new Date(now.getTime() + PAM_ELEVATION_GRANT_MINUTES * 60_000),
-                  updatedAt: now,
-                  decidedAssuranceLevel: assurance.decidedAssuranceLevel,
-                  decidedVia: assurance.decidedVia,
-                  authenticatorDeviceId: assurance.authenticatorDeviceId,
-                }
-              : {
-                  status: 'denied',
-                  deniedByUserId: userId,
-                  denialReason: reason ?? null,
-                  updatedAt: now,
-                  decidedAssuranceLevel: assurance.decidedAssuranceLevel,
-                  decidedVia: assurance.decidedVia,
-                  authenticatorDeviceId: assurance.authenticatorDeviceId,
-                },
-          )
-          .where(
-            and(
-              eq(elevationRequests.id, elevationId),
-              eq(elevationRequests.status, 'pending'),
-            ),
-          )
-          .returning({ id: elevationRequests.id, orgId: elevationRequests.orgId });
-
-        // Lost the race (already decided/expired by a sibling or the web path):
-        // leave everything as-is. Our approval_requests row is still decided.
-        if (elevationUpdate.length === 0) return;
-        wonElevation = true;
-        const elevation = elevationUpdate[0]!;
-
-        await tx.insert(elevationAudit).values({
-          orgId: elevation.orgId,
-          elevationRequestId: elevationId,
-          eventType: status === 'approved' ? 'approved' : 'denied',
-          actor: 'technician',
-          actorUserId: userId,
-          details: {
-            source: 'mobile_approval',
-            approval_request_id: updated.id,
-            ...(status === 'denied' && reason ? { reason } : {}),
-          },
-          occurredAt: now,
-        });
-      });
-    } catch (err) {
-      console.error('[approvals] Failed to mirror decision to elevation_requests:', err);
-      // Non-fatal: the approval_request row is the source of truth for the
-      // mobile decision; the elevation mirror can be reconciled out of band.
-    }
-
-    // Expire the sibling approval rows so they vanish from other approvers'
-    // queues — first-wins fan-in. MUST run in system scope: approval_requests is
-    // Shape-6 (user-id-scoped), so the sibling rows belong to OTHER approvers and
-    // are invisible to this approver's request context — a bare context-scoped
-    // UPDATE would silently match zero rows. Best-effort, post-commit, and only
-    // when this decide won the elevation CAS (the winner owns the fan-in cleanup).
-    if (wonElevation) {
-      try {
-        await runOutsideDbContext(() =>
-          withSystemDbAccessContext(async () => {
-            await db
-              .update(approvalRequests)
-              .set({ status: 'expired' })
-              .where(
-                and(
-                  eq(approvalRequests.elevationRequestId, elevationId),
-                  ne(approvalRequests.id, updated.id),
-                  eq(approvalRequests.status, 'pending'),
-                ),
-              );
-          }),
-        );
-      } catch (err) {
-        console.error('[approvals] Failed to expire sibling approvals:', err);
-      }
-    }
-  }
+  const { updated, wonIntent, enforcementStatus } = writeResult;
 
   // Action intents (spec §4 / §3.4): post-commit audit/metrics projection for
   // the intent fan-in that already committed (or rolled back) as part of the
@@ -1103,6 +1096,7 @@ export async function decideApprovalRequest(
         decidedTargetDevices.get(updated.id) ?? null,
         decidedTargetRef?.orgId ?? null,
       ),
+      ...(enforcementStatus ? { enforcementStatus } : {}),
     },
   };
 }

@@ -661,14 +661,37 @@ const runDetailResponseSchema = z.object({
       approvalScope: z.string(),
       decidedVia: z.string().nullable(),
     }).strict()),
-    // Wave 6 PR 3 (#3828, Task 4) — text-only; no args/toolInput/toolOutput
-    // field exists on this shape either (see AiAgentRunTicketProposalDto).
+    // Wave 6 PR 3 (#3828, Task 4); reshaped in P2-4 (#4191) onto the
+    // `TicketTriageProposal` outcome (@breeze/shared) — no args/toolInput/
+    // toolOutput field exists on this shape either (see
+    // AiAgentRunTicketProposalDto). `intentIds`/`draftsWritten` are the two
+    // DTO-only fields Task A10 wires in — the run's own `intent_ids` column
+    // and a live `ticket_drafts` read, respectively (see runTrace.ts).
     ticketProposal: z.object({
+      version: z.literal(1),
       summary: z.string(),
-      proposedReply: z.string().optional(),
-      proposedStatus: z.string().optional(),
-      proposedPriority: z.string().optional(),
-      notes: z.array(z.string()),
+      fields: z.object({
+        categoryId: z.object({
+          value: z.string(),
+          confidence: z.number(),
+        }).strict().optional(),
+        priority: z.object({
+          value: z.string(),
+          confidence: z.number(),
+        }).strict().optional(),
+      }).strict().optional(),
+      device: z.object({
+        hostname: z.string().optional(),
+        serial: z.string().optional(),
+      }).strict().optional(),
+      draftReply: z.string().optional(),
+      draftResolutionNote: z.string().optional(),
+      notes: z.array(z.string()).optional(),
+      intentIds: z.array(z.string()).optional(),
+      draftsWritten: z.array(z.object({
+        kind: z.enum(['reply', 'resolution_note']),
+        draftId: z.string(),
+      }).strict()).optional(),
     }).strict().nullable(),
     // Phase 2 wave P2-1 (alert verdicts): `null` for a full-profile run and
     // for a verdict run that hasn't produced one. `suggestedAction`'s
@@ -866,6 +889,62 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     }
     expect(json).not.toContain('do-not-leak-me');
     expect(json).not.toContain('scriptId');
+  });
+
+  // Phase 2 wave P2-4 (#4191), Task A10 — intentIds is the run's own
+  // intent_ids column (ground truth for a triage run, see
+  // RunTraceRunInput.intentIds's docstring), draftsWritten is a LIVE
+  // ticket_drafts query keyed on run_id, pinned to the run's own org.
+  it('projects intentIds + draftsWritten for a ticket-triage run', async () => {
+    const TRIAGE_INTENT_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const DRAFT_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    let draftWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        triggerKind: 'ticket',
+        sessionId: null,
+        intentIds: [TRIAGE_INTENT_ID],
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          ticketProposal: { version: 1, summary: 'Restart the spooler.', notes: [] },
+        },
+      })])) // run + agent + device join
+      .mockReturnValueOnce(selectChain([{
+        id: TRIAGE_INTENT_ID, status: 'approved', actionName: 'manage_tickets.comment',
+        approvalScope: 'auto', decidedVia: 'ticket_autonomy',
+      }])) // intents (sessionId is null, so the ledger read is skipped)
+      .mockReturnValueOnce(selectChain(
+        [{ id: DRAFT_ID, kind: 'reply' }],
+        (predicate) => { draftWhere = predicate; },
+      )); // draft rows
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runDetailResponseSchema.parse(body);
+
+    expect(parsed.data.ticketProposal?.intentIds).toEqual([TRIAGE_INTENT_ID]);
+    expect(parsed.data.ticketProposal?.draftsWritten).toEqual([{ kind: 'reply', draftId: DRAFT_ID }]);
+
+    // run row, intents, draft rows — no ledger (sessionId null), no sweep
+    // hostname read, no narrative artifact read (reportRunId null).
+    expect(selectMock).toHaveBeenCalledTimes(3);
+    const draftParams = sqlParams(draftWhere);
+    expect(draftParams).toContain(ORG_ID);
+    expect(draftParams).toContain(RUN_ID);
+  });
+
+  // Phase 2 wave P2-4 (#4191), Task A10.
+  it('skips the draft-rows read entirely for a non-ticket run', async () => {
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })])) // run + agent + device join
+    // No further selects expected — intentIds empty skips intents, sessionId
+    // null skips ledger, triggerKind !== 'ticket' skips draft rows.
+    ;
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
   // Phase 2 wave P2-2 (scheduled sweeps), Task A7.
@@ -1685,5 +1764,101 @@ describe('mapError — supervisedActionKeys write-time rejection (wave 5 Part B,
       }),
       422,
     );
+  });
+});
+
+/**
+ * Regression for #4020. The create race is settled by the partial unique index,
+ * and the insert that loses it is issued through Drizzle — which catches the
+ * postgres-js `PostgresError` and rethrows a `DrizzleQueryError` whose own
+ * `.code` is undefined, with the SQLSTATE on `.cause`. A flat fixture passes
+ * whether or not the handler unwraps, so the wrapped shape is the one that
+ * actually discriminates.
+ */
+describe('mapError — create-race unique violation (#4020)', () => {
+  const callMapError = (err: unknown) => {
+    const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
+    const ctx = { json: jsonMock } as unknown as Parameters<typeof mapError>[0];
+    let threw: unknown;
+    try {
+      mapError(ctx, err);
+    } catch (e) {
+      threw = e;
+    }
+    return { jsonMock, threw };
+  };
+
+  const CONFLICT = { error: 'An agent of this kind already exists', code: 'agent_kind_exists' };
+
+  it('maps a flat postgres.js 23505 to 409', () => {
+    const { jsonMock } = callMapError(
+      Object.assign(
+        new Error('duplicate key value violates unique constraint "ai_agents_org_kind_uq"'),
+        { code: '23505', constraint_name: 'ai_agents_org_kind_uq' },
+      ),
+    );
+
+    expect(jsonMock).toHaveBeenCalledWith(CONFLICT, 409);
+  });
+
+  it('maps a 23505 WRAPPED in a DrizzleQueryError to 409, not a 500', () => {
+    // Faithful to Drizzle: own `.code` undefined, SQLSTATE on `.cause`.
+    const cause = Object.assign(
+      new Error('duplicate key value violates unique constraint "ai_agents_org_kind_uq"'),
+      { code: '23505', constraint_name: 'ai_agents_org_kind_uq' },
+    );
+    const wrapped = Object.assign(new Error('Failed query: insert into "ai_agents" ...'), { cause });
+    wrapped.name = 'DrizzleQueryError';
+
+    const { jsonMock, threw } = callMapError(wrapped);
+
+    expect(threw).toBeUndefined();
+    expect(jsonMock).toHaveBeenCalledWith(CONFLICT, 409);
+  });
+
+  /**
+   * The constraint scoping is itself a discriminating property, and needs a
+   * fixture that can tell the difference. A 23505 from some OTHER unique index
+   * does not mean "this kind is taken", so answering `agent_kind_exists` would
+   * be a wrong-but-plausible 409 that nothing logs — strictly worse than the
+   * 500 it would otherwise get, which is loud and reaches Sentry.
+   */
+  it('does not mislabel a 23505 from an unrelated constraint as agent_kind_exists', () => {
+    const cause = Object.assign(
+      new Error('duplicate key value violates unique constraint "some_other_table_uq"'),
+      { code: '23505', constraint_name: 'some_other_table_uq' },
+    );
+    const wrapped = Object.assign(new Error('Failed query: insert into "some_other_table" ...'), { cause });
+    wrapped.name = 'DrizzleQueryError';
+
+    const { jsonMock, threw } = callMapError(wrapped);
+
+    expect(threw).toBe(wrapped);
+    expect(jsonMock).not.toHaveBeenCalled();
+  });
+
+  it('maps a wrapped 23505 on the PARTNER-wide index to 409 too', () => {
+    const cause = Object.assign(
+      new Error('duplicate key value violates unique constraint "ai_agents_partner_kind_uq"'),
+      { code: '23505', constraint_name: 'ai_agents_partner_kind_uq' },
+    );
+    const wrapped = Object.assign(new Error('Failed query: insert into "ai_agents" ...'), { cause });
+    wrapped.name = 'DrizzleQueryError';
+
+    const { jsonMock, threw } = callMapError(wrapped);
+
+    expect(threw).toBeUndefined();
+    expect(jsonMock).toHaveBeenCalledWith(CONFLICT, 409);
+  });
+
+  it('rethrows a wrapped SQLSTATE that is not a unique violation', () => {
+    const cause = Object.assign(new Error('null value in column violates not-null constraint'), { code: '23502' });
+    const wrapped = Object.assign(new Error('Failed query: insert into "ai_agents" ...'), { cause });
+    wrapped.name = 'DrizzleQueryError';
+
+    const { jsonMock, threw } = callMapError(wrapped);
+
+    expect(threw).toBe(wrapped);
+    expect(jsonMock).not.toHaveBeenCalled();
   });
 });

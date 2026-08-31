@@ -323,6 +323,55 @@ describe('classifyTerminal with run profile (P2-3 narrative)', () => {
   });
 });
 
+// Phase 2 wave P2-4 (ticket triage, #4191) — same ruling as `verdict`/
+// `sweep`/`narrative`, and for the same-shaped reason as `narrative`: a
+// triage run does not read any live data (its whole input is the
+// system-assembled ticket context, `ticketContext.ts`) and its clean
+// completion is a PROPOSAL a human still has to accept — it says nothing
+// about whether the org's remediation is working, so it must never reset
+// (or increment) the streak either way. A genuine runner/ceiling failure
+// still increments, exactly as for every other profile.
+//
+// `classifyTerminal` compares `profile` as a STRING with no exhaustive
+// `never` guard anywhere in the function, so nothing about adding 'triage'
+// to `AI_AGENT_RUN_PROFILES` would have failed to compile if the branch
+// below were missing — the profile would silently have inherited `full`'s
+// reset/increment behaviour. These rows ARE the guard.
+describe('classifyTerminal with run profile (P2-4 triage)', () => {
+  it('a triage completion never resets the streak, clean or needs_attention', () => {
+    expect(classifyTerminal('completed', null, null, 'triage')).toBe('neutral');
+    expect(classifyTerminal('completed', null, 'no_action', 'triage')).toBe('neutral');
+    expect(classifyTerminal('completed', null, 'needs_attention', 'triage')).toBe('neutral');
+  });
+
+  it('awaiting_approval on a triage run is neutral, not reset', () => {
+    expect(classifyTerminal('awaiting_approval', null, null, 'triage')).toBe('neutral');
+  });
+
+  it('a genuine failure still increments on a triage run', () => {
+    expect(classifyTerminal('failed', 'sdk_error', null, 'triage')).toBe('increment');
+    expect(classifyTerminal('failed', 'budget_exceeded', null, 'triage')).toBe('increment');
+    expect(classifyTerminal('failed', 'max_turns_exceeded', null, 'triage')).toBe('increment');
+  });
+
+  it('an off-allowlist failure is still neutral on a triage run', () => {
+    expect(classifyTerminal('failed', 'stalled', null, 'triage')).toBe('neutral');
+    expect(classifyTerminal('failed', null, null, 'triage')).toBe('neutral');
+  });
+
+  it('cancelled/expired/skipped stay neutral on a triage run', () => {
+    expect(classifyTerminal('cancelled', null, null, 'triage')).toBe('neutral');
+    expect(classifyTerminal('expired', null, null, 'triage')).toBe('neutral');
+    expect(classifyTerminal('skipped', null, null, 'triage')).toBe('neutral');
+  });
+
+  it('does not disturb the full profile it shares the string compare with', () => {
+    expect(classifyTerminal('completed', null, null, 'full')).toBe('reset');
+    expect(classifyTerminal('awaiting_approval', null, null, 'full')).toBe('reset');
+    expect(classifyTerminal('completed', null, 'needs_attention', 'full')).toBe('increment');
+  });
+});
+
 describe('isTerminalRunStatus', () => {
   it('is false for queued/running only', () => {
     expect(isTerminalRunStatus('queued')).toBe(false);

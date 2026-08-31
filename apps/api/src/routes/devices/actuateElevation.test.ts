@@ -509,6 +509,9 @@ describe('POST /devices/:id/actuate-elevation', () => {
         type: 'actuate_elevation',
         status: 'pending',
         elevationRequestId: ELEVATION_ID,
+        enforcementStatus: 'legacy_untracked',
+        enforcementGeneration: null,
+        manualRemediationDisposition: 'blocked_manual_remediation',
       });
       expect(commandValues).toHaveBeenCalledWith(
         expect.objectContaining({

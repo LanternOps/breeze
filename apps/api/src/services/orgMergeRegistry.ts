@@ -27,7 +27,8 @@ export type OrgMergePolicy =
   | { kind: 'leave-for-erasure'; note: string }
   | { kind: 'derived'; note: string } // trigger-maintained; never written directly
   | { kind: 'follows-parent'; note: string } // no org_id column; rows travel with their parent
-  | { kind: 'loser-shell' }; // organizations itself
+  | { kind: 'loser-shell' } // organizations itself
+  | { kind: 'blocks-merge'; note: string }; // rows FORBID the merge outright; engine refuses pre-walk — see specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md
 
 // device_commands / user_sso_identities / sso_sessions / psa_ticket_mappings /
 // deployment_results / software_versions / report_runs have no org_id column
@@ -83,6 +84,14 @@ function buildFollowsParentEntries(): Record<string, OrgMergePolicy> {
 
 const SPECIAL: Record<string, OrgMergePolicy> = {
   organizations: { kind: 'loser-shell' },
+
+  // Track A durable authorization bindings copy both the automation owner and
+  // the resource owner observed at admission. A plain org_id repoint leaves
+  // expected_resource_org_id naming the loser and the deferred
+  // automation_resource_bindings_expected_tenant_chk rejects the transaction.
+  // The custom executor advances both axes together; partner-owned/system
+  // bindings have a NULL expected_resource_org_id and remain unchanged.
+  automation_resource_bindings: { kind: 'custom', note: 'repoint org_id and an org-owned expected_resource_org_id together so the durable authorization binding remains valid after the parent automation moves' },
 
   // Append-only (BEFORE UPDATE triggers RAISE unconditionally; per-org hash chain):
   audit_logs: { kind: 'leave-for-erasure', note: 'append-only + per-org hash chain; rows die with the loser shell' },
@@ -140,6 +149,39 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // across two orgs. Same composite (org_id, partner_id) FK fragility as
   // llm_egress_events/ai_unattended_exposure applies too.
   ai_agent_fix_watches: { kind: 'leave-for-erasure', note: 'watch history is tied to a run that itself stays with the source org (ai_agent_runs disposition); composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
+  // ticket_drafts (P2-4, #4191): CUSTOM, not leave-for-erasure — the row
+  // must not survive INTO the merge, or `tickets`' own `repoint` aborts it.
+  //
+  // `tickets` is a plain `repoint`: `UPDATE tickets SET org_id = survivor
+  // WHERE org_id = loser` runs unconditionally in the move phase, for every
+  // ticket the loser org owns. `ticket_drafts_ticket_org_fk (ticket_id,
+  // org_id) -> tickets(id, org_id)` requires a draft's org_id to match its
+  // ticket's org_id. `leave-for-erasure` is a no-op during the merge itself
+  // (rows are only actually destroyed later, when the loser org shell is
+  // erased) — so a loser-org draft sits untouched with org_id = loser while
+  // the tickets repoint just changed ITS ticket's org_id to survivor. The
+  // instant that happens the FK's two legs disagree, and — now that this
+  // constraint is DEFERRABLE INITIALLY IMMEDIATE (org-lifecycle contract) —
+  // that disagreement raises 23503 immediately rather than waiting for
+  // COMMIT, aborting the whole merge the moment the loser org holds a
+  // single ticket with a draft. This is NOT about ticket_drafts_run_org_fk /
+  // ticket_drafts_intent_org_fk (those legs are fine: run_id/intent_id stay
+  // NULL-safe because MATCH SIMPLE never checks a NULL column, and neither
+  // ai_agent_runs nor action_intents ever repoint, so there's no org_id
+  // drift on that side to detect) — it is specifically the ticket_org_fk
+  // leg, driven by `tickets` repointing out from under it.
+  //
+  // Fix: classify `custom` with a RESOLVE-phase executor
+  // (`resolveTicketDrafts`, orgMergeCustomExecutors.ts) that DELETEs every
+  // loser-org ticket_drafts row before ANY table's `move` phase runs (the
+  // walk completes `resolve` for every table before starting `move` on any
+  // — see `MergePolicyPhase` in orgMerge.ts), so by the time `tickets`
+  // repoints, no draft is left to disagree with it. Drafts are ephemeral AI
+  // proposals awaiting human approval (not the ticket_comments row itself),
+  // so losing an in-flight draft in an org merge is acceptable — a fresh
+  // triage run under the surviving organization regenerates one. The `move`
+  // half is a no-op (resolve already leaves zero rows).
+  ticket_drafts: { kind: 'custom', note: 'resolve-phase DELETE of every loser-org row before tickets repoints (its ticket_org_fk composite FK would otherwise 23503 the moment tickets moves org_id out from under a draft) — drafts are ephemeral AI proposals, not the durable ticket_comments record, so dropping them is acceptable; see orgMergeCustomExecutors.ts resolveTicketDrafts/moveTicketDrafts' },
   // ai_agent_circuit_state (Wave 6 PR 2, #3828): per-(org_id, agent_id)
   // failure-streak STATE, not a config row to carry forward — repointing
   // would let a loser org's failure streak silently open (or mask) a
@@ -167,6 +209,20 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // FK to organizations, so a bare org_id UPDATE breaks the moment the two
   // orgs' partners differ. No writer exists yet in this PR either way.
   ai_unattended_exposure: { kind: 'leave-for-erasure', note: 'unattended-exposure history is per-org (like llm_egress_events); composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
+
+  // Durable PAM actuation evidence (Track E org-merge contract,
+  // specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md): never
+  // re-tenanted, never destroyed, never bypassed — a loser org holding ANY
+  // row is refused outright. Repoint is physically unreachable
+  // (pam_actuation_results: UPDATE revoked from breeze_app + unconditional
+  // 42501 trigger; the composite (id, org_id) FK chain has no ON UPDATE
+  // CASCADE), and leave-for-erasure would break
+  // pam_actuations(device_id, org_id) -> devices(id, org_id) the moment the
+  // devices repoint runs — which devices_pam_history_move_guard RAISEs 23514
+  // on anyway. The engine refuses BEFORE the walk (collectMergeBlockers), so
+  // neither trigger can fire mid-merge.
+  pam_actuations: { kind: 'blocks-merge', note: 'durable PAM lifecycle evidence is source-frozen; any loser row refuses the merge — devices_pam_history_move_guard applied at org granularity' },
+  pam_actuation_results: { kind: 'blocks-merge', note: 'append-only PAM evidence (UPDATE revoked + unconditional RAISE); cannot exist without a pam_actuations parent — listed for registry completeness and preview counting' },
 
   // partner_export_configuration_org_state is trigger-maintained (SECURITY
   // DEFINER triggers on the policy tables regenerate it — verified in
@@ -335,6 +391,8 @@ const REPOINT_TABLES: readonly string[] = [
   "access_reviews",
   "account_deletion_requests",
   "agent_logs",
+  "agent_rollback_directives",
+  "agent_rollback_events",
   "ai_action_plans",
   "ai_screenshots",
   "ai_sessions",
@@ -483,6 +541,8 @@ const REPOINT_TABLES: readonly string[] = [
   "pax8_subscription_snapshots",
   "peripheral_events",
   "peripheral_policies",
+  "peripheral_policy_delivery_events",
+  "peripheral_policy_device_states",
   "playbook_executions",
   "plugin_instances",
   "plugins",

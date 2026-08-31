@@ -33,6 +33,11 @@ type Credential struct {
 	Password string
 }
 
+type AccountEvidence struct {
+	Enabled          bool `json:"accountEnabled"`
+	InAdministrators bool `json:"accountInAdministrators"`
+}
+
 // AccountManager owns the lifecycle for the dormant local elevation account.
 type AccountManager interface {
 	EnsureProvisioned() error
@@ -40,10 +45,20 @@ type AccountManager interface {
 	Demote(ctx context.Context) error
 }
 
+type VerifiedAccountManager interface {
+	AccountManager
+	Deprovision(ctx context.Context) (AccountEvidence, error)
+	VerifyClean(ctx context.Context) (AccountEvidence, error)
+}
+
 // New returns the platform-default AccountManager. On non-Windows this is a
 // no-op manager whose Promote returns ErrUnsupportedPlatform.
 func New() AccountManager {
 	return newManager()
+}
+
+func NewVerified() VerifiedAccountManager {
+	return newManager().(VerifiedAccountManager)
 }
 
 // GeneratePassword is exported for tests. It uses crypto/rand, enforces a

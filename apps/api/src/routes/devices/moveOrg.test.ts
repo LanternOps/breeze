@@ -8,15 +8,23 @@ const {
   requireMfaMock,
   siteDenied,
   guardMock,
+  pamGuardMock,
   captureExceptionMock,
+  schedulePeripheralPolicyDeviceMock,
 } = vi.hoisted(() => ({
   guardMock: vi.fn(),
+  pamGuardMock: vi.fn(),
   captureExceptionMock: vi.fn(),
+  schedulePeripheralPolicyDeviceMock: vi.fn().mockResolvedValue('job-id'),
   authMiddlewareMock: vi.fn(),
   requireScopeMock: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermissionMock: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfaMock: vi.fn(() => async (_c: any, next: any) => next()),
   siteDenied: Symbol('SITE_ACCESS_DENIED'),
+}));
+
+vi.mock('../../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice: schedulePeripheralPolicyDeviceMock,
 }));
 
 vi.mock('../../db', () => ({
@@ -68,6 +76,13 @@ vi.mock('../../services/ticketMoveCurrencyGuard', async () => {
   return { ...actual, assertTicketMoveCurrencyCompatible: guardMock };
 });
 
+vi.mock('../../services/pamDeviceMoveGuard', async () => {
+  const actual = await vi.importActual<typeof import('../../services/pamDeviceMoveGuard')>(
+    '../../services/pamDeviceMoveGuard',
+  );
+  return { ...actual, assertPamDeviceOrgMoveAllowed: pamGuardMock };
+});
+
 vi.mock('../../extensions/tenancyRegistry', () => ({
   withExtensionDeviceCascade: (core: readonly string[]) => [...core],
   withExtensionDeviceOrgDenormalized: (core: readonly string[]) => [...core],
@@ -81,6 +96,7 @@ import { disconnectAgent } from '../agentWs';
 import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
 import { moveOrgRoutes } from './moveOrg';
 import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
+import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
 import {
   CUSTOM_ORG_REWRITE_TABLES,
   getDeviceOrgDenormalizedTables,
@@ -202,7 +218,10 @@ function sqlToText(q: any): string {
 
 const BOUND_TICKET_ID = '77777777-7777-4777-8777-777777777777';
 
-function rigTransactionSuccess(updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARGET_ORG, siteId: TARGET_SITE }) {
+function rigTransactionSuccess(
+  updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARGET_ORG, siteId: TARGET_SITE },
+  deviceUpdateError?: unknown,
+) {
   // Each tx.execute() call captures the identifier name being UPDATEd (the
   // second chunk in our `UPDATE ${sql.identifier(table)} SET org_id = ...`
   // template — Drizzle exposes it as queryChunks[1].value) plus the full
@@ -214,15 +233,20 @@ function rigTransactionSuccess(updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARG
 
   vi.mocked(db.transaction).mockImplementation(async (cb: any) => {
     const tx = {
-      update: vi.fn().mockReturnValue({
+      update: vi.fn().mockImplementation(() => {
+        statements.push('UPDATE devices');
+        return {
         set: vi.fn().mockImplementation((vals: any) => {
           deviceUpdateSets.push(vals);
           return {
             where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([updatedRow]),
+              returning: vi.fn().mockImplementation(() => deviceUpdateError
+                ? Promise.reject(deviceUpdateError)
+                : Promise.resolve([updatedRow])),
             }),
           };
         }),
+        };
       }),
       execute: vi.fn().mockImplementation(async (sqlVal: any) => {
         const tableChunk = sqlVal?.queryChunks?.[1];
@@ -272,6 +296,8 @@ describe('POST /devices/:id/move-org', () => {
     barrierMissingOrgIds = new Set<string>();
     guardMock.mockReset();
     guardMock.mockResolvedValue(null);
+    pamGuardMock.mockReset();
+    pamGuardMock.mockResolvedValue(undefined);
     setAuth();
     app = new Hono();
     app.route('/devices', moveOrgRoutes);
@@ -313,6 +339,10 @@ describe('POST /devices/:id/move-org', () => {
       expect(body.success).toBe(true);
       expect(body.device.orgId).toBe(TARGET_ORG);
       expect(body.device.siteId).toBe(TARGET_SITE);
+      expect(schedulePeripheralPolicyDeviceMock).toHaveBeenCalledWith(
+        DEVICE_ID,
+        'device_org_changed',
+      );
 
       // devices.set() must include both orgId and siteId flips, and MUST
       // unlink the device from any multi-boot group (#2138) — the composite
@@ -553,6 +583,106 @@ describe('POST /devices/:id/move-org', () => {
 
       // No WS disconnect on failure (device never actually moved)
       expect(disconnectAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('PAM ownership move guard', () => {
+    const postMove = () => app.request(`/devices/${DEVICE_ID}/move-org`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+    });
+
+    function rigMove() {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+    }
+
+    it('runs after both organization SHARE locks and before the device update', async () => {
+      rigMove();
+      const { statements } = rigTransactionSuccess();
+      pamGuardMock.mockImplementation(async () => {
+        statements.push('PAM guard');
+      });
+
+      const response = await postMove();
+
+      expect(response.status).toBe(200);
+      expect(statements.slice(0, 4)).toEqual([
+        'SELECT organizations FOR share (after 0 updates)',
+        'SELECT organizations FOR share (after 0 updates)',
+        'PAM guard',
+        'UPDATE devices',
+      ]);
+      expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
+        deviceId: DEVICE_ID,
+        sourceOrgId: SOURCE_ORG,
+      });
+    });
+
+    it('returns a stable 409 for the typed preflight conflict and records only its stable code', async () => {
+      rigMove();
+      rigTransactionSuccess();
+      pamGuardMock.mockRejectedValue(new PamDeviceMoveBlockedError());
+
+      const response = await postMove();
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: 'Device organization move is blocked because durable PAM lifecycle evidence exists',
+        code: 'PAM_DEVICE_MOVE_BLOCKED',
+      });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
+      expect(schedulePeripheralPolicyDeviceMock).not.toHaveBeenCalled();
+      expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(writeRouteAudit).mock.calls[0]![1]).toMatchObject({
+        orgId: SOURCE_ORG,
+        action: 'device.move_org.failed',
+        details: { code: 'PAM_DEVICE_MOVE_BLOCKED' },
+      });
+    });
+
+    it('maps only the exact database trigger race to the stable 409', async () => {
+      rigMove();
+      rigTransactionSuccess(undefined, Object.assign(new Error('guard race'), {
+        code: '23514',
+        constraint_name: 'devices_pam_history_move_guard',
+      }));
+
+      const response = await postMove();
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: 'Device organization move is blocked because durable PAM lifecycle evidence exists',
+        code: 'PAM_DEVICE_MOVE_BLOCKED',
+      });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
+      expect(schedulePeripheralPolicyDeviceMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps unrelated 23514 errors on the generic failure path', async () => {
+      rigMove();
+      const unrelated = Object.assign(new Error('other check'), {
+        code: '23514',
+        constraint_name: 'some_other_constraint',
+      });
+      rigTransactionSuccess(undefined, unrelated);
+
+      const response = await postMove();
+
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: 'Failed to move device between organizations' });
+      expect(captureExceptionMock).toHaveBeenCalledWith(unrelated, expect.anything());
+      expect(disconnectAgent).not.toHaveBeenCalled();
+      expect(schedulePeripheralPolicyDeviceMock).not.toHaveBeenCalled();
     });
   });
 

@@ -90,6 +90,9 @@ func safeOutboxFilenameID(id string) bool {
 // permissions error) are logged and skipped but kept on disk for a later
 // Flush. Must be called with o.mu held.
 func (o *backupResultOutbox) loadAllLocked() []backupResultOutboxFile {
+	// Deliberately scan only JSON files directly under the ordinary root. The
+	// durable PAM reconciliation namespace lives in a subdirectory and has no
+	// cap, expiry, corrupt-file deletion, or WebSocket flush semantics.
 	matches, err := filepath.Glob(filepath.Join(o.dir, "*.json"))
 	if err != nil || len(matches) == 0 {
 		return nil

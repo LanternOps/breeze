@@ -30,7 +30,7 @@ export const ticketAttachments = pgTable('ticket_attachments', {
   attachedAt: timestamp('attached_at', { withTimezone: true }),
 }, (t) => [
   index('ticket_attachments_ticket_idx').on(t.ticketId, t.createdAt),
-  // Partial indexes mirror migrations/2026-09-25-ticket-attachments.sql.
+  // Partial indexes mirror migrations/2026-09-26-ticket-attachments.sql.
   // db:check-drift does NOT compare the Drizzle schema to the live DB, so
   // these are declared for readers, not because a check enforces them.
   index('ticket_attachments_comment_idx').on(t.commentId).where(sql`${t.commentId} IS NOT NULL`),

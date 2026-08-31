@@ -48,10 +48,36 @@ const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const DEVICE_ID = '33333333-3333-3333-3333-333333333333';
 const OTHER_DEVICE_ID = '44444444-4444-4444-4444-444444444444';
 
+// Every `.where()` argument the tool builds, in call order. `and(eq(...))`
+// objects are opaque, so `capturedWhereColumns` below walks them for the
+// columns actually filtered on — without this, a where-clause assertion is
+// vacuous (the chain returns its canned rows whatever it was asked).
+const capturedWheres: unknown[] = [];
+
+function whereColumns(node: any, out: string[] = []): string[] {
+  if (!node) return out;
+  if (Array.isArray(node)) {
+    node.forEach((n) => whereColumns(n, out));
+    return out;
+  }
+  if (typeof node === 'object') {
+    if (typeof node.name === 'string' && node.table) out.push(node.name);
+    if (node.queryChunks) whereColumns(node.queryChunks, out);
+  }
+  return out;
+}
+
+function capturedWhereColumns(index: number): string[] {
+  return whereColumns((capturedWheres[index] as any)?.queryChunks);
+}
+
 function createQueryChain(rows: any[] = []) {
   const chain: any = {};
   chain.from = vi.fn(() => chain);
-  chain.where = vi.fn(() => chain);
+  chain.where = vi.fn((arg: unknown) => {
+    capturedWheres.push(arg);
+    return chain;
+  });
   chain.limit = vi.fn(() => chain);
   chain.groupBy = vi.fn(() => chain);
   chain.orderBy = vi.fn(() => chain);
@@ -61,6 +87,7 @@ function createQueryChain(rows: any[] = []) {
 }
 
 function mockSelectSequence(rowsList: any[][]) {
+  capturedWheres.length = 0;
   let index = 0;
   vi.mocked(db.select).mockImplementation(() => createQueryChain(rowsList[index++] ?? []) as any);
 }
@@ -340,14 +367,19 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
     const result = JSON.parse(await tool.handler({ deviceIds: [DEVICE_ID] }, makeAuth()));
 
     // No doomed dispatch; the operator is told, not silently timed out.
-    expect(result.error).toMatch(/No latest agent version found/i);
+    expect(result.error).toMatch(/No agent build resolved/i);
     expect(result.errors[DEVICE_ID]).toMatch(/has no build for this device/i);
     expect(executeCommand).not.toHaveBeenCalled();
   });
 
   it('an explicit targetVersion overrides any pin and is used verbatim', async () => {
-    // #1 verifyDeviceAccess, #2 org-wide check, #3 explicit-version existence.
-    mockSelectSequence([[onlineDeviceRow()], [{ id: DEVICE_ID }], [{ version: '0.90.0' }]]);
+    // #1 verifyDeviceAccess, #2 org-wide check, #3 explicit-version existence,
+    // #4 device→org+platform lookup (the explicit version is resolved per
+    // device too, #4093).
+    mockSelectSequence([
+      [onlineDeviceRow()], [{ id: DEVICE_ID }], [{ version: '0.90.0' }],
+      [deviceOrgRow(DEVICE_ID, ORG_ID)],
+    ]);
 
     const result = JSON.parse(
       await tool.handler({ deviceIds: [DEVICE_ID], targetVersion: '0.90.0' }, makeAuth()),
@@ -355,12 +387,69 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
 
     expect(result.queued).toBe(1);
     expect(result.targetVersion).toBe('0.90.0');
-    // The pin resolver is never consulted when a version is explicitly given.
+    // The org's pin config is never consulted when a version is explicitly given.
     expect(getOrgAgentUpdateConfig).not.toHaveBeenCalled();
     expect(executeCommand).toHaveBeenCalledWith(
       DEVICE_ID, 'update_agent', { version: '0.90.0' },
       expect.objectContaining({ targetRole: 'watchdog' }),
     );
+  });
+
+  // #4093 — before this, an explicit targetVersion only had to EXIST in
+  // agent_versions: no component, edition, platform or arch scoping. A version
+  // with no build for the device dispatched an update_agent that could only
+  // fail on the box (download-info 404), reported to the operator as `queued`.
+  it('explicit targetVersion: no build for THIS device is reported, not dispatched', async () => {
+    // The version exists (row #3) but has no build for this platform/arch.
+    vi.mocked(resolvePinnedUpgradeTarget).mockResolvedValue(null);
+    mockSelectSequence([
+      [onlineDeviceRow()], [{ id: DEVICE_ID }], [{ version: '0.90.0' }],
+      [deviceOrgRow(DEVICE_ID, ORG_ID)],
+    ]);
+
+    const result = JSON.parse(
+      await tool.handler({ deviceIds: [DEVICE_ID], targetVersion: '0.90.0' }, makeAuth()),
+    );
+
+    expect(result.errors[DEVICE_ID]).toMatch(/has no build for this device/i);
+    expect(executeCommand).not.toHaveBeenCalled();
+    // The explicit version IS resolved through the same fail-closed resolver
+    // the pinned path uses, with this device's platform/arch.
+    expect(resolvePinnedUpgradeTarget).toHaveBeenCalledWith(
+      expect.objectContaining({
+        component: 'agent', pin: '0.90.0', platform: 'windows', architecture: 'amd64',
+      }),
+    );
+  });
+
+  it('explicit targetVersion: a version with no agent build at all is rejected up front', async () => {
+    // #3 (the version existence probe) returns nothing → reject before any
+    // per-device work.
+    mockSelectSequence([[onlineDeviceRow()], [{ id: DEVICE_ID }], []]);
+
+    const result = JSON.parse(
+      await tool.handler({ deviceIds: [DEVICE_ID], targetVersion: '9.9.9' }, makeAuth()),
+    );
+
+    expect(result.error).toMatch(/not found/i);
+    expect(resolvePinnedUpgradeTarget).not.toHaveBeenCalled();
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  // The artifact-edition gate itself lives at the dispatch chokepoint
+  // (services/commandQueue.ts executeCommand, #4093). This asserts the tool
+  // surfaces its refusal per device instead of counting it as queued.
+  it('surfaces the dispatch-time edition refusal as a per-device error', async () => {
+    vi.mocked(executeCommand).mockResolvedValue({
+      status: 'failed',
+      error: 'Agent update withheld (#4072): this server serves hosted-edition artifacts …',
+    } as any);
+    mockSelectSequence([[onlineDeviceRow()], [{ id: DEVICE_ID }], [deviceOrgRow(DEVICE_ID, ORG_ID)]]);
+
+    const result = JSON.parse(await tool.handler({ deviceIds: [DEVICE_ID] }, makeAuth()));
+
+    expect(result.queued).toBe(0);
+    expect(result.errors[DEVICE_ID]).toMatch(/withheld/i);
   });
 
   // --- Multi-org batch isolation (the load-bearing new behavior) -------------
@@ -431,8 +520,43 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
 
     const result = JSON.parse(await tool.handler({ deviceIds: [DEVICE_ID] }, makeAuth()));
 
-    expect(result.error).toMatch(/No latest agent version found/i);
+    expect(result.error).toMatch(/No agent build resolved/i);
     expect(result.errors[DEVICE_ID]).toMatch(/Failed to resolve version pin/i);
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  // The explicit-version probe is scoped to component='agent' AND this server's
+  // edition (#4093). Asserting the RESULT alone would be vacuous — the mocked
+  // chain returns its canned rows whatever it was asked — so this asserts the
+  // columns the filter actually names. Drop either eq() from the production
+  // query and this fails.
+  it('scopes the explicit-version probe to component and served edition', async () => {
+    mockSelectSequence([
+      [onlineDeviceRow()], [{ id: DEVICE_ID }], [{ version: '0.90.0' }],
+      [deviceOrgRow(DEVICE_ID, ORG_ID)],
+    ]);
+
+    await tool.handler({ deviceIds: [DEVICE_ID], targetVersion: '0.90.0' }, makeAuth());
+
+    // Select #3 is the agent_versions existence probe.
+    expect(capturedWhereColumns(2).sort()).toEqual(['component', 'edition', 'version']);
+  });
+
+  // A device that passed the access check but is absent from the device-row
+  // SELECT was deleted mid-request. It must get a per-device reason; before
+  // this it fell through to a batch-level error naming the wrong cause, with
+  // the `errors` map omitted entirely when the whole batch vanished.
+  it('reports a device that disappeared between the access check and resolution', async () => {
+    mockSelectSequence([
+      [onlineDeviceRow()],
+      [{ id: DEVICE_ID }],
+      [], // device row gone
+    ]);
+
+    const result = JSON.parse(await tool.handler({ deviceIds: [DEVICE_ID] }, makeAuth()));
+
+    expect(result.errors[DEVICE_ID]).toMatch(/no longer exists/i);
+    expect(result.error).toMatch(/No agent build resolved/i);
     expect(executeCommand).not.toHaveBeenCalled();
   });
 });

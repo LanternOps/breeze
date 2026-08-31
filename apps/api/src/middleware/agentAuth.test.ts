@@ -946,6 +946,9 @@ describe('agentAuthMiddleware - device-remove uninstall drain (#3986)', () => {
     ['recovery-keys', '/api/v1/agents/agent-1/security/recovery-keys'],
     // PAM elevation requests.
     ['elevation-requests', '/api/v1/agents/agent-1/elevation-requests'],
+    // PAM reconciliation ownership reads are intentionally unavailable while
+    // either tenant or device drain has narrowed the agent surface.
+    ['pam-reconciliation-bindings', '/api/v1/agents/agent-1/pam/reconciliation-bindings'],
     // Inventory push.
     ['inventory (hardware)', '/api/v1/agents/agent-1/hardware'],
     ['inventory (software)', '/api/v1/agents/agent-1/software'],

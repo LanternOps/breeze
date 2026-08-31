@@ -473,3 +473,130 @@ describe('deliverRunFinishedNotifications — narrative (P2-3)', () => {
     expect(input).toMatchObject({ title: 'Agent run finished', link: `/ai-agents/runs/${RUN_ID}` });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 2 wave P2-4 (ticket triage), Task 9 (#4191) — the triage
+// notification branch: suppress-if-nothing-minted, ticket-NUMBER-only
+// titling, /tickets/<id> linking, and the "executed automatically" autonomy
+// note.
+// ---------------------------------------------------------------------------
+describe('deliverRunFinishedNotifications — triage (P2-4)', () => {
+  const TICKET_ID = '00000000-0000-4000-8000-0000000000f3';
+  const OTHER_INTENT_ID = '00000000-0000-4000-8000-0000000000f4';
+
+  function triageRun(overrides: Record<string, unknown> = {}) {
+    return {
+      ...baseRun,
+      profile: 'triage',
+      ticketId: TICKET_ID,
+      summary: 'Triaged the ticket: likely a driver conflict.',
+      outcome: {
+        toolExecutionCount: 0,
+        ticketProposal: { summary: 'Likely a driver conflict.', confidence: 0.9 },
+      },
+      ...overrides,
+    };
+  }
+
+  it('suppresses entirely when the run minted zero intents and zero drafts', async () => {
+    queueRows('ai_agent_runs', [triageRun({ intentIds: [] })]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('ticket_drafts', []); // zero drafts materialized for this run
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('minted nothing'),
+      expect.objectContaining({ runId: RUN_ID }),
+    );
+    infoSpy.mockRestore();
+  });
+
+  it('does NOT suppress when the run minted zero intents but a draft already exists', async () => {
+    queueRows('ai_agent_runs', [triageRun({ intentIds: [] })]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('ticket_drafts', [{ id: 'draft-1' }]);
+    queueRows('tickets', [{ ticketNumber: '00042' }]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT query ticket_drafts (and does not suppress) when the run has a live intent', async () => {
+    queueRows('ai_agent_runs', [triageRun({ intentIds: [OTHER_INTENT_ID], status: 'awaiting_approval' })]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('tickets', [{ ticketNumber: '00042' }]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('titles with the ticket NUMBER, never the subject, and links to /tickets/<id>', async () => {
+    queueRows('ai_agent_runs', [triageRun({ intentIds: [OTHER_INTENT_ID], status: 'awaiting_approval' })]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('tickets', [{ ticketNumber: 'T-2026-00042' }]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.title).toBe('Ticket #T-2026-00042 triaged — Front Desk Triage');
+    expect(input.link).toBe(`/tickets/${TICKET_ID}`);
+    expect(input.title).not.toContain('subject');
+  });
+
+  it('a human-decision-pending run (awaiting_approval) does NOT carry the autonomy note', async () => {
+    queueRows('ai_agent_runs', [triageRun({ intentIds: [OTHER_INTENT_ID], status: 'awaiting_approval' })]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('tickets', [{ ticketNumber: '00042' }]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.message).not.toContain('executed automatically');
+  });
+
+  it('an autonomous run (completed, every intent auto-decided) notes "executed automatically" in the message', async () => {
+    queueRows('ai_agent_runs', [triageRun({ intentIds: [OTHER_INTENT_ID], status: 'completed' })]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('tickets', [{ ticketNumber: '00042' }]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.message).toContain('Executed automatically');
+  });
+
+  it('falls back to a short id label when the ticket row is unreadable', async () => {
+    queueRows('ai_agent_runs', [triageRun({ intentIds: [OTHER_INTENT_ID], status: 'completed' })]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('tickets', []); // ticket moved/deleted between finish and notify
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.title).toBe(`Ticket #${TICKET_ID.slice(0, 8)} triaged — Front Desk Triage`);
+  });
+
+  it('never applies the triage copy to another profile, even with a ticketId on the run row', async () => {
+    queueRows('ai_agent_runs', [triageRun({ profile: 'full', intentIds: [OTHER_INTENT_ID] })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.title).toBe('Agent run finished');
+    expect(input.link).toBe(`/ai-agents/runs/${RUN_ID}`);
+  });
+});
