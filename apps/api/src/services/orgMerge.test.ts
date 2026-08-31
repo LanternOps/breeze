@@ -716,4 +716,16 @@ describe('blocks-merge refusal', () => {
     expect(msg).toContain('2 pam_actuation_results row(s), 1 pam_actuations row(s)');
     expect(msg).toContain('Audit-admin retention is not a merge mechanism');
   });
+
+  // previewOrgMerge itself walks the ~260-table registry through
+  // `db.execute`; replaying that in a mocked FIFO queue just to prove a
+  // one-line ternary is disproportionate. `computeMergeVerdict` is the
+  // extracted pure seam that ternary now lives in — tested directly here.
+  it('verdict precedence: blocked wins over too-large when both conditions hold', () => {
+    const verdict = orgMergeModule.computeMergeVerdict(
+      [{ table: 'pam_actuations', loserRows: 1 }],
+      Number.MAX_SAFE_INTEGER, // far beyond ORG_MERGE_MAX_ROWS under any config
+    );
+    expect(verdict).toBe('blocked');
+  });
 });

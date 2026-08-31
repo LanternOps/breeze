@@ -380,6 +380,8 @@ git add -A apps/api/src && git commit -m "fix(pam): refuse org merges over durab
 - Create: `apps/api/migrations/2026-08-31-pam-actuation-org-immutable.sql`
 - Test: `src/__tests__/integration/pamActuationLifecycle.integration.test.ts`
 
+> Note (post-hoc): this migration actually shipped as `2026-09-25-pam-actuation-org-immutable.sql`, not the `2026-08-31-` name planned below — the check-migration-naming gate requires each new migration's filename to sort after every already-committed migration, and by the time this task landed the `2026-08-31-` prefix was already taken. Do not "fix" the filename back to match this plan.
+
 **Interfaces:**
 - Produces: `pam_actuations_transition_guard()` now RAISEs `42501` `'PAM actuation tenancy is immutable'` on any `org_id` change. Task 4's BLOCKING classification of this trigger depends on this task.
 

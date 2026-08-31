@@ -254,6 +254,23 @@ function getMaxMovableRows(): number {
   return raw > 0 ? raw : DEFAULT_MAX_ROWS;
 }
 
+/**
+ * `previewOrgMerge`'s verdict precedence, pulled out as its own pure
+ * function so it has a seam a unit test can drive without replaying the
+ * ~260-table registry walk through a mocked `db.execute` queue.
+ *
+ * `blocked` always wins over `too-large`: a merge a `blocks-merge` policy
+ * refuses can never succeed regardless of row count, so reporting it as
+ * merely oversized would suggest raising `ORG_MERGE_MAX_ROWS` could fix it.
+ */
+export function computeMergeVerdict(
+  mergeBlockers: readonly MergeBlocker[],
+  totalMovableRows: number,
+): OrgMergePreview['verdict'] {
+  if (mergeBlockers.length > 0) return 'blocked';
+  return totalMovableRows > getMaxMovableRows() ? 'too-large' : 'ok';
+}
+
 const uuid = (v: string) => sql`${v}::uuid`;
 
 // ---------------------------------------------------------------------------
@@ -879,7 +896,16 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
   // blocks-merge refusal BEFORE the fence: a merge that can never succeed
   // must not close agent sockets, bump auth epochs, or drain the loser. The
   // in-transaction recheck below is the authoritative copy of this check.
-  const preFenceBlockers = await self.collectMergeBlockers(loser.id);
+  //
+  // This call site must supply its own db-access context: collectMergeBlockers
+  // itself stays context-agnostic (runPolicy's in-tx usage and Phase B's
+  // recheck run it on the live transaction connection), so without wrapping
+  // here it runs on the bare `breeze_app` pool with `breeze_current_scope()
+  // = 'none'`, which forces RLS on the pam tables and silently returns zero
+  // rows — the refusal never fires.
+  const preFenceBlockers = await dbModule.runOutsideDbContext(() =>
+    dbModule.withSystemDbAccessContext(() => self.collectMergeBlockers(loser.id)),
+  );
   if (preFenceBlockers.length > 0) {
     const blocked = new OrgMergeBlockedError(preFenceBlockers);
     await self.writeMergeAudit(input, {
@@ -1273,12 +1299,7 @@ export async function previewOrgMerge(
         notes,
       });
 
-      const verdict: OrgMergePreview['verdict'] =
-        mergeBlockers.length > 0
-          ? 'blocked'
-          : totalMovableRows > getMaxMovableRows()
-            ? 'too-large'
-            : 'ok';
+      const verdict = self.computeMergeVerdict(mergeBlockers, totalMovableRows);
       return {
         tables,
         totalMovableRows,

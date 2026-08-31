@@ -186,21 +186,21 @@ const PREDICATE_CHECK_EXCEPTIONS = new Set(['tenant_variables']);
  */
 const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // Conditional immutability guards: RAISE iff org_id changed.
-  'action_intents.action_intents_immutable_trg': 'action_intents_immutable_trg',
-  'ai_agent_runs.ai_agent_runs_immutable_trg': 'ai_agent_runs_immutable_trg',
+  'action_intents.action_intents_immutable_trg': 'RAISEs iff org_id changed',
+  'ai_agent_runs.ai_agent_runs_immutable_trg': 'RAISEs iff org_id changed',
   // Unconditional append-only guards: RAISE on any UPDATE (the retention job's
   // `breeze.allow_audit_retention` GUC is the only bypass, and it is DELETE-path
   // machinery, not something a merge may set).
-  'audit_logs.audit_log_block_update': 'audit_log_block_update',
-  'audit_log_chain.audit_log_chain_block_update': 'audit_log_chain_block_update',
-  'audit_chain_anchors.audit_chain_anchor_block_update': 'audit_chain_anchor_block_update',
-  'ml_feedback_events.ml_feedback_events_block_update': 'ml_feedback_events_block_update',
+  'audit_logs.audit_log_block_update': 'unconditional append-only RAISE',
+  'audit_log_chain.audit_log_chain_block_update': 'unconditional append-only RAISE',
+  'audit_chain_anchors.audit_chain_anchor_block_update': 'unconditional append-only RAISE',
+  'ml_feedback_events.ml_feedback_events_block_update': 'unconditional append-only RAISE',
   // Silent revert: `NEW.org_id := OLD.org_id` on every direct UPDATE. Scoped
   // to `WHEN (pg_trigger_depth() = 0)`, so the ON UPDATE CASCADE from
   // devices/sites still flows through — which is exactly why these two are
   // `derived` and the engine must never write them itself.
-  'partner_export_device_material_state.breeze_partner_export_guard_direct_write': 'breeze_partner_export_guard_direct_write',
-  'partner_export_site_material_state.breeze_partner_export_guard_direct_write': 'breeze_partner_export_guard_direct_write',
+  'partner_export_device_material_state.breeze_partner_export_guard_direct_write': 'silent org_id revert at depth 0',
+  'partner_export_site_material_state.breeze_partner_export_guard_direct_write': 'silent org_id revert at depth 0',
   // PAM actuations: hardened to RAISE 42501 iff org_id changed (Track E
   // §Hardening, apps/api/migrations/2026-09-25-pam-actuation-org-immutable.sql).
   // Generation-decrease and cleanup-tombstone checks are unrelated to org_id
@@ -495,7 +495,7 @@ describe('Org merge policy registry contract', () => {
       .map((r) => `${r.table_name}.${r.trigger_name}`);
     expect(
       unreviewed,
-      'new BEFORE UPDATE row trigger(s) on an org_id table — read each body and add it to ORG_ID_BLOCKING_TRIGGERS (it RAISEs on, or silently reverts, an org_id change) or ORG_ID_BENIGN_TRIGGERS (with the reason it does not stop a repoint)',
+      'new BEFORE UPDATE row trigger(s) on an org_id table — read each body and add it to ORG_ID_BLOCKING_TRIGGERS (it RAISEs on, or silently reverts, an org_id change), ORG_ID_BENIGN_TRIGGERS (with the reason it does not stop a repoint), or ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS (blocking in isolation, but discharged by a live blocks-merge policy)',
     ).toEqual([]);
 
     // A map entry whose trigger no longer exists is WARNED about, not failed.

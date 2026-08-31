@@ -1495,13 +1495,23 @@ describe('blocks-merge: durable PAM evidence refuses the merge', () => {
   it('executeOrgMerge refuses pre-fence: typed error, loser undisturbed, nothing merged, org.merge.failed audited', async () => {
     await seedPamEvidence(f.loser, f.siteL, f.deviceL);
     const before = await snapshotOrgState(f.loser);
+    // Spy WITHOUT stubbing (must still call through) — a snapshot-equality
+    // check alone cannot distinguish "never fenced" from "fenced then
+    // perfectly unfenced", since fenceLoser/unfenceLoser round-trip status
+    // and settings back to their prior values. This is the discriminating
+    // assertion: it proves fenceLoser was never invoked at all.
+    const fence = vi.spyOn(orgMergeModule, 'fenceLoser');
     await expect(
       orgMergeModule.executeOrgMerge({
         loserOrgId: f.loser, survivorOrgId: f.survivor, partnerId: f.partner,
         performedBy: f.actor, performedByEmail: f.actorEmail,
       }),
     ).rejects.toMatchObject({ code: 'ORG_MERGE_BLOCKED', name: 'OrgMergeBlockedError' });
-    expect(await snapshotOrgState(f.loser)).toEqual(before); // status NOT 'merging' — never fenced
+    // Snapshot equality alone is not proof of "never fenced" (see the spy
+    // assertion below for that); this only proves the loser's observable
+    // state is unchanged.
+    expect(await snapshotOrgState(f.loser)).toEqual(before);
+    expect(fence).not.toHaveBeenCalled();
     const events = await getTestDb().execute(sql`SELECT 1 FROM org_merge_events WHERE loser_org_id = ${f.loser}::uuid`);
     expect(rows(events)).toHaveLength(0);
 
@@ -1510,12 +1520,22 @@ describe('blocks-merge: durable PAM evidence refuses the merge', () => {
     // above) — the offboarding sweeper and any operator tooling reading
     // `org.merge.failed` must see this refusal too, not just a rolled-back
     // one.
-    const failureAudits = await query<{ org_id: string | null; result: string; details: { error?: string } }>(sql`
+    const failureAudits = await query<{
+      org_id: string | null;
+      result: string;
+      details: { error?: string; blockers?: Array<{ table: string; loserRows: number }> };
+    }>(sql`
       SELECT org_id, result::text AS result, details FROM audit_logs WHERE action = 'org.merge.failed'`);
     expect(failureAudits).toHaveLength(1);
     expect(failureAudits[0]!.org_id).toBeNull();
     expect(failureAudits[0]!.result).toBe('failure');
     expect(failureAudits[0]!.details.error).toContain('durable PAM lifecycle evidence');
+    // seedPamEvidence seeds exactly one row per table under the loser;
+    // collectMergeBlockers sorts alphabetically by table name.
+    expect(failureAudits[0]!.details.blockers).toEqual([
+      { table: 'pam_actuation_results', loserRows: 1 },
+      { table: 'pam_actuations', loserRows: 1 },
+    ]);
   });
 
   it("the refusal is the typed OrgMergeBlockedError, never the trigger's raw 23514", async () => {

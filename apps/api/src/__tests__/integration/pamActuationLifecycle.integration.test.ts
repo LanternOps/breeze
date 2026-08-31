@@ -138,8 +138,9 @@ describe('PAM actuation lifecycle schema governance', () => {
   // the same process, including other test files in the same CI job/shard
   // (e.g. Task 4's org-merge trigger-classification tests, which depend on
   // this trigger actually being BLOCKING). Re-apply the hardening migration
-  // unconditionally after every test in this file so the database is left
-  // hardened no matter which tests ran or in what order.
+  // unconditionally once after all tests in this file have run (afterAll,
+  // not afterEach) so the database is left hardened no matter which tests
+  // ran or in what order.
   afterAll(async () => {
     const hardening = await readFile(
       new URL('../../../migrations/2026-09-25-pam-actuation-org-immutable.sql', import.meta.url),
