@@ -137,7 +137,11 @@ vi.mock('../services/permissions', () => ({
 }));
 
 vi.mock('../db/schema/elevations', () => ({
-  elevationRequests: { id: 'id', orgId: 'org_id', status: 'status' },
+  elevationRequests: {
+    id: 'id', orgId: 'org_id', deviceId: 'device_id', status: 'status',
+    revision: 'revision', targetExecutablePath: 'target_executable_path',
+    targetExecutableHash: 'target_executable_hash', subjectUsername: 'subject_username',
+  },
   elevationAudit: { id: 'id', orgId: 'org_id', elevationRequestId: 'elevation_request_id' },
 }));
 
@@ -170,6 +174,16 @@ vi.mock('./lifecycle', () => ({
   // Not used by approvals.ts but exported from lifecycle.ts; mocked to avoid
   // pulling in the full lifecycle module-init chain in this test surface.
   isOauthClientBlockedForOrg: vi.fn(async () => false),
+}));
+
+const pamLifecycleMocks = vi.hoisted(() => ({ createPamDecisionIntent: vi.fn() }));
+vi.mock('../services/pamActuationLifecycle', () => pamLifecycleMocks);
+pamLifecycleMocks.createPamDecisionIntent.mockImplementation(async (_tx, input) => ({
+  actuationId: 'actuation-1',
+  elevationRequestId: input.request.id,
+  requestRevision: input.requestRevision,
+  generation: 1,
+  desiredState: input.decision === 'denied' ? 'cleanup' : 'active',
 }));
 
 // Phase 2: the decide path now resolves assurance through assertApprovalAssurance
@@ -260,6 +274,7 @@ vi.mock('../middleware/auth', () => ({
 import { and, eq } from 'drizzle-orm';
 import { approvalRoutes } from './approvals';
 import { approvalRequests } from '../db/schema/approvals';
+import { actionIntents } from '../db/schema/actionIntents';
 import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
@@ -1542,24 +1557,14 @@ describe('POST /approvals/:id/deny', () => {
 });
 
 describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
-  // Builds a tx stub for the SECOND db.transaction(fn) call — the elevation
-  // mirror tx, which runs AFTER the Task 6 atomic decide-write tx (registered
-  // by mockDecideWithElevation below, consumed first via mockImplementationOnce
-  // ordering). `elevationUpdateRows` is what the elevation CAS returns ([] =
-  // lost the race). The tx does ONLY the elevation CAS (.update) + the audit
-  // insert (.values) — the sibling-expiry runs post-commit as a separate,
-  // system-scoped db.update (see mockDecideWithElevation's siblingExpireSet).
-  // Captures the elevation .set arg and the elevationAudit .values arg.
+  let elevationSet = vi.fn();
+  let auditValues = vi.fn();
+
   function mockElevationTx(elevationUpdateRows: unknown[]) {
-    const elevationSet = vi.fn().mockReturnValue({
+    elevationSet = vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(elevationUpdateRows) }),
     });
-    const auditValues = vi.fn().mockResolvedValue(undefined);
-    const tx = {
-      update: vi.fn(() => ({ set: elevationSet } as any)),
-      insert: vi.fn(() => ({ values: auditValues } as any)),
-    };
-    vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(tx));
+    auditValues = vi.fn().mockResolvedValue(undefined);
     return { elevationSet, auditValues };
   }
 
@@ -1595,14 +1600,22 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
         where: vi.fn().mockResolvedValue([{ ...updatedRow, status: 'pending' }]),
       }),
     } as any);
-    // 1) the atomic decide-write tx — ONE tx.update call (approval_requests CAS)
+    // One transaction owns approval CAS, elevation CAS, PAM lifecycle/outbox,
+    // audit, and sibling expiry.
     const casReturning = vi.fn().mockResolvedValue([updatedRow]);
     const casSet = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: casReturning }) });
-    const mainTx = { update: vi.fn(() => ({ set: casSet } as any)) };
-    vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(mainTx));
-    // 2) post-commit sibling-expiry (system scope) — a terminal .set().where()
     const siblingExpireSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
-    vi.mocked(db.update).mockReturnValueOnce({ set: siblingExpireSet } as any);
+    let updateCall = 0;
+    const mainTx = {
+      update: vi.fn(() => {
+        updateCall += 1;
+        if (updateCall === 1) return { set: casSet } as any;
+        if (updateCall === 2) return { set: elevationSet } as any;
+        return { set: siblingExpireSet } as any;
+      }),
+      insert: vi.fn(() => ({ values: auditValues } as any)),
+    };
+    vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(mainTx));
     return { updatedRow, casSet, siblingExpireSet };
   }
 
@@ -1612,7 +1625,7 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
     expect(res.status).toBe(200);
-    expect(db.transaction).toHaveBeenCalledTimes(2);
+    expect(db.transaction).toHaveBeenCalledTimes(1);
     expect(tx.elevationSet).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'approved', approvedByUserId: TEST_USER.id }),
     );
@@ -1628,7 +1641,8 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
     // db.update), not as a second tx.update — proving the RLS-fix structure:
     // the Shape-6 sibling rows belong to OTHER approvers, invisible to this
     // user's request context, so the write must be system-scoped.
-    expect(siblingExpireSet).toHaveBeenCalledWith({ status: 'expired' });
+    expect(siblingExpireSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'expired' }));
+    expect(pamLifecycleMocks.createPamDecisionIntent).toHaveBeenCalledOnce();
   });
 
   it('deny mirrors elevation to denied', async () => {
@@ -1673,12 +1687,14 @@ describe('#1254 PAM mobile bridge: mirror decision back to elevation', () => {
     expect(db.transaction).toHaveBeenCalledTimes(1);
   });
 
-  it('mirror failure is non-fatal: decide still returns 200', async () => {
+  it('mirror failure rolls the whole decision back and returns retryable 500', async () => {
     mockDecideWithElevation({ status: 'pending', riskTier: 'medium', elevationRequestId: 'elev-1' });
-    vi.mocked(db.transaction).mockRejectedValue(new Error('tx blew up'));
+    vi.mocked(db.transaction).mockReset();
+    vi.mocked(db.transaction).mockRejectedValueOnce(new Error('tx blew up'));
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: 'decide_failed', retryable: true });
   });
 });
 
@@ -3041,9 +3057,21 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
     };
   }
 
+  /**
+   * P2-2 (#4189): `serialize` now also emits the intent's resolved TARGET
+   * device, which `resolveTargetDevices` batches into at most two extra
+   * selects per page — `ai_agent_runs` (only for agent intents with NO
+   * explicit scope, whose target is still the run's device), then `devices`.
+   * Both go through `db.select().from(...).where(...)` with no `leftJoin`, so
+   * the from-stub gains a sibling `where` branch whose results are queued in
+   * that order. Defaults to `[[], []]` — no run, no device, `targetDevice:
+   * null` — which is what every pre-P2-2 assertion in this block expects.
+   */
   function mockPendingJoinResolvesAgent(
     rows: Array<{ approval: unknown; intent: unknown | null }>,
+    targetLookups: unknown[][] = [],
   ) {
+    const queued = [...targetLookups];
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
         leftJoin: vi.fn().mockReturnValue({
@@ -3051,8 +3079,21 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
             orderBy: vi.fn().mockResolvedValue(rows),
           }),
         }),
+        where: vi.fn(async () => queued.shift() ?? []),
       }),
     } as any);
+  }
+
+  /** Queues the two `resolveTargetDevices` selects (runs, then devices) onto a
+   *  `mockReturnValueOnce` chain — the shape GET /:id and decide use. */
+  function queueTargetDeviceSelects(runs: unknown[] = [], deviceRows: unknown[] = []) {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(runs) }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(deviceRows) }),
+      } as any);
   }
 
   function buildAgentApproval(overrides: Record<string, unknown> = {}) {
@@ -3174,7 +3215,10 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
 
   // ------------------------------------------------------------ GET /:id ---
 
-  function mockDetailWithAgentIntent(intent: unknown | null) {
+  function mockDetailWithAgentIntent(
+    intent: unknown | null,
+    targetLookups?: { runs?: unknown[]; devices?: unknown[] },
+  ) {
     vi.mocked(db.select)
       .mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -3186,6 +3230,7 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
           where: vi.fn().mockResolvedValue(intent ? [intent] : []),
         }),
       } as any);
+    queueTargetDeviceSelects(targetLookups?.runs, targetLookups?.devices);
   }
 
   it('GET /:id serializes origin ai_agent / agentName under the same live rule', async () => {
@@ -3213,7 +3258,10 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
 
   let lastAgentApprovalRow: Record<string, unknown> | undefined;
 
-  function mockDecideWithAgentIntent(opts: { intentOverrides?: Record<string, unknown> } = {}) {
+  function mockDecideWithAgentIntent(opts: {
+    intentOverrides?: Record<string, unknown>;
+    targetLookups?: { runs?: unknown[]; devices?: unknown[] };
+  } = {}) {
     const approvalRow = buildAgentApproval();
     const intentRow = buildAgentIntent(opts.intentOverrides);
 
@@ -3229,6 +3277,12 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
         where: vi.fn().mockResolvedValue([intentRow]),
       }),
     } as any);
+
+    // 3+4) P2-2 target-device resolution for the decide RESPONSE's
+    // `targetDevice` — runs, then devices. Queued here (not in
+    // mockAgentFanInTx) because the 403 tests never reach the transaction
+    // but the `Once` chain must stay aligned for the ones that do.
+    queueTargetDeviceSelects(opts.targetLookups?.runs, opts.targetLookups?.devices);
 
     lastAgentApprovalRow = approvalRow;
     return { approvalRow, intentRow };
@@ -3378,5 +3432,339 @@ describe('wave 3b Task 6: agent-originated intents — see it, decide it', () =>
     const body = await res.json();
     expect(body.approval.origin).toBe('ai_agent');
     expect(body.approval.agentName).toBe(AGENT_NAME);
+  });
+
+  // ---------------------------------------------------------------- P2-2 ---
+  // Task A3 (#4189): the DTO's additive `orgId` / `action` / `targetDevice`.
+
+  describe('P2-2 target-device projection', () => {
+    const scopedApproval = () =>
+      buildAgentApproval({
+        actionToolName: 'manage_services',
+        actionArguments: { deviceId: 'dev-scope', action: 'restart', serviceName: 'spooler' },
+      });
+
+    it('resolves targetDevice from the intent SCOPE (the run is device-less)', async () => {
+      mockPendingJoinResolvesAgent(
+        [
+          {
+            approval: scopedApproval(),
+            intent: buildAgentIntent({ scopeKind: 'device', scopeDeviceId: 'dev-scope' }),
+          },
+        ],
+        // A scoped intent never needs the run read, so `devices` is the only
+        // queued lookup.
+        [[{ id: 'dev-scope', orgId: 'org-9', hostname: 'WS-SCOPE' }]],
+      );
+
+      const res = await buildApp().request('/approvals/pending');
+      expect(res.status).toBe(200);
+      const [approval] = (await res.json()).approvals;
+      expect(approval.targetDevice).toEqual({ id: 'dev-scope', hostname: 'WS-SCOPE' });
+      expect(approval.orgId).toBe('org-9');
+      expect(approval.action).toBe('restart');
+    });
+
+    it('falls back to the RUN device for an intent with no scope', async () => {
+      mockPendingJoinResolvesAgent(
+        [{ approval: buildAgentApproval(), intent: buildAgentIntent() }],
+        [
+          [{ id: AGENT_RUN_ID, deviceId: 'dev-run' }],
+          [{ id: 'dev-run', orgId: 'org-9', hostname: 'WS-RUN' }],
+        ],
+      );
+
+      const res = await buildApp().request('/approvals/pending');
+      const [approval] = (await res.json()).approvals;
+      expect(approval.targetDevice).toEqual({ id: 'dev-run', hostname: 'WS-RUN' });
+      // execute_command's arguments carry no `action` discriminator.
+      expect(approval.action).toBeNull();
+    });
+
+    it('drops a target device that now belongs to another org (never renders its hostname)', async () => {
+      mockPendingJoinResolvesAgent(
+        [
+          {
+            approval: scopedApproval(),
+            intent: buildAgentIntent({ scopeKind: 'device', scopeDeviceId: 'dev-scope' }),
+          },
+        ],
+        [[{ id: 'dev-scope', orgId: 'org-OTHER', hostname: 'FOREIGN-HOST' }]],
+      );
+
+      const res = await buildApp().request('/approvals/pending');
+      const raw = await res.text();
+      expect(raw).not.toContain('FOREIGN-HOST');
+      expect(JSON.parse(raw).approvals[0].targetDevice).toBeNull();
+    });
+
+    it('emits targetDevice null for a tombstoned scope, with no device read at all', async () => {
+      mockPendingJoinResolvesAgent(
+        [
+          {
+            approval: scopedApproval(),
+            intent: buildAgentIntent({ scopeKind: 'device', scopeDeviceId: null }),
+          },
+        ],
+        // Nothing queued: a tombstone resolves to no device id, so neither
+        // the run nor the device lookup is reachable.
+        [],
+      );
+
+      const res = await buildApp().request('/approvals/pending');
+      const [approval] = (await res.json()).approvals;
+      expect(approval.targetDevice).toBeNull();
+    });
+
+    it('emits orgId/action/targetDevice null for a row with no linked intent', async () => {
+      mockPendingJoinResolvesAgent([
+        { approval: buildPendingApproval({ id: 'appr-plain' }), intent: null },
+      ]);
+
+      const res = await buildApp().request('/approvals/pending');
+      const [approval] = (await res.json()).approvals;
+      expect(approval.orgId).toBeNull();
+      expect(approval.targetDevice).toBeNull();
+      expect(approval.action).toBeNull();
+    });
+  });
+});
+
+// ---------------------------------------------------------------- P2-2 ----
+// Task B1 (#4189): batch challenge + batch decide. These live at the ROUTE
+// level (the rule logic itself is covered in
+// services/approvals/batchDecide.test.ts) because the thing that can only
+// break here is registration order: `/batch/assertion-challenge` has the same
+// shape as `/:id/assertion-challenge`, and Hono matches in registration order,
+// so a batch route declared after the param route would silently be handled
+// as `id === 'batch'`.
+describe('P2-2 batch decide routes', () => {
+  const BATCH_USER = TEST_USER.id;
+
+  function batchIntent(n: number, overrides: Record<string, unknown> = {}) {
+    return {
+      id: `intent-b${n}`,
+      orgId: 'org-9',
+      actionName: 'manage_services',
+      arguments: { deviceId: `dev-${n}`, action: 'restart' },
+      argumentDigest: `digest-b${n}`,
+      source: 'ai_agent',
+      status: 'pending_approval',
+      approvalScope: 'supervised',
+      requestedByUserId: null,
+      requestingAgentRunId: 'run-sweep-1',
+      requestingClientLabel: 'Patch Hygiene Agent',
+      scopeKind: 'device',
+      scopeDeviceId: `dev-${n}`,
+      ...overrides,
+    };
+  }
+
+  function batchApproval(n: number, overrides: Record<string, unknown> = {}) {
+    return buildPendingApproval({
+      id: `appr-b${n}`,
+      userId: BATCH_USER,
+      actionToolName: 'manage_services',
+      actionArguments: { deviceId: `dev-${n}`, action: 'restart' },
+      riskTier: 'medium',
+      intentId: `intent-b${n}`,
+      boundArgumentDigest: `digest-b${n}`,
+      elevationRequestId: null,
+      ...overrides,
+    });
+  }
+
+  /** Table-dispatched select stub — same idea as the service suite's, so the
+   *  per-row reads don't depend on a global call-order queue. */
+  function mockBatchDb(rows: Array<{ approval: any; intent: any }>, devicesRows: unknown[] = []) {
+    const byId = new Map(rows.map((r) => [r.approval.id, r]));
+    const order = rows.map((r) => r.approval.id);
+    let cursor = 0;
+    // The intent load is a per-row FOLLOW-UP to that row's own pre-fetch, and
+    // a row can return early before ever reaching it, so the intent branch
+    // tracks the row the pre-fetch last handed out rather than keeping an
+    // independent cursor that would drift out of lockstep.
+    let currentId: string | undefined;
+    vi.mocked(db.select).mockImplementation(
+      (proj?: any) =>
+        ({
+          from: (table: any) => {
+            if (table === approvalRequests) {
+              return {
+                leftJoin: () => ({ where: async () => rows }),
+                where: async () => {
+                  currentId = order[cursor++]!;
+                  return [byId.get(currentId)!.approval];
+                },
+              };
+            }
+            // Table IDENTITY, not a column-shape heuristic: the mocked
+            // approvals/intents schemas share column names, so shape-matching
+            // would silently answer the wrong read if either mock gains a key.
+            if (table === actionIntents) {
+              return { where: async () => [byId.get(currentId!)!.intent] };
+            }
+            if (proj && 'customerDisplayName' in proj) {
+              return { innerJoin: () => ({ innerJoin: () => ({ where: async () => [] }) }) };
+            }
+            // authenticator-device reads (webauthn_platform, then mobile_hw_key)
+            return { where: async () => devicesRows };
+          },
+        }) as any,
+    );
+  }
+
+  function mockBatchTx() {
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const set = () => ({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn(async () => [{ ...batchApproval(1), status: 'approved' }]),
+        }),
+      });
+      const tx = {
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({ for: vi.fn(async () => [{ id: 'intent-b1' }]) })),
+          })),
+        })),
+        update: vi.fn(() => ({ set: vi.fn(set) })),
+        insert: vi.fn(() => ({ values: vi.fn(async () => undefined) }) as any),
+      };
+      return fn(tx);
+    });
+  }
+
+  it('POST /batch/assertion-challenge mints ONE challenge under the batch key', async () => {
+    mockBatchDb([
+      { approval: batchApproval(1), intent: batchIntent(1) },
+      { approval: batchApproval(2), intent: batchIntent(2) },
+    ]);
+
+    const res = await buildApp().request('/approvals/batch/assertion-challenge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        approvalRequestIds: ['appr-b1', 'appr-b2'],
+        decision: 'approved',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    // Registration order held: the param route would have 404'd on id 'batch'.
+    expect(vi.mocked(generateApprovalAssertionOptions)).toHaveBeenCalledTimes(1);
+    const key = vi.mocked(generateApprovalAssertionOptions).mock.calls[0]![0].approvalId;
+    expect(key).toMatch(/^batch-approved-[0-9a-f]{64}$/);
+  });
+
+  it('POST /batch/assertion-challenge 422s a heterogeneous set without minting', async () => {
+    mockBatchDb([
+      { approval: batchApproval(1), intent: batchIntent(1) },
+      {
+        approval: batchApproval(2, { actionToolName: 'execute_command' }),
+        intent: batchIntent(2, { actionName: 'execute_command' }),
+      },
+    ]);
+
+    const res = await buildApp().request('/approvals/batch/assertion-challenge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        approvalRequestIds: ['appr-b1', 'appr-b2'],
+        decision: 'approved',
+      }),
+    });
+
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({
+      error: 'batch_not_homogeneous',
+      offending: ['appr-b2'],
+    });
+    expect(vi.mocked(generateApprovalAssertionOptions)).not.toHaveBeenCalled();
+  });
+
+  it('POST /batch/assertion-challenge mints NOTHING for a demoted approver', async () => {
+    // Review fix round 1, minor: live authorization runs inside the loader, so
+    // a caller who lost action-and-target authority over even one row cannot
+    // mint (and burn) a batch challenge covering it.
+    mockBatchDb([
+      { approval: batchApproval(1), intent: batchIntent(1) },
+      { approval: batchApproval(2), intent: batchIntent(2) },
+    ]);
+    vi.mocked(isAgentIntentDecideAuthorized).mockImplementation(
+      async (_userId: string, intent: any) => intent.id !== 'intent-b2',
+    );
+
+    const res = await buildApp().request('/approvals/batch/assertion-challenge', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        approvalRequestIds: ['appr-b1', 'appr-b2'],
+        decision: 'approved',
+      }),
+    });
+
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({
+      error: 'batch_not_homogeneous',
+      offending: ['appr-b2'],
+    });
+    expect(vi.mocked(generateApprovalAssertionOptions)).not.toHaveBeenCalled();
+    expect(vi.mocked(issueMobileAssertionNonce)).not.toHaveBeenCalled();
+  });
+
+  it('POST /batch/decide returns per-row results and verifies assurance ONCE', async () => {
+    mockBatchDb([
+      { approval: batchApproval(1), intent: batchIntent(1) },
+      { approval: batchApproval(2), intent: batchIntent(2) },
+    ]);
+    mockBatchTx();
+
+    const res = await buildApp().request('/approvals/batch/decide', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        approvalRequestIds: ['appr-b1', 'appr-b2'],
+        decision: 'approved',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.results.map((r: any) => [r.id, r.httpStatus])).toEqual([
+      ['appr-b1', 200],
+      ['appr-b2', 200],
+    ]);
+    expect(vi.mocked(assertApprovalAssurance)).toHaveBeenCalledTimes(1);
+  });
+
+  it('POST /batch/decide 403s step_up_required for the whole batch', async () => {
+    mockBatchDb([{ approval: batchApproval(1), intent: batchIntent(1) }]);
+    mockBatchTx();
+    vi.mocked(assertApprovalAssurance).mockRejectedValue(new StepUpRequiredError(3, 1));
+
+    const res = await buildApp().request('/approvals/batch/decide', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approvalRequestIds: ['appr-b1'], decision: 'approved' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'step_up_required', requiredLevel: 3 });
+    expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/assertion-challenge still reaches the single-card route', async () => {
+    // Regression guard for the inverse of the ordering bug above: adding the
+    // batch routes must not shadow the param route for a real approval id.
+    // An unlinked row, so the shared live-authorization filter short-circuits
+    // and the only thing under test is which handler the path reached.
+    mockSelectResolves([buildPendingApproval({ id: 'appr-b1' })]);
+    const res = await buildApp().request('/approvals/appr-b1/assertion-challenge', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(200);
+    expect(vi.mocked(generateApprovalAssertionOptions).mock.calls[0]![0].approvalId).toBe(
+      'appr-b1',
+    );
   });
 });

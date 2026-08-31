@@ -27,13 +27,17 @@ export type OrgMergePolicy =
   | { kind: 'leave-for-erasure'; note: string }
   | { kind: 'derived'; note: string } // trigger-maintained; never written directly
   | { kind: 'follows-parent'; note: string } // no org_id column; rows travel with their parent
-  | { kind: 'loser-shell' }; // organizations itself
+  | { kind: 'loser-shell' } // organizations itself
+  | { kind: 'blocks-merge'; note: string }; // rows FORBID the merge outright; engine refuses pre-walk — see specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md
 
 // device_commands / user_sso_identities / sso_sessions / psa_ticket_mappings /
-// deployment_results / software_versions have no org_id column of their own:
+// deployment_results / software_versions / report_runs have no org_id column
+// of their own:
 // tenancy is inferred by joining to a parent row, so once the parent's
 // org_id is repointed these rows travel along for free — the merge engine
-// does nothing to them directly.
+// does nothing to them directly. (Exception: `report_runs` rows under a
+// DUPLICATE narrative definition are re-homed by the `mergeReports` custom
+// executor before the repoint; the rest still just travel with their parent.)
 //
 // These names are NOT retyped here: they're derived below from
 // tenantCascade's ASSOCIATED_SYSTEM_SCOPED_TABLES (its FK pre-clear list for
@@ -55,6 +59,7 @@ const FOLLOWS_PARENT_NOTES: Readonly<Record<string, string>> = {
   psa_ticket_mappings: 'connection/alert/device-keyed',
   deployment_results: 'deployment-keyed',
   software_versions: 'parent-keyed (software_catalog)',
+  report_runs: 'parent-keyed (reports)',
 };
 const FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS = new Set(['software_deployments']);
 
@@ -79,6 +84,14 @@ function buildFollowsParentEntries(): Record<string, OrgMergePolicy> {
 
 const SPECIAL: Record<string, OrgMergePolicy> = {
   organizations: { kind: 'loser-shell' },
+
+  // Track A durable authorization bindings copy both the automation owner and
+  // the resource owner observed at admission. A plain org_id repoint leaves
+  // expected_resource_org_id naming the loser and the deferred
+  // automation_resource_bindings_expected_tenant_chk rejects the transaction.
+  // The custom executor advances both axes together; partner-owned/system
+  // bindings have a NULL expected_resource_org_id and remain unchanged.
+  automation_resource_bindings: { kind: 'custom', note: 'repoint org_id and an org-owned expected_resource_org_id together so the durable authorization binding remains valid after the parent automation moves' },
 
   // Append-only (BEFORE UPDATE triggers RAISE unconditionally; per-org hash chain):
   audit_logs: { kind: 'leave-for-erasure', note: 'append-only + per-org hash chain; rows die with the loser shell' },
@@ -122,6 +135,13 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // itself stays with the source org (ai_agent_runs disposition above) —
   // same reasoning, not a separate immutability trigger.
   ai_alert_verdicts: { kind: 'leave-for-erasure', note: 'verdicts hang off ai_agent_runs (leave-for-erasure) and cascade with them; alert/group FKs cascade too' },
+  // ai_agent_schedules (Phase 2 wave P2-2, #4189): dual-owner (org_id XOR
+  // partner_id) config, same "not a normal org_id table" shape as ai_agents
+  // above. An org override only makes sense against the LOSER org's own
+  // partner-baseline relationship; the survivor keeps whatever override it
+  // already has (or none, falling back to the baseline). Partner baseline
+  // rows have org_id NULL and are never touched by an org merge at all.
+  ai_agent_schedules: { kind: 'leave-for-erasure', note: 'org override rows tighten a partner baseline for the LOSER org only; the survivor keeps its own overrides. Partner rows have org_id NULL and are not merge participants.' },
   // ai_agent_fix_watches (Wave 6 PR 2, #3828): a fix-held watch is per-run
   // HISTORY tied to a specific ai_agent_runs row that itself never follows
   // an org merge (see ai_agent_runs above) — repointing the watch while its
@@ -129,6 +149,39 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // across two orgs. Same composite (org_id, partner_id) FK fragility as
   // llm_egress_events/ai_unattended_exposure applies too.
   ai_agent_fix_watches: { kind: 'leave-for-erasure', note: 'watch history is tied to a run that itself stays with the source org (ai_agent_runs disposition); composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
+  // ticket_drafts (P2-4, #4191): CUSTOM, not leave-for-erasure — the row
+  // must not survive INTO the merge, or `tickets`' own `repoint` aborts it.
+  //
+  // `tickets` is a plain `repoint`: `UPDATE tickets SET org_id = survivor
+  // WHERE org_id = loser` runs unconditionally in the move phase, for every
+  // ticket the loser org owns. `ticket_drafts_ticket_org_fk (ticket_id,
+  // org_id) -> tickets(id, org_id)` requires a draft's org_id to match its
+  // ticket's org_id. `leave-for-erasure` is a no-op during the merge itself
+  // (rows are only actually destroyed later, when the loser org shell is
+  // erased) — so a loser-org draft sits untouched with org_id = loser while
+  // the tickets repoint just changed ITS ticket's org_id to survivor. The
+  // instant that happens the FK's two legs disagree, and — now that this
+  // constraint is DEFERRABLE INITIALLY IMMEDIATE (org-lifecycle contract) —
+  // that disagreement raises 23503 immediately rather than waiting for
+  // COMMIT, aborting the whole merge the moment the loser org holds a
+  // single ticket with a draft. This is NOT about ticket_drafts_run_org_fk /
+  // ticket_drafts_intent_org_fk (those legs are fine: run_id/intent_id stay
+  // NULL-safe because MATCH SIMPLE never checks a NULL column, and neither
+  // ai_agent_runs nor action_intents ever repoint, so there's no org_id
+  // drift on that side to detect) — it is specifically the ticket_org_fk
+  // leg, driven by `tickets` repointing out from under it.
+  //
+  // Fix: classify `custom` with a RESOLVE-phase executor
+  // (`resolveTicketDrafts`, orgMergeCustomExecutors.ts) that DELETEs every
+  // loser-org ticket_drafts row before ANY table's `move` phase runs (the
+  // walk completes `resolve` for every table before starting `move` on any
+  // — see `MergePolicyPhase` in orgMerge.ts), so by the time `tickets`
+  // repoints, no draft is left to disagree with it. Drafts are ephemeral AI
+  // proposals awaiting human approval (not the ticket_comments row itself),
+  // so losing an in-flight draft in an org merge is acceptable — a fresh
+  // triage run under the surviving organization regenerates one. The `move`
+  // half is a no-op (resolve already leaves zero rows).
+  ticket_drafts: { kind: 'custom', note: 'resolve-phase DELETE of every loser-org row before tickets repoints (its ticket_org_fk composite FK would otherwise 23503 the moment tickets moves org_id out from under a draft) — drafts are ephemeral AI proposals, not the durable ticket_comments record, so dropping them is acceptable; see orgMergeCustomExecutors.ts resolveTicketDrafts/moveTicketDrafts' },
   // ai_agent_circuit_state (Wave 6 PR 2, #3828): per-(org_id, agent_id)
   // failure-streak STATE, not a config row to carry forward — repointing
   // would let a loser org's failure streak silently open (or mask) a
@@ -156,6 +209,20 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // FK to organizations, so a bare org_id UPDATE breaks the moment the two
   // orgs' partners differ. No writer exists yet in this PR either way.
   ai_unattended_exposure: { kind: 'leave-for-erasure', note: 'unattended-exposure history is per-org (like llm_egress_events); composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
+
+  // Durable PAM actuation evidence (Track E org-merge contract,
+  // specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md): never
+  // re-tenanted, never destroyed, never bypassed — a loser org holding ANY
+  // row is refused outright. Repoint is physically unreachable
+  // (pam_actuation_results: UPDATE revoked from breeze_app + unconditional
+  // 42501 trigger; the composite (id, org_id) FK chain has no ON UPDATE
+  // CASCADE), and leave-for-erasure would break
+  // pam_actuations(device_id, org_id) -> devices(id, org_id) the moment the
+  // devices repoint runs — which devices_pam_history_move_guard RAISEs 23514
+  // on anyway. The engine refuses BEFORE the walk (collectMergeBlockers), so
+  // neither trigger can fire mid-merge.
+  pam_actuations: { kind: 'blocks-merge', note: 'durable PAM lifecycle evidence is source-frozen; any loser row refuses the merge — devices_pam_history_move_guard applied at org granularity' },
+  pam_actuation_results: { kind: 'blocks-merge', note: 'append-only PAM evidence (UPDATE revoked + unconditional RAISE); cannot exist without a pam_actuations parent — listed for registry completeness and preview counting' },
 
   // partner_export_configuration_org_state is trigger-maintained (SECURITY
   // DEFINER triggers on the policy tables regenerate it — verified in
@@ -231,16 +298,32 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   //   plugin_installations <- plugin_logs.installation_id     (NO ACTION, NOT NULL)
   //   playbook_definitions <- playbook_executions.playbook_id (NO ACTION, NOT NULL)
   //   pam_signer_groups    <- pam_rules.match_signer_group_id (ON DELETE RESTRICT)
+  //   reports              <- report_runs.report_id           (NO ACTION, NOT NULL)
   //   incidents            <- incident_actions.incident_id,
   //                           incident_evidence.incident_id   (2x NO ACTION, NOT NULL)
   //
-  // The first four re-home their children onto the SURVIVOR's row and then
+  // The first five re-home their children onto the SURVIVOR's row and then
   // delete the now-unreferenced duplicate. `incidents` does not delete at all
   // (see its note) — an incident is a case file, not a derived row.
   discovered_assets: { kind: 'custom', note: 're-home network_monitors/snmp_devices/unifi_* children onto the survivor asset with the same ip_address, then delete the duplicate; SPLIT across phases because discovered_assets rides sites\' ON UPDATE CASCADE (see CUSTOM_RESOLVE_EXECUTORS)' },
   plugin_installations: { kind: 'custom', note: 're-home plugin_logs.installation_id onto the survivor installation for the same catalog_id, then delete the duplicate' },
   playbook_definitions: { kind: 'custom', note: 're-home playbook_executions.playbook_id (and remediation_suggestions.playbook_id) onto the survivor definition with the same lower(name), then delete the duplicate' },
   pam_signer_groups: { kind: 'custom', note: 're-home pam_rules.match_signer_group_id onto the survivor group with the same name, then delete the duplicate (the FK is ON DELETE RESTRICT — a plain dedupe DELETE raises 23503)' },
+  // CORRECTED (P2-3 review, #4190): `reports` was a plain `repoint` — correct
+  // until P2-3 gave it its FIRST collidable unique index,
+  // `reports_source_ai_agent_schedule_uniq (org_id, source_ai_agent_schedule_id)
+  // WHERE source_ai_agent_schedule_id IS NOT NULL`. A PARTNER-WIDE narrative
+  // schedule mints one definition per org, so merging two orgs under the same
+  // partner repoints both onto `(survivor, same schedule)` -> 23505, and the
+  // whole merge aborts. `repoint-dedupe` cannot fix it either: its DELETE hits
+  // `report_runs.report_id` (NO ACTION, NOT NULL, non-deferrable — verified
+  // against pg_constraint) and raises 23503 instead. Same shape as
+  // plugin_installations/plugin_logs, so the same remedy.
+  //
+  // Only narrative definitions dedupe: every other report has a NULL
+  // source_ai_agent_schedule_id, and the executor's key match is a plain `=`,
+  // which is NULL-blind exactly like the partial index it mirrors.
+  reports: { kind: 'custom', note: "re-home report_runs.report_id onto the survivor's definition for the same source_ai_agent_schedule_id, then delete the duplicate definition, then repoint the rest; NEVER delete the runs — they are the customer's generated artifacts and report_runs.report_id is a NOT NULL NO ACTION child" },
   incidents: { kind: 'custom', note: "NULL the colliding loser row's source_ref (it leaves the incidents_source_ref_unique partial index, which is WHERE source_ref IS NOT NULL) and record the old value in `summary`; NEVER delete — incident_actions/incident_evidence are NOT NULL NO ACTION children and an incident is a case file, not a derived row" },
   contacts: { kind: 'custom', note: 'clear loser is_primary if survivor has one, then repoint (partial unique)' },
   backup_configs: { kind: 'custom', note: 'clear loser is_default if survivor has one, then repoint (org-owned storage creds must NOT be dropped)' },
@@ -308,6 +391,8 @@ const REPOINT_TABLES: readonly string[] = [
   "access_reviews",
   "account_deletion_requests",
   "agent_logs",
+  "agent_rollback_directives",
+  "agent_rollback_events",
   "ai_action_plans",
   "ai_screenshots",
   "ai_sessions",
@@ -456,6 +541,8 @@ const REPOINT_TABLES: readonly string[] = [
   "pax8_subscription_snapshots",
   "peripheral_events",
   "peripheral_policies",
+  "peripheral_policy_delivery_events",
+  "peripheral_policy_device_states",
   "playbook_executions",
   "plugin_instances",
   "plugins",
@@ -476,7 +563,7 @@ const REPOINT_TABLES: readonly string[] = [
   "recovery_readiness",
   "recovery_tokens",
   "remote_sessions",
-  "reports",
+  // "reports" is SPECIAL (custom) — see its note there.
   "restore_jobs",
   "roles",
   "s1_actions",

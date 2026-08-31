@@ -77,7 +77,7 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
 // scoped by design) — see apps/api/src/db/schema/devices.ts.
 const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'device_commands', // Agent WS path: system-scoped command queue, no tenant isolation needed.
-  'intent_outbox', // Action intents transactional outbox (spec 2026-07-18): system-scoped, workers-only queue, no tenant isolation needed. FK-cascades from action_intents (org-scoped, RLS shape 1). Mirrors device_commands.
+  'intent_outbox', // Generalized transactional outbox: system-scoped workers-only queue. Its XOR parent FK cascades from either action_intents or pam_actuations (both direct-org, forced RLS). Mirrors device_commands.
   'manifest_signing_keys', // System-scoped: per-deployment agent-update signing key. Forced RLS, no policies → only system context.
   'manifest_signing_key_delegations', // System-scoped: signed authorisation to add ONE unseen agent-update signing key (Wave 6 Task 7). No tenant column — per-deployment agent-update infrastructure. Forced RLS, single system-only policy (USING + WITH CHECK) → only system context. No org_id/device_id, so no cascade-list registration applies.
   'm365_consent_sessions', // OAuth consent state: forced RLS, system-only policies; tenant scopes must never read verifier/nonce material.
@@ -311,6 +311,16 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // ai_agents_one_owner_chk enforces exactly one axis. Functional cross-partner
   // forge proof: aiAgentsPartnerRls.integration.test.ts.
   'ai_agents',
+  // ai_agent_schedules (Phase 2 wave P2-2, #4189): a schedule is org-scoped
+  // (org_id set, an override of a partner baseline) OR partner-wide
+  // (partner_id set, org_id NULL, the baseline). Created dual-axis from day
+  // one in 2026-09-23-ai-agents-scheduled-sweeps. Same blindspot as
+  // ai_agents above: the org_id column means org-tenant auto-discovery
+  // already asserts the breeze_has_org_access branch, so this entry is what
+  // asserts the breeze_has_partner_access (partner-wide) branch. CHECK
+  // ai_agent_schedules_one_owner_chk enforces exactly one axis. Functional
+  // cross-partner forge proof: aiAgentSchedulesPartnerRls.integration.test.ts.
+  'ai_agent_schedules',
   // custom_field_definitions: a field is org-scoped (org_id set) OR
   // partner-wide (partner_id set, org_id NULL). Shipped org-only in the
   // baseline; converted to dual-axis in 2026-06-11-i-custom-fields-dual-axis-rls.
@@ -416,6 +426,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // cross-partner forge + evaluation fan-out proof:
   // automationPoliciesPartnerRls.integration.test.ts.
   'automation_policies',
+  // automation_resource_bindings (S0 Track A): copies the standalone
+  // automation's org XOR partner owner axes. The parent-owner constraint
+  // trigger rejects drift, and automationResourceBindings.integration.test.ts
+  // proves both org and partner forge paths through the real app role.
+  'automation_resource_bindings',
   // automations (#2133, epic #2135): org-scoped OR partner-wide standalone
   // automation ("on device.offline run diagnostic script" across all orgs).
   // automation_runs stays parent-join (its EXISTS policies gained the partner
@@ -1918,7 +1933,11 @@ describe('manifest_signing_keys RLS — system-only enforcement (#639)', () => {
           keyId: seededKeyId,
           publicKeyB64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
           privateKeyEnc: 'enc:v1:forge',
-          status: 'active',
+          // Visibility is independent of lifecycle status. Use a retired row
+          // so this suite remains isolated when a preceding signing/rollback
+          // suite has legitimately created the deployment's one active key.
+          status: 'retired',
+          retiredAt: new Date(),
         });
       });
       insertedKeyIds.push(seededKeyId);

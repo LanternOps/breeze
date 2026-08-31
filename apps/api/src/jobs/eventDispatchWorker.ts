@@ -46,14 +46,11 @@ const { db } = dbModule;
  * comment for why not this queue): `receipt-retention` (daily batched-delete
  * pruning of `event_delivery_receipts`) and `shadow-compare` (5-minute parity
  * check between shadow-mode routing and local delivery, the evidence gate for
- * flipping to enforce). Both are registered whenever the MAIN worker above
- * actually starts (mode != 'off', or draining a backlog) — including in
- * `mode='off'` if a backlog forces a start. KNOWN GAP: if mode goes back to
- * 'off' and the queue fully drains, the worker (and therefore both
- * maintenance repeatables) stops, so residual receipts from a completed
- * rollout only age out the next time the worker is started again (mode
- * re-enabled, or a fresh backlog appears) — see
- * `registerEventDispatchMaintenanceRepeatables`'s docstring for the tradeoff.
+ * flipping to enforce). Both are registered on EVERY boot (#4124),
+ * independently of whether the MAIN worker above starts — retention is
+ * exactly the job that must keep running once a rollout ends and the queue
+ * drains, and shadow-compare re-checks the mode at run time. See
+ * `registerEventDispatchMaintenanceRepeatables`'s docstring.
  */
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -757,19 +754,23 @@ export function createEventDispatchMaintenanceWorker(): Worker {
 
 /**
  * Registers both maintenance repeatables. Called from
- * `initializeEventDispatchWorker` whenever the MAIN worker actually starts
- * (mode != 'off', or draining a backlog), unconditionally regardless of the
- * current mode:
+ * `initializeEventDispatchWorker` on EVERY boot (#4124) — including
+ * `mode='off'` with an empty queue, when the main worker deliberately does
+ * not start. Both job bodies are cheap and self-gating, so there is nothing
+ * to gate the registration on:
  *
- *  - retention: ideally would also run while mode='off' if receipts remain
- *    from a completed rollout, but that requires a DB probe at boot just to
- *    decide "should retention run" for a purely housekeeping job. Accepted
- *    gap (see `initializeEventDispatchWorker`'s docstring): once mode returns
- *    to 'off' and the queue drains, residual receipts age out only the next
- *    time the worker starts (mode re-enabled, or a backlog reappears).
- *  - shadow-compare: cheap to register unconditionally; it re-checks
- *    `eventDispatchMode() === 'shadow'` on every RUN, not just here at
- *    registration (see `runShadowComparisonSweep`) — mode can flip between
+ *  - retention: MUST run while mode='off' — that is exactly when residual
+ *    `event_delivery_receipts` from a completed rollout need to age out. The
+ *    original wave-3.5c shape tied registration to the main worker starting,
+ *    which meant those rows only aged out the next time the worker happened
+ *    to start (mode re-enabled, or a backlog reappeared). Running it always
+ *    costs three index-driven DELETE passes plus one COUNT per day; on an
+ *    empty table that is nothing, and it needs no boot-time DB probe to
+ *    decide whether it is worth scheduling.
+ *  - shadow-compare: it re-checks `eventDispatchMode() === 'shadow'` on every
+ *    RUN, not just here at registration (see `runShadowComparisonSweep`), and
+ *    returns `{ skipped: true }` outside shadow mode — so a tick under
+ *    mode='off' is a single function call, and mode can flip between
  *    5-minute ticks without a worker restart.
  *
  * Registration idiom (remove existing repeatables then add) mirrors
@@ -820,10 +821,15 @@ export function createEventDispatchWorker(): Worker {
 }
 
 /**
- * Starts the worker whenever `eventDispatchMode() !== 'off'`, OR the queue
- * already holds jobs — so flipping the mode back to `off` still drains
- * whatever is in flight rather than abandoning it. No-op (one log line) only
- * when both are false.
+ * Starts the MAIN worker whenever `eventDispatchMode() !== 'off'`, OR the
+ * queue already holds jobs — so flipping the mode back to `off` still drains
+ * whatever is in flight rather than abandoning it.
+ *
+ * The MAINTENANCE worker and its two repeatables, by contrast, are registered
+ * on every boot regardless of mode or backlog (#4124) — see
+ * `registerEventDispatchMaintenanceRepeatables`. Retention is precisely the
+ * job that has to keep running once a rollout ends, and shadow-compare
+ * self-gates at run time.
  *
  * Called from index.ts's `initializeWorkers()` AFTER its `Promise.allSettled`
  * block completes — by then `registerAllEventSubscribers()` (synchronous, run
@@ -833,8 +839,9 @@ export function createEventDispatchWorker(): Worker {
  */
 export async function initializeEventDispatchWorker(): Promise<void> {
   const mode = eventDispatchMode();
+  let startMainWorker = mode !== 'off';
 
-  if (mode === 'off') {
+  if (!startMainWorker) {
     // A throw here (e.g. Redis unreachable while constructing the queue) must
     // NEVER propagate: `EVENT_DISPATCH_MODE=off` is the default, so an
     // unguarded probe failure would set `workerStatus['eventDispatch'] =
@@ -853,24 +860,29 @@ export async function initializeEventDispatchWorker(): Promise<void> {
       backlog = 0;
     }
     if (backlog === 0) {
-      console.log('[EventDispatchWorker] mode=off and queue empty — worker not started');
-      return;
+      console.log(
+        '[EventDispatchWorker] mode=off and queue empty — main worker not started (maintenance repeatables still register)'
+      );
+    } else {
+      console.warn(
+        `[EventDispatchWorker] mode=off but ${backlog} job(s) remain queued — starting worker to drain them`
+      );
+      startMainWorker = true;
     }
-    console.warn(
-      `[EventDispatchWorker] mode=off but ${backlog} job(s) remain queued — starting worker to drain them`
-    );
   }
 
-  try {
-    worker = createEventDispatchWorker();
-    attachWorkerObservability(worker, 'eventDispatch');
-    console.log(`[EventDispatchWorker] Initialized (mode=${mode})`);
-  } catch (error) {
-    if (worker) {
-      await worker.close().catch(() => {});
-      worker = null;
+  if (startMainWorker) {
+    try {
+      worker = createEventDispatchWorker();
+      attachWorkerObservability(worker, 'eventDispatch');
+      console.log(`[EventDispatchWorker] Initialized (mode=${mode})`);
+    } catch (error) {
+      if (worker) {
+        await worker.close().catch(() => {});
+        worker = null;
+      }
+      throw error;
     }
-    throw error;
   }
 
   try {
@@ -879,12 +891,14 @@ export async function initializeEventDispatchWorker(): Promise<void> {
     await registerEventDispatchMaintenanceRepeatables();
     console.log('[EventDispatchWorker] Maintenance repeatables registered (receipt-retention, shadow-compare)');
   } catch (error) {
-    // ISOLATED failure domain, deliberately NOT rethrown: the main worker
-    // constructed just above is already healthy and serving real event
-    // traffic, and this function's caller (index.ts's initializeWorkers)
-    // sets `workerStatus['eventDispatch'] = true` only if this promise
-    // resolves — the exact off-mode-backlog-probe lesson a few lines up
-    // applies here too. Maintenance registration does 3+ fresh Redis
+    // ISOLATED failure domain, deliberately NOT rethrown: whatever the main
+    // worker is doing (running and serving real event traffic, or
+    // deliberately not started because mode='off') is unaffected, and this
+    // function's caller (index.ts's initializeWorkers) sets
+    // `workerStatus['eventDispatch'] = true` only if this promise resolves —
+    // the exact off-mode-backlog-probe lesson a few lines up applies here
+    // too, and applies HARDER now that this block runs on the default
+    // mode='off' boot as well. Maintenance registration does 3+ fresh Redis
     // round-trips (getRepeatableJobs, 2x removeRepeatableByKey/add), so a
     // transient Redis blip during boot must degrade to "retention/
     // shadow-compare didn't get scheduled this boot" rather than pinning
@@ -899,8 +913,27 @@ export async function initializeEventDispatchWorker(): Promise<void> {
       await maintenanceQueue.close().catch(() => {});
       maintenanceQueue = null;
     }
-    console.error('[EventDispatchWorker] Failed to register maintenance repeatables (main worker unaffected):', error);
-    captureException(error instanceof Error ? error : new Error(String(error)));
+    // Because the error IS swallowed, this report is the only visible trace
+    // that retention never got scheduled — `workerStatus` deliberately gets no
+    // `eventDispatchMaintenance` key, since `readiness.ts` fails readiness on
+    // `outcomes.every(Boolean)` and a `false` there would pin `/ready` exactly
+    // as this block exists to prevent. So it has to be findable on its own:
+    // a greppable `errorId` in the log line (the convention this file already
+    // uses for EVENT_DISPATCH_RECEIPTS_ABANDONED / _SHADOW_MISMATCH) and the
+    // `worker` Sentry tag — the same triage axis `attachWorkerObservability`
+    // puts on every job-level failure from this worker, and one of the few
+    // tag names that survives the sentry.ts scrubber allowlist.
+    console.error(
+      `[EventDispatchWorker] maintenance-registration-failed ${JSON.stringify({
+        errorId: 'EVENT_DISPATCH_MAINTENANCE_REGISTRATION_FAILED',
+        mainWorkerStarted: startMainWorker,
+        mode
+      })}`,
+      error
+    );
+    captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+      worker: 'eventDispatchMaintenance'
+    });
   }
 }
 

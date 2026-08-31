@@ -1,12 +1,18 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../reports/reportExport', () => ({
+  exportReport: vi.fn().mockResolvedValue(undefined),
+  getBrowserTimezone: () => 'UTC',
+}));
 
 import RunDetailPage from './RunDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { exportReport } from '../reports/reportExport';
 
 const fetchMock = vi.mocked(fetchWithAuth);
+const exportReportMock = vi.mocked(exportReport);
 
 const json = (payload: unknown, ok = true, status = 200): Response =>
   ({ ok, status, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
@@ -90,6 +96,132 @@ const BUDGET = {
   accountingMode: 'full' as const,
 };
 
+// Phase 2 wave P2-2 (#4189, Task 14) — a `sweep`-profile run's outcome
+// projection (`AiAgentRunSweepDto`). Six findings, one per sweep kind, so the
+// table exercises every kind label plus a proposal in each disposition.
+const SWEEP = {
+  scheduleId: 'sched-1',
+  occurrenceKey: '2026-08-29T02:00',
+  kinds: ['service_down', 'unpatched_critical', 'disk_pressure', 'stale_agents', 'pending_reboots', 'failed_backups'],
+  summary: 'Six problems found across three devices.',
+  evidenceTruncated: true,
+  findings: [
+    {
+      kind: 'service_down',
+      severity: 'critical',
+      deviceId: 'd1',
+      deviceHostname: 'WKS-01',
+      title: 'Print Spooler is stopped',
+      detail: 'The watched Spooler service has been stopped since 09:12.',
+      evidence: { serviceName: 'Spooler', state: 'stopped' },
+      proposal: {
+        tool: 'manage_services',
+        action: 'restart',
+        disposition: 'intent_created',
+        reason: null,
+        intentId: 'intent-9',
+      },
+    },
+    {
+      kind: 'unpatched_critical',
+      severity: 'high',
+      deviceId: 'd2',
+      deviceHostname: 'WKS-02',
+      title: '3 critical CVEs unpatched',
+      detail: 'Three critical vulnerabilities have no applied patch.',
+      evidence: { cveCount: 3 },
+      proposal: {
+        tool: 'remediate_vulnerability',
+        action: null,
+        disposition: 'refused',
+        reason: 'not_allowlisted',
+        intentId: null,
+      },
+    },
+    {
+      kind: 'disk_pressure',
+      severity: 'medium',
+      deviceId: null,
+      deviceHostname: null,
+      title: 'Volume C: is 94% full',
+      detail: 'Free space has fallen below the 10% floor.',
+      evidence: { percentUsed: 94 },
+      proposal: null,
+    },
+    {
+      kind: 'stale_agents',
+      severity: 'low',
+      deviceId: 'd3',
+      deviceHostname: 'SRV-03',
+      title: 'Agent has not checked in for 6 days',
+      detail: 'Last heartbeat was 2026-08-23.',
+      evidence: { lastSeenDays: 6 },
+      proposal: {
+        tool: 'manage_services',
+        action: 'restart',
+        disposition: 'cap_reached',
+        reason: 'max_actions_per_run',
+        intentId: null,
+      },
+    },
+    {
+      kind: 'pending_reboots',
+      severity: 'info',
+      deviceId: 'd3',
+      deviceHostname: 'SRV-03',
+      title: 'Reboot pending since Tuesday',
+      detail: 'A servicing operation is waiting on a restart.',
+      evidence: { pendingSince: '2026-08-25' },
+      proposal: {
+        tool: 'manage_services',
+        action: 'restart',
+        disposition: 'error',
+        reason: 'intent_error',
+        intentId: null,
+      },
+    },
+    {
+      kind: 'failed_backups',
+      severity: 'high',
+      deviceId: 'd2',
+      deviceHostname: 'WKS-02',
+      title: 'Nightly backup failed twice',
+      detail: 'The last two scheduled backup jobs ended in failure.',
+      evidence: { failures: 2 },
+      proposal: {
+        tool: 'remediate_vulnerability',
+        action: null,
+        disposition: 'refused',
+        reason: 'device_not_in_org',
+        intentId: null,
+      },
+    },
+  ],
+};
+
+// Phase 2 wave P2-3 (#4190) — a `narrative`-profile run's outcome projection
+// (`AiAgentRunNarrativeDto`). All eight sections, in NARRATIVE_SECTION_KEYS
+// order, with the server-attached titles the report itself uses.
+const NARRATIVE = {
+  headline: 'A quiet week: 3 alerts closed and every backup green.',
+  sections: [
+    { key: 'overview', title: 'Overview', bullets: ['12 devices monitored all week.'] },
+    { key: 'alerts', title: 'Alerts', bullets: ['3 alerts raised, all closed.', 'No repeat offenders.'] },
+    { key: 'sweeps_and_fixes', title: 'Sweeps & fixes', bullets: ['Spooler restarted on WKS-01.'] },
+    { key: 'tickets', title: 'Tickets', bullets: ['2 tickets resolved.'] },
+    { key: 'patching_and_security', title: 'Patching & security', bullets: ['No critical CVEs outstanding.'] },
+    { key: 'backups', title: 'Backups', bullets: ['Every nightly job succeeded.'] },
+    { key: 'fleet', title: 'Fleet', bullets: ['One device added.'] },
+    { key: 'recommendations', title: 'Recommendations', bullets: ['Schedule the SRV-03 reboot.'] },
+  ],
+  reportRunId: 'rr-1',
+  reportId: 'rep-1',
+  downloadPath: '/api/reports/runs/rr-1/download',
+  periodStart: '2026-08-17T00:00:00.000Z',
+  periodEnd: '2026-08-24T00:00:00.000Z',
+  contextTruncated: false,
+};
+
 function mockEndpoints(opts: {
   detail?: unknown;
   detailOk?: boolean;
@@ -111,6 +243,8 @@ function mockEndpoints(opts: {
 
 beforeEach(() => {
   fetchMock.mockReset();
+  exportReportMock.mockReset();
+  exportReportMock.mockResolvedValue(undefined);
 });
 
 describe('RunDetailPage', () => {
@@ -204,5 +338,273 @@ describe('RunDetailPage', () => {
     for (const forbidden of ['toolInput', 'toolOutput', 'args', 'arguments']) {
       expect(html).not.toContain(forbidden);
     }
+  });
+});
+
+// Phase 2 wave P2-2 (#4189, Task 14) — the sweep-findings section.
+describe('RunDetailPage sweep findings', () => {
+  it('renders nothing when the run carries no sweep outcome', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: null } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-sweep')).not.toBeInTheDocument();
+  });
+
+  it('renders the summary, the evidence-truncated note and one row per finding', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-sweep-summary')).toHaveTextContent(
+      'Six problems found across three devices.',
+    );
+    expect(screen.getByTestId('ai-agent-run-sweep-truncated')).toBeInTheDocument();
+    for (let index = 0; index < 6; index += 1) {
+      expect(screen.getByTestId(`ai-agent-run-sweep-finding-${index}`)).toBeInTheDocument();
+    }
+    expect(screen.queryByTestId('ai-agent-run-sweep-finding-6')).not.toBeInTheDocument();
+  });
+
+  it('omits the evidence-truncated note when nothing was truncated', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: { ...SWEEP, evidenceTruncated: false } } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-sweep-truncated')).not.toBeInTheDocument();
+  });
+
+  it('translates the kind and severity and shows the hostname, title and detail', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
+    const row = screen.getByTestId('ai-agent-run-sweep-finding-0');
+    expect(row).toHaveTextContent('Service down');
+    expect(row).toHaveTextContent('Critical');
+    expect(row).toHaveTextContent('WKS-01');
+    expect(row).toHaveTextContent('Print Spooler is stopped');
+    expect(row).toHaveTextContent('The watched Spooler service has been stopped since 09:12.');
+  });
+
+  it('renders evidence as key/value pairs rather than a raw JSON blob', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    const { container } = render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-sweep-finding-0-evidence')).toHaveTextContent('serviceName: Spooler');
+    expect(screen.getByTestId('ai-agent-run-sweep-finding-0-evidence')).toHaveTextContent('state: stopped');
+    // A JSON dump would carry the object punctuation; the k/v rendering never does.
+    expect(container.innerHTML).not.toContain('{&quot;serviceName&quot;');
+  });
+
+  it('falls back to an em dash for a fleet-wide finding with no hostname', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-2')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-sweep-finding-2-device')).toHaveTextContent('—');
+  });
+
+  it('links an intent_created proposal to Approvals', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
+    const link = screen.getByTestId('ai-agent-run-sweep-proposal-link-0');
+    expect(link).toHaveAttribute('href', '/approvals');
+    expect(link).toHaveTextContent('Approval requested');
+  });
+
+  it('shows a translated reason instead of a link for a refused proposal', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-1')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-sweep-proposal-link-1')).not.toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-run-sweep-finding-1-proposal')).toHaveTextContent(
+      'Tool not allowed for this agent',
+    );
+  });
+
+  it('shows an em dash when a finding proposed nothing', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-2')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-sweep-finding-2-proposal')).toHaveTextContent('—');
+  });
+
+  it('translates every proposal reason rather than leaking the raw token', async () => {
+    const reasons = [
+      'device_not_in_evidence',
+      'device_not_in_org',
+      'not_allowlisted',
+      'no_eligible_approvers',
+      'intent_error',
+      'max_actions_per_run',
+    ];
+    const findings = reasons.map((reason, index) => ({
+      ...SWEEP.findings[1],
+      title: `Finding ${index}`,
+      proposal: { ...SWEEP.findings[1].proposal, reason },
+    }));
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: { ...SWEEP, findings } } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-5')).toBeInTheDocument());
+    reasons.forEach((reason, index) => {
+      const cell = screen.getByTestId(`ai-agent-run-sweep-finding-${index}-proposal`);
+      expect(cell.textContent).not.toBe(reason);
+      expect(cell.textContent?.trim().length).toBeGreaterThan(0);
+      // The raw enum token must never reach the DOM — an untranslated key
+      // renders as the key itself, which would contain the token.
+      expect(cell.textContent).not.toContain(reason);
+    });
+  });
+
+  it('names the sweep kinds it checked', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-kinds')).toBeInTheDocument());
+    const kinds = screen.getByTestId('ai-agent-run-sweep-kinds');
+    expect(kinds).toHaveTextContent('Service down');
+    expect(kinds).toHaveTextContent('Failed backups');
+    expect(kinds.textContent).not.toContain('service_down');
+  });
+});
+
+// Phase 2 wave P2-3 (#4190) — the weekly-narrative section.
+describe('RunDetailPage narrative', () => {
+  it('renders nothing when the run produced no narrative', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: null } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-narrative')).not.toBeInTheDocument();
+  });
+
+  it('renders the headline and all eight sections with their bullets', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-narrative-headline')).toHaveTextContent(
+      'A quiet week: 3 alerts closed and every backup green.',
+    );
+    for (const section of NARRATIVE.sections) {
+      const block = screen.getByTestId(`ai-agent-run-narrative-section-${section.key}`);
+      expect(block).toHaveTextContent(section.title);
+      for (const bullet of section.bullets) expect(block).toHaveTextContent(bullet);
+    }
+  });
+
+  it('renders a model-authored bullet as text, never as markup', async () => {
+    const injected = '<img src=x onerror="alert(1)"> and **not bold**';
+    const narrative = {
+      ...NARRATIVE,
+      sections: NARRATIVE.sections.map((section, index) =>
+        index === 0 ? { ...section, bullets: [injected] } : section),
+    };
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+    const block = screen.getByTestId('ai-agent-run-narrative-section-overview');
+    // The literal characters survive as text; no element was created from them.
+    expect(block).toHaveTextContent(injected);
+    expect(block.querySelector('img')).toBeNull();
+  });
+
+  it('links to the generated report and offers the download as a button, never a raw API anchor', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-narrative-report-link')).toHaveAttribute('href', '/reports');
+
+    // The download route answers JSON and authenticates from the Authorization
+    // header only, so an <a href> to it is dead in a browser. It must be a
+    // button that fetches + renders client-side.
+    const download = screen.getByTestId('ai-agent-run-narrative-download');
+    expect(download.tagName).toBe('BUTTON');
+    expect(download).not.toHaveAttribute('href');
+  });
+
+  it('fetches the stored snapshot and hands the narrative summary to exportReport', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
+    const snapshot = {
+      type: 'ai_org_narrative',
+      format: 'pdf',
+      data: { rows: [], summary: { narrative: { headline: NARRATIVE.headline, sections: NARRATIVE.sections } } },
+    };
+    render(<RunDetailPage runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(url.startsWith('/reports/runs/') ? json(snapshot) : json({ data: [] })));
+    fireEvent.click(screen.getByTestId('ai-agent-run-narrative-download'));
+
+    await waitFor(() => expect(exportReportMock).toHaveBeenCalledTimes(1));
+    // Bearer-authenticated fetch against the API-relative path, not the raw
+    // /api/... downloadPath a browser navigation would have used.
+    expect(fetchMock).toHaveBeenCalledWith('/reports/runs/rr-1/download');
+    expect(exportReportMock).toHaveBeenCalledWith([], expect.objectContaining({
+      format: 'pdf',
+      reportType: 'ai_org_narrative',
+      summary: snapshot.data.summary,
+    }));
+    expect(screen.queryByTestId('ai-agent-run-narrative-download-error')).not.toBeInTheDocument();
+  });
+
+  it('surfaces an inline error when the snapshot fetch fails, and never calls exportReport', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
+    render(<RunDetailPage runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(url.startsWith('/reports/runs/')
+        ? json({ error: 'nope' }, false, 404)
+        : json({ data: [] })));
+    fireEvent.click(screen.getByTestId('ai-agent-run-narrative-download'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('ai-agent-run-narrative-download-error')).toBeInTheDocument());
+    expect(exportReportMock).not.toHaveBeenCalled();
+  });
+
+  it('omits both links for a narrative that never reached a report run', async () => {
+    const narrative = { ...NARRATIVE, reportRunId: null, reportId: null, downloadPath: null };
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-narrative-report-link')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-run-narrative-download')).not.toBeInTheDocument();
+  });
+
+  it('says so when the run\'s context was cut short, and stays quiet when it was not', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: { ...NARRATIVE, contextTruncated: true } } });
+    const { unmount } = render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative-truncated')).toBeInTheDocument());
+    unmount();
+
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
+    render(<RunDetailPage runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-narrative-truncated')).not.toBeInTheDocument();
+  });
+
+  it('names the reporting window it covers', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative-period')).toBeInTheDocument());
+    const period = screen.getByTestId('ai-agent-run-narrative-period');
+    // Formatted through the locale date formatter, never the raw ISO string.
+    expect(period.textContent).not.toContain('2026-08-17T00:00:00.000Z');
+    expect(period.textContent).toContain('2026');
   });
 });

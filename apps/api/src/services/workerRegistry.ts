@@ -896,6 +896,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'pamActuationWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/pamActuationWorker');
+      return { init: m.initializePamActuationWorker, shutdown: m.shutdownPamActuationWorker };
+    },
+  },
+  {
     name: 'intentExpiryReaper',
     placement: 'global',
     load: async () => {
@@ -1035,6 +1043,30 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/alertVerdictScheduler');
       return { init: m.initializeAlertVerdictScheduler, shutdown: m.shutdownAlertVerdictScheduler };
+    },
+  },
+  {
+    // Phase 2 wave P2-2 (scheduled sweeps), task 9: the fixed 5-minute tick
+    // over `ai_agent_schedules` plus the per-org occurrence fan-out.
+    //
+    // `global`, NOT `socket-owner` — and deliberately not copied from
+    // `alertVerdictScheduler` above, which looks like the same shape.
+    // `workerEntrypointClosure.contract.test.ts` (the mechanical authority)
+    // was run for BOTH values: this entry's runtime closure reaches neither
+    // `routes/agentWs.ts` nor `services/agentCommandAwait.ts`, while
+    // `alertVerdictScheduler`'s does — it pulls `alertVerdictSubscriber` ->
+    // `aiToolsOrgs` -> `tenantOffboarding` -> `orgMerge` ->
+    // `routes/portal/helpers`, a chain this module never imports. Its own
+    // deepest AI dependency is `runService.createAndEnqueueAgentRun`, which
+    // only INSERTS a run row and enqueues; the socket-touching execution
+    // happens later, in `aiAgentRunner` (socket-owner). Flipping this to
+    // `socket-owner` would silently exclude the sweeper from `worker`-role
+    // processes for no reason.
+    name: 'aiAgentSweepScheduler',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiAgentSweepScheduler');
+      return { init: m.initializeAiAgentSweepScheduler, shutdown: m.shutdownAiAgentSweepScheduler };
     },
   },
 ];

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadBuiltinManifest, resolveBuiltinRoot } from './builtinRegistry';
+import { defineBuiltin, loadBuiltinManifest, resolveBuiltinRoot } from './builtinRegistry';
 
 /**
  * Exercises `resolveBuiltinRoot` / `loadBuiltinManifest`'s candidate order
@@ -44,10 +44,10 @@ afterEach(() => {
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
-function scaffold(base: string): void {
+function scaffold(base: string, manifest: typeof MANIFEST = MANIFEST): void {
   const dir = join(base, PACKAGE_DIR);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'manifest.json'), JSON.stringify(MANIFEST));
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest));
 }
 
 describe('resolveBuiltinRoot', () => {
@@ -155,5 +155,112 @@ describe('loadBuiltinManifest', () => {
     expect(() => loadBuiltinManifest(PACKAGE_DIR)).toThrow(
       /EISDIR|illegal operation/i,
     );
+  });
+});
+
+describe('BUILTINS manifest resolution is lazy (#3470)', () => {
+  it('reads no built-in manifest at module import time', { timeout: 60_000 }, async () => {
+    vi.resetModules();
+    const manifestReads: string[] = [];
+    vi.doMock('node:fs', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:fs')>();
+      const readFileSync = (p: unknown, ...rest: unknown[]) => {
+        if (typeof p === 'string' && p.endsWith('manifest.json')) manifestReads.push(p);
+        return (actual.readFileSync as (...a: unknown[]) => unknown)(p, ...rest);
+      };
+      return { ...actual, default: { ...actual, readFileSync }, readFileSync };
+    });
+
+    const mod = await import('./builtinRegistry');
+    expect(manifestReads, `read during import: ${manifestReads.join(', ')}`).toEqual([]);
+    expect(mod.BUILTINS.length).toBeGreaterThan(0);
+    // The name set is derived from the STATIC name field, so it stays free of I/O too.
+    expect([...mod.BUILTIN_EXTENSION_NAMES]).toEqual(['workspace']);
+    expect(manifestReads, `read for names: ${manifestReads.join(', ')}`).toEqual([]);
+
+    vi.doUnmock('node:fs');
+    vi.resetModules();
+  });
+
+  it('resolves the manifest on first access rather than at definition', () => {
+    root = mkdtempSync(join(tmpdir(), 'breeze-builtin-lazy-'));
+    vi.spyOn(process, 'cwd').mockReturnValue(root);
+
+    const builtin = defineBuiltin({
+      module: { register() {} },
+      name: MANIFEST.name,
+      packageDir: PACKAGE_DIR,
+      packageName: '@breeze/ext-fixture-builtin',
+      helperRoutes: false,
+      enableEnvVar: 'BREEZE_FIXTURE_BUILTIN_ENABLED',
+    });
+
+    scaffold(root);
+    expect(builtin.manifest.name).toBe(MANIFEST.name);
+  });
+
+  it('memoises a successful manifest resolution', () => {
+    root = mkdtempSync(join(tmpdir(), 'breeze-builtin-lazy-'));
+    scaffold(root);
+    vi.spyOn(process, 'cwd').mockReturnValue(root);
+    const builtin = defineBuiltin({
+      module: { register() {} },
+      name: MANIFEST.name,
+      packageDir: PACKAGE_DIR,
+      packageName: '@breeze/ext-fixture-builtin',
+      helperRoutes: false,
+      enableEnvVar: 'BREEZE_FIXTURE_BUILTIN_ENABLED',
+    });
+
+    const first = builtin.manifest;
+    rmSync(root, { recursive: true, force: true });
+    const second = builtin.manifest;
+
+    expect(second).toBe(first);
+  });
+
+  it('memoises a failed manifest resolution and rethrows the identical error', () => {
+    root = mkdtempSync(join(tmpdir(), 'breeze-builtin-lazy-miss-'));
+    vi.spyOn(process, 'cwd').mockReturnValue(root);
+    const builtin = defineBuiltin({
+      module: { register() {} },
+      name: MANIFEST.name,
+      packageDir: PACKAGE_DIR,
+      packageName: '@breeze/ext-fixture-builtin',
+      helperRoutes: false,
+      enableEnvVar: 'BREEZE_FIXTURE_BUILTIN_ENABLED',
+    });
+
+    let first: unknown;
+    let second: unknown;
+    try {
+      void builtin.manifest;
+    } catch (error) {
+      first = error;
+    }
+    try {
+      void builtin.manifest;
+    } catch (error) {
+      second = error;
+    }
+
+    expect(first).toBeInstanceOf(Error);
+    expect(second).toBe(first);
+  });
+
+  it('rejects a static name that disagrees with the shipped manifest name', () => {
+    root = mkdtempSync(join(tmpdir(), 'breeze-builtin-lazy-mismatch-'));
+    scaffold(root);
+    vi.spyOn(process, 'cwd').mockReturnValue(root);
+    const builtin = defineBuiltin({
+      module: { register() {} },
+      name: 'something-else',
+      packageDir: PACKAGE_DIR,
+      packageName: '@breeze/ext-fixture-builtin',
+      helperRoutes: false,
+      enableEnvVar: 'BREEZE_FIXTURE_BUILTIN_ENABLED',
+    });
+
+    expect(() => builtin.manifest).toThrow(/something-else.*fixture-builtin|fixture-builtin.*something-else/);
   });
 });

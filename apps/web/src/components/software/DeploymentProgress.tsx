@@ -8,6 +8,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatDateTime as formatDateTimeCentral } from "@/lib/dateTimeFormat";
 import ProgressBar from "../shared/ProgressBar";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
@@ -121,9 +122,7 @@ export function isManagerUnavailable(errorMessage?: string | null): boolean {
 
 function formatDateTime(value?: string | null): string {
   if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString();
+  return formatDateTimeCentral(value);
 }
 
 export default function DeploymentProgress({

@@ -17,6 +17,71 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     expect(result.success).toBe(true);
   });
 
+  it('drops malformed PAM reconciliation telemetry independently', () => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      securityCapabilities: {
+        peripheralPolicyProtocolVersion: 2,
+        pamLifetimeProtocolVersion: 2,
+        pamReconciliation: {
+          unresolvedCount: -1,
+          quarantinedCount: 'one',
+          awaitingAcknowledgementCount: 0,
+          receivedObservationPendingCount: -1,
+          blockingReason: 'not_a_protocol_reason',
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.securityCapabilities?.peripheralPolicyProtocolVersion).toBe(2);
+    expect(result.data.securityCapabilities?.pamLifetimeProtocolVersion).toBe(2);
+    expect(result.data.securityCapabilities?.pamReconciliation).toBeUndefined();
+  });
+
+  it('accepts a valid rollback observation and drops a malformed optional one', () => {
+    const valid = heartbeatSchema.safeParse({
+      ...minimal,
+      rollbackObservation: {
+        schemaVersion: 1,
+        observationId: 'a'.repeat(64),
+        rollbackId: '10000000-0000-4000-8000-000000000001',
+        deviceId: '20000000-0000-4000-8000-000000000002',
+        phase: 'restart_requested',
+        currentVersion: '2.0.0',
+        componentVersions: { agent: '1.9.0' },
+        observedAt: '2026-08-25T12:00:00Z',
+      },
+    });
+    expect(valid.success).toBe(true);
+    if (valid.success) expect(valid.data.rollbackObservation?.phase).toBe('restart_requested');
+
+    const malformed = heartbeatSchema.safeParse({
+      ...minimal,
+      rollbackObservation: { schemaVersion: 1, phase: 'made_up' },
+    });
+    expect(malformed.success).toBe(true);
+    if (malformed.success) expect(malformed.data.rollbackObservation).toBeUndefined();
+  });
+
+  it('accepts a bounded rollback component inventory and drops malformed inventory', () => {
+    const valid = heartbeatSchema.safeParse({
+      ...minimal,
+      rollbackComponentVersions: {
+        agent: '2.0.0', helper: '2.0.0', 'user-helper': '2.0.0', watchdog: '2.0.0', backup: '2.0.0',
+      },
+    });
+    expect(valid.success).toBe(true);
+    if (valid.success) expect(valid.data.rollbackComponentVersions?.helper).toBe('2.0.0');
+
+    const malformed = heartbeatSchema.safeParse({
+      ...minimal,
+      rollbackComponentVersions: { agent: '2.0.0', unknown: '2.0.0' },
+    });
+    expect(malformed.success).toBe(true);
+    if (malformed.success) expect(malformed.data.rollbackComponentVersions).toBeUndefined();
+  });
+
   it('parses a full battery snapshot (#2142)', () => {
     const result = heartbeatSchema.safeParse({
       ...minimal,

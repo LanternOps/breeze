@@ -23,6 +23,7 @@ WORKDIR /app
 # (v0.98.0 shipped without a web image this way: @breeze/extension-web-sdk was
 # absent here, so its `zod` never installed and Rolldown failed to resolve it.)
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY patches ./patches
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/extension-web-sdk/package.json ./packages/extension-web-sdk/
@@ -62,9 +63,11 @@ RUN pnpm build
 FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS runner
 WORKDIR /app
 
-# Install wget for healthcheck; remove the bundled npm (and its vendored undici,
-# CVE-2026-12151) since the runtime entrypoint is `node`, not npm.
-RUN apk add --no-cache wget && \
+# Refresh libcrypto3/libssl3 because the pinned base digest predates the fix for
+# CVE-2026-14456; install wget for healthcheck; remove the bundled npm (and its
+# vendored undici, CVE-2026-12151) since the runtime entrypoint is `node`, not npm.
+RUN apk upgrade --no-cache libcrypto3 libssl3 && \
+    apk add --no-cache wget && \
     rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 # Set production environment

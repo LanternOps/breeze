@@ -31,6 +31,12 @@ import {
   TicketMoveCurrencyBlockedError,
   type MoveCurrencyGuardDetails,
 } from '../../services/ticketMoveCurrencyGuard';
+import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
+import {
+  assertPamDeviceOrgMoveAllowed,
+  PamDeviceMoveBlockedError,
+} from '../../services/pamDeviceMoveGuard';
+import { pgErrorNode } from '../../utils/pgErrors';
 
 /**
  * An organization that passed the pre-transaction existence check was gone at
@@ -197,6 +203,7 @@ moveOrgRoutes.post(
         const lockedTarget = lockedOrgs.get(targetOrgId);
         if (!lockedTarget) throw new OrgVanishedDuringMoveError('target');
         if (!lockedSource) throw new OrgVanishedDuringMoveError('source');
+        await assertPamDeviceOrgMoveAllowed(tx, { deviceId, sourceOrgId });
         const lockedSourceCurrency = lockedSource.currencyCode;
         const lockedTargetCurrency = lockedTarget.currencyCode;
 
@@ -252,6 +259,31 @@ moveOrgRoutes.post(
         // it targets the incident by its still-source device_id.
         await tx.execute(
           sql`UPDATE metric_anomaly_incidents SET agent_run_id = NULL WHERE device_id = ${deviceId}::uuid`,
+        );
+
+        // action_intents.scope_device_id (P2-2, #4189): same cross-tenant-
+        // pointer class as the two detaches above — an intent whose target
+        // device just moved to a different org must not keep pointing at it.
+        // The immutability trigger (action_intents_block_content_update())
+        // permits exactly this transition (non-null -> NULL is the ONE
+        // allowed change to scope_device_id; see actionIntents.ts's column
+        // comment), so this UPDATE is the tombstone path, not a bypass.
+        //
+        // Scoped to LIVE statuses only (pending_approval/approved/executing):
+        // a terminal-status intent (completed/failed/rejected/expired/
+        // cancelled) is a historical record of an action already decided —
+        // its target device at decision time is a fact, not something a
+        // future release path re-validates, so leaving it alone matches how
+        // ai_agent_runs' org_id is left un-restamped for the same reason
+        // above. Only a LIVE intent can still reach the release path
+        // (intentTargetScope.ts, Task A3), which fails closed on a NULL
+        // scope_device_id (tombstone) or an org mismatch — this UPDATE is
+        // what produces that tombstone instead of leaving a dangling
+        // cross-tenant device id for release to silently act on.
+        await tx.execute(
+          sql`UPDATE action_intents SET scope_device_id = NULL
+              WHERE scope_device_id = ${deviceId}::uuid
+                AND status IN ('pending_approval', 'approved', 'executing')`,
         );
 
         // Rewrite the denormalized org_id on every device-scoped table.
@@ -319,6 +351,27 @@ moveOrgRoutes.post(
         }
       });
     } catch (err) {
+      const pgNode = pgErrorNode(err);
+      if (
+        err instanceof PamDeviceMoveBlockedError
+        || (
+          pgNode?.code === '23514'
+          && pgNode.constraint_name === 'devices_pam_history_move_guard'
+        )
+      ) {
+        writeRouteAudit(c, {
+          orgId: sourceOrgId,
+          action: 'device.move_org.failed',
+          resourceType: 'device',
+          resourceId: deviceId,
+          resourceName: device.hostname,
+          details: { code: 'PAM_DEVICE_MOVE_BLOCKED' },
+        });
+        return c.json({
+          error: 'Device organization move is blocked because durable PAM lifecycle evidence exists',
+          code: 'PAM_DEVICE_MOVE_BLOCKED',
+        }, 409);
+      }
       // A currency-policy block is not a failure: the transaction rolled back
       // (device + tickets untouched), so report it and skip Sentry / the
       // failed-move audit.
@@ -348,6 +401,10 @@ moveOrgRoutes.post(
       });
       return c.json({ error: 'Failed to move device between organizations' }, 500);
     }
+
+    await schedulePeripheralPolicyDevice(deviceId, 'device_org_changed').catch((error) => {
+      console.error(`[devices.moveOrg] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+    });
 
     // Force-close any active WS so the agent reconnects with a fresh
     // handshake on the new org_id. Without this, createAgentWsHandlers

@@ -1631,9 +1631,11 @@ describe('org routes', () => {
         })
       }) as any;
 
-    // Partner scope reads partners.settings for the preferred org order, which
-    // lands BETWEEN the page query and the device counts. It has to be queued
-    // explicitly once anything follows it, or it consumes the next mock.
+    // Partner scope reads partners.settings for the preferred org order. Since
+    // #4004 that order is the leading ORDER BY term of the page query itself,
+    // so the read lands BETWEEN the count and the page query — ahead of the
+    // rows it sorts, not after them. It has to be queued explicitly once
+    // anything follows it, or it consumes the next mock.
     const mockPartnerOrderSettings = () =>
       ({
         from: vi.fn().mockReturnValue({
@@ -1651,6 +1653,7 @@ describe('org routes', () => {
             where: vi.fn().mockResolvedValue([{ count: 1 }])
           })
         } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -1662,7 +1665,6 @@ describe('org routes', () => {
             })
           })
         } as any)
-        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce(mockOrgDeviceCounts([{ orgId: 'org-1', count: 2 }]));
 
       const res = await app.request('/orgs/organizations?page=1&limit=1');
@@ -1685,6 +1687,7 @@ describe('org routes', () => {
             where: vi.fn().mockResolvedValue([{ count: 2 }])
           })
         } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -1696,7 +1699,6 @@ describe('org routes', () => {
             })
           })
         } as any)
-        .mockReturnValueOnce(mockPartnerOrderSettings())
         // org-2 has no devices, so the grouped query simply omits it.
         .mockReturnValueOnce(mockOrgDeviceCounts([{ orgId: 'org-1', count: 12 }]));
 
@@ -1726,6 +1728,7 @@ describe('org routes', () => {
               where: vi.fn().mockResolvedValue([{ count: total }])
             })
           } as any)
+          .mockReturnValueOnce(mockPartnerOrderSettings())
           .mockReturnValueOnce({
             from: vi.fn().mockReturnValue({
               where: vi.fn().mockReturnValue({
@@ -1736,8 +1739,7 @@ describe('org routes', () => {
                 })
               })
             })
-          } as any)
-          .mockReturnValueOnce(mockPartnerOrderSettings());
+          } as any);
         if (orgIds.length > 0) {
           vi.mocked(db.select).mockReturnValueOnce(mockOrgDeviceCounts([]));
         }
@@ -1903,6 +1905,7 @@ describe('org routes', () => {
             where: vi.fn().mockResolvedValue([{ count: 3 }])
           })
         } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -1914,7 +1917,6 @@ describe('org routes', () => {
             })
           })
         } as any)
-        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({ groupBy: groupBySpy })
@@ -1938,6 +1940,11 @@ describe('org routes', () => {
     // silently see some orgs twice and miss others. This exercises the
     // general paginated branch (partner scope), NOT the own-org early-return
     // branch covered by the projection test below.
+    //
+    // This asserts the ARGUMENTS handed to a mocked `orderBy`, which cannot see
+    // what Postgres would actually run. The compiled-SQL assertions in
+    // `orgs.listQuery.test.ts` are the real guard on the emitted ORDER BY; this
+    // case pins only that the route reaches the builder on the partner branch.
     it('appends a unique id tiebreaker to the sort so paging is stable', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       let capturedOrderBy: unknown[] = [];
@@ -1947,6 +1954,8 @@ describe('org routes', () => {
             where: vi.fn().mockResolvedValue([{ count: 0 }])
           })
         } as any)
+        // No stored order, so the sort is the bare tiebreaker.
+        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -1979,6 +1988,7 @@ describe('org routes', () => {
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({ where: whereSpy })
         } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -1988,7 +1998,6 @@ describe('org routes', () => {
             })
           })
         } as any)
-        .mockReturnValueOnce(mockPartnerOrderSettings())
         .mockReturnValueOnce(mockOrgDeviceCounts([]));
 
       const res = await app.request('/orgs/organizations?search=contoso');
@@ -5799,7 +5808,17 @@ describe('org routes', () => {
           where: vi.fn().mockResolvedValue([{ count: 1 }])
         })
       } as any);
-      // 2) main list query
+      // 2) partner-settings read — throws. Since #4004 this runs BEFORE the
+      // page query, because its result is the leading ORDER BY term; the
+      // soft-fail therefore has to leave the list query itself still runnable.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockRejectedValue(new Error('db blew up'))
+          })
+        })
+      } as any);
+      // 3) main list query — still runs, ordered by the created_at, id fallback
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -5808,14 +5827,6 @@ describe('org routes', () => {
                 orderBy: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Org 1' }])
               })
             })
-          })
-        })
-      } as any);
-      // 3) partner-settings read — throws
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockRejectedValue(new Error('db blew up'))
           })
         })
       } as any);

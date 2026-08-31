@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Behaviour of the event-dispatch worker (route-event + deliver-event
@@ -529,23 +529,97 @@ describe('eventDispatchProcessor', () => {
 });
 
 describe('initializeEventDispatchWorker / shutdownEventDispatchWorker', () => {
-  it('mode off, empty queue: no-op, worker not created', async () => {
+  // The module holds `worker` / `maintenanceWorker` / `maintenanceQueue` in
+  // module-level state. Since maintenance now registers on EVERY path
+  // (including the ones that never start a main worker), a test that leaves
+  // it running would leak that state into the next test's close()/construct()
+  // counts. Shutting down after every case keeps each `it` independent.
+  afterEach(async () => {
+    await shutdownEventDispatchWorker();
+  });
+
+  /** Worker names passed to attachWorkerObservability, in call order. */
+  function observedWorkerNames(): string[] {
+    return attachWorkerObservabilityMock.mock.calls.map((call) => (call as [unknown, string])[1]);
+  }
+
+  /** BullMQ queue names the Worker constructor was invoked with, in order. */
+  function constructedWorkerQueues(): string[] {
+    return workerConstructorMock.mock.calls.map((call) => (call as [string, ...unknown[]])[0]);
+  }
+
+  it('mode off, empty queue: main worker NOT started, but the maintenance repeatables STILL register (#4124)', async () => {
     eventDispatchModeMock.mockReturnValue('off');
     getJobCountsMock.mockResolvedValue({ waiting: 0, delayed: 0, active: 0, paused: 0 });
 
     await initializeEventDispatchWorker();
 
-    expect(attachWorkerObservabilityMock).not.toHaveBeenCalled();
+    // Registration is unconditional so residual `event_delivery_receipts`
+    // from a completed rollout keep aging out after EVENT_DISPATCH_MODE goes
+    // back to 'off' and the queue drains — previously they only aged out the
+    // next time the main worker happened to start.
+    expect(observedWorkerNames()).toEqual(['eventDispatchMaintenance']);
+    expect(constructedWorkerQueues()).toEqual(['event-dispatch-maintenance']);
+    expect(queueAddMock.mock.calls.map((call) => call[0])).toEqual([
+      'receipt-retention',
+      'shadow-compare'
+    ]);
   });
 
-  it('mode off, backlog probe throws: does NOT propagate (would permanently pin /ready) — treated as no backlog, no worker started', async () => {
+  it('mode off, backlog probe throws: does NOT propagate (would permanently pin /ready) — treated as no backlog, main worker not started, maintenance still registers', async () => {
     eventDispatchModeMock.mockReturnValue('off');
     getJobCountsMock.mockRejectedValue(new Error('redis unreachable'));
 
     await expect(initializeEventDispatchWorker()).resolves.toBeUndefined();
 
+    // Only the probe failure is reported — maintenance registration succeeded.
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
-    expect(attachWorkerObservabilityMock).not.toHaveBeenCalled();
+    expect(observedWorkerNames()).toEqual(['eventDispatchMaintenance']);
+    expect(constructedWorkerQueues()).toEqual(['event-dispatch-maintenance']);
+    expect(queueAddMock.mock.calls.map((call) => call[0])).toEqual([
+      'receipt-retention',
+      'shadow-compare'
+    ]);
+  });
+
+  it('mode off, empty queue, maintenance registration fails: still resolves (a housekeeping job must never pin /ready) and closes what it opened', async () => {
+    eventDispatchModeMock.mockReturnValue('off');
+    getJobCountsMock.mockResolvedValue({ waiting: 0, delayed: 0, active: 0, paused: 0 });
+    const boom = new Error('redis unreachable during repeatable registration');
+    queueGetRepeatableJobsMock.mockRejectedValue(boom);
+
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(initializeEventDispatchWorker()).resolves.toBeUndefined();
+
+      // This suppression is swallowed BY DESIGN (a housekeeping job must never
+      // pin /ready), and since #4124 it runs on the default mode='off' boot —
+      // i.e. on every instance in the fleet, not just the opt-in rollout
+      // population. The Sentry report is therefore the ONLY operator-visible
+      // trace that retention never got scheduled, so it has to carry the
+      // `worker` tag (the triage axis attachWorkerObservability gives every
+      // other failure on this worker) and a greppable errorId in the log line.
+      expect(captureExceptionMock).toHaveBeenCalledWith(boom, undefined, {
+        worker: 'eventDispatchMaintenance'
+      });
+      expect(
+        consoleError.mock.calls.some((call) =>
+          call.some(
+            (arg) =>
+              typeof arg === 'string' &&
+              arg.includes('EVENT_DISPATCH_MAINTENANCE_REGISTRATION_FAILED')
+          )
+        )
+      ).toBe(true);
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    // The maintenance worker + queue this path opened are both closed. No main
+    // worker exists on this path, so the subsequent shutdown (afterEach) has
+    // nothing further to close.
+    expect(workerCloseMock).toHaveBeenCalledTimes(1);
+    expect(queueCloseMock).toHaveBeenCalledTimes(1);
   });
 
   it('mode off, queue has a backlog: starts the worker anyway to drain it, AND registers the maintenance repeatables', async () => {
@@ -606,7 +680,12 @@ describe('initializeEventDispatchWorker / shutdownEventDispatchWorker', () => {
     await expect(initializeEventDispatchWorker()).resolves.toBeUndefined();
 
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
-    expect(captureExceptionMock).toHaveBeenCalledWith(boom);
+    // Tagged `worker` so the report is attributable in Sentry — see the
+    // mode='off' sibling case above for why this tag carries the whole triage
+    // burden for a failure that is otherwise swallowed.
+    expect(captureExceptionMock).toHaveBeenCalledWith(boom, undefined, {
+      worker: 'eventDispatchMaintenance'
+    });
 
     // Cleanup closed the maintenance worker (Worker#close, shared mock with
     // the main worker's — see below) and the maintenance queue: one call

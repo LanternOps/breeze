@@ -97,5 +97,14 @@ export function verdictLimits(limits: AiAgentLimits): AiAgentLimits {
  * a verdict run either.
  */
 export function verdictToolAllowlist(_agentAllowlist: string[]): string[] {
-  return [...VERDICT_TOOL_ALLOWLIST, ...OUTCOME_TOOL_NAMES];
+  // Filtered, NOT spread: `OUTCOME_TOOL_NAMES` is the catalog of EVERY
+  // profile's outcome tool, and since wave P2-2 it also carries
+  // `submit_sweep_findings` — spreading it here would put a sweep run's
+  // outcome tool into a verdict run's exposure AND its
+  // `guardrailPolicy.toolAllowlist` (`runLoop.ts` builds both from this one
+  // list). Mirrors `sweepToolAllowlist`'s own filter, for the same reason.
+  return [
+    ...VERDICT_TOOL_ALLOWLIST,
+    ...OUTCOME_TOOL_NAMES.filter((name) => name === 'submit_alert_verdict'),
+  ];
 }

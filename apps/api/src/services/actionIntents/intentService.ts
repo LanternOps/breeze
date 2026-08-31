@@ -18,6 +18,7 @@ import {
 import { approvalRequests } from '../../db/schema/approvals';
 import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
 import { devices } from '../../db/schema/devices';
+import { tickets } from '../../db/schema/portal';
 import { type AuthContext, dbAccessContextFromAuth } from '../../middleware/auth';
 import { aiTools, resolveWritableToolOrgId } from '../aiTools';
 import {
@@ -37,6 +38,14 @@ import {
   type IntentTargetScope,
 } from './intentApprovers';
 import { computeEffectDigestOutcome, type EffectDigestOutcome } from './effectDigest';
+import {
+  assertArgsMatchScope,
+  assertArgsMatchTicketScope,
+  effectiveTargetDeviceId,
+  resolveIntentTargetDevice,
+  IntentScopeArgumentMismatchError,
+} from './intentTargetScope';
+import { evaluateTicketAutonomy } from './ticketAutonomy';
 
 /** Statuses the partial `action_intents_org_idem_uniq` index dedupes on
  * (IMPORTANT-4 — migration 2026-07-18-action-intents.sql). Kept as a single
@@ -126,6 +135,31 @@ export interface CreateActionIntentInput {
    * fields. Absent for every non-comms tool, which is why it is optional.
    */
   binding?: { connectionId: string; tenantId: string };
+  /**
+   * P2-2: explicit target device for an intent minted by a DEVICE-LESS run
+   * (sweeps). Agent principal only. Becomes `scope_kind='device'`/
+   * `scope_device_id`; every downstream reader resolves the target through
+   * `resolveIntentTargetDevice` so the run's own device is never consulted
+   * when a scope exists.
+   *
+   * P2-4 (#4191): widened to a discriminated union — `{ ticketId }` is the
+   * ticket-triage mirror, agent principal only, becoming
+   * `scope_kind='ticket'`/`scope_ticket_id`; every downstream reader
+   * resolves it through `resolveIntentTargetTicket`. The two variants are
+   * mutually exclusive by construction (the CHECK
+   * `action_intents_scope_ticket_chk` pairs `scope_kind='ticket'` with a
+   * non-null `scope_ticket_id`, same shape as the device pairing).
+   */
+  scope?: { deviceId: string } | { ticketId: string };
+  /**
+   * P2-4 (#4191): requests the creation-transaction ticket-autonomy decision
+   * (`ticketAutonomy.ts`'s `evaluateTicketAutonomy`) — honored ONLY for the
+   * `ai_agent` principal, and only alongside `scope: { ticketId }` (one of
+   * the five gates `evaluateTicketAutonomy` re-checks). A denial never
+   * throws: the intent proceeds down the ordinary `human_required` path with
+   * an `autonomyDenied` breadcrumb on its `result` column.
+   */
+  autonomy?: { kind: 'ticket_autonomy' };
 }
 
 export type ActionIntentSnapshot = {
@@ -262,8 +296,26 @@ function buildImpactSummary(toolName: string, guardrail: GuardrailCheck): string
   return firstSentence(description);
 }
 
-function deriveIdempotencyKey(actorId: string, actionName: string, digest: string): string {
-  return createHash('sha256').update(`${actorId}:${actionName}:${digest}`).digest('hex');
+/**
+ * `scopeDeviceId` (P2-2) is appended to the hashed material ONLY when it is
+ * non-null, so every key derived before this parameter existed — and every
+ * key derived for an unscoped intent today — is byte-identical to what it
+ * always was. A scoped intent must NOT collide with the unscoped one that
+ * shares its run/tool/arguments, and two intents that differ only in their
+ * scope device (the sweep fan-out case: same tool, same args, one per device)
+ * must land on DIFFERENT keys or the partial unique index would collapse the
+ * whole sweep to one live intent.
+ */
+function deriveIdempotencyKey(
+  actorId: string,
+  actionName: string,
+  digest: string,
+  scopeDeviceId: string | null = null,
+): string {
+  const material = scopeDeviceId
+    ? `${actorId}:${actionName}:${digest}:${scopeDeviceId}`
+    : `${actorId}:${actionName}:${digest}`;
+  return createHash('sha256').update(material).digest('hex');
 }
 
 function computeExpiresAt(source: ActionIntentSource, approvalScope: ActionIntentApprovalScope): Date {
@@ -351,6 +403,12 @@ function resolvePolicyDecisionState(args: {
    * closed to human_required, same as every other branch here.
    */
   agentMode: string | undefined;
+  /**
+   * P2-2 (#4189): true when the caller pinned an explicit target device
+   * (`CreateActionIntentInput.scope`) — i.e. this is a SWEEP-minted proposal
+   * from a device-less run. See the `hasScope` branch below.
+   */
+  hasScope: boolean;
 }): ActionIntentPolicyDecisionState {
   void args.toolName;
   void args.input;
@@ -363,6 +421,22 @@ function resolvePolicyDecisionState(args: {
   // principal is filing it as a supervised intent for a human to see — that
   // human step is the point, not a gap to skip.
   if (args.guardrail.tier < 3) return 'human_required';
+  // P2-2 (#4189) — spec §4.2 AMENDMENT: a sweep-minted proposal is a
+  // supervised inbox card THIS WAVE, never a policy-decided auto-execution.
+  // An explicit `scope` is the only signal creation has that this intent was
+  // minted for a device the run itself is not bound to, and it is
+  // agent-principal-only (rejected above for every other principal), so it
+  // cannot be forged into a decidability change from the outside.
+  //
+  // Why the scope and not the run's profile: a sweep proposal is fanned out
+  // per DEVICE from one device-less run, so the human reviewing it is being
+  // shown a target the run never established for itself. Policy-decide's
+  // pre-authorization was written against the run-bound target — extending
+  // it to a target the operator's per-agent authorization never saw is a
+  // wider grant than it was reviewed as. Act-mode auto-execution for sweeps
+  // arrives with P2-5, behind its own review, and is expected to REPLACE
+  // this line rather than route around it.
+  if (args.hasScope) return 'human_required';
   if (!args.agentRun) return 'human_required';
   if (args.approvalScope !== 'supervised') return 'human_required';
   if (args.agentMode !== 'act') return 'human_required';
@@ -659,10 +733,37 @@ export async function createActionIntent(
       'agent_source_mismatch',
     );
   }
+  // P2-2 (#4189): an explicit device scope is the SWEEP path's way of minting
+  // a device-bound intent from a device-less run. It is agent-principal only —
+  // a human/MCP caller's target already comes from the tool arguments the
+  // approval card renders, and letting one pin an arbitrary `scope_device_id`
+  // would add a second, unaudited target axis to the human approval story.
+  if (input.scope && auth.principal.kind !== 'ai_agent') {
+    throw new ActionIntentError(
+      `scope is only valid for the ai_agent principal (got principal '${auth.principal.kind}')`,
+      'scope_not_allowed',
+    );
+  }
+  // `scope_device_id` / `scope_ticket_id` are Postgres `uuid` columns: an
+  // uppercase or malformed GUID would raise 22P02 at INSERT (a 500), not a
+  // validation error — same reasoning as the `binding` checks further down.
+  if (input.scope && 'deviceId' in input.scope && !CANONICAL_UUID_LOWER.test(input.scope.deviceId)) {
+    throw new ActionIntentError('scope.deviceId must be a canonical lowercase UUID', 'invalid_scope');
+  }
+  if (input.scope && 'ticketId' in input.scope && !CANONICAL_UUID_LOWER.test(input.scope.ticketId)) {
+    throw new ActionIntentError('scope.ticketId must be a canonical lowercase UUID', 'invalid_scope');
+  }
   // Captured here, at the top level, on purpose: TypeScript discards property
   // narrowing inside the transaction closure below, so reading
   // `auth.principal.kind` at the insert site would widen the type back out.
   const originPrincipalKind: ActionIntentOriginPrincipalKind = auth.principal.kind;
+  // Same reasoning, for the scope union: every later use site (idempotency
+  // key, the insert values, the ticket-autonomy evaluation) needs a plain
+  // `string | null` it can read without re-narrowing `input.scope`. The two
+  // variants are mutually exclusive (`scope_ticket_chk`), so at most one of
+  // these is ever non-null.
+  const scopeDeviceId = input.scope && 'deviceId' in input.scope ? input.scope.deviceId : null;
+  const scopeTicketId = input.scope && 'ticketId' in input.scope ? input.scope.ticketId : null;
 
   const guardrail = checkGuardrails(input.toolName, input.input);
   if (!guardrail.allowed || guardrail.tier >= 4) {
@@ -730,6 +831,9 @@ export async function createActionIntent(
   let agentRunMode: string | undefined;
   if (auth.principal.kind === 'ai_agent') {
     const principal = auth.principal;
+    // scopeDeviceId/scopeTicketId are the top-level consts above — captured
+    // there (not re-declared here) so the system read below can close over
+    // them via the same variables the later insert/idempotency-key sites use.
     // runOutsideDbContext is load-bearing: a bare system wrapper inside an
     // ambient request context is a passthrough (db/index.ts ~440) and the
     // run/agent/device reads below must not silently run under whatever org
@@ -763,7 +867,35 @@ export async function createActionIntent(
             .limit(1);
           deviceSiteId = device?.siteId ?? null;
         }
-        return { run, agent, deviceSiteId };
+        // P2-2: the explicitly scoped device, loaded under the SAME system
+        // read as the run/agent above. `orgId` is projected so the caller can
+        // pin it to the intent's org — a scoped device from another tenant
+        // must be indistinguishable from a nonexistent one (same rule
+        // resolveIntentTargetScope applies to device args).
+        let scopedDevice: { id: string; orgId: string; siteId: string | null } | null = null;
+        if (scopeDeviceId) {
+          const [device] = await db
+            .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
+            .from(devices)
+            .where(eq(devices.id, scopeDeviceId))
+            .limit(1);
+          scopedDevice = device ?? null;
+        }
+        // P2-4 (#4191): the explicitly scoped ticket, loaded under the SAME
+        // system read — mirrors the device projection above. `orgId` lets
+        // the caller pin it to the intent's org, same rule as the device
+        // case (a cross-tenant ticket id is indistinguishable from a
+        // nonexistent one).
+        let scopedTicket: { id: string; orgId: string } | null = null;
+        if (scopeTicketId) {
+          const [ticket] = await db
+            .select({ id: tickets.id, orgId: tickets.orgId })
+            .from(tickets)
+            .where(eq(tickets.id, scopeTicketId))
+            .limit(1);
+          scopedTicket = ticket ?? null;
+        }
+        return { run, agent, deviceSiteId, scopedDevice, scopedTicket };
       }),
     );
     if (!loaded) {
@@ -775,21 +907,100 @@ export async function createActionIntent(
     agentRun = loaded.run;
     agentRow = loaded.agent;
 
+    // P2-2 (#4189): an explicit scope must name a device that EXISTS in this
+    // intent's org. A missing device and a cross-tenant one hit the same
+    // error on purpose — otherwise this is a device-UUID existence oracle for
+    // whatever runner produced the id.
+    if (scopeDeviceId && (!loaded.scopedDevice || loaded.scopedDevice.orgId !== orgId)) {
+      throw new ActionIntentError(
+        'scoped device is missing or belongs to another org',
+        'scope_device_invalid',
+      );
+    }
+    // P2-4 (#4191): the ticket mirror of the device check above.
+    if (scopeTicketId && (!loaded.scopedTicket || loaded.scopedTicket.orgId !== orgId)) {
+      throw new ActionIntentError(
+        'scoped ticket is missing or belongs to another org',
+        'scope_ticket_invalid',
+      );
+    }
+    // ...and the proposed arguments must not reach past that device. Without
+    // this a sweep runner could scope an intent to device A (narrowing every
+    // release-time guardrail re-run to A's site) while the arguments actually
+    // act on device B.
+    if (scopeDeviceId) {
+      try {
+        assertArgsMatchScope(input.toolName, input.input, scopeDeviceId);
+      } catch (err) {
+        if (err instanceof IntentScopeArgumentMismatchError) {
+          throw new ActionIntentError(err.message, 'scope_argument_mismatch');
+        }
+        throw err;
+      }
+    }
+    // I2 (final review #4191): the ticket mirror of the device args check
+    // above — a ticket-scoped intent's arguments must not name a DIFFERENT
+    // ticket than the scope. See `assertArgsMatchTicketScope`'s doc comment.
+    if (scopeTicketId) {
+      try {
+        assertArgsMatchTicketScope(input.toolName, input.input, scopeTicketId);
+      } catch (err) {
+        if (err instanceof IntentScopeArgumentMismatchError) {
+          throw new ActionIntentError(err.message, 'scope_argument_mismatch');
+        }
+        throw err;
+      }
+    }
+
     // Re-verify the verdict from the run's own policy snapshot. deviceId and
-    // deviceSiteId come from the RUN row, never from tool input (Task 3:
+    // deviceSiteId come from the intent's TARGET — the explicit scope when
+    // there is one, otherwise the RUN row — never from tool input (Task 3:
     // isAgentGuardrailPolicy rejects an absent deviceId, so it must be
     // populated explicitly — a malformed snapshot fails validation inside
     // checkAgentGuardrails and denies, which is the fail-closed shape we
-    // want, hence the cast instead of a hand-rolled validator here).
+    // want, hence the cast instead of a hand-rolled validator here). Feeding
+    // the SCOPE here is what lets a device-less sweep run propose a mutation
+    // at all: checkAgentGuardrails denies every mutating call whose
+    // policy.deviceId is null ("the run is not device-bound").
     const effective = loaded.run.policySnapshot?.effective;
     agentRunMode = effective?.mode;
+    // Through the SAME resolver every release/decide-time reader uses, rather
+    // than an inline `scope ?? run` — creation and release must not be able to
+    // drift on what "the intent's target device" means. A freshly-minted
+    // intent can never be a tombstone (the scoped device was just verified
+    // above), so this collapses to the scope device or the run's.
+    const creationTarget = resolveIntentTargetDevice(
+      {
+        scopeKind: scopeDeviceId ? 'device' : scopeTicketId ? 'ticket' : null,
+        scopeDeviceId,
+        scopeTicketId,
+      },
+      loaded.run,
+    );
     const verdict = checkAgentGuardrails(input.toolName, input.input, {
       enabled: effective?.enabled,
       mode: effective?.mode,
       toolAllowlist: effective?.toolAllowlist,
       protectedResources: effective?.protectedResources,
-      deviceId: loaded.run.deviceId ?? null,
-      deviceSiteId: loaded.deviceSiteId,
+      deviceId: effectiveTargetDeviceId(creationTarget),
+      // Review fix (round 1): branch on WHICH device is the target, never
+      // `scopedDevice?.siteId ?? deviceSiteId`. `devices.site_id` is nullable,
+      // so a scoped device with no site would fall through `??` to the RUN
+      // device's site — pairing `deviceId = <scope device>` with
+      // `deviceSiteId = <a different device's site>`, which is exactly the
+      // input `siteScopeDenial` evaluates. All three release-time readers use
+      // `device.siteId ?? null` with NO run fallback, so the `??` form made
+      // creation and release disagree for a site-less scoped device.
+      deviceSiteId: loaded.scopedDevice ? (loaded.scopedDevice.siteId ?? null) : loaded.deviceSiteId,
+      // P2-4 (#4191) forward-compat: `AgentGuardrailPolicy` does not declare
+      // a `scope` field yet — Task A4 adds it, threading it through the
+      // device-less-mutation deny so a ticket-scoped `manage_tickets` call
+      // satisfies the target-binding requirement without a device. Carried
+      // here (via the existing `as AgentGuardrailPolicy` cast, so it compiles
+      // as an inert extra key today) so creation and release agree on what
+      // populates it the moment Task A4 lands, rather than needing a second
+      // follow-up PR to wire the creation call site too.
+      ...(scopeTicketId ? { scope: { ticketId: scopeTicketId } } : {}),
     } as AgentGuardrailPolicy);
     if (verdict.disposition === 'deny') {
       throw new ActionIntentError(
@@ -806,7 +1017,18 @@ export async function createActionIntent(
   // yield DISTINCT intents — an intent is immutably attributed to one run,
   // whose policy snapshot the release path evaluates (review major 4).
   const idempotencyKey = input.idempotencyKey
-    ?? deriveIdempotencyKey(agentRun ? agentRun.id : requesterId, input.toolName, argumentDigest);
+    ?? deriveIdempotencyKey(
+      agentRun ? agentRun.id : requesterId,
+      input.toolName,
+      argumentDigest,
+      // The two scope variants are mutually exclusive; either one (or
+      // neither) folds into the SAME hashed-material parameter that has
+      // always carried the device scope — a ticket-scoped fan-out (multiple
+      // ticket-triage proposals for the same tool+args, one per ticket) must
+      // land on distinct keys for exactly the same reason a device sweep
+      // fan-out does.
+      scopeDeviceId ?? scopeTicketId ?? null,
+    );
   const targetSummary = buildTargetSummary(input.toolName, input.input);
   const impactSummary = buildImpactSummary(input.toolName, guardrail);
   const expiresAt = computeExpiresAt(input.source, approvalScope);
@@ -865,10 +1087,25 @@ export async function createActionIntent(
     try {
       // orgId pins the device resolution to the intent's org (review finding
       // 1): a cross-tenant device id must fail exactly like a nonexistent one.
+      // P2-2: the device the approvers are resolved against is the intent's
+      // TARGET (explicit scope when present), never the run's own device — a
+      // sweep run has none, and a scoped intent's approvers must be the humans
+      // who can reach the SCOPED device's site.
       targetScope = await resolveIntentTargetScope(
         input.toolName,
         input.input,
-        { deviceId: agentRun.deviceId },
+        {
+          deviceId: effectiveTargetDeviceId(
+            resolveIntentTargetDevice(
+              {
+                scopeKind: scopeDeviceId ? 'device' : scopeTicketId ? 'ticket' : null,
+                scopeDeviceId,
+                scopeTicketId,
+              },
+              agentRun,
+            ),
+          ),
+        },
         orgId,
       );
     } catch (err) {
@@ -957,7 +1194,34 @@ export async function createActionIntent(
         toolName: input.toolName,
         input: input.input,
         agentMode: agentRunMode,
+        hasScope: input.scope !== undefined,
       });
+
+      // P2-4 Task A3 (#4191) — the creation-transaction ticket-autonomy
+      // decision. Evaluated here (INSIDE this transaction, via the ambient
+      // `db` — the SAME connection/snapshot the insert below runs on) so it
+      // can be baked directly into the insert's values rather than a
+      // follow-up UPDATE, and so a concurrent policy flip cannot land
+      // between "decide" and "insert". Short-circuits to `not_requested`
+      // (near-zero cost) for the overwhelming majority of intents that never
+      // asked for autonomy at all — see ticketAutonomy.ts's header.
+      const autonomyDecision = await evaluateTicketAutonomy({
+        requestedAutonomyKind: input.autonomy?.kind,
+        principalKind: auth.principal.kind,
+        agentRunId: agentRun?.id ?? null,
+        orgId,
+        scope: input.scope,
+      });
+      const autonomyGranted = autonomyDecision.granted;
+      // A denial is never thrown — it's a breadcrumb on the row that still
+      // proceeds down the ordinary human_required path. Only stamped when
+      // autonomy was ACTUALLY requested (never for the ordinary case where
+      // `input.autonomy` was never set at all, which would otherwise spam
+      // `autonomyDenied: 'not_requested'` onto every unrelated intent).
+      const autonomyResult: Record<string, unknown> | null =
+        input.autonomy?.kind === 'ticket_autonomy' && !autonomyDecision.granted
+          ? { autonomyDenied: autonomyDecision.reason }
+          : null;
 
       const [inserted] = await db
         .insert(actionIntents)
@@ -982,6 +1246,14 @@ export async function createActionIntent(
                   : null,
           connectionId: input.binding?.connectionId ?? null,
           tenantId: input.binding?.tenantId ?? null,
+          // P2-2/P2-4 typed target scope. Immutable except for the non-null
+          // -> NULL tombstone the device-delete FK / moveOrg detach (device)
+          // and the `manage_tickets:move_org` executor detach (ticket)
+          // produce; every reader resolves through `resolveIntentTargetDevice`
+          // / `resolveIntentTargetTicket`.
+          scopeKind: scopeDeviceId ? ('device' as const) : scopeTicketId ? ('ticket' as const) : null,
+          scopeDeviceId,
+          scopeTicketId,
           source: input.source,
           requestingClientLabel,
           actionName: input.toolName,
@@ -1006,6 +1278,23 @@ export async function createActionIntent(
           // approvalExpiresAt).
           expiresAt,
           approvalExpiresAt: expiresAt,
+          // P2-4 Task A3 (#4191): a granted ticket-autonomy decision is
+          // baked directly into the insert, exactly like `runAuthorizeTransaction`
+          // (policyDecide.ts) stamps a policy-decided row — `decidedByUserId:
+          // null` because no human decided this, `releaseBy` the SAME
+          // fixed-lease shape every approved intent gets. Every field here
+          // stays at its column default (status 'pending_approval', the rest
+          // null) when autonomy was not granted.
+          ...(autonomyGranted
+            ? {
+              status: 'approved' as const,
+              decidedVia: 'ticket_autonomy',
+              decidedAt: new Date(),
+              decidedByUserId: null,
+              releaseBy: new Date(Date.now() + RELEASE_LEASE_MS),
+            }
+            : {}),
+          result: autonomyResult,
         })
         // IMPORTANT-4: action_intents_org_idem_uniq is now a PARTIAL unique
         // index (migration 2026-07-18-action-intents.sql) covering only LIVE
@@ -1100,7 +1389,11 @@ export async function createActionIntent(
       let fanOutUserIds: string[] = [];
       let finalIntent: ActionIntent = inserted;
 
-      if (decisionState === 'human_required') {
+      // P2-4 Task A3 (#4191): a granted ticket-autonomy decision skips the
+      // human fan-out entirely, same as the (not-yet-reachable-here)
+      // policy-authorized case would — no approval_requests rows, no
+      // approver notification.
+      if (!autonomyGranted && decisionState === 'human_required') {
         ({ approvalRequestIds, requesterApprovalRequestId, fanOutUserIds, finalIntent } =
           await runHumanFanout({
             db,
@@ -1132,6 +1425,27 @@ export async function createActionIntent(
         // Ids only, no argument content (spec §3.2).
         payload: { intentId: inserted.id, orgId },
       });
+
+      // P2-4 Task A3 (#4191): a granted ticket-autonomy decision ALSO
+      // enqueues the SAME durable release job the human-approve path
+      // enqueues (`decideApprovalRequest.ts`) / policy-decide's own
+      // authorize transaction enqueues (`policyDecide.ts`'s
+      // `runAuthorizeTransaction`) — reused verbatim so crash-recovery
+      // replays it: `intentReleaseWorker.ts`'s `intent_approved` branch
+      // releases this intent regardless of `decidedVia`, unmodified by this
+      // task. The `intent_created` row above is a SECOND, independent
+      // recovery path for the same release (see that worker's
+      // `data.eventType === 'intent_created'` branch, widened by this task
+      // to release directly for a `decidedVia: 'ticket_autonomy'` row
+      // instead of calling `attemptPolicyDecision`) — a backstop in case
+      // this row's own publish is ever the one that gets stuck.
+      if (autonomyGranted) {
+        await db.insert(intentOutbox).values({
+          intentId: inserted.id,
+          eventType: 'intent_approved',
+          payload: { intentId: inserted.id, orgId },
+        });
+      }
 
       return {
         intent: finalIntent,
@@ -1171,7 +1485,13 @@ export async function createActionIntent(
   // `pending_approval` snapshot exactly as it always did; the attempt's
   // outcome surfaces later via the intent's own state, not this call's return
   // value.
-  if (creation.isNew && creation.intent.policyDecisionState === 'unattempted') {
+  // `!input.scope` is belt-and-braces, not redundancy with taste: a scoped
+  // intent cannot BE 'unattempted' (resolvePolicyDecisionState forces
+  // human_required for it — spec §4.2 amendment, #4189), so this second
+  // condition only fires if that invariant is ever broken upstream. It is
+  // cheap, and the failure it guards against is a sweep proposal
+  // auto-executing.
+  if (creation.isNew && !input.scope && creation.intent.policyDecisionState === 'unattempted') {
     triggerPolicyDecisionAttempt(creation.intent.id);
   }
 
@@ -1337,10 +1657,15 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
 
   let targetScope: IntentTargetScope;
   try {
+    // P2-2: same resolver as the creation fan-out — a scoped intent's
+    // approvers are the humans who can reach the SCOPED device, and the run's
+    // own device (null for a sweep) is never consulted. A tombstoned scope
+    // collapses to `deviceId: null`, which falls through to the fail-closed
+    // 'indirect' rule below exactly like an unresolvable device does.
     targetScope = await resolveIntentTargetScope(
       intent.actionName,
       intent.arguments as Record<string, unknown>,
-      { deviceId: run.deviceId },
+      { deviceId: effectiveTargetDeviceId(resolveIntentTargetDevice(intent, run)) },
       intent.orgId,
     );
   } catch {
@@ -1358,6 +1683,9 @@ export async function runDeferredHumanFanout(intentId: string): Promise<void> {
     targetScope,
   });
 
+  // `deviceId` here is inert for targeting — AgentRunRef carries it, but the
+  // fan-out reads only `agentRun.id` (and its truthiness). The TARGET device
+  // was resolved above, through resolveIntentTargetDevice.
   const agentRun: AgentRunRef = { id: run.id, agentId: run.agentId, orgId: run.orgId, deviceId: run.deviceId };
 
   const fanoutResult = await withSystemDbAccessContext(async (): Promise<HumanFanoutResult | null> => {

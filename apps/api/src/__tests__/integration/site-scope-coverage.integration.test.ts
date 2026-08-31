@@ -24,6 +24,8 @@ import {
  *   - `canAccessDeviceSite`           per-file helper convention
  *   - `getDeviceWithOrgAndSiteCheck`  canonical helper (`routes/devices/helpers.ts`)
  *   - `canAccessSite`                 underlying primitive (`services/permissions.ts`)
+ *   - `authorizeRouteResilienceResources` shared recovery lineage gate
+ *   - `resolveRouteAuthorizedDeviceIds` shared recovery list narrowing
  *
  * The allowlist below captures the set of routes that were known to be
  * missing the gate as of the SP2 sweep that added this test (PR #864/#868
@@ -144,12 +146,17 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/agents/bootPerformance.ts:POST /:id/boot-performance',
   'routes/agents/changes.ts:PUT /:id/changes',
   'routes/agents/commands.ts:POST /:id/commands/:commandId/result',
+  // Primary agent-token path: command lookup is pinned to the authenticated
+  // device ID plus exact command ID/type/target role; no user site scope exists.
+  'routes/agents/pamObservations.ts:POST /:id/commands/:commandId/pam-observations',
   'routes/agents/connections.ts:PUT /:id/connections',
   'routes/agents/elevationRequests.ts:POST /:id/elevation-requests',
   'routes/agents/enrollment.ts:POST /enroll',
   'routes/agents/inventory.ts:PUT /:id/disks',
   'routes/agents/inventory.ts:PUT /:id/hardware',
   'routes/agents/inventory.ts:PUT /:id/network',
+  // Agent-role token on the route group; the URL id is resolved to the
+  // authenticated agent's device by agentAuth, not a user-session site scope.
   'routes/agents/inventory.ts:PUT /:id/software',
   'routes/agents/inventory.ts:PUT /:id/warranty-info',
   // Agent-token mTLS renewal confirm (Wave 5 Task 4/6). The atomic

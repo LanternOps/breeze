@@ -247,7 +247,7 @@ export function SettingsSheet({ visible, onCancel }: Props) {
         style: 'destructive',
         onPress: () => {
           onCancel();
-          dispatch(logoutAsync());
+          dispatch(logoutAsync({ deliberate: true }));
         },
       },
     ]);

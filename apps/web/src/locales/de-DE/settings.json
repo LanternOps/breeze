@@ -1324,6 +1324,70 @@
     "billedToPartnerKeyViaEndpoint": "Abrechnung über Ihren Schlüssel via {{name}} — die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben"
   },
   "aiAgentsPage": {
+    "schedules": {
+      "title": "Geplante Sweeps",
+      "description": "Cron-Zeitpläne, die den Flotten-Sweep dieses Agenten ausführen. Partner legen die Basis fest; Organisationen können sie nur einschränken.",
+      "partnerOnly": "Sweep-Zeitpläne können nur an einen partnerweiten Agenten angehängt werden.",
+      "loading": "Zeitpläne werden geladen …",
+      "loadFailed": "Sweep-Zeitpläne konnten nicht geladen werden.",
+      "empty": "Noch keine Sweep-Zeitpläne.",
+      "add": "Zeitplan hinzufügen",
+      "edit": "Bearbeiten",
+      "save": "Zeitplan speichern",
+      "cancel": "Abbrechen",
+      "delete": "Zeitplan löschen",
+      "deleteOverride": "Ausnahme entfernen",
+      "confirmDelete": "Löschen bestätigen",
+      "cron": "Cron-Ausdruck",
+      "cronHint": "Fünf Felder: Minute Stunde Tag-des-Monats Monat Wochentag. Beispiel: 0 3 * * * läuft täglich um 03:00 Uhr.",
+      "cronInvalid": "Geben Sie vor dem Speichern einen gültigen Cron-Ausdruck mit fünf Feldern ein.",
+      "timezone": "Zeitzone",
+      "kinds": {
+        "sweep": "Prüflauf",
+        "narrative": "Wochenbericht"
+      },
+      "kindsLabel": "Auszuführende Prüfungen",
+      "kind": "Zeitplantyp",
+      "weeklyOnlyHint": "Ein Wochenbericht wird genau einmal pro Woche ausgelöst: feste Minute und Stunde, * für Tag-des-Monats und Monat sowie ein einzelner Wochentag von 0 bis 6. Beispiel: 0 7 * * 1 läuft jeden Montag um 07:00 Uhr.",
+      "kindsRequired": "Wählen Sie mindestens eine Prüfung aus.",
+      "enabled": "Aktiviert",
+      "override": "Für diese Organisation überschreiben",
+      "editOverride": "Ausnahme dieser Organisation bearbeiten",
+      "overrideHint": "Die Ausnahme dieser Organisation zur Partner-Basis. Sie läuft immer im Takt der Basis.",
+      "overrideSummary": "Diese Organisation: {{state}} · {{kinds}}",
+      "overrideSummaryNarrative": "Diese Organisation: {{state}}",
+      "tightenOnly": "Eine Ausnahme kann die Basis nur einschränken: Sie kann den Sweep deaktivieren oder Prüfungen entfernen, aber nie hinzufügen.",
+      "noKinds": "Keine Prüfungen",
+      "lastRun": "Letzter Lauf {{at}} · {{admitted}} von {{total}} Organisationen geprüft, {{skipped}} übersprungen.",
+      "kindLabels": {
+        "disk_pressure": "Speicherplatzdruck",
+        "stale_agents": "Veraltete Agenten",
+        "pending_reboots": "Ausstehende Neustarts",
+        "failed_backups": "Fehlgeschlagene Backups",
+        "service_down": "Dienst ausgefallen",
+        "unpatched_critical": "Kritische ungepatchte Schwachstellen"
+      },
+      "toasts": {
+        "saved": "Zeitplan gespeichert",
+        "saveFailed": "Der Zeitplan konnte nicht gespeichert werden.",
+        "deleted": "Zeitplan gelöscht",
+        "deleteFailed": "Der Zeitplan konnte nicht gelöscht werden."
+      },
+      "errors": {
+        "invalidCron": "Dieser Cron-Ausdruck ist ungültig. Verwenden Sie fünf Felder, zum Beispiel 0 3 * * *.",
+        "invalidTimezone": "Das ist keine gültige IANA-Zeitzone.",
+        "kindsNotSubset": "Eine Ausnahme kann die Basis nur einschränken. Entfernen Sie die Prüfungen, die die Partner-Basis nicht ausführt.",
+        "overrideExists": "Für diese Basis besteht bereits eine Ausnahme dieser Organisation. Bearbeiten Sie die vorhandene Ausnahme.",
+        "baselineWrongPartner": "Diese Basis gehört zu einem anderen Partner.",
+        "baselineIsOverride": "Dieser Zeitplan ist bereits eine Ausnahme. Ausnahmen können nicht verkettet werden.",
+        "baselineNotPartnerRow": "Diese Basis hat keinen Eigentümer und kann nicht überschrieben werden.",
+        "baselineAgentMismatch": "Diese Basis gehört zu einem anderen Agenten.",
+        "agentNotPartnerWide": "Sweep-Zeitpläne erfordern einen partnerweiten Agenten.",
+        "agentKindNotTriage": "Nur ein Triage-Agent kann geplant werden.",
+        "kindsNotEmpty": "Ein Wochenbericht-Zeitplan führt keine Prüfungen aus. Entfernen Sie die ausgewählten Prüfungen vor dem Speichern.",
+        "invalidCronForKind": "Ein Wochenbericht muss genau einmal pro Woche ausgelöst werden. Verwenden Sie feste Minute und Stunde, * für Tag-des-Monats und Monat sowie einen einzelnen Wochentag."
+      }
+    },
     "title": "KI-Agenten",
     "description": "Benannte KI-Mitarbeiter mit einer Richtlinie. Partner legen die Grundlinie fest; Organisationen können sie nur verschärfen.",
     "empty": "Noch keine Agenten vorhanden.",
@@ -1473,6 +1537,56 @@
         "schedule": "Zeitplan",
         "ticket": "Ticket",
         "anomaly": "Anomalie"
+      },
+      "profile": {
+        "sweep": "Prüflauf",
+        "narrative": "Wochenbericht"
+      },
+      "sweep": {
+        "title": "Ergebnisse des Prüflaufs",
+        "kindsLabel": "Prüfungen: {{kinds}}",
+        "empty": "Keine Befunde gemeldet.",
+        "evidenceTruncated": "Die Belege wurden gekürzt — dem Agenten wurde nicht jede passende Zeile gezeigt.",
+        "proposalCreated": "Genehmigung angefordert",
+        "columns": {
+          "kind": "Prüfung",
+          "severity": "Schweregrad",
+          "device": "Gerät",
+          "title": "Befund",
+          "detail": "Beschreibung",
+          "proposal": "Vorschlag"
+        },
+        "kinds": {
+          "disk_pressure": "Speicherplatzmangel",
+          "stale_agents": "Veraltete Agenten",
+          "pending_reboots": "Ausstehende Neustarts",
+          "failed_backups": "Fehlgeschlagene Sicherungen",
+          "service_down": "Dienst gestoppt",
+          "unpatched_critical": "Ungepatchte kritische Schwachstellen"
+        },
+        "severities": {
+          "critical": "Kritisch",
+          "high": "Hoch",
+          "medium": "Mittel",
+          "low": "Niedrig",
+          "info": "Information"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Gerät nicht in den Belegen des Prüflaufs",
+          "device_not_in_org": "Gerät gehört nicht zu dieser Organisation",
+          "not_allowlisted": "Werkzeug für diesen Agenten nicht freigegeben",
+          "no_eligible_approvers": "Keine berechtigten Genehmiger",
+          "intent_error": "Genehmigung konnte nicht erstellt werden",
+          "max_actions_per_run": "Aktionslimit für diesen Lauf erreicht"
+        }
+      },
+      "narrative": {
+        "title": "Wöchentliche Zusammenfassung",
+        "period": "Zeitraum {{start}} bis {{end}}",
+        "truncatedNote": "Der Kontext des Agenten wurde gekürzt — diese Zusammenfassung hat nicht die ganze Woche gesehen.",
+        "openReport": "Bericht öffnen",
+        "download": "PDF herunterladen",
+        "downloadFailed": "Das PDF konnte nicht heruntergeladen werden."
       },
       "noAgent": "Unbekannter Agent",
       "loading": "Läufe werden geladen…",
@@ -2129,6 +2243,7 @@
     "ssoReauthEmailUnverified": "Ihr Identitätsanbieter meldet, dass Ihre E-Mail-Adresse nicht bestätigt ist. Bestätigen Sie sie dort und versuchen Sie es erneut.",
     "ssoReauthProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um die Einrichtung der Multi-Faktor-Authentifizierung abzuschließen.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Dieses Konto meldet sich über einen Identitätsanbieter an und hat kein Passwort. Bestätigen Sie sich erneut bei Ihrem Anbieter, bevor Sie einen Passkey hinzufügen.",
+    "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Ihre Identität wurde bestätigt. Benennen Sie diesen Passkey und fahren Sie fort.",
     "verifyWithYourIdentityProvider": "Mit Ihrem Identitätsanbieter bestätigen",
     "passkeyIdpVerificationRequired": "Bestätigen Sie sich bei Ihrem Identitätsanbieter, bevor Sie einen Passkey hinzufügen.",
     "ssoReauthFailed": "Die Bestätigung bei Ihrem Identitätsanbieter ist fehlgeschlagen. Bitte versuchen Sie es erneut.",

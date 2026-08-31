@@ -45,6 +45,11 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // which itself never follows a device move (ai_agent_runs above) — see
   // the CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
   'ai_agent_fix_watches',
+  // Durable PAM ownership history is frozen in its source org. A device with
+  // any actuation is non-transferable, so neither table participates in an
+  // organization-move rewrite.
+  'pam_actuations',
+  'pam_actuation_results',
   'automation_policy_compliance',
   'deployment_devices',
   'deployment_results',
@@ -414,5 +419,50 @@ describe('ai_agent_runs run-lineage detach coverage', () => {
 
     const actual = extractDetachColumns(match![1]!);
     expect(actual).toEqual(deriveExpectedDetachColumns());
+  });
+});
+
+/**
+ * action_intents.scope_device_id detach coverage (P2-2 review round 1,
+ * Important 2, #4189).
+ *
+ * Same cross-tenant-pointer class as the ai_agent_runs run-lineage detach
+ * above: `action_intents.scope_device_id` is a typed target-scope pointer
+ * (migrations/2026-09-23-ai-agents-scheduled-sweeps.sql) that must not keep
+ * naming a device once that device moves to a different org. Unlike the
+ * ai_agent_runs columns, this is a single column gated to LIVE statuses only
+ * (see actionIntents.ts's schema comment for why terminal-status intents are
+ * left alone) — a source-text regex assertion on the WHERE clause, not a
+ * schema-FK-derived set, since there is only the one column to check.
+ *
+ * Deliberately NOT mirrored into breeze_cascade_device_org_id() (the DB-side
+ * trigger for direct-SQL/non-route callers) in this round — the controller
+ * ruling scoped this fix to the moveOrg route only. A direct
+ * `UPDATE devices SET org_id = ...` that bypasses the route would still leave
+ * a stale scope_device_id; tracked as a known gap for a follow-up, same
+ * pattern as this file's own `KNOWN_UNDETACHED_RUN_LINEAGE_COLUMNS` note for
+ * ticket_id above.
+ */
+describe('action_intents.scope_device_id detach coverage', () => {
+  it('moveOrg.ts tombstones scope_device_id for the moved device, scoped to live statuses', () => {
+    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const src = readFileSync(moveOrgPath, 'utf8');
+
+    const match = src.match(
+      /UPDATE action_intents SET scope_device_id = NULL\s+WHERE scope_device_id = \$\{deviceId\}::uuid\s+AND status IN \(([^)]+)\)/,
+    );
+    expect(
+      match,
+      'moveOrg.ts no longer has the expected "UPDATE action_intents SET scope_device_id = NULL ... WHERE scope_device_id = ... AND status IN (...)" statement — update this test if the statement shape changed intentionally',
+    ).toBeTruthy();
+
+    // Assert the WHERE's status filter, not just that some UPDATE ran — a
+    // detach that fired unconditionally (e.g. dropping the status filter)
+    // would tombstone a COMPLETED intent's historical target too, which the
+    // schema comment explicitly says must not happen.
+    const statuses = match![1]!
+      .split(',')
+      .map((s) => s.trim().replace(/^'|'$/g, ''));
+    expect(statuses.sort()).toEqual(['approved', 'executing', 'pending_approval']);
   });
 });

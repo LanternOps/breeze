@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Calendar } from "lucide-react";
 import { formatDateTime as formatUserDateTime } from "@/lib/dateTimeFormat";
 import { fetchWithAuth } from "../../stores/auth";
+import HashLink from "../shared/HashLink";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -247,14 +248,14 @@ export default function DeviceAlertHistory({
         )}
       </div>
       {limit && alerts.length > limit && (
-        <a
-          href="#alerts"
+        <HashLink
+          hash="alerts"
           className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
         >
           {t("deviceAlertHistory.viewAll")} {alerts.length}{" "}
           {t("deviceAlertHistory.alerts")}{" "}
           <span aria-hidden="true">{t("deviceAlertHistory.text")}</span>
-        </a>
+        </HashLink>
       )}
     </div>
   );

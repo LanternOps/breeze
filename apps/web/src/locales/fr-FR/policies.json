@@ -738,6 +738,8 @@
         "recurrence": "Récidive",
         "startDateTime": "Date/Heure de début",
         "theSpecificDateAndTimeForThis": "La date et l’heure précises pour cette fenêtre de maintenance unique.",
+        "startTime": "Heure de début",
+        "theTimeOfDayEachWindowOpensIn": "L’heure à laquelle chaque fenêtre de maintenance s’ouvre, dans le fuseau horaire sélectionné. Minuit (00:00) par défaut.",
         "durationHours": "Durée (heures)",
         "timezone": "Fuse horaire",
         "notifyBeforeMinutes": "Notifier avant (minutes)",

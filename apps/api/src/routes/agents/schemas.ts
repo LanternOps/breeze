@@ -160,6 +160,10 @@ export const heartbeatSchema = z.object({
   // Installed breeze-backup version, reported by the agent so
   // devices.backup_version stays fresh (mirrors watchdogVersion above).
   backupVersion: z.string().max(20).optional().catch(undefined),
+  rollbackComponentVersions: z.record(
+    z.enum(['agent', 'helper', 'user-helper', 'watchdog', 'backup']),
+    z.string().min(1).max(20),
+  ).optional().catch(undefined),
   // #2288 — the control-plane base URL the agent used for this heartbeat.
   serverUrl: z.string().max(512).optional().catch(undefined),
   ipHistoryUpdate: z.object({
@@ -252,15 +256,59 @@ export const heartbeatSchema = z.object({
   }).optional().catch(undefined),
   // Wave 6 Task 4 (security remediation) — outbound-network-policy capability
   // handshake. Old agents omit this object entirely; a capable agent sends
-  // `{"outboundNetworkPolicyVersion":1}`. Informational — a bad value drops
-  // the whole object (.catch) rather than 400-ing the heartbeat, since the
-  // route treats anything other than exactly 1 as "not enforcing" anyway.
+  // `{"outboundNetworkPolicyVersion":1}`. Informational — a bad field drops
+  // independently rather than 400-ing the heartbeat, since the route treats
+  // every omitted/unrecognized value as capability zero anyway.
   securityCapabilities: z.object({
     outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
     // #3409 PR4 — encrypted secret-env delivery. Same informational contract:
     // a bad value drops the field rather than 400-ing the heartbeat, since the
     // route treats anything other than exactly 1 as "not capable" anyway.
     scriptSecretEnvVersion: z.number().int().optional().catch(undefined),
+    // Device-control capability claims are tolerant informational fields.
+    // Each malformed field drops independently without rejecting the beat.
+    peripheralPolicyProtocolVersion: z.number().int().optional().catch(undefined),
+    rollbackProtocolVersion: z.number().int().optional().catch(undefined),
+    pamLifetimeProtocolVersion: z.number().int().optional().catch(undefined),
+    pamReconciliation: z.object({
+      unresolvedCount: z.number().int().nonnegative(),
+      quarantinedCount: z.number().int().nonnegative(),
+      awaitingAcknowledgementCount: z.number().int().nonnegative(),
+      receivedObservationPendingCount: z.number().int().nonnegative().optional(),
+      blockingReason: z.enum([
+        'resolver_unavailable',
+        'binding_unresolved',
+        'enqueue_failed',
+        'acknowledgement_unavailable',
+        'quarantined',
+        'outbox_unreadable',
+        'received_observation_transport',
+      ]).refine((value) => value.length <= 64).optional(),
+    }).optional().catch(undefined),
+  }).optional().catch(undefined),
+  // Signed rollback progress is informational and restart-resend safe. A
+  // malformed optional observation must never take the ordinary heartbeat
+  // offline; the server simply withholds an acknowledgement for that value.
+  rollbackObservation: z.object({
+    schemaVersion: z.literal(1),
+    observationId: z.string().regex(/^[a-f0-9]{64}$/),
+    rollbackId: z.string().uuid(),
+    deviceId: z.string().uuid(),
+    phase: z.enum([
+      'received',
+      'downloaded',
+      'verified',
+      'staged',
+      'swapped',
+      'restart_requested',
+      'healthy',
+      'failed',
+      'recovered',
+    ]),
+    currentVersion: z.string().min(1).max(100),
+    componentVersions: z.record(z.string().min(1).max(64), z.string().min(1).max(100)),
+    observedAt: z.string().datetime({ offset: true }),
+    errorCode: z.string().min(1).max(128).regex(/^[a-z0-9_]+$/).optional().catch(undefined),
   }).optional().catch(undefined),
   // Migration-banner Task 2 — self-reported install edition + whether the
   // agent believes it needs to migrate hosted↔self-host. Since #4072 this is
