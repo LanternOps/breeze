@@ -166,6 +166,22 @@ describe('GET /orgs/organizations — organizationOrder across page boundaries (
     ]);
   });
 
+  // NOT COVERED HERE — the system-scope branch (`else if (auth.scope === 'system'
+  // && queryPartnerId)` in orgs.ts) cannot be reached over HTTP from this
+  // harness, and the reason is worth recording rather than papering over. The
+  // route is gated by `requireOrgRead` -> `requirePermission(ORGS_READ)`, and
+  // `getUserPermissions` resolves a user's permissions through their
+  // organization_users / partner_users membership keyed by the request's
+  // partnerId/orgId. A system-scope token carries neither (db-utils mints
+  // `partnerId: null` for system scope, by design), so the lookup returns null
+  // and every system caller gets 403 "No permissions found" — before any
+  // ordering code runs. Promoting the fixture user to `is_platform_admin`
+  // clears the separate SR2-02 live-binding check (middleware/auth.ts:591) but
+  // not this one: there is no platform-admin bypass in `getUserPermissions`.
+  // Covering that branch needs a harness change (a system-reachable role), not
+  // a change to this file, and the ordering it feeds is already proven by the
+  // partner-scope cases above plus the compiled-SQL suite.
+
   it('falls back to created_at, id when the partner has stored no order', async () => {
     const { client, orgIds } = await seedFiveOrgs();
     expect(await walkPages(client, 2)).toEqual(orgIds);

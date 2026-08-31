@@ -63,6 +63,11 @@ describe('buildOrganizationListQuery — preferred order participates in page se
     const createdAtAt = orderBy.indexOf('"created_at"');
     const idAt = orderBy.lastIndexOf('"id"');
 
+    // Assert PRESENCE before relative position. `indexOf` returns -1 when the
+    // term is absent, and `createdAtAt > -1` holds for any ORDER BY at all —
+    // so without this line the whole case passes with the ordering feature
+    // removed, which is exactly the vacuous shape this file exists to avoid.
+    expect(arrayPositionAt).toBeGreaterThan(-1);
     expect(createdAtAt).toBeGreaterThan(arrayPositionAt);
     expect(idAt).toBeGreaterThan(createdAtAt);
   });
