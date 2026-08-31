@@ -743,14 +743,21 @@ export default function AiAgentForm({
             {t('aiAgentsPage.fields.respectMaintenanceWindows')}
           </label>
 
-          {/* P2-4 (#4191). Only a `triage` agent's runs ever consult
-              `triggers.ticketAutonomousWrites` (ticket-triggered admission,
-              runService.ts). Disabled — never hidden — on a partner-wide row:
-              the merge reads ONLY the org's own override
-              (effectivePolicy.ts), so a partner baseline value can never take
-              effect; hiding it outright would look like the field vanished
-              rather than explain why it cannot be set here. */}
-          {draft.kind === 'triage' && (
+          {/* P2-4 (#4191) review fix — ticket-triggered runs are admitted
+              with `kind: 'helpdesk'` (ticketHelpdeskSubscriber.ts's
+              `admitTriageRun`: `createAndEnqueueAgentRun({ kind: 'helpdesk',
+              triggerKind: 'ticket', profile: 'triage', ... })`), and
+              runService.ts's `resolveEffectiveAgentSystem(orgId, kind)`
+              resolves the effective policy off THAT `kind` field — never
+              `triage`, which is a different agent kind entirely (the
+              scheduled-sweeps gate a few lines below IS genuinely
+              triage-only; do not copy this gate from that one again).
+              Disabled — never hidden — on a partner-wide row: the merge
+              reads ONLY the org's own override (effectivePolicy.ts), so a
+              partner baseline value can never take effect; hiding it
+              outright would look like the field vanished rather than
+              explain why it cannot be set here. */}
+          {draft.kind === 'helpdesk' && (
             <div className="space-y-1">
               <label className="flex items-center gap-2 text-sm">
                 <input

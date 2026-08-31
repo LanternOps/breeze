@@ -62,18 +62,28 @@ const ORG_AGENT = {
   allOrgs: false,
 };
 
-// P2-4 (#4191) — an ORG-owned triage agent, the only ownership axis the
-// `ticketAutonomousWrites` toggle can ever take effect on (org-row-only
-// opt-in; see AiAgentTriggers.ticketAutonomousWrites's docstring).
-const ORG_TRIAGE_AGENT = {
+// P2-4 (#4191) review fix — ticket-triggered runs are admitted with
+// `kind: 'helpdesk'` (ticketHelpdeskSubscriber.ts's `admitTriageRun`,
+// `createAndEnqueueAgentRun({ kind: 'helpdesk', ... })`), and runService.ts
+// resolves the effective policy off THAT kind — never `triage` (the
+// scheduled-sweeps kind, a different gate entirely). `ticketAutonomousWrites`
+// can therefore only ever take effect on a `helpdesk`-kind, ORG-owned row.
+const ORG_HELPDESK_AGENT = {
   ...PARTNER_AGENT,
   id: 'a3',
-  kind: 'triage' as const,
-  name: 'Org triage',
+  kind: 'helpdesk' as const,
+  name: 'Org helpdesk',
   orgId: 'org-1',
   partnerId: null,
   ownerScope: 'organization' as const,
   allOrgs: false,
+};
+
+const PARTNER_HELPDESK_AGENT = {
+  ...PARTNER_AGENT,
+  id: 'a4',
+  kind: 'helpdesk' as const,
+  name: 'Partner helpdesk',
 };
 
 function mockEndpoints(agents: unknown[] = [PARTNER_AGENT]) {
@@ -546,32 +556,40 @@ describe('AiAgentsPage', () => {
 // never consulted in either direction (effectivePolicy.ts's merge), so a
 // partner-wide row must never let an operator believe toggling it does
 // anything.
+//
+// Review fix (#4191): ticket-triggered runs are admitted with
+// `kind: 'helpdesk'` (ticketHelpdeskSubscriber.ts's `admitTriageRun`), and
+// runService.ts resolves the effective policy off THAT kind — never
+// `triage` (a different, scheduled-sweeps-only gate). Every fixture below
+// is `helpdesk`-kind for that reason, EXCEPT the first test, which proves
+// a `triage`-kind agent — the exact kind this toggle was originally
+// (wrongly) gated on — never renders it at all.
 describe('AiAgentsPage ticketAutonomousWrites toggle (P2-4, #4191)', () => {
-  it('hides the toggle entirely for a non-triage agent kind', async () => {
-    mockEndpoints([ORG_AGENT]);
-    render(<AiAgentsPage />);
-
-    await waitFor(() => screen.getByTestId('ai-agent-edit-a2'));
-    fireEvent.click(screen.getByTestId('ai-agent-edit-a2'));
-
-    await screen.findByTestId('ai-agent-editor');
-    expect(screen.queryByTestId('ai-agent-ticket-autonomous-writes')).toBeNull();
-  });
-
-  it('renders the toggle DISABLED for a partner-wide triage agent — it can never take effect there', async () => {
+  it('hides the toggle entirely for a triage-kind agent — ticket runs are admitted as helpdesk, never triage', async () => {
     mockEndpoints([PARTNER_AGENT]);
     render(<AiAgentsPage />);
 
     await waitFor(() => screen.getByTestId('ai-agent-edit-a1'));
     fireEvent.click(screen.getByTestId('ai-agent-edit-a1'));
 
+    await screen.findByTestId('ai-agent-editor');
+    expect(screen.queryByTestId('ai-agent-ticket-autonomous-writes')).toBeNull();
+  });
+
+  it('renders the toggle DISABLED for a partner-wide helpdesk agent — it can never take effect there', async () => {
+    mockEndpoints([PARTNER_HELPDESK_AGENT]);
+    render(<AiAgentsPage />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-edit-a4'));
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a4'));
+
     const checkbox = await screen.findByTestId('ai-agent-ticket-autonomous-writes');
     expect(checkbox).toBeDisabled();
   });
 
-  it('renders the toggle CHECKED when the stored org-owned agent already opted in', async () => {
+  it('renders the toggle CHECKED when the stored org-owned helpdesk agent already opted in', async () => {
     const preset = {
-      ...ORG_TRIAGE_AGENT,
+      ...ORG_HELPDESK_AGENT,
       triggers: { alertSeverities: ['critical'], respectMaintenanceWindows: true, ticketAutonomousWrites: true },
     };
     mockEndpoints([preset]);
@@ -585,8 +603,8 @@ describe('AiAgentsPage ticketAutonomousWrites toggle (P2-4, #4191)', () => {
     expect(checkbox).toBeChecked();
   });
 
-  it('round-trips a toggle flip through to the PATCH body for an org-owned triage agent', async () => {
-    const orgAgent = { ...ORG_TRIAGE_AGENT, supportedModes: ['off', 'shadow', 'act'] as const };
+  it('round-trips a toggle flip through to the PATCH body for an org-owned helpdesk agent', async () => {
+    const orgAgent = { ...ORG_HELPDESK_AGENT, supportedModes: ['off', 'shadow', 'act'] as const };
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
       if (url === '/ai/agents/a3' && init?.method === 'PATCH') return Promise.resolve(json({ data: orgAgent }));
