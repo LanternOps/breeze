@@ -738,6 +738,8 @@
         "recurrence": "Recurrence",
         "startDateTime": "Start Date/Time",
         "theSpecificDateAndTimeForThis": "The specific date and time for this one-time maintenance window.",
+        "startTime": "Start time",
+        "theTimeOfDayEachWindowOpensIn": "The time of day each maintenance window opens, in the selected timezone. Defaults to midnight (00:00).",
         "durationHours": "Duration (hours)",
         "timezone": "Timezone",
         "notifyBeforeMinutes": "Notify before (minutes)",
