@@ -177,10 +177,13 @@ describe('command queue service', () => {
     // outside the wrapper, these calls will land before 'enter-system' and the
     // assertions below will fail.
     //
-    // queueCommand now opens TWO such blocks: the created_by probe (#3978) runs
-    // first, then the fire-and-forget audit block. Both must be wrapped — the
-    // probe reads RLS-protected `users`, the audit block reads RLS-protected
-    // `devices`, and a BullMQ worker has no request context for either.
+    // queueCommand opens THREE wrapped blocks: the created_by probe (#3978),
+    // then the device_commands insert, then the fire-and-forget audit block.
+    // All three need a context — the probe reads RLS-protected `users`, the
+    // audit block reads RLS-protected `devices`, and the insert itself must not
+    // be a contextless bare-pool write (#1375). A BullMQ worker has no request
+    // context for any of them. Only the probe and the audit block additionally
+    // need to ESCAPE a caller context, so only those two use runOutsideDbContext.
     const callOrder: string[] = [];
     // mockImplementationOnce queues single-use impls so the default passthrough
     // mock from vi.mock('../db', ...) is restored after this test's calls —
@@ -204,11 +207,15 @@ describe('command queue service', () => {
       .mockImplementationOnce(trackOutside);
     vi.mocked(dbModule.withSystemDbAccessContext)
       .mockImplementationOnce(trackSystem)
+      .mockImplementationOnce(trackSystem)
       .mockImplementationOnce(trackSystem);
 
     const commandInsertChain = {
       values: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([queued]),
+        returning: vi.fn().mockImplementation(() => {
+          callOrder.push('command-insert');
+          return Promise.resolve([queued]);
+        }),
       }),
     };
     const auditInsertValues = vi.fn().mockImplementation(() => {
@@ -251,20 +258,28 @@ describe('command queue service', () => {
     // audit block), and a fixed drain that returns early would both fail here
     // and leak the unconsumed mockImplementationOnce entries into later tests
     // in this file.
-    await vi.waitFor(() => expect(callOrder).toHaveLength(11));
+    await vi.waitFor(() => expect(callOrder).toHaveLength(14));
 
-    // Two wrapped blocks: the created_by probe, then the audit block.
+    // Two context ESCAPES (probe, audit block) and three system contexts
+    // (probe, insert, audit block).
     expect(dbModule.runOutsideDbContext).toHaveBeenCalledTimes(2);
-    expect(dbModule.withSystemDbAccessContext).toHaveBeenCalledTimes(2);
+    expect(dbModule.withSystemDbAccessContext).toHaveBeenCalledTimes(3);
     // The users probe, the devices lookup and the audit insert must each happen
     // between an enter-system and its exit-system — this is the contract that
     // guards the worker-path regression.
     expect(callOrder).toEqual([
+      // 1. created_by probe: escapes the caller context, then system scope.
       'enter-outside',
       'enter-system',
       'users-probe',
       'exit-system',
       'exit-outside',
+      // 2. the device_commands insert: system scope, no escape (it belongs on
+      //    the caller's transaction when there is one).
+      'enter-system',
+      'command-insert',
+      'exit-system',
+      // 3. fire-and-forget audit block: escapes, then system scope.
       'enter-outside',
       'enter-system',
       'devices-select',

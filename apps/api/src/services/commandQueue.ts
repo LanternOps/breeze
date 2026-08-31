@@ -577,17 +577,25 @@ export async function queueCommand(
   // `users` row, which would fail the created_by FK with 23503 (#3978).
   const safeUserId = await resolveCommandCreatedBy(deviceId, userId);
 
-  const [command] = await db
-    .insert(deviceCommands)
-    .values({
-      ...(options.commandId ? { id: options.commandId } : {}),
-      deviceId,
-      type,
-      payload,
-      status: 'pending',
-      createdBy: safeUserId,
-    })
-    .returning();
+  // Insert under a system context (device_commands has no RLS, but a bare-pool
+  // write with no access context trips the #1375 contextless-write guard, which
+  // CI runs in strict mode). BullMQ workers and other background callers reach
+  // here with no request context; when a caller context IS open this is a no-op
+  // and the insert stays on the caller's transaction, exactly as before. Matches
+  // executeCommand's insert site, which was already wrapped for this reason.
+  const [command] = await withSystemDbAccessContext(() =>
+    db
+      .insert(deviceCommands)
+      .values({
+        ...(options.commandId ? { id: options.commandId } : {}),
+        deviceId,
+        type,
+        payload,
+        status: 'pending',
+        createdBy: safeUserId,
+      })
+      .returning(),
+  );
 
   // Audit log for mutating commands — fire-and-forget under a system-scope
   // connection outside any caller tx, matching `services/auditService.ts`.
