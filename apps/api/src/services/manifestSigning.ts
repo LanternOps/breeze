@@ -174,6 +174,13 @@ export async function ensureActiveSigningKey(): Promise<ActiveSigningKey> {
 }
 
 export async function signManifest(manifestJson: string): Promise<string> {
+  return (await signBytesWithActiveKey(Buffer.from(manifestJson, 'utf8'))).signature;
+}
+
+/** Sign arbitrary protocol bytes with the active deployment manifest key. */
+export async function signBytesWithActiveKey(
+  bytes: Uint8Array,
+): Promise<{ keyId: string; signature: string }> {
   const active = await loadActive();
   if (!active) {
     throw new Error('no active manifest signing key — call ensureActiveSigningKey first');
@@ -183,7 +190,10 @@ export async function signManifest(manifestJson: string): Promise<string> {
     throw new Error('decryptSecret returned null for active signing key');
   }
   const key = privateKeyFromRawSeed(seedB64);
-  return sign(null, Buffer.from(manifestJson, 'utf8'), key).toString('base64');
+  return {
+    keyId: active.keyId,
+    signature: sign(null, Buffer.from(bytes), key).toString('base64'),
+  };
 }
 
 export async function getActivePublicKeys(): Promise<string[]> {

@@ -42,6 +42,10 @@ vi.mock('./filterEngine', () => ({
   isFilterConditionGroup: vi.fn().mockReturnValue(true),
 }));
 
+vi.mock('../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id'),
+}));
+
 import {
   evaluateDeviceMembershipForGroup,
   evaluateGroupMembership,

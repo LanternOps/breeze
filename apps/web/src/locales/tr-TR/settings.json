@@ -1324,6 +1324,70 @@
     "billedToPartnerKeyViaEndpoint": "{{name}} üzerinden anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır"
   },
   "aiAgentsPage": {
+    "schedules": {
+      "title": "Zamanlanmış taramalar",
+      "description": "Bu aracının filo taramasını çalıştıran cron zamanlamaları. Temel çizgiyi iş ortakları belirler; kuruluşlar yalnızca daraltabilir.",
+      "partnerOnly": "Tarama zamanlamaları yalnızca iş ortağı genelindeki bir aracıya eklenebilir.",
+      "loading": "Zamanlamalar yükleniyor…",
+      "loadFailed": "Tarama zamanlamaları yüklenemedi.",
+      "empty": "Henüz tarama zamanlaması yok.",
+      "add": "Zamanlama ekle",
+      "edit": "Düzenle",
+      "save": "Zamanlamayı kaydet",
+      "cancel": "İptal",
+      "delete": "Zamanlamayı sil",
+      "deleteOverride": "Geçersiz kılmayı kaldır",
+      "confirmDelete": "Silmeyi onayla",
+      "cron": "Cron ifadesi",
+      "cronHint": "Beş alan: dakika saat ayın-günü ay haftanın-günü. Örneğin 0 3 * * * her gün 03:00'te çalışır.",
+      "cronInvalid": "Kaydetmeden önce geçerli, beş alanlı bir cron ifadesi girin.",
+      "timezone": "Saat dilimi",
+      "kinds": {
+        "sweep": "Tarama",
+        "narrative": "Haftalık rapor"
+      },
+      "kindsLabel": "Çalıştırılacak denetimler",
+      "kind": "Zamanlama türü",
+      "weeklyOnlyHint": "Haftalık rapor haftada tam olarak bir kez çalışır: sabit dakika ve saat, ayın-günü ve ay için * ve 0-6 arasında tek bir haftanın günü. Örneğin 0 7 * * 1 her pazartesi 07:00'de çalışır.",
+      "kindsRequired": "En az bir denetim seçin.",
+      "enabled": "Etkin",
+      "override": "Bu kuruluş için geçersiz kıl",
+      "editOverride": "Bu kuruluşun geçersiz kılmasını düzenle",
+      "overrideHint": "Bu kuruluşun, iş ortağı temel çizgisini geçersiz kılması. Her zaman temel çizginin sıklığıyla çalışır.",
+      "overrideSummary": "Bu kuruluş: {{state}} · {{kinds}}",
+      "overrideSummaryNarrative": "Bu kuruluş: {{state}}",
+      "tightenOnly": "Geçersiz kılma temel çizgiyi yalnızca daraltabilir: taramayı kapatabilir veya denetim çıkarabilir, asla ekleyemez.",
+      "noKinds": "Denetim yok",
+      "lastRun": "Son çalışma {{at}} · {{total}} kuruluştan {{admitted}} tanesi tarandı, {{skipped}} atlandı.",
+      "kindLabels": {
+        "disk_pressure": "Disk baskısı",
+        "stale_agents": "Eskimiş aracılar",
+        "pending_reboots": "Bekleyen yeniden başlatmalar",
+        "failed_backups": "Başarısız yedeklemeler",
+        "service_down": "Durdurulmuş hizmet",
+        "unpatched_critical": "Yamalanmamış kritik güvenlik açıkları"
+      },
+      "toasts": {
+        "saved": "Zamanlama kaydedildi",
+        "saveFailed": "Zamanlama kaydedilemedi.",
+        "deleted": "Zamanlama silindi",
+        "deleteFailed": "Zamanlama silinemedi."
+      },
+      "errors": {
+        "invalidCron": "Bu cron ifadesi geçerli değil. Beş alan kullanın, örneğin 0 3 * * *.",
+        "invalidTimezone": "Bu geçerli bir IANA saat dilimi değil.",
+        "kindsNotSubset": "Geçersiz kılma temel çizgiyi yalnızca daraltabilir. İş ortağı temel çizgisinin çalıştırmadığı denetimleri kaldırın.",
+        "overrideExists": "Bu kuruluş o temel çizgiyi zaten geçersiz kılıyor. Mevcut olanı düzenleyin.",
+        "baselineWrongPartner": "O temel çizgi başka bir iş ortağına ait.",
+        "baselineIsOverride": "O zamanlama zaten bir geçersiz kılma. Geçersiz kılmalar zincirlenemez.",
+        "baselineNotPartnerRow": "O temel çizginin sahibi yok ve geçersiz kılınamaz.",
+        "baselineAgentMismatch": "O temel çizgi başka bir aracıya ait.",
+        "agentNotPartnerWide": "Tarama zamanlamaları iş ortağı genelinde bir aracı gerektirir.",
+        "agentKindNotTriage": "Yalnızca bir triyaj aracısı zamanlanabilir.",
+        "kindsNotEmpty": "Haftalık rapor zamanlaması denetim çalıştırmaz. Kaydetmeden önce seçili denetimleri kaldırın.",
+        "invalidCronForKind": "Haftalık rapor haftada tam olarak bir kez çalışmalıdır. Sabit dakika ve saat, ayın-günü ve ay için * ve tek bir haftanın günü kullanın."
+      }
+    },
     "title": "Yapay Zeka Aracıları",
     "description": "Bir politikaya sahip, adlandırılmış yapay zeka çalışanları. Temel çizgiyi iş ortakları belirler; kuruluşlar yalnızca daraltabilir.",
     "empty": "Henüz aracı yok.",
@@ -1473,6 +1537,56 @@
         "schedule": "Zamanlanmış",
         "ticket": "Talep",
         "anomaly": "Anormallik"
+      },
+      "profile": {
+        "sweep": "Tarama",
+        "narrative": "Haftalık rapor"
+      },
+      "sweep": {
+        "title": "Tarama bulguları",
+        "kindsLabel": "Kontroller: {{kinds}}",
+        "empty": "Bildirilen bulgu yok.",
+        "evidenceTruncated": "Kanıtlar kısaltıldı: eşleşen tüm satırlar aracıya gösterilmedi.",
+        "proposalCreated": "Onay istendi",
+        "columns": {
+          "kind": "Kontrol",
+          "severity": "Önem düzeyi",
+          "device": "Cihaz",
+          "title": "Bulgu",
+          "detail": "Ayrıntı",
+          "proposal": "Öneri"
+        },
+        "kinds": {
+          "disk_pressure": "Disk baskısı",
+          "stale_agents": "Sessiz aracılar",
+          "pending_reboots": "Bekleyen yeniden başlatmalar",
+          "failed_backups": "Başarısız yedeklemeler",
+          "service_down": "Servis durdu",
+          "unpatched_critical": "Yamalanmamış kritik açıklar"
+        },
+        "severities": {
+          "critical": "Kritik",
+          "high": "Yüksek",
+          "medium": "Orta",
+          "low": "Düşük",
+          "info": "Bilgi"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Cihaz tarama kanıtlarında yok",
+          "device_not_in_org": "Cihaz bu organizasyona ait değil",
+          "not_allowlisted": "Bu aracı için araç izinli değil",
+          "no_eligible_approvers": "Uygun onaylayıcı yok",
+          "intent_error": "Onay oluşturulamadı",
+          "max_actions_per_run": "Bu çalıştırma için eylem sınırına ulaşıldı"
+        }
+      },
+      "narrative": {
+        "title": "Haftalık anlatı",
+        "period": "{{start}} - {{end}} arasını kapsar",
+        "truncatedNote": "Aracının bağlamı kısaltıldı: bu anlatı haftanın tamamını görmedi.",
+        "openReport": "Raporu aç",
+        "download": "PDF'yi indir",
+        "downloadFailed": "PDF indirilemedi."
       },
       "noAgent": "Bilinmeyen aracı",
       "loading": "Çalıştırmalar yükleniyor…",

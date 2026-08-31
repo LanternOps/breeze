@@ -10,6 +10,7 @@ import {
   AgentRunOwnershipError,
   buildAgentAuthContext,
 } from '../aiAgents/agentAuthContext';
+import { IntentScopeLostError, resolveIntentTargetDevice } from './intentTargetScope';
 import { getUserPermissions, canAccessOrg as permsCanAccessOrg } from '../permissions';
 import { buildOrgAccessClosures, siteAccessCheck, type AuthContext } from '../../middleware/auth';
 import type { TokenPayload } from '../jwt';
@@ -27,6 +28,13 @@ import type { TokenPayload } from '../jwt';
  * the SAME closure factories `authMiddleware` uses to build the request-path
  * AuthContext — so org/site access semantics can never drift between "live
  * request" and "durable release" execution.
+ *
+ * ONE typed exception escapes instead of collapsing to `null`:
+ * `IntentScopeLostError` (P2-2, #4189), when an agent intent's device SCOPE
+ * is gone. It is distinguished from `null`/`actor_invalid` on purpose —
+ * `revalidateApprovedIntentForRelease` maps it to the terminal
+ * `agent_scope_lost` errorCode the controller ruling names, which tells an
+ * operator "the target device went away", not "the actor is broken".
  */
 export async function buildAuthContextForIntent(intent: ActionIntent): Promise<AuthContext | null> {
   if (intent.requestedByUserId) {
@@ -294,15 +302,44 @@ async function buildAgentOwnedAuthContext(
       if (!org) {
         return null;
       }
+      // P2-2 (#4189): the intent's TARGET device, not the run's. A sweep run
+      // is device-less and pins its intents one device at a time via
+      // scope_kind/scope_device_id; a tombstoned scope (device deleted, or
+      // detached by a moveOrg) can never be released, so fail closed here
+      // rather than silently falling back to the run's own (null) device,
+      // which would rebuild an UNSCOPED, org-wide agent context.
+      const target = resolveIntentTargetDevice(intent, run);
+      if (target.kind === 'tombstone') {
+        throw new IntentScopeLostError(
+          `agent_scope_lost: intent ${intent.id} is device-scoped but its scope_device_id was tombstoned`,
+        );
+      }
       // The device's CURRENT site, not the site at proposal time — spec §3.2
       // pins a device-bound run to its device's site, and release must
       // reflect where the device lives NOW.
       let deviceSiteId: string | null = null;
-      if (run.deviceId) {
+      if (target.kind === 'scope') {
+        // Controller ruling (P2-2 A3): for a SCOPED target the device must
+        // still exist AND still belong to the intent's org — a device
+        // org-move that landed through the DB-side cascade rather than the
+        // HTTP moveOrg route leaves scope_device_id set, and this is the
+        // backstop. Treated exactly like a tombstone.
+        const [device] = await db
+          .select({ orgId: devices.orgId, siteId: devices.siteId })
+          .from(devices)
+          .where(eq(devices.id, target.deviceId))
+          .limit(1);
+        if (!device || device.orgId !== intent.orgId) {
+          throw new IntentScopeLostError(
+            `agent_scope_lost: intent ${intent.id}'s scoped device ${target.deviceId} is missing or no longer in org ${intent.orgId}`,
+          );
+        }
+        deviceSiteId = device.siteId ?? null;
+      } else if (target.deviceId) {
         const [device] = await db
           .select({ siteId: devices.siteId })
           .from(devices)
-          .where(eq(devices.id, run.deviceId))
+          .where(eq(devices.id, target.deviceId))
           .limit(1);
         deviceSiteId = device?.siteId ?? null;
       }
@@ -315,7 +352,10 @@ async function buildAgentOwnedAuthContext(
             name: agent.name,
             kind: agent.kind,
           },
-          { id: run.id, orgId: run.orgId, deviceId: run.deviceId, deviceSiteId },
+          // The run row's own deviceId is deliberately NOT used here: the
+          // rebuilt context is pinned to the intent's target device (and its
+          // site), which for a scoped intent is not the run's.
+          { id: run.id, orgId: run.orgId, deviceId: target.deviceId, deviceSiteId },
           { id: run.orgId, partnerId: org.partnerId },
         );
       } catch (error) {

@@ -134,6 +134,7 @@ import { viewerRoutes } from './routes/viewers';
 import { aiRoutes } from './routes/ai';
 import { aiProviderRoutes } from './routes/aiProvider';
 import { aiAgentsRoutes } from './routes/aiAgents';
+import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
 import { mountInviteLandingRoutes } from './modules/mcpInvites';
@@ -1013,6 +1014,9 @@ api.route('/agent-ws', createAgentWsRoutes(upgradeWebSocket));
 api.route('/agent-versions', agentVersionRoutes);
 api.route('/viewers', viewerRoutes);
 api.route('/ai/provider', aiProviderRoutes);
+// BEFORE /ai/agents: aiAgentsRoutes owns /:id, which would otherwise capture
+// '/schedules' as an agent id (#4189).
+api.route('/ai/agents/schedules', aiAgentSchedulesRoutes);
 api.route('/ai/agents', aiAgentsRoutes);
 api.route('/ai', aiRoutes);
 api.route('/ai/script-builder', scriptAiRoutes);

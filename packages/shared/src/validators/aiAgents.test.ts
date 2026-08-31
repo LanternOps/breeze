@@ -65,8 +65,48 @@ describe('aiAgents validators', () => {
     expect(parsed.verdictBudgetCentsPerRun).toBe(5);
   });
 
-  it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 5 (phase 2 P2-1 bump)', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(5);
+  it('maxConcurrentSweepRuns/maxSweepRunsPerHour/sweepBudgetCentsPerRun/sweepMaxTurns default-fill and clamp (phase 2 P2-2)', () => {
+    const parsed = aiAgentLimitsSchema.parse({});
+    expect(parsed.maxConcurrentSweepRuns).toBe(2);
+    expect(parsed.maxSweepRunsPerHour).toBe(20);
+    expect(parsed.sweepBudgetCentsPerRun).toBe(30);
+    expect(parsed.sweepMaxTurns).toBe(8);
+    expect(aiAgentLimitsSchema.safeParse({ maxConcurrentSweepRuns: 0 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxConcurrentSweepRuns: 11 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxSweepRunsPerHour: 0 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxSweepRunsPerHour: 201 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ sweepBudgetCentsPerRun: 4 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ sweepBudgetCentsPerRun: 101 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ sweepMaxTurns: 2 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ sweepMaxTurns: 21 }).success).toBe(false);
+  });
+
+  it('maxConcurrentNarrativeRuns/maxNarrativeRunsPerHour/narrativeBudgetCentsPerRun/narrativeMaxTurns default-fill and clamp (phase 2 P2-3)', () => {
+    const parsed = aiAgentLimitsSchema.parse({});
+    expect(parsed.maxConcurrentNarrativeRuns).toBe(1);
+    expect(parsed.maxNarrativeRunsPerHour).toBe(5);
+    expect(parsed.narrativeBudgetCentsPerRun).toBe(20);
+    expect(parsed.narrativeMaxTurns).toBe(3);
+    expect(aiAgentLimitsSchema.safeParse({ maxConcurrentNarrativeRuns: 0 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxConcurrentNarrativeRuns: 1 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxConcurrentNarrativeRuns: 5 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxConcurrentNarrativeRuns: 6 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxNarrativeRunsPerHour: 0 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ maxNarrativeRunsPerHour: 1 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxNarrativeRunsPerHour: 50 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ maxNarrativeRunsPerHour: 51 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ narrativeBudgetCentsPerRun: 4 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ narrativeBudgetCentsPerRun: 5 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ narrativeBudgetCentsPerRun: 100 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ narrativeBudgetCentsPerRun: 101 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ narrativeMaxTurns: 1 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ narrativeMaxTurns: 2 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ narrativeMaxTurns: 8 }).success).toBe(true);
+    expect(aiAgentLimitsSchema.safeParse({ narrativeMaxTurns: 9 }).success).toBe(false);
+  });
+
+  it('AI_AGENT_POLICY_SNAPSHOT_VERSION is 7 (phase 2 P2-3 bump)', () => {
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(7);
   });
 
   it('rejects instructions over 2000 chars and unknown allowlist shapes', () => {
@@ -305,9 +345,40 @@ describe('limits v5', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxVerdictRunsPerHour).toBe(200);
     expect(AI_AGENT_LIMIT_DEFAULTS.maxConcurrentVerdictRuns).toBe(4);
     expect(AI_AGENT_LIMIT_DEFAULTS.verdictBudgetCentsPerRun).toBe(5);
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(5);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxVerdictRunsPerHour: 2001 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentVerdictRuns: 0 }).success).toBe(false);
     expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, verdictBudgetCentsPerRun: 51 }).success).toBe(false);
+  });
+});
+
+describe('limits v6', () => {
+  it('has sweep-profile defaults and bounds (phase 2 P2-2)', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxConcurrentSweepRuns).toBe(2);
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour).toBe(20);
+    expect(AI_AGENT_LIMIT_DEFAULTS.sweepBudgetCentsPerRun).toBe(30);
+    expect(AI_AGENT_LIMIT_DEFAULTS.sweepMaxTurns).toBe(8);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(7);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentSweepRuns: 11 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxSweepRunsPerHour: 201 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, sweepBudgetCentsPerRun: 4 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, sweepMaxTurns: 2 }).success).toBe(false);
+  });
+});
+
+describe('limits v7', () => {
+  it('has narrative-profile defaults and bounds (phase 2 P2-3)', () => {
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxConcurrentNarrativeRuns).toBe(1);
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour).toBe(5);
+    expect(AI_AGENT_LIMIT_DEFAULTS.narrativeBudgetCentsPerRun).toBe(20);
+    expect(AI_AGENT_LIMIT_DEFAULTS.narrativeMaxTurns).toBe(3);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(7);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentNarrativeRuns: 6 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, maxNarrativeRunsPerHour: 51 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, narrativeBudgetCentsPerRun: 4 }).success).toBe(false);
+    expect(aiAgentLimitsSchema.safeParse({ ...AI_AGENT_LIMIT_DEFAULTS, narrativeMaxTurns: 9 }).success).toBe(false);
+    // The v7 default object must itself round-trip through the schema — a
+    // default outside its own bound is the classic way a limits bump ships
+    // broken (the parse below fails if any of the four is out of range).
+    expect(aiAgentLimitsSchema.parse({ ...AI_AGENT_LIMIT_DEFAULTS })).toEqual(AI_AGENT_LIMIT_DEFAULTS);
   });
 });
