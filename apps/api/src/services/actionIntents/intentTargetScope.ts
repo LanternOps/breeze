@@ -220,3 +220,40 @@ export function assertArgsMatchScope(
     }
   }
 }
+
+/**
+ * Creation-time consistency gate for the ticket axis (I2, final review
+ * #4191) — mirrors `assertArgsMatchScope` exactly, including reusing
+ * `IntentScopeArgumentMismatchError` (same error class/code:
+ * `scope_argument_mismatch`) so `intentService.ts`'s existing catch/rethrow
+ * onto `ActionIntentError(..., 'scope_argument_mismatch')` covers both axes
+ * unchanged.
+ *
+ * Before this gate, a scoped intent's arguments could name a DIFFERENT
+ * ticket than the one `scope_ticket_id` pins it to — release-time guardrail
+ * re-runs and approver fan-out narrow to the scope ticket
+ * (`resolveIntentTargetTicket`), so an argument mismatch would let the tool
+ * act on a ticket that never went through that narrowing.
+ *
+ * Only one argument name is known here, `ticketId` (the ticketing tools have
+ * no `ticketIds` plural — every ticket-scoped tool call names exactly one
+ * ticket; see `aiToolsTicketing.ts`). A tool call carrying NO `ticketId` at
+ * all passes: the scope itself is the binding for those calls (e.g.
+ * `move_org`'s `ticketId` argument IS present and checked, but a
+ * hypothetical scoped tool with no ticket argument has nothing to check
+ * against and is not this gate's problem, same boundary as the device
+ * version's doc comment above).
+ */
+export function assertArgsMatchTicketScope(
+  toolName: string,
+  args: Record<string, unknown>,
+  scopeTicketId: string,
+): void {
+  const ticketId = args.ticketId;
+  if (ticketId === undefined || ticketId === null) return;
+  if (typeof ticketId !== 'string' || ticketId !== scopeTicketId) {
+    throw new IntentScopeArgumentMismatchError(
+      `scope_argument_mismatch: tool "${toolName}" arguments name ticketId ${JSON.stringify(ticketId)} but the intent is scoped to ticket ${scopeTicketId}`,
+    );
+  }
+}

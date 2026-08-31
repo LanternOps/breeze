@@ -40,6 +40,7 @@ import {
 import { computeEffectDigestOutcome, type EffectDigestOutcome } from './effectDigest';
 import {
   assertArgsMatchScope,
+  assertArgsMatchTicketScope,
   effectiveTargetDeviceId,
   resolveIntentTargetDevice,
   IntentScopeArgumentMismatchError,
@@ -930,6 +931,19 @@ export async function createActionIntent(
     if (scopeDeviceId) {
       try {
         assertArgsMatchScope(input.toolName, input.input, scopeDeviceId);
+      } catch (err) {
+        if (err instanceof IntentScopeArgumentMismatchError) {
+          throw new ActionIntentError(err.message, 'scope_argument_mismatch');
+        }
+        throw err;
+      }
+    }
+    // I2 (final review #4191): the ticket mirror of the device args check
+    // above — a ticket-scoped intent's arguments must not name a DIFFERENT
+    // ticket than the scope. See `assertArgsMatchTicketScope`'s doc comment.
+    if (scopeTicketId) {
+      try {
+        assertArgsMatchTicketScope(input.toolName, input.input, scopeTicketId);
       } catch (err) {
         if (err instanceof IntentScopeArgumentMismatchError) {
           throw new ActionIntentError(err.message, 'scope_argument_mismatch');

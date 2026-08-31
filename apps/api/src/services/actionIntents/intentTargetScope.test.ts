@@ -4,6 +4,8 @@ import {
   resolveIntentTargetTicket,
   effectiveTargetDeviceId,
   assertArgsMatchScope,
+  assertArgsMatchTicketScope,
+  IntentScopeArgumentMismatchError,
 } from './intentTargetScope';
 
 const D = '22222222-2222-4222-8222-222222222222';
@@ -51,5 +53,31 @@ describe('assertArgsMatchScope', () => {
   it('rejects a divergent deviceId or an extra deviceIds member', () => {
     expect(() => assertArgsMatchScope('manage_services', { deviceId: 'x' }, D)).toThrow(/scope_argument_mismatch/);
     expect(() => assertArgsMatchScope('manage_patches', { deviceIds: [D, 'x'] }, D)).toThrow(/scope_argument_mismatch/);
+  });
+});
+
+// I2 (final review #4191): the ticket mirror of assertArgsMatchScope.
+describe('assertArgsMatchTicketScope', () => {
+  it('accepts a matching ticketId', () => {
+    expect(() => assertArgsMatchTicketScope('manage_tickets', { ticketId: T, action: 'move_org' }, T)).not.toThrow();
+  });
+  it('accepts a tool call carrying no ticketId at all — the scope IS the binding for those calls', () => {
+    expect(() => assertArgsMatchTicketScope('manage_tickets', { action: 'add_comment', content: 'x' }, T)).not.toThrow();
+    expect(() => assertArgsMatchTicketScope('manage_tickets', { ticketId: null }, T)).not.toThrow();
+    expect(() => assertArgsMatchTicketScope('manage_tickets', { ticketId: undefined }, T)).not.toThrow();
+  });
+  it('rejects a divergent ticketId, throwing IntentScopeArgumentMismatchError with code scope_argument_mismatch', () => {
+    let caught: unknown;
+    try {
+      assertArgsMatchTicketScope('manage_tickets', { ticketId: 'some-other-ticket' }, T);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(IntentScopeArgumentMismatchError);
+    expect((caught as IntentScopeArgumentMismatchError).code).toBe('scope_argument_mismatch');
+    expect((caught as Error).message).toMatch(/scope_argument_mismatch/);
+  });
+  it('rejects a non-string ticketId', () => {
+    expect(() => assertArgsMatchTicketScope('manage_tickets', { ticketId: 42 }, T)).toThrow(/scope_argument_mismatch/);
   });
 });
