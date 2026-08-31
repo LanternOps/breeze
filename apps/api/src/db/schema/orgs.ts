@@ -113,6 +113,19 @@ export const partners = pgTable('partners', {
   offboardingStartedAt: timestamp('offboarding_started_at', { withTimezone: true }),
 });
 
+/**
+ * Name of the per-partner, case-insensitive, lifetime slug uniqueness index
+ * (#3967 — migrations/2026-09-08-organizations-partner-slug-unique.sql).
+ *
+ * Exported and used by the `uniqueIndex()` call below so there is exactly ONE
+ * place this string is written: every handler that maps its 23505 to a 409 has
+ * to name the index EXACTLY (an unconstrained "any 23505 is a slug conflict"
+ * check misdiagnoses every other unique violation raised by the same statement
+ * — #3982), and a name that only matched by copy-paste is a silent way for
+ * that mapping to stop firing.
+ */
+export const ORG_SLUG_UNIQUE_INDEX = 'organizations_partner_slug_uniq';
+
 export const organizations = pgTable('organizations', {
   id: uuid('id').primaryKey().defaultRandom(),
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
@@ -161,7 +174,7 @@ export const organizations = pgTable('organizations', {
   // downgrade this to a bare `.unique()` on the column: that would mean a
   // GLOBAL namespace and would stop two unrelated MSPs both onboarding an
   // "acme".
-  partnerSlugUnique: uniqueIndex('organizations_partner_slug_uniq').on(table.partnerId, sql`lower(${table.slug})`),
+  partnerSlugUnique: uniqueIndex(ORG_SLUG_UNIQUE_INDEX).on(table.partnerId, sql`lower(${table.slug})`),
 }));
 
 export const sites = pgTable('sites', {
