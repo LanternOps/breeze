@@ -7,9 +7,10 @@ import { listActiveTicketDrafts, sendTicketDraft, discardTicketDraft } from '../
 import { getScopedTicketOr404, actorFrom, handleServiceError } from './tickets';
 
 // P2-4 (#4191), Task A10 — human draft routes: list a ticket's active AI
-// drafts, "send as me" a reply draft, or discard one. A `resolution_note`
-// draft is NEVER sendable/discardable here — it is consumed only via the
-// resolve flow (`POST /:id/status` with `aiDraftId`, tickets.ts). Same
+// drafts, "send as me" a reply draft, or discard one (either kind — discard
+// has no kind restriction). A `resolution_note` draft is NEVER SENDABLE
+// here (sendTicketDraft 409s on kind !== 'reply') — it is consumed only via
+// the resolve flow (`POST /:id/status` with `aiDraftId`, tickets.ts). Same
 // RBAC/org-scoping idiom as the sibling `/:id/triage-suggestion` routes in
 // ./tickets.ts: tickets:read for the list, tickets:write for the mutations,
 // `getScopedTicketOr404` for tenant + site-axis scoping.

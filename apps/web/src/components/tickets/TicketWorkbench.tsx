@@ -321,37 +321,48 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     return () => { cancelled = true; };
   }, [ticket, ticketId]);
 
+  // Loads the (fresh) active-draft list for `forTicketId` from the server —
+  // the shared loader behind both the mount/ticket-change effect below AND
+  // the post-conflict recovery calls in sendAiDraft/discardAiDraft/
+  // submitResolve. Guarded against a ticket switch racing an in-flight fetch
+  // via `ticketIdRef` rather than an effect-local `cancelled` flag, since
+  // this is also called imperatively outside any effect.
+  const ticketIdRef = useRef(ticketId);
+  useEffect(() => { ticketIdRef.current = ticketId; }, [ticketId]);
+
+  const refetchAiDrafts = useCallback(async (forTicketId: string) => {
+    try {
+      const res = await fetchWithAuth(`/tickets/${forTicketId}/ai-drafts`);
+      if (!res.ok) return;
+      const body = await res.json();
+      if (ticketIdRef.current !== forTicketId) return; // ticket switched mid-flight
+      const drafts: TicketAiDraft[] = Array.isArray(body?.data) ? body.data : [];
+      setAiDrafts(drafts);
+      setDraftContent((prev) => {
+        const next = { ...prev };
+        for (const draft of drafts) {
+          if (!(draft.id in next)) next[draft.id] = draft.content;
+        }
+        return next;
+      });
+    } catch {
+      // Best-effort — leave the existing (possibly stale) list rather than
+      // clearing it out from under an in-progress edit on a network blip.
+    }
+  }, []);
+
   // P2-4 (#4191), Task 11 — active AI drafts, fetched alongside the triage
-  // suggestion above. Seeds `draftContent` for any newly-seen draft id
-  // without clobbering an in-progress edit; a draft the API stops returning
-  // (sent/discarded/consumed elsewhere) simply drops out of `aiDrafts`, which
-  // is the only thing the card list renders from.
+  // suggestion above. A draft the API stops returning (sent/discarded/
+  // consumed elsewhere) simply drops out of `aiDrafts` on the next fetch,
+  // which is the only thing the card list renders from.
   useEffect(() => {
     if (!ticket) {
       setAiDrafts([]);
       setDraftContent({});
       return;
     }
-    let cancelled = false;
-    void fetchWithAuth(`/tickets/${ticketId}/ai-drafts`)
-      .then(async (res) => (res.ok ? res.json() : null))
-      .then((body) => {
-        if (cancelled) return;
-        const drafts: TicketAiDraft[] = Array.isArray(body?.data) ? body.data : [];
-        setAiDrafts(drafts);
-        setDraftContent((prev) => {
-          const next = { ...prev };
-          for (const draft of drafts) {
-            if (!(draft.id in next)) next[draft.id] = draft.content;
-          }
-          return next;
-        });
-      })
-      .catch(() => {
-        if (!cancelled) setAiDrafts([]);
-      });
-    return () => { cancelled = true; };
-  }, [ticket, ticketId]);
+    void refetchAiDrafts(ticketId);
+  }, [ticket, ticketId, refetchAiDrafts]);
 
   // Bulk actions in the queue mutate tickets behind the pane's back; the parent
   // bumps refreshToken after a bulk apply so the detail can't go stale. The ref
@@ -687,10 +698,16 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       afterMutation();
     } catch (err) {
       if (!(err instanceof ActionError)) throw err;
+      // A non-401 failure (typically a 409 — someone else already sent or
+      // discarded this exact draft) would otherwise leave the card mounted
+      // and interactive on stale local state, looping the same 409 on every
+      // retry. Refetch the real active-draft list so a now-gone draft's
+      // card actually disappears.
+      if (err.status !== 401) void refetchAiDrafts(ticketId);
     } finally {
       setSendingDraftId(null);
     }
-  }, [afterMutation, discardingDraftId, draftContent, sendingDraftId, ticketId, t]);
+  }, [afterMutation, discardingDraftId, draftContent, refetchAiDrafts, sendingDraftId, ticketId, t]);
 
   // Discards a draft (either kind) without acting on it.
   const discardAiDraft = useCallback(async (draft: TicketAiDraft) => {
@@ -707,10 +724,16 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       if (resolveDraftId === draft.id) setResolveDraftId(null);
     } catch (err) {
       if (!(err instanceof ActionError)) throw err;
+      // Same stale-card recovery as sendAiDraft — a non-401 failure here is
+      // typically a 409 (already sent/discarded/consumed elsewhere).
+      if (err.status !== 401) {
+        void refetchAiDrafts(ticketId);
+        if (resolveDraftId === draft.id) setResolveDraftId(null);
+      }
     } finally {
       setDiscardingDraftId(null);
     }
-  }, [discardingDraftId, resolveDraftId, sendingDraftId, ticketId, t]);
+  }, [discardingDraftId, refetchAiDrafts, resolveDraftId, sendingDraftId, ticketId, t]);
 
   // Fallback path: option values are the six core enums; POST {status}.
   const onStatusChange = useCallback(async (status: TicketStatus) => {
@@ -737,19 +760,42 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     await mutate('/status', { statusId }, t('ticketWorkbench.toast.statusUpdated'), t('ticketWorkbench.toast.statusUpdateFailed'), { status: row.coreStatus, statusName: row.name, statusColor: row.color ?? null });
   }, [config, mutate, openResolveForm, t]);
 
+  // Not routed through the shared `mutate` helper (unlike onStatusChange/
+  // onCustomStatusChange/submitPending) because it needs the thrown
+  // ActionError's status to tell a draft-related 409 apart from any other
+  // resolve failure — `mutate` swallows that down to a bare boolean.
   const submitResolve = useCallback(async () => {
     if (!resolutionNote.trim()) return;
     const target = pendingStatusId ? { statusId: pendingStatusId } : { status: 'resolved' as const };
     const note = resolutionNote.trim();
     const body = { ...target, resolutionNote: note, ...(resolveDraftId ? { aiDraftId: resolveDraftId } : {}) };
-    const ok = await mutate('/status', body, t('ticketWorkbench.toast.ticketResolved'), t('ticketWorkbench.toast.resolveFailed'), { status: 'resolved', resolutionNote: note });
-    if (!ok) return; // keep the form open and the typed note intact on failure
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/tickets/${ticketId}/status`, { method: 'POST', body: JSON.stringify(body) }),
+        errorFallback: t('ticketWorkbench.toast.resolveFailed'),
+        successMessage: t('ticketWorkbench.toast.ticketResolved'),
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+      });
+    } catch (err) {
+      if (!(err instanceof ActionError)) throw err;
+      // A 409 while an aiDraftId was attached means the resolution-note
+      // draft was consumed/discarded elsewhere since the form opened. Drop
+      // the now-dead id (and refetch the draft list, so its card
+      // disappears too) so the technician's next submit — the typed note
+      // stays put — POSTs without it, instead of looping the same 409.
+      if (err.status === 409 && resolveDraftId) {
+        setResolveDraftId(null);
+        void refetchAiDrafts(ticketId);
+      }
+      return; // keep the form open and the typed note intact on failure
+    }
+    afterMutation({ status: 'resolved', resolutionNote: note });
     if (resolveDraftId) setAiDrafts((prev) => prev.filter((d) => d.id !== resolveDraftId));
     setResolveOpen(false);
     setResolutionNote('');
     setPendingStatusId(null);
     setResolveDraftId(null);
-  }, [mutate, resolutionNote, pendingStatusId, resolveDraftId, t]);
+  }, [afterMutation, pendingStatusId, refetchAiDrafts, resolutionNote, resolveDraftId, t, ticketId]);
 
   const submitPending = useCallback(async () => {
     if (!pendingOpen) return;
@@ -1248,7 +1294,10 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           </div>
         )}
         {aiDrafts.map((draft) => (
-          <div key={draft.id} className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-ai-draft">
+          // At most one `reply` + one `resolution_note` draft can be active
+          // at once (ticket_drafts_active_uq) — testids are keyed per kind
+          // (not per draft id) so both cards are independently addressable.
+          <div key={draft.id} className="mt-2 rounded-md border bg-muted/30 p-2" data-testid={`ticket-ai-draft-${draft.kind}`}>
             <div className="flex items-center gap-1.5 text-xs font-medium">
               <Sparkles className="h-3.5 w-3.5 text-primary" />
               {draft.kind === 'reply' ? t('ticketWorkbench.aiDraft.kindReply') : t('ticketWorkbench.aiDraft.kindResolutionNote')}
@@ -1258,7 +1307,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               onChange={(e) => setDraftContent((prev) => ({ ...prev, [draft.id]: e.target.value }))}
               rows={3}
               className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
-              data-testid="ticket-ai-draft-content"
+              data-testid={`ticket-ai-draft-${draft.kind}-content`}
             />
             <div className="mt-1.5 flex justify-end gap-2">
               <button
@@ -1266,7 +1315,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 onClick={() => void discardAiDraft(draft)}
                 disabled={sendingDraftId === draft.id || discardingDraftId === draft.id}
                 className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
-                data-testid="ticket-ai-draft-discard"
+                data-testid={`ticket-ai-draft-${draft.kind}-discard`}
               >
                 {discardingDraftId === draft.id ? t('common:states.saving') : t('ticketWorkbench.aiDraft.discard')}
               </button>
@@ -1276,7 +1325,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                   onClick={() => void sendAiDraft(draft)}
                   disabled={sendingDraftId === draft.id || discardingDraftId === draft.id || !(draftContent[draft.id] ?? draft.content).trim()}
                   className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
-                  data-testid="ticket-ai-draft-send"
+                  data-testid={`ticket-ai-draft-${draft.kind}-send`}
                 >
                   {sendingDraftId === draft.id ? t('ticketWorkbench.aiDraft.sending') : t('ticketWorkbench.aiDraft.sendAsMe')}
                 </button>
