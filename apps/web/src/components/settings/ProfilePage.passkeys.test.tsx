@@ -35,8 +35,9 @@ vi.mock('./ConnectSsoCard', () => ({
 }));
 
 import ProfilePage from './ProfilePage';
+import { SSO_REAUTH_INTENT_KEY, stashSsoReauthIntent } from '@/lib/ssoReauthIntent';
 
-const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
+const makeJsonResponse =(payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
     ok,
     status,
@@ -47,6 +48,9 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
 describe('ProfilePage passkey management', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // #4055 records the originating card here; a value bleeding between tests
+    // would silently reroute the one after it.
+    sessionStorage.clear();
     globalThis.URL.createObjectURL = vi.fn(() => 'blob:fake');
     globalThis.URL.revokeObjectURL = vi.fn();
   });
@@ -188,6 +192,9 @@ describe('ProfilePage passkey management', () => {
     it('sends the SAME grant to BOTH register/options and register/verify', async () => {
       // Arriving back from the IdP: the callback hands the grant over in the
       // fragment, and ProfilePage holds it for whichever road spends it first.
+      // #4055: the trip started from the passkey card, so that is what is
+      // recorded — the return must come back here, not to the TOTP QR screen.
+      stashSsoReauthIntent('passkey');
       window.history.replaceState(null, '', `/settings/profile#ssoReauthGrant=${GRANT}`);
 
       fetchWithAuthMock.mockImplementation(async (url: string) => {
@@ -307,6 +314,167 @@ describe('ProfilePage passkey management', () => {
       await screen.findByText(/No passkeys are registered/i);
       expect(document.querySelector('#passkey-password')).toBeTruthy();
       expect(screen.queryByTestId('passkey-sso-reauth')).toBeNull();
+    });
+
+    // ── #4055 ────────────────────────────────────────────────────────────────
+    // Both cards start the SAME `POST /sso/reauth/start` trip and the callback
+    // returns everyone to the same `#ssoReauthGrant=` fragment. Nothing used to
+    // record WHICH card the user left from, so the return path unconditionally
+    // ran /auth/mfa/setup and force-opened the TOTP QR screen — a user who
+    // clicked "Verify with your identity provider" on the PASSKEY card landed
+    // on a different card, a different factor, and a TOTP secret they never
+    // asked for (left stranded in Redis under `mfa:setup:<userId>`).
+    describe('returning to the card the trip started from (#4055)', () => {
+      it('records the passkey card as the origin BEFORE navigating to the IdP', async () => {
+        window.history.replaceState(null, '', '/settings/profile');
+        // Captured at assign() time, not after: the recorded intent has to be
+        // durable at the instant the page leaves, or the return has nothing.
+        let intentAtNavigation: string | null = 'not-called';
+        const assignMock = vi.fn(() => {
+          intentAtNavigation = sessionStorage.getItem(SSO_REAUTH_INTENT_KEY);
+        });
+        const realLocation = window.location;
+        Object.defineProperty(window, 'location', {
+          configurable: true,
+          value: { assign: assignMock, hash: '', search: '', pathname: '/settings/profile' },
+        });
+
+        fetchWithAuthMock.mockImplementation(async (url: string) => {
+          const u = String(url);
+          if (u === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+          if (u === '/sso/reauth/start') {
+            return makeJsonResponse({ authUrl: 'https://idp.example.com/authorize?prompt=login' });
+          }
+          return makeJsonResponse({});
+        });
+
+        try {
+          render(<ProfilePage initialUser={passwordlessUser} />);
+          await screen.findByText(/No passkeys are registered/i);
+          fireEvent.click(screen.getByTestId('passkey-sso-reauth'));
+
+          await waitFor(() => expect(assignMock).toHaveBeenCalled());
+          expect(intentAtNavigation).toBe('passkey');
+        } finally {
+          // In a `finally` on purpose: a bare restore after the assertions is
+          // skipped when one fails, and the stubbed location then leaks into
+          // every later test in this file as an empty hash.
+          Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+        }
+      });
+
+      it('returns to the passkey card and never fires the TOTP /auth/mfa/setup call', async () => {
+        stashSsoReauthIntent('passkey');
+        window.history.replaceState(null, '', `/settings/profile#ssoReauthGrant=${GRANT}`);
+
+        fetchWithAuthMock.mockImplementation(async (url: string) => {
+          const u = String(url);
+          if (u === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+          if (u === '/auth/mfa/setup') {
+            return makeJsonResponse({ qrCodeDataUrl: 'data:image/png;base64,abc' });
+          }
+          return makeJsonResponse({});
+        });
+
+        render(<ProfilePage initialUser={passwordlessUser} />);
+        await screen.findByText(/No passkeys are registered/i);
+
+        // The grant landed and the card is armed: the submit replaces the CTA.
+        expect(screen.getByTestId('passkey-add')).toBeTruthy();
+        expect(screen.queryByTestId('passkey-sso-reauth')).toBeNull();
+
+        // And the user is NOT dropped on the TOTP enrollment screen.
+        expect(screen.queryByText(/Set up authenticator/i)).toBeNull();
+
+        // The load-bearing assertion: no TOTP secret is minted for a user who
+        // asked for a passkey. `mfa:setup:<userId>` is only cleared by the TOTP
+        // confirm step, so an unwanted one sits in Redis until its TTL expires.
+        expect(callTo('/auth/mfa/setup')).toHaveLength(0);
+      });
+
+      it('brings the passkey card to the user rather than leaving it below the fold', async () => {
+        const scrollSpy = vi.fn();
+        const realScroll = Element.prototype.scrollIntoView;
+        // jsdom has no layout and so no scrollIntoView implementation.
+        Element.prototype.scrollIntoView = scrollSpy;
+
+        stashSsoReauthIntent('passkey');
+        window.history.replaceState(null, '', `/settings/profile#ssoReauthGrant=${GRANT}`);
+        fetchWithAuthMock.mockImplementation(async (url: string) => {
+          if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+          return makeJsonResponse({});
+        });
+
+        try {
+          render(<ProfilePage initialUser={passwordlessUser} />);
+          await screen.findByText(/No passkeys are registered/i);
+
+          const card = await screen.findByTestId('passkey-card');
+          await waitFor(() => {
+            expect(scrollSpy.mock.contexts).toContain(card);
+          });
+
+          // Scrolling helps a sighted user; focus is what routes a keyboard or
+          // screen-reader user, and it names the next thing to do.
+          await waitFor(() => {
+            expect(document.activeElement).toBe(document.querySelector('#passkey-name'));
+          });
+        } finally {
+          Element.prototype.scrollIntoView = realScroll;
+        }
+      });
+
+      it('replaces the now-stale "verify first" instruction once the grant is in hand', async () => {
+        stashSsoReauthIntent('passkey');
+        window.history.replaceState(null, '', `/settings/profile#ssoReauthGrant=${GRANT}`);
+        fetchWithAuthMock.mockImplementation(async (url: string) => {
+          if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+          return makeJsonResponse({});
+        });
+
+        render(<ProfilePage initialUser={passwordlessUser} />);
+        await screen.findByText(/No passkeys are registered/i);
+
+        // Telling someone to "re-verify before adding a passkey" seconds after
+        // they did exactly that reads as a failed round-trip.
+        expect(screen.queryByText(/Re-verify with your provider before adding a passkey/i))
+          .toBeNull();
+        expect(screen.getByText(/Your identity is verified/i)).toBeTruthy();
+      });
+
+      it('consumes the recorded intent so a later return cannot replay it', async () => {
+        stashSsoReauthIntent('passkey');
+        window.history.replaceState(null, '', `/settings/profile#ssoReauthGrant=${GRANT}`);
+        fetchWithAuthMock.mockImplementation(async (url: string) => {
+          if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+          return makeJsonResponse({});
+        });
+
+        render(<ProfilePage initialUser={passwordlessUser} />);
+        await screen.findByText(/No passkeys are registered/i);
+
+        expect(sessionStorage.getItem(SSO_REAUTH_INTENT_KEY)).toBeNull();
+      });
+
+      // Storage blocked (private mode, hardened browser) leaves nothing to
+      // read. That must land on the pre-#4055 behaviour rather than on a
+      // half-state where neither card does anything.
+      it('falls back to the TOTP road when no intent was recorded', async () => {
+        window.history.replaceState(null, '', `/settings/profile#ssoReauthGrant=${GRANT}`);
+        fetchWithAuthMock.mockImplementation(async (url: string) => {
+          const u = String(url);
+          if (u === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+          if (u === '/auth/mfa/setup') {
+            return makeJsonResponse({ qrCodeDataUrl: 'data:image/png;base64,abc' });
+          }
+          return makeJsonResponse({});
+        });
+
+        render(<ProfilePage initialUser={passwordlessUser} />);
+
+        await waitFor(() => expect(callTo('/auth/mfa/setup')).toHaveLength(1));
+        await screen.findByText(/Set up authenticator/i);
+      });
     });
   });
 });
