@@ -3,6 +3,7 @@ import { db } from '../../db';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { readAiKillState } from '../aiKillState';
 import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
+import { captureException } from '../sentry';
 
 /**
  * P2-4 Task A3 (#4191) — the creation-transaction ticket-autonomy gate (spec
@@ -43,6 +44,18 @@ import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
  * A denial is never thrown: the caller stamps the typed reason onto the
  * intent's `result` column as a `autonomyDenied` breadcrumb and proceeds
  * down the ordinary `human_required` path.
+ *
+ * Review fix (#4191): gates 2-4 do real I/O (a DB select, a live-policy
+ * resolve that can itself throw `HTTPException` on a missing org, a kill-
+ * state read) INSIDE `createActionIntent`'s single creation transaction —
+ * an uncaught throw here does not degrade to `human_required`, it propagates
+ * out of that transaction, rolls the WHOLE intent insert back, and surfaces
+ * to the caller as `ActionIntentError('fanout_failed')`: no intent is
+ * created at all. That is strictly worse than "no human ever reviewed this"
+ * for what is, on any of these three reads, an ordinary infra fault — so
+ * every fallible gate from here on is wrapped and ANY exception denies with
+ * `gate_evaluation_failed` rather than escaping. Gates 1 and 5 above are
+ * pure/synchronous and stay outside the try — they cannot throw.
  */
 export type TicketAutonomyDenialReason =
   | 'not_requested'
@@ -51,7 +64,8 @@ export type TicketAutonomyDenialReason =
   | 'run_not_ticket_triggered'
   | 'run_snapshot_not_authorized'
   | 'live_policy_not_authorized'
-  | 'kill_switch_engaged';
+  | 'kill_switch_engaged'
+  | 'gate_evaluation_failed';
 
 export type TicketAutonomyDecision =
   | { granted: true }
@@ -82,50 +96,60 @@ export async function evaluateTicketAutonomy(
   // Gate 5.
   if (!args.scope || !('ticketId' in args.scope)) return deny('scope_not_ticket');
 
-  // Gate 2 — re-read the run row IN-TRANSACTION. The ambient `db` already
-  // runs inside `createActionIntent`'s system-scoped transaction (see that
-  // module's header comment on why the whole creation is one transaction),
-  // so this is the SAME connection/snapshot as the intent insert about to
-  // follow — no separate context needed here.
-  const [run] = await db
-    .select({
-      id: aiAgentRuns.id,
-      agentId: aiAgentRuns.agentId,
-      orgId: aiAgentRuns.orgId,
-      triggerKind: aiAgentRuns.triggerKind,
-      policySnapshot: aiAgentRuns.policySnapshot,
-    })
-    .from(aiAgentRuns)
-    .where(eq(aiAgentRuns.id, args.agentRunId))
-    .limit(1);
-  if (!run || run.orgId !== args.orgId) return deny('not_agent_run');
-  if (run.triggerKind !== 'ticket') return deny('run_not_ticket_triggered');
+  // Gates 2-4: every fallible read from here on is wrapped (see the header
+  // comment's "Review fix" paragraph) — this function must NEVER let an
+  // exception escape into `createActionIntent`'s transaction.
+  try {
+    // Gate 2 — re-read the run row IN-TRANSACTION. The ambient `db` already
+    // runs inside `createActionIntent`'s system-scoped transaction (see that
+    // module's header comment on why the whole creation is one transaction),
+    // so this is the SAME connection/snapshot as the intent insert about to
+    // follow — no separate context needed here.
+    const [run] = await db
+      .select({
+        id: aiAgentRuns.id,
+        agentId: aiAgentRuns.agentId,
+        orgId: aiAgentRuns.orgId,
+        triggerKind: aiAgentRuns.triggerKind,
+        policySnapshot: aiAgentRuns.policySnapshot,
+      })
+      .from(aiAgentRuns)
+      .where(eq(aiAgentRuns.id, args.agentRunId))
+      .limit(1);
+    if (!run || run.orgId !== args.orgId) return deny('not_agent_run');
+    if (run.triggerKind !== 'ticket') return deny('run_not_ticket_triggered');
 
-  const snapshotEffective = run.policySnapshot?.effective;
-  if (
-    snapshotEffective?.mode !== 'act'
-    || snapshotEffective?.triggers?.ticketAutonomousWrites !== true
-  ) {
-    return deny('run_snapshot_not_authorized');
+    const snapshotEffective = run.policySnapshot?.effective;
+    if (
+      snapshotEffective?.mode !== 'act'
+      || snapshotEffective?.triggers?.ticketAutonomousWrites !== true
+    ) {
+      return deny('run_snapshot_not_authorized');
+    }
+
+    // Gate 3 — the live policy. `resolveEffectiveAgentSystem` is already
+    // system-scoped and, per its own doc comment, reads straight through (no
+    // second pooled connection) when the ambient context is already 'system'
+    // — exactly the case here. It can also THROW (`HTTPException` on a
+    // missing organization row) rather than return null — caught below.
+    const resolved = await resolveEffectiveAgentSystem(args.orgId, run.policySnapshot.kind);
+    if (
+      !resolved
+      || resolved.agentId !== run.agentId
+      || resolved.effective.mode !== 'act'
+      || resolved.effective.triggers?.ticketAutonomousWrites !== true
+    ) {
+      return deny('live_policy_not_authorized');
+    }
+
+    // Gate 4.
+    const killState = await readAiKillState();
+    if (killState.killed) return deny('kill_switch_engaged');
+
+    return { granted: true };
+  } catch (err) {
+    console.error('[ticketAutonomy] gate evaluation threw — denying (fail-closed to human_required):', err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return deny('gate_evaluation_failed');
   }
-
-  // Gate 3 — the live policy. `resolveEffectiveAgentSystem` is already
-  // system-scoped and, per its own doc comment, reads straight through (no
-  // second pooled connection) when the ambient context is already 'system'
-  // — exactly the case here.
-  const resolved = await resolveEffectiveAgentSystem(args.orgId, run.policySnapshot.kind);
-  if (
-    !resolved
-    || resolved.agentId !== run.agentId
-    || resolved.effective.mode !== 'act'
-    || resolved.effective.triggers?.ticketAutonomousWrites !== true
-  ) {
-    return deny('live_policy_not_authorized');
-  }
-
-  // Gate 4.
-  const killState = await readAiKillState();
-  if (killState.killed) return deny('kill_switch_engaged');
-
-  return { granted: true };
 }

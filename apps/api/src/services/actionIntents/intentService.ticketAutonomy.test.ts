@@ -378,6 +378,30 @@ describe('createActionIntent — creation-transaction ticket autonomy (P2-4 Task
     expect(eventTypes).toEqual(['intent_created']);
   });
 
+  // Review fix (#4191): a gate-evaluation exception (e.g.
+  // resolveEffectiveAgentSystem throwing) must degrade to the SAME
+  // human_required path as an ordinary denial, never abort intent creation
+  // entirely — evaluateTicketAutonomy itself now catches this (its own
+  // ticketAutonomy.test.ts proves the catch); this proves the wiring here
+  // treats 'gate_evaluation_failed' exactly like any other denial reason.
+  it('gate-evaluation exception denial: intent still created pending_approval, breadcrumb carries gate_evaluation_failed', async () => {
+    queueTicketTriageContext();
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    ticketAutonomyState.evaluateTicketAutonomy.mockResolvedValue({
+      granted: false,
+      reason: 'gate_evaluation_failed',
+    });
+
+    const snapshot = await createActionIntent(makeAgentAuth(), triageInput());
+
+    expect(snapshot.status).toBe('pending_approval');
+    const inserted = dbState.insertedActionIntentValues[0];
+    expect(inserted?.status).toBeUndefined();
+    expect(inserted?.decidedVia).toBeUndefined();
+    expect(inserted?.result).toEqual({ autonomyDenied: 'gate_evaluation_failed' });
+    expect(dbState.insertedApprovalRequestsValues.length).toBeGreaterThan(0);
+  });
+
   it('live-policy-flipped-off race (snapshot true, live false): pending_approval, breadcrumb reflects the live-policy reason', async () => {
     queueTicketTriageContext();
     dbState.insertActionIntentsResults.push(echoInsertedIntent());

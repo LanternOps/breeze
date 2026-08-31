@@ -7,7 +7,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
  * gate combinator, not either dependency's own logic).
  */
 
-const { dbState, killState, effectivePolicyState } = vi.hoisted(() => ({
+const { dbState, killState, effectivePolicyState, sentryMock } = vi.hoisted(() => ({
   dbState: { runRow: null as Record<string, unknown> | null },
   killState: { killed: false, epoch: 0 },
   effectivePolicyState: {
@@ -16,6 +16,7 @@ const { dbState, killState, effectivePolicyState } = vi.hoisted(() => ({
       effective: { mode: string; triggers: Record<string, unknown> };
     },
   },
+  sentryMock: { captureException: vi.fn() },
 }));
 
 vi.mock('../../db', () => ({
@@ -48,7 +49,10 @@ vi.mock('../aiAgents/effectivePolicy', () => ({
   resolveEffectiveAgentSystem: vi.fn(async () => effectivePolicyState.resolved),
 }));
 
+vi.mock('../sentry', () => ({ captureException: sentryMock.captureException }));
+
 import { evaluateTicketAutonomy } from './ticketAutonomy';
+import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
 
 const ORG = 'org-1';
 const RUN = 'run-1';
@@ -85,6 +89,7 @@ describe('evaluateTicketAutonomy', () => {
     dbState.runRow = liveRunRow();
     killState.killed = false;
     effectivePolicyState.resolved = liveResolved();
+    sentryMock.captureException.mockClear();
   });
 
   it('grants when all five gates hold', async () => {
@@ -275,5 +280,59 @@ describe('evaluateTicketAutonomy', () => {
       scope: { ticketId: TICKET },
     });
     expect(decision).toEqual({ granted: false, reason: 'kill_switch_engaged' });
+  });
+
+  // Review fix (#4191): gates 2-4 do real I/O inside createActionIntent's own
+  // transaction — an uncaught throw here must NOT propagate (it would roll
+  // back the whole intent insert instead of degrading to human_required).
+  describe('fail-closed on gate-evaluation exceptions', () => {
+    it('denies gate_evaluation_failed when the live-policy resolve throws (e.g. HTTPException on a missing org)', async () => {
+      vi.mocked(resolveEffectiveAgentSystem).mockRejectedValueOnce(new Error('org not found'));
+
+      const decision = await evaluateTicketAutonomy({
+        requestedAutonomyKind: 'ticket_autonomy',
+        principalKind: 'ai_agent',
+        agentRunId: RUN,
+        orgId: ORG,
+        scope: { ticketId: TICKET },
+      });
+
+      expect(decision).toEqual({ granted: false, reason: 'gate_evaluation_failed' });
+      expect(sentryMock.captureException).toHaveBeenCalledTimes(1);
+    });
+
+    it('denies gate_evaluation_failed when the run re-read throws', async () => {
+      const { db } = await import('../../db');
+      vi.mocked(db.select).mockImplementationOnce(() => {
+        throw new Error('connection terminated');
+      });
+
+      const decision = await evaluateTicketAutonomy({
+        requestedAutonomyKind: 'ticket_autonomy',
+        principalKind: 'ai_agent',
+        agentRunId: RUN,
+        orgId: ORG,
+        scope: { ticketId: TICKET },
+      });
+
+      expect(decision).toEqual({ granted: false, reason: 'gate_evaluation_failed' });
+      expect(sentryMock.captureException).toHaveBeenCalledTimes(1);
+    });
+
+    it('denies gate_evaluation_failed when the kill-state read throws', async () => {
+      const { readAiKillState } = await import('../aiKillState');
+      vi.mocked(readAiKillState).mockRejectedValueOnce(new Error('redis unavailable'));
+
+      const decision = await evaluateTicketAutonomy({
+        requestedAutonomyKind: 'ticket_autonomy',
+        principalKind: 'ai_agent',
+        agentRunId: RUN,
+        orgId: ORG,
+        scope: { ticketId: TICKET },
+      });
+
+      expect(decision).toEqual({ granted: false, reason: 'gate_evaluation_failed' });
+      expect(sentryMock.captureException).toHaveBeenCalledTimes(1);
+    });
   });
 });
