@@ -2243,6 +2243,7 @@
     "ssoReauthEmailUnverified": "Votre fournisseur d'identité indique que votre adresse e-mail n'est pas vérifiée. Vérifiez-la chez lui, puis réessayez.",
     "ssoReauthProofExpired": "Votre vérification auprès du fournisseur d'identité a expiré. Vérifiez de nouveau pour terminer la configuration de l'authentification multifacteur.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Ce compte se connecte via un fournisseur d'identité et n'a pas de mot de passe. Vérifiez de nouveau auprès de votre fournisseur avant d'ajouter une clé d'accès.",
+    "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Votre identité est vérifiée. Nommez cette clé d’accès et continuez.",
     "verifyWithYourIdentityProvider": "Vérifier auprès de votre fournisseur d'identité",
     "passkeyIdpVerificationRequired": "Vérifiez auprès de votre fournisseur d'identité avant d'ajouter une clé d'accès.",
     "ssoReauthFailed": "Impossible de vérifier avec votre fournisseur d'identité. Veuillez réessayer.",

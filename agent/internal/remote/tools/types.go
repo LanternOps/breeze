@@ -116,6 +116,8 @@ const (
 	CmdSecurityThreatRemove     = "security_threat_remove"
 	CmdSecurityThreatRestore    = "security_threat_restore"
 	CmdSensitiveDataScan        = "sensitive_data_scan"
+	CmdPeripheralPolicySyncV2   = "peripheral_policy_sync_v2"
+	CmdAgentRollbackV1          = "agent_rollback_v1"
 	CmdEncryptionCollectKeys    = "encryption_collect_keys"
 	CmdEncryptionRotateKey      = "encryption_rotate_key"
 	CmdEncryptFile              = "encrypt_file"
@@ -241,6 +243,8 @@ const (
 	// Server-pushed only; handled by internal/pamactuator on Windows and
 	// a no-op stub on other platforms.
 	CmdActuateElevation = "actuate_elevation"
+	CmdPamApplyV2       = "pam_apply_v2"
+	CmdPamCleanupV2     = "pam_cleanup_v2"
 )
 
 // CommandResult represents the result of a command execution
@@ -252,11 +256,15 @@ type CommandResult struct {
 	// Failure paths that never spawn a process must set a synthetic nonzero
 	// exit code (NewErrorResult uses 1) so `exit_code = 0` always means "a
 	// process ran and exited cleanly".
-	ExitCode   int    `json:"exitCode"`
-	Stdout     string `json:"stdout,omitempty"`
-	Stderr     string `json:"stderr,omitempty"`
-	Error      string `json:"error,omitempty"`
-	DurationMs int64  `json:"durationMs,omitempty"`
+	ExitCode int    `json:"exitCode"`
+	Stdout   string `json:"stdout,omitempty"`
+	Stderr   string `json:"stderr,omitempty"`
+	Error    string `json:"error,omitempty"`
+	// Result carries structured output for the HTTP command-result transport.
+	// Most handlers leave it nil; WebSocket conversion independently reparses
+	// JSON stdout to avoid duplicating large generic results on that wire.
+	Result     any   `json:"result,omitempty"`
+	DurationMs int64 `json:"durationMs,omitempty"`
 	// RFC3339Nano timestamp captured by the agent at the moment the command's
 	// primary work began. Set by command handlers that care about the server-
 	// side reconstruction (e.g. software_install). Empty when not applicable.

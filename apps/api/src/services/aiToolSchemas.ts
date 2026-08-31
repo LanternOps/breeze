@@ -217,6 +217,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'edit_comment',
       'delete_comment',
       'move_org',
+      // P2-4 (#4191) ticket-triage executors.
+      'link_device',
+      'draft',
     ]),
     ticketId: uuid.optional(),
     alertId: uuid.optional(),
@@ -233,6 +236,18 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     statusName: z.string().min(1).max(60).optional(),
     resolutionNote: z.string().max(10000).optional(),
     content: z.string().max(50_000).optional(),
+    // link_device (P2-4): resolve a device by exact hostname or serial number
+    // within the ticket's org.
+    // O1 (final review #4191): this `serial` max(100) is the bound that
+    // packages/shared/src/validators/ticketTriage.ts's `device.serial` is
+    // deliberately coupled to (see that file's comment) — a triage
+    // proposal's serial longer than this AND <=255 used to pass the
+    // validator, then silently drop the device-link slot as `intent_error`
+    // here. Keep the two in sync if either changes.
+    hostname: z.string().min(1).max(255).optional(),
+    serial: z.string().min(1).max(100).optional(),
+    // draft (P2-4): which ticket_drafts kind this proposal is.
+    kind: z.enum(['reply', 'resolution_note']).optional(),
     isPublic: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
     pendingReason: z.string().max(500).optional(),

@@ -738,6 +738,8 @@
         "recurrence": "Wiederholung",
         "startDateTime": "Startdatum/-uhrzeit",
         "theSpecificDateAndTimeForThis": "Das spezifische Datum und die Uhrzeit für dieses einmalige Wartungsfenster.",
+        "startTime": "Startzeit",
+        "theTimeOfDayEachWindowOpensIn": "Die Uhrzeit, zu der jedes Wartungsfenster in der ausgewählten Zeitzone beginnt. Standard ist Mitternacht (00:00).",
         "durationHours": "Dauer (Stunden)",
         "timezone": "Zeitzone",
         "notifyBeforeMinutes": "Benachrichtigen vor (Minuten)",

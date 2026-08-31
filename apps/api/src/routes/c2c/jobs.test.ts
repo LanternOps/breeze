@@ -187,6 +187,11 @@ describe('c2c jobs routes', () => {
     });
 
     expect(res.status).toBe(201);
+    expect(createC2cSyncJobIfIdleMock).toHaveBeenCalledWith({
+      orgId: ORG_ID,
+      configId: CONFIG_ID,
+      auth: authState,
+    });
     expect(enqueueC2cSyncMock).toHaveBeenCalledWith('job-1', CONFIG_ID, ORG_ID);
   });
 });

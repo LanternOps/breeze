@@ -20,7 +20,7 @@ import {
 // This list is duplicated here deliberately — the whole point of the test is
 // to catch drift between the plan's documented contract and the actual
 // registry, so it must not import the list from the module under test.
-const EXPECTED_113_NAMES = [
+const EXPECTED_114_NAMES = [
   'alertWorkers', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
   'metricAnomaliesWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
@@ -45,7 +45,7 @@ const EXPECTED_113_NAMES = [
   'recoveryMediaWorker', 'recoveryBootMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',
   'softwareDeploymentScheduler', 'pamJobs', 'approvalExpiryReaper', 'offboardingDrainReaper',
-  'intentOutboxPublisher', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep',
+  'intentOutboxPublisher', 'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep',
   'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'ticketSlaWorker', 'inboundEmailWorker', 'ticketMailboxPollWorker', 'invoiceWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'aiUnattendedExposureRetention',
@@ -53,12 +53,12 @@ const EXPECTED_113_NAMES = [
 ];
 
 describe('workerRegistry: losslessness', () => {
-  it('contains exactly the 113 known names, in order', () => {
-    expect(WORKER_REGISTRY.map((e) => e.name)).toEqual(EXPECTED_113_NAMES);
+  it('contains exactly the 114 known names, in order', () => {
+    expect(WORKER_REGISTRY.map((e) => e.name)).toEqual(EXPECTED_114_NAMES);
   });
 
-  it('has exactly 113 entries', () => {
-    expect(WORKER_REGISTRY.length).toBe(113);
+  it('has exactly 114 entries', () => {
+    expect(WORKER_REGISTRY.length).toBe(114);
   });
 
   it('every entry has a well-formed shape', () => {
@@ -78,14 +78,14 @@ describe('workerRegistry: losslessness', () => {
 
 describe('workerRegistry: selectWorkers', () => {
   it("'all' selects every entry", () => {
-    expect(selectWorkers('all').length).toBe(113);
+    expect(selectWorkers('all').length).toBe(114);
     expect(selectWorkers('all')).toEqual(WORKER_REGISTRY);
   });
 
   it("'api' and 'worker' partition the set with no overlap and no loss", () => {
     const api = selectWorkers('api');
     const worker = selectWorkers('worker');
-    expect(api.length + worker.length).toBe(113);
+    expect(api.length + worker.length).toBe(114);
 
     const apiNames = new Set(api.map((e) => e.name));
     const workerNames = new Set(worker.map((e) => e.name));
@@ -93,7 +93,7 @@ describe('workerRegistry: selectWorkers', () => {
       expect(workerNames.has(name)).toBe(false);
     }
     const union = new Set([...apiNames, ...workerNames]);
-    expect(union.size).toBe(113);
+    expect(union.size).toBe(114);
   });
 
   it("'api' selects only socket-owner placements", () => {

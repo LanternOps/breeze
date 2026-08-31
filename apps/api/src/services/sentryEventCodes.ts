@@ -112,6 +112,12 @@ export const SENTRY_EVENT_CODES = [
   'device_deletion_lock_timeout_unreadable',
   /** The device cascade ran without holding the parent `devices` row lock. */
   'device_deletion_parent_lock_missing',
+
+  // --- mcp transport ----------------------------------------------------
+  /** A principal presented an `Mcp-Session-Id` owned by someone else (MED-1). */
+  'mcp_session_principal_mismatch',
+  /** Unknown/expired `Mcp-Session-Id` rate spiked — suspect session-store loss (#3744). */
+  'mcp_session_unknown_rate_high',
 ] as const;
 
 /**

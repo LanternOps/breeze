@@ -931,4 +931,57 @@ describe('org merge engine SQL against real Postgres', () => {
     }
     expect(asserted).toBe(6);
   }, 120_000);
+
+  it('moves automation binding ownership and its expected org atomically', async () => {
+    const P = randomUUID();
+    const L = randomUUID();
+    const S = randomUUID();
+    const A = randomUUID();
+    const B = randomUUID();
+
+    try {
+      await withSystemDbAccessContext(async () => {
+        await db.execute(sql`
+          INSERT INTO partners (id, name, slug)
+          VALUES (${P}::uuid, 'Automation binding merge', ${`automation-binding-${P.slice(0, 8)}`})`);
+        await db.execute(sql`
+          INSERT INTO organizations (id, partner_id, name, slug, status, currency_code)
+          VALUES (${L}::uuid, ${P}::uuid, 'Loser', ${`loser-${L.slice(0, 8)}`}, 'active', 'USD'),
+                 (${S}::uuid, ${P}::uuid, 'Survivor', ${`survivor-${S.slice(0, 8)}`}, 'active', 'USD')`);
+        await db.execute(sql`
+          INSERT INTO automations (id, org_id, name, trigger, actions)
+          VALUES (${A}::uuid, ${L}::uuid, 'Bound automation', '{}'::jsonb, '[]'::jsonb)`);
+        await db.execute(sql`
+          INSERT INTO automation_resource_bindings (
+            id, automation_id, org_id, resource_kind, resource_id,
+            expected_resource_org_id, expected_resource_is_system, state
+          ) VALUES (
+            ${B}::uuid, ${A}::uuid, ${L}::uuid, 'script', ${randomUUID()},
+            ${L}::uuid, false, 'active'
+          )`);
+
+        await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+        const out = await CUSTOM_EXECUTORS.automation_resource_bindings!(L, S);
+        expect(out).toEqual({ moved: 1, dropped: 0, notes: [] });
+
+        // The parent moves in its own registry step. Forcing the deferred
+        // guards proves the custom child rewrite leaves a committable state.
+        await db.execute(sql`UPDATE automations SET org_id = ${S}::uuid WHERE id = ${A}::uuid`);
+        await db.execute(sql`SET CONSTRAINTS ALL IMMEDIATE`);
+
+        const rows = (await db.execute(sql`
+          SELECT org_id, expected_resource_org_id
+            FROM automation_resource_bindings
+           WHERE id = ${B}::uuid`)) as unknown as Array<{
+          org_id: string;
+          expected_resource_org_id: string | null;
+        }>;
+        expect(rows).toEqual([{ org_id: S, expected_resource_org_id: S }]);
+
+        throw new Rollback('done');
+      });
+    } catch (err) {
+      if (!(err instanceof Rollback)) throw err;
+    }
+  });
 });

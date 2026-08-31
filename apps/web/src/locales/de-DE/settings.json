@@ -2243,6 +2243,7 @@
     "ssoReauthEmailUnverified": "Ihr Identitätsanbieter meldet, dass Ihre E-Mail-Adresse nicht bestätigt ist. Bestätigen Sie sie dort und versuchen Sie es erneut.",
     "ssoReauthProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um die Einrichtung der Multi-Faktor-Authentifizierung abzuschließen.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Dieses Konto meldet sich über einen Identitätsanbieter an und hat kein Passwort. Bestätigen Sie sich erneut bei Ihrem Anbieter, bevor Sie einen Passkey hinzufügen.",
+    "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Ihre Identität wurde bestätigt. Benennen Sie diesen Passkey und fahren Sie fort.",
     "verifyWithYourIdentityProvider": "Mit Ihrem Identitätsanbieter bestätigen",
     "passkeyIdpVerificationRequired": "Bestätigen Sie sich bei Ihrem Identitätsanbieter, bevor Sie einen Passkey hinzufügen.",
     "ssoReauthFailed": "Die Bestätigung bei Ihrem Identitätsanbieter ist fehlgeschlagen. Bitte versuchen Sie es erneut.",

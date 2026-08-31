@@ -1054,6 +1054,7 @@ export * from './ai';
 export * from './aiAgents';
 export * from './aiAgentSchedules';
 export * from './orgNarrative';
+export * from './ticketTriage';
 
 // ============================================
 // Tenant Variable Validators (#3409)
@@ -1074,6 +1075,7 @@ export * from './queryParams';
 export * from './timeEntries';
 export * from './portal';
 export * from './ticketConfig';
+export * from './ticketPushPreferences';
 export * from './clientAiDlp';
 export * from './quickSupport';
 

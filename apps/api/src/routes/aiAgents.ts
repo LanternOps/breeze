@@ -19,7 +19,7 @@ import { zValidator } from '../lib/validation';
 import { db } from '../db';
 import {
   actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
-  reportRuns, reports, type AiAgentRow,
+  reportRuns, reports, ticketDrafts, type AiAgentRow,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { policyDecideEnabled } from '../config/env';
@@ -626,6 +626,28 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     }
     : null;
 
+  // Phase 2 wave P2-4 (#4191), Task A10 — the ticket_drafts rows THIS RUN
+  // produced, for ticketProposal.draftsWritten. A LIVE query, not something
+  // read off the persisted outcome jsonb: a draft intent left
+  // `pending_approval` has not written its `ticket_drafts` row yet (that only
+  // happens later, when a human approves and the intent releases through
+  // Task 5's `draft` executor) — see `RunTraceDraftRowInput`'s docstring.
+  // Skipped entirely for every non-ticket run. `eq(ticketDrafts.orgId,
+  // run.orgId)` pins the read to the RUN's own org for the same reason the
+  // sweep-hostname and narrative-artifact reads above do (a partner-scoped
+  // caller's `auth.orgCondition` alone spans every sibling org); that stays
+  // as defence-in-depth beside RLS.
+  const draftRows = run.triggerKind === 'ticket'
+    ? await db
+      .select({ id: ticketDrafts.id, kind: ticketDrafts.kind })
+      .from(ticketDrafts)
+      .where(and(
+        eq(ticketDrafts.runId, run.id),
+        eq(ticketDrafts.orgId, run.orgId),
+        auth.orgCondition(ticketDrafts.orgId),
+      ))
+    : [];
+
   // Both fields come from the same left-joined ai_agents row, so they are
   // either both present or both null together.
   const agent = run.agentName !== null && run.agentKind !== null
@@ -639,6 +661,7 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     intentRows,
     deviceHostnames,
     narrativeArtifact,
+    draftRows,
   );
   return c.json({ data: detail });
 });

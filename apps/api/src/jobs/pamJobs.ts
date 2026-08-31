@@ -24,6 +24,7 @@ import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
+import { requestPamCleanup } from '../services/pamActuationLifecycle';
 import { envInt } from '../utils/envInt';
 
 const ENFORCER_QUEUE = 'pam-elevation-expiry-enforcer';
@@ -61,27 +62,9 @@ function extractRows(result: unknown): TransitionedRow[] {
   return Array.isArray(rows) ? rows : [];
 }
 
-/** Shared post-transition side effects: PAM audit chain + event + audit log. */
+/** Shared post-commit side effects: event + general audit log. */
 async function emitExpiryEffects(rows: TransitionedRow[], cause: 'window' | 'stale'): Promise<void> {
   if (rows.length === 0) return;
-  const now = new Date();
-
-  // PAM-specific audit chain (one row per transition). Best-effort.
-  try {
-    await db.insert(elevationAudit).values(
-      rows.map((row) => ({
-        orgId: row.org_id,
-        elevationRequestId: row.id,
-        eventType: 'expired' as const,
-        actor: 'system' as const,
-        details: { cause, prior_status: row.prior_status },
-        occurredAt: now,
-      })),
-    );
-  } catch (err) {
-    console.error('[PamJobs] elevation_audit write failed:', err);
-    captureException(err instanceof Error ? err : new Error(String(err)));
-  }
 
   const requestLike = requestLikeFromSnapshot({});
   for (const row of rows) {
@@ -123,33 +106,48 @@ async function emitExpiryEffects(rows: TransitionedRow[], cause: 'window' | 'sta
  * Returns the number of rows transitioned. Exported for tests.
  */
 export async function enforceElevationExpiry(): Promise<number> {
-  const transitioned = await db.execute<TransitionedRow>(sql`
-    WITH due AS (
-      SELECT id
-      FROM ${elevationRequests}
-      WHERE ${elevationRequests.status} IN ('approved', 'auto_approved', 'actuating')
-        AND ${elevationRequests.expiresAt} IS NOT NULL
-        AND ${elevationRequests.expiresAt} < now()
-      ORDER BY ${elevationRequests.expiresAt} ASC
-      LIMIT ${MAX_PER_RUN}
-      FOR UPDATE SKIP LOCKED
-    )
-    UPDATE ${elevationRequests} AS e
-    SET status = 'expired',
-        expired_at = now(),
-        updated_at = now()
-    FROM due
-    WHERE e.id = due.id
-      AND e.status IN ('approved', 'auto_approved', 'actuating')
-    RETURNING
-      e.id,
-      e.org_id,
-      e.device_id,
-      e.flow_type,
-      'active'::text AS prior_status;
-  `);
-
-  const rows = extractRows(transitioned);
+  const rows = await db.transaction(async (tx) => {
+    const transitioned = await tx.execute<TransitionedRow>(sql`
+      WITH due AS (
+        SELECT id
+        FROM ${elevationRequests}
+        WHERE ${elevationRequests.status} IN ('approved', 'auto_approved', 'actuating')
+          AND ${elevationRequests.expiresAt} IS NOT NULL
+          AND ${elevationRequests.expiresAt} < now()
+        ORDER BY ${elevationRequests.expiresAt} ASC
+        LIMIT ${MAX_PER_RUN}
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE ${elevationRequests} AS e
+      SET status = 'expired',
+          expired_at = now(),
+          updated_at = now()
+      FROM due
+      WHERE e.id = due.id
+        AND e.status IN ('approved', 'auto_approved', 'actuating')
+      RETURNING
+        e.id,
+        e.org_id,
+        e.device_id,
+        e.flow_type,
+        'active'::text AS prior_status;
+    `);
+    const expired = extractRows(transitioned);
+    for (const row of expired) {
+      await requestPamCleanup(tx, { elevationRequestId: row.id, cause: 'expired' });
+    }
+    if (expired.length > 0) {
+      await tx.insert(elevationAudit).values(expired.map((row) => ({
+        orgId: row.org_id,
+        elevationRequestId: row.id,
+        eventType: 'expired' as const,
+        actor: 'system' as const,
+        details: { cause: 'window', prior_status: row.prior_status },
+        occurredAt: new Date(),
+      })));
+    }
+    return expired;
+  });
   await emitExpiryEffects(rows, 'window');
 
   if (rows.length === MAX_PER_RUN) {
@@ -166,7 +164,8 @@ export async function expireStaleRequests(): Promise<number> {
   const ttlMinutes = Number.isFinite(STALE_PENDING_TTL_MINUTES) && STALE_PENDING_TTL_MINUTES > 0
     ? STALE_PENDING_TTL_MINUTES
     : 15;
-  const transitioned = await db.execute<TransitionedRow>(sql`
+  const rows = await db.transaction(async (tx) => {
+    const transitioned = await tx.execute<TransitionedRow>(sql`
     WITH due AS (
       SELECT id
       FROM ${elevationRequests}
@@ -189,9 +188,20 @@ export async function expireStaleRequests(): Promise<number> {
       e.device_id,
       e.flow_type,
       'pending'::text AS prior_status;
-  `);
-
-  const rows = extractRows(transitioned);
+    `);
+    const expired = extractRows(transitioned);
+    if (expired.length > 0) {
+      await tx.insert(elevationAudit).values(expired.map((row) => ({
+        orgId: row.org_id,
+        elevationRequestId: row.id,
+        eventType: 'expired' as const,
+        actor: 'system' as const,
+        details: { cause: 'stale', prior_status: row.prior_status },
+        occurredAt: new Date(),
+      })));
+    }
+    return expired;
+  });
   await emitExpiryEffects(rows, 'stale');
 
   if (rows.length === MAX_PER_RUN) {

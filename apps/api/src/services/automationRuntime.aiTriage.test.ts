@@ -57,6 +57,8 @@ const EXPECTED_SUCCESS: Record<AgentRunSkipReason, boolean> = {
   sweep_rate: true,
   max_concurrent_narrative_runs: true,
   narrative_rate: true,
+  max_concurrent_triage_runs: true,
+  triage_rate: true,
 };
 
 const DEFAULT_TRIGGER: AutomationTriggerContext = {

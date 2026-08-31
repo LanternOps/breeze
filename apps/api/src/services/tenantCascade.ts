@@ -121,6 +121,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'audit_policy_states',
   'audit_retention_policies',
   'automation_policies',
+  'automation_resource_bindings',
   'automation_run_device_results',
   'automations',
   'backup_chains',
@@ -283,6 +284,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // requirement that every org_id-columned table be listed for auditability.
   'organization_external_links',
   'organization_users',
+  'agent_rollback_events',
+  'agent_rollback_directives',
+  'pam_actuation_results',
+  'pam_actuations',
   'pam_org_config',
   'pam_rules',
   'pam_signer_groups',
@@ -296,6 +301,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'pax8_subscription_snapshots',
   'peripheral_events',
   'peripheral_policies',
+  'peripheral_policy_delivery_events',
+  'peripheral_policy_device_states',
   'playbook_definitions',
   'playbook_executions',
   'plugin_installations',
@@ -380,6 +387,15 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // 'tenant_variables' < 'ticket_alert_links' by localeCompare).
   'tenant_variables',
   'ticket_alert_links',
+  // ticket_drafts (P2-4, #4191): the reply/resolution-note an agent proposes
+  // for a ticket. Composite FKs to tickets(id, org_id) (ON DELETE CASCADE —
+  // this row dies with its ticket) and to ai_agent_runs/action_intents(id,
+  // org_id) (ON DELETE RESTRICT, mirroring action_intents' own
+  // requestingAgentRunOrgFk) are all explicit-ON-DELETE, so position
+  // relative to them is cosmetic — topologicalCascadeOrder()'s runtime
+  // pg_constraint read orders the actual DELETE. localeCompare sorts this
+  // BEFORE 'ticket_email_links' ('d' < 'e').
+  'ticket_drafts',
   // ticket_email_links (spec 2026-08-15, outlook-tech-addin): cross-channel
   // email<->ticket association + idempotency ledger. Shape 1 (direct org_id).
   // ticket_id FK is ON DELETE CASCADE (child of tickets, deleted well before
@@ -580,6 +596,9 @@ const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
   'audit_log_chain',
   'audit_chain_anchors',
   'ml_feedback_events',
+  'peripheral_policy_delivery_events',
+  'agent_rollback_events',
+  'pam_actuation_results',
 ]);
 
 interface FkEdge {

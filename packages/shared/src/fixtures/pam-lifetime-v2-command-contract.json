@@ -1,0 +1,24 @@
+{
+  "apply": {
+    "protocolVersion": 2,
+    "actuationId": "30000000-0000-4000-8000-000000000001",
+    "generation": 4,
+    "requestId": "30000000-0000-4000-8000-000000000004",
+    "deviceId": "30000000-0000-4000-8000-000000000003",
+    "orgId": "30000000-0000-4000-8000-000000000002",
+    "targetPath": "C:\\Program Files\\Fixture\\fixture.exe",
+    "targetHash": null,
+    "subjectUsername": "CORP\\operator",
+    "expiresAt": "2026-08-27T12:01:00.000Z",
+    "serverTime": "2026-08-27T12:00:00.000Z",
+    "maxRemainingLifetimeMs": 60000
+  },
+  "cleanup": {
+    "protocolVersion": 2,
+    "actuationId": "30000000-0000-4000-8000-000000000001",
+    "generation": 5,
+    "requestId": "30000000-0000-4000-8000-000000000004",
+    "deviceId": "30000000-0000-4000-8000-000000000003",
+    "orgId": "30000000-0000-4000-8000-000000000002"
+  }
+}

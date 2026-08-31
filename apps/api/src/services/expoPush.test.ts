@@ -47,6 +47,9 @@ import {
   APPROVAL_PUSH_TTL_SECONDS,
   TIME_SUGGESTION_PUSH_TTL_SECONDS,
   TIME_SUGGESTIONS_PUSH_EVENT_TYPE,
+  buildTicketPush,
+  dispatchPushToTokens,
+  dispatchApprovalPushToTokens,
 } from './expoPush';
 import { readFileSync } from 'fs';
 import { db } from '../db';
@@ -457,5 +460,87 @@ describe('buildTimeSuggestionPush (W06 #3900, dispatched by W07)', () => {
     // Guard against a well-meaning follow-up wiring dispatch in early.
     const src = readFileSync(new URL('./expoPush.ts', import.meta.url), 'utf8');
     expect(src).not.toMatch(/dispatchTimeSuggestionPush|sendExpoPush\([^)]*TimeSuggestion/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W07 (#3901): generalised push spec + ticket pushes
+// ---------------------------------------------------------------------------
+
+describe('buildTicketPush', () => {
+  it('assigned: lock-screen-safe body, 24h ttl, collapse/thread ids, no subject', () => {
+    const spec = buildTicketPush({ ticketId: 't-1', reason: 'assigned', internalNumber: 'T-2026-0042', orgName: 'Acme' });
+    expect(spec.title).toBe('Ticket assigned to you');
+    expect(spec.body).toBe('T-2026-0042 \u00b7 Acme');
+    expect(spec.data).toEqual({ type: 'ticket', ticketId: 't-1', reason: 'assigned', internalNumber: 'T-2026-0042' });
+    expect(spec.ttl).toBe(86400);
+    expect(spec.collapseId).toBe('ticket:t-1:assigned');
+    expect(spec.threadId).toBe('ticket:t-1');
+    expect(spec.category).toBe('BREEZE_TICKET');
+    expect(spec.channelId).toBe('tickets');
+    expect(JSON.stringify(spec)).not.toContain('subject');
+  });
+  it('sla_breached: target in title/collapse, 4h ttl, "Ticket" fallback label', () => {
+    const spec = buildTicketPush({ ticketId: 't-1', reason: 'sla_breached', target: 'response', internalNumber: null, orgName: 'Acme' });
+    expect(spec.title).toBe('SLA breached (response)');
+    expect(spec.body).toBe('Ticket \u00b7 Acme');
+    expect(spec.ttl).toBe(14400);
+    expect(spec.collapseId).toBe('ticket:t-1:sla:response');
+    expect(spec.data).toEqual({ type: 'ticket', ticketId: 't-1', reason: 'sla_breached', target: 'response' });
+  });
+  /**
+   * REGRESSION (#4281 review, critical): APNs caps `apns-collapse-id` at 64
+   * BYTES and answers an over-long value with 400 `BadCollapseId`. Every
+   * fixture above uses the 3-character id `t-1`; the real `tickets.id` is a
+   * 36-char uuid, which made `ticket:<uuid>:sla_breached:resolution` 67 bytes
+   * — so every native-APNs SLA push was rejected while the in-app row and the
+   * email still landed. Pin the length with a REAL uuid, not a short fixture.
+   */
+  it('collapse ids stay inside the 64-byte apns-collapse-id limit for a real uuid ticket id', () => {
+    const uuid = '0f5a1c2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b';
+    const specs = [
+      buildTicketPush({ ticketId: uuid, reason: 'assigned', internalNumber: 'T-2026-0042', orgName: 'Acme' }),
+      buildTicketPush({ ticketId: uuid, reason: 'sla_breached', target: 'response', internalNumber: null, orgName: 'Acme' }),
+      buildTicketPush({ ticketId: uuid, reason: 'sla_breached', target: 'resolution', internalNumber: null, orgName: 'Acme' }),
+    ];
+    for (const spec of specs) {
+      expect(Buffer.byteLength(spec.collapseId!, 'utf8')).toBeLessThanOrEqual(64);
+    }
+    // Shortening must not collapse the two SLA targets onto one another.
+    expect(specs[1]!.collapseId).not.toBe(specs[2]!.collapseId);
+    expect(specs[0]!.collapseId).not.toBe(specs[1]!.collapseId);
+  });
+  it('truncates a long org name', () => {
+    const spec = buildTicketPush({ ticketId: 't-1', reason: 'assigned', internalNumber: 'T-1', orgName: 'x'.repeat(200) });
+    expect(spec.body.length).toBeLessThanOrEqual('T-1 \u00b7 '.length + 60);
+  });
+});
+
+describe('dispatchPushToTokens', () => {
+  beforeEach(() => { sendApnsNotificationMock.mockReset(); updateSetCalls.length = 0; });
+
+  it('forwards ttl, collapseId, threadId and category to APNs', async () => {
+    sendApnsNotificationMock.mockResolvedValue({ ok: true, status: 200 });
+    const spec = buildTicketPush({ ticketId: 't-1', reason: 'assigned', internalNumber: 'T-1', orgName: 'Acme' });
+    const res = await dispatchPushToTokens([{ token: 'apns-1', platform: 'ios', provider: 'apns' }], spec);
+    expect(res).toEqual({ tokensFound: 1, dispatched: 1, errors: 0 });
+    expect(sendApnsNotificationMock).toHaveBeenCalledWith('apns-1', expect.objectContaining({
+      ttl: 86400, collapseId: 'ticket:t-1:assigned', threadId: 'ticket:t-1', category: 'BREEZE_TICKET',
+    }));
+  });
+
+  it('purges an unregistered APNs token', async () => {
+    sendApnsNotificationMock.mockResolvedValue({ ok: false, status: 410, unregistered: true });
+    await dispatchPushToTokens([{ token: 'dead', platform: 'ios', provider: 'apns' }],
+      buildTicketPush({ ticketId: 't-1', reason: 'assigned', internalNumber: 'T-1', orgName: 'Acme' }));
+    expect(updateSetCalls).toContainEqual({ apnsToken: null });
+  });
+
+  it('approval wrapper output is unchanged', async () => {
+    sendApnsNotificationMock.mockResolvedValue({ ok: true, status: 200 });
+    await dispatchApprovalPushToTokens([{ token: 'apns-1', platform: 'ios', provider: 'apns' }],
+      { approvalId: 'a1', actionLabel: 'Reboot', requestingClientLabel: 'Claude' });
+    const [, payload] = sendApnsNotificationMock.mock.calls[0]!;
+    expect(payload).toEqual({ title: 'Approval requested', body: 'Claude: Reboot', data: { type: 'approval', approvalId: 'a1' }, ttl: 60 });
   });
 });

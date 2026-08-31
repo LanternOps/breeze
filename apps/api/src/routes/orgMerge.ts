@@ -181,12 +181,9 @@ orgMergeRoutes.post(
       return c.json({ error: 'confirmName does not match the organization being merged away' }, 400);
     }
 
-    let verdict: 'ok' | 'too-large';
-    let totalMovableRows: number;
+    let preview: Awaited<ReturnType<typeof previewOrgMerge>>;
     try {
-      const preview = await previewOrgMerge(loserId, survivorId, authz.partnerId);
-      verdict = preview.verdict;
-      totalMovableRows = preview.totalMovableRows;
+      preview = await previewOrgMerge(loserId, survivorId, authz.partnerId);
     } catch (err) {
       if (err instanceof MergeValidationError) {
         return c.json({ error: err.message }, 400);
@@ -194,7 +191,18 @@ orgMergeRoutes.post(
       throw err;
     }
 
-    if (verdict === 'too-large') {
+    if (preview.verdict === 'blocked') {
+      return c.json(
+        {
+          error: preview.blockers[0] ?? 'merge blocked by durable evidence',
+          code: 'ORG_MERGE_BLOCKED',
+          blockers: preview.blockers,
+        },
+        422,
+      );
+    }
+
+    if (preview.verdict === 'too-large') {
       return c.json(
         {
           // Name the knob. The limit is a deployment-tunable guard
@@ -203,7 +211,7 @@ orgMergeRoutes.post(
           // to contact — telling them only to "contact support" turns a config
           // change into a dead end.
           error: 'This merge would move more rows than the org-merge engine runs inline. Self-hosted deployments can raise the ORG_MERGE_MAX_ROWS limit (default 500000) and retry; on hosted Breeze, contact support to schedule a manual/batched merge.',
-          totalMovableRows,
+          totalMovableRows: preview.totalMovableRows,
         },
         422,
       );

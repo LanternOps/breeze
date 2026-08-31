@@ -359,8 +359,8 @@ describe('approver registration status', () => {
   // would also blank the slice, but that safety net lives in another module:
   // asserting it here keeps the guarantee true of authSlice on its own.
   it.each([
-    ['fulfilled', () => logoutAsync.fulfilled(undefined, 'req-id')],
-    ['rejected', () => logoutAsync.rejected(null, 'req-id')],
+    ['fulfilled', () => logoutAsync.fulfilled(undefined, 'req-id', { deliberate: true })],
+    ['rejected', () => logoutAsync.rejected(null, 'req-id', { deliberate: true })],
   ])('clears on logoutAsync.%s — the next user must not inherit the banner or grant', (_name, action) => {
     const store = makeStore();
     store.dispatch(setApproverRegistration({ status: 'failed', reason: 'http_400' }));

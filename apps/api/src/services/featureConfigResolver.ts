@@ -1599,6 +1599,30 @@ function getRetentionImmutableDays(retention: Record<string, unknown> | null): n
 }
 
 /**
+ * The device rows a backup policy is allowed to target (#3968).
+ *
+ * `decommissioned` is this schema's soft delete — `DELETE /devices/:id` only
+ * flips `status`, so the row (and every backup assignment reaching it) survives
+ * indefinitely — and an ephemeral device is a Quick Support session box the
+ * reaper purges a few hours after the session ends. Neither can ever complete a
+ * backup, so fanning out to them buys a guaranteed-failing `backup_jobs` row per
+ * schedule tick, forever, plus a `recovery_readiness` row scoring 0 that pins
+ * the low-readiness alert.
+ *
+ * Built as ONE predicate every branch of the fan-out switch reuses: the bug this
+ * fixes was five independent WHERE clauses of which zero carried the exclusion,
+ * and a sixth branch written later must not be able to miss it. Same pair used
+ * by `GET /metrics/`, `readFleetGauges`, and the fleet workers.
+ *
+ * A function rather than a module constant so the `sql` template is built at
+ * call time — module-level evaluation would run inside every suite that mocks
+ * `drizzle-orm` at import.
+ */
+function backupTargetableDeviceCondition(): SQL {
+  return sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false`;
+}
+
+/**
  * Finds ALL devices with backup config policy assignments for an org.
  * Used by the backup scheduler (to know which devices to back up) and the run-all endpoint.
  *
@@ -1683,6 +1707,12 @@ export async function resolveAllBackupAssignedDevices(
   // Track which devices we've already seen — first (highest priority) wins
   const seen = new Map<string, BackupAssignedDevice>();
 
+  // EVERY branch of the switch below must ALSO exclude decommissioned and
+  // ephemeral rows — see `backupTargetableDeviceCondition`. Bound once and
+  // reused because the bug was that all five branches independently forgot it
+  // (#3968); a sixth branch should have to reach for this same name.
+  const targetableDevice = backupTargetableDeviceCondition();
+
   for (const row of sorted) {
     let deviceIds: string[];
 
@@ -1699,7 +1729,13 @@ export async function resolveAllBackupAssignedDevices(
         const [device] = await db
           .select({ id: devices.id })
           .from(devices)
-          .where(and(eq(devices.id, row.assignmentTargetId), eq(devices.orgId, orgId)))
+          .where(
+            and(
+              eq(devices.id, row.assignmentTargetId),
+              eq(devices.orgId, orgId),
+              targetableDevice
+            )
+          )
           .limit(1);
         deviceIds = device ? [device.id] : [];
         break;
@@ -1712,7 +1748,8 @@ export async function resolveAllBackupAssignedDevices(
           .where(
             and(
               eq(deviceGroupMemberships.groupId, row.assignmentTargetId),
-              eq(devices.orgId, orgId)
+              eq(devices.orgId, orgId),
+              targetableDevice
             )
           );
         deviceIds = members.map((m) => m.deviceId);
@@ -1722,7 +1759,13 @@ export async function resolveAllBackupAssignedDevices(
         const siteDevices = await db
           .select({ id: devices.id })
           .from(devices)
-          .where(and(eq(devices.siteId, row.assignmentTargetId), eq(devices.orgId, orgId)));
+          .where(
+            and(
+              eq(devices.siteId, row.assignmentTargetId),
+              eq(devices.orgId, orgId),
+              targetableDevice
+            )
+          );
         deviceIds = siteDevices.map((d) => d.id);
         break;
       }
@@ -1735,7 +1778,7 @@ export async function resolveAllBackupAssignedDevices(
         const orgDevices = await db
           .select({ id: devices.id })
           .from(devices)
-          .where(eq(devices.orgId, orgId));
+          .where(and(eq(devices.orgId, orgId), targetableDevice));
         deviceIds = orgDevices.map((d) => d.id);
         break;
       }
@@ -1748,6 +1791,7 @@ export async function resolveAllBackupAssignedDevices(
             and(
               eq(organizations.partnerId, row.assignmentTargetId),
               eq(devices.orgId, orgId),
+              targetableDevice
             )
           );
         deviceIds = partnerDevices.map((d) => d.id);
@@ -1931,16 +1975,73 @@ export interface MaintenanceWindowStatus {
   rebootIfPending: boolean;
 }
 
+/** Bare time of day, e.g. "1:50", "01:50" or "01:50:00". */
+const TIME_OF_DAY_PATTERN = /^(\d{1,2}):(\d{2})(?::\d{2})?$/;
+/** Time component of a naive (zoneless) ISO-8601-ish datetime, e.g. "2026-03-15T02:00". */
+const DATETIME_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}[T ](\d{1,2}):(\d{2})/;
+/**
+ * A trailing `Z` or `±HH:MM` offset. Such a value names an *instant*, so its
+ * digits are not wall-clock time in `settings.timezone` — `migrateToConfigPolicies`
+ * writes exactly this shape (`toISOString()`) for migrated `once` windows.
+ */
+const EXPLICIT_UTC_OFFSET_PATTERN = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+
+/** The anchor recurring windows used before issue #4224, and the fallback still. */
+const MIDNIGHT_ANCHOR = { hours: 0, minutes: 0 } as const;
+
+/**
+ * Reads the time-of-day anchor for a recurring maintenance window out of
+ * `config_policy_maintenance_settings.window_start`.
+ *
+ * That column is recurrence-discriminated: for `once` it holds a full
+ * ISO-8601 local datetime, and for `daily`/`weekly`/`monthly` it holds an
+ * "HH:MM" time of day. A *naive* datetime is accepted for the recurring
+ * cadences too, using only its time component, so a policy switched from
+ * `once` keeps a sensible anchor instead of jumping to midnight.
+ *
+ * A datetime carrying `Z` or a numeric offset is rejected rather than read
+ * digit-for-digit: it names an instant, and treating its UTC hour as local
+ * wall-clock time would shift the window by the zone's offset invisibly.
+ *
+ * Returns `'invalid'` for a value that parses as none of these — the caller
+ * warns and falls back to midnight rather than treating the window as never
+ * open.
+ */
+function parseRecurringWindowAnchor(
+  rawWindowStart: string | null
+): { hours: number; minutes: number } | 'invalid' {
+  const value = (rawWindowStart ?? '').trim();
+  // Absent is not a defect: every pre-#4224 recurring row has window_start
+  // NULL and must keep the midnight schedule it has been running on.
+  if (value === '') return MIDNIGHT_ANCHOR;
+  if (EXPLICIT_UTC_OFFSET_PATTERN.test(value)) return 'invalid';
+
+  const match = TIME_OF_DAY_PATTERN.exec(value) ?? DATETIME_TIME_PATTERN.exec(value);
+  if (!match) return 'invalid';
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return 'invalid';
+  return { hours, minutes };
+}
+
 /**
  * Determines whether a maintenance window is currently active based on
  * the recurrence pattern, duration, and timezone.
  *
- * Recurrence values:
- *   - 'daily'   — window starts every day at 00:00 in the configured timezone
- *   - 'weekly'  — window starts every Sunday at 00:00 in the configured timezone
- *   - 'monthly' — window starts on the 1st of each month at 00:00 in the configured timezone
+ * Recurrence values (all times in the configured timezone):
+ *   - 'once'    — window starts at the `windowStart` datetime
+ *   - 'daily'   — window starts every day at the `windowStart` time of day
+ *   - 'weekly'  — window starts every Sunday at the `windowStart` time of day
+ *   - 'monthly' — window starts on the 1st of each month at the `windowStart` time of day
  *
- * The window lasts for `durationHours` from the start time.
+ * Recurring cadences fall back to 00:00 when no `windowStart` is stored, which
+ * is what every recurring window did before issue #4224.
+ *
+ * The window lasts for `durationHours` from the start time. Because the start
+ * time may sit late in its period, the evaluated occurrence is the most recent
+ * one at or before `now` — a 23:00 daily window is still open at 00:30 the
+ * next morning.
  */
 export function isInMaintenanceWindow(
   settings: typeof configPolicyMaintenanceSettings.$inferSelect,
@@ -1983,6 +2084,20 @@ export function isInMaintenanceWindow(
 
   const durationMs = settings.durationHours * 60 * 60 * 1000;
 
+  // Lazily resolved so the `once` branch — which reads windowStart as a full
+  // datetime — never warns about a value that is valid for its own recurrence.
+  const resolveRecurringAnchor = (): { hours: number; minutes: number } => {
+    const anchor = parseRecurringWindowAnchor(settings.windowStart);
+    if (anchor === 'invalid') {
+      console.warn(
+        `[FeatureConfigResolver] Unparseable maintenance windowStart "${settings.windowStart}" for ` +
+          `'${settings.recurrence}' recurrence; anchoring the window to midnight`
+      );
+      return MIDNIGHT_ANCHOR;
+    }
+    return anchor;
+  };
+
   // Compute potential window start based on recurrence
   let windowStart: Date;
 
@@ -2004,24 +2119,40 @@ export function isInMaintenanceWindow(
       break;
     }
     case 'daily': {
-      // Window starts at midnight local time each day
+      // Window starts at the configured time of day, every day. If today's
+      // occurrence has not begun yet, yesterday's may still be running.
+      const { hours, minutes } = resolveRecurringAnchor();
       windowStart = new Date(localNow);
-      windowStart.setHours(0, 0, 0, 0);
+      windowStart.setHours(hours, minutes, 0, 0);
+      if (windowStart > localNow) {
+        windowStart.setDate(windowStart.getDate() - 1);
+      }
       break;
     }
     case 'weekly': {
-      // Window starts at midnight on the most recent Sunday
+      // Window starts at the configured time of day on Sunday. If this
+      // Sunday's occurrence has not begun yet, last Sunday's may still run.
+      const { hours, minutes } = resolveRecurringAnchor();
       windowStart = new Date(localNow);
-      const dayOfWeek = windowStart.getDay(); // 0 = Sunday
-      windowStart.setDate(windowStart.getDate() - dayOfWeek);
-      windowStart.setHours(0, 0, 0, 0);
+      windowStart.setDate(windowStart.getDate() - windowStart.getDay()); // 0 = Sunday
+      windowStart.setHours(hours, minutes, 0, 0);
+      if (windowStart > localNow) {
+        windowStart.setDate(windowStart.getDate() - 7);
+      }
       break;
     }
     case 'monthly': {
-      // Window starts at midnight on the 1st of the current month
+      // Window starts at the configured time of day on the 1st. If this
+      // month's occurrence has not begun yet, last month's may still run.
+      const { hours, minutes } = resolveRecurringAnchor();
       windowStart = new Date(localNow);
       windowStart.setDate(1);
-      windowStart.setHours(0, 0, 0, 0);
+      windowStart.setHours(hours, minutes, 0, 0);
+      if (windowStart > localNow) {
+        // Safe to roll the month back: the day is pinned to the 1st, so there
+        // is no short-month overflow.
+        windowStart.setMonth(windowStart.getMonth() - 1);
+      }
       break;
     }
     default: {

@@ -21,8 +21,34 @@ import (
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/pkg/api"
 )
+
+type recordingPamStartup struct {
+	order       []string
+	hadDeadline bool
+}
+
+func (s *recordingPamStartup) SetStatePath(path string) {
+	s.order = append(s.order, "ledger:"+filepath.Base(path))
+}
+func (s *recordingPamStartup) ReconcilePAMLifetime(ctx context.Context) []pamlifetime.Result {
+	s.order = append(s.order, "reconcile")
+	_, s.hadDeadline = ctx.Deadline()
+	return nil
+}
+
+func TestPreparePAMLifetimeStartupAttachesLedgerBeforeReconcile(t *testing.T) {
+	startup := &recordingPamStartup{}
+	preparePAMLifetimeStartup(context.Background(), startup, filepath.Join(t.TempDir(), "agent.state"))
+	if got, want := strings.Join(startup.order, ","), "ledger:agent.state,reconcile"; got != want {
+		t.Fatalf("startup order = %q, want %q", got, want)
+	}
+	if !startup.hadDeadline {
+		t.Fatal("startup reconciliation context had no finite deadline")
+	}
+}
 
 func TestProcessStartupFieldsContainRoleEvidenceOnly(t *testing.T) {
 	startup := ProcessStartup{

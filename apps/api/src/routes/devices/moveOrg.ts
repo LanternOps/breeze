@@ -31,6 +31,12 @@ import {
   TicketMoveCurrencyBlockedError,
   type MoveCurrencyGuardDetails,
 } from '../../services/ticketMoveCurrencyGuard';
+import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
+import {
+  assertPamDeviceOrgMoveAllowed,
+  PamDeviceMoveBlockedError,
+} from '../../services/pamDeviceMoveGuard';
+import { pgErrorNode } from '../../utils/pgErrors';
 
 /**
  * An organization that passed the pre-transaction existence check was gone at
@@ -197,6 +203,7 @@ moveOrgRoutes.post(
         const lockedTarget = lockedOrgs.get(targetOrgId);
         if (!lockedTarget) throw new OrgVanishedDuringMoveError('target');
         if (!lockedSource) throw new OrgVanishedDuringMoveError('source');
+        await assertPamDeviceOrgMoveAllowed(tx, { deviceId, sourceOrgId });
         const lockedSourceCurrency = lockedSource.currencyCode;
         const lockedTargetCurrency = lockedTarget.currencyCode;
 
@@ -344,6 +351,27 @@ moveOrgRoutes.post(
         }
       });
     } catch (err) {
+      const pgNode = pgErrorNode(err);
+      if (
+        err instanceof PamDeviceMoveBlockedError
+        || (
+          pgNode?.code === '23514'
+          && pgNode.constraint_name === 'devices_pam_history_move_guard'
+        )
+      ) {
+        writeRouteAudit(c, {
+          orgId: sourceOrgId,
+          action: 'device.move_org.failed',
+          resourceType: 'device',
+          resourceId: deviceId,
+          resourceName: device.hostname,
+          details: { code: 'PAM_DEVICE_MOVE_BLOCKED' },
+        });
+        return c.json({
+          error: 'Device organization move is blocked because durable PAM lifecycle evidence exists',
+          code: 'PAM_DEVICE_MOVE_BLOCKED',
+        }, 409);
+      }
       // A currency-policy block is not a failure: the transaction rolled back
       // (device + tickets untouched), so report it and skip Sentry / the
       // failed-move audit.
@@ -373,6 +401,10 @@ moveOrgRoutes.post(
       });
       return c.json({ error: 'Failed to move device between organizations' }, 500);
     }
+
+    await schedulePeripheralPolicyDevice(deviceId, 'device_org_changed').catch((error) => {
+      console.error(`[devices.moveOrg] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+    });
 
     // Force-close any active WS so the agent reconnects with a fresh
     // handshake on the new org_id. Without this, createAgentWsHandlers

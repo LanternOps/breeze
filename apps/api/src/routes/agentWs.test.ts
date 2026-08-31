@@ -9,6 +9,14 @@ process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: 'current-key-mate
 import { and, eq, notInArray } from 'drizzle-orm';
 
 const updateRestoreJobFromResultMock = vi.fn().mockResolvedValue(true);
+const { recordPamActuationResultMock } = vi.hoisted(() => ({
+  recordPamActuationResultMock: vi.fn(),
+}));
+
+vi.mock('../services/pamActuationResult', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../services/pamActuationResult')>();
+  return { ...original, recordPamActuationResult: recordPamActuationResultMock };
+});
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -870,6 +878,70 @@ describe('agent websocket command results', () => {
     } as any, ws as any);
 
     expect(db.update).toHaveBeenCalledTimes(1);
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it.each(['pam_apply_v2', 'pam_cleanup_v2'])(
+    'dispatches authenticated %s results through the shared PAM transaction',
+    async (commandType) => {
+      const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+      const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+      const commandId = '11111111-1111-4111-8111-111111111111';
+      vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([{
+        id: commandId, type: commandType, payload: {}, deviceId: 'device-123',
+      }]) as any);
+      vi.mocked(db.update).mockReturnValue(updateResult([{ id: commandId }]) as any);
+      const protocolResult = {
+        protocolVersion: 2,
+        observationId: '22222222-2222-4222-8222-222222222222',
+        actuationId: '33333333-3333-4333-8333-333333333333',
+        generation: 2,
+        state: 'received',
+        observedAt: '2026-08-25T12:00:00.000Z',
+        evidence: { bootId: 'boot-1' },
+      };
+      await handlers.onMessage({ data: JSON.stringify({
+        type: 'command_result', commandId, status: 'completed', result: protocolResult,
+      }) } as any, ws as any);
+      expect(recordPamActuationResultMock).toHaveBeenCalledTimes(1);
+      expect(recordPamActuationResultMock).toHaveBeenCalledWith({
+        agentId: 'agent-123', deviceId: 'device-123', commandId, result: protocolResult,
+      });
+    },
+  );
+
+  it('keeps terminal PAM WebSocket results on orphan handling without supplemental dispatch', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    const commandId = '11111111-1111-4111-8111-111111111111';
+
+    // The production lookup includes commandAcceptsAgentResultCondition, so a
+    // terminal command is absent here and follows the existing orphan branch.
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([]) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+
+    await handlers.onMessage({ data: JSON.stringify({
+      type: 'command_result',
+      commandId,
+      status: 'completed',
+      result: {
+        protocolVersion: 2,
+        observationId: '22222222-2222-4222-8222-222222222222',
+        actuationId: '33333333-3333-4333-8333-333333333333',
+        generation: 2,
+        state: 'verified_active',
+        observedAt: '2026-08-25T12:00:00.000Z',
+        evidence: { bootId: 'boot-1' },
+      },
+    }) } as any, ws as any);
+
+    expect(db.select).toHaveBeenCalledTimes(4);
+    expect(recordPamActuationResultMock).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 

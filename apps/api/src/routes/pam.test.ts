@@ -129,6 +129,12 @@ vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
+const lifecycleMocks = vi.hoisted(() => ({
+  createPamDecisionIntent: vi.fn(),
+  requestPamCleanup: vi.fn(),
+}));
+vi.mock('../services/pamActuationLifecycle', () => lifecycleMocks);
+
 // Phase 2: the respond path now resolves assurance through assertApprovalAssurance
 // (verifies an optional browser proof). Default the no-proof L1 result; tests
 // override per-case. resolveElevationAssurance stays exported for any callers.
@@ -195,6 +201,7 @@ import { pamRoutes } from './pam';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { requireCurrentPasswordStepUp } from './auth/helpers';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
+import { createPamDecisionIntent, requestPamCleanup } from '../services/pamActuationLifecycle';
 
 const ORG_ID = '7b41c9a2-0000-4000-8000-000000000001';
 const REQ_ID = '7b41c9a2-0000-4000-8000-000000000002';
@@ -257,6 +264,7 @@ function rigTransaction(opts: TxRigOptions) {
           return Promise.resolve();
         }),
       })),
+      execute: vi.fn().mockResolvedValue({ rows: [] }),
     };
     return fn(tx);
   });
@@ -293,6 +301,21 @@ const activeRow = {
   status: 'pending',
 };
 
+lifecycleMocks.createPamDecisionIntent.mockImplementation(async (_tx, input) => ({
+  actuationId: '7b41c9a2-0000-4000-8000-000000000099',
+  elevationRequestId: input.request.id,
+  requestRevision: input.requestRevision,
+  generation: 1,
+  desiredState: input.decision === 'denied' ? 'cleanup' : 'active',
+}));
+lifecycleMocks.requestPamCleanup.mockResolvedValue({
+  actuationId: '7b41c9a2-0000-4000-8000-000000000099',
+  elevationRequestId: REQ_ID,
+  requestRevision: 1,
+  generation: 2,
+  desiredState: 'cleanup',
+});
+
 describe('GET /pam/elevation-requests and /pam/active — decider display names', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -313,6 +336,11 @@ describe('GET /pam/elevation-requests and /pam/active — decider display names'
     approvedByName: 'Jane Admin',
     deniedByName: null,
     revokedByName: null,
+    enforcementStatus: 'legacy_untracked',
+    enforcementGeneration: 1,
+    enforcementReason: null,
+    endpointObservedAt: null,
+    cleanupReceivedAt: null,
   };
 
   it('list rows carry approvedByName/deniedByName/revokedByName from the user joins', async () => {
@@ -328,6 +356,11 @@ describe('GET /pam/elevation-requests and /pam/active — decider display names'
     // Existing joins are untouched.
     expect(body.requests[0].deviceHostname).toBe('WS-ALPHA');
     expect(body.requests[0].siteName).toBe('HQ');
+    expect(body.requests[0]).toMatchObject({
+      enforcementStatus: 'legacy_untracked',
+      enforcementGeneration: 1,
+      manualRemediationDisposition: 'blocked_manual_remediation',
+    });
     expect(body.pagination).toEqual({ page: 1, limit: 50, total: 1 });
 
     // The select projection asks for all three aliased user names.
@@ -335,6 +368,8 @@ describe('GET /pam/elevation-requests and /pam/active — decider display names'
     expect(projection).toHaveProperty('approvedByName');
     expect(projection).toHaveProperty('deniedByName');
     expect(projection).toHaveProperty('revokedByName');
+    expect(projection).toHaveProperty('enforcementStatus');
+    expect(projection).toHaveProperty('cleanupReceivedAt');
   });
 
   it('active rows carry the decider name fields', async () => {
@@ -1066,6 +1101,13 @@ describe('POST /pam/rules', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setAuth();
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({
+      select: db.select,
+      insert: db.insert,
+      update: db.update,
+      delete: db.delete,
+      execute: vi.fn().mockResolvedValue({ rows: [] }),
+    }));
   });
 
   it('rejects a rule with no executable criterion (400)', async () => {
@@ -1390,6 +1432,13 @@ describe('PAM rules — site-axis enforcement', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setAuth();
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({
+      select: db.select,
+      insert: db.insert,
+      update: db.update,
+      delete: db.delete,
+      execute: vi.fn().mockResolvedValue({ rows: [] }),
+    }));
   });
 
   afterEach(() => {

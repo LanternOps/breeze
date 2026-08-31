@@ -6,6 +6,11 @@ import { z } from 'zod';
 import { and, eq, ilike, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners, organizations, sites, devices, agentVersions, partnerUsers } from '../db/schema';
+// Imported from the CONCRETE schema module, not the '../db/schema' barrel:
+// several suites mock that barrel with a non-partial factory, and a plain
+// constant added to it would throw "No export is defined on the mock" at the
+// exact moment this 409 mapping runs.
+import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
@@ -23,7 +28,8 @@ import {
   beginOrganizationOffboarding,
   beginPartnerOffboarding,
 } from '../services/tenantOffboarding';
-import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
+import { sanitizeOrganizationOrder } from '../services/orgOrdering';
+import { buildOrganizationListQuery } from './orgs.listQuery';
 import {
   listArchivedOrgs,
   loadArchivedOrg,
@@ -222,7 +228,11 @@ export const updateOrganizationSchema = createOrganizationSchema.partial().omit(
 // breeze_has_org_access(id), so a partner-scope caller whose accessible org set
 // excludes the clashing org would read zero rows here and fall through to the
 // 23505 anyway.
-const ORG_SLUG_UNIQUE_INDEX = 'organizations_partner_slug_uniq';
+//
+// `ORG_SLUG_UNIQUE_INDEX` (imported at the top from the schema declaration) is
+// the name every one of those mappings has to match EXACTLY: an unconstrained
+// "any 23505 is a slug conflict" check misdiagnoses unrelated unique
+// violations raised by the same statement (#3982).
 
 interface OrgSlugConflict {
   id: string;
@@ -1375,30 +1385,18 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
         .where(conditions);
   const count = countResult[0]?.count ?? 0;
 
-  const data = noLiveOrgs ? [] : await db
-    .select()
-    .from(organizations)
-    .where(conditions)
-    .limit(limit)
-    .offset(offset)
-    // `id` is a mandatory tiebreaker, not a cosmetic nicety (#3462).
-    // `created_at` is `defaultNow()` and Postgres `now()` is the TRANSACTION
-    // timestamp, so every org written in one transaction (seed, bulk import,
-    // migration) shares a byte-identical value. Ordering on a tied key alone
-    // leaves row order undefined between two LIMIT/OFFSET queries, so the page
-    // walk in `apps/web/src/lib/fetchAllOrganizations.ts` would silently see
-    // some orgs twice and miss others.
-    .orderBy(organizations.createdAt, organizations.id);
-
-  // Apply the partner's preferred organization order, when one is set.
+  // Load the partner's preferred organization order BEFORE the page query.
+  // It has to be part of the ORDER BY that LIMIT/OFFSET walks — applying it to
+  // an already-selected page can only permute that page, so an org the partner
+  // dragged to the top could never leave page 2 (#4004).
   // - partner scope: load own partner settings.
   // - system scope: only when a partnerId filter is in the query.
   // (organization scope already returned above — at most one row anyway.)
-  let ordered = data;
+  let preferredOrder: string[] | undefined;
   let orderPartnerId: string | null = null;
   if (auth.scope === 'partner' && auth.partnerId) orderPartnerId = auth.partnerId;
   else if (auth.scope === 'system' && queryPartnerId) orderPartnerId = queryPartnerId;
-  // Nothing to order when the live query never ran (archived-only partner).
+  // Nothing to order when the live query never runs (archived-only partner).
   if (orderPartnerId && !noLiveOrgs) {
     try {
       const settingsRow = await withSystemDbAccessContext(async () => {
@@ -1409,9 +1407,8 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
           .limit(1);
         return row;
       });
-      const preferredOrder = (settingsRow?.settings as { organizationOrder?: string[] } | undefined)
+      preferredOrder = (settingsRow?.settings as { organizationOrder?: string[] } | undefined)
         ?.organizationOrder;
-      ordered = applyOrganizationOrder(data, preferredOrder);
     } catch (err) {
       // Soft-fail: if we can't load partner settings, fall back to createdAt
       // order so the list still renders. Surface the failure to stderr and
@@ -1424,6 +1421,14 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
       captureException(err, c);
     }
   }
+
+  // One statement: the preferred order is the leading sort key and
+  // `created_at, id` the tiebreaker, so LIMIT/OFFSET slices the intended
+  // sequence. `buildOrganizationListQuery` owns that shape and is pinned on the
+  // compiled SQL in `orgs.listQuery.test.ts`.
+  const ordered = noLiveOrgs
+    ? []
+    : await buildOrganizationListQuery({ conditions, limit, offset, preferredOrder });
 
   // Device count per organization. The list is where an MSP scans "how big is
   // each customer", and the web card renders `{{count}} devices` — with no
@@ -2184,6 +2189,26 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
 
   // See the create path: the slug pre-check above cannot close the race, so the
   // index's 23505 gets the same 409 treatment here too.
+  //
+  // #3982 — one asymmetry with the create path, load-bearing for anyone editing
+  // below this line. The create path runs its insert in its OWN transaction
+  // (`runOutsideDbContext(() => withSystemDbAccessContext(...))`), so a 23505
+  // there poisons only that inner tx. The non-override branch here does NOT:
+  // `runUpdate()` executes on the request's ambient context, and
+  // `withDbAccessContext` is a real `baseDb.transaction(...)` — so the moment
+  // Postgres raises the 23505 the REQUEST's transaction is aborted, and every
+  // subsequent statement in it fails with 25P02 ("current transaction is
+  // aborted") regardless of what it does.
+  //
+  // That is benign today for exactly one reason: the catch below returns the
+  // 409 immediately and nothing after it touches the database on that path. It
+  // stops being benign the instant a DB write is added between here and the
+  // response — an audit row, a lifecycle event, a cache invalidation — because
+  // that write would fail with an unrelated-looking 25P02 rather than the 409.
+  // If a follow-up write ever has to happen here, move `runUpdate` into its own
+  // transaction (matching the create path) instead of adding statements after
+  // this catch. The suspendedLifecycleOverride branch is already immune: it
+  // opens a fresh system-scoped tx of its own.
   let organization: Awaited<ReturnType<typeof runUpdate>>[number] | undefined;
   try {
     [organization] = suspendedLifecycleOverride

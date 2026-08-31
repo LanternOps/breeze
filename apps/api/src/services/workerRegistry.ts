@@ -896,6 +896,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'pamActuationWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/pamActuationWorker');
+      return { init: m.initializePamActuationWorker, shutdown: m.shutdownPamActuationWorker };
+    },
+  },
+  {
     name: 'intentExpiryReaper',
     placement: 'global',
     load: async () => {

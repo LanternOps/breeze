@@ -29,6 +29,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { enqueueC2cRestore, enqueueC2cSync } from '../jobs/c2cEnqueue';
 import { createC2cSyncJobIfIdle } from './c2cJobCreation';
+import { captureRecoveryAuthorizationSubject } from './recoveryAuthorizationSubject';
 
 type C2CHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -319,6 +320,7 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
       const created = await createC2cSyncJobIfIdle({
         orgId: config.orgId,
         configId: config.id,
+        auth,
       });
       const job = created?.job;
       if (!job) return JSON.stringify({ error: 'Failed to create C2C sync job' });
@@ -400,12 +402,19 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
       }
 
       const now = new Date();
+      const authorizationSubject = await captureRecoveryAuthorizationSubject(
+        auth,
+        items[0]!.orgId,
+        { operation: 'c2c_restore', requiredAiTool: 'restore_c2c_items' },
+      );
       const [restoreJob] = await db
         .insert(c2cBackupJobs)
         .values({
           orgId: items[0]!.orgId,
           configId: items[0]!.configId,
           status: 'pending',
+          operationKind: 'restore',
+          ...authorizationSubject,
           createdAt: now,
           updatedAt: now,
         })
