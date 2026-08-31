@@ -16,6 +16,7 @@ import {
   currentSessionGeneration,
 } from './sessionGeneration';
 import { beginSessionInvalidation } from './sessionAuthority';
+import { noteServerDate } from './serverClock';
 import { AUTH_TOKEN_KEY, NATIVE_AUTH_BINDING_KEY } from './authSessionKeys';
 
 export const FALLBACK_API_BASE_URL =
@@ -284,6 +285,11 @@ async function requestWithPrefix<T>(
       { ...options, headers, credentials: 'include' },
       timeoutMs
     );
+    // Anchor the server clock from every response, INCLUDING failures: a phone
+    // whose clock runs fast has its offline time entries rejected as too far in
+    // the future (createTimeEntrySchema refines startedAt with notFarFuture),
+    // and that 400 is permanent. Synchronous, never throws.
+    noteServerDate(response.headers.get('date'));
     assertCurrentSession(capturedGeneration);
 
     if (nativeAuthIssuer && response.status === 428 && !retriedBindingBootstrap) {

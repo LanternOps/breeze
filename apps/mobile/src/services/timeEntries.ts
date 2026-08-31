@@ -16,7 +16,16 @@ import { coreRequest } from './api';
 export type BillingStatus = 'not_billed' | 'billed' | 'no_charge' | 'contract';
 
 export interface RunningTimer {
-  id: string;
+  /**
+   * The server entry id, or null for a timer that exists only on this device
+   * because it was started while offline (see services/localTimer.ts). A null
+   * id is what tells every surface that this timer has not been created yet:
+   * it can be stopped and enqueued as a `create`, but never stopped through
+   * `/time-entries/stop`, which would close somebody else's running entry.
+   */
+  id: string | null;
+  /** Set while the timer is device-only; null once the server owns it. */
+  localId: string | null;
   ticketId: string | null;
   startedAt: string;
   description: string | null;
@@ -104,6 +113,7 @@ function compact(input: object): Record<string, unknown> {
 function narrowRunningTimer(row: ServerTimeEntry): RunningTimer {
   return {
     id: row.id,
+    localId: null,
     ticketId: row.ticketId ?? null,
     startedAt: row.startedAt,
     description: row.description ?? null,
@@ -204,6 +214,44 @@ export async function getTimesheet(weekStart: string): Promise<TimesheetWeek> {
         billableMinutes: response.data.totals.billableMinutes,
       },
     };
+  } catch (error) {
+    throw asTimeEntryError(error);
+  }
+}
+
+/**
+ * Fields the phone is allowed to correct after the fact.
+ *
+ * Deliberately narrower than `updateTimeEntrySchema`: `hourlyRate` is never
+ * computed or sent from a phone, and `startedAt` is absent because moving the
+ * START of an entry needs a date picker the timesheet does not have — a
+ * mistyped boundary is worse than an uncorrected one. The TIMESHEET UI still
+ * offers no boundary editing at all.
+ *
+ * `endedAt` exists for exactly one caller: the `closeEntry` replay path
+ * (services/timeEntryReplay.ts). A timer the SERVER started can only be closed
+ * at its true tap time by PATCHing that timestamp onto the running row —
+ * `POST /time-entries/stop` stamps `endedAt = now`, which bills a 15:00 stop
+ * to whenever the phone reconnected. `updateTimeEntrySchema.endedAt` carries no
+ * `notFarFuture` refine and the service recomputes `durationMinutes`, so this
+ * closes the row correctly with no backend change.
+ */
+export interface UpdateTimeEntryInput {
+  description?: string | null;
+  isBillable?: boolean;
+  endedAt?: string;
+}
+
+export async function updateTimeEntry(
+  id: string,
+  input: UpdateTimeEntryInput
+): Promise<TimeEntry> {
+  try {
+    const response = await coreRequest<{ data: ServerTimeEntry }>(
+      `/time-entries/${encodeURIComponent(id)}`,
+      { method: 'PATCH', body: JSON.stringify(compact(input)) }
+    );
+    return narrowTimeEntry(response.data);
   } catch (error) {
     throw asTimeEntryError(error);
   }
