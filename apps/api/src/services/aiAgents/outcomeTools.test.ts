@@ -15,6 +15,7 @@ import { TOOL_TIERS, createBreezeMcpServer } from '../aiAgentSdkTools';
 import { verdictToolAllowlist } from './verdictProfile';
 import { sweepToolAllowlist } from './sweepProfile';
 import { narrativeToolAllowlist } from './narrativeProfile';
+import { triageToolAllowlist } from './triageProfile';
 
 /** Minimal valid `SweepFindingsOutcome` — one device-bound finding with a
  *  proposal, which is the shape the sweep prompt actually asks for. */
@@ -158,6 +159,9 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
       // The narrative floor is the outcome tool ALONE (empty drill-down
       // tier) — the same broad agent allowlist must not widen it either.
       narrative: narrativeToolAllowlist(['manage_services', 'run_script']),
+      // The triage floor is the outcome tool ALONE too (empty drill-down
+      // tier), same broad-agent-allowlist-must-not-widen-it check.
+      triage: triageToolAllowlist(['manage_services', 'run_script']),
     };
 
     for (const profile of AI_AGENT_RUN_PROFILES) {
@@ -172,7 +176,8 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
     expect(outcomeToolsForProfile('verdict')).toEqual(['submit_alert_verdict']);
     expect(outcomeToolsForProfile('sweep')).toEqual(['submit_sweep_findings']);
     expect(outcomeToolsForProfile('narrative')).toEqual(['submit_narrative']);
-    // Every name in the catalog belongs to exactly one profile — a fourth
+    expect(outcomeToolsForProfile('triage')).toEqual(['submit_ticket_proposal']);
+    // Every name in the catalog belongs to exactly one profile — a fifth
     // outcome tool added without a profile mapping fails here. Driven off
     // `AI_AGENT_RUN_PROFILES` rather than a hand-listed set so a fifth
     // profile cannot be added without its mapping being counted.
@@ -281,6 +286,88 @@ describe('submit_narrative outcome tool (P2-3)', () => {
     const bullets = shape.sections!.element!.shape!.bullets!;
     expect(bullets.description).toMatch(/single/i);
     expect(bullets.description).toMatch(/newline|line/i);
+  });
+});
+
+/** A minimal valid `TicketTriageProposal` exercising every field. */
+const VALID_TICKET_PROPOSAL = {
+  version: 1 as const,
+  summary: 'The printer driver on WS-01 crashed twice this week; recommend reinstalling it.',
+  fields: {
+    categoryId: { value: '00000000-0000-4000-8000-0000000000f2', confidence: 0.9 },
+    priority: { value: 'high' as const, confidence: 0.8 },
+  },
+  device: { hostname: 'WS-01' },
+  draftReply: 'Hi, we found the likely cause and are working on a fix.',
+  draftResolutionNote: 'Reinstalled the printer driver on WS-01.',
+  notes: ['Driver crashed twice in the last week.'],
+};
+
+// Phase 2 wave P2-4 (ticket triage, #4191), task A6 — the fourth outcome tool.
+describe('submit_ticket_proposal outcome tool (P2-4)', () => {
+  it('validates submit_ticket_proposal input with the shared schema', () => {
+    expect(validateOutcomeToolInput('submit_ticket_proposal', VALID_TICKET_PROPOSAL))
+      .toMatchObject({ summary: VALID_TICKET_PROPOSAL.summary });
+    // `.strict()` on the shared schema: an unknown key is a hard reject, not
+    // a silent drop — the model gets a retryable error instead.
+    expect(() => validateOutcomeToolInput('submit_ticket_proposal', { ...VALID_TICKET_PROPOSAL, extra: 1 }))
+      .toThrow();
+    // A priority outside TICKET_TRIAGE_PRIORITIES is not a valid proposal.
+    expect(() => validateOutcomeToolInput('submit_ticket_proposal', {
+      ...VALID_TICKET_PROPOSAL,
+      fields: { priority: { value: 'critical', confidence: 0.9 } },
+    })).toThrow();
+  });
+
+  it('sanitizes control characters out of text fields and rejects a now-empty result', () => {
+    const hostile = { ...VALID_TICKET_PROPOSAL, summary: 'WS-01\u0000 crashed' };
+    expect(validateOutcomeToolInput('submit_ticket_proposal', hostile).summary).toBe('WS-01 crashed');
+    expect(() => validateOutcomeToolInput('submit_ticket_proposal', { ...VALID_TICKET_PROPOSAL, summary: ' ' }))
+      .toThrow();
+  });
+
+  it('is not a registered chat/MCP tool (never reachable from routes/ai or the MCP server)', () => {
+    expect(aiTools.has('submit_ticket_proposal')).toBe(false);
+    expect((TOOL_TIERS as Record<string, unknown>)['submit_ticket_proposal']).toBeUndefined();
+    expect(isOutcomeTool('submit_ticket_proposal')).toBe(true);
+    expect(OUTCOME_MCP_TOOL_NAMES.submit_ticket_proposal).toBe('mcp__breeze__submit_ticket_proposal');
+  });
+
+  it('builds an SDK tool whose handler executes nothing and returns a recorded marker', async () => {
+    const tools = buildOutcomeSdkTools(['submit_ticket_proposal']);
+    expect(tools).toHaveLength(1);
+    const tool = tools[0]!;
+    expect(tool.name).toBe('submit_ticket_proposal');
+    const result = await tool.handler(VALID_TICKET_PROPOSAL as never, {});
+    expect(JSON.stringify(result)).toContain('recorded');
+    // Invalid input throws out of the handler so the model retries rather
+    // than the run recording a malformed outcome.
+    await expect(tool.handler({ version: 1, summary: '' } as never, {})).rejects.toThrow();
+  });
+
+  it('describes every field of the ticket-proposal shape, recursively (the model reads these)', () => {
+    const tool = buildOutcomeSdkTools(['submit_ticket_proposal'])[0]!;
+    const shape = tool.inputSchema as Record<string, unknown>;
+    expect(Object.keys(shape).sort()).toEqual(
+      ['device', 'draftReply', 'draftResolutionNote', 'fields', 'notes', 'summary', 'version'],
+    );
+
+    const undescribed = undescribedLeaves(shape);
+    expect(undescribed, `these leaves need a .describe(): ${undescribed.join(', ')}`).toEqual([]);
+    // Control: the walk really does reach the nested leaves it claims to —
+    // a vacuous walk that found nothing would pass the assertion above.
+    expect(describedLeafPaths(shape).sort()).toEqual([
+      'device.hostname',
+      'device.serial',
+      'draftReply',
+      'draftResolutionNote',
+      'fields.categoryId.confidence',
+      'fields.categoryId.value',
+      'fields.priority.confidence',
+      'fields.priority.value',
+      'notes[]',
+      'summary',
+    ]);
   });
 });
 

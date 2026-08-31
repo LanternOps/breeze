@@ -13,6 +13,7 @@ import type {
 } from './aiAgents';
 import type { AiSweepKind, AiSweepSeverity } from './aiAgentSchedules';
 import type { AiAgentRunNarrativeDto } from './orgNarrativeReport';
+import type { TicketTriageProposal } from './ticketTriage';
 
 /**
  * Wave 6 PR 1 (#3828) — the execution-trace DTOs: what `GET /ai/agents/runs`
@@ -240,25 +241,28 @@ export interface ExposureBudgetDto {
 }
 
 /**
- * Wave 6 PR 3 (#3828 Task 4) — safe projection of `TicketProposalOutcome`
- * (services/aiAgents/runLoop.ts). Every field is model-authored TEXT — never
- * a tool call, an `args`/`input`/`output` blob, or anything that could carry
- * a raw payload — so this is a 1:1 mirror of the source shape rather than a
- * narrowing of it, kept as its own declared type (not a shared import from an
- * API-only module) for the same reason every other DTO in this file is
- * declared here: the wire contract must not drift with an internal-only type.
- *
- * `notes` are PROPOSED talking points for a human reviewer to read and
- * optionally act on — this DTO is display-only and is never the input to any
- * write. No autonomous note is ever posted by a ticket-triggered run (design
- * authority, wave-6 quorum 2026-08-28; see `ticketShadowGuardrail.contract.test.ts`).
+ * Phase 2 wave P2-4 (#4191) — replaces the wave 6 PR 3 shape (`summary` +
+ * `proposedReply`/`proposedStatus`/`proposedPriority` + `notes`), which had
+ * ZERO writers: no path ever turned a `proposedStatus`/`proposedPriority`
+ * into a write, and `submit_ticket_proposal` never accepted them as
+ * structured fields. No DTO version bump — this simply mirrors what
+ * `submit_ticket_proposal` actually produces now (`TicketTriageProposal`,
+ * `types/ticketTriage.ts`, imported rather than re-declared since it is
+ * already a shared, wire-safe type — not an API-only internal one), plus the
+ * outcome of turning it into writes: which Tier-2 `manage_tickets` intents
+ * `finishRun` created (`intentIds`) and which `ticket_drafts` rows it wrote
+ * (`draftsWritten`). Still text/identifier-only — no `args`/`input`/`output`
+ * blob, nothing a raw tool payload could carry.
  */
-export interface AiAgentRunTicketProposalDto {
-  summary: string;
-  proposedReply?: string;
-  proposedStatus?: string;
-  proposedPriority?: string;
-  notes: string[];
+export interface AiAgentRunTicketProposalDto extends TicketTriageProposal {
+  /** Tier-2 `manage_tickets` intent ids `finishRun` created from this
+   *  proposal's `fields`/`device`/`comment` writes (act + autonomousWrites,
+   *  or an inbox card — either way an intent id, never the raw args). */
+  intentIds?: string[];
+  /** `ticket_drafts` rows `finishRun` wrote from `draftReply`/
+   *  `draftResolutionNote` — never the draft's own content, which lives on
+   *  the ticket UI's "AI draft" surface, not this run-trace DTO. */
+  draftsWritten?: Array<{ kind: 'reply' | 'resolution_note'; draftId: string }>;
 }
 
 /**

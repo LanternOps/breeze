@@ -5,12 +5,13 @@ import { apiKeys } from '../../db/schema/apiKeys';
 import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
 import { organizations } from '../../db/schema/orgs';
 import { devices } from '../../db/schema/devices';
+import { tickets } from '../../db/schema/portal';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 import {
   AgentRunOwnershipError,
   buildAgentAuthContext,
 } from '../aiAgents/agentAuthContext';
-import { IntentScopeLostError, resolveIntentTargetDevice } from './intentTargetScope';
+import { IntentScopeLostError, resolveIntentTargetDevice, resolveIntentTargetTicket } from './intentTargetScope';
 import { getUserPermissions, canAccessOrg as permsCanAccessOrg } from '../permissions';
 import { buildOrgAccessClosures, siteAccessCheck, type AuthContext } from '../../middleware/auth';
 import type { TokenPayload } from '../jwt';
@@ -343,6 +344,43 @@ async function buildAgentOwnedAuthContext(
           .limit(1);
         deviceSiteId = device?.siteId ?? null;
       }
+
+      // P2-4 (Task A3, #4189/#4191): the TICKET-scope mirror of the device
+      // check above. `resolveIntentTargetTicket` never falls back to
+      // anything (there is no run-level "own ticket" to fall back to — see
+      // its doc comment in intentTargetScope.ts), so 'none' here just means
+      // this intent has no ticket target at all, and the branch is a no-op.
+      const ticketTarget = resolveIntentTargetTicket(intent);
+      if (ticketTarget.kind === 'tombstone') {
+        throw new IntentScopeLostError(
+          `agent_scope_lost: intent ${intent.id} is ticket-scoped but its scope_ticket_id was tombstoned`,
+        );
+      }
+      if (ticketTarget.kind === 'scope') {
+        const [ticket] = await db
+          .select({ id: tickets.id, orgId: tickets.orgId, status: tickets.status, deletedAt: tickets.deletedAt })
+          .from(tickets)
+          .where(eq(tickets.id, ticketTarget.ticketId))
+          .limit(1);
+        // Missing, soft-deleted, moved to another org, or closed — all
+        // treated exactly like a lost device scope. `resolved` is
+        // deliberately EXCLUDED from this list: resolution-note drafts
+        // (`manage_tickets:draft`, kind `draftResolutionNote`) are the
+        // motivating case for proposing against a ticket that has already
+        // moved to `resolved`, and every other ticket-triage tool call is
+        // equally valid against a resolved (not yet closed) ticket.
+        if (
+          !ticket
+          || ticket.deletedAt !== null
+          || ticket.orgId !== intent.orgId
+          || ticket.status === 'closed'
+        ) {
+          throw new IntentScopeLostError(
+            `agent_scope_lost: intent ${intent.id}'s scoped ticket ${ticketTarget.ticketId} is missing, deleted, closed, or no longer in org ${intent.orgId}`,
+          );
+        }
+      }
+
       try {
         return buildAgentAuthContext(
           {

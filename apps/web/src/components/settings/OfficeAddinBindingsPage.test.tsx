@@ -5,7 +5,15 @@ const mocks = vi.hoisted(() => ({ fetchWithAuth: vi.fn(), runAction: vi.fn(), ha
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: mocks.fetchWithAuth }));
 vi.mock('../../lib/runAction', () => ({ runAction: mocks.runAction, handleActionError: mocks.handleActionError }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: mocks.navigateTo }));
-vi.mock('@/lib/i18n', () => ({ default: {} }));
+// formatDate now routes through the central dateTimeFormat helper, which
+// resolves a display locale via lib/i18n/format.ts's resolvedFormattingLocale
+// (getFallbackFormattingLocale + the i18n instance) — both named exports must
+// be present on the mock or vitest throws on the missing-export access.
+vi.mock('@/lib/i18n', () => ({
+  default: {},
+  i18n: {},
+  getFallbackFormattingLocale: () => undefined,
+}));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) =>

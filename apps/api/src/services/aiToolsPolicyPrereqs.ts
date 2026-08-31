@@ -28,6 +28,10 @@ import {
 } from './aiToolsSoftwarePolicyAudit';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { validateS3Details } from '../routes/backup/schemas';
+import {
+  resolvePeripheralPolicyDeviceIds,
+  schedulePeripheralPolicyDevices,
+} from '../jobs/peripheralJobs';
 
 /**
  * Defense-in-depth (#1317): the manage_update_rings AI tool writes `autoApprove`
@@ -590,6 +594,9 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         const policy = rows[0];
         if (!policy) return JSON.stringify({ error: 'Failed to create peripheral policy' });
 
+        const affectedDeviceIds = await resolvePeripheralPolicyDeviceIds(policy);
+        await schedulePeripheralPolicyDevices(affectedDeviceIds, 'ai-prereq-create');
+
         return JSON.stringify({
           success: true,
           policyId: policy.id,
@@ -613,6 +620,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Modifying a partner-wide peripheral policy requires full partner org access (orgAccess must be "all")' });
         }
 
+        const oldDeviceIds = await resolvePeripheralPolicyDeviceIds(existing);
+
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
         if (typeof input.deviceClass === 'string') updates.deviceClass = input.deviceClass;
@@ -621,6 +630,12 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.isActive === 'boolean') updates.isActive = input.isActive;
 
         await db.update(peripheralPolicies).set(updates).where(eq(peripheralPolicies.id, existing.id));
+        const updatedSnapshot = { ...existing, ...updates };
+        const newDeviceIds = await resolvePeripheralPolicyDeviceIds(updatedSnapshot);
+        await schedulePeripheralPolicyDevices(
+          [...new Set([...oldDeviceIds, ...newDeviceIds])],
+          'ai-prereq-update',
+        );
         return JSON.stringify({ success: true, message: `Peripheral policy "${existing.name}" updated` });
       }
 

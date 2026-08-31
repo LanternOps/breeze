@@ -776,6 +776,12 @@ func (m *Manager) applyPendingUpdate() {
 		log.Debug("helper update deferred, chat active", "targetVersion", m.pendingHelperVersion)
 		return
 	}
+	lease, acquired := updater.TryBeginProcessMutation("helper-update")
+	if !acquired {
+		log.Debug("helper update deferred, another component mutation is active", "targetVersion", m.pendingHelperVersion)
+		return
+	}
+	defer lease.Release()
 
 	log.Info("helper is idle, applying update", "targetVersion", m.pendingHelperVersion)
 
