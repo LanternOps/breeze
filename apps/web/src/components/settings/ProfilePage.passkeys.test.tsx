@@ -37,7 +37,7 @@ vi.mock('./ConnectSsoCard', () => ({
 import ProfilePage from './ProfilePage';
 import { SSO_REAUTH_INTENT_KEY, stashSsoReauthIntent } from '@/lib/ssoReauthIntent';
 
-const makeJsonResponse =(payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
+const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
     ok,
     status,
@@ -45,9 +45,17 @@ const makeJsonResponse =(payload: unknown, ok = true, status = ok ? 200 : 500): 
     json: vi.fn().mockResolvedValue(payload),
   }) as unknown as Response;
 
+// Captured before any test can stub it. Several tests here replace
+// `window.location` with a plain object to intercept `assign()`; restoring it
+// unconditionally up front — rather than trusting each test's own cleanup —
+// means one failed assertion cannot leak an empty hash into every test after
+// it. Same guard `ProfilePage.test.tsx` already carries.
+const REAL_LOCATION = window.location;
+
 describe('ProfilePage passkey management', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(window, 'location', { configurable: true, value: REAL_LOCATION });
     // #4055 records the originating card here; a value bleeding between tests
     // would silently reroute the one after it.
     sessionStorage.clear();
@@ -260,6 +268,13 @@ describe('ProfilePage passkey management', () => {
       expect(screen.queryByTestId('passkey-add')).toBeNull();
       expect(document.querySelector('#passkey-password')).toBeNull();
 
+      // #4055: the OTHER half of the instruction ternary. Asserting only the
+      // testids would let the two branches be swapped — telling a user with no
+      // grant that their identity is already verified — without a red test.
+      expect(screen.getByText(/Re-verify with your provider before adding a passkey/i))
+        .toBeTruthy();
+      expect(screen.queryByText(/Your identity is verified/i)).toBeNull();
+
       // And nothing proofless is ever sent.
       expect(callTo('/auth/passkeys/register/options')).toHaveLength(0);
       expect(callTo('/auth/passkeys/register/verify')).toHaveLength(0);
@@ -416,6 +431,43 @@ describe('ProfilePage passkey management', () => {
 
           // Scrolling helps a sighted user; focus is what routes a keyboard or
           // screen-reader user, and it names the next thing to do.
+          await waitFor(() => {
+            expect(document.activeElement).toBe(document.querySelector('#passkey-name'));
+          });
+        } finally {
+          Element.prototype.scrollIntoView = realScroll;
+        }
+      });
+
+      // The PRODUCTION mount. `profile.astro` renders `<ProfilePage client:load />`
+      // with no `initialUser`, so the component spends its first renders behind
+      // a "Loading profile…" early return while GET /users/me is in flight —
+      // the passkey card does not exist in the DOM at the moment the mount
+      // effect flips the return flag. Every other test here passes
+      // `initialUser` and therefore skips that branch entirely, which is
+      // exactly how a landing that never fires in production stays green.
+      it('lands on the passkey card even though it mounts after the profile finishes loading', async () => {
+        const scrollSpy = vi.fn();
+        const realScroll = Element.prototype.scrollIntoView;
+        Element.prototype.scrollIntoView = scrollSpy;
+
+        stashSsoReauthIntent('passkey');
+        window.history.replaceState(null, '', `/settings/profile#ssoReauthGrant=${GRANT}`);
+        fetchWithAuthMock.mockImplementation(async (url: string) => {
+          const u = String(url);
+          if (u === '/users/me') return makeJsonResponse(passwordlessUser);
+          if (u === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+          return makeJsonResponse({});
+        });
+
+        try {
+          // No initialUser — the real page never has one.
+          render(<ProfilePage />);
+
+          const card = await screen.findByTestId('passkey-card');
+          await waitFor(() => {
+            expect(scrollSpy.mock.contexts).toContain(card);
+          });
           await waitFor(() => {
             expect(document.activeElement).toBe(document.querySelector('#passkey-name'));
           });

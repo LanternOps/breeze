@@ -173,8 +173,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   // hand and stays true for the rest of the flow: this fires the one-shot
   // "bring the card to the user" landing and then stops mattering.
   const [passkeyReauthReturn, setPasskeyReauthReturn] = useState(false);
-  const passkeyCardRef = useRef<HTMLDivElement | null>(null);
   const passkeyNameRef = useRef<HTMLInputElement | null>(null);
+  const passkeyLandingDone = useRef(false);
 
   // Avatar upload state
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
@@ -548,10 +548,22 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   // from sits below the fold. Routing them back to it means actually taking
   // them there. Focus does the same job for keyboard and screen-reader users,
   // and lands on the one field they still have to fill in.
-  useEffect(() => {
-    if (!passkeyReauthReturn) return;
+  //
+  // A CALLBACK ref, keyed on the flag, rather than an effect over an object
+  // ref. The real page is `<ProfilePage client:load />` with no `initialUser`,
+  // so the component sits behind the `isLoadingUser` early return below while
+  // GET /users/me is in flight — the card does not exist in the DOM at the
+  // moment the mount effect sets the flag, and an effect keyed only on the flag
+  // would find a null ref and never run again. React re-invokes a callback ref
+  // whose identity changed, so this fires whichever way the race lands: card
+  // already mounted (identity change re-invokes it) or card mounted later (the
+  // attach invokes it). Child refs attach before parents, so the name input is
+  // already populated by the time this runs. The latch keeps it one-shot.
+  const passkeyCardRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node || !passkeyReauthReturn || passkeyLandingDone.current) return;
+    passkeyLandingDone.current = true;
     // jsdom has no layout and so no `scrollIntoView`; optional-call it.
-    passkeyCardRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    node.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
     passkeyNameRef.current?.focus?.();
   }, [passkeyReauthReturn]);
 
