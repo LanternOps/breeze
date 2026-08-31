@@ -141,9 +141,11 @@ type HeartbeatPayload struct {
 	// written unconditionally server-side (the outboundNetworkPolicyVersion
 	// self-healing pattern, NOT the sticky isVirtual pattern) so a resolved
 	// condition clears a dashboard migration banner on the next beat.
-	// omitempty on both: a self-host build (the only build in this repo
-	// today) reports "" / false — both omitempty fields drop out — so the
-	// wire payload is byte-identical to pre-Task-8 agents.
+	// Since #4072 BOTH build editions report a value ("self-host"/"hosted") —
+	// a reported edition doubles as the server's signal that this build can
+	// accept hosted-edition update artifacts (see migrationSignal). omitempty
+	// is retained so MigrationRequired=false stays off the wire; AgentEdition
+	// is never empty from this build.
 	AgentEdition      string `json:"agentEdition,omitempty"`
 	MigrationRequired bool   `json:"migrationRequired,omitempty"`
 }
@@ -154,12 +156,19 @@ type HeartbeatPayload struct {
 // nothing is persisted to violate the allowlist when there is no backup.
 // Pure; independent of hostpolicy.Strict() — reporting is telemetry, not
 // enforcement, so it fires the same in gap and strict hosted builds.
-// Self-host returns ("", false) — NOT "self-host" — because the
-// AgentEdition field is omitempty: only the empty string drops out of the
-// wire payload, preserving byte-identity with pre-Task-8 agents.
+//
+// Self-host builds report "self-host" explicitly (#4072). This is the
+// server's edition-transition capability signal: a build that reports an
+// edition — either value — also carries the one-way self-host → hosted
+// allowance in updater.editionAllowed (both shipped in the same binary),
+// while a silent build ≥0.105.0 is a self-host build that hard-refuses
+// hosted-edition artifacts, so the server withholds those offers rather
+// than wedging it in a permanent retry loop. Regressing this to the empty
+// string would re-strand every future self-host agent that migrates to a
+// hosted control plane.
 func migrationSignal(server, backup string) (edition string, migrationRequired bool) {
 	if !hostpolicy.Enforced() {
-		return "", false
+		return "self-host", false
 	}
 	if hostpolicy.AllowedURL(server) != nil {
 		return "hosted", true

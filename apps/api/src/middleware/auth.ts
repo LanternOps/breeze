@@ -146,6 +146,18 @@ export interface AuthContext {
   canAccessSite?: (siteId: string | null | undefined) => boolean;
 
   /**
+   * Device-axis allowlist — pins a caller to an EXACT set of device ids,
+   * tighter than `allowedSiteIds` (which admits every device in the site).
+   * `undefined` = no device restriction. Set only for a device-bound AI
+   * agent run (`agentAuthContext.buildAgentAuthContext`); every other
+   * AuthContext construction site never sets it, so behavior for
+   * interactive/user/helper/MCP callers is unchanged. Enforced in
+   * `verifyDeviceAccess` (services/aiTools.ts) — the chokepoint every
+   * per-deviceId tool call routes through.
+   */
+  allowedDeviceIds?: readonly string[];
+
+  /**
    * Set ONLY for Breeze Helper sessions (helperAuth). When present, the
    * AI-tools executeTool gate forces every tool's device input to this device
    * id and denies org-wide tools — the Helper can act only on its own device.

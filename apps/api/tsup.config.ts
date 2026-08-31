@@ -8,6 +8,10 @@ export default defineConfig({
   // land at dist/scripts/<name>.cjs.
   entry: {
     index: 'src/index.ts',
+    // BREEZE_ROLE=worker entrypoint (wave 3.5d-b, #4086) — same named-entry
+    // pattern as scripts/recover-stuck-agents below, so worker.cjs lands at
+    // dist/worker.cjs (the compose `worker` service's `command`).
+    worker: 'src/worker.ts',
     'scripts/recover-stuck-agents': 'scripts/recover-stuck-agents.ts',
   },
   format: ['cjs'],

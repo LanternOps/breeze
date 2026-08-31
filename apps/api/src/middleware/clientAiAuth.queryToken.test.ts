@@ -5,6 +5,7 @@ const { redisMock, getRedisMock, dbSelectMock } = vi.hoisted(() => {
   const redis = {
     get: vi.fn(),
     del: vi.fn(() => Promise.resolve(1)),
+    srem: vi.fn(() => Promise.resolve(1)),
     expire: vi.fn(() => Promise.resolve(1)),
   };
   return { redisMock: redis, getRedisMock: vi.fn(() => redis), dbSelectMock: vi.fn() };
@@ -19,6 +20,12 @@ vi.mock('../services/redis', () => ({ getRedis: getRedisMock }));
 vi.mock('../services/clientAiPolicy', () => ({
   getOrgPolicy: vi.fn(),
   isClientUserPermitted: vi.fn(() => true),
+}));
+// Org-status gate (org-lifecycle Wave 2): the middleware now refuses a session
+// whose org is not usable. Default to "usable" so these tests keep asserting
+// what they are about; the gate itself is covered by clientAiAuthOrgStatusGate.test.ts.
+vi.mock('../services/tenantStatus', () => ({
+  getActiveOrgTenant: vi.fn(async (orgId: string) => ({ orgId, partnerId: 'partner-1' })),
 }));
 
 import { clientAiAuthMiddleware } from './clientAiAuth';

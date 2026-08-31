@@ -19,7 +19,7 @@ import {
   deviceGroupMemberships,
   organizations,
 } from '../db/schema';
-import { type BreezeEvent, getEventBus } from '../services/eventBus';
+import { type BreezeEvent } from '../services/eventBus';
 import {
   type AutomationTrigger,
   type AutomationTriggerContext,
@@ -84,8 +84,6 @@ type AutomationJobData = AutomationQueueJobData;
 
 let automationQueue: Queue<AutomationJobData> | null = null;
 let automationWorker: Worker<AutomationJobData> | null = null;
-
-let eventSubscription: (() => void) | null = null;
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -1031,24 +1029,24 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
   }
 }
 
-function subscribeToAutomationEvents(): void {
-  if (eventSubscription) {
-    return;
+/**
+ * Dispatch one event to the automation trigger fan-out.
+ *
+ * Registered under subscriber id `automation-worker` (services/eventSubscribers.ts).
+ * MUST throw on failure — queue-mode dispatch (#4085) retries on a thrown
+ * rejection; local delivery's wrapper (eventBus.ts's invokeLocalHandlers)
+ * provides the swallow-and-log semantics the old subscriber's try/catch used
+ * to provide itself.
+ */
+export async function handleAutomationEvent(event: BreezeEvent): Promise<void> {
+  if (!isRedisAvailable()) {
+    // Retryable in queue mode; local delivery swallows this exactly as the
+    // old silent `return` did.
+    throw new Error('redis unavailable for automation trigger dispatch');
   }
 
-  const eventBus = getEventBus();
-  eventSubscription = eventBus.subscribe('*', async (event) => {
-    try {
-      if (!isRedisAvailable()) {
-        return;
-      }
-
-      await runWithSystemDbAccess(async () => {
-        await queueEventTriggers(event as BreezeEvent<Record<string, unknown>>);
-      });
-    } catch (error) {
-      console.error('[AutomationWorker] Failed handling event trigger dispatch:', error);
-    }
+  await runWithSystemDbAccess(async () => {
+    await queueEventTriggers(event as BreezeEvent<Record<string, unknown>>);
   });
 }
 
@@ -1065,17 +1063,11 @@ export async function initializeAutomationWorker(): Promise<void> {
   });
 
   await scheduleAutomationScans();
-  subscribeToAutomationEvents();
 
   console.log('[AutomationWorker] Automation worker initialized');
 }
 
 export async function shutdownAutomationWorker(): Promise<void> {
-  if (eventSubscription) {
-    eventSubscription();
-    eventSubscription = null;
-  }
-
   if (automationWorker) {
     await automationWorker.close();
     automationWorker = null;

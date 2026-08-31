@@ -265,6 +265,7 @@
       },
       "refresh": "Yenile",
       "reportTypes": {
+        "ai_org_narrative": "Haftalık Yapay Zeka Operasyon Anlatısı",
         "alert_summary": "Uyarı Özeti",
         "compliance": "Uyumluluk Raporu",
         "device_inventory": "Cihaz Envanteri",
@@ -290,6 +291,10 @@
         "generateNow": "Şimdi oluştur"
       },
       "adhocReport": "Özel Rapor",
+      "aiNarrative": {
+        "managedBySchedule": "Yapay zeka programı tarafından yönetiliyor",
+        "openLatest": "En sonuncuyu aç"
+      },
       "confirmDelete": "\"{{name}}\" öğesini silmek istediğinizden emin misiniz?",
       "createReport": "Rapor Oluştur",
       "description": "Altyapınız için raporlar oluşturun ve planlayın.",
@@ -304,7 +309,8 @@
         "downloadFailed": "İndirme başarısız oldu",
         "fetchReports": "Raporlar getirilemedi",
         "generateReport": "Rapor oluşturulamadı",
-        "generic": "Bir hata oluştu"
+        "generic": "Bir hata oluştu",
+        "noCompletedRun": "Açılacak tamamlanmış anlatı henüz yok"
       },
       "formats": {
         "csv": "CSV",
@@ -316,6 +322,7 @@
       "newReport": "Yeni Rapor",
       "nextOccurrence": "Sonraki: {{next}}",
       "reportTypes": {
+        "ai_org_narrative": "Haftalık Yapay Zeka Operasyon Anlatısı",
         "alert_summary": "Uyarı Özeti",
         "compliance": "Uyumluluk Raporu",
         "device_inventory": "Cihaz Envanteri",
@@ -770,6 +777,10 @@
         }
       },
       "selectedFields": "Seçilen alanlar",
+      "success": {
+        "created": "\"{{name}}\" raporu kaydedildi.",
+        "updated": "\"{{name}}\" raporu güncellendi."
+      },
       "values": {
         "enabled": "Etkin",
         "off": "Kapalı",
@@ -805,6 +816,7 @@
       "previewAlt": "{{name}} önizleme",
       "reportTypes": {
         "activity": "Etkinlik",
+        "ai_org_narrative": "Haftalık Yapay Zeka Operasyon Anlatısı",
         "alert_summary": "Uyarı Özeti",
         "alerts": "Uyarılar",
         "compliance": "Uyumluluk Raporu",

@@ -76,7 +76,11 @@ describe('in-app sender', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     insertMock.mockReturnValue({
-      values: vi.fn().mockResolvedValue(undefined)
+      // sendInAppNotification terminates the insert with .onConflictDoNothing()
+      // (the alert dedupe key), so `values` must return a chainable, not a promise.
+      values: vi.fn().mockReturnValue({
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined)
+      })
     });
   });
 
@@ -137,7 +141,9 @@ describe('in-app sender', () => {
   // /alerts/<id> fallback. Mirrors the client getSafeNext guard.
 
   it('sanitizes a hostile payload.link to the /alerts/<id> fallback (sendInAppNotification)', async () => {
-    const valuesMock = vi.fn().mockResolvedValue(undefined);
+    const valuesMock = vi.fn().mockReturnValue({
+      onConflictDoNothing: vi.fn().mockResolvedValue(undefined)
+    });
     insertMock.mockReturnValue({ values: valuesMock });
 
     selectMock
@@ -160,7 +166,9 @@ describe('in-app sender', () => {
   });
 
   it('preserves a safe relative payload.link (sendInAppNotification)', async () => {
-    const valuesMock = vi.fn().mockResolvedValue(undefined);
+    const valuesMock = vi.fn().mockReturnValue({
+      onConflictDoNothing: vi.fn().mockResolvedValue(undefined)
+    });
     insertMock.mockReturnValue({ values: valuesMock });
 
     selectMock
@@ -181,7 +189,9 @@ describe('in-app sender', () => {
   });
 
   it('sanitizes a hostile payload.link to the /alerts/<id> fallback (sendInAppNotificationToUsers)', async () => {
-    const valuesMock = vi.fn().mockResolvedValue(undefined);
+    const valuesMock = vi.fn().mockReturnValue({
+      onConflictDoNothing: vi.fn().mockResolvedValue(undefined)
+    });
     insertMock.mockReturnValue({ values: valuesMock });
 
     const result = await sendInAppNotificationToUsers(['user-1', 'user-2'], {
@@ -200,7 +210,9 @@ describe('in-app sender', () => {
   });
 
   it('preserves a safe relative payload.link (sendInAppNotificationToUsers)', async () => {
-    const valuesMock = vi.fn().mockResolvedValue(undefined);
+    const valuesMock = vi.fn().mockReturnValue({
+      onConflictDoNothing: vi.fn().mockResolvedValue(undefined)
+    });
     insertMock.mockReturnValue({ values: valuesMock });
 
     await sendInAppNotificationToUsers(['user-1'], {

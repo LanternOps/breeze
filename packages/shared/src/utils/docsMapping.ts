@@ -55,6 +55,7 @@ const docsMapping: DocsEntry[] = [
     },
   },
   { pattern: '/settings/sso', docsPath: '/reference/sso/', label: 'Single Sign-On' },
+  { pattern: '/settings/ai-agents', docsPath: '/features/ai-agents/', label: 'AI Agents' },
   { pattern: '/settings/ai-usage', docsPath: '/features/ai/', label: 'AI Assistant' },
   { pattern: '/settings/custom-fields', docsPath: '/features/custom-fields/', label: 'Custom Fields' },
   { pattern: '/settings/access-reviews', docsPath: '/reference/access-reviews/', label: 'Access Reviews' },
@@ -216,6 +217,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/audit', docsPath: '/reference/audit-logs/', label: 'Audit Logs' },
   { pattern: '/logs', docsPath: '/features/log-shipping/', label: 'Log Shipping' },
   { pattern: '/fleet', docsPath: '/features/fleet-hygiene/', label: 'Fleet Hygiene Findings' },
+  { pattern: '/approvals', docsPath: '/features/ai-agents/', label: 'Approvals' },
   { pattern: '/workspace', docsPath: '/features/ai/', label: 'AI Workspace' },
 
   // Account

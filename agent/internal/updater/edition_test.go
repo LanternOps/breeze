@@ -98,9 +98,15 @@ func TestEditionAllowed_SelfHostRejectedInHostedBuild(t *testing.T) {
 	}
 }
 
-func TestEditionAllowed_HostedRejectedInSelfHostBuild(t *testing.T) {
-	if editionAllowed("hosted") {
-		t.Fatal("edition=hosted must be rejected in a self-host build")
+func TestEditionAllowed_HostedAcceptedInSelfHostBuild(t *testing.T) {
+	// One-way self-host → hosted transition (#4072). Both call sites only
+	// consult editionAllowed AFTER the manifest's Ed25519 signature verified
+	// against the trust roots, and moving onto a hosted build only ADDS
+	// enforcement (the hostpolicy allowlist) — so a self-host build accepts
+	// a hosted-edition artifact rather than wedging in a permanent refusal
+	// loop the moment its control plane cuts over to hosted artifacts.
+	if !editionAllowed("hosted") {
+		t.Fatal("edition=hosted must be accepted in a self-host build (one-way transition, #4072)")
 	}
 }
 
@@ -175,14 +181,14 @@ func TestVerifyUpdateManifest_ReleaseArtifact_SelfHostEdition_RejectedInHostedBu
 	}
 }
 
-func TestVerifyUpdateManifest_ReleaseArtifact_HostedEdition_RejectedInSelfHostBuild(t *testing.T) {
+func TestVerifyUpdateManifest_ReleaseArtifact_HostedEdition_AcceptedInSelfHostBuild(t *testing.T) {
 	assetName := agentAssetName()
 	content := []byte("fake binary edition hosted")
 	info := signedReleaseArtifactDownloadInfoWithEdition(t, "1.0.0", assetName, "hosted", "http://example/"+assetName, content)
 
 	u := &Updater{config: &Config{Component: "agent"}}
-	if _, err := u.verifyUpdateManifest(info, "1.0.0"); err == nil {
-		t.Fatal("edition=hosted must be rejected in a self-host build")
+	if _, err := u.verifyUpdateManifest(info, "1.0.0"); err != nil {
+		t.Fatalf("edition=hosted must be accepted in a self-host build (one-way transition, #4072): %v", err)
 	}
 }
 
@@ -248,13 +254,13 @@ func TestPkgAssetChecksum_SelfHostEdition_RejectedInHostedBuild(t *testing.T) {
 	}
 }
 
-func TestPkgAssetChecksum_HostedEdition_RejectedInSelfHostBuild(t *testing.T) {
+func TestPkgAssetChecksum_HostedEdition_AcceptedInSelfHostBuild(t *testing.T) {
 	pkgName := "breeze-agent-darwin-" + runtime.GOARCH + ".pkg"
 	payload := buildReleaseManifest(t, "v1.2.3", []releaseArtifactAsset{
 		{Name: pkgName, SHA256: strings.Repeat("a", 64), Size: 20, Edition: "hosted"},
 	})
-	if _, err := pkgAssetChecksum(payload, "1.2.3"); err == nil {
-		t.Fatal("edition=hosted must be rejected in a self-host build")
+	if _, err := pkgAssetChecksum(payload, "1.2.3"); err != nil {
+		t.Fatalf("edition=hosted must be accepted in a self-host build (one-way transition, #4072): %v", err)
 	}
 }
 

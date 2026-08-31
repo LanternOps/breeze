@@ -214,8 +214,14 @@ function bareHostname(hostname: string): string {
  * The single place the resolve-and-filter policy lives, shared by `safeFetch`,
  * `assertSafeUrl` and `createGuardedLookup` so they can never drift apart.
  * Throws `SsrfBlockedError` when nothing safe remains.
+ *
+ * Exported for callers that dial a socket themselves and therefore need the
+ * validated record rather than a finished `Response` — the LLM egress CONNECT
+ * proxy (`services/llm/llmEgressProxy.ts`) is the motivating case: it must pin
+ * the IP it dials, and re-implementing this filter there would be exactly the
+ * drift this helper exists to prevent.
  */
-async function resolveSafeRecords(
+export async function resolveSafeRecords(
   hostname: string,
   opts?: SsrfGuardOptions
 ): Promise<{ safe: LookupAddress[]; allIps: string[] }> {
@@ -261,6 +267,17 @@ async function resolveSafeRecords(
  * window.
  */
 export async function assertSafeUrl(urlStr: string, opts?: SsrfGuardOptions): Promise<void> {
+  // #1105 tripwire, same reasoning as `safeFetch` below. This function sends no
+  // request, but it DOES perform a real `dns.lookup` against a hostname the
+  // caller does not control — an unbounded network wait. Run inside a held
+  // withDbAccessContext transaction it pins a pooled connection
+  // idle-in-transaction for the duration of that resolution, which is the same
+  // pool-poison class as an outbound fetch, only quieter. Guarding the
+  // primitive (rather than trusting each new route to register itself in
+  // middleware/selfManagedDbContextRoutes.ts) is what makes a new violation
+  // visible at all. Warn-only in prod; throws under DB_CONTEXT_TRIPWIRE_STRICT.
+  assertOutsideHeldDbContext('assertSafeUrl');
+
   const u = new URL(urlStr);
   if (u.protocol !== 'https:' && u.protocol !== 'http:') {
     throw new SsrfBlockedError(`unsupported URL scheme: ${u.protocol}`);
@@ -369,6 +386,17 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    * callback's JWKS fetch (SR2-13).
    */
   maxBytes?: number;
+  /**
+   * Optional callback invoked once with the validated IP `safeFetch` has
+   * pinned for this request, before the socket is dialed. Exists so callers
+   * that need to audit/record which address was actually contacted (e.g. the
+   * LLM egress recorder) don't have to duplicate `resolveSafeRecords`.
+   *
+   * Fire-and-forget: a throwing `onConnect` is swallowed and never fails the
+   * request or surfaces to the caller. Backward compatible — omitting it is a
+   * no-op, matching every existing caller's behavior exactly.
+   */
+  onConnect?: (ip: string) => void;
 }
 
 /**
@@ -408,6 +436,15 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     allowPrivateNetwork: init.allowPrivateNetwork
   });
   const safeRecord = safe[0]!;
+
+  if (init.onConnect) {
+    try {
+      init.onConnect(safeRecord.address);
+    } catch {
+      // Fire-and-forget by contract — a caller's audit hook must never be
+      // able to fail the request it's merely observing.
+    }
+  }
 
   // Cleartext is only conceded for the on-LAN hop the operator owns. Checked
   // against the pinned record specifically, so it cannot drift from the address

@@ -359,6 +359,18 @@ type RefreshOutcome =
 
 const REFRESH_LOCK_NAME = 'breeze-token-refresh';
 
+async function fetchAuthIssuerWithBindingRetry(
+  input: RequestInfo | URL,
+  init: RequestInit,
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set('x-breeze-auth-transition', 'v1');
+  const capableInit = { ...init, headers };
+  const first = await fetch(input, capableInit);
+  if (first.status !== 428) return first;
+  return fetch(input, capableInit);
+}
+
 // One low-level /auth/refresh attempt. Returns the new tokens on success, or a
 // discriminated result so the caller can tell three cases apart:
 //   - raced:     a benign concurrent race (server reason 'refresh_raced',
@@ -437,7 +449,7 @@ async function refreshFetchOnce(): Promise<RefreshFetchResult> {
 
   let refreshResponse: Response;
   try {
-    refreshResponse = await fetch(buildApiUrl('/auth/refresh'), {
+    refreshResponse = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/refresh'), {
       method: 'POST',
       headers,
       credentials: 'include',
@@ -462,6 +474,17 @@ async function refreshFetchOnce(): Promise<RefreshFetchResult> {
     if (body?.reason === 'refresh_raced') {
       return { tokens: null, raced: true, transient: false };
     }
+  }
+
+  // Same benign race, second shape. #4097's per-binding issuance lease
+  // (apps/api/src/services/authBrowserTransition.ts) rejects the LOSER of two
+  // concurrent refreshes with a retryable AuthIssuanceConflictError, flattened
+  // to a bare 409 with no `reason` — no verdict was reached on the refresh
+  // cookie, so this is the raced path, not an expired session. An org switch
+  // hits it every time (reload → bootstrap refresh racing the pre-reload one
+  // the unload aborted client-side but the server is still executing).
+  if (refreshResponse.status === 409) {
+    return { tokens: null, raced: true, transient: false };
   }
 
   // 429 means the rate limiter rejected the request before the refresh cookie
@@ -543,9 +566,16 @@ async function requestTokenRefresh(): Promise<RefreshOutcome> {
         if (retry.throttledForMs !== undefined) {
           return { kind: 'throttled', retryAfterMs: retry.throttledForMs };
         }
-        // If the race-retry itself hit a transient blip, fall through to the
-        // backoff path below; otherwise the session is genuinely gone.
-        if (!retry.transient) return { kind: 'auth-failed' };
+        // If the race-retry hit a transient blip — or raced AGAIN — fall
+        // through to the backoff path below; otherwise the session is
+        // genuinely gone. A second consecutive race is still not a verdict on
+        // the refresh cookie: the fixed 200ms above simply wasn't long enough
+        // for the winner's issuance transaction to commit and release the
+        // #4097 lease (reachable under DB/pool contention), and evicting there
+        // was the same org-switch logout, just rarer. Deliberately reuses the
+        // existing bounded ladder rather than adding a second counter — the
+        // whole loop stays capped at MAX_TRANSIENT_REFRESH_RETRIES passes.
+        if (!retry.transient && !retry.raced) return { kind: 'auth-failed' };
       } else if (!result.transient) {
         // Hard failure (expired/reused refresh cookie, real 401/403): the
         // session is unrecoverable — evict.
@@ -1152,6 +1182,9 @@ type ApiAuthSuccess = {
   tokens?: Tokens;
   requiresSetup?: boolean;
   error?: string;
+  // #4067: present when the completed step was the link-on-first-SSO-login
+  // ceremony — the sanitized post-login relay target from the SSO initiation.
+  redirectPath?: string;
 };
 
 export type PasskeyRegistrationOptions = PublicKeyCredentialCreationOptionsJSON;
@@ -1184,7 +1217,7 @@ export async function apiLogin(email: string, password: string): Promise<{
   error?: string;
 }> {
   try {
-    const response = await fetch(buildApiUrl('/auth/login'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1216,7 +1249,8 @@ export async function apiLogin(email: string, password: string): Promise<{
       success: true,
       user,
       tokens: data.tokens,
-      requiresSetup: !!data.requiresSetup
+      requiresSetup: !!data.requiresSetup,
+      ...(typeof data.redirectPath === 'string' ? { redirectPath: data.redirectPath } : {})
     };
   } catch {
     return { success: false, error: 'Network error' };
@@ -1225,7 +1259,7 @@ export async function apiLogin(email: string, password: string): Promise<{
 
 export async function apiVerifyMFA(code: string, tempToken: string, method?: MfaMethod): Promise<ApiAuthSuccess> {
   try {
-    const response = await fetch(buildApiUrl('/auth/mfa/verify'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/mfa/verify'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1244,7 +1278,8 @@ export async function apiVerifyMFA(code: string, tempToken: string, method?: Mfa
       success: true,
       user,
       tokens: data.tokens,
-      requiresSetup: !!data.requiresSetup
+      requiresSetup: !!data.requiresSetup,
+      ...(typeof data.redirectPath === 'string' ? { redirectPath: data.redirectPath } : {})
     };
   } catch {
     return { success: false, error: 'Network error' };
@@ -1269,7 +1304,7 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
     const optionsJSON = optionsData.options ?? optionsData.optionsJSON;
     const credential = await getPasskeyCredential(optionsJSON);
 
-    const verifyResponse = await fetch(buildApiUrl('/auth/mfa/passkey/verify'), {
+    const verifyResponse = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/mfa/passkey/verify'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1290,7 +1325,8 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
       success: true,
       user,
       tokens: verifyData.tokens,
-      requiresSetup: !!verifyData.requiresSetup
+      requiresSetup: !!verifyData.requiresSetup,
+      ...(typeof verifyData.redirectPath === 'string' ? { redirectPath: verifyData.redirectPath } : {})
     };
   } catch (error) {
     if (error instanceof Error && error.name === 'NotAllowedError') {
@@ -1298,6 +1334,83 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
     }
     console.warn('[apiVerifyPasskeyMFA] passkey MFA verification failed:', error);
     return { success: false, error: 'Network error' };
+  }
+}
+
+// ── #4067: link-on-first-SSO-login ceremony ─────────────────────────────────
+// The SSO callback parked the verified IdP identity server-side and bound the
+// ceremony to this browser via an HttpOnly cookie scoped to the API's
+// /sso/link endpoints (the API owns the exact path), so both calls just need
+// credentials: 'include'.
+
+export async function apiSsoLinkPending(): Promise<
+  | { success: true; email: string; providerName: string | null }
+  | { success: false; expired: boolean; error?: string }
+> {
+  try {
+    const response = await fetch(buildApiUrl('/sso/link/pending'), {
+      method: 'GET',
+      credentials: 'include'
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      return { success: false, expired: response.status === 404, error: extractApiError(data, 'Ceremony unavailable') };
+    }
+    return { success: true, email: String(data.email ?? ''), providerName: data.providerName ?? null };
+  } catch {
+    return { success: false, expired: false, error: 'Network error' };
+  }
+}
+
+export type SsoLinkConfirmResult =
+  | { state: 'mfa'; tempToken: string; mfaMethod: MfaMethod; passkeyAvailable: boolean; phoneLast4: string | null }
+  | { state: 'complete'; user: User; tokens: Tokens; requiresSetup: boolean; redirectPath?: string }
+  | { state: 'failed'; reason: 'expired' | 'identity_in_use' | 'completion_failed' | 'other'; error?: string };
+
+export async function apiSsoLinkConfirm(password: string): Promise<SsoLinkConfirmResult> {
+  try {
+    const response = await fetch(buildApiUrl('/sso/link/confirm'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ password })
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      if (response.status === 409) return { state: 'failed', reason: 'identity_in_use' };
+      if (data?.error === 'sso_link_expired') return { state: 'failed', reason: 'expired' };
+      if (data?.error === 'completion_failed') return { state: 'failed', reason: 'completion_failed' };
+      return { state: 'failed', reason: 'other', error: extractApiError(data, 'Confirmation failed') };
+    }
+
+    if (data.mfaRequired) {
+      if (typeof data.tempToken !== 'string' || data.tempToken.length === 0) {
+        return { state: 'failed', reason: 'other', error: 'Confirmation failed' };
+      }
+      return {
+        state: 'mfa',
+        tempToken: data.tempToken,
+        mfaMethod: (data.mfaMethod as MfaMethod) || 'totp',
+        passkeyAvailable: data.passkeyAvailable === true,
+        phoneLast4: typeof data.phoneLast4 === 'string' ? data.phoneLast4 : null
+      };
+    }
+
+    if (data.user && data.tokens) {
+      return {
+        state: 'complete',
+        user: data.user,
+        tokens: data.tokens,
+        requiresSetup: !!data.requiresSetup,
+        ...(typeof data.redirectPath === 'string' ? { redirectPath: data.redirectPath } : {})
+      };
+    }
+
+    // 200 without a recognizable shape — API drift; surface, don't strand.
+    return { state: 'failed', reason: 'other', error: 'Confirmation failed' };
+  } catch {
+    return { state: 'failed', reason: 'other', error: 'Network error' };
   }
 }
 
@@ -1368,22 +1481,85 @@ export async function apiRegisterPartner(
 // refreshFetchOnce above.
 const LOGOUT_TIMEOUT_MS = 8000;
 
-export async function apiLogout(): Promise<void> {
-  const { tokens, logout } = useAuthStore.getState();
+export type LogoutOutcome =
+  | Readonly<{ kind: 'complete' }>
+  | Readonly<{ kind: 'partial'; message: string }>;
 
-  if (tokens?.accessToken) {
+export type CfTerminalLogoutPreparationOutcome =
+  | Readonly<{ kind: 'ready'; navigationUrl: string }>
+  | Readonly<{ kind: 'partial'; message: string }>;
+
+function evictLocalAuthState(): void {
+  useAuthStore.getState().logout();
+  try {
+    localStorage.removeItem('breeze-auth');
+    localStorage.removeItem('breeze-org');
+    localStorage.removeItem('breeze-ai-chat');
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+function terminalLogoutHeaders(accessToken: string): Headers {
+  const headers = new Headers({
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${accessToken}`,
+    'x-breeze-auth-transition': 'v1',
+  });
+  const csrfToken = readCookie(CSRF_COOKIE_NAME);
+  if (csrfToken) headers.set(CSRF_HEADER_NAME, csrfToken);
+  return headers;
+}
+
+export function validateCfTerminalNavigationUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string' || typeof window === 'undefined') return null;
+  try {
+    const url = new URL(raw, window.location.origin);
+    if (
+      url.origin !== window.location.origin
+      || url.username !== ''
+      || url.password !== ''
+      || url.pathname !== '/api/v1/auth/cf-access-logout'
+      || url.hash !== ''
+    ) return null;
+    const entries = [...url.searchParams.entries()];
+    if (entries.length !== 1 || entries[0]?.[0] !== 'ticket' || !entries[0][1]) return null;
+    return `${url.pathname}?ticket=${encodeURIComponent(entries[0][1])}`;
+  } catch {
+    return null;
+  }
+}
+
+export async function apiLogout(retainedAccessToken?: string): Promise<LogoutOutcome> {
+  const { tokens } = useAuthStore.getState();
+  const accessToken = retainedAccessToken ?? tokens?.accessToken;
+  let outcome: LogoutOutcome = {
+    kind: 'partial',
+    message: 'Your local session was cleared, but durable server sign-out could not be confirmed.',
+  };
+
+  if (accessToken) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
     try {
-      await fetch(buildApiUrl('/auth/logout'), {
+      const response = await fetch(buildApiUrl('/auth/logout'), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${tokens.accessToken}`
-        },
+        headers: terminalLogoutHeaders(accessToken),
         credentials: 'include',
         signal: controller.signal
       });
+      if (response.ok) {
+        const body: unknown = await response.json();
+        if (
+          typeof body === 'object'
+          && body !== null
+          && !Array.isArray(body)
+          && Object.keys(body).length === 1
+          && (body as { success?: unknown }).success === true
+        ) {
+          outcome = { kind: 'complete' };
+        }
+      }
     } catch (err) {
       // Network error, offline, or the 8s abort fired. Ignored on purpose —
       // the refresh-token family may survive server-side, but the client must
@@ -1394,16 +1570,42 @@ export async function apiLogout(): Promise<void> {
     }
   }
 
-  logout();
+  evictLocalAuthState();
+  return outcome;
+}
 
-  // Clear all persisted store data to prevent stale state on next login
-  try {
-    localStorage.removeItem('breeze-auth');
-    localStorage.removeItem('breeze-org');
-    localStorage.removeItem('breeze-ai-chat');
-  } catch {
-    // localStorage may be unavailable
+export async function apiPrepareCfTerminalLogout(
+  retainedAccessToken?: string,
+): Promise<CfTerminalLogoutPreparationOutcome> {
+  const { tokens } = useAuthStore.getState();
+  const accessToken = retainedAccessToken ?? tokens?.accessToken;
+  let outcome: CfTerminalLogoutPreparationOutcome = {
+    kind: 'partial',
+    message: 'Your local session was cleared, but Cloudflare sign-out could not be prepared.',
+  };
+  if (accessToken) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
+    try {
+      const response = await fetch(buildApiUrl('/auth/cf-access-logout/prepare'), {
+        method: 'POST',
+        headers: terminalLogoutHeaders(accessToken),
+        credentials: 'include',
+        signal: controller.signal,
+      });
+      if (response.ok) {
+        const body = await response.json().catch(() => null) as { navigationUrl?: unknown } | null;
+        const navigationUrl = validateCfTerminalNavigationUrl(body?.navigationUrl);
+        if (navigationUrl) outcome = { kind: 'ready', navigationUrl };
+      }
+    } catch (error) {
+      console.warn('[apiLogout] Cloudflare terminal preparation failed; evicting locally', error);
+    } finally {
+      clearTimeout(timeout);
+    }
   }
+  evictLocalAuthState();
+  return outcome;
 }
 
 export async function fetchAndApplyPreferences(): Promise<void> {
@@ -1521,7 +1723,7 @@ export async function apiVerifyEmail(token: string): Promise<{
   redirectUrl?: string;
 }> {
   try {
-    const response = await fetch(buildApiUrl('/auth/verify-email'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/verify-email'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1710,7 +1912,7 @@ export async function apiAcceptInvite(token: string, password: string): Promise<
   error?: string;
 }> {
   try {
-    const response = await fetch(buildApiUrl('/auth/accept-invite'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/accept-invite'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',

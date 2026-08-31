@@ -10,10 +10,6 @@ import type { PartnerStatus } from '../../db/schema/orgs';
 import {
   rateLimiter,
   getRedis,
-  createTokenPair,
-  mintRefreshTokenFamily,
-  bindRefreshJtiToFamily,
-  getUserEpochs,
 } from '../../services';
 import { getEmailService } from '../../services/email';
 import {
@@ -23,7 +19,7 @@ import {
 } from '../../services/emailVerification';
 import {
   consumePendingRegistration,
-  rewritePendingRegistration,
+  peekPendingRegistration,
   type PendingRegistration,
 } from '../../services/pendingRegistration';
 import { createPartner } from '../../services/partnerCreate';
@@ -34,17 +30,46 @@ import { captureException } from '../../services/sentry';
 import { isHosted } from '../../config/env';
 import { ENABLE_REGISTRATION, ENABLE_2FA } from './schemas';
 import { authMiddleware } from '../../middleware/auth';
-import { runPostCommitCleanup } from '../../services/authLifecycle';
+import {
+  advanceUserEpochs,
+  lockActiveRefreshFamiliesForUsers,
+  revokeAllRefreshFamilies,
+  runPostCommitCleanup,
+  type Tx as AuthLifecycleTransaction,
+} from '../../services/authLifecycle';
+import {
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceCapabilityError,
+  AuthIssuanceConflictError,
+  beginAuthIssuance,
+  cancelAuthIssuance,
+  finishAuthIssuance,
+  type AuthIssuanceCapability,
+} from '../../services/authBrowserTransition';
+import {
+  authBrowserTransitionsEnforced,
+  bindIssuedUserSession,
+  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
+  type AuthorizedUserSession,
+  type UserSessionIdentity,
+} from '../../services/userSession';
+import { recordAuthTransitionLegacyIssuer } from '../../services/authTransitionMetrics';
+import { activatePendingPartnerAndInvalidateSessions } from '../../services/partnerActivation';
 import {
   getClientRateLimitKey,
   writeAuthAudit,
-  setRefreshTokenCookie,
   toPublicTokens,
+  isAuthTransitionV1Request,
+  authClientUpgradeRequiredResponse,
+  installAuthorizedUserSessionCookies,
+  installLegacyUserSessionCookiesDuringTransition,
 } from './helpers';
+import { installAuthBindingReplacement, requestAuthBinding } from './binding';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 
 const { db, withSystemDbAccessContext } = dbModule;
-
-const PENDING_REG_TTL_SECONDS = 3600;
 
 function sha256Hex(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -80,7 +105,33 @@ function isSafeHookActionUrl(url: string): boolean {
   }
 }
 
+const REGISTRATION_PARTNER_STATUSES: readonly PartnerStatus[] = [
+  'pending', 'active', 'suspended', 'churned',
+];
+
+function isRegistrationPartnerStatus(value: string): value is PartnerStatus {
+  return REGISTRATION_PARTNER_STATUSES.some((status) => status === value);
+}
+
 export const verifyEmailRoutes = new Hono();
+
+function registrationIssuanceError(c: Context, error: unknown): Response | null {
+  if (error instanceof AuthBindingRotationRequiredError) {
+    installAuthBindingReplacement(c, error.replacement);
+    return c.json({
+      error: 'Authentication binding refresh required',
+      reason: 'binding_refresh',
+    }, 428);
+  }
+  if (
+    error instanceof AuthBindingUnavailableError
+    || error instanceof AuthIssuanceConflictError
+    || error instanceof AuthIssuanceCapabilityError
+  ) {
+    return c.json({ error: 'Authentication temporarily unavailable' }, 409);
+  }
+  return null;
+}
 
 const verifyEmailSchema = z.object({
   token: z.string().min(1, 'token required'),
@@ -111,11 +162,12 @@ verifyEmailRoutes.post(
     // SR2-21 step 2: a submitted token is FIRST tried as a pending registration
     // (email-first signup — the account does not exist yet and gets created
     // HERE, the ONLY registration account-creation + session-mint site now).
-    // consumePendingRegistration is a single-winner GETDEL: a second click gets
-    // null and falls through to the ordinary verification path below.
-    const pending = await consumePendingRegistration(sha256Hex(token));
+    // This read-only peek grants and consumes no authority. Pending signup
+    // state stays retryable until the PostgreSQL authority transaction commits.
+    const tokenHash = sha256Hex(token);
+    const pending = await peekPendingRegistration(tokenHash);
     if (pending) {
-      return finalizePendingRegistration(c, pending, token);
+      return finalizePendingRegistration(c, Object.freeze({ ...pending }), tokenHash);
     }
 
     const result = await consumeVerificationToken(token);
@@ -328,21 +380,210 @@ verifyEmailRoutes.post('/resend-verification', authMiddleware, async (c) => {
   return c.json({ sent: true });
 });
 
+type CreatedRegistration = Awaited<ReturnType<typeof createPartner>>;
+
+interface RegistrationFacts {
+  created: CreatedRegistration;
+  partnerRow: {
+    id: string;
+    name: string;
+    slug: string;
+    plan: string;
+    status: PartnerStatus;
+    settings: unknown;
+  };
+  userRow: {
+    id: string;
+    email: string;
+    name: string;
+    mfaEnabled: boolean;
+  };
+  roleRow: { forceMfa: boolean };
+  authEpoch: number;
+  mfaEpoch: number;
+  mfaEnrollmentRequired: boolean;
+  mfaSatisfied: boolean;
+}
+
+type RegistrationCommit =
+  | Readonly<{ kind: 'sign_in' }>
+  | Readonly<{ kind: 'created_guarded'; facts: RegistrationFacts; issued: AuthorizedUserSession }>
+  | Readonly<{ kind: 'created_legacy'; facts: RegistrationFacts }>;
+
+async function createRegistrationAccount(
+  tx: AuthLifecycleTransaction,
+  rec: PendingRegistration,
+): Promise<RegistrationFacts | null> {
+  const normalizedEmail = rec.email.toLowerCase().trim();
+  const [existing] = await tx
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, normalizedEmail))
+    .limit(1);
+  if (existing) return null;
+
+  const created = await createPartner({
+    orgName: rec.companyName,
+    adminEmail: rec.email,
+    adminName: rec.name,
+    passwordHash: rec.passwordHash,
+    origin: { mcp: false, ip: rec.signupIp, userAgent: rec.signupUserAgent },
+    status: rec.hostedExpectation ? 'pending' : 'active',
+  }, { tx });
+
+  const [partnerRow] = await tx
+    .select({
+      id: partners.id,
+      name: partners.name,
+      slug: partners.slug,
+      plan: partners.plan,
+      status: partners.status,
+      settings: partners.settings,
+    })
+    .from(partners)
+    .where(eq(partners.id, created.partnerId))
+    .limit(1);
+  const [userRow] = await tx
+    .select({
+      id: users.id,
+      email: users.email,
+      name: users.name,
+      mfaEnabled: users.mfaEnabled,
+    })
+    .from(users)
+    .where(eq(users.id, created.adminUserId))
+    .limit(1);
+  const [roleRow] = await tx
+    .select({ forceMfa: roles.forceMfa })
+    .from(roles)
+    .where(eq(roles.id, created.adminRoleId))
+    .limit(1);
+  if (!partnerRow || !userRow || !roleRow) {
+    throw new Error('Partner, user or admin-role row missing after createPartner');
+  }
+
+  const now = new Date();
+  await tx.update(users).set({ emailVerifiedAt: now }).where(eq(users.id, created.adminUserId));
+  await tx
+    .update(partners)
+    .set({ emailVerifiedAt: now, updatedAt: now })
+    .where(eq(partners.id, created.partnerId));
+  const epochs = await advanceUserEpochs(tx, created.adminUserId, { auth: true });
+
+  const partnerSettings = (partnerRow.settings ?? {}) as Record<string, unknown>;
+  const policy = combineMfaPolicyFacts({
+    roleForceMfa: roleRow.forceMfa === true,
+    security: partnerSettings.security as MfaSecuritySettings | undefined,
+    failClosed: true,
+  });
+  const mfaEnrollmentRequired = ENABLE_2FA && !userRow.mfaEnabled && policy.required;
+  const mfaSatisfied = !ENABLE_2FA || (!userRow.mfaEnabled && !policy.required);
+
+  return {
+    created,
+    partnerRow,
+    userRow,
+    roleRow,
+    authEpoch: epochs.authEpoch,
+    mfaEpoch: epochs.mfaEpoch,
+    mfaEnrollmentRequired,
+    mfaSatisfied,
+  };
+}
+
+async function durableRegistrationUserExists(email: string): Promise<boolean> {
+  const normalizedEmail = email.toLowerCase().trim();
+  const [existing] = await withSystemDbAccessContext(() => db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, normalizedEmail))
+    .limit(1));
+  return existing !== undefined;
+}
+
+async function consumePendingRegistrationAfterCommit(tokenHash: string): Promise<void> {
+  try {
+    await consumePendingRegistration(tokenHash);
+  } catch (error) {
+    console.error('[verify-email] pending-registration delete failed after durable commit', {
+      tokenHash: tokenHash.slice(0, 12),
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function registrationIdentity(facts: RegistrationFacts): UserSessionIdentity {
+  return {
+    userId: facts.created.adminUserId,
+    email: facts.userRow.email,
+    roleId: facts.created.adminRoleId,
+    orgId: facts.created.orgId,
+    partnerId: facts.created.partnerId,
+    scope: 'partner',
+    mfa: facts.mfaSatisfied,
+  };
+}
+
+async function applyGuardedRegistrationStatusChange(
+  c: Context,
+  facts: RegistrationFacts,
+  status: PartnerStatus,
+): Promise<AuthorizedUserSession> {
+  let capability: AuthIssuanceCapability | null = null;
+  try {
+    capability = await beginAuthIssuance(requestAuthBinding(c));
+    const guardedCapability = capability;
+    const issued = await finishAuthIssuance(guardedCapability, async (tx) => {
+      let epochs: { authEpoch: number; mfaEpoch: number };
+      if (facts.partnerRow.status === 'pending' && status === 'active') {
+        const activation = await activatePendingPartnerAndInvalidateSessions(
+          tx,
+          facts.created.partnerId,
+        );
+        const adminEpochs = activation.epochs.find(
+          (entry) => entry.userId === facts.created.adminUserId,
+        );
+        if (!activation.activated || !adminEpochs) {
+          throw new AuthIssuanceCapabilityError();
+        }
+        epochs = adminEpochs;
+      } else {
+        const next = await advanceUserEpochs(tx, facts.created.adminUserId, { auth: true });
+        await lockActiveRefreshFamiliesForUsers(tx, [facts.created.adminUserId]);
+        await revokeAllRefreshFamilies(tx, facts.created.adminUserId, 'registration-status-changed');
+        const updated = await tx
+          .update(partners)
+          .set({ status, updatedAt: new Date() })
+          .where(eq(partners.id, facts.created.partnerId))
+          .returning({ id: partners.id });
+        if (updated.length !== 1) throw new AuthIssuanceCapabilityError();
+        epochs = { authEpoch: next.authEpoch, mfaEpoch: next.mfaEpoch };
+      }
+
+      return issueUserSession(registrationIdentity(facts), {
+        tx,
+        capability: guardedCapability,
+        expectedEpochs: epochs,
+      });
+    });
+    await bindIssuedUserSession(issued);
+    return issued;
+  } catch (error) {
+    if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+    throw error;
+  }
+}
+
 /**
- * SR2-21 step 2 — the email-first signup finalizer. This is the ONLY place a
- * partner registration creates the tenant AND mints the auto-login session; the
- * account did not exist until this click. `rawToken` is the exact token the user
- * submitted (identical to the raw token parked in Redis), used only to re-park
- * the record if createPartner fails after the single-winner consume removed it.
+ * Email-first signup finalization. The immutable Redis snapshot is read before
+ * admission, but account authority is created only inside the browser-guarded
+ * PostgreSQL transaction. Redis is consumed only after that commit.
  */
 async function finalizePendingRegistration(
   c: Context,
   rec: PendingRegistration,
-  rawToken: string,
+  tokenHash: string,
 ): Promise<Response> {
-  // 1. Policy re-check. A flip between step 1 and step 2 (registration disabled,
-  //    or the hosted/self-hosted mode changed) denies — fail closed, generic
-  //    400. The pending record was already consumed; that is fine, it is dead.
   if (!ENABLE_REGISTRATION || isHosted() !== rec.hostedExpectation) {
     writeAuthAudit(c, {
       action: 'auth.email_verify_failed',
@@ -353,21 +594,68 @@ async function finalizePendingRegistration(
     return c.json({ error: 'Invalid or expired verification link' }, 400);
   }
 
-  const normalizedEmail = rec.email.toLowerCase().trim();
+  const transitionV1 = isAuthTransitionV1Request(c);
+  if (!transitionV1 && authBrowserTransitionsEnforced()) {
+    return authClientUpgradeRequiredResponse(c);
+  }
 
-  // 2. Global uniqueness re-check under a system context (users is FORCE-RLS).
-  //    The address may have been registered while the link sat in the mailbox.
-  //    Direct the holder — who, by holding this token, controls the mailbox — to
-  //    sign in, and create nothing. This discloses "already registered" only to
-  //    whoever controls the address, which the design explicitly permits.
-  const [existing] = await withSystemDbAccessContext(() =>
-    db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.email, normalizedEmail))
-      .limit(1),
-  );
-  if (existing) {
+  let committed: RegistrationCommit;
+  let capability: AuthIssuanceCapability | null = null;
+  try {
+    if (transitionV1) {
+      capability = await beginAuthIssuance(requestAuthBinding(c));
+      const guardedCapability = capability;
+      committed = await finishAuthIssuance(guardedCapability, async (tx) => {
+        const facts = await createRegistrationAccount(tx, rec);
+        if (!facts) return { kind: 'sign_in' as const };
+        const issued = await issueUserSession(registrationIdentity(facts), {
+          tx,
+          capability: guardedCapability,
+          expectedEpochs: { authEpoch: facts.authEpoch, mfaEpoch: facts.mfaEpoch },
+        });
+        return { kind: 'created_guarded' as const, facts, issued };
+      });
+    } else {
+      const facts = await withSystemDbAccessContext(() =>
+        db.transaction((tx) => createRegistrationAccount(tx, rec)));
+      if (!facts) {
+        committed = { kind: 'sign_in' };
+      } else {
+        committed = { kind: 'created_legacy', facts };
+      }
+    }
+  } catch (error) {
+    if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+    if (isPgUniqueViolation(error)) {
+      let durableWinner = false;
+      try {
+        durableWinner = await durableRegistrationUserExists(rec.email);
+      } catch (lookupError) {
+        console.error('[verify-email] failed to resolve durable registration winner', {
+          error: lookupError instanceof Error ? lookupError.message : String(lookupError),
+        });
+      }
+      if (durableWinner) {
+        await consumePendingRegistrationAfterCommit(tokenHash);
+        writeAuthAudit(c, {
+          action: 'auth.email_verified',
+          result: 'denied',
+          reason: 'already_registered',
+          email: rec.email,
+        });
+        return c.json({ verified: false, status: 'sign_in' as const }, 200);
+      }
+      return c.json({ error: 'Authentication temporarily unavailable' }, 409);
+    }
+    const response = registrationIssuanceError(c, error);
+    if (response) return response;
+    console.error('[verify-email] pending-registration durable finalization failed', error);
+    captureException(error, c);
+    return c.json({ error: 'Registration failed. Please try again.' }, 500);
+  }
+
+  await consumePendingRegistrationAfterCommit(tokenHash);
+  if (committed.kind === 'sign_in') {
     writeAuthAudit(c, {
       action: 'auth.email_verified',
       result: 'denied',
@@ -377,119 +665,20 @@ async function finalizePendingRegistration(
     return c.json({ verified: false, status: 'sign_in' as const }, 200);
   }
 
-  // 3. Create the partner (its own committed transaction — this handler holds no
-  //    outer tx). Threads the STEP-1 abuse attribution (#2343), never the click's
-  //    IP/UA. On failure the single-winner consume has already removed the
-  //    record, so re-park it (best effort) with the remaining TTL and return a
-  //    generic 500 so the user can click the same link again.
-  let created;
-  try {
-    created = await createPartner({
-      orgName: rec.companyName,
-      adminEmail: rec.email,
-      adminName: rec.name,
-      passwordHash: rec.passwordHash,
-      origin: { mcp: false, ip: rec.signupIp, userAgent: rec.signupUserAgent },
-      status: rec.hostedExpectation ? 'pending' : 'active',
-    });
-  } catch (err) {
-    console.error('[verify-email] pending-registration createPartner failed', err);
-    captureException(err, c);
-    const remainingTtl = PENDING_REG_TTL_SECONDS - Math.floor((Date.now() - rec.createdAt) / 1000);
-    await rewritePendingRegistration(sha256Hex(rawToken), { ...rec, rawToken }, remainingTtl).catch(
-      (reparkErr) => console.error('[verify-email] pending-registration re-park failed', reparkErr),
-    );
-    return c.json({ error: 'Registration failed. Please try again.' }, 500);
+  const { facts } = committed;
+  if (committed.kind === 'created_guarded') {
+    await bindIssuedUserSession(committed.issued);
   }
 
   try {
-    // 4. createPartner COMMITTED before we read, so these reads under a fresh
-    //    system context SEE the committed rows — the Task-2 fail-open (reading
-    //    still-uncommitted signup rows on a second connection → policy always
-    //    "not required" → vacuous mfa=true) cannot recur here. Fail closed: any
-    //    missing row throws to the 500 below, before a token is minted. We also
-    //    stamp email_verified_at on both rows — the click proves the address.
-    const now = new Date();
-    const facts = await withSystemDbAccessContext(async () => {
-      const [partnerRow] = await db
-        .select({
-          id: partners.id,
-          name: partners.name,
-          slug: partners.slug,
-          plan: partners.plan,
-          status: partners.status,
-          settings: partners.settings,
-        })
-        .from(partners)
-        .where(eq(partners.id, created.partnerId))
-        .limit(1);
-      const [userRow] = await db
-        .select({ id: users.id, email: users.email, name: users.name, mfaEnabled: users.mfaEnabled })
-        .from(users)
-        .where(eq(users.id, created.adminUserId))
-        .limit(1);
-      const [roleRow] = await db
-        .select({ forceMfa: roles.forceMfa })
-        .from(roles)
-        .where(eq(roles.id, created.adminRoleId))
-        .limit(1);
-
-      if (!partnerRow || !userRow || !roleRow) {
-        throw new Error('Partner, user or admin-role row missing after createPartner');
-      }
-
-      await db.update(users).set({ emailVerifiedAt: now }).where(eq(users.id, created.adminUserId));
-      await db
-        .update(partners)
-        .set({ emailVerifiedAt: now, updatedAt: now })
-        .where(eq(partners.id, created.partnerId));
-
-      return { partnerRow, userRow, roleRow };
-    });
-
-    // Effective MFA policy at the auto-login mint — the Task-2 contract. A
-    // just-created user holds no factor, so the old `mfaSatisfied` was a vacuous
-    // constant `true`. Resolve the policy from the committed role/settings facts
-    // and apply the shared strictest-wins rule (combineMfaPolicyFacts).
-    const partnerSettings = (facts.partnerRow.settings ?? {}) as Record<string, unknown>;
-    const policy = combineMfaPolicyFacts({
-      roleForceMfa: facts.roleRow.forceMfa === true,
-      security: partnerSettings.security as MfaSecuritySettings | undefined,
-      failClosed: true,
-    });
-    const mfaEnrollmentRequired = ENABLE_2FA && !facts.userRow.mfaEnabled && policy.required;
-    const mfaSatisfied = !ENABLE_2FA || (!facts.userRow.mfaEnabled && !policy.required);
-
-    // Mint a fresh refresh-token family so the first session inherits the same
-    // reuse-detection chain as a real /login.
-    const registerFamilyId = await mintRefreshTokenFamily(created.adminUserId);
-    const epochs = await getUserEpochs(created.adminUserId);
-    if (!epochs) throw new Error('user epochs unavailable at token mint');
-    const tokens = await createTokenPair(
-      {
-        sub: created.adminUserId,
-        email: facts.userRow.email,
-        roleId: created.adminRoleId,
-        orgId: created.orgId,
-        partnerId: created.partnerId,
-        scope: 'partner',
-        mfa: mfaSatisfied,
-        aep: epochs.authEpoch,
-        mep: epochs.mfaEpoch,
-      },
-      { refreshFam: registerFamilyId },
-    );
-    await bindRefreshJtiToFamily(tokens.refreshJti, registerFamilyId);
-    setRefreshTokenCookie(c, tokens.refreshToken);
-
-    // Post-registration hook (external services can override status/redirect).
-    const hookResponse = await dispatchHook('registration', created.partnerId, {
+    // External webhook work is deliberately post-commit: no transition, user,
+    // family, or tenant lock is held while another service is contacted.
+    const hookResponse = await dispatchHook('registration', facts.created.partnerId, {
       email: facts.userRow.email,
       partnerName: facts.partnerRow.name,
       plan: facts.partnerRow.plan,
     });
 
-    const VALID_STATUSES = ['pending', 'active', 'suspended', 'churned'] as const;
     let effectiveStatus: PartnerStatus = facts.partnerRow.status;
 
     // The status override and the inactive-screen banner are INDEPENDENT
@@ -510,7 +699,7 @@ async function finalizePendingRegistration(
       msgSettings.statusActionUrl = hookResponse.actionUrl;
     } else if (hookResponse?.actionUrl) {
       console.error(
-        `[verify-email] Hook returned a non-http(s) actionUrl for partner ${created.partnerId}; dropping it`,
+          `[verify-email] Hook returned a non-http(s) actionUrl for partner ${facts.created.partnerId}; dropping it`,
       );
     }
     if (hookResponse?.actionLabel) msgSettings.statusActionLabel = hookResponse.actionLabel;
@@ -520,12 +709,33 @@ async function finalizePendingRegistration(
 
     let statusChange: PartnerStatus | null = null;
     if (hookResponse?.status && hookResponse.status !== facts.partnerRow.status) {
-      if (!VALID_STATUSES.includes(hookResponse.status as never)) {
+      if (!isRegistrationPartnerStatus(hookResponse.status)) {
         console.error(
-          `[verify-email] Hook returned invalid status '${hookResponse.status}' for partner ${created.partnerId}; ignoring`,
+          `[verify-email] Hook returned invalid status '${hookResponse.status}' for partner ${facts.created.partnerId}; ignoring`,
         );
       } else {
-        statusChange = hookResponse.status as PartnerStatus;
+        statusChange = hookResponse.status;
+      }
+    }
+
+    if (statusChange && committed.kind === 'created_guarded') {
+      const issued = await applyGuardedRegistrationStatusChange(c, facts, statusChange);
+      committed = { kind: 'created_guarded', facts, issued };
+      effectiveStatus = statusChange;
+    }
+
+    if (statusChange && committed.kind === 'created_legacy') {
+      if (facts.partnerRow.status === 'pending' && statusChange === 'active') {
+        const activation = await withSystemDbAccessContext(() => db.transaction((tx) =>
+          activatePendingPartnerAndInvalidateSessions(tx, facts.created.partnerId)));
+        const adminEpochs = activation.epochs.find(
+          (entry) => entry.userId === facts.created.adminUserId,
+        );
+        if (!activation.activated || !adminEpochs) {
+          throw new AuthIssuanceCapabilityError();
+        }
+        effectiveStatus = statusChange;
+      } else {
         updateSet.status = statusChange;
       }
     }
@@ -534,12 +744,16 @@ async function finalizePendingRegistration(
       updateSet.updatedAt = new Date();
       try {
         await withSystemDbAccessContext(() =>
-          db.update(partners).set(updateSet).where(eq(partners.id, created.partnerId)),
+          db.update(partners).set(updateSet).where(eq(partners.id, facts.created.partnerId)),
         );
-        if (statusChange) effectiveStatus = statusChange;
+        if (
+          statusChange
+          && committed.kind === 'created_legacy'
+          && 'status' in updateSet
+        ) effectiveStatus = statusChange;
       } catch (statusErr) {
         console.error('[verify-email] hook status/banner update failed', {
-          partnerId: created.partnerId,
+          partnerId: facts.created.partnerId,
           error: statusErr instanceof Error ? statusErr.message : String(statusErr),
         });
         writeAuditEvent(c, {
@@ -547,13 +761,13 @@ async function finalizePendingRegistration(
           actorType: 'system',
           action: 'register-partner.hook-status-update-failed',
           resourceType: 'partner',
-          resourceId: created.partnerId,
+          resourceId: facts.created.partnerId,
           resourceName: facts.partnerRow.name,
           details: {
             fromStatus: facts.partnerRow.status,
             // null when this UPDATE carried only banner fields — do not imply a
             // status transition that was never attempted.
-            toStatus: statusChange,
+            toStatus: 'status' in updateSet ? statusChange : null,
             bannerKeys: Object.keys(msgSettings),
           },
           result: 'failure',
@@ -570,30 +784,51 @@ async function finalizePendingRegistration(
       ? hookResponse!.redirectUrl
       : undefined;
 
+    const responseBase = {
+      verified: true,
+      user: { id: facts.created.adminUserId, email: facts.userRow.email, name: facts.userRow.name, mfaEnabled: false },
+      partner: { id: facts.created.partnerId, name: facts.partnerRow.name, slug: facts.partnerRow.slug, status: effectiveStatus },
+      mfaRequired: false,
+      mfaEnrollmentRequired: facts.mfaEnrollmentRequired,
+      enrollUrl: facts.mfaEnrollmentRequired ? '/auth/mfa/setup' : undefined,
+      ...(redirectUrl ? { redirectUrl } : {}),
+    };
+    if (committed.kind === 'created_guarded') {
+      writeAuthAudit(c, {
+        action: 'auth.email_verified',
+        result: 'success',
+        userId: facts.created.adminUserId,
+        email: facts.userRow.email,
+        details: { partnerId: facts.created.partnerId, registration: true },
+      });
+      installAuthorizedUserSessionCookies(c, committed.issued);
+      return c.json({
+        ...responseBase,
+        tokens: toPublicTokens(committed.issued),
+      });
+    }
+
+    recordAuthTransitionLegacyIssuer('registration', 'web');
+    const issued = await issueUserSessionLegacyDuringTransition(registrationIdentity(facts));
     writeAuthAudit(c, {
       action: 'auth.email_verified',
       result: 'success',
-      userId: created.adminUserId,
+      userId: facts.created.adminUserId,
       email: facts.userRow.email,
-      details: { partnerId: created.partnerId, registration: true },
+      details: { partnerId: facts.created.partnerId, registration: true },
     });
-
+    installLegacyUserSessionCookiesDuringTransition(c, issued);
     return c.json({
-      verified: true,
-      user: { id: created.adminUserId, email: facts.userRow.email, name: facts.userRow.name, mfaEnabled: false },
-      partner: { id: created.partnerId, name: facts.partnerRow.name, slug: facts.partnerRow.slug, status: effectiveStatus },
-      tokens: toPublicTokens(tokens),
-      mfaRequired: false,
-      mfaEnrollmentRequired,
-      enrollUrl: mfaEnrollmentRequired ? '/auth/mfa/setup' : undefined,
-      ...(redirectUrl ? { redirectUrl } : {}),
+      ...responseBase,
+      tokens: toPublicTokens(issued),
     });
   } catch (err) {
-    // The partner is already committed; the user can sign in normally. Do NOT
-    // re-park (that would let a re-click create a duplicate, which the step-2
-    // uniqueness check would then bounce to sign_in anyway). Surface a 500.
+    const response = registrationIssuanceError(c, err);
+    if (response) return response;
+    // Account/session authority is already committed. Hook and response-shaping
+    // failures are observable, but never re-park the Redis authority.
     console.error('[verify-email] pending-registration finalize failed after createPartner', {
-      partnerId: created.partnerId,
+      partnerId: facts.created.partnerId,
       error: err instanceof Error ? err.message : String(err),
     });
     captureException(err, c);

@@ -1,12 +1,68 @@
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+
+// ── Mocks for the "core migration advisory lock" describe block below ──────
+// Hoisted above the `./autoMigrate` import (vitest hoists every `vi.mock`
+// call to the top of the file regardless of source position) so the module's
+// internal `import postgres from 'postgres'` and `readFile`/`readdir` from
+// `node:fs/promises` resolve to these fakes. No other describe block in this
+// file calls `autoMigrate()` itself or reads via `node:fs/promises` — every
+// other test below exercises pure exports or reads the real migrations
+// directory via the SYNC `node:fs` API imported below, which this does not
+// touch.
+const { postgresFactory, clientMock, callLog, lockState } = vi.hoisted(() => {
+  const callLog: string[] = [];
+  const lockState: { failPattern: RegExp | null } = { failPattern: null };
+
+  const clientMock = Object.assign(
+    vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      callLog.push(`${strings.join('?')} | values=${JSON.stringify(values)}`);
+      return [];
+    }),
+    {
+      unsafe: vi.fn(async (query: string) => {
+        callLog.push(query);
+        if (lockState.failPattern?.test(query)) {
+          throw new Error(`mock DB failure: ${query}`);
+        }
+        return [];
+      }),
+      begin: vi.fn(async (cb: (tx: unknown) => unknown) => cb(clientMock)),
+      end: vi.fn(async () => undefined),
+      // `./autoMigrate` transitively imports `./seed` -> `./index`, whose
+      // module-level `drizzle(client, { schema })` call (the app's own
+      // request pool, unrelated to autoMigrate's own `postgres(...)` client)
+      // also resolves through this same mocked factory. drizzle-orm's
+      // postgres-js driver reads `client.options.parsers`/`serializers` at
+      // construction time (see requestDatabasePool.test.ts for the same
+      // shape requirement).
+      options: { parsers: {}, serializers: {} },
+    },
+  );
+
+  return { postgresFactory: vi.fn(() => clientMock), clientMock, callLog, lockState };
+});
+
+vi.mock('postgres', () => ({ default: postgresFactory }));
+vi.mock('node:fs/promises', () => ({
+  // Empty migration set: `autoMigrate()` takes the "no migration files
+  // found" early return right after the tracking-table setup, which is
+  // exactly the phase this describe block needs to observe the lock around
+  // without simulating the entire apply pipeline (ensureAppRole/seed/etc).
+  readdir: vi.fn(async () => []),
+  readFile: vi.fn(async () => ''),
+}));
+
 import {
   detectState,
+  assertAppRoleBootstrapped,
   hashSql,
   hasNoTransactionDirective,
   splitSqlStatements,
   CHECKSUM_RECONCILIATIONS,
   planMigrations,
   partitionLedgerRows,
+  autoMigrate,
+  CORE_MIGRATION_LOCK_KEY,
 } from './autoMigrate';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -85,6 +141,23 @@ describe('autoMigrate', () => {
 
     it('should return "normal" when both users and breeze_migrations exist', () => {
       expect(detectState(true, true)).toBe('normal');
+    });
+  });
+
+  describe('assertAppRoleBootstrapped', () => {
+    it('does not throw when ensureAppRole succeeded', () => {
+      expect(() => assertAppRoleBootstrapped(true, false)).not.toThrow();
+      expect(() => assertAppRoleBootstrapped(true, true)).not.toThrow();
+    });
+
+    it('does not throw when ensureAppRole was skipped but breeze_app already exists (e.g. compose-provisioned dev DB)', () => {
+      expect(() => assertAppRoleBootstrapped(false, true)).not.toThrow();
+    });
+
+    it('throws a pointed error when ensureAppRole was skipped AND breeze_app does not exist (#4048)', () => {
+      expect(() => assertAppRoleBootstrapped(false, false)).toThrow(
+        /BREEZE_APP_DB_PASSWORD.*POSTGRES_PASSWORD.*globalPassThroughEnv/s,
+      );
     });
   });
 
@@ -290,6 +363,49 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS bar_idx ON t (b);`;
       expect(out[0]).toContain('foo_idx');
       expect(out[1]).toContain('bar_idx');
     });
+  });
+});
+
+describe('core migration advisory lock (#4086)', () => {
+  beforeEach(() => {
+    callLog.length = 0;
+    lockState.failPattern = null;
+    vi.clearAllMocks();
+  });
+
+  function acquireIndex(): number {
+    return callLog.findIndex((c) => c.includes('pg_advisory_lock(') && c.includes(CORE_MIGRATION_LOCK_KEY));
+  }
+  function releaseIndex(): number {
+    return callLog.findIndex((c) => c.includes('pg_advisory_unlock(') && c.includes(CORE_MIGRATION_LOCK_KEY));
+  }
+
+  it('acquires the session advisory lock before any tracking-table work, and releases it after (happy path)', async () => {
+    await autoMigrate();
+
+    const trackingTableIndex = callLog.findIndex((c) => c.includes('CREATE TABLE IF NOT EXISTS breeze_migrations'));
+
+    expect(acquireIndex()).toBe(0);
+    expect(trackingTableIndex).toBeGreaterThan(acquireIndex());
+    expect(releaseIndex()).toBeGreaterThan(trackingTableIndex);
+    // The lock release is the LAST DB call this run makes — nothing runs
+    // after it except closing the connection.
+    expect(releaseIndex()).toBe(callLog.length - 1);
+    expect(clientMock.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('still releases the lock (and closes the connection) when a migration step throws', async () => {
+    lockState.failPattern = /CREATE TABLE IF NOT EXISTS breeze_migrations/;
+
+    await expect(autoMigrate()).rejects.toThrow(/mock DB failure/);
+
+    const failureIndex = callLog.findIndex((c) => c.includes('CREATE TABLE IF NOT EXISTS breeze_migrations'));
+
+    expect(acquireIndex()).toBe(0);
+    expect(failureIndex).toBeGreaterThan(acquireIndex());
+    // The unlock in autoMigrate()'s inner `finally` still ran despite the throw.
+    expect(releaseIndex()).toBeGreaterThan(failureIndex);
+    expect(clientMock.end).toHaveBeenCalledTimes(1);
   });
 });
 

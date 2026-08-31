@@ -48,16 +48,46 @@ const {
   };
 });
 
-vi.mock('../services', () => ({
-  hashPassword: vi.fn().mockResolvedValue('$argon2id$hashed'),
-  verifyPassword: vi.fn().mockResolvedValue(true),
-  isPasswordStrong: vi.fn().mockReturnValue({ valid: true, errors: [] }),
-  createTokenPair: vi.fn().mockResolvedValue({
+vi.mock('../services', () => {
+  const createTokenPair = vi.fn().mockResolvedValue({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     refreshJti: 'refresh-jti',
     expiresInSeconds: 900,
-  }),
+  });
+  const mintRefreshTokenFamily = vi.fn().mockResolvedValue('family-passkey');
+  const bindRefreshJtiToFamily = vi.fn().mockResolvedValue(undefined);
+  const getUserEpochs = vi.fn().mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
+  const issueLegacy = vi.fn(async (identity: any) => {
+    const familyId = identity.legacyFamilyId ?? await mintRefreshTokenFamily(identity.userId);
+    const epochs = await getUserEpochs(identity.userId);
+    const tokens = await createTokenPair({
+      sub: identity.userId,
+      email: identity.email,
+      roleId: identity.roleId,
+      orgId: identity.orgId,
+      partnerId: identity.partnerId,
+      scope: identity.scope,
+      mfa: identity.mfa,
+      aep: epochs.authEpoch,
+      mep: epochs.mfaEpoch,
+      mdid: identity.mobileDeviceId,
+    }, { refreshFam: familyId });
+    await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
+    return { ...tokens, familyId };
+  });
+  class AuthBindingRotationRequiredError extends Error {
+    status = 428;
+    constructor(readonly replacement: unknown) { super('rotation required'); }
+  }
+  class AuthBindingUnavailableError extends Error {}
+  class AuthIssuanceConflictError extends Error {}
+  class AuthIssuanceCapabilityError extends Error {}
+  return {
+  hashPassword: vi.fn().mockResolvedValue('$argon2id$hashed'),
+  verifyPassword: vi.fn().mockResolvedValue(true),
+  isPasswordStrong: vi.fn().mockReturnValue({ valid: true, errors: [] }),
+  createTokenPair,
   verifyToken: vi.fn(),
   generateMFASecret: vi.fn(),
   generateOTPAuthURL: vi.fn(),
@@ -77,9 +107,9 @@ vi.mock('../services', () => ({
   revokeFamily: vi.fn().mockResolvedValue(undefined),
   isFamilyRevoked: vi.fn().mockResolvedValue(false),
   touchFamilyLastUsed: vi.fn().mockResolvedValue(undefined),
-  mintRefreshTokenFamily: vi.fn().mockResolvedValue('family-passkey'),
-  bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined),
-  getUserEpochs: vi.fn().mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 }),
+  mintRefreshTokenFamily,
+  bindRefreshJtiToFamily,
+  getUserEpochs,
   rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() }),
   loginLimiter: { limit: 5, windowSeconds: 300 },
   forgotPasswordLimiter: { limit: 3, windowSeconds: 3600 },
@@ -93,8 +123,21 @@ vi.mock('../services', () => ({
   getAccountLockoutWindowSeconds: vi.fn(() => 15 * 60),
   getTrustedClientIp: vi.fn(() => '127.0.0.1'),
   getRedis: vi.fn(() => redisMock),
+  beginAuthIssuance: vi.fn(async () => ({ transitionId: 'transition-1', generation: 1 })),
+  finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => Promise<unknown>) => callback({})),
+  cancelAuthIssuance: vi.fn(async () => undefined),
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceConflictError,
+  AuthIssuanceCapabilityError,
+  issueUserSession: vi.fn(async (identity: any) => issueLegacy(identity)),
+  issueUserSessionLegacyDuringTransition: issueLegacy,
+  bindIssuedUserSession: vi.fn(async () => undefined),
+  authBrowserTransitionsEnforced: vi.fn(() => process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED === 'true'),
+  recordAuthTransitionLegacyIssuer: vi.fn(),
   ...passkeyMocks,
-}));
+  };
+});
 
 vi.mock('../services/passkeys', () => ({
   PasskeyChallengeError: class PasskeyChallengeError extends Error {
@@ -127,6 +170,11 @@ vi.mock('../services/twilio', () => ({
 vi.mock('../services/tenantStatus', () => ({
   TenantInactiveError: class TenantInactiveError extends Error {},
   assertActiveTenantContext: vi.fn().mockResolvedValue(undefined),
+}));
+
+// #4067: passkey continuation of the link-on-first-SSO-login ceremony.
+vi.mock('./auth/ssoLinkCompletion', () => ({
+  finalizeSsoPendingLink: vi.fn(),
 }));
 
 vi.mock('./auth/ssoPolicy', () => ({
@@ -314,11 +362,24 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: vi.fn(() => (_c: any, next: any) => next()),
 }));
 
-import { createTokenPair, getRedis, getUserEpochs, rateLimiter, verifyPassword } from '../services';
+import {
+  AuthIssuanceCapabilityError,
+  beginAuthIssuance,
+  cancelAuthIssuance,
+  createTokenPair,
+  finishAuthIssuance,
+  getRedis,
+  getUserEpochs,
+  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
+  rateLimiter,
+  verifyPassword,
+} from '../services';
 import { PasskeyChallengeError } from '../services/passkeys';
 import { withSystemDbAccessContext } from '../db';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { validateStepUpGrant, consumeStepUpGrant } from '../services/mfaStepUpGrant';
+import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 
 const user = {
   id: 'user-123',
@@ -345,7 +406,10 @@ function pendingMfaJson(overrides: Partial<{
   mfaEpoch: number;
   statusExpectation: string;
   allowedMethods: { totp: boolean; sms: boolean; passkey: boolean };
+  transitionId: string;
+  browserGeneration: number;
   expiresAt: number;
+  ssoLinkTokenHash: string;
 }> = {}): string {
   return JSON.stringify({
     userId: 'user-123',
@@ -355,6 +419,8 @@ function pendingMfaJson(overrides: Partial<{
     mfaEpoch: 1,
     statusExpectation: 'active',
     allowedMethods: { totp: true, sms: true, passkey: true },
+    transitionId: 'transition-1',
+    browserGeneration: 1,
     expiresAt: Date.now() + 5 * 60 * 1000,
     ...overrides,
   });
@@ -386,6 +452,9 @@ describe('passkey MFA auth routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED;
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
+    vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() });
     dbState.selectQueue = [];
     dbState.updateSets = [];
     dbState.insertReturning = [insertedPasskeyRow];
@@ -826,7 +895,7 @@ describe('passkey MFA auth routes', () => {
 
     const res = await app.request('/auth/mfa/passkey/verify', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-breeze-auth-transition': 'v1' },
       body: JSON.stringify({
         tempToken: 'temp-token',
         credential: { id: 'credential-1', response: {} },
@@ -929,6 +998,115 @@ describe('passkey MFA auth routes', () => {
     });
     expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
     expect(vi.mocked(withSystemDbAccessContext).mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does not update the passkey counter, last login, pending key, or cookie when logout wins finalization', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+      }],
+      [{ partnerId: 'partner-123', roleId: 'role-123' }],
+    );
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+      },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toEqual([]);
+    expect(redisMock.del).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('releases the issuance lease when tenant context resolution fails after factor proof', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+      }],
+      [],
+    );
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+      },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(beginAuthIssuance).toHaveBeenCalledOnce();
+    expect(cancelAuthIssuance).toHaveBeenCalledOnce();
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toEqual([]);
+    expect(redisMock.del).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('releases the issuance lease when verified passkey metadata cannot be normalized', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+      }],
+    );
+    passkeyMocks.authenticationInfoToPasskeyUpdateFields.mockImplementationOnce(() => {
+      throw new Error('invalid authenticator metadata');
+    });
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+      },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(cancelAuthIssuance).toHaveBeenCalledOnce();
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toEqual([]);
+    expect(redisMock.del).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
   });
 
   it('rejects a passkey credential that belongs to another user', async () => {
@@ -1160,6 +1338,91 @@ describe('passkey MFA auth routes', () => {
     // Single-use: a rejected (invalidated) session must still be consumed so
     // it can't be retried.
     expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
+  });
+
+  // #4067: pending records carrying ssoLinkTokenHash finalize the SSO link
+  // ceremony (SSO-style mint) instead of the password-login mint.
+  it('finalizes the SSO link ceremony on a verified passkey when the pending record carries ssoLinkTokenHash', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey', ssoLinkTokenHash: 'link-hash-1' }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+        disabledAt: null,
+      }],
+    );
+    vi.mocked(finalizeSsoPendingLink).mockResolvedValue({
+      ok: true,
+      accessToken: 'sso-access',
+      refreshToken: 'sso-refresh',
+      expiresInSeconds: 900,
+      mfa: true,
+      session: { refreshToken: 'sso-refresh' },
+      redirectPath: '/dashboard',
+    } as any);
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-breeze-auth-transition': 'v1' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      mfaRequired: false,
+      tokens: { accessToken: 'sso-access', expiresInSeconds: 900 },
+      redirectPath: '/dashboard',
+    });
+    expect(finalizeSsoPendingLink).toHaveBeenCalledWith(
+      expect.anything(),
+      'link-hash-1',
+      {
+        breezeMfaVerified: true,
+        expectedUserId: 'user-123',
+        capability: expect.objectContaining({ transitionId: 'transition-1', generation: 1 }),
+      },
+    );
+    // The temp token was consumed; the password-login mint must NOT run.
+    expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('rejects the passkey link continuation with the distinct sso_link_expired code when the finalizer refuses', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey', ssoLinkTokenHash: 'link-hash-1' }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+        disabledAt: null,
+      }],
+    );
+    vi.mocked(finalizeSsoPendingLink).mockResolvedValue({ ok: false, error: 'link_expired' } as any);
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: 'sso_link_expired' });
+    expect(createTokenPair).not.toHaveBeenCalled();
   });
 
   // (e) /mfa/passkey/options guards.

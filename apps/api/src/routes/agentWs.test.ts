@@ -201,6 +201,18 @@ vi.mock('../services/redis', () => ({
   getRedis: vi.fn(() => null)
 }));
 
+// Wave 3.5b (#4084): presence lifecycle wiring. Defaults are chosen so every
+// OTHER describe block in this file — which never asserts on presence — sees
+// harmless, non-throwing behaviour: refresh "succeeds" so the self-heal branch
+// never fires unless a test explicitly arms it otherwise.
+vi.mock('../services/agentPresence', () => ({
+  setAgentPresence: vi.fn(async () => {}),
+  refreshAgentPresence: vi.fn(async () => true),
+  clearAgentPresence: vi.fn(async () => true),
+  clearAgentPresenceUnfenced: vi.fn(async () => {}),
+  readAgentPresence: vi.fn(async () => null),
+}));
+
 vi.mock('../services/viewerTokenRevocation', () => ({
   revokeViewerSession: vi.fn(async () => undefined),
   // The real terminalWs ping loop consults this; never revoked in these suites.
@@ -309,8 +321,16 @@ import {
   __resetCrossTenantDropsForTest,
   AGENT_WS_CAPABILITIES,
 } from './agentWs';
+import { sendCommandToAgentAwaitResult } from '../services/agentCommandAwait';
 import { applySoftwareInstallResult } from '../services/softwareDeploymentResult';
 import { isRedisAvailable } from '../services/redis';
+import {
+  clearAgentPresence,
+  clearAgentPresenceUnfenced,
+  refreshAgentPresence,
+  setAgentPresence,
+} from '../services/agentPresence';
+import { INSTANCE_ID } from '../services/instanceIdentity';
 import { checkAgentCertificateBinding } from '../services/agentCertificateBinding';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 import { writeAuditEvent } from '../services/auditEvents';
@@ -2149,6 +2169,176 @@ describe('Finding #4 — one-socket-per-agent invariant', () => {
     expect(isAgentConnected('agent-orphan')).toBe(true);
     disconnectAgent('agent-orphan');
     expect(ws2.close).toHaveBeenCalled();
+  });
+});
+
+// Wave 3.5b (#4084) — fenced presence leases maintained from the WS lifecycle.
+// A lease is an ADMISSION HINT for the command relay (services/agentCommandRelay.ts);
+// these tests pin only that the lifecycle calls the right presence primitive
+// with the right (agentId, connectionToken) pair — fencing/TTL semantics
+// themselves are covered in agentPresence.test.ts.
+describe('presence lifecycle (wave 3.5b #4084)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(setAgentPresence).mockResolvedValue(undefined);
+    vi.mocked(refreshAgentPresence).mockResolvedValue(true);
+    vi.mocked(clearAgentPresence).mockResolvedValue(true);
+    vi.mocked(clearAgentPresenceUnfenced).mockResolvedValue(undefined);
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+  });
+
+  function connectionTokenFromSetCall(callIndex = 0): string {
+    const call = vi.mocked(setAgentPresence).mock.calls[callIndex];
+    if (!call) throw new Error(`no setAgentPresence call at index ${callIndex}`);
+    return call[1].connectionToken;
+  }
+
+  it('onOpen sets a fenced presence lease bound to this instance with a fresh token', async () => {
+    const handlers = createAgentWsHandlers('agent-p1', { deviceId: 'device-p1', orgId: 'org-p1' });
+
+    await handlers.onOpen({}, wsMock() as any);
+
+    expect(setAgentPresence).toHaveBeenCalledTimes(1);
+    const [agentId, lease] = vi.mocked(setAgentPresence).mock.calls[0]!;
+    expect(agentId).toBe('agent-p1');
+    expect(lease.instanceId).toBe(INSTANCE_ID);
+    expect(typeof lease.connectionToken).toBe('string');
+    expect(lease.connectionToken.length).toBeGreaterThan(0);
+  });
+
+  it("a pong message refreshes the presence lease with this connection's token", async () => {
+    const handlers = createAgentWsHandlers('agent-p2', { deviceId: 'device-p2', orgId: 'org-p2' });
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+    const token = connectionTokenFromSetCall();
+
+    await handlers.onMessage({ data: JSON.stringify({ type: 'pong' }) } as any, ws as any);
+
+    expect(refreshAgentPresence).toHaveBeenCalledWith('agent-p2', token);
+  });
+
+  it('a heartbeat message also refreshes the presence lease', async () => {
+    const handlers = createAgentWsHandlers('agent-p2b', { deviceId: 'device-p2b', orgId: 'org-p2b' });
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+    const token = connectionTokenFromSetCall();
+
+    await handlers.onMessage({ data: JSON.stringify({ type: 'heartbeat' }) } as any, ws as any);
+
+    expect(refreshAgentPresence).toHaveBeenCalledWith('agent-p2b', token);
+  });
+
+  it('self-heals by re-setting the lease when refresh fails but this socket is still live', async () => {
+    vi.mocked(refreshAgentPresence).mockResolvedValue(false);
+    const handlers = createAgentWsHandlers('agent-p3', { deviceId: 'device-p3', orgId: 'org-p3' });
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+    const token = connectionTokenFromSetCall();
+    vi.mocked(setAgentPresence).mockClear();
+
+    await handlers.onMessage({ data: JSON.stringify({ type: 'pong' }) } as any, ws as any);
+    // the refresh->self-heal chain is fire-and-forget (`void ...then(...)`) —
+    // flush microtasks so its callback has run before asserting.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(setAgentPresence).toHaveBeenCalledWith('agent-p3', { instanceId: INSTANCE_ID, connectionToken: token });
+  });
+
+  it('does NOT self-heal when the pong arrives on a superseded socket', async () => {
+    vi.mocked(refreshAgentPresence).mockResolvedValue(false);
+    const handlers = createAgentWsHandlers('agent-p4', { deviceId: 'device-p4', orgId: 'org-p4' });
+    const ws1 = wsMock();
+    const ws2 = wsMock();
+    await handlers.onOpen({}, ws1 as any);
+    await handlers.onOpen({}, ws2 as any); // supersedes ws1
+    vi.mocked(setAgentPresence).mockClear();
+
+    await handlers.onMessage({ data: JSON.stringify({ type: 'pong' }) } as any, ws1 as any);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(setAgentPresence).not.toHaveBeenCalled();
+  });
+
+  it('onClose clears the presence lease for the current socket', async () => {
+    const handlers = createAgentWsHandlers('agent-p5', { deviceId: 'device-p5', orgId: 'org-p5' });
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+    const token = connectionTokenFromSetCall();
+
+    await handlers.onClose({}, ws as any);
+
+    expect(clearAgentPresence).toHaveBeenCalledWith('agent-p5', token);
+  });
+
+  it("onClose of a superseded (orphan) socket does NOT clear the live socket's lease", async () => {
+    const handlers = createAgentWsHandlers('agent-p6', { deviceId: 'device-p6', orgId: 'org-p6' });
+    const ws1 = wsMock();
+    const ws2 = wsMock();
+    await handlers.onOpen({}, ws1 as any);
+    await handlers.onOpen({}, ws2 as any); // supersedes ws1
+
+    await handlers.onClose({}, ws1 as any); // orphan's late close
+
+    expect(clearAgentPresence).not.toHaveBeenCalled();
+  });
+
+  it('onError clears the presence lease for the current socket', async () => {
+    const handlers = createAgentWsHandlers('agent-p7', { deviceId: 'device-p7', orgId: 'org-p7' });
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+    const token = connectionTokenFromSetCall();
+
+    handlers.onError({}, ws as any);
+
+    expect(clearAgentPresence).toHaveBeenCalledWith('agent-p7', token);
+  });
+});
+
+// Wave 3.5b (#4084) — socket-local dispatch must fail LOUDLY in the worker
+// role rather than silently returning false/offline (the every-agent-reads-
+// offline failure mode this wave exists to kill). A worker-role process never
+// holds sockets, so these three entry points are unreachable there by design.
+describe('worker-role runtime assertions (wave 3.5b #4084)', () => {
+  const originalRole = process.env.BREEZE_ROLE;
+
+  afterEach(() => {
+    if (originalRole === undefined) delete process.env.BREEZE_ROLE;
+    else process.env.BREEZE_ROLE = originalRole;
+  });
+
+  it('sendCommandToAgent throws (never returns false) in the worker role', () => {
+    process.env.BREEZE_ROLE = 'worker';
+
+    expect(() =>
+      sendCommandToAgent('agent-role-1', { id: 'c1', type: 'ping', payload: {} } as any)
+    ).toThrow(/BREEZE_ROLE/);
+  });
+
+  it('isAgentConnected throws in the worker role', () => {
+    process.env.BREEZE_ROLE = 'worker';
+
+    expect(() => isAgentConnected('agent-role-1')).toThrow(/BREEZE_ROLE/);
+  });
+
+  it('sendCommandToAgentAwaitResult throws (never resolves as offline) in the worker role', () => {
+    process.env.BREEZE_ROLE = 'worker';
+
+    // Not `async` — the guard throws synchronously, before a Promise is ever
+    // constructed, so callers see a real throw rather than a rejected Promise.
+    expect(() =>
+      sendCommandToAgentAwaitResult('agent-role-1', { id: 'c1', type: 'ping', payload: {} }, 1_000)
+    ).toThrow(/BREEZE_ROLE/);
+  });
+
+  it('does not throw for any of the three outside the worker role', () => {
+    process.env.BREEZE_ROLE = 'all';
+    expect(() => isAgentConnected('agent-role-2')).not.toThrow();
+
+    delete process.env.BREEZE_ROLE;
+    expect(() => isAgentConnected('agent-role-2')).not.toThrow();
   });
 });
 

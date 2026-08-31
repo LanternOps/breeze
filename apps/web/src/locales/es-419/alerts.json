@@ -181,6 +181,7 @@
     "title": "Título",
     "severity": "Gravedad",
     "status": "Estado",
+    "aiVerdict": "Veredicto de IA",
     "triggered": "Activado",
     "actions": "Acciones",
     "noAlertsMatchYourFilters": "Ninguna alerta coincide con sus filtros.",
@@ -520,6 +521,24 @@
     "deleteConfirm": "¿Eliminar plantilla \"{{name}}\"? Esto no se puede deshacer.",
     "deleteFailed": "No se pudo eliminar la plantilla.",
     "deleted": "Plantilla eliminada"
+  },
+  "alertVerdict": {
+    "label": {
+      "actionable": "Requiere acción",
+      "transient_self_healed": "Autorresuelto",
+      "recurring_pattern": "Patrón recurrente",
+      "duplicate_of_group": "Duplicado",
+      "needs_human": "Requiere revisión humana"
+    },
+    "confidence": "{{pct}}% de confianza",
+    "feedbackUp": "Este veredicto fue útil",
+    "feedbackDown": "Este veredicto no fue útil",
+    "feedbackThanks": "Gracias por tu comentario",
+    "feedbackTaken": "Alguien ya dejó comentarios sobre este veredicto",
+    "feedbackFailed": "No se pudo registrar el comentario",
+    "hideNoise": "Ocultar ruido marcado por IA",
+    "suggestionPending": "La IA sugirió una acción — revisar en Aprobaciones",
+    "none": "Aún no hay veredicto de IA"
   },
   "alertsPage": {
     "loadingAlerts": "Cargando alertas...",

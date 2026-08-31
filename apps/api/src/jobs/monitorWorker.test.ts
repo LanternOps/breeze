@@ -94,9 +94,9 @@ vi.mock('../services/redis', () => ({
   isBullMQAvailable: vi.fn(() => true),
 }));
 
-vi.mock('../routes/agentWs', () => ({
-  sendCommandToAgent: vi.fn(),
-  isAgentConnected: vi.fn()
+vi.mock('../services/agentCommandRelay', () => ({
+  dispatchCommandToAgent: vi.fn(),
+  isAgentConnectedAnywhere: vi.fn()
 }));
 
 vi.mock('../routes/monitors', () => ({
@@ -115,6 +115,8 @@ vi.mock('../services/alertService', () => ({
 import { db } from '../db';
 import { isCooldownActive, setCooldown } from '../services/alertCooldown';
 import { resolveAlert } from '../services/alertService';
+import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
+import { buildMonitorCommand } from '../routes/monitors';
 
 function selectLimitResolved(rows: unknown[]) {
   return {
@@ -146,7 +148,12 @@ function selectWhereOrderLimitResolved(rows: unknown[]) {
   };
 }
 
-const { recordMonitorCheckResult, processScheduler, selectExecutionAgentForMonitor } = await import('./monitorWorker');
+const {
+  recordMonitorCheckResult,
+  processScheduler,
+  selectExecutionAgentForMonitor,
+  processCheckMonitor,
+} = await import('./monitorWorker');
 
 describe('selectExecutionAgentForMonitor (SR5-08 site-bound fallback)', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -400,5 +407,87 @@ describe('recordMonitorCheckResult', () => {
     const stateSet = txUpdateSet.mock.calls[0]![0] as { lastError: string };
     expect(stateSet.lastError).toContain('[PRIVATE_KEY_REDACTED]');
     expect(stateSet.lastError).not.toContain('BEGIN RSA PRIVATE KEY');
+  });
+});
+
+describe('processCheckMonitor (wave 3.5b #4084 — dispatch via facade)', () => {
+  const MONITOR_ROW = {
+    id: 'monitor-1',
+    orgId: 'org-1',
+    assetId: null,
+    isActive: true,
+    name: 'Edge Ping',
+    target: '8.8.8.8',
+    monitorType: 'icmp_ping',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(buildMonitorCommand).mockReturnValue({
+      id: 'cmd-1',
+      type: 'network_check',
+      payload: {},
+    } as never);
+  });
+
+  function wireMonitorAndAgentSelects(agentId: string | null) {
+    vi.mocked(db.select)
+      // monitor row lookup
+      .mockReturnValueOnce(selectLimitResolved([MONITOR_ROW]) as any)
+      // org-wide online agent lookup (assetless monitor)
+      .mockReturnValueOnce(selectLimitResolved(agentId ? [{ agentId }] : []) as any);
+  }
+
+  it('warns and returns not-dispatched when no agent is connected anywhere, without calling dispatch', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    wireMonitorAndAgentSelects(null);
+
+    const result = await processCheckMonitor({ type: 'check-monitor', monitorId: 'monitor-1', orgId: 'org-1' });
+
+    expect(result).toEqual({ dispatched: false, agentId: null });
+    expect(vi.mocked(dispatchCommandToAgent)).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('No online agent'));
+    warn.mockRestore();
+  });
+
+  it('returns dispatched:true on outcome sent, and dispatches with priority "probe"', async () => {
+    wireMonitorAndAgentSelects('agent-1');
+    vi.mocked(isAgentConnectedAnywhere).mockResolvedValue(true);
+    vi.mocked(dispatchCommandToAgent).mockResolvedValue({ status: 'sent', via: 'local' });
+
+    const result = await processCheckMonitor({ type: 'check-monitor', monitorId: 'monitor-1', orgId: 'org-1' });
+
+    expect(result).toEqual({ dispatched: true, agentId: 'agent-1' });
+    expect(vi.mocked(dispatchCommandToAgent)).toHaveBeenCalledWith(
+      'agent-1',
+      expect.anything(),
+      { priority: 'probe' }
+    );
+  });
+
+  it('returns dispatched:false and logs the outcome status when offline', async () => {
+    wireMonitorAndAgentSelects('agent-1');
+    vi.mocked(isAgentConnectedAnywhere).mockResolvedValue(true);
+    vi.mocked(dispatchCommandToAgent).mockResolvedValue({ status: 'offline' });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await processCheckMonitor({ type: 'check-monitor', monitorId: 'monitor-1', orgId: 'org-1' });
+
+    expect(result).toEqual({ dispatched: false, agentId: 'agent-1' });
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('offline'));
+    error.mockRestore();
+  });
+
+  it('returns dispatched:false and WARNS naming "indeterminate" so ops can tell "maybe sent" from "definitely not"', async () => {
+    wireMonitorAndAgentSelects('agent-1');
+    vi.mocked(isAgentConnectedAnywhere).mockResolvedValue(true);
+    vi.mocked(dispatchCommandToAgent).mockResolvedValue({ status: 'indeterminate' });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await processCheckMonitor({ type: 'check-monitor', monitorId: 'monitor-1', orgId: 'org-1' });
+
+    expect(result).toEqual({ dispatched: false, agentId: 'agent-1' });
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('indeterminate'));
+    error.mockRestore();
   });
 });

@@ -33,6 +33,10 @@ services:
       - ./apps/api/migrations:/app/apps/api/migrations:ro
       - ./packages/shared/src:/app/packages/shared/src:cached
       - ./ee/workspace/src:/app/ee/workspace/src:cached
+      # ee/workspace imports @breeze/extension-sdk (main: ./src/index.ts). Mount it
+      # too, or a mounted workspace hot-reloads against a baked, stale SDK
+      # (SyntaxError: does not provide an export named …) until --rebuild.
+      - ./packages/extension-sdk/src:/app/packages/extension-sdk/src:cached
       - ./ee/workspace/migrations:/app/ee/workspace/migrations:ro
       # The manifest is BAKED into the image, so without this mount a local edit
       # to its tenancy / orgExportColumns is invisible to the running container

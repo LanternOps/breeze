@@ -65,6 +65,38 @@ const CUSTOM_VALUE_MOVE_OWNERS_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-31-device-custom-value-move-owners.sql',
 );
+const SERIALIZE_BACKUP_REFERENCES_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-08-01-b-serialize-backup-policy-references.sql',
+);
+const SERIALIZE_ONEDRIVE_REFERENCES_MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-08-01-c-serialize-onedrive-policy-references.sql',
+);
+
+/**
+ * Restores what replaying 2026-07-26-a and 2026-07-27-b below (for their own
+ * idempotency coverage) undoes.
+ *
+ * Those two files unconditionally recreate
+ * `config_policy_backup_settings_tenant_integrity`,
+ * `config_policy_onedrive_settings_tenant_integrity`, and
+ * `config_policy_onedrive_libraries_tenant_integrity` — three row-level
+ * BEFORE UPDATE triggers that 2026-08-01-b/2026-08-01-c later DROP in favor
+ * of statement-level serialization triggers. The migration ledger says those
+ * row-level triggers are gone; replaying the earlier files out of order
+ * silently brings them back into the shared test database, and whichever
+ * suite runs next inherits them — orgMergeRegistry.integration.test.ts's live
+ * `pg_trigger` scan (org lifecycle wave 2, #4074) then finds them
+ * unclassified and fails. Re-applying the later migrations here restores the
+ * state the ledger already claims is true; both are idempotent by
+ * construction (CREATE OR REPLACE FUNCTION + DROP TRIGGER IF EXISTS).
+ */
+async function restoreConfigPolicyReferenceSerialization(): Promise<void> {
+  const db = getTestDb();
+  await db.execute(sql.raw(readFileSync(SERIALIZE_BACKUP_REFERENCES_MIGRATION_FILE, 'utf8')));
+  await db.execute(sql.raw(readFileSync(SERIALIZE_ONEDRIVE_REFERENCES_MIGRATION_FILE, 'utf8')));
+}
 
 describe('partner desired-configuration material watermarks', () => {
   runDb('migration is idempotent and creates forced org-axis RLS', async () => {
@@ -152,6 +184,11 @@ describe('partner desired-configuration material watermarks', () => {
     await expect(db.execute(sql.raw(featureReferenceMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(onedriveReferenceMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(onedriveReferenceMigration))).resolves.toBeDefined();
+    // See restoreConfigPolicyReferenceSerialization's docstring: the two
+    // replays above just resurrected three row-level tenant-integrity
+    // triggers that later migrations drop for good. Put the schema back the
+    // way the ledger says it already is before any other suite reads it.
+    await restoreConfigPolicyReferenceSerialization();
     // Re-applying 07-26-b recreates the pre-parity implementation under the
     // public name. The fix-forward migration must restore its wrapper and must
     // itself remain idempotent.

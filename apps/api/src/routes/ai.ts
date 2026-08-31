@@ -26,7 +26,7 @@ import {
 import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { streamingSessionManager } from '../services/streamingSessionManager';
-import { getUsageSummary, updateBudget, getSessionHistory, recordUsage } from '../services/aiCostTracker';
+import { getUsageSummary, updateBudget, getSessionHistory, recordUsage, type CatalogPricingSnapshot } from '../services/aiCostTracker';
 import { createTicket, changeTicketStatus, TicketServiceError } from '../services/ticketService';
 import { createTimeEntry } from '../services/timeEntryService';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -50,7 +50,7 @@ import { getConfig } from '../config/validate';
 import { OpenAICompatibleProvider } from '../services/llm/openaiCompatibleProvider';
 import { OpenAISessionManager } from '../services/llm/openaiSessionManager';
 import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
-import { getAnthropicClientForPartner, LlmUnavailableError } from '../services/llm/llmConfigResolver';
+import { getAnthropicClientForPartner, LlmUnavailableError, resolveWireModel } from '../services/llm/llmConfigResolver';
 import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
@@ -407,15 +407,26 @@ aiRoutes.post(
 
     let draft;
     let billingSource: 'platform' | 'partner_key' = 'platform';
+    let catalogPricing: CatalogPricingSnapshot | undefined;
     try {
-      const { client, resolved } = await getAnthropicClientForPartner(org.partnerId ?? null);
+      const { client, resolved } = await getAnthropicClientForPartner(org.partnerId ?? null, {
+        surface: 'one_shot_ticket_draft',
+        orgId: session.orgId,
+      });
       billingSource = resolved.source === 'partner' ? 'partner_key' : 'platform';
+      // The session's model translated to what the resolved endpoint speaks —
+      // a catalog endpoint 404s on the platform-logical id. Throws
+      // LlmUnavailableError (handled below as a 503) when the pinned revision
+      // has no verified mapping for this session's model.
+      const wire = resolveWireModel(resolved, model);
+      catalogPricing = wire.catalogPricing;
       draft = await draftTicketFromTranscript({
         messages: messages.map((m) => ({ role: m.role, content: m.content })),
         contextSnapshot: session.contextSnapshot,
         elapsedMinutes,
-        model,
+        model: wire.model,
         partnerId: org.partnerId ?? null,
+        orgId: session.orgId,
         client,
       });
     } catch (err) {
@@ -436,6 +447,9 @@ aiRoutes.post(
         draft.outputTokens,
         false,
         billingSource,
+        // Catalog traffic meters from the revision snapshot, never Anthropic
+        // list rates.
+        catalogPricing,
       );
     } catch {
       // non-fatal

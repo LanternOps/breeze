@@ -4,6 +4,7 @@ import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { portalUsers, organizations, partners } from '../db/schema';
 import { getRedis } from '../services/redis';
 import { getOrgPolicy, isClientUserPermitted } from '../services/clientAiPolicy';
+import { getActiveOrgTenant } from '../services/tenantStatus';
 import {
   CLIENT_AI_REDIS_KEYS,
   CLIENT_AI_SESSION_TTL_SECONDS,
@@ -82,6 +83,30 @@ export async function clientAiAuthMiddleware(c: Context, next: Next) {
 
   if (user.status !== 'active') {
     return c.json({ error: 'Account is not active' }, 403);
+  }
+
+  // Org-status gate — the same one portalAuthMiddleware carries, because this
+  // is the SECOND portal_users ingress and it opens an org-scoped WRITE context
+  // below. Without it an add-in user of a suspended, offboarding, archived or
+  // (org-lifecycle Wave 2) `merging` org keeps inserting ai_messages and
+  // updating ai_sessions; during a merge those rows land under the loser after
+  // the fence and are stranded by the re-tenant, then destroyed by the erasure.
+  //
+  // Deliberately NOT wrapped in try/catch: `getActiveOrgTenant` throwing means
+  // we could not establish that the org is usable, and the correct response to
+  // that is to fail the request, not to admit it. An unhandled rejection here
+  // surfaces as a 500 — closed, which is the only safe direction for a gate.
+  const activeOrg = await getActiveOrgTenant(user.orgId);
+  if (!activeOrg) {
+    // Drop the session and its index entry so the add-in re-exchanges (and is
+    // refused at the exchange) rather than retrying this token every poll.
+    try {
+      await redis.del(CLIENT_AI_REDIS_KEYS.session(token));
+      await redis.srem(CLIENT_AI_REDIS_KEYS.userSessions(user.id), token);
+    } catch (error) {
+      console.error('[client-ai] Failed to purge session for an unavailable org:', error);
+    }
+    return c.json({ error: 'Organization is not available' }, 403);
   }
 
   // Sliding session timeout: any authenticated activity pushes expiry forward.

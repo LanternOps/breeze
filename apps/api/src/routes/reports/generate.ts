@@ -4,6 +4,7 @@ import { authMiddleware, requirePermission, requireScope } from '../../middlewar
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
   generateReport,
+  StoredArtifactOnlyReportError,
   UnexecutableReportScopeError,
   type ReportResult,
 } from '../../services/reportGenerationService';
@@ -73,6 +74,13 @@ generateRoutes.post(
     } catch (error) {
       if (error instanceof UnexecutableReportScopeError) {
         return c.json({ error: 'Device not found or access denied' }, 403);
+      }
+      // P2-3 (#4190) — unreachable through this route today (the ad-hoc
+      // generate schema already rejects the internal type with a 400), but
+      // mapped rather than rethrown so a future type whose artifact is stored
+      // surfaces as a 409 the first time it is asked for, not a 500.
+      if (error instanceof StoredArtifactOnlyReportError) {
+        return c.json({ error: 'stored_artifact_only' }, 409);
       }
       throw error;
     }

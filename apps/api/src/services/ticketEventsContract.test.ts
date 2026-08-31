@@ -109,6 +109,7 @@ vi.mock('../db/schema', () => ({
   tickets: { id: 'id', orgId: 'orgId', status: 'status', assignedTo: 'assignedTo', firstResponseAt: 'firstResponseAt' },
   ticketComments: {},
   ticketAlertLinks: {},
+  ticketOutbox: {},
   organizations: { id: 'id', partnerId: 'partnerId' },
   alerts: { id: 'id', orgId: 'orgId' },
   users: { id: 'id', email: 'email', partnerId: 'partnerId' },
@@ -236,17 +237,21 @@ describe('ticket-events producer→consumer contract', () => {
     const event = hoisted.emitCaptured[0] as TicketEvent;
     expect(event.type).toBe('ticket.status_changed');
 
-    // Verify payload field names via narrowed access — this is the seam assertion
+    // Verify payload field names via narrowed access — this is the seam assertion.
+    // #3828 wave-6-3 task 2: resolutionNote is deliberately ABSENT from the
+    // payload now (free-text ticket content never rides the event) — the
+    // worker instead reads it off the ticket row fetched by handleTicketEvent.
     if (event.type === 'ticket.status_changed') {
       expect(event.payload.to).toBe('resolved');
       expect(event.payload.from).toBe('open');
-      expect(event.payload.resolutionNote).toBe('Fixed the printer.');
+      expect(event.payload).not.toHaveProperty('resolutionNote');
     }
 
-    // Worker: ticket lookup
+    // Worker: ticket lookup — resolutionNote now comes from THIS row, not the
+    // event payload.
     hoisted.selectQueue.push([{
       id: 't-c3', orgId: 'o-1', internalNumber: 'T-2026-C001', subject: 'Contract test',
-      submitterEmail: 'user@acme.example'
+      submitterEmail: 'user@acme.example', resolutionNote: 'Fixed the printer.', status: 'resolved'
     }]);
 
     await handleTicketEvent(event);

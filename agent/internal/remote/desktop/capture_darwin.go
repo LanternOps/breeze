@@ -53,8 +53,14 @@ static int loadDisplayFromShareableContent(id content, int displayIndex, id *out
     if (content == nil || outDisplay == nil) return 2;
 
     NSArray *displays = [content valueForKey:@"displays"];
-    if (displays == nil || displays.count == 0) {
+    if (displays == nil) {
         return 2;
+    }
+    // #4042: zero displays is NOT the same failure as a content request that
+    // errored. Nothing is attached to capture — no permission change can fix
+    // it. Reporting 2 here made the two indistinguishable in the Go error.
+    if (displays.count == 0) {
+        return 11;
     }
 
     NSUInteger idx = (NSUInteger)displayIndex;
@@ -258,6 +264,13 @@ void releaseCapture(void) {
     g_config = nil;
 }
 
+// activeDisplayCount reports how many displays the window server currently
+// has. One integer separates "nothing is attached" from "permission problem"
+// (#4042) — the distinction that took four rounds to establish on #3380.
+int activeDisplayCount(void) {
+    return (int)[NSScreen screens].count;
+}
+
 // getScreenBounds returns the bounds of the specified display
 void getScreenBounds(int displayIndex, int* width, int* height, int* error) {
     *error = 0;
@@ -332,8 +345,12 @@ func newPlatformCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	if hasSCScreenshotManager() {
 		cap, sckErr := newSCKCapturer(config)
 		if sckErr != nil {
+			// Log the display count alongside the error: a zero here means the
+			// fallback is also doomed and the cause is a missing framebuffer,
+			// not a permission (#4042).
 			slog.Warn("ScreenCaptureKit init failed, falling back to CoreGraphics",
-				"error", sckErr.Error(), "darwinVersion", macOSMajorVersion)
+				"error", sckErr.Error(), "darwinVersion", macOSMajorVersion,
+				"activeDisplayCount", int(C.activeDisplayCount()))
 			cgCap, cgErr := newCGCapturer(config)
 			if cgErr != nil {
 				return nil, fmt.Errorf("SCK failed (%v); CG fallback also failed: %w", sckErr, cgErr)
@@ -466,32 +483,12 @@ func getScreenBoundsC(displayIndex int) (int, int, error) {
 	return int(cWidth), int(cHeight), nil
 }
 
-// translateDarwinError converts C error codes to Go errors
+// translateDarwinError forwards to the platform-neutral mapping in
+// capture_errors.go. That file carries no build tag on purpose: this one is
+// `darwin && cgo`, and the Test Agent CI job runs on ubuntu-latest, so a test
+// living beside this function would compile out and never run (#4042).
 func translateDarwinError(code int) error {
-	switch code {
-	case 1:
-		return fmt.Errorf("failed to get display list")
-	case 2:
-		return ErrDisplayNotFound
-	case 3:
-		return ErrPermissionDenied
-	case 4:
-		return fmt.Errorf("memory allocation failed")
-	case 5:
-		return fmt.Errorf("failed to create bitmap context")
-	case 6:
-		return fmt.Errorf("capturer not initialized — call initCapture first")
-	case 7:
-		return fmt.Errorf("ScreenCaptureKit timed out — process may lack Screen Recording permission (check System Settings > Privacy > Screen Recording)")
-	case 8:
-		return fmt.Errorf("macOS capture backend not available")
-	case 9:
-		return fmt.Errorf("failed to create CGDisplayStream")
-	case 10:
-		return fmt.Errorf("failed to start CGDisplayStream")
-	default:
-		return fmt.Errorf("unknown error: %d", code)
-	}
+	return translateCaptureError(code)
 }
 
 var _ ScreenCapturer = (*darwinCapturer)(nil)

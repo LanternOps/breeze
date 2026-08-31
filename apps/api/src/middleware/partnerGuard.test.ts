@@ -5,7 +5,8 @@ vi.mock('../services/jwt', () => ({
 }));
 
 const limitMock = vi.fn();
-const updateWhereMock = vi.fn().mockResolvedValue(undefined);
+const updateReturningMock = vi.fn().mockResolvedValue([{ id: 'p-1' }]);
+const updateWhereMock = vi.fn(() => ({ returning: updateReturningMock }));
 const updateSetMock = vi.fn((_values: Record<string, unknown>) => ({ where: updateWhereMock }));
 const updateMock = vi.fn((_table: unknown) => ({ set: updateSetMock }));
 vi.mock('../db', () => ({
@@ -123,7 +124,8 @@ describe('partnerGuard — fail closed (SR-005)', () => {
 describe('partnerGuard — activation reconciliation (#718)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    updateWhereMock.mockResolvedValue(undefined);
+    updateWhereMock.mockReturnValue({ returning: updateReturningMock });
+    updateReturningMock.mockResolvedValue([{ id: 'p-1' }]);
   });
 
   it('reconciles a stranded pending partner (email verified + payment attached) to active and lets the request through', async () => {

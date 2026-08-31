@@ -1,11 +1,13 @@
 import { and, desc, eq, isNull, or } from 'drizzle-orm';
-import type { CreateAiAgentInput, UpdateAiAgentInput } from '@breeze/shared';
+import type { AiAgentActAssets, AiAgentRecipients, CreateAiAgentInput, UpdateAiAgentInput } from '@breeze/shared';
 import { db } from '../../db';
 import { aiAgents, type AiAgentRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { createAuditLog } from '../auditService';
 import { captureException } from '../sentry';
 import { getEventBus } from '../eventBus';
+import { type RejectedAuthorizationKey, validateAuthorizationKeys } from '../actionIntents/policyDecidable';
+import { ACT_ELIGIBLE_TOOL_NAMES } from './actManifest';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 import { isSupportedAgentMode } from './constants';
 import { normalizeAgentPolicy } from './effectivePolicy';
@@ -14,7 +16,7 @@ import {
   setManagedAutomationEnabled,
   syncManagedAutomation,
 } from './managedAutomation';
-import { validateAgentRecipients } from './recipients';
+import { hasResolvableAgentRecipient, validateAgentRecipients } from './recipients';
 
 export class UnsupportedAgentModeError extends Error {
   readonly code = 'mode_not_supported';
@@ -48,6 +50,127 @@ export class AgentKindConflictError extends Error {
     super(`agent_kind_exists: ${kind}`);
     this.name = 'AgentKindConflictError';
   }
+}
+
+/**
+ * Wave 5 Part B (#3827). `actAssets.supervisedActionKeys` is the operator's
+ * explicit per-agent authorization for `attemptPolicyDecision` to resolve a
+ * matching Tier-3 intent WITHOUT human fanout — so an unknown, four_eyes,
+ * Tier-4/blocked, or secret-bearing key must never be persisted here. `rejected`
+ * names exactly which keys failed and why (validateAuthorizationKeys,
+ * policyDecidable.ts) so the client (Task 5's editor) can render an actionable
+ * message rather than a bare 422.
+ */
+export class InvalidSupervisedActionKeysError extends Error {
+  readonly code = 'invalid_supervised_action_keys';
+
+  constructor(public rejected: RejectedAuthorizationKey[]) {
+    super(`invalid_supervised_action_keys: ${rejected.map((r) => r.key).join(', ')}`);
+    this.name = 'InvalidSupervisedActionKeysError';
+  }
+}
+
+/**
+ * Wave 4 Part B (Task 6, #3826). A write that would leave the row with
+ * `mode: 'act'` must clear two prerequisites BEFORE anything is persisted:
+ * at least one recipient that currently resolves to a real user (an
+ * unattended agent nobody can be notified about is worse than no agent), and
+ * at least one act-eligible allowlisted surface (an act-mode agent that can
+ * never actually reach the manifest is a mode flag with no effect — the
+ * operator almost certainly meant something else). `missing` names exactly
+ * which ones failed so the client can render an actionable message rather
+ * than a bare "not met".
+ */
+export class ActPrerequisitesNotMetError extends Error {
+  readonly code = 'act_prerequisites_not_met';
+
+  constructor(public missing: Array<'recipient' | 'act_eligible_tool'>) {
+    super(`act_prerequisites_not_met: ${missing.join(', ')}`);
+    this.name = 'ActPrerequisitesNotMetError';
+  }
+}
+
+/**
+ * Task 6's second prerequisite: the allowlist must intersect the manifest's
+ * real tool names, and `run_script` only counts when at least one script is
+ * actually authorized (`actAssets.scriptIds`) — an allowlist admitting
+ * run_script with an empty actAssets is exactly "never act-eligible" (Global
+ * Constraints, plan header), not a real surface.
+ *
+ * Allowlist entries are matched by BASE tool name, not exact string.
+ * checkAgentGuardrails (aiGuardrails.ts) admits an allowlist entry in either
+ * the bare `toolName` form or the scoped `toolName:action` form for
+ * action-multiplexed tools (manage_services, disk_cleanup, ...) — the guardrail
+ * is authoritative, so this prerequisite must recognize the same scoped form.
+ * Without this, the tightest and repo-documented act config
+ * (`['manage_services:restart']`, packages/shared/src/validators/aiAgents.test.ts)
+ * would be refused with a 422 even though it is a real act-eligible surface.
+ */
+function hasActEligibleSurface(
+  toolAllowlist: string[],
+  actAssets: Partial<AiAgentActAssets>,
+): boolean {
+  // Wave 5 Part B (#3827): a non-empty supervisedActionKeys set is ITSELF a
+  // real act-eligible surface — exactly what makes the agent act unattended
+  // for those keys — independent of the wave-4 ACT_MANIFEST/toolAllowlist
+  // check below. Without this branch, an agent configured ONLY for
+  // policy-decide on a tool ACT_MANIFEST doesn't cover (security_scan,
+  // manage_startup_items, manage_scheduled_tasks all qualify;
+  // manage_services happens to overlap both lanes) could never satisfy this
+  // prerequisite and so could never enter act mode at all — the write-time
+  // key validation (assertSupervisedActionKeysValid) already guarantees any
+  // non-empty value here is genuine POLICY_DECIDABLE_TIER3 membership, so
+  // trusting length alone is safe.
+  if ((actAssets.supervisedActionKeys?.length ?? 0) > 0) return true;
+
+  const eligible = new Set(ACT_ELIGIBLE_TOOL_NAMES);
+  const baseName = (entry: string): string => entry.split(':', 1)[0] ?? entry;
+  const intersecting = toolAllowlist.filter((entry) => eligible.has(baseName(entry)));
+  if (intersecting.some((entry) => baseName(entry) !== 'run_script')) return true;
+  if (!intersecting.some((entry) => baseName(entry) === 'run_script')) return false;
+  return (actAssets.scriptIds?.length ?? 0) > 0;
+}
+
+/**
+ * Wave 5 Part B (#3827) write-time gate. Validates exactly the keys THIS
+ * write is setting — never the merged/stored value — so a key the registry
+ * has since dropped stays stored-but-inert (Design authority, plan header:
+ * "stored authorization keys tolerated-but-inert when the registry drops
+ * them") rather than retroactively blocking an unrelated future edit that
+ * never touches actAssets.supervisedActionKeys at all. No-op on an absent or
+ * empty array.
+ */
+function assertSupervisedActionKeysValid(keys: string[] | undefined): void {
+  if (!keys || keys.length === 0) return;
+  const { rejected } = validateAuthorizationKeys(keys);
+  if (rejected.length > 0) throw new InvalidSupervisedActionKeysError(rejected);
+}
+
+/**
+ * Throws ActPrerequisitesNotMetError unless the write's RESULTING mode is
+ * something other than 'act', or both prerequisites are met by what will
+ * actually be persisted — never by the caller's raw patch alone, which is
+ * how an update that patches only `mode: 'act'` onto an agent with existing
+ * recipients/allowlist correctly passes.
+ */
+async function assertActPrerequisites(
+  owner: AgentOwner,
+  resolved: {
+    mode: string;
+    toolAllowlist: string[];
+    actAssets: Partial<AiAgentActAssets>;
+    recipients: Partial<AiAgentRecipients>;
+  },
+): Promise<void> {
+  if (resolved.mode !== 'act') return;
+
+  const missing: Array<'recipient' | 'act_eligible_tool'> = [];
+  const hasRecipient = await hasResolvableAgentRecipient(owner, resolved.recipients);
+  if (!hasRecipient) missing.push('recipient');
+  if (!hasActEligibleSurface(resolved.toolAllowlist, resolved.actAssets)) {
+    missing.push('act_eligible_tool');
+  }
+  if (missing.length > 0) throw new ActPrerequisitesNotMetError(missing);
 }
 
 export interface AgentOwner {
@@ -88,6 +211,7 @@ function createPolicyColumns(input: CreateAiAgentInput): Partial<typeof aiAgents
     limits: input.limits,
     triggers: input.triggers,
     recipients: input.recipients,
+    actAssets: input.actAssets,
   };
 }
 
@@ -110,6 +234,9 @@ function updatePolicyColumns(
     ...(input.recipients === undefined
       ? {}
       : { recipients: { ...stored.recipients, ...input.recipients } }),
+    ...(input.actAssets === undefined
+      ? {}
+      : { actAssets: { ...stored.actAssets, ...input.actAssets } }),
   };
 }
 
@@ -281,6 +408,22 @@ export async function createAgent(
   // silently never hears anything.
   await validateAgentRecipients(owner, input.recipients ?? {});
 
+  // Wave 5 Part B (#3827): a create-supplied supervisedActionKeys set is
+  // validated against POLICY_DECIDABLE_TIER3 before anything is written, same
+  // reason as recipients above — a rejected key must never be persisted.
+  assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
+
+  // Task 6 (#3826): a create that would land with mode: 'act' must already
+  // have a resolvable recipient and an act-eligible surface — checked against
+  // exactly what THIS create will persist (input's own fields are already
+  // complete: createAiAgentSchema materializes every nested default).
+  await assertActPrerequisites(owner, {
+    mode: input.mode,
+    toolAllowlist: input.toolAllowlist,
+    actAssets: input.actAssets,
+    recipients: input.recipients,
+  });
+
   // Pre-check the partial unique indexes on (partner_id, kind) and (org_id,
   // kind) WHERE disabled_at IS NULL. Letting the insert trip 23505 is not an
   // option here: the whole request runs inside one withDbAccessContext
@@ -335,15 +478,35 @@ export async function updateAgent(
   }
   assertAgentWriteAllowed(auth, existing);
 
+  const stored = normalizeAgentPolicy(existing);
+  const owner: AgentOwner = { orgId: existing.orgId, partnerId: existing.partnerId };
+
   // Validate the MERGED recipients — the exact object updatePolicyColumns
   // persists ({ ...stored, ...patch }), so what is checked is what is stored.
+  const mergedRecipients = input.recipients === undefined
+    ? stored.recipients
+    : { ...stored.recipients, ...input.recipients };
   if (input.recipients !== undefined) {
-    const stored = normalizeAgentPolicy(existing);
-    await validateAgentRecipients(
-      { orgId: existing.orgId, partnerId: existing.partnerId },
-      { ...stored.recipients, ...input.recipients },
-    );
+    await validateAgentRecipients(owner, mergedRecipients);
   }
+
+  // Wave 5 Part B (#3827): validate only the keys THIS patch is setting, not
+  // the merged/stored value — see assertSupervisedActionKeysValid's doc.
+  if (input.actAssets?.supervisedActionKeys !== undefined) {
+    assertSupervisedActionKeysValid(input.actAssets.supervisedActionKeys);
+  }
+
+  // Task 6 (#3826): prerequisites are checked against what the update will
+  // actually PERSIST (merged, same as recipients above) — never just the raw
+  // patch. A PATCH touching only `mode: 'act'` on an already-equipped agent
+  // passes; a PATCH that narrows the allowlist/actAssets/recipients out from
+  // under an existing act-mode agent is refused before the UPDATE runs.
+  await assertActPrerequisites(owner, {
+    mode: input.mode ?? stored.mode,
+    toolAllowlist: input.toolAllowlist ?? stored.toolAllowlist,
+    actAssets: input.actAssets === undefined ? stored.actAssets : { ...stored.actAssets, ...input.actAssets },
+    recipients: mergedRecipients,
+  });
 
   const [row] = await db
     .update(aiAgents)

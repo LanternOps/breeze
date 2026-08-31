@@ -5,6 +5,7 @@ import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { aiAgents } from '../../db/schema';
 import { resolveEffectiveAgent } from '../../services/aiAgents/effectivePolicy';
 import type { AuthContext } from '../../middleware/auth';
+import { AI_AGENT_POLICY_SNAPSHOT_VERSION } from '@breeze/shared';
 import { createOrganization, createPartner, createUser } from './db-utils';
 
 // resolveEffectiveAgent against REAL Postgres. A mocked-DB unit test cannot
@@ -92,7 +93,7 @@ describe('resolveEffectiveAgent under real RLS', () => {
     expect(resolved!.effective.mode).toBe('shadow');            // org asked for 'act'
     expect(resolved!.effective.toolAllowlist).toEqual(['run_script']); // intersection
     expect(resolved!.effective.limits.maxDevicesPerRun).toBe(10);      // org asked for 50
-    expect(resolved!.schemaVersion).toBe(1);
+    expect(resolved!.schemaVersion).toBe(AI_AGENT_POLICY_SNAPSHOT_VERSION);
   });
 
   it('the platform kill switch forces every resolved agent off', async () => {

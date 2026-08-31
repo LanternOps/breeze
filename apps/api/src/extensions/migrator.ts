@@ -127,6 +127,56 @@ async function loadAppliedExtensionMigrations(
   return new Set(rows.map((r) => r.filename));
 }
 
+/** Read-only view of an extension's ledger parity: which of its on-disk
+ *  migration files are missing from `breeze_migrations`, and which are
+ *  present with a checksum that no longer matches the on-disk file. */
+export interface ExtensionMigrationParity {
+  missing: string[];
+  mismatched: string[];
+}
+
+/**
+ * Checks (never applies) whether an extension's on-disk migrations are fully
+ * reflected in the ledger — the `mode: 'worker'` counterpart to
+ * {@link reconcileExtensionMigrations} (wave 3.5d-b, #4086). A worker-role
+ * process never runs extension migrations; it only verifies that some
+ * api/all-role process already has, exactly like `db/migrationParity.ts`
+ * does for core migrations.
+ *
+ * Takes a plain `postgres.Sql` (pool or single connection) — this is a
+ * one-shot read with no lock and no transaction, unlike
+ * `reconcileExtensionMigrations`'s reserved-connection + advisory-lock
+ * section.
+ */
+export async function checkExtensionMigrationParity(
+  extension: Pick<MigratableExtension, 'name' | 'migrations'>,
+  sql: postgres.Sql,
+): Promise<ExtensionMigrationParity> {
+  const { name, migrations } = extension;
+  // Same namespaced LIKE query as loadAppliedExtensionMigrations, but reading
+  // checksums too since parity is about content, not just presence.
+  const rows = await sql.unsafe<{ filename: string; checksum: string }[]>(
+    `SELECT filename, checksum FROM ${MIGRATION_TABLE} WHERE filename LIKE $1`,
+    [`${name}/%`],
+  );
+  const ledger = new Map(rows.map((row) => [row.filename, row.checksum]));
+
+  const missing: string[] = [];
+  const mismatched: string[] = [];
+  for (const file of migrations) {
+    const ledgerName = `${name}/${file.filename}`;
+    const ledgerChecksum = ledger.get(ledgerName);
+    if (ledgerChecksum === undefined) {
+      missing.push(ledgerName);
+      continue;
+    }
+    if (hashSql(file.sql) !== ledgerChecksum) {
+      mismatched.push(ledgerName);
+    }
+  }
+  return { missing, mismatched };
+}
+
 /**
  * Apply an extension's pending migrations transactionally, under a per-extension
  * advisory lock, enforcing the rollback and rolling-update gates first.

@@ -83,6 +83,13 @@ describe('clearAuthData', () => {
     expect(keys).toContain('breeze.approvals.cache.v1');
   });
 
+  it('removes the signed native binding with the rest of session authority', async () => {
+    await clearAuthData();
+
+    const keys = secureStore.deleteItemAsync.mock.calls.map((c) => c[0]);
+    expect(keys).toContain('breeze_native_auth_binding_v1');
+  });
+
   it('does not call Sentry or throw when every wipe succeeds', async () => {
     await expect(clearAuthData()).resolves.toBeUndefined();
     expect(sentry.captureException).not.toHaveBeenCalled();
