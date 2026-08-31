@@ -1687,7 +1687,7 @@
         "title": "Triage dei ticket",
         "fieldsTitle": "Campi proposti",
         "fields": {
-          "categoryId": "Categoria",
+          "categoryIdLabel": "ID categoria",
           "priority": "Priorità"
         },
         "confidence": "{{value}}% di confidenza",

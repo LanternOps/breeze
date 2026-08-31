@@ -1687,7 +1687,7 @@
         "title": "Talep önceliklendirme",
         "fieldsTitle": "Önerilen alanlar",
         "fields": {
-          "categoryId": "Kategori",
+          "categoryIdLabel": "Kategori Kimliği",
           "priority": "Öncelik"
         },
         "confidence": "{{value}}% güven",

@@ -932,6 +932,45 @@ describe('changeTicketStatus — aiDraftId (P2-4, #4191, Task A10)', () => {
     expect(draftUpdatePayload.consumedAt).toBeInstanceOf(Date);
   });
 
+  // C1 (final review #4191): a technician-edited resolutionNote supplied
+  // alongside aiDraftId must win over the draft's content — the draft is
+  // still locked/validated/consumed either way. Non-uniform fixture: the
+  // supplied text is deliberately different from the draft content so a
+  // regression that silently prefers the draft would fail loudly.
+  it('C1: supplied resolutionNote wins over draft content on the full-transition path; draft still consumed', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }])
+      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'resolution_note', state: 'active', content: 'AI-drafted note' }]);
+    dbMocks.updateReturning
+      .mockResolvedValueOnce([{ id: 't-1', status: 'resolved' }])
+      .mockResolvedValueOnce([{ id: 'draft-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'resolved' }, { resolutionNote: 'Technician-edited note', aiDraftId: 'draft-1' }, actor);
+
+    const ticketUpdatePayload = setMock.mock.calls[0]![0];
+    expect(ticketUpdatePayload).toMatchObject({ status: 'resolved', resolutionNote: 'Technician-edited note' });
+
+    // Draft was still locked/validated/consumed even though its content lost.
+    const draftUpdatePayload = setMock.mock.calls[1]![0];
+    expect(draftUpdatePayload).toMatchObject({ state: 'consumed', consumedBy: 'u-1' });
+  });
+
+  it('C1: empty/whitespace resolutionNote + aiDraftId falls back to draft content on the full-transition path', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }])
+      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'resolution_note', state: 'active', content: 'AI-drafted note' }]);
+    dbMocks.updateReturning
+      .mockResolvedValueOnce([{ id: 't-1', status: 'resolved' }])
+      .mockResolvedValueOnce([{ id: 'draft-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus('t-1', { status: 'resolved' }, { resolutionNote: '   ', aiDraftId: 'draft-1' }, actor);
+
+    const ticketUpdatePayload = setMock.mock.calls[0]![0];
+    expect(ticketUpdatePayload).toMatchObject({ status: 'resolved', resolutionNote: 'AI-drafted note' });
+  });
+
   it('404s when the draft does not exist', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }])
@@ -1011,6 +1050,36 @@ describe('changeTicketStatus — aiDraftId (P2-4, #4191, Task A10)', () => {
     const draftUpdatePayload = setMock.mock.calls[1]![0];
     expect(draftUpdatePayload).toMatchObject({ state: 'consumed', consumedBy: 'u-1' });
     expect(draftUpdatePayload.consumedAt).toBeInstanceOf(Date);
+  });
+
+  // C1 (final review #4191): same as the full-transition case above but for
+  // the same-status/statusId-relabel fast path — supplied resolutionNote
+  // still wins over the draft's content.
+  it('C1: supplied resolutionNote wins over draft content on the same-status fast path; draft still consumed', async () => {
+    const ticket = { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'resolved', statusId: 'old-status-id', resolvedAt: new Date('2026-08-01') };
+    dbMocks.selectResult
+      .mockResolvedValueOnce([ticket])
+      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'resolution_note', state: 'active', content: 'AI relabel note' }]);
+    configMocks.getTicketStatusById.mockResolvedValueOnce({
+      id: 'new-status-id', partnerId: 'p-1', coreStatus: 'resolved', name: 'Resolved - Verified', isActive: true
+    });
+    dbMocks.updateReturning
+      .mockResolvedValueOnce([{ ...ticket, statusId: 'new-status-id', resolutionNote: 'Technician-edited relabel note' }])
+      .mockResolvedValueOnce([{ id: 'draft-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await changeTicketStatus(
+      't-1',
+      { statusId: 'new-status-id' },
+      { resolutionNote: 'Technician-edited relabel note', aiDraftId: 'draft-1' },
+      actor
+    );
+
+    const ticketUpdatePayload = setMock.mock.calls[0]![0];
+    expect(ticketUpdatePayload).toMatchObject({ statusId: 'new-status-id', resolutionNote: 'Technician-edited relabel note' });
+
+    const draftUpdatePayload = setMock.mock.calls[1]![0];
+    expect(draftUpdatePayload).toMatchObject({ state: 'consumed', consumedBy: 'u-1' });
   });
 
   it('rejects aiDraftId on a non-resolve same-status fast-path transition (different statusId, same core status) with 400', async () => {

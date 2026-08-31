@@ -712,6 +712,105 @@ describe('TicketWorkbench AI drafts (#4191, Task 11)', () => {
     });
   });
 
+  // C1 (#4191 final review): the technician editing the prefilled note before
+  // submitting must NOT be silently replaced by the draft's original content.
+  // Non-uniform fixture — the edited text is deliberately different from
+  // resolutionDraft.content — so a regression that resends the draft's
+  // content instead of the edited value fails loudly.
+  it('C1: submits the technician-edited note (not the draft content) alongside aiDraftId', async () => {
+    mockDraftsApi([resolutionDraft]);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    await screen.findByTestId('ticket-ai-draft-resolution_note');
+
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
+
+    const note = screen.getByTestId('ticket-workbench-resolve-note') as HTMLTextAreaElement;
+    expect(note.value).toBe(resolutionDraft.content);
+    fireEvent.change(note, { target: { value: 'Technician-edited resolution note' } });
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ status: 'resolved', resolutionNote: 'Technician-edited resolution note', aiDraftId: 'draft-note-1' }),
+        }),
+      );
+    });
+  });
+
+  // I1 (#4191 final review): a 404 (stale draft id after a ticket switch,
+  // e.g. resolveDraftId survived from a prior ticket's aiDrafts state) used
+  // to fall through the `err.status === 409` check and loop forever. The
+  // recovery must match the sibling send/discard handlers (any non-401).
+  it('I1: on a 404 resolve conflict from a stale aiDraftId, drops it and retries without it (not just 409)', async () => {
+    let resolveAttempts = 0;
+    let consumed = false;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1' }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ enabled: false, flagSource: 'default', suggestion: null });
+      }
+      if (url === '/tickets/tk-1/ai-drafts' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: consumed ? [] : [resolutionDraft] });
+      }
+      if (url === '/tickets/tk-1/status' && init?.method === 'POST') {
+        resolveAttempts += 1;
+        if (resolveAttempts === 1) {
+          consumed = true;
+          return makeJsonResponse({ error: 'Draft not found' }, false, 404);
+        }
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1', status: 'resolved' }) });
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    await screen.findByTestId('ticket-ai-draft-resolution_note');
+
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
+    const note = screen.getByTestId('ticket-workbench-resolve-note') as HTMLTextAreaElement;
+    expect(note.value).toBe(resolutionDraft.content);
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ status: 'resolved', resolutionNote: resolutionDraft.content, aiDraftId: 'draft-note-1' }),
+        }),
+      );
+    });
+
+    expect(screen.getByTestId('ticket-workbench-resolve-form')).toBeInTheDocument();
+    expect(note.value).toBe(resolutionDraft.content);
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    // The second submit must NOT loop the same 404 forever — it posts without
+    // the now-dropped aiDraftId.
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ status: 'resolved', resolutionNote: resolutionDraft.content }),
+        }),
+      );
+    });
+  });
+
   it('on a 409 resolve conflict from a stale aiDraftId, keeps the typed note and retries without it', async () => {
     let resolveAttempts = 0;
     // Same rationale as the send-409 test above: an explicit "consumed" flag
@@ -790,6 +889,51 @@ describe('TicketWorkbench AI drafts (#4191, Task 11)', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/tickets/tk-1/ai-drafts'));
     expect(screen.queryByTestId('ticket-ai-draft-reply')).toBeNull();
     expect(screen.queryByTestId('ticket-ai-draft-resolution_note')).toBeNull();
+  });
+
+  // I2 (#4191 final review): ticket A's AI-draft card must clear as soon as
+  // ticketId switches — not linger until ticket B's ai-drafts fetch resolves.
+  // The new ticket's GET is held open (never resolved during the assertion)
+  // so a regression that only clears on refetch-complete would still show
+  // ticket A's stale card at the point we check.
+  it('I2: clears stale AI-draft cards immediately on ticket switch, before the new fetch resolves', async () => {
+    let resolveTk2Drafts!: (value: Response) => void;
+    const tk2DraftsPromise = new Promise<Response>((resolve) => { resolveTk2Drafts = resolve; });
+
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1', internalNumber: 'T-2026-0001' }) });
+      }
+      if (url === '/tickets/tk-2' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-2', internalNumber: 'T-2026-0002' }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' || url === '/tickets/tk-2/triage-suggestion') {
+        return makeJsonResponse({ enabled: false, flagSource: 'default', suggestion: null });
+      }
+      if (url === '/tickets/tk-1/ai-drafts' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: [replyDraft] });
+      }
+      if (url === '/tickets/tk-2/ai-drafts' && (!init?.method || init.method === 'GET')) {
+        return tk2DraftsPromise; // held open deliberately
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    const { rerender } = render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+    await screen.findByTestId('ticket-ai-draft-reply');
+
+    rerender(<TicketWorkbench ticketId="tk-2" assignees={[]} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ticket-workbench-number')).toHaveTextContent('T-2026-0002');
+    });
+    // Ticket A's card is gone even though ticket B's ai-drafts fetch is still
+    // unresolved at this point.
+    expect(screen.queryByTestId('ticket-ai-draft-reply')).toBeNull();
+
+    resolveTk2Drafts(makeJsonResponse({ data: [resolutionDraft] }));
+    await screen.findByTestId('ticket-ai-draft-resolution_note');
   });
 });
 

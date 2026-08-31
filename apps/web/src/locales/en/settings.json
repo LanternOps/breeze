@@ -1687,7 +1687,7 @@
         "title": "Ticket triage",
         "fieldsTitle": "Proposed fields",
         "fields": {
-          "categoryId": "Category",
+          "categoryIdLabel": "Category ID",
           "priority": "Priority"
         },
         "confidence": "{{value}}% confidence",

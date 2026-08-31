@@ -447,9 +447,13 @@ function TicketProposalSection({
           <ul className="space-y-1 text-sm">
             {proposal.fields?.categoryId && (
               <li data-testid="ai-agent-run-triage-field-categoryId">
-                <span className="font-medium">{t('aiAgentsPage.runs.triage.fields.categoryId')}</span>
+                {/* I3 (#4191 final review): this value is a raw category UUID
+                    (no catalog fetch here to resolve it to a name) — the
+                    "ID" label plus monospace styling makes that legible
+                    instead of reading as a broken/garbled category name. */}
+                <span className="font-medium">{t('aiAgentsPage.runs.triage.fields.categoryIdLabel')}</span>
                 {': '}
-                <span>{proposal.fields.categoryId.value}</span>{' '}
+                <span className="font-mono text-xs">{proposal.fields.categoryId.value}</span>{' '}
                 <span className="text-xs text-muted-foreground">
                   {t('aiAgentsPage.runs.triage.confidence', {
                     value: Math.round(proposal.fields.categoryId.confidence * 100),

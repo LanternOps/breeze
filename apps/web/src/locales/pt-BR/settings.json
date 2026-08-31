@@ -1687,7 +1687,7 @@
         "title": "Triagem de chamados",
         "fieldsTitle": "Campos propostos",
         "fields": {
-          "categoryId": "Categoria",
+          "categoryIdLabel": "ID da categoria",
           "priority": "Prioridade"
         },
         "confidence": "{{value}}% de confiança",

@@ -391,6 +391,13 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     setPendingStatusId(null);
     setResolveDraftId(null);
     setDeleteOpen(false);
+    // I2 (#4191 final review): without this, ticket A's AI-draft cards (and
+    // any in-progress per-draft edits) stayed visible until the new
+    // ticket's `refetchAiDrafts` call resolved — a stale card could even be
+    // sent/discarded against the wrong ticket. Clear both eagerly here
+    // rather than waiting on the `[ticket, ticketId]` refetch effect.
+    setAiDrafts([]);
+    setDraftContent({});
   }, [ticketId]);
 
   // Opens the resolve form and, when an active `resolution_note` AI draft
@@ -778,12 +785,15 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       });
     } catch (err) {
       if (!(err instanceof ActionError)) throw err;
-      // A 409 while an aiDraftId was attached means the resolution-note
-      // draft was consumed/discarded elsewhere since the form opened. Drop
-      // the now-dead id (and refetch the draft list, so its card
-      // disappears too) so the technician's next submit — the typed note
-      // stays put — POSTs without it, instead of looping the same 409.
-      if (err.status === 409 && resolveDraftId) {
+      // A non-401 failure while an aiDraftId was attached means the
+      // resolution-note draft is no longer valid — consumed/discarded
+      // elsewhere (409), OR its id is stale after a ticket switch reset it
+      // out from under this submit (404, I1 #4191 final review: matches the
+      // sibling send/discard recovery condition below, not just 409, so a
+      // 404 doesn't loop forever). Drop the now-dead id (and refetch the
+      // draft list, so its card disappears too) so the technician's next
+      // submit — the typed note stays put — POSTs without it.
+      if (err.status !== 401 && resolveDraftId) {
         setResolveDraftId(null);
         void refetchAiDrafts(ticketId);
       }

@@ -1687,7 +1687,7 @@
         "title": "Triaje de tickets",
         "fieldsTitle": "Campos propuestos",
         "fields": {
-          "categoryId": "Categoría",
+          "categoryIdLabel": "ID de categoría",
           "priority": "Prioridad"
         },
         "confidence": "{{value}}% confianza",

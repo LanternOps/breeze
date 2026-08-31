@@ -1687,7 +1687,7 @@
         "title": "Triage des tickets",
         "fieldsTitle": "Champs proposés",
         "fields": {
-          "categoryId": "Catégorie",
+          "categoryIdLabel": "ID de catégorie",
           "priority": "Priorité"
         },
         "confidence": "{{value}} % confiance",
