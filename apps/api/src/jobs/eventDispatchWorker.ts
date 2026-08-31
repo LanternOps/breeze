@@ -925,8 +925,7 @@ export async function initializeEventDispatchWorker(): Promise<void> {
       await maintenanceQueue.close().catch(() => {});
       maintenanceQueue = null;
     }
-    //
-    // Because it IS swallowed, this report is the only operator-visible trace
+    // Because the error IS swallowed, this report is the only visible trace
     // that retention never got scheduled — `workerStatus` deliberately gets no
     // `eventDispatchMaintenance` key, since `readiness.ts` fails readiness on
     // `outcomes.every(Boolean)` and a `false` there would pin `/ready` exactly
