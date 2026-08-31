@@ -12,9 +12,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // pre-check, mapping dispatch results onto action logs, and the caller-side
 // 'queued' status write for the undelivered-but-queued case.
 
-const { updateMock, dispatchMock } = vi.hoisted(() => ({
+const { updateMock, dispatchMock, resolveOwnedAutomationReferencesMock } = vi.hoisted(() => ({
   updateMock: vi.fn(),
   dispatchMock: vi.fn(),
+  resolveOwnedAutomationReferencesMock: vi.fn(),
+}));
+
+vi.mock('./automationReferenceAuthorization', () => ({
+  AutomationReferenceAuthorizationError: class AutomationReferenceAuthorizationError extends Error {
+    readonly code = 'unknown_or_unauthorized_reference';
+    constructor() {
+      super('Unknown or unauthorized automation reference');
+    }
+  },
+  resolveOwnedAutomationReferences: resolveOwnedAutomationReferencesMock,
 }));
 
 vi.mock('../db', () => ({
@@ -26,6 +37,7 @@ vi.mock('../db', () => ({
     insert: vi.fn(),
     update: updateMock,
     delete: vi.fn(),
+    transaction: vi.fn(),
   },
 }));
 
@@ -34,6 +46,7 @@ vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../db/schema', () => ({
   automationRuns: { id: 'id', automationId: 'automationId', status: 'status' },
   automationRunDeviceResults: { runId: 'runId', deviceId: 'deviceId' },
+  automationResourceBindings: { automationId: 'automationId', state: 'state', resourceKind: 'resourceKind', resourceId: 'resourceId' },
   configPolicyAutomations: { featureLinkId: 'featureLinkId' },
   configurationPolicies: { id: 'id', orgId: 'orgId' },
   devices: { id: 'id', hostname: 'hostname', osType: 'osType', status: 'status', displayName: 'displayName', agentId: 'agentId' },
@@ -57,7 +70,8 @@ vi.mock('./notificationSenders', () => ({
   sendWebhookNotification: vi.fn().mockResolvedValue({ success: false }),
 }));
 
-import { executeRunScriptAction } from './automationRuntime';
+import { db } from '../db';
+import { createAutomationRunRecord, executeRunScriptAction } from './automationRuntime';
 
 const EXECUTION_ID = '11111111-2222-4333-8444-555555555555';
 const RUN_ID = '99999999-8888-4777-8666-555555555555';
@@ -112,6 +126,49 @@ beforeEach(() => {
     delivered: true,
     executedAt: new Date('2026-08-14T00:00:00.000Z'),
     ignoredParameters: [],
+  });
+  resolveOwnedAutomationReferencesMock.mockReset().mockResolvedValue({
+    scriptsById: new Map(),
+    softwareCatalogsById: new Map(),
+    softwareVersionsByCatalogId: new Map(),
+    notificationChannelsById: new Map(),
+  });
+  vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db as any));
+});
+
+describe('createAutomationRunRecord — ownership admission', () => {
+  it('rejects a moved script before creating a run or any downstream execution state', async () => {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn(() => ({ where: vi.fn().mockResolvedValue([]) })),
+    } as any);
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn(() => ({
+        returning: vi.fn().mockResolvedValue([{ id: RUN_ID, logs: [] }]),
+      })),
+    } as any);
+    resolveOwnedAutomationReferencesMock.mockRejectedValueOnce(
+      Object.assign(new Error('Unknown or unauthorized automation reference'), {
+        code: 'unknown_or_unauthorized_reference',
+      }),
+    );
+
+    await expect(createAutomationRunRecord({
+      automation: {
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        orgId: null,
+        partnerId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        name: 'Moved reference',
+        trigger: { type: 'manual' },
+        conditions: null,
+        actions: [{ type: 'run_script', scriptId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }],
+        onFailure: 'stop',
+        notificationTargets: null,
+      } as never,
+      triggeredBy: 'manual:user-1',
+    })).rejects.toMatchObject({ code: 'unknown_or_unauthorized_reference' });
+
+    expect(vi.mocked(db.insert)).toHaveBeenCalledTimes(0);
+    expect(dispatchMock).toHaveBeenCalledTimes(0);
   });
 });
 

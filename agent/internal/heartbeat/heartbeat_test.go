@@ -310,3 +310,57 @@ func TestHeartbeatPayloadSecurityCapabilitiesJSON(t *testing.T) {
 		t.Fatalf("zero-value scriptSecretEnvVersion = %v, want %v", got, want)
 	}
 }
+
+func TestSecurityCapabilitiesControlProtocolJSON(t *testing.T) {
+	tests := []struct {
+		name                string
+		capabilities        SecurityCapabilities
+		wantPeripheralValue any
+		wantRollbackValue   any
+		wantPeripheralKey   bool
+		wantRollbackKey     bool
+	}{
+		{
+			name: "reports exact supported versions",
+			capabilities: SecurityCapabilities{
+				PeripheralPolicyProtocolVersion: 2,
+				RollbackProtocolVersion:         1,
+			},
+			wantPeripheralValue: float64(2),
+			wantRollbackValue:   float64(1),
+			wantPeripheralKey:   true,
+			wantRollbackKey:     true,
+		},
+		{name: "omits unsupported zero values"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(tt.capabilities)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			var decoded map[string]any
+			if err := json.Unmarshal(body, &decoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+
+			peripheralValue, peripheralPresent := decoded["peripheralPolicyProtocolVersion"]
+			if peripheralPresent != tt.wantPeripheralKey {
+				t.Fatalf("peripheralPolicyProtocolVersion present = %v, want %v; payload=%s", peripheralPresent, tt.wantPeripheralKey, body)
+			}
+			if peripheralPresent && peripheralValue != tt.wantPeripheralValue {
+				t.Fatalf("peripheralPolicyProtocolVersion = %v, want %v", peripheralValue, tt.wantPeripheralValue)
+			}
+
+			rollbackValue, rollbackPresent := decoded["rollbackProtocolVersion"]
+			if rollbackPresent != tt.wantRollbackKey {
+				t.Fatalf("rollbackProtocolVersion present = %v, want %v; payload=%s", rollbackPresent, tt.wantRollbackKey, body)
+			}
+			if rollbackPresent && rollbackValue != tt.wantRollbackValue {
+				t.Fatalf("rollbackProtocolVersion = %v, want %v", rollbackValue, tt.wantRollbackValue)
+			}
+		})
+	}
+}

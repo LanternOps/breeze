@@ -14,6 +14,7 @@ export * from './reportSchedule';
 export * from './s3Region';
 export * from './s3Endpoint';
 export * from './softwareFileType';
+export * from './cron';
 // Deliberately NOT `export *`. `compileExcludeMatcher` is a code-point port of
 // the agent's matcher and knowingly diverges from Go on mid-rune byte offsets
 // and Unicode special-casing (see matcherPortLimitations in

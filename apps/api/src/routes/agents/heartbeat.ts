@@ -51,6 +51,7 @@ import { normalizeReportedScriptSecretEnvVersion } from '../../services/scriptSe
 import { redactSecretsDeep } from '../../services/secretRedaction';
 import { recordAgentHeartbeat, resolveResponseStatus } from '../metrics';
 import { getBinaryEdition } from '../../services/binaryEdition';
+import { ingestRollbackObservation } from '../../services/agentRollbackResult';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -231,6 +232,16 @@ export function resetWatchdogRestartLogCacheForTests(): void {
 
 export function watchdogRestartLogCacheSizeForTests(): number {
   return watchdogRestartLogCache.size;
+}
+
+/** Normalize the only peripheral-policy protocol version implemented here. */
+export function normalizePeripheralPolicyProtocolVersion(value: unknown): 0 | 2 {
+  return value === 2 ? 2 : 0;
+}
+
+/** Normalize the only signed rollback protocol version implemented here. */
+export function normalizeRollbackProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
 }
 
 export const heartbeatRoutes = new Hono();
@@ -761,6 +772,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // not only at enqueue, because an offline-queued command can be claimed
     // after the agent downgraded.
     scriptSecretEnvVersion: normalizeReportedScriptSecretEnvVersion(data.securityCapabilities?.scriptSecretEnvVersion),
+    // Device-control capability claims are same-heartbeat, non-sticky truth.
+    // Never union with stored values or infer support from agentVersion.
+    peripheralPolicyProtocolVersion: normalizePeripheralPolicyProtocolVersion(
+      data.securityCapabilities?.peripheralPolicyProtocolVersion,
+    ),
+    rollbackProtocolVersion: normalizeRollbackProtocolVersion(
+      data.securityCapabilities?.rollbackProtocolVersion,
+    ),
     // Migration-banner Task 2 — self-reported install edition + migration
     // flag. Written UNCONDITIONALLY every heartbeat, mirroring
     // outboundNetworkPolicyVersion above: an agent that stops reporting these
@@ -806,6 +825,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // leaves the stored value untouched.
   if (data.backupVersion) {
     deviceUpdates.backupVersion = data.backupVersion;
+  }
+
+  // Rollback protocol v1 agents must replace this as a complete snapshot on
+  // every heartbeat. Missing inventory from a claiming agent clears prior
+  // truth so authorization fails closed instead of trusting stale components.
+  if (data.securityCapabilities?.rollbackProtocolVersion === 1) {
+    deviceUpdates.rollbackComponentVersions = data.rollbackComponentVersions ?? null;
   }
 
   // #2288 — active control-plane URL. Absent (old agent) leaves the stored
@@ -1155,7 +1181,15 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     device.id,
     10,
     'agent',
-    agent?.claimTypeAllowlist
+    agent?.claimTypeAllowlist,
+    {
+      peripheralPolicyProtocolVersion: normalizePeripheralPolicyProtocolVersion(
+        data.securityCapabilities?.peripheralPolicyProtocolVersion,
+      ),
+      rollbackProtocolVersion: normalizeRollbackProtocolVersion(
+        data.securityCapabilities?.rollbackProtocolVersion,
+      ),
+    },
   );
 
   // Policy probe config (buildPolicyProbeConfigUpdate) is deliberately NOT
@@ -1503,6 +1537,25 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // block — pass it through.
   if (scoped instanceof Response) return scoped;
 
+  // The device heartbeat above has committed before rollback truth is
+  // evaluated. This second short org context lets terminal `healthy` rely on
+  // persisted live agent/companion versions without holding the main
+  // heartbeat transaction or updating the parent device alongside child rows.
+  let acknowledgedRollbackObservationId: string | undefined;
+  if (data.rollbackObservation) {
+    try {
+      const result = await withDbAccessContext(dbContext, () =>
+        ingestRollbackObservation(scoped.deviceId, data.rollbackObservation!),
+      );
+      acknowledgedRollbackObservationId = result.acknowledgedObservationId ?? undefined;
+    } catch (err) {
+      // No acknowledgement means the restart-safe agent retains and resends
+      // the observation. Ordinary heartbeat delivery remains available.
+      console.error(`[heartbeat] Failed to ingest rollback observation for agentId=${agentId}:`, err);
+      captureException(err);
+    }
+  }
+
   // #1105 — the org transaction is now released. Fetch the manifest trust
   // keyset OUTSIDE it: getActiveTrustKeyset opens its own system-scoped
   // context/connection, so no withDbAccessContext(org) is held while it
@@ -1722,6 +1775,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     uacInterceptionEnabled: pamSettings?.uacInterceptionEnabled ?? false,
     helperEnabled: helperSettings?.enabled ?? false,
     helperSettings: helperSettings ?? undefined,
+    acknowledgedRollbackObservationId,
   });
 });
 

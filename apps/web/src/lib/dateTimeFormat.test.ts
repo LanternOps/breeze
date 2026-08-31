@@ -1,6 +1,29 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeTimeFormatPreference } from './appearance';
 import { formatDateTime, formatTime, withUserTimeFormatOptions } from './dateTimeFormat';
+
+/**
+ * Simulates the browser/OS reporting a given hour cycle via
+ * `Intl.DateTimeFormat(undefined, ...).resolvedOptions().hourCycle` — the
+ * same mechanism `detectBrowserTimeFormat` (appearance.ts) relies on. Only
+ * calls made with an *undefined* locale (i.e. "ask the environment") are
+ * redirected; calls with an explicit locale (what test assertions pass to
+ * pin the rendered format) are left alone.
+ */
+function mockBrowserHourCycle(hourCycle: 'h23' | 'h12'): () => void {
+  const RealDateTimeFormat = Intl.DateTimeFormat;
+  const localeForHourCycle = hourCycle === 'h23' ? 'de-DE' : 'en-US';
+  const spy = vi
+    .spyOn(Intl, 'DateTimeFormat')
+    .mockImplementation(function (
+      this: unknown,
+      locale?: Intl.LocalesArgument,
+      options?: Intl.DateTimeFormatOptions
+    ) {
+      return new RealDateTimeFormat(locale === undefined ? localeForHourCycle : locale, options);
+    });
+  return () => spy.mockRestore();
+}
 
 function makeMemoryStorage(): Storage {
   const data = new Map<string, string>();
@@ -36,6 +59,10 @@ describe('dateTimeFormat', () => {
     window.localStorage.clear();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('formats 24-hour time without AM/PM and with 00 for midnight', () => {
     const rendered = formatTime('2026-01-01T00:05:00.000Z', {
       locale: 'en-US',
@@ -57,6 +84,23 @@ describe('dateTimeFormat', () => {
       minute: '2-digit',
       timeFormat: '12h',
     })).toBe('3:45 PM');
+  });
+
+  it('falls through to browser-detected hour cycle when no preference is stored (#4231)', () => {
+    const restore = mockBrowserHourCycle('h23');
+    try {
+      // No stored preference (localStorage cleared in beforeEach), no explicit
+      // timeFormat — the browser/OS reports a 24h hour cycle, so the effective
+      // format must be 24h, not fall back to the app UI locale's 12h default.
+      expect(formatTime('2026-01-01T15:45:00.000Z', {
+        locale: 'en-US',
+        timeZone: 'UTC',
+        hour: '2-digit',
+        minute: '2-digit',
+      })).toBe('15:45');
+    } finally {
+      restore();
+    }
   });
 
   it('uses the saved appearance preference when no explicit timeFormat is provided', () => {

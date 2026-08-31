@@ -20,6 +20,10 @@ const EXTRA_REQUIRED = [
   // follows-parent).
   'device_commands', 'user_sso_identities', 'sso_sessions', 'psa_ticket_mappings',
   'deployment_results', 'software_versions',
+  // P2-3 (#4190): report_runs joined ASSOCIATED_SYSTEM_SCOPED_TABLES when the
+  // org-erasure FK gap on reports.report_id was closed. Parent-keyed, so it
+  // travels with its definition's repointed org_id.
+  'report_runs',
   'partner_export_configuration_org_state', 'partner_export_device_material_state',
   'partner_export_site_material_state',
 ];
@@ -212,6 +216,11 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   devices: 'partner-export watermark freeze',
   sites: 'partner-export watermark freeze',
   device_hardware: 'partner-export watermark freeze',
+  // Append-only evidence guards that explicitly admit an org_id-only
+  // restamp after the authoritative device row has moved. All evidence
+  // fields remain byte-for-byte unchanged.
+  agent_rollback_events: 'org_id-only device-owner restamp',
+  peripheral_policy_delivery_events: 'org_id-only device-owner restamp',
   // Plain updated_at bumps.
   elevation_requests: 'updated_at bump',
   incidents: 'updated_at bump',
@@ -246,6 +255,17 @@ describe('Org merge policy registry contract', () => {
     expect(policies.get('organizations')).toEqual({ kind: 'loser-shell' });
     for (const t of ['audit_logs', 'audit_log_chain', 'audit_chain_anchors', 'ml_feedback_events']) {
       expect(policies.get(t)?.kind, t).toBe('leave-for-erasure');
+    }
+  });
+
+  it('repoints Track D device-control state and evidence with the device owner', () => {
+    for (const table of [
+      'agent_rollback_directives',
+      'agent_rollback_events',
+      'peripheral_policy_delivery_events',
+      'peripheral_policy_device_states',
+    ]) {
+      expect(policies.get(table), table).toEqual({ kind: 'repoint' });
     }
   });
 

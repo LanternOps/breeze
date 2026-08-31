@@ -102,6 +102,11 @@ describe('getOrgCascadeDeleteOrder()', () => {
     expect(__testOnly.AUDIT_ADMIN_REQUIRED_TABLES.has('ml_feedback_events')).toBe(true);
   });
 
+  it('routes append-only peripheral delivery evidence through the audit-admin delete path', () => {
+    expect(cascadeOrder).toContain('peripheral_policy_delivery_events');
+    expect(__testOnly.AUDIT_ADMIN_REQUIRED_TABLES.has('peripheral_policy_delivery_events')).toBe(true);
+  });
+
   it('includes the canonical tenant tables', () => {
     const set = new Set(cascadeOrder);
     for (const required of [
