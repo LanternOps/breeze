@@ -689,3 +689,31 @@ describe('stampTerminalShell', () => {
     error.mockRestore();
   }, 20_000);
 });
+
+describe('blocks-merge refusal', () => {
+  it('refuses before fencing and audits org.merge.failed', async () => {
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({
+      loser: { id: 'a', partnerId: 'p', name: 'Loser', type: 'standard', status: 'active', deletedAt: null },
+      survivor: { id: 'b', partnerId: 'p', name: 'Survivor', type: 'standard', status: 'active', deletedAt: null },
+    } as never);
+    const fence = vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined as never);
+    vi.spyOn(orgMergeModule, 'collectMergeBlockers').mockResolvedValue([{ table: 'pam_actuations', loserRows: 3 }]);
+    const audit = vi.spyOn(orgMergeModule, 'writeMergeAudit').mockResolvedValue(undefined as never);
+
+    await expect(
+      orgMergeModule.executeOrgMerge({ loserOrgId: 'a', survivorOrgId: 'b', partnerId: 'p', performedBy: 'u' }),
+    ).rejects.toMatchObject({ code: 'ORG_MERGE_BLOCKED' });
+
+    expect(fence).not.toHaveBeenCalled();
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'org.merge.failed' }));
+  });
+
+  it('builds the operator refusal text with per-table counts', () => {
+    const msg = orgMergeModule.buildMergeBlockedMessage([
+      { table: 'pam_actuation_results', loserRows: 2 },
+      { table: 'pam_actuations', loserRows: 1 },
+    ]);
+    expect(msg).toContain('2 pam_actuation_results row(s), 1 pam_actuations row(s)');
+    expect(msg).toContain('Audit-admin retention is not a merge mechanism');
+  });
+});

@@ -90,8 +90,10 @@ export interface OrgMergePreviewTable {
 export interface OrgMergePreview {
   tables: OrgMergePreviewTable[];
   totalMovableRows: number;
-  verdict: 'ok' | 'too-large';
+  verdict: 'ok' | 'too-large' | 'blocked';
   warnings: string[];
+  /** Non-empty iff verdict === 'blocked'; operator-facing refusal text. */
+  blockers: string[];
 }
 
 export interface ExecuteOrgMergeInput {
@@ -134,7 +136,7 @@ export interface MergeBlocker {
   loserRows: number;
 }
 
-/** Operator-facing refusal text; also embedded in previews and audits. */
+/** Operator-facing refusal text; also embedded in previews and audits. Precondition: `blockers` is non-empty — every caller only invokes this once a blocks-merge table has loser rows. */
 export function buildMergeBlockedMessage(blockers: MergeBlocker[]): string {
   const counts = blockers.map((b) => `${b.loserRows} ${b.table} row(s)`).join(', ');
   return (
@@ -873,6 +875,27 @@ export function buildMergeWarnings(input: MergeWarningInput): string[] {
 
 export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgMergeResult> {
   const { loser, survivor } = await self.loadAndValidate(input);
+
+  // blocks-merge refusal BEFORE the fence: a merge that can never succeed
+  // must not close agent sockets, bump auth epochs, or drain the loser. The
+  // in-transaction recheck below is the authoritative copy of this check.
+  const preFenceBlockers = await self.collectMergeBlockers(loser.id);
+  if (preFenceBlockers.length > 0) {
+    const blocked = new OrgMergeBlockedError(preFenceBlockers);
+    await self.writeMergeAudit(input, {
+      action: 'org.merge.failed',
+      result: 'failure',
+      details: {
+        loserOrgId: loser.id,
+        loserOrgName: loser.name,
+        survivorOrgId: survivor.id,
+        error: blocked.message,
+        blockers: preFenceBlockers,
+      },
+    });
+    throw blocked;
+  }
+
   await self.fenceLoser(loser);
 
   let result: OrgMergeResult;
@@ -909,6 +932,13 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         // DEFERRABLE; deferring them lets parent and child org_id move in
         // separate statements without a mid-transaction FK violation.
         await dbModule.db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+
+        // TOCTOU recheck of the blocks-merge refusal, inside the transaction
+        // and BEFORE the walk — parents-first order repoints `devices` early,
+        // and devices_pam_history_move_guard would abort mid-walk with a raw
+        // 23514 instead of this typed refusal.
+        const txBlockers = await self.collectMergeBlockers(loser.id);
+        if (txBlockers.length > 0) throw new OrgMergeBlockedError(txBlockers);
 
         const policies = getOrgMergePolicies();
         // topologicalCascadeOrder is children-before-parents (erasure order);
@@ -1162,10 +1192,21 @@ export async function previewOrgMerge(
       const connectionDrops: Array<{ table: string; dropped: number }> = [];
       let totalMovableRows = 0;
       let destroyedRows = 0;
+      const mergeBlockers: MergeBlocker[] = [];
 
       for (const table of order) {
         const policy = policies.get(table);
         if (!policy) continue;
+
+        if (policy.kind === 'blocks-merge') {
+          const loserRows = await scalarCount(
+            sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${uuid(loserOrgId)}`,
+          );
+          if (loserRows === 0) continue;
+          tables.push({ table, policy: policy.kind, loserRows, wouldDrop: 0 });
+          mergeBlockers.push({ table, loserRows });
+          continue;
+        }
 
         // `leave-for-erasure` tables are counted but NOT skipped (I4). Those
         // rows do not move and are not "dropped by a collision" — they are
@@ -1232,11 +1273,18 @@ export async function previewOrgMerge(
         notes,
       });
 
+      const verdict: OrgMergePreview['verdict'] =
+        mergeBlockers.length > 0
+          ? 'blocked'
+          : totalMovableRows > getMaxMovableRows()
+            ? 'too-large'
+            : 'ok';
       return {
         tables,
         totalMovableRows,
-        verdict: totalMovableRows > getMaxMovableRows() ? ('too-large' as const) : ('ok' as const),
+        verdict,
         warnings,
+        blockers: mergeBlockers.length > 0 ? [buildMergeBlockedMessage(mergeBlockers)] : [],
       };
     }),
   );
