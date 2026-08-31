@@ -1,6 +1,22 @@
 import { EventEmitter } from 'node:events';
-import postgres from 'postgres';
+import { createRequire } from 'node:module';
+import postgresEsm from 'postgres';
 import { describe, expect, it } from 'vitest';
+
+// The patch lands in THREE independent hunks (src/, cjs/src/, cf/src/), and the
+// two that matter here resolve to different files: this test file's ESM import
+// follows the package's `import` condition to `src/index.js`, while production
+// (`dist/index.cjs`, tsup externalizes postgres) `require()`s the `default`
+// condition — `cjs/src/index.js`. Exercising only one build would stay green
+// while the other's hunk silently stopped applying (empirically confirmed:
+// reverting only the cjs hunk left the ESM-only suite passing). So every test
+// below runs against BOTH entries.
+const postgresCjs = createRequire(import.meta.url)('postgres') as typeof postgresEsm;
+
+const DRIVER_BUILDS = [
+  ['esm (src/ — what this test file imports)', postgresEsm],
+  ['cjs (cjs/src/ — what production dist/index.cjs loads)', postgresCjs],
+] as const;
 
 /**
  * Regression guard for the postgres.js pool-poisoning bug behind #3214,
@@ -113,6 +129,7 @@ function createFakeSocket(): FakeSocket {
  * the race — no timing luck involved.
  */
 async function runHandshakeAttempts(options: {
+  postgres: typeof postgresEsm;
   killAttempts: ReadonlySet<number>;
   settleMs: number;
   /**
@@ -123,6 +140,7 @@ async function runHandshakeAttempts(options: {
    */
   killDelayMs?: number;
 }): Promise<number[]> {
+  const postgres = options.postgres;
   const sockets: FakeSocket[] = [];
 
   // `socket` is a genuine postgres.js option — `parseOptions` copies it
@@ -166,11 +184,12 @@ async function runHandshakeAttempts(options: {
   return sockets.map((s) => s.bytesWritten);
 }
 
-describe('postgres.js deferred-write pool poisoning (#3214)', () => {
+describe.each(DRIVER_BUILDS)('postgres.js deferred-write pool poisoning (#3214) — %s', (_buildName, postgres) => {
   it('control: an undisturbed connection flushes its StartupMessage', async () => {
     // Proves the harness itself works — without this, the poisoning assertion
     // below could pass simply because the fake socket never receives anything.
     const written = await runHandshakeAttempts({
+      postgres,
       killAttempts: new Set(),
       settleMs: 250,
     });
@@ -187,6 +206,7 @@ describe('postgres.js deferred-write pool poisoning (#3214)', () => {
     // completes its handshake write normally. That isolates the buffered write
     // as the actual cause, which is the claim an upstream report has to make.
     const written = await runHandshakeAttempts({
+      postgres,
       killAttempts: new Set([1]),
       killDelayMs: 60,
       settleMs: 1_500,
@@ -209,6 +229,7 @@ describe('postgres.js deferred-write pool poisoning (#3214)', () => {
     // patches/postgres@3.4.9.patch applied, both teardown paths null the timer
     // and drop the stale chunk, so the reconnect handshake reaches the wire.
     const written = await runHandshakeAttempts({
+      postgres,
       killAttempts: new Set([1]),
       settleMs: 1_500,
     });
