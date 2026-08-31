@@ -543,17 +543,21 @@ export async function resolveCommandCreatedBy(
         .from(users)
         .where(eq(users.id, candidateUserId))
         .limit(1);
-      if (!userRow) {
-        // Deliberate degrade, but never a silent one. Expected for `ai_agent`
-        // and other synthetic principals; unexpected for anything else (a
-        // stale or deleted user id), and the two are indistinguishable here —
-        // so leave a breadcrumb rather than dropping attribution with no trace
-        // in logs, Sentry or metrics.
-        console.warn(
-          '[commandQueue] created_by degraded to NULL: id is not a users row',
-          { deviceId, candidateUserId },
-        );
-      }
+      // NOT logged here, deliberately. For an `ai_agent` or other synthetic
+      // principal this degrade is the DESIGNED outcome, not an anomaly, so a
+      // per-dispatch warn would fire on every agent-issued command — the
+      // cry-wolf shape that buried `db/index.ts`'s contextless-write reporter
+      // under thousands of events/day. Telling an expected degrade apart from a
+      // genuinely anomalous one (a stale or deleted user id) needs the caller's
+      // principal kind, which `queueCommand` does not receive; plumbing it
+      // through ~50 call sites is the very coupling this helper exists to
+      // avoid.
+      //
+      // The degrade is still observable without it: `dispatchActor` below keys
+      // on this resolved value, so every degraded dispatch is counted with
+      // actor="system" instead of actor="user" on the existing
+      // `commandsDispatchedTotal` counter. A spike there is the signal; a log
+      // line per command is not.
       return userRow ? candidateUserId : null;
     })
   );
