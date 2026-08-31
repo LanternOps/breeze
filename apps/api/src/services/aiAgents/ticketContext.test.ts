@@ -469,6 +469,61 @@ describe('assembleTicketContext — similarResolvedTickets', () => {
   });
 });
 
+// P2-4 (#4191) Task 7 review follow-up — "unavailable ≠ zero": a loader
+// FAILURE must be distinguishable from genuine absence. `assembleTicketContext`
+// itself is a dumb pass-through for these two flags (the actual "did the
+// ticket have a deviceId/categoryId" decision lives in `loadTicketContext`,
+// covered separately below) — these tests only prove the pure core carries
+// the flag through faithfully, including surviving the byte-budget trim.
+describe('assembleTicketContext — linkedDeviceUnavailable / similarResolvedTicketsUnavailable', () => {
+  it('both flags are absent (not false) when neither is passed', () => {
+    const ctx = assembleTicketContext({ ticket: baseTicket(), comments: [] });
+    expect(ctx.linkedDeviceUnavailable).toBeUndefined();
+    expect(ctx.similarResolvedTicketsUnavailable).toBeUndefined();
+    expect(ctx).not.toHaveProperty('linkedDeviceUnavailable');
+    expect(ctx).not.toHaveProperty('similarResolvedTicketsUnavailable');
+  });
+
+  it('sets linkedDeviceUnavailable even though linkedDevice itself stays null', () => {
+    const ctx = assembleTicketContext({
+      ticket: baseTicket({ deviceId: DEVICE_ID }),
+      comments: [],
+      linkedDevice: null,
+      linkedDeviceUnavailable: true,
+    });
+    expect(ctx.linkedDevice).toBeNull();
+    expect(ctx.linkedDeviceUnavailable).toBe(true);
+  });
+
+  it('sets similarResolvedTicketsUnavailable even though the list itself stays empty', () => {
+    const ctx = assembleTicketContext({
+      ticket: baseTicket({ categoryId: CATEGORY_ID }),
+      comments: [],
+      similarResolvedTickets: [],
+      similarResolvedTicketsUnavailable: true,
+    });
+    expect(ctx.similarResolvedTickets).toEqual([]);
+    expect(ctx.similarResolvedTicketsUnavailable).toBe(true);
+  });
+
+  it('is never dropped by the whole-context byte-budget trim', () => {
+    const hugeComments = Array.from({ length: 10 }, (_, i) => ({
+      authorType: 'portal', content: 'c'.repeat(5000), createdAt: `2026-08-2${i % 8}T00:00:00Z`,
+    }));
+    const ctx = assembleTicketContext({
+      ticket: baseTicket({ deviceId: DEVICE_ID, categoryId: CATEGORY_ID, description: 'y'.repeat(20000) }),
+      comments: hugeComments,
+      linkedDevice: null,
+      linkedDeviceUnavailable: true,
+      similarResolvedTickets: [],
+      similarResolvedTicketsUnavailable: true,
+    });
+    expect(Buffer.byteLength(JSON.stringify(ctx), 'utf8')).toBeLessThanOrEqual(TICKET_CONTEXT_HARD_LIMIT_BYTES);
+    expect(ctx.linkedDeviceUnavailable).toBe(true);
+    expect(ctx.similarResolvedTicketsUnavailable).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // P2-4 Task 7 — WHOLE-context byte ceiling and its deterministic trim order.
 // Every fixture below uses DISTINCT sizes per section (computed empirically,
@@ -718,7 +773,12 @@ describe('loadTicketContext — per-loader failure isolation', () => {
     expect(ctx).not.toBeNull();
     expect(ctx!.subject).toBe('Printer down');
     expect(ctx!.linkedDevice).toBeNull();
+    // The "unavailable ≠ zero" distinction (review follow-up): the ticket
+    // HAD a deviceId, so the failed load is flagged, not silently blank.
+    expect(ctx!.linkedDeviceUnavailable).toBe(true);
     expect(ctx!.similarResolvedTickets).toEqual([{ title: 'Fixed by reboot', resolutionNote: null }]);
+    // The sibling loader succeeded — its own flag must stay unset.
+    expect(ctx!.similarResolvedTicketsUnavailable).toBeUndefined();
     expect(captureException).toHaveBeenCalledWith(
       expect.any(Error),
       undefined,
@@ -743,7 +803,11 @@ describe('loadTicketContext — per-loader failure isolation', () => {
     expect(ctx).not.toBeNull();
     expect(ctx!.linkedDevice).not.toBeNull();
     expect(ctx!.linkedDevice!.hostname).toBe('WS-01');
+    // The sibling loader succeeded — its own flag must stay unset.
+    expect(ctx!.linkedDeviceUnavailable).toBeUndefined();
     expect(ctx!.similarResolvedTickets).toEqual([]);
+    // The ticket HAD a categoryId, so the failed load is flagged.
+    expect(ctx!.similarResolvedTicketsUnavailable).toBe(true);
     expect(captureException).toHaveBeenCalledWith(
       expect.any(Error),
       undefined,
@@ -760,7 +824,10 @@ describe('loadTicketContext — per-loader failure isolation', () => {
     const ctx = await loadTicketContext(TICKET_ID, ORG_ID);
 
     expect(ctx!.linkedDevice).toBeNull();
+    // No deviceId at all — genuine absence, never a failure, so no flag.
+    expect(ctx!.linkedDeviceUnavailable).toBeUndefined();
     expect(ctx!.similarResolvedTickets).toEqual([]);
+    expect(ctx!.similarResolvedTicketsUnavailable).toBeUndefined();
     expect(executed).toHaveLength(0); // no raw-SQL loader was ever invoked
   });
 });

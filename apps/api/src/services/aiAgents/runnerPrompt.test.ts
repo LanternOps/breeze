@@ -321,7 +321,6 @@ describe('buildAgentRunTaskPrompt', () => {
         subject: 'Printer not working', description: null, status: 'open', priority: 'high',
         category: 'hardware', tags: [], dueDate: null, comments: [],
         linkedDevice: {
-          id: 'device-1',
           hostname: 'WS-01',
           displayName: 'Reception PC',
           osType: 'windows',
@@ -357,6 +356,41 @@ describe('buildAgentRunTaskPrompt', () => {
     }));
     expect(prompt).toContain('Printer offline after update');
     expect(prompt).toContain('Reinstalled the driver.');
+  });
+
+  // P2-4 (#4191) Task 7 review follow-up — "unavailable ≠ zero": a failed
+  // load must read differently from genuine absence.
+  it('renders a hedge line when linkedDeviceUnavailable is set, even though linkedDevice itself is null', () => {
+    const prompt = buildAgentRunTaskPrompt(ticketCtx({
+      ticket: {
+        subject: 'Printer not working', description: null, status: 'open', priority: 'high',
+        category: 'hardware', tags: [], dueDate: null, comments: [],
+        linkedDevice: null,
+        linkedDeviceUnavailable: true,
+        similarResolvedTickets: [],
+        truncated: false,
+      },
+    }));
+    expect(prompt).toContain('Linked device signal unavailable — do not infer device health.');
+  });
+
+  it('renders a hedge line when similarResolvedTicketsUnavailable is set, even though the list itself is empty', () => {
+    const prompt = buildAgentRunTaskPrompt(ticketCtx({
+      ticket: {
+        subject: 'Printer not working', description: null, status: 'open', priority: 'high',
+        category: 'hardware', tags: [], dueDate: null, comments: [],
+        linkedDevice: null,
+        similarResolvedTickets: [],
+        similarResolvedTicketsUnavailable: true,
+        truncated: false,
+      },
+    }));
+    expect(prompt).toContain('Similar-ticket history unavailable — do not infer none exist.');
+  });
+
+  it('renders neither hedge line for the default ticket fixture (no device, no category, no failure)', () => {
+    const prompt = buildAgentRunTaskPrompt(ticketCtx());
+    expect(prompt).not.toContain('unavailable');
   });
 
   it('never renders a comment author\'s identity — only the non-identifying authorType role label', () => {

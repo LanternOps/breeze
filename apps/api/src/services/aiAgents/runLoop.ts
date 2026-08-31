@@ -1402,7 +1402,12 @@ function ticketPromptContext(ticket: TicketRunContext): AgentRunTicketPromptCont
     // P2-4 (#4191) Task 7 — both already sanitized/whitelist-filtered by
     // `ticketContext.ts`'s `assembleTicketContext`; passed through as-is.
     linkedDevice: ticket.linkedDevice,
+    // P2-4 (#4191) Task 7 review follow-up — the "unavailable ≠ zero" flags;
+    // passed through as-is (present/`true` only when set, matching
+    // `TicketRunContext`'s own optional-`true` contract).
+    linkedDeviceUnavailable: ticket.linkedDeviceUnavailable,
     similarResolvedTickets: ticket.similarResolvedTickets,
+    similarResolvedTicketsUnavailable: ticket.similarResolvedTicketsUnavailable,
     truncated: ticket.truncated,
   };
 }

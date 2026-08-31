@@ -130,7 +130,11 @@ const GUIDANCE_TAG_RE = /<\s*\/?\s*operator-guidance[^>]*>/gi;
  * twin, mirroring `AgentRunTicketPromptContext` itself.
  */
 export interface AgentRunTicketLinkedDevicePromptContext {
-  id: string;
+  // NOTE: no `id` field — nothing in this module reads it (`ticketPromptLines`
+  // never renders a device id, and no tool-call binding needs it here), so it
+  // was dead weight on this render-only twin. `ticketContext.ts`'s
+  // `TicketContextLinkedDevice` keeps its own `id` — that's the loader's
+  // source-of-truth shape, a different concern from what gets rendered.
   hostname: string;
   displayName: string | null;
   osType: string;
@@ -153,13 +157,23 @@ export interface AgentRunTicketPromptContext {
    *  `ticketContext.ts`'s `TicketContextComment` for why. */
   comments: Array<{ authorType: string | null; content: string; createdAt: string }>;
   /** P2-4 (#4191) Task 7 — `null` when the ticket has no linked device or the
-   *  signal could not be loaded. See `ticketContext.ts`'s header on why
-   *  absence and failure share one shape. */
+   *  signal could not be loaded; `linkedDeviceUnavailable` (below) tells the
+   *  two apart. See `ticketContext.ts`'s header. */
   linkedDevice: AgentRunTicketLinkedDevicePromptContext | null;
+  /** P2-4 (#4191) Task 7 review follow-up — `true` ONLY when the ticket has a
+   *  linked device but that signal could not be loaded (never set when the
+   *  ticket simply has no linked device). `ticketPromptLines` renders a
+   *  one-line hedge when this is set so the model never reads `linkedDevice:
+   *  null` as "confirmed no device issues." */
+  linkedDeviceUnavailable?: true;
   /** P2-4 (#4191) Task 7 — up to `MAX_SIMILAR_RESOLVED_TICKETS`, most-
    *  recently-resolved first. Empty when none were found or the signal could
-   *  not be loaded. */
+   *  not be loaded; `similarResolvedTicketsUnavailable` (below) tells the two
+   *  apart. */
   similarResolvedTickets: Array<{ title: string; resolutionNote: string | null }>;
+  /** P2-4 (#4191) Task 7 review follow-up — same contract as
+   *  `linkedDeviceUnavailable`, for the `categoryId` axis. */
+  similarResolvedTicketsUnavailable?: true;
   /** True when `ticketContext.ts` cut any section (comments, description, or
    *  either P2-4 section) to fit its byte ceiling. */
   truncated: boolean;
@@ -1091,6 +1105,13 @@ function ticketPromptLines(ticket: AgentRunTicketPromptContext): string[] {
       lines.push('Open sweep findings for this device (from the most recent fleet sweep):');
       for (const finding of device.sweepFindings) lines.push(`- [${finding.severity}] ${finding.kind}: ${finding.title}`);
     }
+  } else if (ticket.linkedDeviceUnavailable) {
+    // P2-4 (#4191) Task 7 review follow-up — distinct from "no linked
+    // device": the ticket HAS one, but its signal failed to load. Hedge
+    // rather than let the model read `linkedDevice: null` as a confirmed
+    // clean bill of health for the device.
+    lines.push('');
+    lines.push('Linked device signal unavailable — do not infer device health.');
   }
 
   if (ticket.similarResolvedTickets.length > 0) {
@@ -1099,6 +1120,12 @@ function ticketPromptLines(ticket: AgentRunTicketPromptContext): string[] {
     for (const similar of ticket.similarResolvedTickets) {
       lines.push(`- ${similar.title}${similar.resolutionNote ? ` — resolution: ${similar.resolutionNote}` : ''}`);
     }
+  } else if (ticket.similarResolvedTicketsUnavailable) {
+    // Same distinction as `linkedDeviceUnavailable` above, for the category
+    // axis — "no similar tickets" and "could not check" must not read the
+    // same to the model.
+    lines.push('');
+    lines.push('Similar-ticket history unavailable — do not infer none exist.');
   }
 
   if (ticket.truncated) {

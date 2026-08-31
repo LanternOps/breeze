@@ -80,20 +80,24 @@
  *    whitespace-collapsing (a resolution write-up is legitimately
  *    multi-line prose, unlike a title/hostname/rule-name).
  *
- * Both sections fail CLOSED to absent rather than to a misleading zero: a
- * loader failure (network blip, a malformed jsonb row, etc.) surfaces as
- * `linkedDevice: null` / `similarResolvedTickets: []` — the SAME shape as
- * "the ticket genuinely has no linked device" / "genuinely no similar
- * tickets exist" — via `Promise.allSettled` isolation in `loadTicketContext`
- * (a rejected loader is logged and reported to Sentry, never thrown). This is
- * a deliberate scope choice for these two SUPPLEMENTARY signals: unlike
- * `narrativeContext.ts` (which is written ENTIRELY from its loaded numbers
- * and therefore needs a granular `unavailable` list to keep "measured zero"
- * distinct from "could not measure"), a ticket-triage run always has the
- * ticket's own subject/description/comments as load-bearing content — these
- * two sections only add supporting signal, and the run's summary is expected
- * to hedge on absence either way ("no additional device/history context was
- * available") rather than assert a hard negative from it.
+ * Both sections fail CLOSED on the VALUE: a loader failure (network blip, a
+ * malformed jsonb row, etc.) surfaces as `linkedDevice: null` /
+ * `similarResolvedTickets: []` via `Promise.allSettled` isolation in
+ * `loadTicketContext` (a rejected loader is logged and reported to Sentry,
+ * never thrown). That value alone would conflate "the ticket genuinely has
+ * no linked device/category" with "the signal could not be loaded" —
+ * exactly the "unavailable ≠ zero" trap this repo's context assemblers
+ * (`narrativeContext.ts`, `anomalyContext.ts`) all guard against. So each
+ * section carries a companion `linkedDeviceUnavailable`/
+ * `similarResolvedTicketsUnavailable` flag, present (`true`) ONLY when the
+ * ticket actually HAD a `deviceId`/`categoryId` but that section's loader
+ * rejected — a ticket with no device/category at all gets the plain
+ * `null`/`[]` with no flag, since there was never anything to fail to load.
+ * `ticketPromptLines` (runnerPrompt.ts) renders a one-line hedge when a flag
+ * is set, telling the model not to infer a negative from the absence. The
+ * flag is never touched by the byte-budget trim below — it costs a handful
+ * of fixed bytes and dropping it would silently reintroduce the exact
+ * conflation it exists to prevent.
  *
  * `assembleTicketContext` is the pure core (fixture-testable, no DB) that
  * `loadTicketContext` wraps with the actual reads.
@@ -227,12 +231,20 @@ export interface TicketRunContext {
   /** Oldest first — chronological reading order for the model. */
   comments: TicketContextComment[];
   /** `null` when the ticket has no linked device, the device could not be
-   *  resolved, or the signal could not be loaded — see this module's header
-   *  on why absence and failure share one shape here. */
+   *  resolved, or the signal could not be loaded — see `linkedDeviceUnavailable`
+   *  below to tell the failure case apart from genuine absence. */
   linkedDevice: TicketContextLinkedDevice | null;
+  /** Present (always `true`) ONLY when the ticket has a `deviceId` but the
+   *  `linkedDevice` signal could not be loaded — see this module's header. */
+  linkedDeviceUnavailable?: true;
   /** Empty when the ticket has no category, none were found, or the signal
-   *  could not be loaded — see this module's header. */
+   *  could not be loaded — see `similarResolvedTicketsUnavailable` below to
+   *  tell the failure case apart from genuine absence. */
   similarResolvedTickets: TicketContextSimilarResolvedTicket[];
+  /** Present (always `true`) ONLY when the ticket has a `categoryId` but the
+   *  `similarResolvedTickets` signal could not be loaded — see this module's
+   *  header. */
+  similarResolvedTicketsUnavailable?: true;
   /** True when ANY section was cut to fit the hard ceiling — surfaced in the
    *  prompt so the model knows the context is partial rather than silently
    *  missing history. */
@@ -385,7 +397,13 @@ export function assembleTicketContext(args: {
   ticket: RawTicketRow;
   comments: RawCommentRow[];
   linkedDevice?: RawLinkedDevice | null;
+  /** True ONLY when the ticket has a `deviceId` but that signal's loader
+   *  rejected — see this module's header. Never set when the ticket simply
+   *  has no linked device. */
+  linkedDeviceUnavailable?: boolean;
   similarResolvedTickets?: RawSimilarResolvedTicket[];
+  /** Same contract as `linkedDeviceUnavailable`, for the `categoryId` axis. */
+  similarResolvedTicketsUnavailable?: boolean;
 }): TicketRunContext {
   const subject = stripHtml(args.ticket.subject);
   let description = stripHtml(args.ticket.description);
@@ -404,10 +422,19 @@ export function assembleTicketContext(args: {
   let similarResolvedTickets: TicketContextSimilarResolvedTicket[] =
     (args.similarResolvedTickets ?? []).map(assembleSimilarResolvedTicket);
 
+  // Constant for the life of this call — never touched by the trim loop
+  // below (see this module's header on why the flag itself is never
+  // dropped).
+  const linkedDeviceUnavailable = args.linkedDeviceUnavailable === true;
+  const similarResolvedTicketsUnavailable = args.similarResolvedTicketsUnavailable === true;
+
   let truncated = false;
 
-  function currentBytes(): number {
-    return Buffer.byteLength(JSON.stringify({
+  // The single source of truth for both the byte measurement below AND the
+  // final return value — the two representations can never drift apart
+  // because they're the same call.
+  function snapshot(): TicketRunContext {
+    return {
       id: args.ticket.id,
       subject,
       description: description || null,
@@ -418,12 +445,14 @@ export function assembleTicketContext(args: {
       dueDate: isoString(args.ticket.dueDate),
       comments,
       linkedDevice,
+      ...(linkedDeviceUnavailable ? { linkedDeviceUnavailable: true as const } : {}),
       similarResolvedTickets,
+      ...(similarResolvedTicketsUnavailable ? { similarResolvedTicketsUnavailable: true as const } : {}),
       truncated,
-    }), 'utf8');
+    };
   }
 
-  while (currentBytes() > TICKET_CONTEXT_HARD_LIMIT_BYTES) {
+  while (Buffer.byteLength(JSON.stringify(snapshot()), 'utf8') > TICKET_CONTEXT_HARD_LIMIT_BYTES) {
     if (similarResolvedTickets.length > 0) {
       similarResolvedTickets = similarResolvedTickets.slice(0, -1);
       truncated = true;
@@ -441,27 +470,15 @@ export function assembleTicketContext(args: {
       truncated = true;
     } else {
       // Nothing left to drop: the residual bytes are the envelope itself
-      // (fixed-shape fields). Bail rather than spin.
+      // (fixed-shape fields, plus either unavailable flag when set). Bail
+      // rather than spin.
       truncated = true;
       break;
     }
   }
   if (truncated && description) description = `${description}${TRUNCATION_SUFFIX}`;
 
-  return {
-    id: args.ticket.id,
-    subject,
-    description: description || null,
-    status: args.ticket.status,
-    priority: args.ticket.priority,
-    category: args.ticket.category,
-    tags: args.ticket.tags ?? [],
-    dueDate: isoString(args.ticket.dueDate),
-    comments,
-    linkedDevice,
-    similarResolvedTickets,
-    truncated,
-  };
+  return snapshot();
 }
 
 /**
@@ -641,7 +658,11 @@ export async function loadSimilarResolvedTickets(
  * The two P2-4 sections load CONCURRENTLY via `Promise.allSettled`, isolated
  * from each other and from the base ticket/comments read above them — a
  * rejection in either is reported (`reportLoaderFailure`) and degrades that
- * section to absent, never aborting the whole context load.
+ * section to absent, never aborting the whole context load. When the ticket
+ * actually had a `deviceId`/`categoryId` for the rejected section, the
+ * corresponding `linkedDeviceUnavailable`/`similarResolvedTicketsUnavailable`
+ * flag is also set — see `TicketRunContext`'s docstring on why absence and
+ * failure must stay distinguishable to the model.
  */
 export async function loadTicketContext(ticketId: string, orgId: string): Promise<TicketRunContext | null> {
   const [ticketRow] = await db
@@ -689,23 +710,34 @@ export async function loadTicketContext(ticketId: string, orgId: string): Promis
   ]);
 
   let linkedDevice: RawLinkedDevice | null = null;
+  // Only settable `true` when the ticket actually HAD a deviceId — the
+  // Promise.allSettled branch above never even calls the loader otherwise
+  // (it resolves `null` directly), so a rejection here implies `row.deviceId`
+  // was set. The explicit check is defensive documentation of that
+  // invariant, not load-bearing on its own.
+  let linkedDeviceUnavailable = false;
   if (linkedDeviceResult.status === 'fulfilled') {
     linkedDevice = linkedDeviceResult.value;
   } else {
     reportLoaderFailure(orgId, 'linkedDevice', linkedDeviceResult.reason);
+    if (row.deviceId) linkedDeviceUnavailable = true;
   }
 
   let similarResolvedTickets: RawSimilarResolvedTicket[] = [];
+  let similarResolvedTicketsUnavailable = false;
   if (similarTicketsResult.status === 'fulfilled') {
     similarResolvedTickets = similarTicketsResult.value;
   } else {
     reportLoaderFailure(orgId, 'similarResolvedTickets', similarTicketsResult.reason);
+    if (row.categoryId) similarResolvedTicketsUnavailable = true;
   }
 
   return assembleTicketContext({
     ticket: row,
     comments: commentRows as RawCommentRow[],
     linkedDevice,
+    linkedDeviceUnavailable,
     similarResolvedTickets,
+    similarResolvedTicketsUnavailable,
   });
 }
