@@ -27,6 +27,22 @@ const hoisted = vi.hoisted(() => {
   const getEmailServiceMock = vi.fn();
   const withSystemDbAccessContextMock = vi.fn((fn: () => unknown) => fn());
   const emitCaptured: unknown[] = [];
+  // W07 (#3901): the assignee branch no longer inserts into user_notifications
+  // directly — it goes through createNotification (the dedupe anchor) and then
+  // through the ticketPush helpers. Those are collaborators of the CONSUMER,
+  // not part of the producer→consumer payload seam this file exists to pin, so
+  // they are mocked; the seam assertion moves from insertValuesMock to
+  // createNotificationMock, which still sees the event's field names.
+  const createNotificationMock = vi.fn(async () => 'n-1' as string | null);
+  const loadUserCandidateMock = vi.fn(async (id: string) => ({
+    userId: id, partnerId: 'p-1', status: 'active', email: 'tech@msp.example',
+  }));
+  const loadTicketPushPrefsMock = vi.fn(async () => ({ assignedEnabled: true, slaScope: 'owned' as const }));
+  const listAnySlaSubscribersMock = vi.fn(async () => ({ users: [] as unknown[], truncated: false }));
+  const isAuthorisedForTicketMock = vi.fn(async () => true);
+  const admitPushMock = vi.fn(async () => []);
+  const resolvePushJobsMock = vi.fn(async () => []);
+  const dispatchPushToTokensMock = vi.fn(async () => ({ tokensFound: 0, dispatched: 0, errors: 0 }));
   return {
     selectQueue,
     insertReturningQueue,
@@ -35,7 +51,15 @@ const hoisted = vi.hoisted(() => {
     sendEmailMock,
     getEmailServiceMock,
     withSystemDbAccessContextMock,
-    emitCaptured
+    emitCaptured,
+    createNotificationMock,
+    loadUserCandidateMock,
+    loadTicketPushPrefsMock,
+    listAnySlaSubscribersMock,
+    isAuthorisedForTicketMock,
+    admitPushMock,
+    resolvePushJobsMock,
+    dispatchPushToTokensMock
   };
 });
 
@@ -120,6 +144,23 @@ vi.mock('../db/schema', () => ({
   ticketSourceEnum: { enumValues: ['portal', 'email', 'alert', 'manual', 'api', 'ai'] }
 }));
 
+vi.mock('./userNotifications', () => ({ createNotification: hoisted.createNotificationMock }));
+vi.mock('./ticketPush', () => ({
+  loadUserCandidate: hoisted.loadUserCandidateMock,
+  loadTicketPushPrefs: hoisted.loadTicketPushPrefsMock,
+  listAnySlaSubscribers: hoisted.listAnySlaSubscribersMock,
+  isAuthorisedForTicket: hoisted.isAuthorisedForTicketMock,
+  admitPush: hoisted.admitPushMock,
+  resolvePushJobs: hoisted.resolvePushJobsMock,
+  assertSamePartner: (c: { partnerId: string }, eventPartnerId: string | null) =>
+    !!eventPartnerId && c.partnerId === eventPartnerId,
+  ANY_SUBSCRIBER_CAP: 500,
+}));
+vi.mock('./expoPush', () => ({
+  dispatchPushToTokens: hoisted.dispatchPushToTokensMock,
+  buildTicketPush: vi.fn(() => ({ title: 't', body: 'b', data: {} })),
+}));
+
 vi.mock('bullmq', () => ({ Queue: vi.fn(() => ({ add: vi.fn() })), Worker: vi.fn() }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
 vi.mock('../services/email', () => ({ getEmailService: hoisted.getEmailServiceMock }));
@@ -147,6 +188,15 @@ describe('ticket-events producer→consumer contract', () => {
     hoisted.withSystemDbAccessContextMock.mockImplementation((fn: () => unknown) => fn());
     hoisted.getEmailServiceMock.mockReturnValue({ sendEmail: hoisted.sendEmailMock });
     hoisted.sendEmailMock.mockResolvedValue(undefined);
+    hoisted.createNotificationMock.mockResolvedValue('n-1');
+    hoisted.loadUserCandidateMock.mockImplementation(async (id: string) => ({
+      userId: id, partnerId: 'p-1', status: 'active', email: 'tech@msp.example',
+    }));
+    hoisted.loadTicketPushPrefsMock.mockResolvedValue({ assignedEnabled: true, slaScope: 'owned' });
+    hoisted.listAnySlaSubscribersMock.mockResolvedValue({ users: [], truncated: false });
+    hoisted.isAuthorisedForTicketMock.mockResolvedValue(true);
+    hoisted.admitPushMock.mockResolvedValue([]);
+    hoisted.resolvePushJobsMock.mockResolvedValue([]);
   });
 
   // ── createTicket with assignee → ticket.created ──────────────────────────
@@ -165,21 +215,25 @@ describe('ticket-events producer→consumer contract', () => {
     const event = hoisted.emitCaptured[0] as TicketEvent;
     expect(event.type).toBe('ticket.created');
 
-    // Worker selects: ticket lookup, then assignee user lookup
+    // Worker selects: ticket lookup, then the org-name lookup for the push body.
+    // The assignee row now comes from the mocked loadUserCandidate, not the queue.
     hoisted.selectQueue.push(
       [{ id: 't-c1', orgId: 'o-1', internalNumber: 'T-2026-C001', subject: 'Contract test', submitterEmail: null }],
-      [{ id: 'u-assignee', email: 'tech@msp.example' }]
+      [{ name: 'Acme' }]
     );
-    // Worker insert: userNotifications insert
-    hoisted.insertReturningQueue.push([]);
 
-    hoisted.insertValuesMock.mockClear();
+    hoisted.createNotificationMock.mockClear();
 
     await handleTicketEvent(event);
 
-    expect(hoisted.insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
+    // The seam assertion: the emitted event's assigneeId/orgId reach the
+    // consumer's notification write, and the dedupe key is anchored on the
+    // event's own eventId (W07 D2).
+    expect(hoisted.createNotificationMock).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'u-assignee',
-      type: 'ticket'
+      orgId: 'o-1',
+      type: 'ticket',
+      dedupeKey: expect.stringContaining('ticket:t-c1:assigned:u-assignee:')
     }));
     expect(hoisted.sendEmailMock).toHaveBeenCalledWith(expect.objectContaining({
       to: 'tech@msp.example',

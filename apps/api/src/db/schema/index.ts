@@ -43,6 +43,7 @@ export * from './storageEncryption';
 export * from './backupVerification';
 export * from './snmp';
 export * from './notifications';
+export * from './ticketPushPreferences';
 export * from './configurationPolicies';
 export * from './automations';
 export * from './filters';

@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { SUPPORTED_LOCALES } from '@breeze/shared';
+import { SUPPORTED_LOCALES, resolveTicketPushPrefs, updateTicketPushPreferencesSchema } from '@breeze/shared';
 import type { SupportedLocale } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { bodyLimit } from 'hono/body-limit';
@@ -8,7 +8,7 @@ import { and, eq, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { users, partnerUsers, organizationUsers, roles, organizations, partners } from '../db/schema';
+import { users, partnerUsers, organizationUsers, roles, organizations, partners, ticketPushPreferences } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import {
   MAX_AVATAR_SIZE_BYTES,
@@ -32,6 +32,7 @@ import {
   type ScopeContext,
 } from '../services/roleAssignment';
 import { createAuditLogAsync } from '../services/auditService';
+import { writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { getEmailService } from '../services/email';
 import { captureException } from '../services/sentry';
@@ -56,14 +57,23 @@ userRoutes.use('*', async (c, next) => {
     return;
   }
 
-  // Self-service routes (own profile + own/displayed avatar) must stay accessible
-  // to EVERY partner user regardless of org-access level. This gate governs
-  // partner-wide user MANAGEMENT only — without this exemption a 'selected'/'none'
-  // partner admin would be 403'd on GET/PATCH /me and the top-bar avatar
-  // (GET /:id/avatar runs its own scope check in the handler).
+  // Self-service routes (own profile + own/displayed avatar + own notification
+  // preferences) must stay accessible to EVERY partner user regardless of
+  // org-access level. This gate governs partner-wide user MANAGEMENT only —
+  // without this exemption a 'selected'/'none' partner admin would be 403'd on
+  // GET/PATCH /me, the top-bar avatar (GET /:id/avatar runs its own scope check
+  // in the handler), and (W07, #3901) their own ticket push preferences, which
+  // is the field technician this feature exists for.
+  //
+  // A route may be added here ONLY if its subject is derived from auth.user.id
+  // and never from a path param or request body. Both /me/ticket-push-preferences
+  // handlers satisfy that: the id is auth.user.id and the PATCH schema is
+  // .strict(), so a smuggled `userId` is a 400. Do NOT widen this to
+  // /\/me(\/.*)?$/ — that would auto-exempt every future /me/* route,
+  // including ones whose subject is not auth.user.id. The allowlist is the point.
   const path = c.req.path;
   const isSelfServiceRoute =
-    /\/me(\/avatar)?$/.test(path) ||
+    /\/me(\/avatar|\/ticket-push-preferences)?$/.test(path) ||
     (c.req.method === 'GET' && /\/avatar$/.test(path));
   if (isSelfServiceRoute) {
     await next();
@@ -460,6 +470,62 @@ function validatePreferenceEnum(
   }
   return null;
 }
+
+// W07 (#3901): per-user ticket push preferences. Self-only by construction —
+// the user id is auth.user.id, never a param or body field (the schema is
+// .strict(), so a smuggled userId is a 400). Lives on the core user route, not
+// /mobile, so a web Settings toggle can reuse it later (spec D10).
+//
+// NOTE: these paths are exempted from the partner-wide MANAGEMENT gate at the
+// top of this file — see the isSelfServiceRoute predicate.
+userRoutes.get('/me/ticket-push-preferences', async (c) => {
+  const auth = c.get('auth');
+  const rows = await db
+    .select({
+      assignedEnabled: ticketPushPreferences.assignedEnabled,
+      slaScope: ticketPushPreferences.slaScope,
+    })
+    .from(ticketPushPreferences)
+    .where(eq(ticketPushPreferences.userId, auth.user.id))
+    .limit(1);
+  // Missing row = defaults; no insert on read.
+  return c.json({ settings: resolveTicketPushPrefs(rows[0] ?? null) });
+});
+
+userRoutes.patch(
+  '/me/ticket-push-preferences',
+  zValidator('json', updateTicketPushPreferencesSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+    const set: { assignedEnabled?: boolean; slaScope?: 'off' | 'owned' | 'any'; updatedAt: Date } = {
+      updatedAt: new Date(),
+    };
+    if (body.assignedEnabled !== undefined) set.assignedEnabled = body.assignedEnabled;
+    if (body.slaScope !== undefined) set.slaScope = body.slaScope;
+
+    const [row] = await db
+      .insert(ticketPushPreferences)
+      .values({ userId: auth.user.id, ...set })
+      .onConflictDoUpdate({ target: ticketPushPreferences.userId, set })
+      .returning({
+        assignedEnabled: ticketPushPreferences.assignedEnabled,
+        slaScope: ticketPushPreferences.slaScope,
+      });
+
+    writeRouteAudit(c, {
+      // orgId is a REQUIRED property on RouteAuditInput (services/auditEvents.ts),
+      // so it cannot be omitted. A partner-scoped mobile token has no org.
+      orgId: auth.orgId ?? null,
+      action: 'user.ticket_push_preferences.update',
+      resourceType: 'user',
+      resourceId: auth.user.id,
+      details: { ...body },
+    });
+
+    return c.json({ settings: resolveTicketPushPrefs(row ?? set) });
+  }
+);
 
 userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
   const auth = c.get('auth');
