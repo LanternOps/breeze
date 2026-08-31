@@ -71,7 +71,7 @@ async function findRollupOrgRows(): Promise<Array<{ orgId: string }>> {
 
 async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number }> {
   const orgRows = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => findRollupOrgRows())
+    withSystemDbAccessContext(() => findRollupOrgRows(), 'metricRollups.scanOrgs')
   );
 
   if (orgRows.length === 0) {
@@ -119,9 +119,14 @@ export function createMetricRollupsWorker(): Worker<MetricRollupJobData> {
         return processScanOrgs(job.data);
       }
       const data = job.data;
-      return runOutsideDbContext(() =>
-        withSystemDbAccessContext(() => processRollupOrgRange(data))
-      );
+      // No worker-level system context here (#4276): rollupDeviceMetricsRange
+      // owns one short-lived labeled context PER statement. Re-wrapping it
+      // would make withDbAccessContext short-circuit into the ambient
+      // transaction and silently restore the single 26-statement hold that
+      // made this worker the top db_context_held_too_long offender. The
+      // runOutsideDbContext escape is kept as belt-and-braces against a future
+      // ambient context on this path.
+      return runOutsideDbContext(() => processRollupOrgRange(data));
     },
     {
       connection: getBullMQConnection(),
