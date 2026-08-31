@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readdirSync, readFileSync, statSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import {
   agentAcceptsServedEdition,
@@ -162,18 +162,32 @@ describe('agentBinaryUpdateDispatchRefusal (#4093)', () => {
 // same class of "new call site forgot the registration" bug has shipped
 // repeatedly in this repo and review has never been what caught it.
 describe('agent-binary update command types are only named at known sites (#4093)', () => {
-  // apps/api — covers both the server (src/) and the operator scripts, which
-  // insert device_commands rows of their own (scripts/recover-stuck-agents.ts).
+  // apps/api — the server (src/) and the operator scripts, which insert
+  // device_commands rows of their own (scripts/recover-stuck-agents.ts) — plus
+  // ee/, whose built-in extensions compile into the same API image and could
+  // grow a dispatch path of their own.
+  //
+  // LIMITATION, so a future reader does not over-trust this: it matches the
+  // literal command-type strings. A dispatcher that reached them indirectly
+  // (e.g. spreading AGENT_BINARY_UPDATE_COMMAND_TYPES) would slip past. The
+  // runtime guards are the real enforcement — executeCommand evaluates the
+  // gate and queueCommand refuses these types; this scan exists to catch the
+  // remaining hole, a hand-rolled db.insert(deviceCommands).
+  const REPO_ROOT = join(__dirname, '..', '..', '..', '..');
   const API_ROOT = join(__dirname, '..', '..');
-  const SCAN_ROOTS = ['src', 'scripts'];
+  const SCAN_ROOTS = [
+    join(API_ROOT, 'src'),
+    join(API_ROOT, 'scripts'),
+    join(REPO_ROOT, 'ee'),
+  ].filter((dir) => existsSync(dir));
 
   // Every file that may mention 'update_agent' / 'update_watchdog'.
   // Adding a file here means: you are dispatching an agent-binary update, so
   // route it through executeCommand(..., { targetRole: 'watchdog' }) — that is
   // the only path that applies agentBinaryUpdateDispatchRefusal.
   const ALLOWED = new Set([
-    'src/services/agentEditionCompat.ts', // the gate itself
-    'src/services/aiToolsAgentMgmt.ts', // trigger_agent_upgrade — the one dispatcher
+    'apps/api/src/services/agentEditionCompat.ts', // the gate itself
+    'apps/api/src/services/aiToolsAgentMgmt.ts', // trigger_agent_upgrade — the one dispatcher
   ]);
 
   function walk(dir: string, out: string[] = []): string[] {
@@ -190,10 +204,10 @@ describe('agent-binary update command types are only named at known sites (#4093
   // couple of thousand synchronous reads and can exceed the 5s default when
   // the suite runs alongside others.
   it('only the gate and the known dispatcher name update_agent / update_watchdog', () => {
-    const files = SCAN_ROOTS.flatMap((root) => walk(join(API_ROOT, root)));
+    const files = SCAN_ROOTS.flatMap((root) => walk(root));
     const offenders = files
       .filter((file) => /\bupdate_(agent|watchdog)\b/.test(readFileSync(file, 'utf8')))
-      .map((file) => file.slice(API_ROOT.length + 1))
+      .map((file) => file.slice(REPO_ROOT.length + 1))
       .filter((rel) => !ALLOWED.has(rel))
       .sort();
 

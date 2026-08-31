@@ -304,7 +304,13 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
             try {
               const cfg = await runOutsideDbContext(() => withSystemDbAccessContext(() => getOrgAgentUpdateConfig(d.orgId)));
               pinByOrg.set(d.orgId, cfg.pins.agent);
-            } catch {
+            } catch (err) {
+              // The operator-facing string is deliberately generic; the cause
+              // has to go somewhere or a batch-wide pin outage is undebuggable.
+              console.error(
+                `[aiToolsAgentMgmt] failed to resolve the agent pin for org ${d.orgId}:`,
+                err,
+              );
               failedOrgs.add(d.orgId);
               errors[d.id] = 'Failed to resolve version pin for this organization';
               continue;
@@ -331,7 +337,11 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
             pin,
             agentId: d.id,
           });
-        } catch {
+        } catch (err) {
+          console.error(
+            `[aiToolsAgentMgmt] failed to resolve an agent build for device ${d.id}:`,
+            err,
+          );
           errors[d.id] = 'Failed to resolve an agent build for this device';
           continue;
         }
@@ -348,11 +358,22 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
         }
       }
 
+      // A requested device that produced neither a target nor a reason was not
+      // in `deviceRows` at all — deleted between the access check and this
+      // SELECT. Record it here rather than letting the batch-level error below
+      // name the wrong cause (and, when the WHOLE batch vanished, report no
+      // per-device reason at all).
+      for (const id of deviceIds) {
+        if (!targetByDevice.has(id) && !errors[id]) {
+          errors[id] = 'Device no longer exists — it was removed while this request was running';
+        }
+      }
+
       if (targetByDevice.size === 0) {
         return JSON.stringify({
           error: explicitVersion
             ? `Agent version "${explicitVersion}" has no build for any of the selected devices`
-            : 'No latest agent version found',
+            : 'No agent build resolved for any of the selected devices',
           ...(Object.keys(errors).length > 0 ? { errors } : {}),
         });
       }
