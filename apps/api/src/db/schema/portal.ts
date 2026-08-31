@@ -130,7 +130,31 @@ export const ticketComments = pgTable('ticket_comments', {
   newValue: text('new_value'),
   deletedAt: timestamp('deleted_at'),
   editedAt: timestamp('edited_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull()
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  // Wave 6 PR 3 (#3828) — origin-based loop guard for the ticket-shadow
+  // helpdesk subscriber (design authority: never 'source'-string matching).
+  //
+  // Deliberate deviation from action_intents.origin_principal_kind's
+  // fail-closed 'unknown' default: every ticket_comments row that predates
+  // this column IS human/user-authored (no agent write path into this table
+  // exists before this PR — Task 3's shadow gating denies manage_tickets
+  // mutations for ticket runs, and the deferred autonomous-note lane is not
+  // built), so DEFAULT 'user' is correct here. The admitted vocabulary itself
+  // is shared with action_intents' CHECK, not private: 'ai_agent' (never bare
+  // 'agent' — that literal means the opposite principal on action_intents),
+  // plus 'system'/'unknown' for future fail-closed writers. The loop guard
+  // (ticketHelpdeskSubscriber, Task 3) treats anything NOT 'user' as suspect
+  // and skips admission — see the migration header for the full rationale.
+  originPrincipalKind: text('origin_principal_kind').notNull().default('user'),
+  // Loop-guard link to the agent run that authored this comment (Task 3
+  // reads it; nothing writes it yet — the autonomous-note lane is deferred).
+  // Deliberately NOT `.references(() => aiAgentRuns.id, ...)` here: aiAgents.ts
+  // already imports `tickets` from this file (for ai_agent_runs.ticket_id),
+  // so a reverse import would be a circular module dependency. The actual FK
+  // (ON DELETE SET NULL) is declared in the SQL migration only — same
+  // established pattern as this table's own categoryId/statusId columns
+  // above, for the identical reason.
+  agentRunId: uuid('agent_run_id')
 });
 
 export const assetCheckouts = pgTable('asset_checkouts', {

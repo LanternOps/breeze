@@ -295,8 +295,13 @@ export const heartbeatSchema = z.object({
     errorCode: z.string().min(1).max(128).regex(/^[a-z0-9_]+$/).optional().catch(undefined),
   }).optional().catch(undefined),
   // Migration-banner Task 2 — self-reported install edition + whether the
-  // agent believes it needs to migrate hosted↔self-host. Informational: a bad
-  // value drops (.catch) rather than 400-ing the heartbeat.
+  // agent believes it needs to migrate hosted↔self-host. Since #4072 this is
+  // NOT merely informational: a reported edition is the capability signal
+  // that gates update-offer delivery (agentAcceptsServedEdition), and a
+  // value swallowed here makes the agent look silent — which on a hosted
+  // server means offers are withheld from a ≥0.105.0 build. The .catch is
+  // still correct (a future third edition must degrade to "silent", not
+  // 400 the heartbeat), but changes here are offer-load-bearing.
   agentEdition: z.enum(['hosted', 'self-host']).optional().catch(undefined),
   migrationRequired: z.boolean().optional().catch(undefined),
 });

@@ -5,6 +5,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 type InsertCall = { table: unknown; values: Record<string, unknown> };
 let insertCalls: InsertCall[] = [];
 
+const dbTestState = vi.hoisted(() => ({ lastTransaction: null as unknown }));
+
 // Fake schema sentinels — good enough for `is this the right table?` asserts.
 vi.mock('../db/schema', () => ({
   partners: { __t: 'partners', id: 'partners.id', slug: 'partners.slug', name: 'partners.name', mcpOrigin: 'partners.mcpOrigin', createdAt: 'partners.createdAt' },
@@ -89,19 +91,46 @@ vi.mock('../db', () => {
 
   return {
     db: {
-      transaction: vi.fn(async (cb: any) => cb(makeTx())),
+      transaction: vi.fn(async (cb: any) => {
+        const tx = makeTx();
+        dbTestState.lastTransaction = tx;
+        return cb(tx);
+      }),
       select: vi.fn(),
     },
   };
 });
 
 import { createPartner } from './partnerCreate';
+import { db } from '../db';
 
 beforeEach(() => {
   insertCalls = [];
 });
 
 describe('createPartner', () => {
+  it('uses a caller transaction without opening a nested transaction', async () => {
+    const input = {
+      orgName: 'Outer Transaction',
+      adminEmail: 'outer@example.com',
+      adminName: 'Outer',
+      passwordHash: 'hashed',
+      origin: { mcp: false as const },
+      status: 'active' as const,
+    };
+    await db.transaction(async () => undefined);
+    const tx = dbTestState.lastTransaction;
+    if (!tx) throw new Error('test transaction was not captured');
+    vi.mocked(db.transaction).mockClear();
+    insertCalls = [];
+
+    const result = await Reflect.apply(createPartner, null, [input, { tx }]);
+
+    expect(result.adminUserId).toBe('users-id');
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(insertCalls.some((call) => (call.table as any).__t === 'users')).toBe(true);
+  });
+
   it('inserts partner, admin user, admin role, partner-user link, default org, and default site in a single transaction', async () => {
     const result = await createPartner({
       orgName: 'Acme',

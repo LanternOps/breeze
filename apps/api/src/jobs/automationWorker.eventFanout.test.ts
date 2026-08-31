@@ -93,6 +93,26 @@ function offlineEvent(orgId: string): BreezeEvent<Record<string, unknown>> {
   } as BreezeEvent<Record<string, unknown>>;
 }
 
+// #3828 wave-6-3 task 3 — the dossier correction: the ticket-outbox
+// publisher (Task 2) is the first thing that ever calls publishEvent for a
+// ticket lifecycle event, so this is the FIRST time automation-worker's
+// wildcard '*' subscription can see one at all. There is no special-case
+// exclusion for ticket.* anywhere in queueEventTriggers — an automation
+// reaches it exactly like any other event type, by explicitly configuring
+// trigger.eventType to match. These two tests pin that: silent by default,
+// reachable only by opt-in.
+function ticketCreatedEvent(orgId: string): BreezeEvent<Record<string, unknown>> {
+  return {
+    id: 'evt-ticket-1',
+    type: 'ticket.created',
+    orgId,
+    source: 'ticket-outbox-publisher',
+    priority: 'normal',
+    payload: { ticketId: 'ticket-1' },
+    metadata: { timestamp: '2026-08-28T00:00:00.000Z' },
+  } as BreezeEvent<Record<string, unknown>>;
+}
+
 /** db.select().from().where().limit() → rows (the event-org partner lookup). */
 function mockOrgLookupOnce(rows: unknown[]) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -158,6 +178,37 @@ describe('queueEventTriggers — partner-wide fan-out wiring (#2133)', () => {
     expect(queueAddMock).toHaveBeenCalledWith(
       'trigger-event',
       expect.objectContaining({ automationId: 'auto-org' }),
+      expect.anything(),
+    );
+  });
+});
+
+describe('queueEventTriggers — ticket events reach automations ONLY when explicitly subscribed (#3828 wave-6-3 task 3)', () => {
+  it('does not enqueue an automation configured for a different event type', async () => {
+    mockOrgLookupOnce([{ partnerId: 'partner-1' }]);
+    // Configured for device.offline, same fixture the rest of this file uses.
+    mockCandidatesOnce([PARTNER_WIDE_AUTOMATION]);
+
+    await queueEventTriggers(ticketCreatedEvent('org-member-1'));
+
+    expect(queueAddMock).not.toHaveBeenCalled();
+  });
+
+  it('enqueues an automation that explicitly configured trigger.eventType = ticket.created', async () => {
+    mockOrgLookupOnce([{ partnerId: 'partner-1' }]);
+    mockCandidatesOnce([
+      { ...PARTNER_WIDE_AUTOMATION, id: 'auto-ticket', trigger: { type: 'event', eventType: 'ticket.created' } },
+    ]);
+
+    await queueEventTriggers(ticketCreatedEvent('org-member-1'));
+
+    expect(queueAddMock).toHaveBeenCalledWith(
+      'trigger-event',
+      expect.objectContaining({
+        type: 'trigger-event',
+        automationId: 'auto-ticket',
+        eventType: 'ticket.created',
+      }),
       expect.anything(),
     );
   });

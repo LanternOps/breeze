@@ -16,7 +16,7 @@ export interface Organization {
   id: string;
   partnerId: string;
   name: string;
-  status: 'active' | 'trial' | 'suspended' | 'inactive';
+  status: 'active' | 'trial' | 'suspended' | 'inactive' | 'merging' | 'archived' | 'purging';
   trialEndsAt?: string;
   /** ISO 4217 billing currency (wave 1, `organizations.currency_code`). Present on
    *  the partner/system-scope list (full row); the org-scoped projection of

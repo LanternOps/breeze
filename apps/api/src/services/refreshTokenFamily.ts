@@ -17,10 +17,13 @@
  * Steps 1+2 live here; 3+4 stay in the route handler so each path can apply
  * its own surrounding logic (db wrapping, audit trail, etc).
  */
-import { randomUUID } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { createHash, randomUUID } from 'crypto';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
+import { users } from '../db/schema/users';
+import type { Tx } from './authLifecycle';
+import { verifyToken } from './jwt';
 import { rememberJtiFamily } from './tokenRevocation';
 
 function absoluteTtlDays(): number {
@@ -42,17 +45,195 @@ function absoluteTtlDays(): number {
  * outcome; the alternative is a token without a family, which is exactly
  * the bug this helper exists to prevent).
  */
-export async function mintRefreshTokenFamily(userId: string): Promise<string> {
+// W07-A rollout overload for the frozen pre-guard issuer inventory only.
+export async function mintRefreshTokenFamily(userId: string): Promise<string>;
+export async function mintRefreshTokenFamily(
+  userId: string,
+  currentRefreshJti: string,
+  options?: { tx?: Tx },
+): Promise<string>;
+export async function mintRefreshTokenFamily(
+  userId: string,
+  currentRefreshJti?: string,
+  options: { tx?: Tx } = {},
+): Promise<string> {
   const familyId = randomUUID();
   const absoluteExpiresAt = new Date(Date.now() + absoluteTtlDays() * 24 * 60 * 60 * 1000);
-  await dbModule.withSystemDbAccessContext(async () => {
-    await dbModule.db.insert(refreshTokenFamilies).values({
+  const insert = async (executor: Pick<Tx, 'insert'>) => {
+    await executor.insert(refreshTokenFamilies).values({
       familyId,
       userId,
       absoluteExpiresAt,
+      currentRefreshJtiDigest: currentRefreshJti === undefined
+        ? null
+        : digestRefreshTokenJti(currentRefreshJti),
     });
-  });
+  };
+  if (options.tx) {
+    await insert(options.tx);
+  } else {
+    await dbModule.runOutsideDbContext(() =>
+      dbModule.withSystemDbAccessContext(() => insert(dbModule.db)),
+    );
+  }
   return familyId;
+}
+
+export function digestRefreshTokenJti(jti: string): string {
+  return createHash('sha256')
+    .update(`auth-refresh-jti:v1\0${jti}`, 'utf8')
+    .digest('hex');
+}
+
+export class RefreshTokenCurrentnessError extends Error {
+  constructor() {
+    super('Refresh token is not the durable current token for its family');
+    this.name = 'RefreshTokenCurrentnessError';
+  }
+}
+
+/** Lock and compare/swap one owner-bound live family using database time. */
+export async function rotateRefreshTokenFamilyCurrentJti(
+  tx: Tx,
+  input: { familyId: string; userId: string; presentedJti: string; successorJti: string },
+): Promise<void> {
+  const [family] = await tx
+    .select({
+      userId: refreshTokenFamilies.userId,
+      revokedAt: refreshTokenFamilies.revokedAt,
+      absoluteExpiresAt: refreshTokenFamilies.absoluteExpiresAt,
+      currentRefreshJtiDigest: refreshTokenFamilies.currentRefreshJtiDigest,
+      databaseNow: sql<Date>`now()`,
+    })
+    .from(refreshTokenFamilies)
+    .where(and(
+      eq(refreshTokenFamilies.familyId, input.familyId),
+      eq(refreshTokenFamilies.userId, input.userId),
+    ))
+    .for('update')
+    .limit(1);
+
+  const databaseNow = family?.databaseNow instanceof Date
+    ? family.databaseNow
+    : new Date(family?.databaseNow ?? Number.NaN);
+  if (
+    !family
+    || family.userId !== input.userId
+    || family.revokedAt !== null
+    || !(family.absoluteExpiresAt instanceof Date)
+    || !Number.isFinite(family.absoluteExpiresAt.getTime())
+    || !Number.isFinite(databaseNow.getTime())
+    || family.absoluteExpiresAt.getTime() <= databaseNow.getTime()
+  ) {
+    throw new RefreshTokenCurrentnessError();
+  }
+
+  const presentedDigest = digestRefreshTokenJti(input.presentedJti);
+  const legacy = family.currentRefreshJtiDigest === null;
+  if (!legacy && family.currentRefreshJtiDigest !== presentedDigest) {
+    throw new RefreshTokenCurrentnessError();
+  }
+
+  const currentPredicate = legacy
+    ? isNull(refreshTokenFamilies.currentRefreshJtiDigest)
+    : eq(refreshTokenFamilies.currentRefreshJtiDigest, presentedDigest);
+  const updated = await tx
+    .update(refreshTokenFamilies)
+    .set({
+      currentRefreshJtiDigest: digestRefreshTokenJti(input.successorJti),
+      lastUsedAt: sql`now()`,
+    })
+    .where(and(
+      eq(refreshTokenFamilies.familyId, input.familyId),
+      eq(refreshTokenFamilies.userId, input.userId),
+      isNull(refreshTokenFamilies.revokedAt),
+      currentPredicate,
+    ))
+    .returning({ familyId: refreshTokenFamilies.familyId });
+  if (updated.length !== 1) throw new RefreshTokenCurrentnessError();
+}
+
+export type RefreshAuthority =
+  | Readonly<{ kind: 'current'; userId: string; familyId: string }>
+  | Readonly<{ kind: 'legacy_or_stale_family'; familyId: string }>
+  | Readonly<{ kind: 'invalid' }>;
+
+/**
+ * Classify refresh authority without allowing legacy/stale tokens to name a
+ * global logout subject. Caller already owns the transition lock; this helper
+ * then follows the global user-before-family lock order.
+ */
+export async function classifyRefreshTokenAuthority(tx: Tx, token: string): Promise<RefreshAuthority> {
+  const payload = await verifyToken(token);
+  if (
+    !payload
+    || payload.type !== 'refresh'
+    || !payload.sub
+    || !payload.fam
+    || !payload.jti
+    || typeof payload.aep !== 'number'
+    || typeof payload.mep !== 'number'
+  ) {
+    return { kind: 'invalid' };
+  }
+
+  const [user] = await tx
+    .select({
+      id: users.id,
+      status: users.status,
+      authEpoch: users.authEpoch,
+      mfaEpoch: users.mfaEpoch,
+    })
+    .from(users)
+    .where(eq(users.id, payload.sub))
+    .for('update')
+    .limit(1);
+  if (
+    !user
+    || user.id !== payload.sub
+    || user.status !== 'active'
+    || user.authEpoch !== payload.aep
+    || user.mfaEpoch !== payload.mep
+  ) {
+    return { kind: 'invalid' };
+  }
+
+  const [family] = await tx
+    .select({
+      familyId: refreshTokenFamilies.familyId,
+      userId: refreshTokenFamilies.userId,
+      revokedAt: refreshTokenFamilies.revokedAt,
+      absoluteExpiresAt: refreshTokenFamilies.absoluteExpiresAt,
+      currentRefreshJtiDigest: refreshTokenFamilies.currentRefreshJtiDigest,
+      databaseNow: sql<Date>`now()`,
+    })
+    .from(refreshTokenFamilies)
+    .where(and(
+      eq(refreshTokenFamilies.familyId, payload.fam),
+      eq(refreshTokenFamilies.userId, payload.sub),
+    ))
+    .for('update')
+    .limit(1);
+
+  const databaseNow = family?.databaseNow instanceof Date
+    ? family.databaseNow
+    : new Date(family?.databaseNow ?? Number.NaN);
+  if (
+    !family
+    || family.familyId !== payload.fam
+    || family.userId !== payload.sub
+    || family.revokedAt !== null
+    || !(family.absoluteExpiresAt instanceof Date)
+    || !Number.isFinite(databaseNow.getTime())
+    || family.absoluteExpiresAt.getTime() <= databaseNow.getTime()
+  ) {
+    return { kind: 'invalid' };
+  }
+
+  if (family.currentRefreshJtiDigest !== digestRefreshTokenJti(payload.jti)) {
+    return { kind: 'legacy_or_stale_family', familyId: payload.fam };
+  }
+  return { kind: 'current', userId: payload.sub, familyId: payload.fam };
 }
 
 /**

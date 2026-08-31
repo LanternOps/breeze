@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { getTableName } from 'drizzle-orm';
-import { PgTable } from 'drizzle-orm/pg-core';
+import { getTableConfig, PgTable } from 'drizzle-orm/pg-core';
 import * as schema from '../../db/schema';
+import { aiAgentRuns } from '../../db/schema';
 import {
   CUSTOM_ORG_REWRITE_TABLES,
   getDeviceCascadeDeleteTables,
@@ -31,6 +34,17 @@ const INTENTIONALLY_NO_ORG_ID: ReadonlySet<string> = new Set([
   // history stays with the source org (owner decision 2026-08-23) — see the
   // CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
   'ai_agent_runs',
+  // Has org_id, but it is intentionally NOT re-stamped on move: exposure
+  // history stays with the org the unattended action ran in (same
+  // ai_agent_runs decision above), and a bare org_id repoint would violate
+  // the (org_id, partner_id) composite FK across partners — see the
+  // CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
+  'ai_unattended_exposure',
+  // Has org_id AND device_id, but org_id is intentionally NOT re-stamped on
+  // move: a fix-held watch's org attribution stays with the run it watches,
+  // which itself never follows a device move (ai_agent_runs above) — see
+  // the CORE_DEVICE_ORG_DENORMALIZED_TABLES comment in core.ts.
+  'ai_agent_fix_watches',
   'automation_policy_compliance',
   'deployment_devices',
   'deployment_results',
@@ -295,5 +309,155 @@ describe('DEVICE_SITE_DENORMALIZED_TABLES coverage', () => {
       `These entries in DEVICE_SITE_DENORMALIZED_TABLES are stale — remove them ` +
         `or fix the schema.`,
     ).toEqual([]);
+  });
+});
+
+/**
+ * ai_agent_runs run-lineage detach coverage (#3828 branch-review blocker 2).
+ *
+ * ai_agent_runs deliberately does NOT follow the device on a cross-org move
+ * (owner decision 2026-08-23 — see CORE_DEVICE_ORG_DENORMALIZED_TABLES'
+ * comment above): run history stays with the SOURCE org, and moveOrg.ts
+ * instead severs every FK column that points at a row which DOES move with
+ * the device (either the device row itself, or a table returned by
+ * getDeviceOrgDenormalizedTables()). Left un-severed, such a column would
+ * point across tenants the moment its target is re-stamped to the
+ * destination org — exactly the bug this blocker fixes for
+ * `anomaly_incident_id`.
+ *
+ * The detach statement is duplicated in two places that must stay in sync:
+ * moveOrg.ts's UPDATE and breeze_cascade_device_org_id()'s identical UPDATE
+ * (the DB-side trigger, for direct-SQL/non-route callers). This block derives
+ * the expected column set from the ai_agent_runs schema's own FK columns —
+ * not a hand-maintained list — so the next FK added to this table cannot
+ * silently skip both detach sites the way anomaly_incident_id did.
+ */
+describe('ai_agent_runs run-lineage detach coverage', () => {
+  const runsCfg = getTableConfig(aiAgentRuns);
+  const denormTableSet = new Set<string>(getDeviceOrgDenormalizedTables());
+
+  // KNOWN, pre-existing, NOT fixed by this change: `ticket_id` references
+  // `tickets`, which IS in getDeviceOrgDenormalizedTables() (tickets bound to
+  // the moved device are re-stamped to the destination org by the generic
+  // loop) — so by the same reasoning as anomaly_incident_id, a source-org run
+  // keeping its ticket_id would end up pointing at a now-foreign ticket too.
+  // That gap predates this PR (wave 6 PR 3, #3828) and is NOT one of the
+  // three review blockers this change fixes — flagged here instead of
+  // silently "fixed" as a scope change. Tracked for a follow-up; remove this
+  // entry (and stop excluding it below) once ticket_id is detached alongside
+  // device_id/alert_id/session_id/anomaly_incident_id in both sites.
+  const KNOWN_UNDETACHED_RUN_LINEAGE_COLUMNS: ReadonlySet<string> = new Set(['ticket_id']);
+
+  // Columns that reference the run's OWN identity, not a row that moves WITH
+  // the device — must stay untouched by device-lineage detach.
+  const NOT_DEVICE_LINEAGE: ReadonlySet<string> = new Set(['agent_id', 'org_id']);
+
+  function deriveExpectedDetachColumns(): string[] {
+    const expected: string[] = [];
+    for (const fk of runsCfg.foreignKeys) {
+      const ref = fk.reference();
+      const [column] = ref.columns;
+      if (!column) continue;
+      if (NOT_DEVICE_LINEAGE.has(column.name)) continue;
+      const foreignTableName = getTableName(ref.foreignTable);
+      const isDeviceLineage = foreignTableName === 'devices' || denormTableSet.has(foreignTableName);
+      if (!isDeviceLineage) continue;
+      if (KNOWN_UNDETACHED_RUN_LINEAGE_COLUMNS.has(column.name)) continue;
+      expected.push(column.name);
+    }
+    return expected.sort();
+  }
+
+  function extractDetachColumns(sqlText: string): string[] {
+    // Matches `<col> = NULL` occurrences inside an UPDATE ai_agent_runs SET
+    // ... WHERE device_id = ... statement targeting a single row's lineage
+    // columns (not bulk org_id rewrites, which use `= <param>` not `= NULL`).
+    return [...sqlText.matchAll(/\b([a-z_]+)\s*=\s*NULL\b/g)].map((m) => m[1]!).sort();
+  }
+
+  it('sanity: the derived expected set is non-empty and contains the known lineage columns', () => {
+    const expected = deriveExpectedDetachColumns();
+    expect(expected.length).toBeGreaterThan(0);
+    expect(expected).toEqual(
+      expect.arrayContaining(['device_id', 'alert_id', 'session_id', 'anomaly_incident_id']),
+    );
+  });
+
+  it('moveOrg.ts detaches exactly the derived run-lineage columns', () => {
+    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const src = readFileSync(moveOrgPath, 'utf8');
+
+    const match = src.match(/UPDATE ai_agent_runs SET ([\s\S]*?)\s*WHERE device_id/);
+    expect(
+      match,
+      'moveOrg.ts no longer has the expected "UPDATE ai_agent_runs SET ... WHERE device_id" statement — update this test if the statement shape changed intentionally',
+    ).toBeTruthy();
+
+    const actual = extractDetachColumns(match![1]!);
+    expect(actual).toEqual(deriveExpectedDetachColumns());
+  });
+
+  it('breeze_cascade_device_org_id() detaches exactly the derived run-lineage columns', () => {
+    // Newest definition of the function as of this PR — grep migrations/ for
+    // `CREATE OR REPLACE FUNCTION public.breeze_cascade_device_org_id` if this
+    // ever fails after a later migration replaces the function again.
+    const migrationPath = fileURLToPath(
+      new URL('../../../migrations/2026-09-20-ai-agents-anomaly-pilot.sql', import.meta.url),
+    );
+    const src = readFileSync(migrationPath, 'utf8');
+
+    const match = src.match(/UPDATE public\.ai_agent_runs\s+SET ([\s\S]*?)\s*WHERE device_id = NEW\.id/);
+    expect(
+      match,
+      'breeze_cascade_device_org_id() no longer has the expected ai_agent_runs detach statement',
+    ).toBeTruthy();
+
+    const actual = extractDetachColumns(match![1]!);
+    expect(actual).toEqual(deriveExpectedDetachColumns());
+  });
+});
+
+/**
+ * action_intents.scope_device_id detach coverage (P2-2 review round 1,
+ * Important 2, #4189).
+ *
+ * Same cross-tenant-pointer class as the ai_agent_runs run-lineage detach
+ * above: `action_intents.scope_device_id` is a typed target-scope pointer
+ * (migrations/2026-09-23-ai-agents-scheduled-sweeps.sql) that must not keep
+ * naming a device once that device moves to a different org. Unlike the
+ * ai_agent_runs columns, this is a single column gated to LIVE statuses only
+ * (see actionIntents.ts's schema comment for why terminal-status intents are
+ * left alone) — a source-text regex assertion on the WHERE clause, not a
+ * schema-FK-derived set, since there is only the one column to check.
+ *
+ * Deliberately NOT mirrored into breeze_cascade_device_org_id() (the DB-side
+ * trigger for direct-SQL/non-route callers) in this round — the controller
+ * ruling scoped this fix to the moveOrg route only. A direct
+ * `UPDATE devices SET org_id = ...` that bypasses the route would still leave
+ * a stale scope_device_id; tracked as a known gap for a follow-up, same
+ * pattern as this file's own `KNOWN_UNDETACHED_RUN_LINEAGE_COLUMNS` note for
+ * ticket_id above.
+ */
+describe('action_intents.scope_device_id detach coverage', () => {
+  it('moveOrg.ts tombstones scope_device_id for the moved device, scoped to live statuses', () => {
+    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const src = readFileSync(moveOrgPath, 'utf8');
+
+    const match = src.match(
+      /UPDATE action_intents SET scope_device_id = NULL\s+WHERE scope_device_id = \$\{deviceId\}::uuid\s+AND status IN \(([^)]+)\)/,
+    );
+    expect(
+      match,
+      'moveOrg.ts no longer has the expected "UPDATE action_intents SET scope_device_id = NULL ... WHERE scope_device_id = ... AND status IN (...)" statement — update this test if the statement shape changed intentionally',
+    ).toBeTruthy();
+
+    // Assert the WHERE's status filter, not just that some UPDATE ran — a
+    // detach that fired unconditionally (e.g. dropping the status filter)
+    // would tombstone a COMPLETED intent's historical target too, which the
+    // schema comment explicitly says must not happen.
+    const statuses = match![1]!
+      .split(',')
+      .map((s) => s.trim().replace(/^'|'$/g, ''));
+    expect(statuses.sort()).toEqual(['approved', 'executing', 'pending_approval']);
   });
 });

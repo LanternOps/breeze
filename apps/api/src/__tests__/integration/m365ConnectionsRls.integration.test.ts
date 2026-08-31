@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { m365Connections } from '../../db/schema';
-import { createOrganization, createPartner, createUser } from './db-utils';
+import { createOrganization, createPartner, createUser, reapplyOrgIdFkDeferrability } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -44,6 +44,11 @@ function migrationText(filename: string): string {
 async function replayGraphReadConsentMigration(): Promise<void> {
   await getTestDb().execute(sql.raw(migrationText('2026-07-14-m365-customer-graph-read-consent.sql')));
   await getTestDb().execute(sql.raw(migrationText('2026-07-22-m365-consent-sessions-actions-profile.sql')));
+  // 2026-07-14's unconditional DROP+ADD of m365_consent_sessions_connection_identity_fkey
+  // carries no DEFERRABLE clause, so replaying it undoes the org-lifecycle branch's
+  // deferrable-FK contract (migrations/2026-09-12-100001-org-lifecycle-foundations.sql
+  // Section 2). Restore it here rather than editing the shipped migration.
+  await reapplyOrgIdFkDeferrability(getTestDb());
 }
 
 async function seedFixture() {

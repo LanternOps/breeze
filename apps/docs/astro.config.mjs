@@ -57,6 +57,7 @@ export default defineConfig({
                 { slug: 'features/remote-access' },
                 { slug: 'features/scripts' },
                 { slug: 'features/script-ai' },
+                { slug: 'features/ai-agents' },
                 { slug: 'features/automations' },
                 { slug: 'features/playbooks' },
                 { slug: 'features/deployments' },

@@ -24,9 +24,11 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV M365_GRAPH_READ_EXECUTOR_AUTOSTART=1
 
-# The runtime needs only Node. Removing bundled package managers avoids carrying
-# their unused dependency trees without resolving mutable Alpine packages.
-RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+# CVE-2026-14456: the pinned base digest predates fixed libcrypto3/libssl3 3.5.8-r0.
+# The credential-boundary hardening guard permits only this exact two-package
+# upgrade; remove bundled npm/npx because the runtime entrypoint never uses them.
+RUN apk upgrade --no-cache libcrypto3 libssl3 && \
+    rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 COPY --from=build --chown=node:node /deployed/node_modules ./node_modules
 COPY --from=build --chown=node:node /deployed/dist ./dist

@@ -1,4 +1,4 @@
-import type { PostureSummary, ExecutiveSummary } from '@breeze/shared';
+import type { PostureSummary, ExecutiveSummary, OrgNarrativeReportSummary } from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula } from '@/lib/csvExport';
 import { downloadBlob } from '@/lib/downloadBlob';
@@ -41,8 +41,9 @@ export function getBrowserTimezone(): string {
  *
  * Throws if rows is empty for CSV/Excel formats. When `summary` is supplied for
  * the security_compliance_posture report, the PDF leads with a posture scorecard
- * before the per-device table. PDFs are branded with the partner's uploaded logo
- * when available (fetched here unless `branding` is supplied by the caller).
+ * before the per-device table; for ai_org_narrative it renders the stored
+ * narrative instead of a table. PDFs are branded with the partner's uploaded
+ * logo when available (fetched here unless `branding` is supplied by the caller).
  */
 export async function exportReport(
   rows: unknown[],
@@ -50,7 +51,10 @@ export async function exportReport(
     format: 'csv' | 'pdf' | 'excel';
     reportType: string;
     timezone: string;
-    summary?: PostureSummary | ExecutiveSummary;
+    /** Stored run snapshot consumed by the designed cover/body renderers
+     * (posture scorecard, executive summary, AI org narrative); the generic
+     * table path ignores it. */
+    summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary;
     /** Slim baseline from the previous completed run (report_runs.result.previous),
      * used to draw the scorecard trend chip; ignored by non-cover report types. */
     previous?: { generatedAt?: string | null; summary?: unknown };

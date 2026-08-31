@@ -107,6 +107,10 @@ type OrgDetails = {
   name: string;
   slug: string;
   status: string;
+  // Present on the archived-org shape the GET returns (see orgs.ts —
+  // `loadArchivedOrg`/the `status === 'archived'` branch); absent otherwise.
+  archived?: boolean;
+  purgeAt?: string | null;
   type?: string;
   maxDevices?: number;
   settings?: {
@@ -269,6 +273,13 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   const [typeDraft, setTypeDraft] = useState<string>('customer');
   const [savingType, setSavingType] = useState(false);
 
+  // Archived orgs are read-only: the update route 404s any PATCH here (the
+  // LIFECYCLE_FROZEN_ORG_STATUSES guard in orgs.ts matches 0 rows), so writes
+  // must be refused client-side rather than surfacing that 404 as a bespoke
+  // error. The GET does NOT 404 for an archived org — it returns the full row
+  // plus `archived: true` — so this signal is always available once loaded.
+  const isArchived = orgDetails?.status === 'archived';
+
   const { currentOrgId, organizations } = useOrgStore();
   const effectiveOrgId = propOrgId || currentOrgId;
 
@@ -351,6 +362,10 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
 
   const handleSaveSettings = useCallback(async (section: string, data: Record<string, unknown>) => {
     if (!effectiveOrgId) return;
+    if (isArchived) {
+      setError(t('orgSettingsPage.archived.saveBlocked'));
+      return;
+    }
 
     try {
       const currentSettings = orgDetails?.settings || {};
@@ -381,10 +396,14 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         setError(err instanceof Error ? err.message : t('orgSettingsPage.errors.saveSettings'));
       }
     }
-  }, [effectiveOrgId, orgDetails, fetchOrgDetails, t]);
+  }, [effectiveOrgId, orgDetails, isArchived, fetchOrgDetails, t]);
 
   const handleSaveName = useCallback(async () => {
     if (!effectiveOrgId) return;
+    if (isArchived) {
+      setError(t('orgSettingsPage.archived.saveBlocked'));
+      return;
+    }
     const trimmed = nameDraft.trim();
     if (!trimmed || trimmed === orgDetails?.name) return;
 
@@ -405,10 +424,14 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
     } finally {
       setSavingName(false);
     }
-  }, [effectiveOrgId, nameDraft, orgDetails, fetchOrgDetails, t]);
+  }, [effectiveOrgId, nameDraft, orgDetails, isArchived, fetchOrgDetails, t]);
 
   const handleSaveType = useCallback(async () => {
     if (!effectiveOrgId) return;
+    if (isArchived) {
+      setError(t('orgSettingsPage.archived.saveBlocked'));
+      return;
+    }
     if (typeDraft === (orgDetails?.type ?? 'customer')) return;
 
     try {
@@ -433,7 +456,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
     } finally {
       setSavingType(false);
     }
-  }, [effectiveOrgId, typeDraft, fetchOrgDetails, t]);
+  }, [effectiveOrgId, typeDraft, orgDetails, isArchived, fetchOrgDetails, t]);
 
   // Fallback display data — prefer fetched orgDetails; when accessed via URL prop the org
   // might not be in the store's organizations array, so fall back to a minimal object.
@@ -448,6 +471,9 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   }, [saveState.hasUnsavedChanges, saveState.lastSavedAt, t]);
 
   const handleDirty = () => {
+    // Nothing can actually be saved on an archived org (see isArchived above),
+    // so never let a child editor's edits show a false "unsaved changes" pill.
+    if (isArchived) return;
     setSaveState(prev => ({ ...prev, hasUnsavedChanges: true }));
   };
 
@@ -625,7 +651,8 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                           void handleSaveName();
                         }
                       }}
-                      className="flex-1 rounded-md border bg-background px-3 py-1.5 text-base font-semibold focus:outline-hidden focus:ring-2 focus:ring-primary"
+                      disabled={isArchived}
+                      className="flex-1 rounded-md border bg-background px-3 py-1.5 text-base font-semibold focus:outline-hidden focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
                       placeholder={t('orgSettingsPage.overview.organizationName')}
                       aria-label={t('orgSettingsPage.overview.organizationName')}
                     />
@@ -633,7 +660,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                       type="button"
                       data-testid="org-name-save"
                       onClick={() => void handleSaveName()}
-                      disabled={savingName || !nameDraft.trim() || nameDraft.trim() === orgDetails?.name}
+                      disabled={isArchived || savingName || !nameDraft.trim() || nameDraft.trim() === orgDetails?.name}
                       className="inline-flex items-center rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {savingName ? t('common:states.saving') : t('orgSettingsPage.actions.save')}
@@ -657,7 +684,8 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                       data-testid="org-type-select"
                       value={typeDraft}
                       onChange={(e) => setTypeDraft(e.target.value)}
-                      className="flex-1 rounded-md border bg-background px-3 py-1.5 text-base font-semibold focus:outline-hidden focus:ring-2 focus:ring-primary"
+                      disabled={isArchived}
+                      className="flex-1 rounded-md border bg-background px-3 py-1.5 text-base font-semibold focus:outline-hidden focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
                       aria-label={t('orgSettingsPage.overview.organizationType')}
                     >
                       <option value="customer">{t('orgSettingsPage.overview.types.customer')}</option>
@@ -667,7 +695,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                       type="button"
                       data-testid="org-type-save"
                       onClick={() => void handleSaveType()}
-                      disabled={savingType || typeDraft === (orgDetails?.type ?? 'customer')}
+                      disabled={isArchived || savingType || typeDraft === (orgDetails?.type ?? 'customer')}
                       className="inline-flex items-center rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {savingType ? t('common:states.saving') : t('orgSettingsPage.actions.save')}
@@ -770,6 +798,29 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           </div>
         )}
       </header>
+
+      {isArchived && (
+        <div
+          data-testid="org-archived-banner"
+          className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100"
+        >
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+          <div>
+            <p className="text-sm font-medium">
+              {orgDetails?.purgeAt
+                ? t('orgSettingsPage.archived.bannerWithDate', { date: formatDate(orgDetails.purgeAt) })
+                : t('orgSettingsPage.archived.banner')}
+            </p>
+            <a
+              href={`/settings/organizations#${displayOrg.id}`}
+              data-testid="org-archived-restore-link"
+              className="mt-2 inline-block text-xs font-medium underline hover:no-underline"
+            >
+              {t('orgSettingsPage.archived.restoreLink')}
+            </a>
+          </div>
+        </div>
+      )}
 
       {saveState.hasUnsavedChanges ? (
         <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-900">

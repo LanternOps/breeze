@@ -1,11 +1,10 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import * as dbModule from '../../db';
 import { users } from '../../db/schema';
 import {
-  createTokenPair,
   generateMFASecret,
   consumeMFAToken,
   generateOTPAuthURL,
@@ -14,9 +13,24 @@ import {
   rateLimiter,
   mfaLimiter,
   getRedis,
-  mintRefreshTokenFamily,
-  bindRefreshJtiToFamily,
-  getUserEpochs
+  getUserEpochs,
+  beginAuthIssuance,
+  finishAuthIssuance,
+  cancelAuthIssuance,
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceConflictError,
+  AuthIssuanceCapabilityError,
+  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
+  bindIssuedUserSession,
+  authBrowserTransitionsEnforced,
+  recordAuthTransitionLegacyIssuer,
+  consumeRecoveryCode,
+  RecoveryCodeInvalidError,
+  type AuthIssuanceCapability,
+  type AuthorizedUserSession,
+  type UserSessionIdentity,
 } from '../../services';
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
@@ -29,12 +43,12 @@ import { mintStepUpGrant, rollbackResourceDigest } from '../../services/mfaStepU
 import { verifyStepUpPasskeyAssertion } from './passkeys';
 import {
   getClientIP,
-  setRefreshTokenCookie,
+  installAuthorizedUserSessionCookies,
+  installLegacyUserSessionCookiesDuringTransition,
   toPublicTokens,
   encryptMfaSecret,
   decryptMfaSecret,
   decryptMfaSecretForMigration,
-  hashRecoveryCode,
   hashRecoveryCodes,
   mfaDisabledResponse,
   resolveCurrentUserTokenContext,
@@ -48,10 +62,34 @@ import {
   enforceExistingFactorStepUp,
   parsePendingMfa,
   evaluatePendingMfa,
-  mintLoginRegisterGrant
+  mintLoginRegisterGrant,
+  isAuthTransitionV1Request,
+  authClientUpgradeRequiredResponse,
 } from './helpers';
+import { installAuthBindingReplacement, requestAuthBinding } from './binding';
+
+import { finalizeSsoPendingLink } from './ssoLinkCompletion';
 
 const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
+
+function authTransitionClientClass(c: Context): 'web' | 'native' {
+  return readMobileDeviceId(c) ? 'native' : 'web';
+}
+
+function authIssuanceAdmissionError(c: Context, error: unknown): Response | null {
+  if (error instanceof AuthBindingRotationRequiredError) {
+    installAuthBindingReplacement(c, error.replacement);
+    return c.json({ error: error.message, reason: 'auth_binding_rotation_required' }, 428);
+  }
+  if (
+    error instanceof AuthBindingUnavailableError
+    || error instanceof AuthIssuanceConflictError
+    || error instanceof AuthIssuanceCapabilityError
+  ) {
+    return c.json({ error: 'Authentication issuance unavailable' }, 409);
+  }
+  return null;
+}
 
 // Body schemas that require a password re-prompt. A stolen access token
 // must not be sufficient to install/remove an MFA factor — these
@@ -176,6 +214,11 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     const pendingUserId = pending.userId;
     const pendingMfaMethod = pending.mfaMethod;
 
+    const transitionV1 = isAuthTransitionV1Request(c);
+    if (!transitionV1 && authBrowserTransitionsEnforced()) {
+      return authClientUpgradeRequiredResponse(c);
+    }
+
     // Rate limit MFA attempts
     const rateCheck = await rateLimiter(redis, `mfa:${pendingUserId}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
     if (!rateCheck.allowed) {
@@ -247,6 +290,24 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       return c.json({ error: 'Use passkey verification for this MFA session' }, 400);
     }
 
+    let capability: AuthIssuanceCapability | null = null;
+    if (transitionV1) {
+      try {
+        capability = await beginAuthIssuance(requestAuthBinding(c));
+        if (
+          capability.transitionId !== pending.transitionId
+          || capability.generation !== pending.browserGeneration
+        ) {
+          await cancelAuthIssuance(capability);
+          return c.json({ error: 'Invalid or expired MFA session' }, 409);
+        }
+      } catch (error) {
+        const response = authIssuanceAdmissionError(c, error);
+        if (!response) throw error;
+        return response;
+      }
+    }
+
     // Recovery-code login. Independent of the account's primary factor: a user
     // locked out of their authenticator falls back to a stored recovery code.
     // Remove exactly one matching hash with a server-side RELATIVE jsonb delete
@@ -261,66 +322,49 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     //   - two concurrent IDENTICAL codes serialize on the row; the loser's `@>`
     //     guard fails against the winner's committed value → rowCount 0 → 401.
     // Single-winner AND no-resurrection are proven against real Postgres (Task 9).
-    if (method === 'recovery') {
-      const inputHash = hashRecoveryCode(code);
-      const stored = Array.isArray(user.mfaRecoveryCodes) ? (user.mfaRecoveryCodes as string[]) : [];
-      if (!stored.includes(inputHash)) {
-        void auditUserLoginFailure(c, {
-          userId: user.id, email: user.email, name: user.name,
-          reason: 'mfa_recovery_code_invalid', details: { method: 'recovery' },
-        });
-        return c.json({ error: 'Invalid MFA code' }, 401);
+    try {
+      if (method === 'recovery') {
+        // The authoritative hash check and relative delete occur only inside the
+        // guarded finalization below. A logout-pending transition can therefore
+        // never burn a recovery code.
+        valid = true;
+      } else if (effectiveMethod === 'sms') {
+        const phone = user.phoneNumber;
+        if (!phone) {
+          if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+          return c.json({ error: 'No phone number configured for SMS MFA' }, 400);
+        }
+        const twilio = getTwilioService();
+        if (!twilio) {
+          if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+          return c.json({ error: 'SMS service not configured' }, 501);
+        }
+        const result = await twilio.checkVerificationCode(phone, code);
+        if (result.serviceError) {
+          if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+          return c.json({ error: 'SMS verification service temporarily unavailable. Please try again.' }, 502);
+        }
+        valid = result.valid;
+      } else {
+        // TOTP verification
+        const decrypted = decryptMfaSecretForMigration(user.mfaSecret);
+        const decryptedMfaSecret = decrypted.plaintext;
+        if (!decryptedMfaSecret) {
+          if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+          return c.json({ error: 'Invalid MFA configuration' }, 400);
+        }
+        migratedMfaSecret = decrypted.migratedSecret;
+        // consumeMFAToken: single-use per (user, step) so a live code can't be
+        // replayed into a second login session. (security review #2)
+        valid = await consumeMFAToken(decryptedMfaSecret, code, user.id);
       }
-      const removed = await withSystemDbAccessContext(() =>
-        db
-          .update(users)
-          .set({ mfaRecoveryCodes: sql`${users.mfaRecoveryCodes} - ${inputHash}`, updatedAt: new Date() })
-          .where(and(eq(users.id, user.id), sql`${users.mfaRecoveryCodes} @> ${JSON.stringify([inputHash])}::jsonb`))
-          .returning({ id: users.id }),
-      );
-      if (removed.length === 0) {
-        // A concurrent winner already consumed this exact hash — reject the loser.
-        return c.json({ error: 'Invalid MFA code' }, 401);
-      }
-      writeAuthAudit(c, {
-        orgId: undefined,
-        action: 'auth.mfa.recovery_code.used',
-        result: 'success',
-        userId: user.id,
-        email: user.email,
-        // Best-effort count from the PRE-update snapshot only — never read the
-        // post-update array back, and never log the code or its hash.
-        details: { remainingApprox: Math.max(0, stored.length - 1) },
-      });
-      valid = true;
-    } else if (effectiveMethod === 'sms') {
-      const phone = user.phoneNumber;
-      if (!phone) {
-        return c.json({ error: 'No phone number configured for SMS MFA' }, 400);
-      }
-      const twilio = getTwilioService();
-      if (!twilio) {
-        return c.json({ error: 'SMS service not configured' }, 501);
-      }
-      const result = await twilio.checkVerificationCode(phone, code);
-      if (result.serviceError) {
-        return c.json({ error: 'SMS verification service temporarily unavailable. Please try again.' }, 502);
-      }
-      valid = result.valid;
-    } else {
-      // TOTP verification
-      const decrypted = decryptMfaSecretForMigration(user.mfaSecret);
-      const decryptedMfaSecret = decrypted.plaintext;
-      if (!decryptedMfaSecret) {
-        return c.json({ error: 'Invalid MFA configuration' }, 400);
-      }
-      migratedMfaSecret = decrypted.migratedSecret;
-      // consumeMFAToken: single-use per (user, step) so a live code can't be
-      // replayed into a second login session. (security review #2)
-      valid = await consumeMFAToken(decryptedMfaSecret, code, user.id);
+    } catch (error) {
+      if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+      throw error;
     }
 
     if (!valid) {
+      if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
       void auditUserLoginFailure(c, {
         userId: user.id,
         email: user.email,
@@ -331,8 +375,61 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       return c.json({ error: 'Invalid MFA code' }, 401);
     }
 
-    // Clear temp token
-    await redis.del(`mfa:pending:${tempToken}`);
+    // #4067: this MFA step may be the continuation of a link-on-first-SSO-
+    // login ceremony (/sso/link/confirm verified the password, this endpoint
+    // verified the Breeze-held factor). Finalize the SSO link + SSO-style
+    // mint instead of the password-login mint below —
+    // finalizeSsoPendingLink re-validates the user/provider/epoch bindings
+    // against live state and refuses on any drift.
+    if (pending.ssoLinkTokenHash) {
+      const linkCapability = capability ?? undefined;
+      capability = null; // ownership transfers to the finalizer
+      const outcome = await finalizeSsoPendingLink(c, pending.ssoLinkTokenHash, {
+        breezeMfaVerified: true,
+        expectedUserId: user.id,
+        capability: linkCapability,
+        ...(method === 'recovery' ? { recoveryCode: code } : {}),
+      });
+      if (!outcome.ok) {
+        if (outcome.error === 'invalid_mfa_code') {
+          void auditUserLoginFailure(c, {
+            userId: user.id, email: user.email, name: user.name,
+            reason: 'mfa_recovery_code_invalid', details: { method: 'recovery' },
+          });
+          return c.json({ error: 'Invalid MFA code' }, 401);
+        }
+        if (outcome.error === 'identity_in_use') {
+          return c.json({ error: 'identity_in_use' }, 409);
+        }
+        if (outcome.error === 'completion_failed') {
+          // Proofs were fine; the account can't complete (membership/mint).
+          // NOT the expired view — a restart loops the user forever.
+          return c.json({ error: 'completion_failed' }, 403);
+        }
+        // Distinct code: the FACTOR was correct — it's the link ceremony that
+        // is dead (TTL, provider re-config, state drift). The connect page
+        // maps this to its expired view; 'Invalid or expired MFA session'
+        // here would strand the user retrying a code that can never work.
+        return c.json({ error: 'sso_link_expired' }, 401);
+      }
+      await redis.del(`mfa:pending:${tempToken}`);
+      installAuthorizedUserSessionCookies(c, outcome.session);
+      c.header('Cache-Control', 'no-store');
+      return c.json({
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          mfaEnabled: true,
+          avatarUrl: user.avatarUrl,
+          isPlatformAdmin: user.isPlatformAdmin === true
+        },
+        tokens: { accessToken: outcome.accessToken, expiresInSeconds: outcome.expiresInSeconds },
+        mfaRequired: false,
+        requiresSetup: userRequiresSetup(user),
+        redirectPath: outcome.redirectPath
+      });
+    }
 
     // Partner/org context was already resolved above (mfaContext) — reuse it
     // rather than re-querying.
@@ -346,43 +443,108 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     // password-only logins. Missing this on /mfa/verify would silently
     // exempt every MFA-enabled user from RFC 9700 §4.13.2 protection —
     // exactly the wrong cohort to skip.
-    const mfaFamilyId = await mintRefreshTokenFamily(user.id);
-    const epochs = await getUserEpochs(user.id);
-    if (!epochs) throw new Error('user epochs unavailable at token mint');
-    const tokens = await createTokenPair({
-      sub: user.id,
+    const identity: UserSessionIdentity = {
+      userId: user.id,
       email: user.email,
       roleId: mfaRoleId,
       orgId: mfaOrgId,
       partnerId: mfaPartnerId,
       scope: mfaScope,
       mfa: true,
-      aep: epochs.authEpoch,
-      mep: epochs.mfaEpoch,
       // SR-001: bind to the mobile install id when present (MFA login path).
-      mdid: readMobileDeviceId(c) ?? undefined
-    }, { refreshFam: mfaFamilyId });
+      mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+    };
 
-    await bindRefreshJtiToFamily(tokens.refreshJti, mfaFamilyId);
+    let tokens: ReturnType<typeof toPublicTokens>;
+    let mfaFamilyId: string;
+    let installSessionCookies: () => void;
+    if (capability) {
+      const guardedCapability = capability;
+      let issued: AuthorizedUserSession;
+      try {
+        issued = await finishAuthIssuance(guardedCapability, async (tx) => {
+          if (method === 'recovery') await consumeRecoveryCode(tx, user.id, code);
+          const session = await issueUserSession(identity, {
+            tx,
+            capability: guardedCapability,
+            expectedEpochs: { authEpoch: pending.authEpoch, mfaEpoch: pending.mfaEpoch },
+          });
+          await tx
+            .update(users)
+            .set({
+              lastLoginAt: new Date(),
+              ...(migratedMfaSecret ? { mfaSecret: migratedMfaSecret, updatedAt: new Date() } : {}),
+            })
+            .where(eq(users.id, user.id));
+          return session;
+        });
+      } catch (error) {
+        await cancelAuthIssuance(guardedCapability).catch(() => undefined);
+        if (error instanceof RecoveryCodeInvalidError) {
+          void auditUserLoginFailure(c, {
+            userId: user.id, email: user.email, name: user.name,
+            reason: 'mfa_recovery_code_invalid', details: { method: 'recovery' },
+          });
+          return c.json({ error: 'Invalid MFA code' }, 401);
+        }
+        const response = authIssuanceAdmissionError(c, error);
+        if (!response) throw error;
+        return response;
+      }
+      await bindIssuedUserSession(issued);
+      tokens = toPublicTokens(issued);
+      mfaFamilyId = issued.familyId;
+      installSessionCookies = () => installAuthorizedUserSessionCookies(c, issued);
+    } else {
+      const issuer = method === 'recovery' ? 'recovery' : effectiveMethod;
+      if (method === 'recovery') {
+        try {
+          await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+            db.transaction((tx) => consumeRecoveryCode(tx, user.id, code))
+          ));
+        } catch (error) {
+          if (!(error instanceof RecoveryCodeInvalidError)) throw error;
+          void auditUserLoginFailure(c, {
+            userId: user.id, email: user.email, name: user.name,
+            reason: 'mfa_recovery_code_invalid', details: { method: 'recovery' },
+          });
+          return c.json({ error: 'Invalid MFA code' }, 401);
+        }
+      }
+      recordAuthTransitionLegacyIssuer(issuer, authTransitionClientClass(c));
+      const issued = await issueUserSessionLegacyDuringTransition(identity);
+      await withSystemDbAccessContext(() =>
+        db
+          .update(users)
+          .set({
+            lastLoginAt: new Date(),
+            ...(migratedMfaSecret ? { mfaSecret: migratedMfaSecret, updatedAt: new Date() } : {}),
+          })
+          .where(eq(users.id, user.id))
+      );
+      tokens = toPublicTokens(issued);
+      mfaFamilyId = issued.familyId;
+      installSessionCookies = () => installLegacyUserSessionCookiesDuringTransition(c, issued);
+    }
 
-    // Update last login
-    // System DB context required: the MFA-verify step is still unauthenticated,
-    // so without it this `users` RLS UPDATE silently matches 0 rows under
-    // breeze_app — freezing last_login_at AND silently dropping the mfaSecret
-    // migration write (#1375).
-    await withSystemDbAccessContext(() =>
-      db
-        .update(users)
-        .set({
-          lastLoginAt: new Date(),
-          ...(migratedMfaSecret ? { mfaSecret: migratedMfaSecret, updatedAt: new Date() } : {})
-        })
-        .where(eq(users.id, user.id))
-    );
+    // Consume the pending bearer only after the guarded authority commits.
+    await redis.del(`mfa:pending:${tempToken}`);
+
+    if (method === 'recovery') {
+      const stored = Array.isArray(user.mfaRecoveryCodes) ? user.mfaRecoveryCodes : [];
+      writeAuthAudit(c, {
+        orgId: undefined,
+        action: 'auth.mfa.recovery_code.used',
+        result: 'success',
+        userId: user.id,
+        email: user.email,
+        details: { remainingApprox: Math.max(0, stored.length - 1) },
+      });
+    }
 
     auditLogin(c, { orgId: mfaOrgId ?? null, userId: user.id, email: user.email, name: user.name, mfa: true, scope: mfaScope, ip: getClientIP(c) });
 
-    setRefreshTokenCookie(c, tokens.refreshToken);
+    installSessionCookies();
 
     const requiresSetup = userRequiresSetup(user);
 
@@ -402,7 +564,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         // platform-admin-only nav on this flag.
         isPlatformAdmin: user.isPlatformAdmin === true
       },
-      tokens: toPublicTokens(tokens),
+      tokens,
       mfaRequired: false,
       requiresSetup,
       ...(authenticatorRegisterGrantId ? { authenticatorRegisterGrantId } : {})

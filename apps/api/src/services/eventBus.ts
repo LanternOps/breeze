@@ -1,7 +1,11 @@
 import Redis from 'ioredis';
-import { createBlockingRedisConnection, getRedisConnection } from './redis';
+import { getRedisConnection } from './redis';
 import { randomUUID } from 'crypto';
 import { runOutsideDbContext } from '../db';
+import { captureException } from './sentry';
+import { partitionSubscribersForEvent } from './eventSubscriberRegistry';
+import { eventDispatchMode } from '../config/env';
+import { enqueueRouteEvent, recordShadowLocalInvocation } from './eventDispatchQueue';
 
 // Event types for type safety
 export type EventType =
@@ -15,9 +19,47 @@ export type EventType =
   // Alert events
   | 'alert.triggered'
   | 'alert.acknowledged'
+  // C2 fix (P2-1 wave B, task 16d): every publisher SHOULD include
+  // `resolvedAt` (ISO string), `resolvedBy` (uuid | null — null means a
+  // system/auto resolve), and `triggeredAt` (ISO string) on the payload,
+  // sourced from the row the publisher's own UPDATE just wrote/returned —
+  // never from a second read. This lets a subscriber (see
+  // `alertVerdictSubscriber.ts`'s contract comment) gate on the PUBLISHED
+  // payload instead of re-reading the alert row, which can be stale when
+  // the publisher runs inside a still-open transaction (the auto-resolve
+  // sweep in `jobs/alertWorker.ts` / `jobs/monitorWorker.ts` publishes
+  // before its wrapping `withSystemDbAccessContext` commits). A publisher
+  // that omits these fields falls back to the pre-existing re-read
+  // behavior — not every one currently sets them, but new ones should.
   | 'alert.resolved'
   | 'alert.suppressed'
   | 'alert.escalated'
+  // Alert correlation group events (P2-1 wave B task 11). Published by
+  // jobs/alertCorrelation.ts after persistAlertCorrelationGroupsForAlerts
+  // returns — once per NEWLY created alert_correlation_groups row (never on
+  // re-upsert of an existing group; xmax = 0 on the RETURNING row is what
+  // distinguishes the two). Task 16e fix: the worker DOES run inside an
+  // enclosing transaction (`withSystemDbAccessContext`, via `db/index.ts`'s
+  // `withDbAccessContext` -> `baseDb.transaction`) — the premise this
+  // comment used to state ("no enclosing transaction") was disproved by two
+  // FK-violation reproductions (see `jobs/alertCorrelation.ts`'s F1-fix
+  // comment). `processAlertCorrelationJob` publishes this event only AFTER
+  // that `withSystemDbAccessContext` promise has resolved, i.e. once the
+  // transaction has committed and the row is durably visible.
+  //
+  // General contract for every publisher in this file: publish OUTSIDE the
+  // DB context that wrote the row (after commit, never from inside an
+  // open transaction), and a subscriber must never re-read that row on its
+  // own connection and trust it over the published payload — a re-read can
+  // still race a DIFFERENT publisher's still-open transaction (the
+  // auto-resolve sweep in `jobs/alertWorker.ts` / `jobs/monitorWorker.ts`
+  // publishes `alert.resolved` before its own `withSystemDbAccessContext`
+  // commits — see the `alert.resolved` comment above and
+  // `alertVerdictSubscriber.ts`'s payload-gating contract). Payload is
+  // { groupId, rootAlertId, memberCount, deviceId } — rootAlertId/deviceId
+  // are both null when the root alert has since been hard-deleted
+  // (alert_correlation_groups.root_alert_id is ON DELETE SET NULL).
+  | 'alert.correlation_group.created'
   // Incident events
   | 'incident.created'
   | 'incident.contained'
@@ -58,6 +100,23 @@ export type EventType =
   | 'backup.sla_resolved'
   // Ticket SLA events (Phase 2, ticketSlaWorker)
   | 'ticket.sla_breached'
+  // Ticket lifecycle events (#3828 wave-6-3 task 2). Published by
+  // ticketOutboxPublisher.ts from the ticket_outbox transactional outbox —
+  // id-only payloads (never subject/description/resolutionNote/comment
+  // content), same posture as ticket.sla_breached's `assigneeId`-only shape
+  // but stricter (that event predates the id-only design authority). Consumed
+  // by the Task 3 durable ticket-helpdesk subscriber (ticket.created only, v1)
+  // — ticket.commented/ticket.status_changed are published for future
+  // admission scope (deferred; see the wave-6-3 plan's Self-Review Notes).
+  | 'ticket.created'
+  | 'ticket.commented'
+  | 'ticket.status_changed'
+  // Metric-anomaly incident events (#3828 wave-6-4 task 2). Published by
+  // metricAnomalyIncidentPublisher.ts from the metric_anomaly_incidents
+  // transactional dispatch marker (never re-published on re-upsert — see
+  // that table's file header). Id-only payload: { incidentId, deviceId }.
+  // Consumed by the Task 3 durable metric-anomaly subscriber.
+  | 'anomaly.incident_opened'
   // Security events
   | 'security.score_changed'
   // CIS compliance events
@@ -172,36 +231,20 @@ export type EventHandler<T = Record<string, unknown>> = (event: BreezeEvent<T>) 
 
 // Stream key pattern: breeze:events:{orgId}
 const STREAM_PREFIX = 'breeze:events';
-const CONSUMER_GROUP = 'breeze-api';
 const MAX_STREAM_LENGTH = 10000; // Trim streams to prevent unbounded growth
 
 /**
- * EventBus - Redis Streams based event system for reliable event delivery
+ * EventBus - Redis Streams + pub/sub based event system.
  *
  * Features:
- * - Guaranteed delivery via Redis Streams consumer groups
- * - Event replay capability
- * - Dead letter queue for failed processing
+ * - Durable event log via Redis Streams (XADD, MAXLEN-capped)
+ * - Real-time delivery via pub/sub (org-scoped live channel + global channel)
  * - Correlation ID tracking for distributed tracing
  * - Priority-based routing
  */
 class EventBus {
   private handlers: Map<string, Set<EventHandler>> = new Map();
-  private consumerName: string;
-  private isConsuming = false;
   private redisClient: Redis | null = null;
-  /**
-   * Dedicated connection for the `XREADGROUP ... BLOCK 5000` in
-   * `consumeLoop` — see `createBlockingRedisConnection`. Lazily created
-   * (never at import time, and never before `startConsuming()` actually
-   * runs) and cached for the bus's lifetime; a new connection per loop
-   * iteration would churn a TCP connect + AUTH every 5 seconds forever.
-   */
-  private blockingRedisClient: Redis | null = null;
-
-  constructor() {
-    this.consumerName = `consumer-${process.pid}-${randomUUID().slice(0, 8)}`;
-  }
 
   /**
    * Get or create a persistent Redis connection for the EventBus.
@@ -216,34 +259,16 @@ class EventBus {
   }
 
   /**
-   * Get or create the dedicated blocking connection used ONLY for
-   * `XREADGROUP ... BLOCK` in `consumeLoop`. Redis serves one command at a
-   * time per connection, and ioredis queues everything else behind an
-   * in-flight command — so a blocking read on the shared connection from
-   * `getOrCreateRedis()` (the same connection `getBullMQConnection()` hands
-   * to every BullMQ `Queue`) would stall every other command on it,
-   * including request-path job enqueues, by up to the full block timeout.
-   * This is the identical defect fixed in `webhookDelivery.ts`'s `BRPOP`
-   * loop; every non-blocking command in this class (publish's `xadd` /
-   * `publish`, consumer-group creation, `xack`, etc.) deliberately stays on
-   * `getOrCreateRedis()`.
-   */
-  private getBlockingRedis(): Redis {
-    if (!this.blockingRedisClient || this.blockingRedisClient.status === 'end') {
-      this.blockingRedisClient = createBlockingRedisConnection('breeze:event-bus:xreadgroup');
-    }
-    return this.blockingRedisClient;
-  }
-
-  /**
-   * Close the persistent Redis connection and clean up resources.
+   * Release this bus's reference to the shared Redis connection.
+   *
+   * Deliberately does NOT call `.quit()`: `getOrCreateRedis()` borrows the
+   * module-singleton BullMQ connection (`getRedisConnection()`), which every
+   * BullMQ Worker/Queue in the process shares. Quitting it here tore the
+   * connection out from under consumers still draining in the same shutdown
+   * pass — `closeRedis()` is the sole owner of that quit (wave 3.5d-a, #4086).
    */
   async close(): Promise<void> {
-    this.stopConsuming();
-    if (this.redisClient) {
-      await this.redisClient.quit();
-      this.redisClient = null;
-    }
+    this.redisClient = null;
   }
 
   /**
@@ -312,8 +337,18 @@ class EventBus {
         console.log(`[EventBus] Published ${type} for org ${orgId}: ${eventId}`);
       }
 
-      // Invoke local in-process handlers immediately
-      // This handles the case where startConsuming() hasn't been called
+      // Dispatch-queue ingress (wave 3.5c, #4085): snapshot the publisher's
+      // routing plan into a durable BullMQ job BEFORE running local handlers,
+      // so the snapshot survives even if this process crashes mid-handler.
+      // `off` (the default) skips this entirely — today's in-process-only
+      // delivery is unchanged. enqueueRouteEvent itself never throws.
+      const dispatchMode = eventDispatchMode();
+      if (dispatchMode !== 'off') {
+        await enqueueRouteEvent(event as BreezeEvent);
+      }
+
+      // Invoke local in-process handlers immediately (this is the only
+      // delivery path — there is no consumer-group replay of the stream).
       await this.invokeLocalHandlers(event as BreezeEvent);
 
       return eventId;
@@ -388,8 +423,6 @@ class EventBus {
     const wildcardHandlers = this.handlers.get('*') || new Set();
     const allHandlers = [...typeHandlers, ...wildcardHandlers];
 
-    if (allHandlers.length === 0) return;
-
     let handlerIndex = 0;
     for (const handler of allHandlers) {
       try {
@@ -415,6 +448,52 @@ class EventBus {
       }
       handlerIndex += 1;
     }
+
+    // Registry-aware local delivery (wave 3.5c, #4085). Subscribers registered
+    // via `registerEventSubscriber` (the replacement for the legacy `subscribe`
+    // map above) are routed through `partitionSubscribersForEvent`, which keeps
+    // this in-process path and the queue path (eventDispatchWorker) mutually
+    // exclusive in `enforce` mode.
+    const { local } = partitionSubscribersForEvent(event.type);
+    for (const sub of local) {
+      try {
+        await sub.handler(event);
+        // Shadow-mode bookkeeping (wave 3.5c, #4085): fire-and-forget — a
+        // Redis hiccup recording shadow stats must never affect delivery.
+        // No-ops entirely outside shadow mode (see recordShadowLocalInvocation).
+        recordShadowLocalInvocation(event, sub.id, 'ok').catch((err) => {
+          console.warn('[EventBus] shadow-record-failed', err);
+        });
+      } catch (error) {
+        // Local delivery keeps wave-3d semantics: a buggy subscriber must not
+        // break the publish path (#820). Queue delivery (eventDispatchWorker)
+        // deliberately does NOT catch — the throw drives BullMQ retries.
+        console.error(
+          '[EventBus] local-handler-failed',
+          JSON.stringify({
+            errorId: 'EVENT_BUS_LOCAL_HANDLER_FAILED',
+            eventId: event.id,
+            eventType: event.type,
+            orgId: event.orgId,
+            source: event.source,
+            subscriberId: sub.id,
+            error: error instanceof Error
+              ? { name: error.name, message: error.message, stack: error.stack }
+              : String(error),
+          }),
+        );
+        try {
+          captureException(error); // NEW — five of six subscribers were stdout-only
+        } catch {
+          // Sentry must never break publish() — a throwing captureException
+          // (e.g. a misconfigured SDK) would otherwise escape this catch and
+          // reject publish() for the caller. See the carried fix, #4085 task 5.
+        }
+        recordShadowLocalInvocation(event, sub.id, 'error').catch((err) => {
+          console.warn('[EventBus] shadow-record-failed', err);
+        });
+      }
+    }
   }
 
   /**
@@ -436,222 +515,6 @@ class EventBus {
     };
   }
 
-  /**
-   * Start consuming events from Redis Streams
-   */
-  async startConsuming(orgIds: string[]): Promise<void> {
-    if (this.isConsuming) return;
-    this.isConsuming = true;
-
-    const redis = this.getOrCreateRedis();
-
-    // Ensure consumer groups exist for each org
-    for (const orgId of orgIds) {
-      const streamKey = `${STREAM_PREFIX}:${orgId}`;
-      try {
-        await redis.xgroup('CREATE', streamKey, CONSUMER_GROUP, '0', 'MKSTREAM');
-      } catch (err: unknown) {
-        // Group already exists - ignore
-        if (err instanceof Error && !err.message.includes('BUSYGROUP')) {
-          throw err;
-        }
-      }
-    }
-
-    // Start consuming loop
-    this.consumeLoop(orgIds);
-  }
-
-  private async consumeLoop(orgIds: string[]): Promise<void> {
-    // `redis` handles all NON-blocking commands (xack/lpush inside
-    // processMessage) and stays on the shared connection. Only the blocking
-    // XREADGROUP read below moves to its own connection — see
-    // `getBlockingRedis`.
-    const redis = this.getOrCreateRedis();
-    const streams = orgIds.map(orgId => `${STREAM_PREFIX}:${orgId}`);
-    const streamArgs = streams.flatMap(s => [s, '>']);
-
-    while (this.isConsuming) {
-      try {
-        // Read from all streams with blocking. MUST run on the dedicated
-        // connection (see getBlockingRedis) — not the shared one.
-        const results = await this.getBlockingRedis().xreadgroup(
-          'GROUP',
-          CONSUMER_GROUP,
-          this.consumerName,
-          'COUNT',
-          '10',
-          'BLOCK',
-          '5000',
-          'STREAMS',
-          ...streamArgs
-        );
-
-        if (results) {
-          for (const [, messages] of results as [string, [string, string[]][]][]) {
-            for (const [messageId, fields] of messages) {
-              await this.processMessage(messageId, fields, redis);
-            }
-          }
-        }
-      } catch (err) {
-        console.error('[EventBus] Error in consume loop:', err);
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-    }
-  }
-
-  private async processMessage(
-    messageId: string,
-    fields: string[],
-    redis: Redis
-  ): Promise<void> {
-    // Parse event from fields
-    const eventJson = fields[1]; // fields = ['event', '{...}']
-    if (!eventJson) {
-      console.error(`[EventBus] Missing event JSON in message: ${messageId}`);
-      // Acknowledge and push to DLQ to prevent blocking
-      await redis.xack(`${STREAM_PREFIX}:unknown`, CONSUMER_GROUP, messageId);
-      await redis.lpush(`${STREAM_PREFIX}:dlq`, JSON.stringify({ messageId, error: 'missing event JSON' }));
-      return;
-    }
-
-    let event: BreezeEvent;
-    try {
-      event = JSON.parse(eventJson);
-    } catch {
-      console.error(`[EventBus] Failed to parse event: ${messageId}`);
-      // Acknowledge and push to DLQ to prevent blocking
-      await redis.xack(`${STREAM_PREFIX}:unknown`, CONSUMER_GROUP, messageId);
-      await redis.lpush(`${STREAM_PREFIX}:dlq`, JSON.stringify({ messageId, raw: eventJson, error: 'JSON parse failure' }));
-      return;
-    }
-
-    // Get handlers for this event type
-    const typeHandlers = this.handlers.get(event.type) || new Set();
-    const wildcardHandlers = this.handlers.get('*') || new Set();
-    const allHandlers = [...typeHandlers, ...wildcardHandlers];
-
-    if (allHandlers.length === 0) {
-      // No handlers - acknowledge immediately
-      await redis.xack(`${STREAM_PREFIX}:${event.orgId}`, CONSUMER_GROUP, messageId);
-      return;
-    }
-
-    // Process with all handlers
-    let success = true;
-    for (const handler of allHandlers) {
-      try {
-        await handler(event);
-      } catch (err) {
-        console.error(`[EventBus] Handler failed for ${event.type}:`, err);
-        success = false;
-      }
-    }
-
-    if (success) {
-      // Acknowledge successful processing
-      await redis.xack(`${STREAM_PREFIX}:${event.orgId}`, CONSUMER_GROUP, messageId);
-    } else {
-      // Move to dead letter queue after max retries
-      // For now, just acknowledge to prevent blocking
-      await redis.xack(`${STREAM_PREFIX}:${event.orgId}`, CONSUMER_GROUP, messageId);
-      await redis.lpush(`${STREAM_PREFIX}:dlq`, JSON.stringify({ messageId, event }));
-    }
-  }
-
-  /**
-   * Stop consuming events
-   */
-  stopConsuming(): void {
-    this.isConsuming = false;
-  }
-
-  /**
-   * Replay events from a specific point in time
-   */
-  async replay(
-    orgId: string,
-    fromTimestamp: Date,
-    toTimestamp?: Date
-  ): Promise<BreezeEvent[]> {
-    const redis = this.getOrCreateRedis();
-    const streamKey = `${STREAM_PREFIX}:${orgId}`;
-
-    // Convert timestamps to Redis stream IDs (ms-*)
-    const fromId = `${fromTimestamp.getTime()}-0`;
-    const toId = toTimestamp ? `${toTimestamp.getTime()}-0` : '+';
-
-    const results = await redis.xrange(streamKey, fromId, toId, 'COUNT', '1000');
-
-    const events: BreezeEvent[] = [];
-    for (const [, fields] of results) {
-      const eventJson = fields[1];
-      if (!eventJson) continue;
-      try {
-        events.push(JSON.parse(eventJson) as BreezeEvent);
-      } catch {
-        // Skip malformed entries during replay
-      }
-    }
-    return events;
-  }
-
-  /**
-   * Get pending events that haven't been acknowledged
-   */
-  async getPending(orgId: string, count = 100): Promise<string[]> {
-    const redis = this.getOrCreateRedis();
-    const streamKey = `${STREAM_PREFIX}:${orgId}`;
-
-    const pending = await redis.xpending(
-      streamKey,
-      CONSUMER_GROUP,
-      '-',
-      '+',
-      count.toString()
-    );
-
-    return (pending as [string, string, number, number][]).map(([id]) => id);
-  }
-
-  /**
-   * Get dead letter queue entries
-   */
-  async getDeadLetterQueue(count = 100): Promise<{ messageId: string; event: BreezeEvent }[]> {
-    const redis = this.getOrCreateRedis();
-    const entries = await redis.lrange(`${STREAM_PREFIX}:dlq`, 0, count - 1);
-    return entries.map(entry => JSON.parse(entry));
-  }
-
-  /**
-   * Retry a dead letter queue entry
-   */
-  async retryDeadLetter(index: number): Promise<void> {
-    const redis = this.getOrCreateRedis();
-    const entry = await redis.lindex(`${STREAM_PREFIX}:dlq`, index);
-    if (!entry) return;
-
-    const { event } = JSON.parse(entry) as { messageId: string; event: BreezeEvent };
-
-    // Re-publish the event
-    await this.publish(
-      event.type,
-      event.orgId,
-      event.payload,
-      event.source,
-      {
-        priority: event.priority,
-        correlationId: event.metadata.correlationId,
-        causationId: event.id, // Original event becomes causation
-        userId: event.metadata.userId,
-        siteId: event.siteId, // preserve site attribution on retry
-      }
-    );
-
-    // Remove from DLQ
-    await redis.lrem(`${STREAM_PREFIX}:dlq`, 1, entry);
-  }
 }
 
 // Singleton instance
@@ -691,6 +554,8 @@ export const EVENT_TYPES = {
   ALERT_RESOLVED: 'alert.resolved' as const,
   ALERT_SUPPRESSED: 'alert.suppressed' as const,
   ALERT_ESCALATED: 'alert.escalated' as const,
+  // Alert correlation group (P2-1 wave B task 11)
+  ALERT_CORRELATION_GROUP_CREATED: 'alert.correlation_group.created' as const,
   // Incident
   INCIDENT_CREATED: 'incident.created' as const,
   INCIDENT_CONTAINED: 'incident.contained' as const,
@@ -727,6 +592,12 @@ export const EVENT_TYPES = {
   BACKUP_SLA_BREACH: 'backup.sla_breach' as const,
   BACKUP_SLA_RESOLVED: 'backup.sla_resolved' as const,
   TICKET_SLA_BREACHED: 'ticket.sla_breached' as const,
+  // Ticket lifecycle (#3828 wave-6-3 task 2) — id-only payloads.
+  TICKET_CREATED: 'ticket.created' as const,
+  TICKET_COMMENTED: 'ticket.commented' as const,
+  TICKET_STATUS_CHANGED: 'ticket.status_changed' as const,
+  // Metric-anomaly incidents (#3828 wave-6-4 task 2)
+  ANOMALY_INCIDENT_OPENED: 'anomaly.incident_opened' as const,
   // Security
   SECURITY_SCORE_CHANGED: 'security.score_changed' as const,
   CIS_DEVIATION: 'compliance.cis_deviation' as const,

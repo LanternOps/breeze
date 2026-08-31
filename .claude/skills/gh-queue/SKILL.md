@@ -156,6 +156,8 @@ gh api graphql -f query='mutation($id:ID!,$body:String!){addDiscussionComment(in
 
 **Handles (from `feedback_never_invent_github_handles`):** NEVER @-mention a handle you didn't see verbatim in the thread. Verify with `gh issue view --json author,comments` / the discussion query first.
 
+**Cite docs by PUBLISHED URL, code by repo path.** `file:line` is the right currency for *code* — a reader can find `apps/api/src/config/validate.ts:1198` on GitHub. It is the wrong currency for *documentation*: `apps/docs/src/content/docs/deploy/upgrades.mdx:326` is unusable to the self-hoster who asked. That tree publishes to **https://docs.breezermm.com**, mapping `apps/docs/src/content/docs/<path>.mdx` → `https://docs.breezermm.com/<path>/` (Starlight, `site` set in `apps/docs/astro.config.*`, no `base`). Link the page, not the source file, and **curl each URL for a 200 before posting** — a dead link in a public answer is worse than a repo path. Repo docs *outside* that tree (`docs/operations/*.md`, `docs/registers/*.md`) are not published; name them as repo files and say so. Internal issues we file for ourselves are the exception — a dev fixing `backup.mdx` wants the file path.
+
 **Always verify the post landed** (count comments / re-read last comment). The discussion mutation can succeed while a follow-up verify query errors on a missing-`first`/`last` pagination boundary — that's a query bug, not a post failure; check before re-posting or you'll double-comment (happened on #982; deleted the dup via `deleteDiscussionComment(input:{id:"DC_..."})`).
 
 ### 5. Closing — rules differ by type

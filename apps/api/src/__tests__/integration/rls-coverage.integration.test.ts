@@ -58,6 +58,7 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
   'abuse_script_hosts',
   'abuse_sweep_state',
   'abuse_endpoint_fingerprints',
+  'ai_kill_state',
 ]);
 
 // System-scoped tables: forced RLS with either no permissive policies at all,
@@ -88,6 +89,9 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'os_vulnerabilities', // Global OS-to-vulnerability match facts. Forced RLS, no tenant policies → only system context.
   'software_product_resolutions', // Global DisplayName→product resolution cache/log (#2290). Forced RLS, system-only policy → only system context.
   'third_party_package_catalog', // System-wide curated catalog of third-party packages; writes gated by platform-admin role at the route layer.
+  'llm_provider_catalog', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
+  'llm_provider_catalog_revisions', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
+  'llm_provider_verifications', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
   'supported_currencies', // Global ISO-4217 allowlist (multi-currency spec §4). No tenant axis. Forced RLS: permissive USING (true) SELECT (org-scoped request contexts read it), system-only writes. Mirrors winget_package_index.
   'exchange_rates', // Global reporting-only FX reference data (multi-currency spec §8). No tenant axis. Forced RLS: permissive USING (true) SELECT (org-scoped request contexts read rates to render an approximate total), system-only writes. Mirrors supported_currencies. Proven by exchangeRates.integration.test.ts.
@@ -96,7 +100,10 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'abuse_script_hosts', // Cross-partner download-host corpus for the script-content abuse detector. Carries partner_id but is deliberately operator-only (mirrors partner_abuse_signals). Forced RLS, system-only policy.
   'abuse_sweep_state', // Abuse-sweep scan state (incremental execution-scan high-water mark). No tenant column. Forced RLS, system-only policy.
   'abuse_endpoint_fingerprints', // Cross-partner endpoint-fingerprint corpus for the recidivist-endpoint abuse detector. Carries partner_id but is deliberately operator-only (mirrors abuse_script_hosts). Forced RLS, system-only policy.
+  'ai_kill_state', // Wave 5 Part A (#3827): system-scoped, single-row (id='global'), epoch'd AI-agent kill switch. Mirrors abuse_sweep_state verbatim — no tenant column, forced RLS, single system-only policy. Flipped only via SQL by ops (or a future admin route); no org/partner/user axis applies.
   'sso_sessions', // Pre-auth SSO CSRF/PKCE transaction store (state/nonce/code_verifier + link binding). No tenant column; written/consumed only by unauthenticated callback + system-context routes. Forced RLS, system-only policy → only system context.
+  'auth_browser_transitions', // Browser/native authentication transition state. Forced RLS, one system-only ALL policy; raw bindings are never stored and tenants cannot read browser-to-account correlation.
+  'sso_token_exchange_grants', // One-time SSO exchange authority. Forced RLS, one system-only ALL policy; only guarded auth lifecycle transactions may consume it.
   'installed_extensions', // Global runtime-extension operational state (version/trust/lifecycle/enabled). No tenant axis. Forced RLS, system-only policy → only system context.
   'extension_schema_history', // Global append-only record of the schema-compatibility floor each extension bundle version applied. No tenant axis. Forced RLS, system-only policy → only system context.
 ]);
@@ -280,6 +287,12 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // hard DELETEs as breeze_app under a system RLS context (no role switch).
   // Functional cross-partner forge proof: officeAddinBindingsRls.integration.test.ts.
   ['office_addin_user_bindings', 'partner_id'],
+  // org_merge_events (spec 2026-08-26, org-lifecycle): durable merge record,
+  // survives loser-org erasure (loser_org_id has no FK). Partner-axis (Shape 3),
+  // no org_id column — so no cascade/export registration. GRANT includes DELETE
+  // for cascadeDeletePartner's dynamic partner_id sweep.
+  // Functional cross-partner forge proof: orgMergeEventsRls.integration.test.ts.
+  ['org_merge_events', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -298,6 +311,16 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // ai_agents_one_owner_chk enforces exactly one axis. Functional cross-partner
   // forge proof: aiAgentsPartnerRls.integration.test.ts.
   'ai_agents',
+  // ai_agent_schedules (Phase 2 wave P2-2, #4189): a schedule is org-scoped
+  // (org_id set, an override of a partner baseline) OR partner-wide
+  // (partner_id set, org_id NULL, the baseline). Created dual-axis from day
+  // one in 2026-09-23-ai-agents-scheduled-sweeps. Same blindspot as
+  // ai_agents above: the org_id column means org-tenant auto-discovery
+  // already asserts the breeze_has_org_access branch, so this entry is what
+  // asserts the breeze_has_partner_access (partner-wide) branch. CHECK
+  // ai_agent_schedules_one_owner_chk enforces exactly one axis. Functional
+  // cross-partner forge proof: aiAgentSchedulesPartnerRls.integration.test.ts.
+  'ai_agent_schedules',
   // custom_field_definitions: a field is org-scoped (org_id set) OR
   // partner-wide (partner_id set, org_id NULL). Shipped org-only in the
   // baseline; converted to dual-axis in 2026-06-11-i-custom-fields-dual-axis-rls.

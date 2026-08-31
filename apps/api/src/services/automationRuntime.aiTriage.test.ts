@@ -40,6 +40,7 @@ const EXPECTED_SUCCESS: Record<AgentRunSkipReason, boolean> = {
   no_effective_agent: true,
   agent_disabled: true,
   mode_off: true,
+  circuit_open: true,
   trigger_filter_mismatch: true,
   maintenance_window: true,
   cooldown: true,
@@ -50,6 +51,12 @@ const EXPECTED_SUCCESS: Record<AgentRunSkipReason, boolean> = {
   duplicate: true,
   ownership_mismatch: false,
   device_not_in_org: false,
+  max_concurrent_verdict_runs: true,
+  verdict_rate: true,
+  max_concurrent_sweep_runs: true,
+  sweep_rate: true,
+  max_concurrent_narrative_runs: true,
+  narrative_rate: true,
 };
 
 const DEFAULT_TRIGGER: AutomationTriggerContext = {

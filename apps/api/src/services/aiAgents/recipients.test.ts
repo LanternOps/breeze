@@ -41,6 +41,7 @@ vi.mock('../../db', () => ({
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   InvalidAgentRecipientsError,
+  hasResolvableAgentRecipient,
   resolveRecipientUserIds,
   validateAgentRecipients,
 } from './recipients';
@@ -293,6 +294,73 @@ describe('resolveRecipientUserIds', () => {
     await expect(
       resolveRecipientUserIds({ orgId: 'o1', partnerId: null, recipients: {} }, 'o1'),
     ).resolves.toEqual([]);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('hasResolvableAgentRecipient — Task 6 (#3826) act-mode activation prerequisite', () => {
+  it('returns false without querying when recipients are empty', async () => {
+    await expect(
+      hasResolvableAgentRecipient({ orgId: 'o1', partnerId: null }, {}),
+    ).resolves.toBe(false);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('org-owned agent: true when resolveRecipientUserIds finds a live member', async () => {
+    queueSelect([{ partnerId: 'p1' }]); // organizations → run org's partner
+    queueSelect([{ userId: 'u1' }]); // org member match
+    queueSelect([]); // partner arm — no coverage needed, already matched
+
+    await expect(
+      hasResolvableAgentRecipient({ orgId: 'o1', partnerId: null }, { userIds: ['u1'] }),
+    ).resolves.toBe(true);
+  });
+
+  it('org-owned agent: false when nobody currently resolves (e.g. a role nobody holds)', async () => {
+    queueSelect([{ partnerId: 'p1' }]); // organizations
+    queueSelect([]); // no org holders of the role
+    queueSelect([]); // no covering partner holders either
+
+    await expect(
+      hasResolvableAgentRecipient({ orgId: 'o1', partnerId: null }, { roleIds: ['r-empty'] }),
+    ).resolves.toBe(false);
+  });
+
+  it('partner-owned agent: true on an active partner member matched by userIds', async () => {
+    queueSelect([{ userId: 'u1', orgAccess: 'all', orgIds: null }]);
+
+    await expect(
+      hasResolvableAgentRecipient({ orgId: null, partnerId: 'p1' }, { userIds: ['u1'] }),
+    ).resolves.toBe(true);
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('partner-owned agent: falls through to roleIds when userIds resolves nothing', async () => {
+    queueSelect([]); // userIds arm — nobody
+    const roleHolders = queueSelect([{ userId: 'u2', orgAccess: 'all', orgIds: null }]);
+
+    await expect(
+      hasResolvableAgentRecipient({ orgId: null, partnerId: 'p1' }, { userIds: ['u-gone'], roleIds: ['r1'] }),
+    ).resolves.toBe(true);
+    const bound = JSON.stringify(roleHolders.where);
+    expect(bound).toContain('"partnerUsers.partnerId","p1"');
+    expect(bound).toContain('"partnerUsers.roleId"');
+  });
+
+  it('partner-owned agent: false when neither userIds nor roleIds currently resolve', async () => {
+    queueSelect([]);
+    queueSelect([]);
+
+    await expect(
+      hasResolvableAgentRecipient({ orgId: null, partnerId: 'p1' }, { userIds: ['u-gone'], roleIds: ['r-empty'] }),
+    ).resolves.toBe(false);
+  });
+
+  it('an owner with neither orgId nor partnerId resolves nothing (defensive)', async () => {
+    await expect(
+      hasResolvableAgentRecipient({ orgId: null, partnerId: null }, { userIds: ['u1'] }),
+    ).resolves.toBe(false);
     expect(db.select).not.toHaveBeenCalled();
   });
 });

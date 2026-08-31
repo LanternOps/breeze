@@ -43,6 +43,7 @@ import {
   setS1MetricsRecorder
 } from '../services/sentinelOne/metrics';
 import { setAnomalyMetricsRecorder } from '../services/anomalyMetrics';
+import { setAuthTransitionMetricsRecorder } from '../services/authTransitionMetrics';
 import { setAbuseMetricsRecorder } from '../services/abuseMetrics';
 import { setProxyTrustMetricsRecorder } from '../services/clientIp';
 import { setSupportCodeMetricsRecorder } from '../services/supportCodeMissBudget';
@@ -355,6 +356,13 @@ const failedLoginsTotal = new Counter({
   help: 'Failed login attempts by reason and tenant',
   labelNames: ['reason', 'tenant'] as const,
   registers: [register]
+});
+
+const authTransitionLegacyIssuerTotal = new Counter({
+  name: 'auth_transition_legacy_issuer_total',
+  help: 'Temporary pre-enforcement user-session issuance by issuer and client class',
+  labelNames: ['issuer', 'client_class'] as const,
+  registers: [register],
 });
 
 const agentEnrollmentsTotal = new Counter({
@@ -1164,6 +1172,12 @@ function bindMetricsRecorders(): void {
     onFailedLogin: recordFailedLoginMetric,
     onAgentEnrollment: recordAgentEnrollmentMetric,
     onCommandDispatch: recordCommandDispatchMetric,
+  });
+
+  setAuthTransitionMetricsRecorder({
+    legacyIssuer: (issuer, clientClass) => {
+      authTransitionLegacyIssuerTotal.labels(issuer, clientClass).inc();
+    },
   });
 
   setAbuseMetricsRecorder({

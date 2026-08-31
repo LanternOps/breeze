@@ -25,8 +25,9 @@ import { normalizeMac, buildApprovalDecision } from '../services/assetApproval';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
-import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
-import { isCronDue } from '../services/automationRuntime';
+import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
+import type { AgentCommand } from '../routes/agentWs';
+import { isCronDue } from '../services/cronDue';
 import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
 import {
   buildClassificationWrite,
@@ -181,15 +182,22 @@ export function createDiscoveryWorker(): Worker<DiscoveryJobData> {
   return new Worker<DiscoveryJobData>(
     DISCOVERY_QUEUE,
     async (job: Job<DiscoveryJobData>) => {
+      const data = parseQueueJobData(DISCOVERY_QUEUE, job, discoveryQueueJobDataSchema);
+      // dispatch-scan is handled OUTSIDE the blanket context below (final-review
+      // fix, #4084/#1105): processDispatchScan calls the agentCommandRelay
+      // facade (isAgentConnectedAnywhere, dispatchCommandToAgent — Redis/WS
+      // I/O) and manages its own short-lived system DB contexts around just
+      // its reads/writes, so no pooled connection sits idle-in-transaction
+      // across that I/O.
+      if (data.type === 'dispatch-scan') {
+        assertQueueJobName(DISCOVERY_QUEUE, job, 'dispatch-scan');
+        return await processDispatchScan(data);
+      }
       return runWithSystemDbAccess(async () => {
-        const data = parseQueueJobData(DISCOVERY_QUEUE, job, discoveryQueueJobDataSchema);
         switch (data.type) {
           case 'schedule-profiles':
             assertQueueJobName(DISCOVERY_QUEUE, job, 'schedule-profiles');
             return await processScheduleProfiles();
-          case 'dispatch-scan':
-            assertQueueJobName(DISCOVERY_QUEUE, job, 'dispatch-scan');
-            return await processDispatchScan(data);
           case 'process-results':
             assertQueueJobName(DISCOVERY_QUEUE, job, 'process-results');
             return await processResults(data);
@@ -503,16 +511,33 @@ async function processScheduleProfiles(): Promise<{ enqueued: number }> {
 }
 
 /**
- * Dispatch a discovery scan command to an agent
+ * Outcome of the dispatch-scan read/select phase (final-review fix, #4084 /
+ * #1105). Discriminated so each terminal cause (profile missing, requested
+ * agent invalid, no candidate agent) is distinct rather than inferred from
+ * guard order.
  */
-async function processDispatchScan(data: DispatchScanJobData): Promise<{
-  dispatched: boolean;
-  agentId: string | null;
-  durationMs: number;
-}> {
-  const startTime = Date.now();
+type DispatchScanInputs =
+  | { status: 'profile-missing' }
+  | { status: 'invalid-agent' }
+  | { status: 'no-agent' }
+  | {
+      status: 'ok';
+      profile: typeof discoveryProfiles.$inferSelect;
+      agentId: string;
+      requestedAgentId: string | null;
+      selectionSource: 'requested' | 'site-auto';
+    };
 
-  // Load the profile
+/**
+ * Phase 1 of a dispatch-scan job: load the profile and resolve/validate the
+ * execution agent, inside ONE short system DB context. Every early-failure
+ * write (`markJobFailed`) that can be determined from these reads alone
+ * happens here too, since none of it involves Redis or the agent WebSocket.
+ * The connectivity check (`isAgentConnectedAnywhere`) is NOT here — that is
+ * Redis I/O via the agentCommandRelay facade and must run with no context
+ * held (#1105).
+ */
+async function loadDispatchScanInputs(data: DispatchScanJobData): Promise<DispatchScanInputs> {
   const [profile] = await db
     .select()
     .from(discoveryProfiles)
@@ -521,18 +546,18 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
 
   if (!profile) {
     await markJobFailed(data.jobId, 'Profile not found');
-    return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
+    return { status: 'profile-missing' };
   }
 
   // Find an online agent to run the scan
   let agentId = data.agentId;
   const requestedAgentId = data.agentId ?? null;
-  let selectionSource: 'requested' | 'site-auto' = requestedAgentId ? 'requested' : 'site-auto';
+  const selectionSource: 'requested' | 'site-auto' = requestedAgentId ? 'requested' : 'site-auto';
   if (requestedAgentId) {
     const validation = await validateRequestedAgentForDiscovery(requestedAgentId, data.orgId, data.siteId);
     if (!validation.ok) {
       await markJobFailed(data.jobId, validation.message);
-      return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
+      return { status: 'invalid-agent' };
     }
   }
   if (!agentId) {
@@ -565,20 +590,43 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
       `[DiscoveryWorker] No candidate agent found for job ${data.jobId} (profile=${data.profileId}, org=${data.orgId}, site=${data.siteId}, source=${selectionSource})`
     );
     await markJobFailed(data.jobId, 'No online agent available for this site');
+    return { status: 'no-agent' };
+  }
+
+  return { status: 'ok', profile, agentId, requestedAgentId, selectionSource };
+}
+
+/**
+ * Dispatch a discovery scan command to an agent
+ */
+async function processDispatchScan(data: DispatchScanJobData): Promise<{
+  dispatched: boolean;
+  agentId: string | null;
+  durationMs: number;
+}> {
+  const startTime = Date.now();
+
+  // Phase 1 — profile load, agent validation/selection and every terminal
+  // failure write reachable from those reads alone: ONE short system DB
+  // context, which then CLOSES before any Redis or WS I/O.
+  const inputs = await runWithSystemDbAccess(() => loadDispatchScanInputs(data));
+
+  if (inputs.status !== 'ok') {
     return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
   }
 
-  if (!isAgentConnected(agentId)) {
+  const { profile, agentId, requestedAgentId, selectionSource: initialSelectionSource } = inputs;
+
+  // Phase 2 — connectivity check with NO DB context open (#1105).
+  if (!(await isAgentConnectedAnywhere(agentId))) {
     console.warn(
-      `[DiscoveryWorker] Selected agent is not websocket-connected for job ${data.jobId} (agent=${agentId}, requestedAgent=${requestedAgentId ?? 'none'}, source=${selectionSource})`
+      `[DiscoveryWorker] Selected agent is not websocket-connected for job ${data.jobId} (agent=${agentId}, requestedAgent=${requestedAgentId ?? 'none'}, source=${initialSelectionSource})`
     );
-    await markJobFailed(data.jobId, 'No online agent available for this site');
+    await runWithSystemDbAccess(() => markJobFailed(data.jobId, 'No online agent available for this site'));
     return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
   }
 
-  if (!requestedAgentId) {
-    selectionSource = 'site-auto';
-  }
+  const selectionSource = requestedAgentId ? initialSelectionSource : 'site-auto';
   console.log(
     `[DiscoveryWorker] Selected agent ${agentId} for job ${data.jobId} (profile=${data.profileId}, org=${data.orgId}, site=${data.siteId}, source=${selectionSource}${requestedAgentId ? `, requestedAgent=${requestedAgentId}` : ''})`
   );
@@ -603,26 +651,44 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
     }
   };
 
-  const sent = sendCommandToAgent(agentId, command);
-  if (!sent) {
-    await markJobFailed(data.jobId, 'Failed to send command to agent');
+  // Phase 3 — the WS/relay dispatch itself, no DB context open (#1105).
+  const outcome = await dispatchCommandToAgent(agentId, command);
+  if (outcome.status !== 'sent') {
+    await runWithSystemDbAccess(() =>
+      markJobFailed(
+        data.jobId,
+        outcome.status === 'offline'
+          ? 'Failed to send command to agent'
+          : `Failed to send command to agent (dispatch outcome ${outcome.status})`,
+      )
+    );
     return { dispatched: false, agentId, durationMs: Date.now() - startTime };
   }
 
-  // Update job status to running
-  await db
-    .update(discoveryJobs)
-    .set({
-      status: 'running',
-      agentId,
-      startedAt: new Date(),
-      updatedAt: new Date()
-    })
-    .where(eq(discoveryJobs.id, data.jobId));
+  // Phase 4 — job status flip to running: its own short system DB context.
+  await runWithSystemDbAccess(() =>
+    db
+      .update(discoveryJobs)
+      .set({
+        status: 'running',
+        agentId,
+        startedAt: new Date(),
+        updatedAt: new Date()
+      })
+      .where(eq(discoveryJobs.id, data.jobId))
+  );
 
   console.log(`[DiscoveryWorker] Scan dispatched to agent ${agentId} for job ${data.jobId}`);
   return { dispatched: true, agentId, durationMs: Date.now() - startTime };
 }
+
+// Exposed for the wave 3.5b (#4084) dispatch-facade migration tests — mirrors
+// snmpWorker.ts's __testables pattern. Each handler here manages its own
+// short-lived system DB context(s) around just its reads/writes (final-review
+// fix, #1105), so calling it directly is safe from a context standpoint.
+export const __testables = {
+  processDispatchScan,
+};
 
 /**
  * Process discovery results — upsert discovered assets

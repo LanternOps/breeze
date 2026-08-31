@@ -107,6 +107,16 @@ export default function ScriptExecutionModal({
     return devices.filter(device => script.osTypes.includes(device.os));
   }, [devices, script.osTypes]);
 
+  // How many OS-compatible devices survive the status filter alone (ignoring
+  // query/site/advanced filters). Used to tell "nothing is the right OS"
+  // apart from "everything is just offline" in the empty state below.
+  const compatibleAfterStatusCount = useMemo(() => {
+    if (statusFilter === 'all') return compatibleDevices.length;
+    return compatibleDevices.filter(device => device.status === statusFilter).length;
+  }, [compatibleDevices, statusFilter]);
+
+  const statusFilteredEmptyState = compatibleDevices.length > 0 && compatibleAfterStatusCount === 0;
+
   const filteredDevices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
@@ -379,10 +389,32 @@ export default function ScriptExecutionModal({
             {/* Device List */}
             <div className="rounded-md border max-h-60 overflow-y-auto">
               {filteredDevices.length === 0 ? (
-                <div className="p-4 text-center text-sm text-muted-foreground">
-                  {t('scriptExecutionModal.empty.noCompatibleDevices', {
-                    os: script.osTypes.map(os => t(/* i18n-dynamic */ `scriptExecutionModal.os.${os}`)).join(t('scriptExecutionModal.orSeparator'))
-                  })}
+                <div className="p-4 text-center text-sm text-muted-foreground space-y-2">
+                  {statusFilteredEmptyState ? (
+                    <>
+                      <p>
+                        {t('scriptExecutionModal.empty.offlineFiltered', {
+                          count: compatibleDevices.length,
+                          status: statusFilter === 'maintenance'
+                            ? t('scriptExecutionModal.status.maintenance')
+                            : t(/* i18n-dynamic */ `common:states.${statusFilter}`)
+                        })}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setStatusFilter('all')}
+                        className="text-xs text-primary hover:underline"
+                      >
+                        {t('scriptExecutionModal.empty.showAllDevices')}
+                      </button>
+                    </>
+                  ) : (
+                    <p>
+                      {t('scriptExecutionModal.empty.noCompatibleDevices', {
+                        os: script.osTypes.map(os => t(/* i18n-dynamic */ `scriptExecutionModal.os.${os}`)).join(t('scriptExecutionModal.orSeparator'))
+                      })}
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div className="divide-y">

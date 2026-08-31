@@ -126,6 +126,29 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * detaches device_id instead. It is listed in INTENTIONALLY_NO_ORG_ID in
  * moveOrg.coverage.test.ts. Its org_id is trigger-immutable
  * (2026-09-06-a-agent-runs-org-immutable.sql).
+ *
+ * ai_unattended_exposure is deliberately ABSENT too (wave 5a, #3827): it has
+ * an org_id column but is cascade-deleted, not moved. (a) Exposure history
+ * stays with the org the unattended action ran in — the same
+ * ai_agent_runs owner decision above — and re-stamping it would attribute
+ * the old org's unattended-action count to the new org, corrupting the cap
+ * the ledger exists to enforce. (b) The generic move-org loop UPDATEs
+ * org_id alone, which would violate the (org_id, partner_id) →
+ * organizations(id, partner_id) composite FK the moment the two orgs sit
+ * under different partners — the same reason recorded in the
+ * orgMergeRegistry entry for this table. It is listed in
+ * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
+ *
+ * ai_agent_fix_watches is deliberately ABSENT too (wave 6 PR 2, #3828): it
+ * has both org_id and device_id columns but is cascade-deleted, not moved —
+ * identical reasoning to ai_unattended_exposure above, transplanted to
+ * watch history: (a) a fix-held watch's org attribution stays with the run
+ * it watches, which itself never follows a device move (ai_agent_runs is
+ * ABSENT from this same list, above), so re-stamping the watch's org_id
+ * while its run stays under the old org would split one remediation's
+ * story across two orgs; (b) the same (org_id, partner_id) composite FK
+ * fragility applies the moment the two orgs sit under different partners.
+ * It is listed in INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
  */
 const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
@@ -152,7 +175,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'fleet_finding_devices',
   'group_membership_log',
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
-  'metric_anomaly_candidates', 'metric_anomalies', 'metric_rollups',
+  'metric_anomaly_candidates', 'metric_anomalies', 'metric_anomaly_incidents', 'metric_rollups',
   'onedrive_device_state',
   'peripheral_events', 'peripheral_policy_delivery_events', 'peripheral_policy_device_states',
   'playbook_executions', 'provision_credential_handles',
@@ -271,11 +294,23 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'huntress_agents', 'huntress_incidents',
   // AI & context
   'ai_sessions', 'ai_screenshots', 'brain_device_context',
+  // Unattended-exposure ledger (Wave 5 Part A, #3827) — live device_id
+  // column (NOT NULL), no FK to devices, leaf table, no children. Same
+  // situation as fleet_finding_devices below: the app-level DELETE is the
+  // only thing that reclaims these rows.
+  'ai_unattended_exposure',
+  // Fix-held watch ledger (Wave 6 PR 2, #3828) — live device_id column
+  // (NOT NULL), no FK to devices, leaf table, no children. Same situation
+  // as ai_unattended_exposure directly above: the app-level DELETE is the
+  // only thing that reclaims these rows. NOT in ai_agent_circuit_state's
+  // company here — that table has no device_id column at all (org_id +
+  // agent_id only), so it needs no entry in this device-cascade list.
+  'ai_agent_fix_watches',
   // Analytics & reliability
   'device_reliability_history', 'device_reliability',
   'playbook_executions', 'time_series_metrics', 'capacity_predictions',
   'device_process_samples', 'remediation_suggestions',
-  'metric_anomaly_candidates', 'metric_anomalies', 'metric_rollups',
+  'metric_anomaly_candidates', 'metric_anomalies', 'metric_anomaly_incidents', 'metric_rollups',
   // Portal & integrations (tickets are detached, not deleted —
   // see DEVICE_DETACH_DEVICE_ID_TABLES)
   'psa_ticket_mappings', 'asset_checkouts',
@@ -374,8 +409,11 @@ coreRoutes.post(
     // Optional caller-supplied multi-use / TTL controls (#1108). A copied CLI
     // command is frequently pasted onto several machines during a migration;
     // without these the historical hard-coded single-use token failed on every
-    // machine after the first. Defaults preserve the old single-use, 60-min
-    // behaviour for callers that send no body.
+    // machine after the first. A caller that sends no body still gets a
+    // single-use token, but its TTL now follows the shared enrollment default
+    // (ENROLLMENT_KEY_DEFAULT_TTL_MINUTES, 30 days) rather than the old 60
+    // minutes — this route mints a real `enrollment_keys` row, and a token
+    // staged through deployment tooling has to outlive the download day.
     const data = c.req.valid('json');
     const rawCount = Number((data as { count?: unknown }).count);
     const maxUsage = Number.isFinite(rawCount)
@@ -406,7 +444,7 @@ coreRoutes.post(
     }
 
     const ttlMinutes = explicitTtlMinutes
-      ?? envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60);
+      ?? envInt('ENROLLMENT_KEY_DEFAULT_TTL_MINUTES', 60 * 24 * 30);
 
     const key = `enroll_${randomBytes(24).toString('hex')}`;
     const keyHash = hashEnrollmentKey(key);

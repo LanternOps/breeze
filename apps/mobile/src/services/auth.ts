@@ -4,9 +4,12 @@ import type { User } from './api';
 import { APPROVAL_CACHE_KEY, clearApprovalCacheOrThrow } from './approvalCache';
 import { APP_LOCK_STATE_KEY } from './appLockState';
 import { CSRF_TOKEN_KEY, clearCsrfToken } from './csrfToken';
+import {
+  AUTH_TOKEN_KEY,
+  AUTH_USER_KEY,
+  NATIVE_AUTH_BINDING_KEY,
+} from './authSessionKeys';
 
-const TOKEN_KEY = 'breeze_auth_token';
-const USER_KEY = 'breeze_user';
 const BIOMETRIC_ENABLED_KEY = 'breeze_biometric_enabled';
 
 /**
@@ -14,7 +17,7 @@ const BIOMETRIC_ENABLED_KEY = 'breeze_biometric_enabled';
  */
 export async function storeToken(token: string): Promise<void> {
   try {
-    await SecureStore.setItemAsync(TOKEN_KEY, token, {
+    await SecureStore.setItemAsync(AUTH_TOKEN_KEY, token, {
       keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
     });
   } catch (error) {
@@ -28,7 +31,7 @@ export async function storeToken(token: string): Promise<void> {
  */
 export async function getStoredToken(): Promise<string | null> {
   try {
-    return await SecureStore.getItemAsync(TOKEN_KEY);
+    return await SecureStore.getItemAsync(AUTH_TOKEN_KEY);
   } catch (error) {
     console.error('Error retrieving token:', error);
     return null;
@@ -40,7 +43,7 @@ export async function getStoredToken(): Promise<string | null> {
  */
 export async function storeUser(user: User): Promise<void> {
   try {
-    await SecureStore.setItemAsync(USER_KEY, JSON.stringify(user), {
+    await SecureStore.setItemAsync(AUTH_USER_KEY, JSON.stringify(user), {
       keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
     });
   } catch (error) {
@@ -54,7 +57,7 @@ export async function storeUser(user: User): Promise<void> {
  */
 export async function getStoredUser(): Promise<User | null> {
   try {
-    const userData = await SecureStore.getItemAsync(USER_KEY);
+    const userData = await SecureStore.getItemAsync(AUTH_USER_KEY);
     if (userData) {
       return JSON.parse(userData) as User;
     }
@@ -112,8 +115,12 @@ export class SecureWipeError extends Error {
  */
 export async function clearAuthData(): Promise<void> {
   const deletions: Array<{ key: string; run: () => Promise<unknown> }> = [
-    { key: TOKEN_KEY, run: () => SecureStore.deleteItemAsync(TOKEN_KEY) },
-    { key: USER_KEY, run: () => SecureStore.deleteItemAsync(USER_KEY) },
+    { key: AUTH_TOKEN_KEY, run: () => SecureStore.deleteItemAsync(AUTH_TOKEN_KEY) },
+    { key: AUTH_USER_KEY, run: () => SecureStore.deleteItemAsync(AUTH_USER_KEY) },
+    {
+      key: NATIVE_AUTH_BINDING_KEY,
+      run: () => SecureStore.deleteItemAsync(NATIVE_AUTH_BINDING_KEY),
+    },
     { key: APPROVAL_CACHE_KEY, run: () => clearApprovalCacheOrThrow() },
     // The app-lock record is a standing assertion that THIS device is currently
     // unlocked. Left behind, a stale `locked: false` outlives the session it

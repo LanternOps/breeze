@@ -240,6 +240,7 @@ function createHarness(overrides: {
     builtins: overrides.builtins ?? [fixtureBuiltin()],
     createMigrationSql: () => { migrationSqlOpens.count += 1; return null; },
     runMigrations: async () => {},
+    checkMigrationParity: async () => {},
     publishTenancy: (manifest) => { calls.push('tenancy'); publishedTenancy.push(manifest); },
     existingDeclaredTables: async () => { calls.push('probe'); return []; },
     ...(overrides.realStage ? {} : {
@@ -272,6 +273,11 @@ function createHarness(overrides: {
     calls.push('migration');
     await runMigrations(builtin, sql, stateStore);
   };
+  const checkMigrationParity = ports.checkMigrationParity!;
+  ports.checkMigrationParity = async (builtin, sql) => {
+    calls.push('migration');
+    await checkMigrationParity(builtin, sql);
+  };
 
   return {
     registry,
@@ -282,7 +288,7 @@ function createHarness(overrides: {
     registeredWebAssets,
     publishedTenancy,
     validatedTenancy,
-    load: () => loadBuiltinExtensions({ registry, stateStore, ports }),
+    load: (mode?: 'full' | 'worker') => loadBuiltinExtensions({ registry, stateStore, ports, mode }),
   };
 }
 
@@ -460,6 +466,66 @@ describe('loadBuiltinExtensions', () => {
     expect(h.calls).toEqual(['migration']);
     expect(h.registry.get(NAME)).toBeUndefined();
     expect(await h.stateStore.get(NAME)).toBeNull();
+  });
+});
+
+/**
+ * `mode: 'worker'` (wave 3.5d-b, #4086) — the counterpart pipeline for a
+ * `BREEZE_ROLE=worker` process: parity-check-never-apply instead of
+ * migrate, and no web-asset registration (a worker has no HTTP server to
+ * serve it from). Everything else (publish tenancy, stage, validate, seed
+ * state, activate) runs identically to `'full'`.
+ */
+describe('loadBuiltinExtensions — mode: worker', () => {
+  enableFixtureBuiltin();
+
+  it('runs parity-check instead of migrate, activates, and skips web-asset registration', async () => {
+    const h = createHarness();
+    await h.load('worker');
+
+    // Same phase order as 'full', minus the trailing 'web' step.
+    expect(h.calls).toEqual(['migration', 'tenancy', 'stage', 'validate', 'activate']);
+    expect(h.registeredWebAssets).toEqual([]);
+
+    const snapshot = h.registry.get(NAME);
+    expect(snapshot?.enabled).toBe(true);
+    expect(snapshot?.version).toBe(VERSION);
+
+    const row = await h.stateStore.get(NAME);
+    expect(row?.enabled).toBe(true);
+    expect(row?.activeVersion).toBe(VERSION);
+    expect(row?.lifecycleState).toBe('active');
+  });
+
+  it('never calls runMigrations (the apply path) in worker mode', async () => {
+    const runMigrations = vi.fn(async () => {});
+    const h = createHarness({ ports: { runMigrations } });
+    await h.load('worker');
+    expect(runMigrations).not.toHaveBeenCalled();
+  });
+
+  it('aborts boot when the built-in is not at migration parity', async () => {
+    const boom = new Error(
+      '[extensions] built-in "demo-builtin" is not at migration parity on a worker-role process ' +
+        '(missing from ledger: demo-builtin/0001-init.sql) — an api/all-role process must apply its migrations first',
+    );
+    const h = createHarness({ ports: { checkMigrationParity: async () => { throw boom; } } });
+
+    await expect(h.load('worker')).rejects.toBe(boom);
+
+    // Aborted AT the parity-check phase: nothing downstream ran.
+    expect(h.calls).toEqual(['migration']);
+    expect(h.registry.get(NAME)).toBeUndefined();
+    expect(await h.stateStore.get(NAME)).toBeNull();
+  });
+
+  it('defaults to full mode when `mode` is omitted', async () => {
+    const runMigrations = vi.fn(async () => {});
+    const checkMigrationParity = vi.fn(async () => {});
+    const h = createHarness({ ports: { runMigrations, checkMigrationParity } });
+    await h.load();
+    expect(runMigrations).toHaveBeenCalledTimes(1);
+    expect(checkMigrationParity).not.toHaveBeenCalled();
   });
 });
 

@@ -825,7 +825,10 @@
     },
     "matchCount": "{{count}} correspondência",
     "empty": {
-      "noCompatibleDevices": "Nenhum dispositivo compatível encontrado. Este script requer {{os}}."
+      "noCompatibleDevices": "Nenhum dispositivo compatível encontrado. Este script requer {{os}}.",
+      "offlineFiltered_one": "Nenhum dispositivo {{status}} corresponde. {{count}} dispositivo compatível está oculto pelo filtro de status — mostrar todos os dispositivos para incluí-lo.",
+      "offlineFiltered_other": "Nenhum dispositivo {{status}} corresponde. {{count}} dispositivos compatíveis estão ocultos pelo filtro de status — mostrar todos os dispositivos para incluí-los.",
+      "showAllDevices": "Mostrar todos os dispositivos"
     },
     "orSeparator": " ou ",
     "progress": {

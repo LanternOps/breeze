@@ -23,6 +23,10 @@ import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant } from '../../
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import type { AuthContext } from '../../middleware/auth';
 import type { RequestLike } from '../../services/auditEvents';
+import type {
+  AuthorizedUserSession,
+  LegacyUserSessionDuringTransition,
+} from '../../services/userSession';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import {
   decryptMfaTotpSecret,
@@ -31,6 +35,11 @@ import {
   type MfaSecretDecryptionResult
 } from '../../services/mfaSecretCrypto';
 import { DEFAULT_ALLOWED_ORIGINS, shouldIncludeDefaultOrigins } from '../../services/corsOrigins';
+import {
+  getRecoveryCodePepper as getRecoveryCodePepperFromService,
+  hashRecoveryCode as hashRecoveryCodeWithKdf,
+  hashRecoveryCodes as hashRecoveryCodesWithKdf,
+} from '../../services/recoveryCodeAuth';
 import { assertActiveTenantContext } from '../../services/tenantStatus';
 import type { PublicTokenPayload, UserTokenContext } from './schemas';
 import {
@@ -45,6 +54,20 @@ import {
 } from './schemas';
 
 const { db } = dbModule;
+
+export const AUTH_BINDING_COOKIE_NAME = 'breeze_auth_binding';
+export const AUTH_TRANSITION_CAPABILITY_HEADER = 'x-breeze-auth-transition';
+
+export function isAuthTransitionV1Request(c: Context): boolean {
+  return c.req.header(AUTH_TRANSITION_CAPABILITY_HEADER)?.trim().toLowerCase() === 'v1';
+}
+
+export function authClientUpgradeRequiredResponse(c: Context): Response {
+  return c.json({
+    error: 'Authentication client upgrade required',
+    reason: 'auth_client_upgrade_required',
+  }, 426);
+}
 
 /**
  * Run `fn` inside the SYSTEM DB access context.
@@ -763,6 +786,11 @@ export function buildRefreshTokenCookie(refreshToken: string, connectionSecure: 
   return `${REFRESH_COOKIE_NAME}=${encodeURIComponent(refreshToken)}; Path=${REFRESH_COOKIE_PATH}; HttpOnly${buildCookieSecuritySuffix(sameSite, connectionSecure)}; Max-Age=${REFRESH_COOKIE_MAX_AGE_SECONDS}`;
 }
 
+export function buildAuthBindingCookie(value: string, connectionSecure: boolean): string {
+  const sameSite = resolveAuthCookieSameSite();
+  return `${AUTH_BINDING_COOKIE_NAME}=${encodeURIComponent(value)}; Path=/; HttpOnly${buildCookieSecuritySuffix(sameSite, connectionSecure)}; Max-Age=${REFRESH_COOKIE_MAX_AGE_SECONDS}`;
+}
+
 export function buildCsrfTokenCookie(csrfToken: string, connectionSecure: boolean): string {
   const sameSite = resolveAuthCookieSameSite();
   return `${CSRF_COOKIE_NAME}=${encodeURIComponent(csrfToken)}; Path=${CSRF_COOKIE_PATH}${buildCookieSecuritySuffix(sameSite, connectionSecure)}; Max-Age=${REFRESH_COOKIE_MAX_AGE_SECONDS}`;
@@ -771,6 +799,11 @@ export function buildCsrfTokenCookie(csrfToken: string, connectionSecure: boolea
 export function buildClearRefreshTokenCookie(connectionSecure: boolean): string {
   const sameSite = resolveAuthCookieSameSite();
   return `${REFRESH_COOKIE_NAME}=; Path=${REFRESH_COOKIE_PATH}; HttpOnly${buildCookieSecuritySuffix(sameSite, connectionSecure)}; Max-Age=0`;
+}
+
+export function buildClearAuthBindingCookie(connectionSecure: boolean): string {
+  const sameSite = resolveAuthCookieSameSite();
+  return `${AUTH_BINDING_COOKIE_NAME}=; Path=/; HttpOnly${buildCookieSecuritySuffix(sameSite, connectionSecure)}; Max-Age=0`;
 }
 
 export function buildClearCsrfTokenCookie(connectionSecure: boolean): string {
@@ -870,6 +903,18 @@ export function setRefreshTokenCookie(c: Context, refreshToken: string): void {
   const csrfToken = randomBytes(32).toString('hex');
   c.header('Set-Cookie', buildRefreshTokenCookie(refreshToken, connectionSecure), { append: true });
   c.header('Set-Cookie', buildCsrfTokenCookie(csrfToken, connectionSecure), { append: true });
+}
+
+export function installAuthorizedUserSessionCookies(c: Context, issued: AuthorizedUserSession): void {
+  setRefreshTokenCookie(c, issued.refreshToken);
+}
+
+/** Temporary companion boundary for the source-frozen enforcement-false seam. */
+export function installLegacyUserSessionCookiesDuringTransition(
+  c: Context,
+  issued: LegacyUserSessionDuringTransition,
+): void {
+  setRefreshTokenCookie(c, issued.refreshToken);
 }
 
 export function clearRefreshTokenCookie(c: Context): void {
@@ -983,6 +1028,31 @@ export function validateCookieCsrfRequest(c: Context): string | null {
   return null;
 }
 
+/** Terminal browser mutations never accept the legacy non-browser sentinel. */
+export function validateStrictCookieCsrfRequest(c: Context): string | null {
+  const csrfHeader = c.req.header(CSRF_HEADER_NAME)?.trim();
+  if (!csrfHeader) return 'Missing CSRF header';
+
+  const csrfCookie = getCookieValue(c.req.header('cookie'), CSRF_COOKIE_NAME);
+  if (!csrfCookie) return 'Missing CSRF cookie';
+  if (csrfHeader === '1' || csrfCookie === '1' || !safeCompareTokens(csrfHeader, csrfCookie)) {
+    return 'Invalid CSRF token';
+  }
+
+  const origin = c.req.header('origin');
+  if (!origin) return 'Missing request origin';
+  if (!isAllowedOrigin(origin)) return 'Invalid request origin';
+
+  const fetchSite = c.req.header('sec-fetch-site');
+  if (fetchSite) {
+    const normalized = fetchSite.toLowerCase();
+    if (normalized !== 'same-origin' && normalized !== 'same-site') {
+      return 'Cross-site request blocked';
+    }
+  }
+  return null;
+}
+
 function safeCompareTokens(headerToken: string, cookieToken: string): boolean {
   const headerBuffer = Buffer.from(headerToken, 'utf8');
   const cookieBuffer = Buffer.from(cookieToken, 'utf8');
@@ -1032,25 +1102,15 @@ export function decryptMfaSecretForMigration(secret: string | null | undefined):
 }
 
 export function getRecoveryCodePepper(): string {
-  const pepper = process.env.MFA_RECOVERY_CODE_PEPPER?.trim();
-  if (pepper) return pepper;
-
-  if (process.env.NODE_ENV === 'test') {
-    return 'test-mfa-recovery-code-pepper';
-  }
-
-  throw new Error('No MFA recovery code pepper configured. Set MFA_RECOVERY_CODE_PEPPER.');
+  return getRecoveryCodePepperFromService();
 }
 
 export function hashRecoveryCode(code: string): string {
-  const normalizedCode = code.trim().toUpperCase();
-  return createHash('sha256')
-    .update(`${getRecoveryCodePepper()}:${normalizedCode}`)
-    .digest('hex');
+  return hashRecoveryCodeWithKdf(code);
 }
 
 export function hashRecoveryCodes(codes: string[]): string[] {
-  return codes.map(hashRecoveryCode);
+  return hashRecoveryCodesWithKdf(codes);
 }
 
 // ============================================
@@ -1063,9 +1123,18 @@ export interface PendingMfaRecord {
   passkeyAvailable: boolean;
   authEpoch: number;
   mfaEpoch: number;
+  transitionId: string;
+  browserGeneration: number;
   statusExpectation: string;
   allowedMethods: { totp: boolean; sms: boolean; passkey: boolean };
   expiresAt: number;
+  /**
+   * #4067: set when this MFA step is the continuation of a link-on-first-SSO-
+   * login ceremony (the sso:pendinglink token hash). On successful factor
+   * verification the completion endpoints finalize the SSO link + SSO-style
+   * mint instead of the password-login mint.
+   */
+  ssoLinkTokenHash?: string;
 }
 
 /**
@@ -1088,10 +1157,20 @@ export function parsePendingMfa(raw: string): PendingMfaRecord | null {
     (method !== 'totp' && method !== 'sms' && method !== 'passkey') ||
     typeof parsed.authEpoch !== 'number' ||
     typeof parsed.mfaEpoch !== 'number' ||
+    typeof parsed.transitionId !== 'string' ||
+    typeof parsed.browserGeneration !== 'number' ||
     typeof parsed.statusExpectation !== 'string' ||
     typeof parsed.expiresAt !== 'number' ||
     !am || typeof am !== 'object'
   ) {
+    return null;
+  }
+  // #4067: a PRESENT-but-malformed link pointer must reject the whole record,
+  // never be silently dropped — dropping it would downgrade an SSO-link
+  // continuation into a plain password-login mint, on the one path whose
+  // password check deliberately bypasses assertPasswordAuthAllowedBySso.
+  if ('ssoLinkTokenHash' in parsed
+      && (typeof parsed.ssoLinkTokenHash !== 'string' || parsed.ssoLinkTokenHash.length === 0)) {
     return null;
   }
   return {
@@ -1100,6 +1179,8 @@ export function parsePendingMfa(raw: string): PendingMfaRecord | null {
     passkeyAvailable: parsed.passkeyAvailable === true,
     authEpoch: parsed.authEpoch,
     mfaEpoch: parsed.mfaEpoch,
+    transitionId: parsed.transitionId,
+    browserGeneration: parsed.browserGeneration,
     statusExpectation: parsed.statusExpectation,
     allowedMethods: {
       totp: am.totp !== false,
@@ -1107,6 +1188,9 @@ export function parsePendingMfa(raw: string): PendingMfaRecord | null {
       passkey: am.passkey !== false,
     },
     expiresAt: parsed.expiresAt,
+    ...(typeof parsed.ssoLinkTokenHash === 'string' && parsed.ssoLinkTokenHash.length > 0
+      ? { ssoLinkTokenHash: parsed.ssoLinkTokenHash }
+      : {}),
   };
 }
 

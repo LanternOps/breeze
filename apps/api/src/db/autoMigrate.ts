@@ -316,6 +316,37 @@ export function detectState(
   return 'normal';
 }
 
+/**
+ * Decide whether autoMigrate should abort because the unprivileged
+ * `breeze_app` role is not going to exist when the migration loop runs.
+ *
+ * `ensureAppRole()` returning `false` means it was skipped (neither
+ * BREEZE_APP_DB_PASSWORD nor POSTGRES_PASSWORD reached this process — most
+ * commonly because turbo stripped the var; see #4048). That's only a
+ * problem if `breeze_app` doesn't already exist some other way (e.g. a
+ * docker-compose dev DB that pre-creates it) — in that case, proceeding
+ * anyway lets the migration loop run ~135 files deep before dying on the
+ * opaque Postgres 42704 `role "breeze_app" does not exist`. Pulled out as a
+ * pure function so the decision is unit-testable without a live database.
+ */
+export function assertAppRoleBootstrapped(
+  roleEnsured: boolean,
+  breezeAppRoleExists: boolean,
+): void {
+  if (roleEnsured || breezeAppRoleExists) return;
+  throw new Error(
+    '[auto-migrate] Refusing to proceed: the `breeze_app` role does not exist and ' +
+      "ensureAppRole() could not create it because neither BREEZE_APP_DB_PASSWORD nor " +
+      "POSTGRES_PASSWORD is set in this process's environment. Set one of those two " +
+      'variables. If you invoked this via `pnpm db:migrate` (which runs through turbo), ' +
+      "confirm the variable is listed in turbo.json's `globalPassThroughEnv` — turbo " +
+      'silently strips any env var not declared there or in a task-level `env`/' +
+      '`passThroughEnv`, and a plain DATABASE_URL connection will otherwise proceed as ' +
+      'the admin/superuser and fail confusingly, many migration files later, with ' +
+      'Postgres error 42704.',
+  );
+}
+
 /** Resolve the directory containing numbered .sql migration files. */
 function resolveMigrationsDir(): string {
   try {
@@ -396,6 +427,39 @@ export async function recordMigration(
 export const LEGACY_CUTOFF = 65;
 
 /**
+ * The session advisory-lock key for the CORE migration run. Exported for
+ * tests. Mirrors `extensions/migrator.ts`'s per-extension lock
+ * (`extensionLockKey` / `hashtextextended(key, 0)`) — same primitive, one
+ * lock for the whole core run instead of one per extension.
+ */
+export const CORE_MIGRATION_LOCK_KEY = 'breeze-core-migrations';
+
+/**
+ * Acquire/release the core-migration session advisory lock. Defense-in-depth
+ * against two processes racing `autoMigrate()` against the same database
+ * (e.g. a rolling deploy briefly running two api-role replicas that both
+ * auto-migrate on boot) — normally harmless since every migration is
+ * idempotent and the ledger INSERT is `ON CONFLICT DO NOTHING`, but a lock
+ * removes the window entirely rather than relying on that.
+ *
+ * `client` here is the SAME `postgres(connectionString, { max: 1 })` pool
+ * used for the rest of the run: with a pool ceiling of 1 there is only ever
+ * one physical connection to hand out, so every query for the life of this
+ * function — transactional or not — runs on that one backend session, and a
+ * session-scoped `pg_advisory_lock` taken on it before any other query stays
+ * held for the whole run. A separately `.reserve()`d connection (the
+ * extension migrator's approach, needed there because it shares a
+ * general-purpose pool) would be redundant here.
+ */
+async function acquireCoreMigrationLock(client: postgres.Sql): Promise<void> {
+  await client`SELECT pg_advisory_lock(hashtextextended(${CORE_MIGRATION_LOCK_KEY}, 0))`;
+}
+
+async function releaseCoreMigrationLock(client: postgres.Sql): Promise<void> {
+  await client`SELECT pg_advisory_unlock(hashtextextended(${CORE_MIGRATION_LOCK_KEY}, 0))`;
+}
+
+/**
  * Single-track migration runner for Breeze.
  *
  * Replaces both Drizzle's built-in migrator and the manual SQL runner with one
@@ -409,226 +473,248 @@ export async function autoMigrate(): Promise<void> {
   const client = postgres(connectionString, { max: 1 });
 
   try {
-    const migrationsDir = resolveMigrationsDir();
-    console.log(`[auto-migrate] Migrations directory: ${migrationsDir}`);
-
-    // ── 1. Ensure the tracking table exists ──────────────────────────────
-    await ensureTrackingTable(client);
-
-    // ── 2. Detect database state ─────────────────────────────────────────
-    const usersExist = await tableExists(client, 'users');
-    const hasRows = await trackingTableHasRows(client);
-    const state = detectState(usersExist, hasRows);
-    console.log(`[auto-migrate] Database state: ${state}`);
-
-    // ── 3. Read migration files ──────────────────────────────────────────
-    let allFiles: string[];
+    await acquireCoreMigrationLock(client);
     try {
-      allFiles = await discoverCoreMigrationFilenames();
-    } catch (error) {
-      // Only a genuinely absent migrations directory is a benign "nothing to
-      // do". EACCES/ENOTDIR/etc. must fail loudly — swallowing them here used
-      // to let the process continue against an unmigrated database and fail
-      // later with confusing missing-table errors.
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      console.log('[auto-migrate] No migration files found, skipping');
-      return;
-    }
-
-    if (allFiles.length === 0) {
-      console.log('[auto-migrate] No migration files found, skipping');
-      return;
-    }
-
-    const migrationPlan = planMigrations(allFiles);
-
-    // ── 4. Load already-applied checksums ────────────────────────────────
-    const applied = await loadApplied(client);
-
-    // ── 5. Handle fresh/legacy: baseline pre-consolidation migrations ───
-    if (state === 'fresh') {
-      // Fresh DB: run the baseline (0001) then mark 0002-0065 as applied
-      // since they're already reflected in the baseline.
-      const baseline = allFiles.find((f) => f.startsWith('0001-'));
-      if (baseline) {
-        const sqlPath = path.join(migrationsDir, baseline);
-        const content = await readFile(sqlPath, 'utf8');
-        const checksum = hashSql(content);
-        console.log(`[auto-migrate] Applying baseline: ${baseline}`);
-        await client.begin(async (tx) => {
-          await tx.unsafe(content);
-          await tx.unsafe(
-            `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
-            [baseline, checksum],
-          );
-        });
-        applied.set(baseline, checksum);
-      }
-      // Mark 0002-0065 as applied (already in baseline)
-      for (const filename of allFiles) {
-        const num = parseInt(filename.slice(0, 4), 10);
-        if (num <= 1 || num > LEGACY_CUTOFF) continue;
-        if (applied.has(filename)) continue;
-
-        const sqlPath = path.join(migrationsDir, filename);
-        const content = await readFile(sqlPath, 'utf8');
-        const checksum = hashSql(content);
-
-        await recordMigration(client, filename, checksum);
-        applied.set(filename, checksum);
-      }
-      console.log('[auto-migrate] Fresh database: baseline applied, legacy migrations marked');
-    } else if (state === 'legacy') {
-      // Legacy DB: schema already exists, mark 0001-0065 as applied
-      console.log(
-        '[auto-migrate] Legacy database detected, marking existing migrations as applied...',
-      );
-      for (const filename of allFiles) {
-        const num = parseInt(filename.slice(0, 4), 10);
-        if (num > LEGACY_CUTOFF) break;
-        if (applied.has(filename)) continue;
-
-        const sqlPath = path.join(migrationsDir, filename);
-        const content = await readFile(sqlPath, 'utf8');
-        const checksum = hashSql(content);
-
-        await recordMigration(client, filename, checksum);
-        applied.set(filename, checksum);
-        console.log(`[auto-migrate] Baselined: ${filename}`);
-      }
-    }
-
-    // ── 6. Validate checksums for already-applied migrations ─────────────
-    const { verify: ledgerRowsToVerify, skip: ledgerRowsToSkip } = partitionLedgerRows([
-      ...applied.keys(),
-    ]);
-    for (const filename of ledgerRowsToSkip) {
-      console.warn(
-        `[auto-migrate] skipping checksum for ${filename} — extension-owned ledger row`,
-      );
-    }
-    const verifiableLedgerRows = new Set(ledgerRowsToVerify);
-    for (const migration of migrationPlan) {
-      const filename = migration.ledgerName;
-      if (!verifiableLedgerRows.has(filename)) continue;
-      const priorChecksum = applied.get(filename);
-      if (!priorChecksum) continue;
-
-      const content = await readFile(migration.filePath, 'utf8');
-      const currentChecksum = hashSql(content);
-
-      if (priorChecksum !== currentChecksum) {
-        const reconciliation = CHECKSUM_RECONCILIATIONS[filename];
-        if (
-          reconciliation &&
-          reconciliation.from === priorChecksum &&
-          reconciliation.to === currentChecksum
-        ) {
-          // Known, verified-safe forward-fix to a shipped migration: heal the
-          // recorded checksum instead of crashing the upgrade. Exact from->to
-          // match only; any other change still throws below.
-          await client.unsafe(
-            `UPDATE ${MIGRATION_TABLE} SET checksum = $1 WHERE filename = $2`,
-            [currentChecksum, filename],
-          );
-          applied.set(filename, currentChecksum);
-          console.log(
-            `[auto-migrate] Reconciled checksum for ${filename} (known forward-fix: ${reconciliation.reason})`,
-          );
-          continue;
-        }
-        throw new Error(
-          `Migration checksum mismatch for ${filename}. ` +
-            'The file changed after being applied. Add a new migration instead.',
-        );
-      }
-    }
-
-    // ── 6b. Ensure the unprivileged `breeze_app` role exists BEFORE applying
-    //        post-baseline migrations. Several migrations declare RLS
-    //        policies with `FOR ALL TO breeze_app`; on a truly fresh DB those
-    //        statements fail with `role "breeze_app" does not exist` if the
-    //        role isn't created first. Idempotent — safe on every run. We
-    //        still call ensureAppRole again at step 7b so any tables created
-    //        in this loop receive the privilege grants.
-    await ensureAppRole();
-
-    // ── 7. Apply pending migrations ──────────────────────────────────────
-    let appliedCount = 0;
-    for (const migration of migrationPlan) {
-      const filename = migration.ledgerName;
-      if (applied.has(filename)) continue;
-
-      const content = await readFile(migration.filePath, 'utf8');
-      const checksum = hashSql(content);
-
-      // Migrations marked with `-- @no-transaction` at the top run OUTSIDE
-      // a transaction. Required for statements Postgres forbids inside a
-      // tx — most notably `CREATE INDEX CONCURRENTLY`, which is the
-      // non-blocking variant we need on hot multi-million-row tables
-      // (devices, audit_logs, agent_logs) where a normal CREATE INDEX
-      // takes a SHARE lock and stalls every agent heartbeat / log ship /
-      // audit write for the duration of the build (#753 P0).
-      //
-      // Idempotency contract: a no-transaction migration MUST be safe to
-      // re-apply on partial failure — every statement should use
-      // `IF NOT EXISTS` / `IF EXISTS` / `CREATE OR REPLACE`. If the SQL
-      // succeeds but the breeze_migrations INSERT fails, the next run
-      // will re-apply the file; that's why `CREATE INDEX CONCURRENTLY IF
-      // NOT EXISTS` is the canonical pattern here. Recovery from a
-      // failed CONCURRENTLY (which leaves an invalid index) requires an
-      // operator to `DROP INDEX <name>` before the next deploy.
-      const isNoTransaction = hasNoTransactionDirective(content);
-      console.log(
-        `[auto-migrate] Applying: ${filename}${isNoTransaction ? ' (no-transaction)' : ''}`,
-      );
-      if (isNoTransaction) {
-        // Send statements one at a time so each command leaves the
-        // driver as its own simple-query exchange. Sending the whole
-        // file via `client.unsafe(content)` would group the statements
-        // and Postgres treats a multi-statement simple query as an
-        // implicit transaction — which `CREATE INDEX CONCURRENTLY`
-        // refuses to run inside.
-        const statements = splitSqlStatements(content);
-        for (const stmt of statements) {
-          await client.unsafe(stmt);
-        }
-        await client.unsafe(
-          `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
-          [filename, checksum],
-        );
-      } else {
-        await client.begin(async (tx) => {
-          await tx.unsafe(content);
-          await tx.unsafe(
-            `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
-            [filename, checksum],
-          );
-        });
-      }
-      appliedCount++;
-    }
-
-    if (appliedCount > 0) {
-      console.log(`[auto-migrate] Applied ${appliedCount} migration(s)`);
-    } else {
-      console.log('[auto-migrate] All migrations already applied');
-    }
-
-    // ── 7b. Re-run ensureAppRole so any tables created in step 7 receive
-    //        the standard privilege grants. Idempotent.
-    await ensureAppRole();
-
-    // ── 8. Auto-seed if no users exist ───────────────────────────────────
-    const userCheck = await client`SELECT id FROM users LIMIT 1`;
-    if (userCheck.length === 0) {
-      console.log('[auto-migrate] No users found, running initial seed...');
-      await seed();
-      console.log('[auto-migrate] Initial seed complete');
-    } else {
-      console.log('[auto-migrate] Database already seeded');
+      await runCoreMigrations(client);
+    } finally {
+      await releaseCoreMigrationLock(client);
     }
   } finally {
     await client.end();
+  }
+}
+
+async function runCoreMigrations(client: postgres.Sql): Promise<void> {
+  const migrationsDir = resolveMigrationsDir();
+  console.log(`[auto-migrate] Migrations directory: ${migrationsDir}`);
+
+  // ── 1. Ensure the tracking table exists ──────────────────────────────
+  await ensureTrackingTable(client);
+
+  // ── 2. Detect database state ─────────────────────────────────────────
+  const usersExist = await tableExists(client, 'users');
+  const hasRows = await trackingTableHasRows(client);
+  const state = detectState(usersExist, hasRows);
+  console.log(`[auto-migrate] Database state: ${state}`);
+
+  // ── 3. Read migration files ──────────────────────────────────────────
+  let allFiles: string[];
+  try {
+    allFiles = await discoverCoreMigrationFilenames();
+  } catch (error) {
+    // Only a genuinely absent migrations directory is a benign "nothing to
+    // do". EACCES/ENOTDIR/etc. must fail loudly — swallowing them here used
+    // to let the process continue against an unmigrated database and fail
+    // later with confusing missing-table errors.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    console.log('[auto-migrate] No migration files found, skipping');
+    return;
+  }
+
+  if (allFiles.length === 0) {
+    console.log('[auto-migrate] No migration files found, skipping');
+    return;
+  }
+
+  const migrationPlan = planMigrations(allFiles);
+
+  // ── 4. Load already-applied checksums ────────────────────────────────
+  const applied = await loadApplied(client);
+
+  // ── 5. Handle fresh/legacy: baseline pre-consolidation migrations ───
+  if (state === 'fresh') {
+    // Fresh DB: run the baseline (0001) then mark 0002-0065 as applied
+    // since they're already reflected in the baseline.
+    const baseline = allFiles.find((f) => f.startsWith('0001-'));
+    if (baseline) {
+      const sqlPath = path.join(migrationsDir, baseline);
+      const content = await readFile(sqlPath, 'utf8');
+      const checksum = hashSql(content);
+      console.log(`[auto-migrate] Applying baseline: ${baseline}`);
+      await client.begin(async (tx) => {
+        await tx.unsafe(content);
+        await tx.unsafe(
+          `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
+          [baseline, checksum],
+        );
+      });
+      applied.set(baseline, checksum);
+    }
+    // Mark 0002-0065 as applied (already in baseline)
+    for (const filename of allFiles) {
+      const num = parseInt(filename.slice(0, 4), 10);
+      if (num <= 1 || num > LEGACY_CUTOFF) continue;
+      if (applied.has(filename)) continue;
+
+      const sqlPath = path.join(migrationsDir, filename);
+      const content = await readFile(sqlPath, 'utf8');
+      const checksum = hashSql(content);
+
+      await recordMigration(client, filename, checksum);
+      applied.set(filename, checksum);
+    }
+    console.log('[auto-migrate] Fresh database: baseline applied, legacy migrations marked');
+  } else if (state === 'legacy') {
+    // Legacy DB: schema already exists, mark 0001-0065 as applied
+    console.log(
+      '[auto-migrate] Legacy database detected, marking existing migrations as applied...',
+    );
+    for (const filename of allFiles) {
+      const num = parseInt(filename.slice(0, 4), 10);
+      if (num > LEGACY_CUTOFF) break;
+      if (applied.has(filename)) continue;
+
+      const sqlPath = path.join(migrationsDir, filename);
+      const content = await readFile(sqlPath, 'utf8');
+      const checksum = hashSql(content);
+
+      await recordMigration(client, filename, checksum);
+      applied.set(filename, checksum);
+      console.log(`[auto-migrate] Baselined: ${filename}`);
+    }
+  }
+
+  // ── 6. Validate checksums for already-applied migrations ─────────────
+  const { verify: ledgerRowsToVerify, skip: ledgerRowsToSkip } = partitionLedgerRows([
+    ...applied.keys(),
+  ]);
+  for (const filename of ledgerRowsToSkip) {
+    console.warn(
+      `[auto-migrate] skipping checksum for ${filename} — extension-owned ledger row`,
+    );
+  }
+  const verifiableLedgerRows = new Set(ledgerRowsToVerify);
+  for (const migration of migrationPlan) {
+    const filename = migration.ledgerName;
+    if (!verifiableLedgerRows.has(filename)) continue;
+    const priorChecksum = applied.get(filename);
+    if (!priorChecksum) continue;
+
+    const content = await readFile(migration.filePath, 'utf8');
+    const currentChecksum = hashSql(content);
+
+    if (priorChecksum !== currentChecksum) {
+      const reconciliation = CHECKSUM_RECONCILIATIONS[filename];
+      if (
+        reconciliation &&
+        reconciliation.from === priorChecksum &&
+        reconciliation.to === currentChecksum
+      ) {
+        // Known, verified-safe forward-fix to a shipped migration: heal the
+        // recorded checksum instead of crashing the upgrade. Exact from->to
+        // match only; any other change still throws below.
+        await client.unsafe(
+          `UPDATE ${MIGRATION_TABLE} SET checksum = $1 WHERE filename = $2`,
+          [currentChecksum, filename],
+        );
+        applied.set(filename, currentChecksum);
+        console.log(
+          `[auto-migrate] Reconciled checksum for ${filename} (known forward-fix: ${reconciliation.reason})`,
+        );
+        continue;
+      }
+      throw new Error(
+        `Migration checksum mismatch for ${filename}. ` +
+          'The file changed after being applied. Add a new migration instead.',
+      );
+    }
+  }
+
+  // ── 6b. Ensure the unprivileged `breeze_app` role exists BEFORE applying
+  //        post-baseline migrations. Several migrations declare RLS
+  //        policies with `FOR ALL TO breeze_app`; on a truly fresh DB those
+  //        statements fail with `role "breeze_app" does not exist` if the
+  //        role isn't created first. Idempotent — safe on every run. We
+  //        still call ensureAppRole again at step 7b so any tables created
+  //        in this loop receive the privilege grants.
+  //
+  //        If ensureAppRole was skipped (no password env var reached this
+  //        process — e.g. turbo stripped it) AND breeze_app doesn't already
+  //        exist (e.g. a fresh/scratch DB that compose didn't pre-provision),
+  //        fail fast here with a pointed error instead of letting the
+  //        migration loop run ~135 files deep and die on the opaque
+  //        Postgres 42704 `role "breeze_app" does not exist` (#4048).
+  const roleEnsured = await ensureAppRole();
+  if (!roleEnsured) {
+    const roleRow = await client`
+      SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'breeze_app') AS exists
+    `;
+    assertAppRoleBootstrapped(roleEnsured, Boolean(roleRow[0]?.exists));
+  }
+
+  // ── 7. Apply pending migrations ──────────────────────────────────────
+  let appliedCount = 0;
+  for (const migration of migrationPlan) {
+    const filename = migration.ledgerName;
+    if (applied.has(filename)) continue;
+
+    const content = await readFile(migration.filePath, 'utf8');
+    const checksum = hashSql(content);
+
+    // Migrations marked with `-- @no-transaction` at the top run OUTSIDE
+    // a transaction. Required for statements Postgres forbids inside a
+    // tx — most notably `CREATE INDEX CONCURRENTLY`, which is the
+    // non-blocking variant we need on hot multi-million-row tables
+    // (devices, audit_logs, agent_logs) where a normal CREATE INDEX
+    // takes a SHARE lock and stalls every agent heartbeat / log ship /
+    // audit write for the duration of the build (#753 P0).
+    //
+    // Idempotency contract: a no-transaction migration MUST be safe to
+    // re-apply on partial failure — every statement should use
+    // `IF NOT EXISTS` / `IF EXISTS` / `CREATE OR REPLACE`. If the SQL
+    // succeeds but the breeze_migrations INSERT fails, the next run
+    // will re-apply the file; that's why `CREATE INDEX CONCURRENTLY IF
+    // NOT EXISTS` is the canonical pattern here. Recovery from a
+    // failed CONCURRENTLY (which leaves an invalid index) requires an
+    // operator to `DROP INDEX <name>` before the next deploy.
+    const isNoTransaction = hasNoTransactionDirective(content);
+    console.log(
+      `[auto-migrate] Applying: ${filename}${isNoTransaction ? ' (no-transaction)' : ''}`,
+    );
+    if (isNoTransaction) {
+      // Send statements one at a time so each command leaves the
+      // driver as its own simple-query exchange. Sending the whole
+      // file via `client.unsafe(content)` would group the statements
+      // and Postgres treats a multi-statement simple query as an
+      // implicit transaction — which `CREATE INDEX CONCURRENTLY`
+      // refuses to run inside.
+      const statements = splitSqlStatements(content);
+      for (const stmt of statements) {
+        await client.unsafe(stmt);
+      }
+      await client.unsafe(
+        `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
+        [filename, checksum],
+      );
+    } else {
+      await client.begin(async (tx) => {
+        await tx.unsafe(content);
+        await tx.unsafe(
+          `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
+          [filename, checksum],
+        );
+      });
+    }
+    appliedCount++;
+  }
+
+  if (appliedCount > 0) {
+    console.log(`[auto-migrate] Applied ${appliedCount} migration(s)`);
+  } else {
+    console.log('[auto-migrate] All migrations already applied');
+  }
+
+  // ── 7b. Re-run ensureAppRole so any tables created in step 7 receive
+  //        the standard privilege grants. Idempotent.
+  await ensureAppRole();
+
+  // ── 8. Auto-seed if no users exist ───────────────────────────────────
+  const userCheck = await client`SELECT id FROM users LIMIT 1`;
+  if (userCheck.length === 0) {
+    console.log('[auto-migrate] No users found, running initial seed...');
+    await seed();
+    console.log('[auto-migrate] Initial seed complete');
+  } else {
+    console.log('[auto-migrate] Database already seeded');
   }
 }
