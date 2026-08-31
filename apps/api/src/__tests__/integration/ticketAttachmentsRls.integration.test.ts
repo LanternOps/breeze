@@ -30,6 +30,7 @@
  *      a system context behind the app-layer filters — never the reverse.
  */
 import './setup';
+import { Hono } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
@@ -51,6 +52,8 @@ vi.mock('../../services/s3Storage', async (importOriginal) => ({
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
 import { addTicketComment, moveTicketOrg } from '../../services/ticketService';
 import { openBytes, putBytes, selectBackend } from '../../services/ticketAttachmentStorage';
+import { reapPendingAttachments } from '../../jobs/ticketAttachmentReaper';
+import { ticketRoutes as portalTicketRoutes } from '../../routes/portal/tickets';
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const SHA = (seed: string) => seed.padEnd(64, '0').slice(0, 64);
@@ -256,35 +259,118 @@ describe('ticket_attachments RLS (real driver, breeze_app)', () => {
   });
 });
 
-describe('ticket_attachments portal visibility filter', () => {
-  /** Mirrors routes/portal/tickets.ts: INNER JOIN + is_public + not deleted. */
-  async function portalVisible(orgId: string, ticketId: string) {
-    return withDbAccessContext(orgContext(orgId, null), () =>
-      db
-        .select({ id: ticketAttachments.id })
-        .from(ticketAttachments)
-        .innerJoin(ticketComments, eq(ticketComments.id, ticketAttachments.commentId))
-        .where(and(
-          eq(ticketAttachments.ticketId, ticketId),
-          eq(ticketComments.isPublic, true),
-          isNull(ticketComments.deletedAt)
-        ))
+describe('portal attachment read path (REAL route, real Postgres)', () => {
+  /**
+   * Drives routes/portal/tickets.ts itself rather than re-implementing its
+   * filter. The whole authz ladder on the byte route is SQL — there is no JS
+   * branch — so a hand-mirrored query here could not fail when the route
+   * changed, which is exactly how a dropped `is_public` rung would ship
+   * unnoticed (W08A review). The mocked unit suite cannot cover it either:
+   * its schema mock renders columns as plain strings, so the predicate is
+   * unrecoverable from the SQL tree.
+   */
+  function buildPortalApp(user: { id: string; orgId: string }) {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('portalAuth' as never, { user, token: 'tok', authMethod: 'bearer' } as never);
+      await next();
+    });
+    app.route('/', portalTicketRoutes);
+    return app;
+  }
+
+  /** GETs the byte route as `user`, inside the portal's own org RLS context. */
+  async function getContent(
+    user: { id: string; orgId: string },
+    ticketId: string,
+    attachmentId: string,
+  ): Promise<Response> {
+    const app = buildPortalApp(user);
+    // `app.request` is typed `Response | Promise<Response>`; await it inside
+    // the context so the RLS context is still open while the handler runs.
+    return withDbAccessContext(orgContext(user.orgId, user.id), async () =>
+      await app.request(`/tickets/${ticketId}/attachments/${attachmentId}/content`)
     );
   }
 
-  it('shows public-comment attachments and hides internal, deleted and pending ones', async () => {
+  /** tickets.submitted_by FKs portal_users, not users — a portal session IS a
+   *  portal_user row. Returns the new portal user's id. */
+  async function seedPortalUser(orgId: string): Promise<string> {
+    const id = crypto.randomUUID();
+    await getTestDb().execute(sql`
+      INSERT INTO portal_users (id, org_id, email, name)
+      VALUES (${id}::uuid, ${orgId}::uuid, ${`portal-${uid()}@example.test`}, 'Portal User')
+    `);
+    return id;
+  }
+
+  async function setSubmitter(ticketId: string, portalUserId: string): Promise<void> {
+    await getTestDb().execute(sql`
+      UPDATE tickets SET submitted_by = ${portalUserId}::uuid WHERE id = ${ticketId}::uuid
+    `);
+  }
+
+  it('serves a PUBLIC comment attachment and 404s internal, deleted and pending ones', async () => {
     const f = await seed();
+    const portalUserId = await seedPortalUser(f.orgA);
+    await setSubmitter(f.ticketA, portalUserId);
+    const user = { id: portalUserId, orgId: f.orgA };
+
     const publicComment = await seedComment(f.ticketA, f.userId, true);
     const internalComment = await seedComment(f.ticketA, f.userId, false);
     const deletedComment = await seedComment(f.ticketA, f.userId, true, true);
 
     const visible = await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, commentId: publicComment });
-    await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, commentId: internalComment });
-    await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, commentId: deletedComment });
-    await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, commentId: null, uploadedBy: f.userId });
+    const internal = await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, commentId: internalComment });
+    const deleted = await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, commentId: deletedComment });
+    const pending = await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, commentId: null, uploadedBy: f.userId });
 
-    const rows = await portalVisible(f.orgA, f.ticketA);
-    expect(rows.map((r) => r.id)).toEqual([visible]);
+    // POSITIVE CONTROL first: without it every 404 below could be a broken rig.
+    const ok = await getContent(user, f.ticketA, visible);
+    expect(ok.status).toBe(200);
+    expect(Buffer.from(await ok.arrayBuffer()).equals(PNG_BYTES)).toBe(true);
+    expect(ok.headers.get('X-Content-Type-Options')).toBe('nosniff');
+
+    // The rung that matters: a technician's INTERNAL note is not customer-readable.
+    expect((await getContent(user, f.ticketA, internal)).status).toBe(404);
+    expect((await getContent(user, f.ticketA, deleted)).status).toBe(404);
+    expect((await getContent(user, f.ticketA, pending)).status).toBe(404);
+  });
+
+  it('404s an attachment on a ticket THIS portal session did not submit', async () => {
+    const f = await seed();
+    const mine = await seedPortalUser(f.orgA);
+    const other = await seedPortalUser(f.orgA);
+    await setSubmitter(f.ticketA, other); // someone else's ticket, same org
+    const comment = await seedComment(f.ticketA, f.userId, true);
+    const att = await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, commentId: comment });
+
+    const res = await getContent({ id: mine, orgId: f.orgA }, f.ticketA, att);
+    expect(res.status).toBe(404);
+  });
+
+  it('404s an attachment on ANOTHER org\'s ticket even with a matching submitter', async () => {
+    const f = await seed();
+    const portalUserId = await seedPortalUser(f.orgB);
+    await setSubmitter(f.ticketB, portalUserId); // org B's ticket, this user submitted it
+    const comment = await seedComment(f.ticketB, f.userId, true);
+    const att = await seedAttachment({ orgId: f.orgB, ticketId: f.ticketB, commentId: comment });
+
+    // Session is scoped to org A; the ticket lookup's org_id rung must reject.
+    const res = await getContent({ id: portalUserId, orgId: f.orgA }, f.ticketB, att);
+    expect(res.status).toBe(404);
+  });
+
+  it('404s an attachment on a SOFT-DELETED ticket', async () => {
+    const f = await seed();
+    const portalUserId = await seedPortalUser(f.orgA);
+    await setSubmitter(f.ticketA, portalUserId);
+    await getTestDb().execute(sql`UPDATE tickets SET deleted_at = now() WHERE id = ${f.ticketA}::uuid`);
+    const comment = await seedComment(f.ticketA, f.userId, true);
+    const att = await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, commentId: comment });
+
+    const res = await getContent({ id: portalUserId, orgId: f.orgA }, f.ticketA, att);
+    expect(res.status).toBe(404);
   });
 });
 
@@ -425,5 +511,83 @@ describe('ticket_attachments db backend round-trip (S3 unconfigured)', () => {
     expect(Buffer.isBuffer(opened.body)).toBe(true);
     expect((opened.body as Buffer).equals(PNG_BYTES)).toBe(true);
     expect(opened.contentLength).toBe(PNG_BYTES.length);
+  });
+});
+
+/**
+ * W08A review: the pending reaper's claim must be atomic. The original shape
+ * (unlocked SELECT -> object delete -> re-checked row DELETE) protected the ROW
+ * but not the OBJECT — a comment claiming the attachment during the object
+ * round trip left a live comment pointing at destroyed bytes. These run against
+ * real Postgres because the property under test IS the locking semantics; a
+ * mocked db cannot express it.
+ */
+describe('ticket attachment pending reaper (real Postgres locking)', () => {
+  /** Backdates a row past the 24h grace period. */
+  async function backdate(attachmentId: string): Promise<void> {
+    await getTestDb().execute(sql`
+      UPDATE ticket_attachments SET created_at = now() - interval '48 hours'
+      WHERE id = ${attachmentId}::uuid
+    `);
+  }
+
+  async function exists(attachmentId: string): Promise<boolean> {
+    const rows = await getTestDb().execute(sql`
+      SELECT 1 AS n FROM ticket_attachments WHERE id = ${attachmentId}::uuid
+    `) as unknown as Array<{ n: number }>;
+    return rows.length === 1;
+  }
+
+  it('reaps ONLY abandoned pending rows — an attached row and a fresh upload survive', async () => {
+    const f = await seed();
+    const commentId = await seedComment(f.ticketA, f.userId, true);
+
+    const abandoned = await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, backend: 's3' });
+    await backdate(abandoned);
+    const attached = await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, commentId, backend: 's3' });
+    await backdate(attached); // old AND attached — the row this job must never touch
+    const fresh = await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, backend: 's3' });
+
+    await reapPendingAttachments();
+
+    expect(await exists(abandoned)).toBe(false);
+    expect(await exists(attached)).toBe(true);
+    expect(await exists(fresh)).toBe(true);
+    // ...and exactly one object was deleted: the abandoned row's.
+    const deletedKeys = deleteObjectsMock.mock.calls.flatMap((c) => (c as unknown as [string[]])[0]);
+    expect(deletedKeys).toContain(`ticket-attachments/${abandoned}`);
+    expect(deletedKeys).not.toContain(`ticket-attachments/${attached}`);
+    expect(deletedKeys).not.toContain(`ticket-attachments/${fresh}`);
+  });
+
+  it('SKIPS a row another transaction is mid-claim on, and never touches its object', async () => {
+    const f = await seed();
+    const contended = await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, backend: 's3' });
+    await backdate(contended);
+
+    // Stand in for addTicketComment's claim UPDATE holding the row lock: on the
+    // pre-fix shape the reaper's unlocked SELECT still returned this row and
+    // destroyed its object while the claim was in flight.
+    let signalLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { signalLocked = resolve; });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+
+    const holder = withSystemDbAccessContext(async () => {
+      await db.execute(sql`SELECT id FROM ticket_attachments WHERE id = ${contended}::uuid FOR UPDATE`);
+      signalLocked();
+      await held;
+    });
+    await locked;
+
+    const reaped = await reapPendingAttachments();
+
+    release();
+    await holder;
+
+    expect(reaped).toBe(0);
+    expect(await exists(contended)).toBe(true);
+    const deletedKeys = deleteObjectsMock.mock.calls.flatMap((c) => (c as unknown as [string[]])[0]);
+    expect(deletedKeys).not.toContain(`ticket-attachments/${contended}`);
   });
 });

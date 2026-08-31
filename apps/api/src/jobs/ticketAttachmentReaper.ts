@@ -17,9 +17,25 @@ import { jobSchedule } from './scheduleRegistry';
  * Two rules that must not drift:
  *  - ONLY `comment_id IS NULL`. An attached row is customer data; reaping one
  *    would silently delete a photo out of a live ticket thread.
- *  - Objects BEFORE rows, and abort on a storage fault (spec D9). The row is
- *    the only index to the object key; deleting it first would strand bytes in
- *    the bucket forever. Aborting leaves the batch for the next hour.
+ *  - CLAIM, then delete objects. The claim is one atomic
+ *    `DELETE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING`,
+ *    and objects are deleted only for rows it actually won.
+ *
+ * The claim-then-delete ordering is a REVISION of spec D9's "objects before
+ * rows" (W08A review). D9's shape read the candidates unlocked, deleted their
+ * objects, then re-checked `comment_id IS NULL` on the row DELETE — which
+ * protected the ROW but not the OBJECT: `addTicketComment`'s claim UPDATE can
+ * commit during the object round trip, and the technician then posts a live
+ * comment whose photo bytes are already destroyed and unrecoverable. D9's own
+ * rationale (never orphan bytes, since the row is the only index to the key)
+ * is the lesser harm and is preserved as far as it can be: a storage fault is
+ * loud and logs every orphaned key. Destroying live customer data to avoid
+ * orphaning abandoned bytes is the wrong trade.
+ *
+ * The object round trip runs OUTSIDE the db context on purpose (#1105): a held
+ * `withSystemDbAccessContext` is an open transaction pinning a pooled
+ * connection, and a connection left idle-in-transaction across S3 latency is
+ * killed by `idle_in_transaction_session_timeout` under load.
  *
  * Runs on an ALLOCATED hourly slot rather than `repeat: { every: 1h }` —
  * BullMQ's `every` is epoch-anchored, so every hourly job would co-fire at
@@ -57,41 +73,59 @@ function getQueue(): Queue<ReaperJobData> {
 /**
  * One sweep. Returns the number of rows deleted.
  *
- * Runs under a SYSTEM db context at the worker boundary: `breeze_has_org_access`
- * is TRUE under scope 'system', so the sweep sees every org. A CONTEXTLESS
- * statement resolves scope 'none' and would silently see nothing — a reaper
- * that reports success having done no work.
+ * The claim runs under a SYSTEM db context: `breeze_has_org_access` is TRUE
+ * under scope 'system', so the sweep sees every org. A CONTEXTLESS statement
+ * resolves scope 'none' and would silently see nothing — a reaper that reports
+ * success having done no work. The object delete deliberately runs after that
+ * context has closed (see the header).
  */
 export async function reapPendingAttachments(): Promise<number> {
-  const selected = await db.execute<PendingRow>(sql`
-    SELECT id, storage_backend, storage_key
-    FROM ticket_attachments
-    WHERE comment_id IS NULL
-      AND created_at < now() - interval '${sql.raw(String(PENDING_GRACE_HOURS))} hours'
-    ORDER BY created_at ASC
-    LIMIT ${sql.raw(String(MAX_REAP_PER_RUN))}
-  `);
+  // Phase 1 — CLAIM. One atomic statement: the sub-select locks each candidate
+  // and re-evaluates `comment_id IS NULL` against the locked row, so a row that
+  // addTicketComment claimed in the meantime is dropped from the batch instead
+  // of losing its bytes. SKIP LOCKED leaves a row another transaction is
+  // mid-claim on for the next sweep rather than blocking behind it.
+  const claimed = await withSystemDbAccessContext(async () => {
+    const result = await db.execute<PendingRow>(sql`
+      DELETE FROM ticket_attachments
+      WHERE id IN (
+        SELECT id
+        FROM ticket_attachments
+        WHERE comment_id IS NULL
+          AND created_at < now() - interval '${sql.raw(String(PENDING_GRACE_HOURS))} hours'
+        ORDER BY created_at ASC
+        LIMIT ${sql.raw(String(MAX_REAP_PER_RUN))}
+        FOR UPDATE SKIP LOCKED
+      )
+      RETURNING id, storage_backend, storage_key
+    `);
+    const rows = (result as unknown as { rows?: PendingRow[] }).rows
+      ?? (result as unknown as PendingRow[]);
+    return Array.isArray(rows) ? rows : [];
+  });
+  if (claimed.length === 0) return 0;
 
-  const rows = (selected as unknown as { rows?: PendingRow[] }).rows
-    ?? (selected as unknown as PendingRow[]);
-  if (!Array.isArray(rows) || rows.length === 0) return 0;
-
-  // Objects first. A fault throws and the rows survive — the next run re-reads
-  // the same keys and finishes the job.
-  const keys = rows
+  // Phase 2 — OBJECTS, outside the db context. Every key here belongs to a row
+  // that no longer exists, so nothing live can be destroyed.
+  const keys = claimed
     .filter((r) => r.storage_backend === 's3' && r.storage_key)
     .map((r) => r.storage_key as string);
   if (keys.length > 0) {
-    await deleteObjectKeys(keys);
+    try {
+      await deleteObjectKeys(keys);
+    } catch (err) {
+      // The rows are already gone, so these bytes now have no index. Name every
+      // key so the orphans are reconcilable from the log, then rethrow — the
+      // job must fail loudly rather than report a clean sweep.
+      console.error(
+        `[TicketAttachmentReaper] Object delete FAILED after the rows were claimed — `
+        + `${keys.length} object(s) orphaned with no row to find them by: ${keys.join(', ')}`,
+      );
+      throw err;
+    }
   }
 
-  const idList = sql.join(rows.map((r) => sql`${r.id}::uuid`), sql`, `);
-  await db.execute(sql`
-    DELETE FROM ticket_attachments
-    WHERE id IN (${idList})
-      AND comment_id IS NULL
-  `);
-
+  const rows = claimed;
   if (rows.length === MAX_REAP_PER_RUN) {
     console.warn(`[TicketAttachmentReaper] Hit ${MAX_REAP_PER_RUN}-item cap — backlog may be growing`);
   }
@@ -103,7 +137,12 @@ function createWorker(): Worker<ReaperJobData> {
     QUEUE_NAME,
     async (_job: Job<ReaperJobData>) => {
       try {
-        const reaped = await withSystemDbAccessContext(() => reapPendingAttachments());
+        // NOT wrapped in withSystemDbAccessContext here: the sweep opens its
+        // own short context around the claim and closes it before the object
+        // round trip. Wrapping it out here would nest — the inner context
+        // short-circuits and the S3 call would run inside the held
+        // transaction again (#1105).
+        const reaped = await reapPendingAttachments();
         if (reaped > 0) {
           console.log(`[TicketAttachmentReaper] Reaped ${reaped} abandoned upload(s)`);
         }

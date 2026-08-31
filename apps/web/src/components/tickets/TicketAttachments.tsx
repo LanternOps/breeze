@@ -144,11 +144,17 @@ function AttachmentFileChip({ ticketId, meta }: { ticketId: string; meta: Ticket
 
 export function TicketAttachmentList({
   ticketId,
+  commentId,
   attachments,
   canDelete,
   onDelete,
 }: {
   ticketId: string;
+  /** The owning comment. Keys the container test id so a ticket with photos on
+   *  two comments does not emit the same `data-testid` twice — the e2e
+   *  convention selects by test id only, and a duplicate makes the strip
+   *  unaddressable (W08A review). Falls back to the ticket id. */
+  commentId?: string;
   attachments: TicketAttachmentMeta[];
   canDelete?: boolean;
   onDelete?: (attachmentId: string) => void;
@@ -159,7 +165,7 @@ export function TicketAttachmentList({
   if (attachments.length === 0) return null;
 
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-2" data-testid={`ticket-attachments-${ticketId}`}>
+    <div className="mt-2 flex flex-wrap items-center gap-2" data-testid={`ticket-attachments-${commentId ?? ticketId}`}>
       {attachments.map((meta) => (
         <span key={meta.id} className="inline-flex items-center gap-1">
           {meta.contentType.startsWith('image/')

@@ -1,12 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { executeMock, deleteObjectKeysMock } = vi.hoisted(() => ({
+const { executeMock, deleteObjectKeysMock, ctx } = vi.hoisted(() => ({
   executeMock: vi.fn(),
   deleteObjectKeysMock: vi.fn(),
+  // Tracks how deep inside withSystemDbAccessContext each side effect happens.
+  // A held context is an OPEN transaction pinning a pooled connection, so the
+  // object-store round trip must observe depth 0 (#1105) while the row claim
+  // must observe depth >= 1 (a contextless statement resolves scope 'none' and
+  // would silently see nothing).
+  ctx: { depth: 0 },
 }));
 
 vi.mock('../db', () => ({
-  withSystemDbAccessContext: <T,>(fn: () => Promise<T>): Promise<T> => fn(),
+  withSystemDbAccessContext: async <T,>(fn: () => Promise<T>): Promise<T> => {
+    ctx.depth++;
+    try {
+      return await fn();
+    } finally {
+      ctx.depth--;
+    }
+  },
   db: { execute: executeMock },
 }));
 
@@ -49,9 +62,10 @@ describe('ticketAttachmentReaper (W08 #3902)', () => {
     executeMock.mockReset();
     deleteObjectKeysMock.mockReset();
     deleteObjectKeysMock.mockResolvedValue(undefined);
+    ctx.depth = 0;
   });
 
-  it('selects ONLY pending rows older than 24 hours, capped at 500', async () => {
+  it('claims ONLY pending rows older than 24 hours, capped at 500', async () => {
     executeMock.mockResolvedValue([]);
     await reapPendingAttachments();
     const text = sqlText(executeMock.mock.calls[0]!);
@@ -62,48 +76,91 @@ describe('ticketAttachmentReaper (W08 #3902)', () => {
     expect(text).not.toMatch(/comment_id IS NOT NULL/);
   });
 
+  it('takes the candidate rows under a ROW LOCK in the same statement that deletes them', async () => {
+    // The claim must be ONE atomic statement. An unlocked SELECT followed by a
+    // separate DELETE lets addTicketComment claim the row in between — and the
+    // reaper would already have destroyed its object by then. SKIP LOCKED
+    // leaves a row another transaction is mid-claim on for the next sweep.
+    executeMock.mockResolvedValue([]);
+    await reapPendingAttachments();
+    const text = sqlText(executeMock.mock.calls[0]!);
+    expect(text).toContain('DELETE FROM ticket_attachments');
+    expect(text).toContain('FOR UPDATE SKIP LOCKED');
+    expect(text).toContain('RETURNING');
+    // ...and there must be no second statement racing the first.
+    expect(executeMock).toHaveBeenCalledTimes(1);
+  });
+
   it('does nothing at all when there is no backlog', async () => {
     executeMock.mockResolvedValue([]);
     expect(await reapPendingAttachments()).toBe(0);
-    expect(executeMock).toHaveBeenCalledTimes(1); // the SELECT only
+    expect(executeMock).toHaveBeenCalledTimes(1); // the claim only
     expect(deleteObjectKeysMock).not.toHaveBeenCalled();
   });
 
-  it('deletes the OBJECTS before the ROWS', async () => {
+  it('deletes the ROWS before the OBJECTS, and only for rows the claim actually won', async () => {
     const order: string[] = [];
-    executeMock
-      .mockImplementationOnce(async () => {
-        order.push('select');
-        return [
-          { id: 'a1', storage_backend: 's3', storage_key: 'ticket-attachments/a1' },
-          { id: 'a2', storage_backend: 'db', storage_key: null },
-        ];
-      })
-      .mockImplementationOnce(async () => { order.push('delete-rows'); return []; });
+    executeMock.mockImplementationOnce(async () => {
+      order.push('claim-rows');
+      // a3 is deliberately absent from RETURNING: a concurrent addTicketComment
+      // claimed it, so the DELETE's locking sub-select dropped it. Its object
+      // must NOT be touched — that row is live customer data now.
+      return [
+        { id: 'a1', storage_backend: 's3', storage_key: 'ticket-attachments/a1' },
+        { id: 'a2', storage_backend: 'db', storage_key: null },
+      ];
+    });
     deleteObjectKeysMock.mockImplementation(async () => { order.push('delete-objects'); });
 
     expect(await reapPendingAttachments()).toBe(2);
-    expect(order).toEqual(['select', 'delete-objects', 'delete-rows']);
-    // Only the s3-backed row contributes a key; db rows carry their bytes in
-    // the row and go with the DELETE.
+    expect(order).toEqual(['claim-rows', 'delete-objects']);
+    // Exactly one statement: a trailing "now really delete the rows" DELETE
+    // would mean the objects were destroyed before the rows were claimed.
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    // Only the s3-backed CLAIMED row contributes a key; db rows carry their
+    // bytes in the row and went with the DELETE.
     expect(deleteObjectKeysMock).toHaveBeenCalledWith(['ticket-attachments/a1']);
   });
 
-  it('issues no object delete when every pending row is db-backed', async () => {
-    executeMock
-      .mockResolvedValueOnce([{ id: 'a1', storage_backend: 'db', storage_key: null }])
-      .mockResolvedValueOnce([]);
+  it('runs the row claim INSIDE a db context and the object-store call OUTSIDE it', async () => {
+    // #1105: a held withSystemDbAccessContext is an open transaction pinning a
+    // pooled connection. An S3 round trip inside it sits idle-in-transaction
+    // and is killed by idle_in_transaction_session_timeout under load. The
+    // claim, conversely, MUST be in a context — contextless is scope 'none',
+    // which sees nothing and reports success having done no work.
+    let depthAtClaim = -1;
+    let depthAtObjectDelete = -1;
+    executeMock.mockImplementationOnce(async () => {
+      depthAtClaim = ctx.depth;
+      return [{ id: 'a1', storage_backend: 's3', storage_key: 'ticket-attachments/a1' }];
+    });
+    deleteObjectKeysMock.mockImplementation(async () => { depthAtObjectDelete = ctx.depth; });
+
+    await reapPendingAttachments();
+    expect(depthAtClaim).toBeGreaterThanOrEqual(1);
+    expect(depthAtObjectDelete).toBe(0);
+    expect(ctx.depth).toBe(0);
+  });
+
+  it('issues no object delete when every claimed row is db-backed', async () => {
+    executeMock.mockResolvedValueOnce([{ id: 'a1', storage_backend: 'db', storage_key: null }]);
     await reapPendingAttachments();
     expect(deleteObjectKeysMock).not.toHaveBeenCalled();
   });
 
-  it('ABORTS on an object-store fault and leaves the rows for the next run', async () => {
+  it('surfaces an object-store fault and names the orphaned keys', async () => {
+    // The rows are already gone by this point (that is the price of never
+    // deleting an object out from under a live row). The bytes are therefore
+    // orphaned with no row to find them by, so the fault must be loud and the
+    // keys must be recoverable from the log — never swallowed.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     executeMock.mockResolvedValueOnce([{ id: 'a1', storage_backend: 's3', storage_key: 'ticket-attachments/a1' }]);
     deleteObjectKeysMock.mockRejectedValue(new Error('s3 down'));
+
     await expect(reapPendingAttachments()).rejects.toThrow('s3 down');
-    // The row DELETE must NOT have run — otherwise the bytes survive with no
-    // row left to find them by.
-    expect(executeMock).toHaveBeenCalledTimes(1);
+    const logged = errorSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(logged).toContain('ticket-attachments/a1');
+    errorSpy.mockRestore();
   });
 
   it('uses an allocated sub-daily slot, never an inline cron string', () => {

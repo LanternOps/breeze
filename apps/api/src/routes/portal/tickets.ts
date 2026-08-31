@@ -26,6 +26,7 @@ import { editCommentSchema, PORTAL_TICKET_COMMENT_MAX_CHARS } from '@breeze/shar
 import type { TicketAttachmentMeta } from '@breeze/shared';
 import { ATTACHMENT_META_COLUMNS, ticketAttachments } from '../../db/schema/ticketAttachments';
 import { openBytes } from '../../services/ticketAttachmentStorage';
+import { captureException } from '../../services/sentry';
 import { contentDispositionFor } from '../tickets/attachments';
 import { Readable } from 'node:stream';
 
@@ -571,7 +572,17 @@ ticketRoutes.get(
       return c.body(null, 304, headers);
     }
 
-    const opened = await openBytes(att);
+    // Mirrors the technician route (routes/tickets/attachments.ts): a transport
+    // fault is a RETRYABLE 503, not a 500. Unguarded, an S3 blip surfaced to
+    // the customer as a generic 500 and was never attributed to this route in
+    // Sentry (W08A review).
+    let opened: Awaited<ReturnType<typeof openBytes>>;
+    try {
+      opened = await openBytes(att);
+    } catch (err) {
+      captureException(err);
+      return c.json({ error: 'Attachment storage is unavailable — try again shortly' }, 503);
+    }
     if (!opened.body) return c.json({ error: 'Attachment not found' }, 404);
 
     headers['Content-Type'] = att.contentType;

@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 const {
   authRef, getScopedTicketOr404Mock, dbSelectMock, dbInsertReturningMock,
   selectColumnArgs, insertedValues, putBytesMock, deleteBytesMock, auditMock, rateLimitAllowed,
-  openBytesMock, dbRowMock, deletedRowIds,
+  openBytesMock, dbRowMock, deletedRowIds, dbEventOrder,
 } = vi.hoisted(() => ({
   authRef: {
     current: {
@@ -27,6 +27,8 @@ const {
   openBytesMock: vi.fn(),
   dbRowMock: vi.fn(),
   deletedRowIds: [] as unknown[],
+  // Side effects recorded from INSIDE the request, so orderings are observable.
+  dbEventOrder: [] as string[],
   auditMock: vi.fn(),
   rateLimitAllowed: { current: true },
 }));
@@ -86,6 +88,7 @@ vi.mock('../../db', () => ({
     delete: vi.fn(() => ({
       where: vi.fn((w: unknown) => {
         deletedRowIds.push(w);
+        dbEventOrder.push('row');
         return Promise.resolve();
       }),
     })),
@@ -146,6 +149,7 @@ beforeEach(() => {
   dbSelectMock.mockReturnValue([{ count: 0 }]);
   dbRowMock.mockReturnValue([]);
   deletedRowIds.length = 0;
+  dbEventOrder.length = 0;
   openBytesMock.mockResolvedValue({ body: Buffer.from('bytes'), contentLength: 5 });
   // clearAllMocks keeps implementations — reset the ones individual tests
   // override with a rejection, or the failure leaks into the next test.
@@ -478,13 +482,14 @@ describe('DELETE /tickets/:id/attachments/:attachmentId (W08 #3902)', () => {
   });
 
   it('deletes the OBJECT before the row (same reasoning as D9)', async () => {
-    const order: string[] = [];
-    deleteBytesMock.mockImplementation(async () => { order.push('object'); });
+    // Both markers are pushed from inside the request: 'row' comes from the
+    // db.delete stub, not from the test body after await. Pushing it here
+    // afterwards made the assertion true for a row-first implementation too.
+    deleteBytesMock.mockImplementation(async () => { dbEventOrder.push('object'); });
     dbRowMock.mockReturnValue(joinRow({ storageBackend: 's3', storageKey: 'ticket-attachments/x', data: null }));
     const res = await del();
-    order.push('row');
     expect(res.status).toBe(204);
-    expect(order).toEqual(['object', 'row']);
+    expect(dbEventOrder).toEqual(['object', 'row']);
     expect(deletedRowIds).toHaveLength(1);
   });
 

@@ -53,10 +53,8 @@ vi.mock('./ticketConfigService', () => ({
   getTicketStatusById: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock('../db', () => ({
-  withSystemDbAccessContext: hoisted.withSystemDbAccessContextMock,
-  runOutsideDbContext: (fn: () => unknown) => fn(),
-  db: {
+vi.mock('../db', () => {
+  const dbMock: Record<string, unknown> = {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
@@ -101,9 +99,21 @@ vi.mock('../db', () => ({
           return Promise.resolve(next ?? []);
         })
       }))
-    }))
-  }
-}));
+    })),
+    // W08 #3902: addTicketComment now writes the comment, the firstResponseAt
+    // stamp and the attachment claim inside ONE transaction, so the producer
+    // half of this contract runs on `tx`, not on `db`. Handing the callback the
+    // same mock keeps every queue above shared between the two handles — this
+    // suite asserts the emitted EVENT, not which handle issued the write.
+    execute: vi.fn(() => Promise.resolve([])),
+  };
+  dbMock.transaction = vi.fn((fn: (tx: unknown) => unknown) => Promise.resolve(fn(dbMock)));
+  return {
+    withSystemDbAccessContext: hoisted.withSystemDbAccessContextMock,
+    runOutsideDbContext: (fn: () => unknown) => fn(),
+    db: dbMock,
+  };
+});
 
 vi.mock('../db/schema', () => ({
   tickets: { id: 'id', orgId: 'orgId', status: 'status', assignedTo: 'assignedTo', firstResponseAt: 'firstResponseAt' },

@@ -1091,10 +1091,12 @@ describe('portal ticket attachments (W08 #3902)', () => {
   const SHA = 'e'.repeat(64);
   let app: ReturnType<typeof buildApp>;
   let attachmentWhereArgs: unknown[] = [];
+  let ticketWhereArgs: unknown[] = [];
 
   beforeEach(() => {
     vi.clearAllMocks();
     attachmentWhereArgs = [];
+    ticketWhereArgs = [];
     app = buildApp();
     openBytesMock.mockResolvedValue({ body: Buffer.from('bytes'), contentLength: 5 });
   });
@@ -1127,7 +1129,14 @@ describe('portal ticket attachments (W08 #3902)', () => {
     dbSelectMock.mockImplementation(() => {
       n++;
       if (n === 1) {
-        return { from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve(ticketRows)) })) })) };
+        return {
+          from: vi.fn(() => ({
+            where: vi.fn((...args: unknown[]) => {
+              ticketWhereArgs = args;
+              return { limit: vi.fn(() => Promise.resolve(ticketRows)) };
+            }),
+          })),
+        };
       }
       return {
         from: vi.fn(() => ({
@@ -1154,6 +1163,38 @@ describe('portal ticket attachments (W08 #3902)', () => {
     if ('value' in rec && !('table' in rec)) out.push(rec.value);
     if (Array.isArray(rec.queryChunks)) collectSqlParamValues(rec.queryChunks, out);
     return out;
+  }
+
+  /**
+   * Render a drizzle predicate back to text so the authz ladder itself can be
+   * asserted.
+   *
+   * The rig resolves its fixture rows unconditionally — no mocked WHERE can
+   * change what comes back — so a 404 test proves only that the fixture was
+   * empty. This route has no JS branch to exercise either: every rung of the
+   * ladder is a SQL condition. Asserting the predicate is therefore the only
+   * thing that discriminates; without it, deleting `isPublic` from the route
+   * leaves the whole suite green.
+   *
+   * The schema mock above gives each column a plain string ('orgId'), so a
+   * mocked column lands in the tree as a BOUND VALUE rather than a column
+   * reference — hence the column-name checks below go through
+   * collectSqlParamValues, and only structural text (' is null') is matched
+   * here.
+   */
+  function renderPredicate(node: unknown): string {
+    if (node === null || node === undefined || typeof node !== 'object') return '';
+    if (Array.isArray(node)) return node.map(renderPredicate).join('');
+    const rec = node as Record<string, unknown>;
+    if (Array.isArray(rec.queryChunks)) return renderPredicate(rec.queryChunks);
+    // StringChunk: the literal SQL fragments (' = ', ' is null', ' and ').
+    if (Array.isArray(rec.value) && rec.value.every((v) => typeof v === 'string')) {
+      return (rec.value as string[]).join('');
+    }
+    // Column: has a name and belongs to a table.
+    if (typeof rec.name === 'string' && 'table' in rec) return String(rec.name);
+    if ('value' in rec) return `<${String(rec.value)}>`; // bound parameter
+    return '';
   }
 
   const attRow = (over: Record<string, unknown> = {}) => ({
@@ -1187,6 +1228,15 @@ describe('portal ticket attachments (W08 #3902)', () => {
     expect(attachmentWhereArgs).toEqual([]);
   });
 
+  // NOTE: the three 404 cases below prove the ROUTE returns 404 for an empty
+  // result set, not that the WHERE clause produces one — this rig resolves its
+  // fixture rows unconditionally, and the schema mock above renders mocked
+  // columns as plain strings that vanish from the SQL tree, so the org /
+  // submitter / is_public / deleted_at rungs are NOT assertable here. They are
+  // proven end-to-end against real Postgres in
+  // src/__tests__/integration/ticketAttachmentsRls.integration.test.ts
+  // ("portal attachment read path (REAL route, real Postgres)"), which drives
+  // this handler itself (W08A review).
   it('404s the content route for a ticket the session did not submit', async () => {
     rigContent([], []);
     const res = await app.request(`/tickets/${TICKET_ID}/attachments/${ATT_ID}/content`, {
@@ -1225,6 +1275,33 @@ describe('portal ticket attachments (W08 #3902)', () => {
     });
     expect(res.status).toBe(304);
     expect(openBytesMock).not.toHaveBeenCalled();
+  });
+
+  it('keys the content route attachment lookup on THIS ticket, not the id alone', async () => {
+    rigContent([TICKET_ROW], [{ attachment: attRow() }]);
+    await app.request(`/tickets/${TICKET_ID}/attachments/${ATT_ID}/content`, {
+      headers: { Authorization: 'Bearer t' },
+    });
+    // Without the ticket_id rung the route is an IDOR across every ticket in
+    // the org: any attachment id reachable through any ticket the session did
+    // submit. Both operands here are REAL ticketAttachments columns, so they
+    // survive into the SQL tree and this assertion actually discriminates.
+    const values = collectSqlParamValues(attachmentWhereArgs);
+    expect(values).toContain(ATT_ID);
+    expect(values).toContain(TICKET_ID);
+    // A structural sanity check on the comment join's non-deleted rung.
+    expect(renderPredicate(attachmentWhereArgs)).toMatch(/is null/);
+  });
+
+  it('503s (not 500s) when the object store faults, matching the technician route', async () => {
+    rigContent([TICKET_ROW], [{ attachment: attRow({ storageBackend: 's3', storageKey: 'k', data: null }) }]);
+    openBytesMock.mockRejectedValueOnce(new Error('s3 unreachable'));
+    const res = await app.request(`/tickets/${TICKET_ID}/attachments/${ATT_ID}/content`, {
+      headers: { Authorization: 'Bearer t' },
+    });
+    // A transport fault is retryable; an unhandled throw would surface to the
+    // customer as a generic 500 and never reach Sentry from this route.
+    expect(res.status).toBe(503);
   });
 
   it('the portal has no tickets:manage escape hatch — there is no override branch', async () => {

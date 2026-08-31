@@ -90,6 +90,13 @@ export default function TicketFeed({
   comments: TicketComment[];
   onEditComment?: (id: string, content: string) => void;
   onDeleteComment?: (id: string) => void;
+  /** NOT passed by TicketWorkbench today, so `canDelete` is false there and the
+   *  delete control does not render in the web app. This is the plan's scope,
+   *  not an oversight: Task 17 specifies the control and its gate at the
+   *  COMPONENT level only (covered by TicketAttachments.test.tsx) and no task
+   *  wires a workbench-level delete handler. The API route
+   *  (DELETE /tickets/:id/attachments/:attachmentId) is complete and tested;
+   *  wiring a caller is follow-up work (W08A review). */
   onDeleteAttachment?: (attachmentId: string) => void;
   canManageComment?: (c: TicketComment) => boolean;
 }) {
@@ -213,6 +220,7 @@ export default function TicketFeed({
               {ticketId && (
                 <TicketAttachmentList
                   ticketId={ticketId}
+                  commentId={b.item.id}
                   attachments={b.item.attachments ?? []}
                   canDelete={Boolean(onDeleteAttachment) && canManageComment?.(b.item)}
                   onDelete={onDeleteAttachment}
