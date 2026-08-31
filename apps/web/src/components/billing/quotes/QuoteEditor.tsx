@@ -455,7 +455,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const resync = useCallback(async (): Promise<boolean> => {
     try {
       return (await onChanged()) !== false;
-    } catch {
+    } catch (err) {
+      // Today's only production parent (QuoteWorkspace.fetchDetail) catches
+      // internally and resolves false, so this branch is unreachable from the
+      // app. Keep the breadcrumb anyway: the moment some future parent throws
+      // instead, a bare `return false` would erase the reason, which is the
+      // failure mode this whole change exists to stop.
+      console.error('[QuoteEditor] refetch threw while resyncing the canvas', err);
       return false;
     }
   }, [onChanged]);
@@ -1217,7 +1223,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   /**
    * The tail every add-block branch runs AFTER the POST has already created the
    * block server-side: reposition it, clear the form, resync the canvas. Two
-   * rules make #3519 structurally impossible from here on.
+   * rules close #3519 for every branch that routes through here — which is the
+   * catch: nothing enforces that routing, so a NEW block type must call this
+   * helper rather than re-inlining `positionNewBlock` + reset + `refresh()`,
+   * or it reopens the bug. (Line creation still has the unfixed twin of this
+   * problem; see the note on `doAddCatalog`.)
    *
    * 1. It never throws. A throw would escape into `runScoped`'s catch and toast
    *    "Could not add the section" over a block that DOES exist — the copy that
@@ -1235,8 +1245,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
    * The resync deliberately goes through `resync()` rather than the coalescing
    * `refresh()`: adding a section is a one-shot action, not the tab-through
    * burst the throttle exists to cap, and its outcome report must not sit
-   * behind a cooldown window. Worst case this costs one extra GET when an
-   * unrelated edit already has the window open.
+   * behind a cooldown window. Worst case this costs one extra GET per add,
+   * when an unrelated edit already has the window open.
    */
   const finishBlockCreate = useCallback(async (
     created: { id?: string } | undefined,
@@ -1245,8 +1255,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     let resynced = false;
     try {
       try {
-        // Best-effort and self-toasting: a failed reorder just leaves the new
-        // section at the end, which is visible and non-destructive.
+        // Best-effort and self-toasting — see `positionNewBlock`.
         await positionNewBlock(created);
       } finally {
         resetForm();
@@ -1456,6 +1465,15 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   [quote.id, refresh, runScoped, t]);
 
   // ---- line mutations (scoped to a line_items block) ----------------------
+  // KNOWN GAP (#3519's unfixed twin, deliberately out of scope here): every line
+  // creation below rests on the same premise the block path just stopped
+  // trusting — "no success toast, the appended row and the moving totals ARE the
+  // feedback" — and ends with the fire-and-forget `refresh()` rather than the
+  // honest `finishBlockCreate` tail. So a line POST that succeeds while its
+  // quiet refetch fails is still completely silent, and a tech on a flaky link
+  // can re-add the same line the way the reporter re-uploaded the same image.
+  // Fixing it needs its own copy, its own 8 locales and its own tests, so it is
+  // filed separately rather than smuggled into this change.
   const doAddCatalog = useCallback(async (blockId: string, item: CatalogItem) => {
     await runAction({
       request: () => addCatalogLine(quote.id, { catalogItemId: item.id, quantity: 1, blockId }),

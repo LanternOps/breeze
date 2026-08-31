@@ -78,7 +78,10 @@ export default function QuoteWorkspace({ id }: Props) {
   // still open — and without this the OLDER response can resolve last and
   // re-render the editor from pre-mutation data, hiding a block that was just
   // created (#3519). Only a response at least as new as the last applied one
-  // may call setDetail.
+  // may call setDetail. Scope note: this guards the SUCCESS path only. The
+  // 404/error paths don't advance the sequence, but they only ever setError on
+  // a non-quiet load, and there is exactly one of those (the initial mount), so
+  // they have no stale response to lose a race to.
   const fetchSeq = useRef(0);
   const appliedSeq = useRef(0);
 
@@ -87,8 +90,10 @@ export default function QuoteWorkspace({ id }: Props) {
   // form and discard the user's in-progress local state and cursor position.
   // Only the initial load shows the skeleton / replaces the view on error.
   //
-  // Returns whether the view now reflects fresh server data. Callers rely on
-  // this: an inline mutation whose only success signal is "the result appears"
+  // Returns whether the view now reflects fresh server data — with one
+  // deliberate exception, the 401 branch, which reports success because the
+  // redirect it fires makes staleness moot (see below). Callers rely on this:
+  // an inline mutation whose only success signal is "the result appears"
   // (an added block, a repriced line) has no signal at all when the reload
   // fails, and MUST say so instead of leaving the user staring at a stale
   // canvas. A quiet failure still stays silent HERE — reporting it is the

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import QuoteWorkspace from './QuoteWorkspace';
@@ -226,5 +226,83 @@ describe('QuoteWorkspace — a mutation whose only signal is "it appears" (#3519
       fetchMock.mock.calls.filter(([url]) => url === '/quotes/q-1').length,
     ).toBeGreaterThanOrEqual(2));
     expect(vi.mocked(showToast)).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('QuoteWorkspace — an older refetch must not clobber a newer one (#3519)', () => {
+  // The second stranding vector in the same function. Quiet reloads DO overlap:
+  // `runScoped` only serialises calls sharing a key, and the add-block key
+  // ('add-block') is not the key a terms blur-save uses ('terms'), so blurring
+  // the terms field and then adding a section fires two independent GETs. The
+  // editor's `refresh()` throttle fires the first on its leading edge and
+  // `resync()` fires the second un-throttled, so both are genuinely in flight.
+  // If the OLDER one resolves last, `setDetail` re-renders the canvas from
+  // pre-mutation data and the just-created block disappears — the same
+  // invisible-block symptom, reached by a different route.
+  const draft = { ...sentQuote, quote: { ...sentQuote.quote, status: 'draft', sentAt: null } };
+  const newBlock = {
+    id: 'blk-new', quoteId: 'q-1', orgId: 'org-1', blockType: 'heading',
+    content: { text: 'Scope of work', level: 2 }, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+  });
+
+  it('drops a superseded GET that resolves last instead of rolling the canvas back', async () => {
+    // Every GET after the initial load is handed out as a deferred promise so
+    // the test controls the resolution ORDER independently of the issue order.
+    const deferred: { resolve: (r: Response) => void }[] = [];
+    let quoteGets = 0;
+
+    fetchMock.mockImplementation(async (input: string, init?: { method?: string }) => {
+      if (input === '/quotes/q-1/blocks' && init?.method === 'POST') {
+        return json({ data: newBlock });
+      }
+      if (input === '/quotes/q-1') {
+        if (init?.method === 'PATCH') return json({ data: draft }); // terms save
+        quoteGets += 1;
+        if (quoteGets === 1) return json({ data: draft }); // initial mount
+        return new Promise<Response>((resolve) => { deferred.push({ resolve }); });
+      }
+      return json({ data: [] });
+    });
+
+    render(<QuoteWorkspace id="q-1" />);
+    await waitFor(() => expect(screen.getByTestId('quote-add-block')).toBeInTheDocument());
+
+    // GET #2 — the terms blur-save's refresh() leading edge.
+    fireEvent.change(screen.getByTestId('quote-terms'), { target: { value: 'Net 30' } });
+    fireEvent.blur(screen.getByTestId('quote-terms'));
+
+    // GET #3 — the add-block resync, issued while #2 is still open.
+    fireEvent.click(screen.getByTestId('quote-add-block-type-heading'));
+    fireEvent.change(screen.getByTestId('quote-block-heading-text'), { target: { value: 'Scope of work' } });
+    fireEvent.click(screen.getByTestId('quote-add-block-submit'));
+
+    await waitFor(() => expect(deferred.length).toBe(2));
+
+    // The NEWER request answers first, carrying the block that was just created.
+    deferred[1].resolve(json({ data: { ...draft, blocks: [newBlock] } }));
+    await waitFor(() => expect(screen.queryByTestId('quote-blocks-empty')).not.toBeInTheDocument());
+
+    // The OLDER request answers second, carrying the pre-mutation canvas. It is
+    // superseded, so it must be dropped — not applied on top.
+    deferred[0].resolve(json({ data: draft }));
+
+    // Flush the superseded response's continuation before asserting — it has to
+    // get all the way to where setDetail WOULD be called, or "nothing changed"
+    // would just mean "nothing has happened yet". Each turn covers one await in
+    // fetchDetail past the fetch itself (res.json, then the sequence check).
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    // The block survives. Without the sequence guard this fails: the stale
+    // payload wins by arriving last and the canvas goes empty again. (Verified
+    // red against the unguarded fetchDetail, so the flush above is sufficient.)
+    expect(screen.queryByTestId('quote-blocks-empty')).not.toBeInTheDocument();
   });
 });

@@ -146,6 +146,13 @@ describe('QuoteEditor — an image block created server-side is never invisible 
     expect(joined).not.toMatch(/could not add the image section/i);
     // The button unlatches so the editor is usable again (a fresh file re-arms it).
     await waitFor(() => expect(screen.getByTestId('quote-add-block-submit')).toBeDisabled());
+    // NOT asserted here, deliberately: that the uncontrolled file input's own
+    // `.value` was cleared. jsdom never populates `value` from a programmatic
+    // `files` assignment (measured: with the DOM reset deleted, `.value` is
+    // still ''), and a file input's value cannot be set to a non-empty string,
+    // so any assertion on it passes whether or not the reset exists. Shipping
+    // one would claim coverage this layer cannot give. The DOM reset is covered
+    // by inspection; proving it needs a real browser (Playwright).
     const retry = new File(['more'], 'again.png', { type: 'image/png' });
     fireEvent.change(screen.getByTestId('quote-block-image-file'), { target: { files: [retry] } });
     expect(screen.getByTestId('quote-add-block-submit')).toBeEnabled();
