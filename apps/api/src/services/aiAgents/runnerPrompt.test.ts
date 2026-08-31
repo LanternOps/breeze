@@ -6,10 +6,12 @@ import {
   OPERATOR_GUIDANCE_CLOSE_TAG,
   OPERATOR_GUIDANCE_OPEN_TAG,
   TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER,
+  TICKET_TRIAGE_PRIVATE_NOTE_DISCLAIMER,
   buildAgentRunSystemPrompt,
   buildAgentRunTaskPrompt,
   buildNarrativeTaskPrompt,
   buildSweepTaskPrompt,
+  buildTriageTaskPrompt,
   sanitizeOperatorInstructions,
   sanitizeSweepText,
   type AgentRunPromptContext,
@@ -105,6 +107,14 @@ function ticketCtx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunProm
       ],
       truncated: false,
     },
+    ...overrides,
+  });
+}
+
+function triageCtx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunPromptContext {
+  return ticketCtx({
+    agent: { name: 'Helpdesk Bot', kind: 'helpdesk' },
+    profile: 'triage',
     ...overrides,
   });
 }
@@ -899,5 +909,95 @@ describe('buildNarrativeTaskPrompt (P2-3)', () => {
 
     expect(text).not.toMatch(/undefined/);
     expect(text).toContain('Call submit_narrative exactly once, then stop.');
+  });
+});
+
+// Phase 2 wave P2-4 (ticket triage, #4191), task A6.
+describe('buildAgentRunSystemPrompt — triage profile (P2-4)', () => {
+  it('gets its own mode section instead of shadow/act, naming submit_ticket_proposal', () => {
+    const prompt = buildAgentRunSystemPrompt(triageCtx());
+    expect(prompt).toContain('## Mode: triage');
+    expect(prompt).not.toContain('## Mode: shadow');
+    expect(prompt).not.toContain('## Mode: act');
+    expect(prompt).toContain('submit_ticket_proposal');
+  });
+
+  it('states the confidence floor and the never-invent-a-device rule in the mode section', () => {
+    const prompt = buildAgentRunSystemPrompt(triageCtx());
+    expect(prompt).toContain('0.7');
+    expect(prompt.toLowerCase()).toContain('never invent a device');
+  });
+
+  it('carries the private-note disclaimer, NOT the blanket no-autonomous-notes one', () => {
+    const prompt = buildAgentRunSystemPrompt(triageCtx());
+    expect(prompt).toContain(TICKET_TRIAGE_PRIVATE_NOTE_DISCLAIMER);
+    expect(prompt).not.toContain(TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER);
+  });
+
+  it('a non-triage ticket run still gets the blanket no-autonomous-notes disclaimer, unaffected', () => {
+    const prompt = buildAgentRunSystemPrompt(ticketCtx());
+    expect(prompt).toContain(TICKET_NO_AUTONOMOUS_NOTES_DISCLAIMER);
+    expect(prompt).not.toContain(TICKET_TRIAGE_PRIVATE_NOTE_DISCLAIMER);
+  });
+
+  it('the device-binding line says "no device binding" and never claims a device is targeted', () => {
+    const prompt = buildAgentRunSystemPrompt(triageCtx());
+    expect(prompt.toLowerCase()).toContain('no device binding');
+    expect(prompt).not.toContain('You are bound to the single device and site this run targets.');
+  });
+
+  it('gets the "write it in one pass" reads guidance, same as narrative (empty tool floor)', () => {
+    const prompt = buildAgentRunSystemPrompt(triageCtx());
+    expect(prompt).toContain('Write it in one pass.');
+    expect(prompt).not.toContain('Prefer a small number of high-signal reads');
+  });
+
+  it('gets its own Output section naming submit_ticket_proposal as the output', () => {
+    const prompt = buildAgentRunSystemPrompt(triageCtx());
+    expect(prompt).toContain('## Output');
+    expect(prompt).toContain('The proposal you submit is the output of this run.');
+  });
+});
+
+describe('buildTriageTaskPrompt (P2-4)', () => {
+  it('renders the ticket subject, description and comment history', () => {
+    const text = buildTriageTaskPrompt(triageCtx());
+
+    expect(text).toContain('Printer not working');
+    expect(text).toContain('The office printer shows an error light.');
+    expect(text).toContain('Still broken after reboot.');
+    expect(text).toContain('Requester');
+  });
+
+  it('names every proposal field and the confidence floor', () => {
+    const text = buildTriageTaskPrompt(triageCtx());
+
+    expect(text).toContain('summary');
+    expect(text).toContain('fields.priority');
+    expect(text).toContain('fields.categoryId');
+    expect(text).toContain('draftReply');
+    expect(text).toContain('draftResolutionNote');
+    expect(text).toContain('notes');
+    expect(text).toContain('0.7');
+  });
+
+  it('states the never-invent-a-device rule for the device field specifically', () => {
+    const text = buildTriageTaskPrompt(triageCtx());
+    expect(text.toLowerCase()).toContain('never invented, guessed, or normalized');
+  });
+
+  it('ends with the exactly-once submission instruction', () => {
+    const text = buildTriageTaskPrompt(triageCtx());
+    expect(text).toContain('Call submit_ticket_proposal exactly once, then stop.');
+  });
+
+  it('tolerates a triage run whose ticket context never loaded', () => {
+    const text = buildTriageTaskPrompt(triageCtx({ ticket: null }));
+    expect(text).not.toMatch(/undefined/);
+    expect(text).toContain('Call submit_ticket_proposal exactly once, then stop.');
+  });
+
+  it('buildAgentRunTaskPrompt dispatches a triage-profile run to the triage turn', () => {
+    expect(buildAgentRunTaskPrompt(triageCtx())).toBe(buildTriageTaskPrompt(triageCtx()));
   });
 });

@@ -110,6 +110,21 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *                            narrativeProfile.ts): substitutes for
  *                            maxTurnsPerRun on a narrative-profile run; not
  *                            enforced here.
+ *  - maxConcurrentTriageRuns — HERE (admission rule 6b, via profileCaps()),
+ *                            triage-profile runs only — counted separately
+ *                            from every other per-run-shape concurrency cap
+ *                            above (phase 2 P2-4).
+ *  - maxTriageRunsPerHour  — HERE (admission rule 6b, via profileCaps()),
+ *                            triage-profile runs only — counted separately
+ *                            from every other per-hour cap, so ticket triage
+ *                            can never starve, or be starved by, sweeps,
+ *                            verdicts or narratives.
+ *  - triageBudgetCentsPerRun — run loop (triageLimits(), triageProfile.ts):
+ *                            substitutes for maxBudgetCentsPerRun on a
+ *                            triage-profile run; not enforced here.
+ *  - triageMaxTurns        — run loop (triageLimits(), triageProfile.ts):
+ *                            substitutes for maxTurnsPerRun on a
+ *                            triage-profile run; not enforced here.
  */
 
 export interface CreateAgentRunInput {
@@ -655,9 +670,13 @@ function profileCaps(
         concurrentSkip: 'max_concurrent_narrative_runs',
         rateSkip: 'narrative_rate',
       };
-    // Phase 2 wave P2-4 (ticket triage). P2-4 task A6 registers submit_ticket_proposal;
-    // this profile has no admitting caller yet, so this arm is a
-    // forward-compatible placeholder that keeps this switch exhaustive.
+    // Phase 2 wave P2-4 (ticket triage), task A6 — same real cap-resolution
+    // shape as the verdict/sweep/narrative arms above, counted against
+    // maxConcurrentTriageRuns/maxTriageRunsPerHour so triage volume can
+    // never starve, or be starved by, any other profile's admission. Task A9
+    // is what wires the ticket-created subscriber to actually admit
+    // `triage` runs; until then this arm is exercised only by direct/manual
+    // callers, not left unenforced.
     case 'triage':
       return {
         maxConcurrent: limits.maxConcurrentTriageRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentTriageRuns,
@@ -780,8 +799,21 @@ export async function createAndEnqueueAgentRun(
   // guardrail tool gate's shadow branch) — device pinning, site scope, and
   // maintenance-window checks below still apply normally, exactly as they
   // would for any other device-bound trigger.
-  const modeAtStart = (triggerKind === 'ticket' || input.ticketId
-    || triggerKind === 'anomaly' || input.anomalyIncidentId) ? 'shadow' : effective.mode;
+  //
+  // P2-4 Task A6 (#4191) — the forced-shadow LIFT (spec §4.4 amendment).
+  // A ticket-triggered run is admitted as `act` ONLY when BOTH gates are
+  // open at once: the agent's effective mode is already `act` AND its
+  // effective `triggers.ticketAutonomousWrites` is `true` — the SAME
+  // org-row-only opt-in `effectivePolicy.ts`'s merge resolves onto
+  // `effective` above (never the partner baseline alone; see
+  // `AiAgentTriggers.ticketAutonomousWrites`'s docstring). Deliberately
+  // narrower than "not forced shadow": the lift is keyed on the ticket
+  // condition specifically, so it can never reach the anomaly force below —
+  // an unproven detector has no lift at all, full stop.
+  const ticketAutonomy = (triggerKind === 'ticket' || input.ticketId)
+    && effective.mode === 'act' && effective.triggers.ticketAutonomousWrites === true;
+  const modeAtStart = ((triggerKind === 'ticket' || input.ticketId) && !ticketAutonomy)
+    || triggerKind === 'anomaly' || input.anomalyIncidentId ? 'shadow' : effective.mode;
 
   // 2b. Circuit breaker (wave 6 PR 2, #3828). Placed as early as possible
   // after the kill switch — this is the first point `resolved.agentId` is

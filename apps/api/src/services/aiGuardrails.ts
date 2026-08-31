@@ -1368,7 +1368,7 @@ export interface AgentGuardrailPolicy {
    * device fleet), so without this a mutating `manage_tickets` call would
    * always trip the device-less-mutation deny below. Deliberately NOT a
    * general "any tool with a ticket" escape hatch: only `manage_tickets`
-   * itself consults it (see the deny below) — no `'triage'`/profile literal
+   * itself consults it (see the deny below) — no run-profile literal
    * anywhere in this file, keyed off tool name + scope alone.
    */
   scope?: { ticketId: string };

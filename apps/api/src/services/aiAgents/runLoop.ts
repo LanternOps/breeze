@@ -135,6 +135,7 @@ import {
 import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdictProfile';
 import { isSweepProfile, sweepLimits, sweepToolAllowlist } from './sweepProfile';
 import { isNarrativeProfile, narrativeLimits, narrativeToolAllowlist } from './narrativeProfile';
+import { isTriageProfile, triageLimits, triageToolAllowlist } from './triageProfile';
 import { loadSweepEvidence, type SweepEvidence } from './sweepEvidence';
 import { loadNarrativeContext, type NarrativeContext } from './narrativeContext';
 import { NarrativePersistConflictError, persistNarrativeReport } from './narrativeReport';
@@ -234,14 +235,20 @@ export interface OutcomeExecutedAction {
  * — the real `submit_ticket_proposal` outcome shape — rather than the old
  * ad-hoc `proposedReply`/`proposedStatus`/`proposedPriority` shape, keeping
  * this file and `runTrace.ts`'s projection of it coherent with the DTO.
- * `outcomeToolsForProfile`'s `triage` arm (A6) is what will actually populate
- * this field; it is still unpopulated here today.
+ *
+ * Task A6 (this task) is what actually populates this field: the post-hook
+ * (`createAgentRunPostToolUse`'s `submit_ticket_proposal` case) captures the
+ * model's validated submission verbatim (no server-owned rebuild, unlike
+ * `submit_narrative`) the moment a `triage`-profile run calls its one
+ * outcome tool. Turning a populated value into `manage_tickets` intents/
+ * `ticket_drafts` rows is still task A8's job (`finishRun`), not this one's.
  */
 export type TicketProposalOutcome = TicketTriageProposal;
 
 export interface AgentRunOutcome {
-  /** Reserved — see `TicketProposalOutcome`'s own docstring for why it is
-   *  unpopulated in this PR. Absent for every non-ticket run. */
+  /** The model's `submit_ticket_proposal` submission on a `triage`-profile
+   *  run — see `TicketProposalOutcome`'s docstring. Absent for every
+   *  non-triage run, and for a triage run that never called the tool. */
   ticketProposal?: TicketProposalOutcome;
   proposedActions: OutcomeProposedAction[];
   executedActions: OutcomeExecutedAction[];
@@ -982,8 +989,16 @@ export function createAgentRunPreToolUse(args: {
     // matters because a narrative run has no proposal surface at all: nothing
     // reads `outcome.proposedActions` for this profile, so a recorded
     // proposal would be a mutation request nobody would ever see.
+    //
+    // Wave P2-4 (task A6): triage joins them, on the SAME footing as
+    // narrative — its tool floor (`TRIAGE_TOOL_ALLOWLIST`) is empty too, so
+    // no mutating tool is ever exposed to a triage run in the first place;
+    // this is defense in depth against anything upstream reaching here
+    // anyway. A triage run's real output channel is `submit_ticket_proposal`
+    // (an outcome tool, handled above this branch, never reaching here) —
+    // nothing reads `outcome.proposedActions` for this profile either.
     if (
-      (isVerdictProfile(run) || isSweepProfile(run) || isNarrativeProfile(run))
+      (isVerdictProfile(run) || isSweepProfile(run) || isNarrativeProfile(run) || isTriageProfile(run))
       && check.disposition !== 'allow'
     ) {
       const reason = `${run.profile} runs are read-only`;
@@ -1171,6 +1186,16 @@ export function createAgentRunPostToolUse(args: {
           // overload.
           case 'submit_narrative':
             outcome.narrative = validateOutcomeToolInput(toolName, input);
+            break;
+          // Phase 2 wave P2-4 (ticket triage, #4191), task A6 — what lands
+          // here IS the model's raw (validated) submission, unlike
+          // `submit_narrative`: `TicketProposalOutcome` is a type alias onto
+          // the shared `TicketTriageProposal` with no server-owned rebuild
+          // step (see `TicketProposalOutcome`'s docstring). Turning this into
+          // `manage_tickets` intents/`ticket_drafts` rows happens downstream
+          // in `finishRun` (task A8), never here.
+          case 'submit_ticket_proposal':
+            outcome.ticketProposal = validateOutcomeToolInput(toolName, input);
             break;
           default: {
             const exhaustive: never = toolName;
@@ -1498,23 +1523,35 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // empty), so the same one computation makes `guardrailPolicy.toolAllowlist`,
   // `allowedTools` and `onlyTools` all agree that this run can reach nothing
   // but its own submission channel.
+  //
+  // Wave P2-4 (task A6) added the fifth arm. A triage run's
+  // `profileAllowlist` is ALSO the outcome tool alone (`TRIAGE_TOOL_ALLOWLIST`
+  // is empty, same design as narrative) — but `triageLimits`, unlike its
+  // three siblings, does NOT zero `maxActionsPerRun`: see `triageProfile.ts`'s
+  // `triageLimits` docstring for why that field is a deliberate passthrough
+  // here (task A8's post-run minting cap).
   const verdict = isVerdictProfile(run);
   const sweep = isSweepProfile(run);
   const narrative = isNarrativeProfile(run);
+  const triage = isTriageProfile(run);
   const runLimits = verdict
     ? verdictLimits(limits)
     : sweep
       ? sweepLimits(limits)
       : narrative
         ? narrativeLimits(limits)
-        : limits;
+        : triage
+          ? triageLimits(limits)
+          : limits;
   const profileAllowlist = verdict
     ? verdictToolAllowlist(effective.toolAllowlist)
     : sweep
       ? sweepToolAllowlist(effective.toolAllowlist)
       : narrative
         ? narrativeToolAllowlist(effective.toolAllowlist)
-        : null;
+        : triage
+          ? triageToolAllowlist(effective.toolAllowlist)
+          : null;
   // Computed here (not by the SDK-loop timer below) so the pre-hook's
   // act-mode playbook executor (Task 5, #3826) can enforce the SAME
   // wall-clock ceiling independently of the SDK's `abortController` — a
@@ -1949,6 +1986,12 @@ export async function executeAgentRun(runId: string): Promise<void> {
       // edge one. Without this it would finish `failed('max_turns_exceeded')`
       // holding a complete, publishable narrative.
       || outcome.narrative !== undefined
+      // Same rule again for a triage run's ONE job (wave P2-4, task A6): a
+      // run that called `submit_ticket_proposal` and only then hit
+      // `error_max_turns` has produced exactly what it was admitted to
+      // produce (a proposal task A8 still has to turn into anything), and
+      // must not be counted a ceiling failure against the circuit breaker.
+      || outcome.ticketProposal !== undefined
       || result.summary.trim().length > 0;
 
     const ceiling = outcome.wallClockExceeded
@@ -2330,8 +2373,18 @@ async function finishRun(
   // at (so it notifies), and it executes nothing (so there is no fix to
   // watch). Task A7 re-points the notification's title/link at the stored
   // report artifact; the DECISION to notify at all is this line.
+  //
+  // Wave P2-4 (task A6): `notifies` is left as-is here — a triage run is not
+  // excluded (only `verdict` is), so it already falls on the "does notify"
+  // side; what that notification actually SAYS for a triage run is task A9's
+  // job in `runFinishedNotify.ts`, not this line. `watches` DOES gain the
+  // triage exclusion: a triage run's tool floor is empty
+  // (`TRIAGE_TOOL_ALLOWLIST`), so — exactly like sweep and narrative — it
+  // executes nothing, and there is no fix whose regression `scheduleFixWatch`
+  // could watch for.
   const notifies = !isVerdictProfile(ctx.run);
-  const watches = !isVerdictProfile(ctx.run) && !isSweepProfile(ctx.run) && !isNarrativeProfile(ctx.run);
+  const watches = !isVerdictProfile(ctx.run) && !isSweepProfile(ctx.run) && !isNarrativeProfile(ctx.run)
+    && !isTriageProfile(ctx.run);
 
   if (notifies) {
     try {

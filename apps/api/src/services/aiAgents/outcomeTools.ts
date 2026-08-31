@@ -22,18 +22,21 @@ import {
   NARRATIVE_BULLET_MAX_CHARS,
   NARRATIVE_HEADLINE_MAX_CHARS,
   NARRATIVE_SECTION_KEYS,
+  TICKET_TRIAGE_PRIORITIES,
   alertVerdictOutcomeSchema,
   narrativeOutcomeFromSubmission,
   narrativeSubmissionSchema,
   sweepFindingsOutcomeSchema,
+  ticketTriageProposalSchema,
   type AiAgentRunProfile,
   type AlertVerdictOutcome,
   type NarrativeOutcome,
   type SweepFindingsOutcome,
+  type TicketTriageProposal,
 } from '@breeze/shared';
 
 export const OUTCOME_TOOL_NAMES = [
-  'submit_alert_verdict', 'submit_sweep_findings', 'submit_narrative',
+  'submit_alert_verdict', 'submit_sweep_findings', 'submit_narrative', 'submit_ticket_proposal',
 ] as const;
 export type OutcomeToolName = (typeof OUTCOME_TOOL_NAMES)[number];
 // `ReturnType<typeof tool>` does not resolve usefully here: `tool` is generic
@@ -48,6 +51,7 @@ export const OUTCOME_MCP_TOOL_NAMES: Record<OutcomeToolName, string> = {
   submit_alert_verdict: 'mcp__breeze__submit_alert_verdict',
   submit_sweep_findings: 'mcp__breeze__submit_sweep_findings',
   submit_narrative: 'mcp__breeze__submit_narrative',
+  submit_ticket_proposal: 'mcp__breeze__submit_ticket_proposal',
 };
 
 export function isOutcomeTool(toolName: string): toolName is OutcomeToolName {
@@ -78,10 +82,13 @@ export function outcomeToolsForProfile(profile: AiAgentRunProfile): OutcomeToolN
     // this function grants IS the run's entire tool surface.
     case 'narrative':
       return ['submit_narrative'];
-    // P2-4 task A6 registers submit_ticket_proposal here (empty is safe:
-    // nothing admits triage runs yet).
+    // Phase 2 wave P2-4 (ticket triage), task A6 — this is the ONLY tool a
+    // triage run ever sees, same "empty drill-down floor" design as
+    // `narrative` (`triageProfile.ts`'s `TRIAGE_TOOL_ALLOWLIST`). Nothing
+    // admits triage runs yet (task A9 flips the subscriber) — registering the
+    // exposure here does not, on its own, create a triage run.
     case 'triage':
-      return [];
+      return ['submit_ticket_proposal'];
     default: {
       const exhaustive: never = profile;
       throw new Error(`[outcomeToolsForProfile] Unknown run profile: ${String(exhaustive)}`);
@@ -102,16 +109,24 @@ export function validateOutcomeToolInput(toolName: 'submit_sweep_findings', inpu
  * through here and nowhere else on the run path.
  */
 export function validateOutcomeToolInput(toolName: 'submit_narrative', input: unknown): NarrativeOutcome;
+/**
+ * Phase 2 wave P2-4 (#4191) — `submit_ticket_proposal`'s validated outcome IS
+ * the raw tool input (unlike `submit_narrative`): the model's
+ * `TicketTriageProposal` is stored as-is, and the server-owned turning of it
+ * into `manage_tickets` intents/`ticket_drafts` rows happens downstream in
+ * `finishRun` (task A8), never here — this module never touches the database.
+ */
+export function validateOutcomeToolInput(toolName: 'submit_ticket_proposal', input: unknown): TicketTriageProposal;
 // The union overload the run loop's hooks call through: `toolName` there is
 // the `OutcomeToolName` the SDK handed them, not a literal, so none of the
-// three narrow overloads above would apply. Callers that need the concrete
-// type narrow on the name first (see the post-hook's switch).
+// narrow overloads above would apply. Callers that need the concrete type
+// narrow on the name first (see the post-hook's switch).
 export function validateOutcomeToolInput(
   toolName: OutcomeToolName, input: unknown,
-): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome;
+): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal;
 export function validateOutcomeToolInput(
   toolName: OutcomeToolName, input: unknown,
-): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome {
+): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal {
   switch (toolName) {
     case 'submit_alert_verdict':
       return alertVerdictOutcomeSchema.parse(input);
@@ -122,6 +137,8 @@ export function validateOutcomeToolInput(
       // section key, which the model reads back as the tool error), then the
       // server-owned build. Never the other way round.
       return narrativeOutcomeFromSubmission(narrativeSubmissionSchema.parse(input));
+    case 'submit_ticket_proposal':
+      return ticketTriageProposalSchema.parse(input);
     default: {
       const exhaustive: never = toolName;
       throw new Error(`[validateOutcomeToolInput] Unknown outcome tool: ${String(exhaustive)}`);
@@ -259,6 +276,74 @@ const SUBMIT_NARRATIVE_SHAPE = {
   ),
 };
 
+/**
+ * Phase 2 wave P2-4 (#4191, ticket triage) — the model-facing mirror of
+ * `ticketTriageProposalSchema` (packages/shared/src/validators/ticketTriage.ts).
+ * Same split as `SUBMIT_NARRATIVE_SHAPE`: this shape exists only to give the
+ * model rich per-field `.describe()` guidance in the tool definition, and
+ * carries NO authority of its own — `validateOutcomeToolInput`'s
+ * `.parse()` through the real shared schema is the only place a submission is
+ * actually accepted or rejected (including the `.strict()` unknown-key
+ * reject and the control-character sanitization neither a raw Zod shape nor
+ * this comment can express).
+ *
+ * `fields`/`device` are left OPTIONAL objects rather than flattened, mirroring
+ * the shared schema's nesting exactly — a model that omits a whole group it
+ * has nothing to say about (e.g. no device mentioned anywhere in the ticket)
+ * should not have to submit an empty placeholder for it.
+ */
+const SUBMIT_TICKET_PROPOSAL_SHAPE = {
+  version: z.literal(1).describe('Always 1.'),
+  summary: z.string().min(1).max(2000).describe(
+    'What you found and why, for the technician\'s eyes only (becomes a private note). 1 to 2000 characters, plain text.',
+  ),
+  fields: z.object({
+    categoryId: z.object({
+      value: z.string().uuid().describe(
+        'The categoryId of one of the categories shown in the ticket context, copied verbatim. Never invent one.',
+      ),
+      confidence: z.number().min(0).max(1).describe(
+        '0 to 1, your honest confidence in this specific field. Below 0.7 the proposal is dropped and never written, '
+        + 'so do not inflate it.',
+      ),
+    }).strict().optional(),
+    priority: z.object({
+      value: z.enum(TICKET_TRIAGE_PRIORITIES).describe('One of the priorities shown in the ticket context.'),
+      confidence: z.number().min(0).max(1).describe(
+        '0 to 1, your honest confidence in this specific field. Below 0.7 the proposal is dropped and never written, '
+        + 'so do not inflate it.',
+      ),
+    }).strict().optional(),
+  }).strict().optional().describe(
+    'Optional per-field proposals for this ticket, each with its OWN confidence — omit a field entirely rather '
+    + 'than guess at it.',
+  ),
+  device: z.object({
+    hostname: z.string().min(1).max(255).optional().describe(
+      'A hostname EXACTLY as it appears in the ticket text or context — never invented, never guessed, never '
+      + 'normalized. Omit if none is named.',
+    ),
+    serial: z.string().min(1).max(255).optional().describe(
+      'A serial number EXACTLY as it appears in the ticket text or context — never invented, never guessed. '
+      + 'Omit if none is named.',
+    ),
+  }).strict().optional().describe(
+    'Only when the ticket names a specific device the system-built context did not already resolve. Resolving this '
+    + 'to an actual device record happens server-side, including refusing an ambiguous match.',
+  ),
+  draftReply: z.string().min(1).max(4000).optional().describe(
+    'A draft customer-facing reply. Never sent automatically — a technician must explicitly review and send it as '
+    + 'themselves.',
+  ),
+  draftResolutionNote: z.string().min(1).max(2000).optional().describe(
+    'A draft resolution note offered when the ticket is closed. Never applied automatically.',
+  ),
+  notes: z.array(z.string().min(1).max(500)).max(5).optional().describe(
+    'Up to 5 short talking points folded into the one private note this run posts. Display only — never a write '
+    + 'on their own.',
+  ),
+};
+
 export function buildOutcomeSdkTools(names: readonly OutcomeToolName[]): SdkTool[] {
   return names.map((name) => {
     switch (name) {
@@ -298,6 +383,20 @@ export function buildOutcomeSdkTools(names: readonly OutcomeToolName[]): SdkTool
           SUBMIT_NARRATIVE_SHAPE,
           async (input) => {
             validateOutcomeToolInput('submit_narrative', input); // throws → model retries
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
+          },
+        ) as SdkTool;
+      case 'submit_ticket_proposal':
+        // Same construction-site cast as above, same reason. Validate-only,
+        // static ack — no DB (this module never touches the database; see
+        // the file docstring), no execution: `finishRun` (task A8) is where a
+        // stored proposal becomes anything.
+        return tool(
+          'submit_ticket_proposal',
+          'Record your triage proposal for this ticket. Call exactly once, as your last action.',
+          SUBMIT_TICKET_PROPOSAL_SHAPE,
+          async (input) => {
+            validateOutcomeToolInput('submit_ticket_proposal', input); // throws → model retries
             return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
           },
         ) as SdkTool;
