@@ -69,6 +69,11 @@ function mockEndpoints(agents: unknown[] = [PARTNER_AGENT]) {
     // hand the agents LIST back as the policy-key registry, since
     // '/ai/agents/policy-decidable-keys'.startsWith('/ai/agents') is true.
     if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
+    // Same swallowing hazard as the line above, and the reason the schedules
+    // section (P2-2, #4189) validates ROW shape and not just array shape:
+    // '/ai/agents/schedules?agentId=…'.startsWith('/ai/agents') is true, so
+    // without this the editor was handed the AGENTS list as its schedules.
+    if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
     if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: agents }));
     // The real route answers { data }, not { roles } — mocking the dead branch
     // is how the production branch stayed untested.
@@ -209,6 +214,7 @@ describe('AiAgentsPage', () => {
           ),
         );
       }
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
       if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [actAgent] }));
       if (url === '/roles') return Promise.resolve(json({ data: [{ id: 'r-1', name: 'Org Admin' }] }));
       return Promise.resolve(json({ data: [] }));
@@ -366,6 +372,7 @@ describe('AiAgentsPage', () => {
     // 403 here is reachable. Rendering it as "no roles available" would turn an
     // authorization error into a config decision the operator never made.
     fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
       if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [] }));
       if (url === '/roles') return Promise.resolve(json({ error: 'forbidden' }, false, 403));
       return Promise.resolve(json({ data: [] }));
@@ -414,6 +421,7 @@ describe('AiAgentsPage', () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: registry }));
       if (url === '/ai/agents/a1' && init?.method === 'PATCH') return Promise.resolve(json({ data: actAgent }));
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
       if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [actAgent] }));
       if (url === '/roles') return Promise.resolve(json({ data: [] }));
       return Promise.resolve(json({ data: [] }));
@@ -462,6 +470,7 @@ describe('AiAgentsPage', () => {
           ),
         );
       }
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
       if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [actAgent] }));
       if (url === '/roles') return Promise.resolve(json({ data: [] }));
       return Promise.resolve(json({ data: [] }));
@@ -482,6 +491,7 @@ describe('AiAgentsPage', () => {
     const actAgent = { ...PARTNER_AGENT, supportedModes: ['off', 'shadow', 'act'] as const };
     fetchMock.mockImplementation((url: string) => {
       if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ error: 'nope' }, false, 500));
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
       if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: [actAgent] }));
       if (url === '/roles') return Promise.resolve(json({ data: [] }));
       return Promise.resolve(json({ data: [] }));

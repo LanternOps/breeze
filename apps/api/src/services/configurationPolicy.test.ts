@@ -1,5 +1,33 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const { resolveOwnedAutomationReferencesMock } = vi.hoisted(() => ({
+  resolveOwnedAutomationReferencesMock: vi.fn(),
+}));
+
+vi.mock('./automationReferenceAuthorization', () => ({
+  AutomationReferenceAuthorizationError: class AutomationReferenceAuthorizationError extends Error {
+    readonly code = 'unknown_or_unauthorized_reference';
+    constructor() {
+      super('Unknown or unauthorized automation reference');
+    }
+  },
+  resolveOwnedAutomationReferences: resolveOwnedAutomationReferencesMock,
+}));
+
+// Keep this service suite focused on its storage ordering. Loading the full
+// runtime through configurationPolicy's lazy import can exceed Vitest's
+// per-case timeout when this file runs with the runtime suites.
+vi.mock('./automationRuntime', () => ({
+  normalizeAutomationActions: vi.fn((actions: unknown) => {
+    if (!Array.isArray(actions)) throw new Error('actions must be an array');
+    return actions;
+  }),
+  resolveAutomationReferencesForOwner: vi.fn(
+    (tx: unknown, owner: unknown, actions: unknown) =>
+      resolveOwnedAutomationReferencesMock(tx, owner, [], actions, []),
+  ),
+}));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
@@ -89,6 +117,53 @@ describe('feature link reserved export marker service backstop', () => {
       inlineSettings: { nested: [{ __breezePatchInlineMirror: 'attacker-value' }] },
     }, 'policy-1')).rejects.toThrow(/reserved/i);
     expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+  });
+});
+
+describe('automation feature link reference authorization', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resolveOwnedAutomationReferencesMock.mockResolvedValue({
+      scriptsById: new Map(),
+      softwareCatalogsById: new Map(),
+      softwareVersionsByCatalogId: new Map(),
+      notificationChannelsById: new Map(),
+    });
+  });
+
+  it('rejects a foreign script before storing either the feature link or normalized automation', async () => {
+    const insert = vi.fn()
+      .mockReturnValueOnce({
+        values: vi.fn(() => ({
+          onConflictDoNothing: vi.fn(() => ({
+            returning: vi.fn().mockResolvedValue([{ id: 'link-foreign' }]),
+          })),
+        })),
+      })
+      .mockReturnValueOnce({ values: vi.fn().mockResolvedValue([]) });
+    const tx = {
+      select: vi.fn(() => selectLimitRows([{ orgId: null, partnerId: 'partner-a' }])),
+      insert,
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    resolveOwnedAutomationReferencesMock.mockRejectedValueOnce(
+      Object.assign(new Error('Unknown or unauthorized automation reference'), {
+        code: 'unknown_or_unauthorized_reference',
+      }),
+    );
+
+    await expect(addFeatureLink('policy-1', 'automation', null, {
+      items: [{
+        name: 'Foreign script',
+        triggerType: 'manual',
+        actions: [{
+          type: 'run_script',
+          scriptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        }],
+      }],
+    })).rejects.toMatchObject({ code: 'unknown_or_unauthorized_reference' });
+
+    expect(insert).toHaveBeenCalledTimes(0);
   });
 });
 

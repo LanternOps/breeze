@@ -238,6 +238,167 @@ describe('eventDispatchQueue', () => {
       // The rejection is real (so a caller's .catch() sees it), but nothing in
       // THIS module crashes synchronously — the promise simply rejects.
     });
+
+    // #4125: ioredis resolves `exec()` with one [error, result] tuple per queued
+    // command. A per-command failure NEVER rejects, so it can't reach the
+    // caller's `.catch()` in eventBus.ts — it has to be inspected here.
+    it('warns on a per-command error tuple, without rejecting', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      pipelineExec.mockResolvedValueOnce([
+        [null, 1],
+        [new Error('WRONGTYPE Operation against a key holding the wrong kind of value'), null],
+        [null, 1],
+      ]);
+
+      // The sentry mock is module-scoped and is NOT reset between tests in this
+      // file (an earlier case exercises the enqueue-failure captureException),
+      // so clear it here to make the assertion below about THIS call only.
+      const { captureException } = await import('./sentry');
+      vi.mocked(captureException).mockClear();
+
+      const event = makeEvent({ type: 'alert.triggered' as EventType });
+      // Resolves (that IS the bug — the caller's .catch() never fires), so the
+      // warning has to come from inside this module.
+      await expect(
+        mod.recordShadowLocalInvocation(event, 'webhook-delivery', 'ok'),
+      ).resolves.toBeUndefined();
+
+      const logs = warnSpy.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0].includes('shadow-record-command-failed'),
+      );
+      expect(logs).toHaveLength(1);
+      const payload = JSON.parse(logs[0]![1] as string);
+      expect(payload.errorId).toBe('EVENT_DISPATCH_SHADOW_COMMAND_FAILED');
+      expect(payload.eventId).toBe(event.id);
+      expect(payload.eventType).toBe('alert.triggered');
+      expect(payload.orgId).toBe('org-1');
+      expect(payload.subscriberId).toBe('webhook-delivery');
+      expect(payload.outcome).toBe('ok');
+      // Index 1 of a sampled (3-command) pipeline is the per-event detail HSET,
+      // and the line has to SAY so — a bare index means nothing on an on-call
+      // pager when the pipeline is 1 command long half the time.
+      expect(payload.failures).toEqual([
+        {
+          index: 1,
+          command: 'hset:detail',
+          error: expect.objectContaining({
+            name: 'Error',
+            message: expect.stringContaining('WRONGTYPE'),
+            stack: expect.any(String),
+          }),
+        },
+      ]);
+
+      // Deliberately log-only: this runs once per local subscriber invocation at
+      // full event volume, so a broken shadow key must not become one Sentry
+      // event per invocation. Pinned so a future "helpful" fix has to argue with
+      // a failing test rather than an absence.
+      expect(captureException).not.toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+    });
+
+    it('names the failing command for a non-sampled, single-command pipeline', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // 0xff is above the <26 sampling threshold and device.online isn't
+      // alert.*/policy.*, so only the counter is queued — a ONE-tuple result.
+      pipelineExec.mockResolvedValueOnce([[new Error('OOM command not allowed'), null]]);
+
+      await mod.recordShadowLocalInvocation(
+        makeEvent({ id: 'ff000000-0000-4000-8000-000000000000', type: 'device.online' as EventType }),
+        'webhook-delivery',
+        'ok',
+      );
+
+      expect(pipelineHset).not.toHaveBeenCalled();
+      const logs = warnSpy.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0].includes('shadow-record-command-failed'),
+      );
+      expect(logs).toHaveLength(1);
+      const payload = JSON.parse(logs[0]![1] as string);
+      expect(payload.failures).toEqual([
+        { index: 0, command: 'hincrby:count', error: expect.objectContaining({ name: 'Error' }) },
+      ]);
+
+      warnSpy.mockRestore();
+    });
+
+    it('reports every failing command in one warning line', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      pipelineExec.mockResolvedValueOnce([
+        [new Error('WRONGTYPE hincrby'), null],
+        [null, 1],
+        [new Error('ERR expire'), null],
+      ]);
+
+      await mod.recordShadowLocalInvocation(
+        makeEvent({ type: 'alert.triggered' as EventType }),
+        'automation-worker',
+        'error',
+      );
+
+      const logs = warnSpy.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0].includes('shadow-record-command-failed'),
+      );
+      expect(logs).toHaveLength(1);
+      const payload = JSON.parse(logs[0]![1] as string);
+      expect(payload.failures.map((f: { index: number }) => f.index)).toEqual([0, 2]);
+      expect(payload.failures.map((f: { command: string }) => f.command)).toEqual([
+        'hincrby:count',
+        'expire:detail',
+      ]);
+
+      warnSpy.mockRestore();
+    });
+
+    it('stays quiet when every queued command succeeded', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      pipelineExec.mockResolvedValueOnce([
+        [null, 1],
+        [null, 1],
+        [null, 1],
+      ]);
+
+      await mod.recordShadowLocalInvocation(
+        makeEvent({ type: 'alert.triggered' as EventType }),
+        'webhook-delivery',
+        'ok',
+      );
+
+      expect(
+        warnSpy.mock.calls.filter(
+          (c) => typeof c[0] === 'string' && c[0].includes('shadow-record'),
+        ),
+      ).toHaveLength(0);
+
+      warnSpy.mockRestore();
+    });
+
+    it('warns when exec() resolves null (the MULTI was discarded — nothing ran)', async () => {
+      vi.stubEnv('EVENT_DISPATCH_MODE', 'shadow');
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      pipelineExec.mockResolvedValueOnce(null);
+
+      const event = makeEvent({ type: 'alert.triggered' as EventType });
+      await expect(
+        mod.recordShadowLocalInvocation(event, 'webhook-delivery', 'ok'),
+      ).resolves.toBeUndefined();
+
+      const logs = warnSpy.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0].includes('shadow-record-discarded'),
+      );
+      expect(logs).toHaveLength(1);
+      const payload = JSON.parse(logs[0]![1] as string);
+      expect(payload.errorId).toBe('EVENT_DISPATCH_SHADOW_PIPELINE_DISCARDED');
+      expect(payload.eventId).toBe(event.id);
+      expect(payload.subscriberId).toBe('webhook-delivery');
+
+      warnSpy.mockRestore();
+    });
   });
 
   describe('isShadowSampledEvent', () => {

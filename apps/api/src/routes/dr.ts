@@ -427,6 +427,7 @@ drRoutes.post(
       orgId,
       executionType,
       initiatedBy: auth.user?.id ?? null,
+      auth,
     });
 
     if (!execution) return c.json({ error: 'Failed to create execution' }, 500);

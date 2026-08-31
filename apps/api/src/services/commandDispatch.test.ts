@@ -22,16 +22,24 @@ vi.mock('../db/schema', () => ({
     createdAt: 'deviceCommands.createdAt',
     executedAt: 'deviceCommands.executedAt',
   },
+  peripheralPolicyDeviceStates: {
+    deviceId: 'peripheralPolicyDeviceStates.deviceId',
+    deliveryStatus: 'peripheralPolicyDeviceStates.deliveryStatus',
+  },
 }));
 
 // Spy on inArray (pass-through to the real implementation) so the #2774
 // drain-mode type filter is assertable without mocking all of drizzle.
 vi.mock('drizzle-orm', async (importOriginal) => {
   const actual = await importOriginal<typeof import('drizzle-orm')>();
-  return { ...actual, inArray: vi.fn((...args: Parameters<typeof actual.inArray>) => actual.inArray(...args)) };
+  return {
+    ...actual,
+    inArray: vi.fn((...args: Parameters<typeof actual.inArray>) => actual.inArray(...args)),
+    notInArray: vi.fn((...args: Parameters<typeof actual.notInArray>) => actual.notInArray(...args)),
+  };
 });
 
-import { inArray } from 'drizzle-orm';
+import { inArray, notInArray } from 'drizzle-orm';
 
 import { db } from '../db';
 import {
@@ -93,7 +101,9 @@ describe('command dispatch helpers', () => {
 
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
-    const claimed = await claimPendingCommandsForDevice('dev-1', 10);
+    const claimed = await claimPendingCommandsForDevice(
+      'dev-1', 10, 'agent', undefined, { peripheralPolicyProtocolVersion: 2 },
+    );
 
     expect(claimed).toHaveLength(1);
     expect(claimed[0]?.id).toBe('cmd-1');
@@ -119,10 +129,133 @@ describe('command dispatch helpers', () => {
     };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
 
-    const claimed = await claimPendingCommandsForDevice('dev-1', 10, 'agent', ['self_uninstall']);
+    const claimed = await claimPendingCommandsForDevice(
+      'dev-1', 10, 'agent', ['self_uninstall'], { peripheralPolicyProtocolVersion: 2 },
+    );
 
     expect(claimed).toEqual([]);
     expect(vi.mocked(inArray)).toHaveBeenCalledWith('deviceCommands.type', ['self_uninstall']);
+  });
+
+  it('does not mutate unrelated protocol work during a self-uninstall-only claim', async () => {
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                for: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        }),
+      }),
+      update: vi.fn(),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const claimed = await claimPendingCommandsForDevice(
+      'dev-1',
+      10,
+      'agent',
+      ['self_uninstall'],
+    );
+
+    expect(claimed).toEqual([]);
+    expect(tx.update).not.toHaveBeenCalled();
+  });
+
+  it('cancels queued peripheral v2 work when the claiming heartbeat omits capability 2', async () => {
+    const cancelWhere = vi.fn().mockResolvedValue(undefined);
+    const rejectWhere = vi.fn().mockResolvedValue(undefined);
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                for: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        }),
+      }),
+      update: vi.fn()
+        .mockReturnValueOnce({ set: vi.fn().mockReturnValue({ where: cancelWhere }) })
+        .mockReturnValueOnce({ set: vi.fn().mockReturnValue({ where: rejectWhere }) }),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    const claimed = await claimPendingCommandsForDevice(
+      'dev-1',
+      10,
+      'agent',
+      undefined,
+      { peripheralPolicyProtocolVersion: 0 },
+    );
+
+    expect(claimed).toEqual([]);
+    expect(tx.update).toHaveBeenCalledTimes(2);
+    expect(cancelWhere).toHaveBeenCalledTimes(1);
+    expect(rejectWhere).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(notInArray)).toHaveBeenCalledWith(
+      'deviceCommands.type',
+      ['peripheral_policy_sync_v2', 'agent_rollback_v1', 'pam_apply_v2', 'pam_cleanup_v2'],
+    );
+  });
+
+  it('withholds rollback when this heartbeat does not report protocol v1', async () => {
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue([]) }),
+            }),
+          }),
+        }),
+      }),
+      update: vi.fn(),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await claimPendingCommandsForDevice('dev-1', 10, 'agent', undefined, {
+      peripheralPolicyProtocolVersion: 2,
+      rollbackProtocolVersion: 0,
+      pamLifetimeProtocolVersion: 2,
+    });
+
+    expect(vi.mocked(notInArray)).toHaveBeenCalledWith(
+      'deviceCommands.type',
+      ['agent_rollback_v1'],
+    );
+  });
+
+  it('withholds PAM lifetime commands when this heartbeat does not report protocol v2', async () => {
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue([]) }),
+            }),
+          }),
+        }),
+      }),
+      update: vi.fn(),
+    };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+
+    await claimPendingCommandsForDevice('dev-1', 10, 'agent', undefined, {
+      peripheralPolicyProtocolVersion: 2,
+      rollbackProtocolVersion: 1,
+      pamLifetimeProtocolVersion: 0,
+    });
+
+    expect(vi.mocked(notInArray)).toHaveBeenCalledWith(
+      'deviceCommands.type',
+      ['pam_apply_v2', 'pam_cleanup_v2'],
+    );
   });
 
   it('releases a claimed command back to pending state', async () => {

@@ -1,41 +1,17 @@
-// Server-side sort helper for the organization list. Reads the partner's
-// preferred order (an array of org IDs persisted on partners.settings) and
-// returns the orgs in that order; any orgs missing from the preferred order
-// are appended at the end in their original relative order (which the caller
-// is expected to pre-sort by createdAt).
+// Write-side helpers for the partner's preferred organization order (an array
+// of org IDs persisted on partners.settings).
+//
+// The READ side — turning that array into the list endpoint's sort — is
+// `routes/orgs.listQuery.ts`, and it is SQL, not JavaScript. An in-JS sort
+// applied to an already-selected page could only permute that page, so a
+// cross-page order was inexpressible (#4004); the ordering now has to be part
+// of the ORDER BY that LIMIT/OFFSET walks. Do not reintroduce a post-pagination
+// sort helper here.
 
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners } from '../db/schema';
 import { encryptColumnValueForWrite } from './encryptedColumnRegistry';
-
-export interface OrderableOrg {
-  id: string;
-}
-
-export function applyOrganizationOrder<T extends OrderableOrg>(
-  orgs: T[],
-  preferredOrder: string[] | undefined | null,
-): T[] {
-  if (!preferredOrder || preferredOrder.length === 0) return orgs;
-
-  const indexById = new Map<string, number>();
-  for (let i = 0; i < preferredOrder.length; i++) {
-    const id = preferredOrder[i];
-    if (typeof id === 'string' && id.length > 0 && !indexById.has(id)) {
-      indexById.set(id, i);
-    }
-  }
-
-  const ordered: T[] = [];
-  const trailing: T[] = [];
-  for (const org of orgs) {
-    if (indexById.has(org.id)) ordered.push(org);
-    else trailing.push(org);
-  }
-  ordered.sort((a, b) => (indexById.get(a.id) ?? 0) - (indexById.get(b.id) ?? 0));
-  return [...ordered, ...trailing];
-}
 
 // Sanitize a client-supplied order array against the partner's actual
 // non-deleted org IDs. Removes unknown/duplicate entries; preserves the

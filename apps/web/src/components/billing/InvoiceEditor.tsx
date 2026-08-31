@@ -193,12 +193,59 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
     [onSaveFailure],
   );
 
-  const [notes, setNotes] = useState(invoice.notes ?? '');
+  const serverNotes = invoice.notes ?? '';
+  const serverTerms = invoice.termsAndConditions ?? '';
+  const [notes, setNotes] = useState(serverNotes);
   const [notesDirty, setNotesDirty] = useState(false);
   const [notesSaved, flashNotesSaved] = useSavedFlash();
-  const [terms, setTerms] = useState(invoice.termsAndConditions ?? '');
+  const [terms, setTerms] = useState(serverTerms);
   const [termsDirty, setTermsDirty] = useState(false);
   const [termsSaved, flashTermsSaved] = useSavedFlash();
+
+  // Re-sync the free-text fields when the SERVER value changes — a refetch
+  // brought different notes/terms, so the local draft is stale and must be
+  // replaced. Derived DURING RENDER (React's documented "adjusting state when a
+  // prop changes" pattern) rather than from a `useEffect`, and that distinction
+  // is the entire fix for #3277.
+  //
+  // The previous shape was:
+  //   useEffect(() => { setNotes(invoice.notes ?? ''); setNotesDirty(false); }, [invoice.notes]);
+  // which ALSO ran once on mount, where it is normally a redundant no-op — the
+  // useState initialisers already hold the server value. But a passive effect is
+  // deferred: React commits the editor, and only schedules the effect flush for a
+  // later task. Anything that lands in between — a keystroke in the real app, a
+  // `fireEvent.change` in a test that awaited the commit — is applied FIRST, and
+  // then the stale mount effect flushes and overwrites it with the pre-edit
+  // server value, silently clearing `notesDirty` with it. Because `saveNotes()`
+  // short-circuits on `!notesDirty`, the following blur then dispatches NO PATCH
+  // at all: the edit is discarded with no request, no error and no "unsaved" cue.
+  //
+  // That is what made the InvoiceWorkspace queued-Issue tests flaky, filed five
+  // times from 2026-07-29 on (#2925 → #3219 → #3277 → #3980 → #4033). Under load
+  // the passive-effect flush slipped past the commit that Testing Library was
+  // waiting on, the PATCH was never sent, so `savePending` never went true and
+  // `invoice-issue-saving-hint` never rendered — a condition that could never
+  // become true, which is why both attempts to fix it by enlarging the timeout
+  // budget (#3284, #3956) could not hold.
+  //
+  // Evaluating the same condition during render removes the window entirely:
+  // there is no deferred write that can land after a local edit, and the mount
+  // pass is a genuine no-op because the synced value starts equal to the server
+  // value. Comparing the NORMALISED strings additionally stops a null → ''
+  // round-trip from spuriously clobbering a draft, which the raw-prop dependency
+  // did not.
+  const [syncedServerNotes, setSyncedServerNotes] = useState(serverNotes);
+  if (syncedServerNotes !== serverNotes) {
+    setSyncedServerNotes(serverNotes);
+    setNotes(serverNotes);
+    setNotesDirty(false);
+  }
+  const [syncedServerTerms, setSyncedServerTerms] = useState(serverTerms);
+  if (syncedServerTerms !== serverTerms) {
+    setSyncedServerTerms(serverTerms);
+    setTerms(serverTerms);
+    setTermsDirty(false);
+  }
 
   // Per-line dirty fields, reported up from each LineRow. This MUST be lifted:
   // a line field whose save failed keeps its local value (nothing reverts it)
@@ -263,8 +310,8 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
   const [picked, setPicked] = useState<CatalogItem | null>(null);
   const [pickQty, setPickQty] = useState('1');
 
-  useEffect(() => { setNotes(invoice.notes ?? ''); setNotesDirty(false); }, [invoice.notes]);
-  useEffect(() => { setTerms(invoice.termsAndConditions ?? ''); setTermsDirty(false); }, [invoice.termsAndConditions]);
+  // (notes/terms re-sync is derived during render — see the block by their
+  // useState declarations above. It must NOT move back into a useEffect: #3277.)
 
   // An empty catalog and a BROKEN catalog need different copy: rendering "No
   // catalog items — add in catalog" because the response failed to parse sends

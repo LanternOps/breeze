@@ -374,6 +374,25 @@ describe('org merge routes', () => {
       expect(enqueueOrgMergeMock).not.toHaveBeenCalled();
     });
 
+    it('refuses a blocked merge with 422 ORG_MERGE_BLOCKED and never enqueues', async () => {
+      previewOrgMergeMock.mockResolvedValueOnce({
+        ...PREVIEW_RESULT,
+        verdict: 'blocked',
+        totalMovableRows: 0,
+        blockers: ['merge blocked: the merged-away organization holds durable PAM lifecycle evidence'],
+      });
+      const app = buildApp();
+      const res = await postJson(app, `/orgs/organizations/${LOSER_ID}/merge`, {
+        survivorId: SURVIVOR_ID,
+        confirmName: 'Acme Loser',
+      });
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.code).toBe('ORG_MERGE_BLOCKED');
+      expect(body.blockers).toHaveLength(1);
+      expect(enqueueOrgMergeMock).not.toHaveBeenCalled();
+    });
+
     it('maps a MergeValidationError from the recheck to 400 and never enqueues', async () => {
       previewOrgMergeMock.mockRejectedValueOnce(new MergeValidationError('bad state'));
       const app = buildApp();

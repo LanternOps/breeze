@@ -1,6 +1,7 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, notInArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
-import { deviceCommands } from '../db/schema';
+import { deviceCommands, peripheralPolicyDeviceStates } from '../db/schema';
+import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 
 type DeviceCommandRow = typeof deviceCommands.$inferSelect;
 
@@ -66,12 +67,62 @@ export async function claimPendingCommandsForDevice(
   // are claimable; anything else stays `pending` and is reaped/cancelled by
   // the normal lifecycle. The drain callers pass ['self_uninstall'].
   typeAllowlist?: readonly string[],
+  capabilities?: {
+    peripheralPolicyProtocolVersion?: number;
+    rollbackProtocolVersion?: number;
+    pamLifetimeProtocolVersion?: number;
+  },
 ): Promise<DeviceCommandRow[]> {
   // Only HTTP delivery paths (heartbeat responses) claim batches; the agent
   // WebSocket never embeds command batches in frames (#2407 removed the
   // connect-time/heartbeat_ack claims — no agent version ever consumed them),
   // so the per-frame payload budget that #2399 added here is gone with it.
   return db.transaction(async (tx) => {
+    const peripheralV2IsClaimable =
+      typeAllowlist === undefined || typeAllowlist.includes('peripheral_policy_sync_v2');
+    if (
+      targetRole === 'agent'
+      && peripheralV2IsClaimable
+      && capabilities?.peripheralPolicyProtocolVersion !== 2
+    ) {
+      await tx
+        .update(deviceCommands)
+        .set({
+          status: 'cancelled',
+          completedAt: new Date(),
+          result: { status: 'failed', error: 'peripheral_policy_protocol_v2_not_reported' },
+          ...terminalPayloadErasureSet(),
+        })
+        .where(and(
+          eq(deviceCommands.deviceId, deviceId),
+          eq(deviceCommands.status, 'pending'),
+          eq(deviceCommands.targetRole, 'agent'),
+          eq(deviceCommands.type, 'peripheral_policy_sync_v2'),
+        ));
+      await tx
+        .update(peripheralPolicyDeviceStates)
+        .set({
+          deliveryStatus: 'rejected',
+          lastErrorCode: 'protocol_capability_not_reported',
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(peripheralPolicyDeviceStates.deviceId, deviceId),
+          eq(peripheralPolicyDeviceStates.deliveryStatus, 'pending'),
+        ));
+    }
+
+    const unsupportedProtocolTypes: string[] = [];
+    if (targetRole === 'agent' && capabilities?.peripheralPolicyProtocolVersion !== 2) {
+      unsupportedProtocolTypes.push('peripheral_policy_sync_v2');
+    }
+    if (targetRole === 'agent' && capabilities?.rollbackProtocolVersion !== 1) {
+      unsupportedProtocolTypes.push('agent_rollback_v1');
+    }
+    if (targetRole === 'agent' && capabilities?.pamLifetimeProtocolVersion !== 2) {
+      unsupportedProtocolTypes.push('pam_apply_v2', 'pam_cleanup_v2');
+    }
+
     const pendingCommands = await tx
       .select()
       .from(deviceCommands)
@@ -81,6 +132,9 @@ export async function claimPendingCommandsForDevice(
           eq(deviceCommands.status, 'pending'),
           eq(deviceCommands.targetRole, targetRole),
           ...(typeAllowlist ? [inArray(deviceCommands.type, [...typeAllowlist])] : []),
+          ...(unsupportedProtocolTypes.length > 0
+            ? [notInArray(deviceCommands.type, unsupportedProtocolTypes)]
+            : []),
         ),
       )
       .orderBy(deviceCommands.createdAt)

@@ -18,6 +18,11 @@ import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
 import { formatNumber } from '@/lib/i18n/format';
 import { runAction } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
+import {
+  stashSsoReauthIntent,
+  takeSsoReauthIntent,
+  type SsoReauthIntent,
+} from '@/lib/ssoReauthIntent';
 
 const createProfileSchema = (t: TFunction) => z.object({
   name: z.string().min(2, t('profilePage.nameMustBeAtLeast2Characters')),
@@ -162,6 +167,14 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [ssoReauthGrantId, setSsoReauthGrantId] = useState<string | null>(null);
   const [ssoSetupReady, setSsoSetupReady] = useState(false);
   const [isStartingSsoReauth, setIsStartingSsoReauth] = useState(false);
+  // #4055: this page load IS the return leg of a round-trip the PASSKEY card
+  // started, so the passkey card — not the TOTP one — is where the user must be
+  // put down. Distinct from `hasSsoReauthGrant`, which only says a grant is in
+  // hand and stays true for the rest of the flow: this fires the one-shot
+  // "bring the card to the user" landing and then stops mattering.
+  const [passkeyReauthReturn, setPasskeyReauthReturn] = useState(false);
+  const passkeyNameRef = useRef<HTMLInputElement | null>(null);
+  const passkeyLandingDone = useRef(false);
 
   // Avatar upload state
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
@@ -490,13 +503,34 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const hasSsoReauthGrant = ssoReauthGrantId !== null;
 
   // Consume an `#ssoReauthGrant=<id>` handed back by the SSO callback: the user
-  // has just re-proved their identity at the IdP, so run /mfa/setup with the
-  // grant and drop them straight on the QR screen. Mount-only by design — the
+  // has just re-proved their identity at the IdP. Mount-only by design — the
   // fragment is stripped as it is read, so this can never fire twice.
+  //
+  // #4055: BOTH the TOTP card and the passkey card start the same round-trip
+  // and the callback returns everyone to the same fragment, so the return leg
+  // has to be told which card to go back to. It used to run /mfa/setup
+  // unconditionally, which dropped a user who wanted a PASSKEY onto the TOTP QR
+  // screen and minted a TOTP secret nobody asked for — one that then sits in
+  // Redis under `mfa:setup:<userId>` until its TTL expires, because only the
+  // TOTP confirm step clears it.
   useEffect(() => {
     const grantId = takeSsoReauthGrantFromHash();
+    // Consumed unconditionally, grant or not: an error return
+    // (`?ssoReauthError=`) has nothing to route, and an intent left behind
+    // would misroute the NEXT round-trip instead.
+    const intent = takeSsoReauthIntent();
     if (!grantId) return;
     setSsoReauthGrantId(grantId);
+    if (intent === 'passkey') {
+      // Deliberately NO /mfa/setup here. The passkey road spends the same grant
+      // on register/options + register/verify, which the card below already
+      // knows how to do once `hasSsoReauthGrant` is true.
+      setPasskeyReauthReturn(true);
+      return;
+    }
+    // `null` (nothing recorded — storage blocked, or a link from before #4055)
+    // keeps the historical TOTP road rather than stranding the user on a page
+    // where neither card does anything.
     void requestMfaSetup({ ssoReauthGrantId: grantId }).then((ok) => {
       // Only open the QR view when the server actually issued a secret. On
       // failure the error banner is already set and the user stays on the
@@ -508,6 +542,30 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     // way — the fragment is stripped as it is read — but re-running would burn
     // a second /mfa/setup call for nothing.
   }, []);
+
+  // #4055: the IdP trip is a full-page navigation, so the browser puts the user
+  // back at the TOP of a long settings page while the passkey card they left
+  // from sits below the fold. Routing them back to it means actually taking
+  // them there. Focus does the same job for keyboard and screen-reader users,
+  // and lands on the one field they still have to fill in.
+  //
+  // A CALLBACK ref, keyed on the flag, rather than an effect over an object
+  // ref. The real page is `<ProfilePage client:load />` with no `initialUser`,
+  // so the component sits behind the `isLoadingUser` early return below while
+  // GET /users/me is in flight — the card does not exist in the DOM at the
+  // moment the mount effect sets the flag, and an effect keyed only on the flag
+  // would find a null ref and never run again. React re-invokes a callback ref
+  // whose identity changed, so this fires whichever way the race lands: card
+  // already mounted (identity change re-invokes it) or card mounted later (the
+  // attach invokes it). Child refs attach before parents, so the name input is
+  // already populated by the time this runs. The latch keeps it one-shot.
+  const passkeyCardRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node || !passkeyReauthReturn || passkeyLandingDone.current) return;
+    passkeyLandingDone.current = true;
+    // jsdom has no layout and so no `scrollIntoView`; optional-call it.
+    node.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    passkeyNameRef.current?.focus?.();
+  }, [passkeyReauthReturn]);
 
   // Surface the callback's failure codes
   // (`/settings/profile?ssoReauthError=<code>`), exactly once.
@@ -534,7 +592,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     // ... was not found") and fails the Lint job.
   }, []);
 
-  const handleSsoReauthStart = async () => {
+  // #4055: `intent` is the CARD this trip started from. Every scrap of React
+  // state dies at the navigation below and the callback's return URL is minted
+  // server-side, so the only way the return leg can know where to put the user
+  // down is to write it somewhere that survives the trip.
+  const handleSsoReauthStart = async (intent: SsoReauthIntent) => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
     setIsStartingSsoReauth(true);
@@ -544,6 +606,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         errorFallback: t('profilePage.couldNotStartIdentityProviderVerification'),
       });
       if (body?.authUrl) {
+        // Recorded only once there is somewhere to go: a failed start never
+        // leaves the page, so writing it earlier would just leave a stale value
+        // for a trip that did not happen.
+        stashSsoReauthIntent(intent);
         // External IdP URL — a full-page navigation, not the SPA router (which
         // rejects an off-origin path as an open redirect).
         window.location.assign(body.authUrl);
@@ -975,7 +1041,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       <MFASettings
         enabled={user?.mfaEnabled ?? false}
         hasPassword={user?.hasPassword}
-        onSsoReauth={handleSsoReauthStart}
+        onSsoReauth={() => handleSsoReauthStart('totp')}
         ssoSetupReady={ssoSetupReady}
         ssoReauthGrantAvailable={hasSsoReauthGrant}
         qrCodeDataUrl={qrCodeDataUrl}
@@ -993,7 +1059,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       <ConnectSsoCard />
 
       {/* Passkeys */}
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
+      <div
+        ref={passkeyCardRef}
+        data-testid="passkey-card"
+        className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
+      >
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">{t('profilePage.passkeys')}</h2>
           <p className="text-sm text-muted-foreground">
@@ -1085,8 +1155,13 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           <div className="space-y-1">
             <h3 className="text-sm font-medium">{t('profilePage.addPasskey')}</h3>
             <p className="text-xs text-muted-foreground">
+              {/* #4055: "re-verify BEFORE adding a passkey" is stale the moment
+                  the grant lands — saying it to someone who just completed the
+                  round-trip reads as a failed trip. */}
               {isPasswordless
-                ? t('profilePage.thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey')
+                ? hasSsoReauthGrant
+                  ? t('profilePage.yourIdentityIsVerifiedNameThisPasskeyAndContinue')
+                  : t('profilePage.thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey')
                 : t('profilePage.reEnterYourAccountPasswordBeforeAddingOrDeletingAPasskey')}</p>
           </div>
           <div className="space-y-2">
@@ -1094,6 +1169,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
               {t('profilePage.passkeyName')}</label>
             <input
               id="passkey-name"
+              ref={passkeyNameRef}
               type="text"
               value={passkeyName}
               onChange={event => setPasskeyName(event.target.value)}
@@ -1123,7 +1199,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
             <button
               type="button"
               data-testid="passkey-sso-reauth"
-              onClick={() => { void handleSsoReauthStart(); }}
+              onClick={() => { void handleSsoReauthStart('passkey'); }}
               disabled={isAddingPasskey || isStartingSsoReauth}
               className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >

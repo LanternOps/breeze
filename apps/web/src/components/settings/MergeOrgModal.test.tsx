@@ -83,6 +83,20 @@ const PREVIEW_TOO_LARGE = {
   warnings: ['this merge will REVOKE 3 live API keys belonging to the merged-away organization'],
 };
 
+const PREVIEW_BLOCKED = {
+  tables: [{ table: 'pam_actuations', policy: 'blocks-merge', loserRows: 3, wouldDrop: 0 }],
+  totalMovableRows: 0,
+  verdict: 'blocked' as const,
+  warnings: [],
+  blockers: [
+    'merge blocked: the merged-away organization holds durable PAM lifecycle evidence ' +
+      '(3 pam_actuations row(s), 0 pam_actuation_results row(s)). Privileged-access evidence is never ' +
+      're-tenanted, destroyed, or bypassed by a merge. If the surviving organization is the one without ' +
+      'PAM evidence, merge in the opposite direction; otherwise these organizations cannot be merged. ' +
+      'Audit-admin retention is not a merge mechanism.',
+  ],
+};
+
 interface MergeResponse {
   payload: unknown;
   status?: number;
@@ -186,6 +200,24 @@ describe('MergeOrgModal — preview', () => {
     for (const warning of PREVIEW_TOO_LARGE.warnings) {
       expect(screen.getByText(warning)).toBeInTheDocument();
     }
+  });
+
+  it('renders blockers and refuses to proceed when the preview verdict is blocked', async () => {
+    routeFetch({ preview: () => PREVIEW_BLOCKED });
+    render(
+      <MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={vi.fn()} onDoneClose={vi.fn()} />,
+    );
+
+    fireEvent.change(screen.getByTestId('org-merge-survivor-select'), { target: { value: SURVIVOR.id } });
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('durable PAM lifecycle evidence');
+    expect(alert).toHaveTextContent('Audit-admin retention is not a merge mechanism');
+    // Refused, not retryable — the typed-name confirm step never appears and
+    // submit stays disabled, mirroring the too-large refusal above.
+    expect(screen.queryByTestId('org-merge-confirm-input')).not.toBeInTheDocument();
+    expect(screen.getByTestId('org-merge-submit')).toBeDisabled();
+    expect(screen.queryByTestId('org-merge-too-large')).not.toBeInTheDocument();
   });
 });
 

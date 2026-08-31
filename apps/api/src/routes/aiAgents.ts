@@ -18,7 +18,8 @@ import {
 import { zValidator } from '../lib/validation';
 import { db } from '../db';
 import {
-  actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations, type AiAgentRow,
+  actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
+  reportRuns, reports, ticketDrafts, type AiAgentRow,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { policyDecideEnabled } from '../config/env';
@@ -38,12 +39,15 @@ import { InvalidAgentRecipientsError } from '../services/aiAgents/recipients';
 import { SUPPORTED_AGENT_MODES } from '../services/aiAgents/constants';
 import { buildRunTrace } from '../services/aiAgents/runTrace';
 import { recordVerdictFeedback } from '../services/aiAgents/alertVerdicts';
+import { sweepFindingDeviceIds } from '../services/aiAgents/sweepFindings';
+import { narrativeArtifactProjection } from '../services/aiAgents/narrativeReport';
 import {
   buildRunsKeysetPredicate, decodeRunsCursor, encodeRunsCursor, runsCursorFromRow,
 } from '../services/aiAgents/runsListCursor';
 import { verifyDeviceAccess } from '../services/aiTools';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import { resolveOrgId } from './networkShared';
 
 export const aiAgentsRoutes = new Hono();
@@ -117,9 +121,33 @@ function mapRow(row: AiAgentRow): AiAgentDto {
   };
 }
 
-/** Postgres unique-violation, for the create race the pre-check cannot win. */
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505';
+/**
+ * The two partial unique indexes that enforce "one live agent per kind per
+ * owner" (`2026-09-02-ai-agents.sql`): one per owner axis, because the table
+ * is dual-owned (`ai_agents_one_owner_chk`). Both have to be listed — a
+ * partner-wide create races `ai_agents_partner_kind_uq`, an org-owned one
+ * races `ai_agents_org_kind_uq`, and the handler cannot know which shape it
+ * just lost.
+ */
+const AGENT_KIND_UNIQUE_INDEXES = ['ai_agents_partner_kind_uq', 'ai_agents_org_kind_uq'] as const;
+
+/**
+ * Postgres unique-violation, for the create race the pre-check cannot win.
+ *
+ * `isPgUniqueViolation`, not a top-level `err.code` read (review fix, #4189):
+ * postgres.js raises a PostgresError with `.code === '23505'`, but Drizzle
+ * wraps it in a DrizzleQueryError whose own `.code` is undefined — the real
+ * SQLSTATE is on `.cause`. A top-level check therefore missed EVERY
+ * Drizzle-issued insert, i.e. every real occurrence of the race this mapping
+ * exists for, and returned an unactionable 500 instead of the 409.
+ *
+ * Pinned to the two kind indexes rather than accepting any 23505: an
+ * unrelated unique violation raised anywhere else in the same handler would
+ * otherwise be reported to the client as "an agent of this kind already
+ * exists", which is a false statement about what went wrong.
+ */
+function isAgentKindConflict(err: unknown): boolean {
+  return AGENT_KIND_UNIQUE_INDEXES.some((constraint) => isPgUniqueViolation(err, constraint));
 }
 
 export function mapError(c: Context, err: unknown) {
@@ -157,7 +185,7 @@ export function mapError(c: Context, err: unknown) {
   // The pre-check in createAgent cannot win a concurrent create; the partial
   // unique index settles that race. Answer it the same way rather than letting
   // it become an unactionable 500.
-  if (isUniqueViolation(err)) {
+  if (isAgentKindConflict(err)) {
     return c.json({ error: 'An agent of this kind already exists', code: 'agent_kind_exists' }, 409);
   }
   if (err instanceof PartnerWideWriteDeniedError) {
@@ -306,6 +334,7 @@ function mapRunListItem(row: {
   deviceId: string | null;
   status: AiAgentRunListItemDto['status'];
   triggerKind: AiAgentRunListItemDto['triggerKind'];
+  profile: AiAgentRunListItemDto['profile'];
   runVerdict: string | null;
   queuedAt: Date;
   finishedAt: Date | null;
@@ -321,6 +350,9 @@ function mapRunListItem(row: {
     deviceId: row.deviceId,
     status: row.status,
     triggerKind: row.triggerKind,
+    // Phase 2 wave P2-2, Task A7 — the web list badges sweep/verdict rows off
+    // this; `triggerKind: 'schedule'` alone cannot identify a sweep.
+    profile: row.profile,
     runVerdict: (row.runVerdict as AgentRunVerdict | null) ?? null,
     queuedAt: row.queuedAt.toISOString(),
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
@@ -389,6 +421,7 @@ aiAgentsRoutes.get(
         deviceId: aiAgentRuns.deviceId,
         status: aiAgentRuns.status,
         triggerKind: aiAgentRuns.triggerKind,
+        profile: aiAgentRuns.profile,
         // Pulled straight out of the outcome jsonb by key rather than
         // selecting the whole column — this is a list endpoint, and the
         // full outcome (which is where the SAFE-projection risk lives) has
@@ -460,6 +493,16 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       modeAtStart: aiAgentRuns.modeAtStart,
       status: aiAgentRuns.status,
       summary: aiAgentRuns.summary,
+      // Phase 2 wave P2-2, Task A7 — the sweep projection's occurrence/kinds
+      // provenance; `null`/`{}` for every non-sweep run.
+      scheduleId: aiAgentRuns.scheduleId,
+      triggerRef: aiAgentRuns.triggerRef,
+      // Phase 2 wave P2-3 (weekly org narrative), Task A7 — the report_runs
+      // artifact a narrative run was materialised into. The TYPED column, not
+      // `outcome.narrativeReport`: the FK is `ON DELETE SET NULL`, so this is
+      // the only representation that goes back to null when the artifact is
+      // deleted.
+      reportRunId: aiAgentRuns.reportRunId,
       outcome: aiAgentRuns.outcome,
       intentIds: aiAgentRuns.intentIds,
       turnCount: aiAgentRuns.turnCount,
@@ -521,6 +564,90 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       .where(and(inArray(actionIntents.id, run.intentIds), auth.orgCondition(actionIntents.orgId)))
     : [];
 
+  // Phase 2 wave P2-2 (scheduled sweeps), Task A7 — a sweep run is
+  // device-less but its findings each name one device, so the detail needs
+  // hostnames for ids that are NOT `run.device_id`. ONE batched read for the
+  // whole findings list (never a lookup per finding); empty for every
+  // non-sweep run, which skips the query entirely.
+  //
+  // TWO org predicates, and both are load-bearing (review round 1,
+  // IMPORTANT 1). `sweepDeviceIds` are read out of `outcome.sweepFindings`,
+  // which is MODEL-AUTHORED text: nothing in the jsonb guarantees those ids
+  // belong to this run's org. `auth.orgCondition` alone only bounds them to
+  // the CALLER's accessible set — which, for a partner-scoped caller, spans
+  // every sibling org — so a finding naming a device in org B would render
+  // org B's hostname inside org A's run detail. `eq(devices.orgId,
+  // run.orgId)` pins the read to the run's OWN org, and the auth condition
+  // stays as defence-in-depth beside RLS (matching the two reads above). A
+  // device that fails either simply projects a null hostname.
+  const sweepDeviceIds = sweepFindingDeviceIds(run.outcome);
+  const hostnameRows = sweepDeviceIds.length > 0
+    ? await db
+      .select({ id: devices.id, hostname: devices.hostname })
+      .from(devices)
+      .where(and(
+        inArray(devices.id, sweepDeviceIds),
+        eq(devices.orgId, run.orgId),
+        auth.orgCondition(devices.orgId),
+      ))
+    : [];
+  const deviceHostnames = new Map(hostnameRows.map((row) => [row.id, row.hostname]));
+
+  // Phase 2 wave P2-3 (weekly org narrative), Task A7 — the linked narrative
+  // artifact's provenance scalars (period + context-truncation), projected out
+  // of `report_runs.result` BY POSTGRES rather than pulled whole: that jsonb
+  // carries the full rendered markdown, which the run-detail DTO deliberately
+  // does not ship. Skipped entirely for every run that links no artifact.
+  //
+  // The join to `reports` is what carries the tenancy: `report_runs` has no
+  // `org_id` of its own, so the org pin lives on its parent definition. Both
+  // predicates are load-bearing for the same reason the hostname read's two
+  // are — `eq(reports.orgId, run.orgId)` pins the artifact to the RUN's org
+  // (a partner-scoped caller's accessible set spans siblings), and
+  // `auth.orgCondition` stays as defence-in-depth beside RLS.
+  const [narrativeArtifactRow] = run.reportRunId
+    ? await db
+      .select(narrativeArtifactProjection)
+      .from(reportRuns)
+      .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+      .where(and(
+        eq(reportRuns.id, run.reportRunId),
+        eq(reports.orgId, run.orgId),
+        auth.orgCondition(reports.orgId),
+      ))
+      .limit(1)
+    : [];
+  const narrativeArtifact = narrativeArtifactRow
+    ? {
+      reportId: narrativeArtifactRow.reportId ?? null,
+      periodStart: narrativeArtifactRow.periodStart ?? null,
+      periodEnd: narrativeArtifactRow.periodEnd ?? null,
+      contextTruncated: narrativeArtifactRow.contextTruncated === true,
+    }
+    : null;
+
+  // Phase 2 wave P2-4 (#4191), Task A10 — the ticket_drafts rows THIS RUN
+  // produced, for ticketProposal.draftsWritten. A LIVE query, not something
+  // read off the persisted outcome jsonb: a draft intent left
+  // `pending_approval` has not written its `ticket_drafts` row yet (that only
+  // happens later, when a human approves and the intent releases through
+  // Task 5's `draft` executor) — see `RunTraceDraftRowInput`'s docstring.
+  // Skipped entirely for every non-ticket run. `eq(ticketDrafts.orgId,
+  // run.orgId)` pins the read to the RUN's own org for the same reason the
+  // sweep-hostname and narrative-artifact reads above do (a partner-scoped
+  // caller's `auth.orgCondition` alone spans every sibling org); that stays
+  // as defence-in-depth beside RLS.
+  const draftRows = run.triggerKind === 'ticket'
+    ? await db
+      .select({ id: ticketDrafts.id, kind: ticketDrafts.kind })
+      .from(ticketDrafts)
+      .where(and(
+        eq(ticketDrafts.runId, run.id),
+        eq(ticketDrafts.orgId, run.orgId),
+        auth.orgCondition(ticketDrafts.orgId),
+      ))
+    : [];
+
   // Both fields come from the same left-joined ai_agents row, so they are
   // either both present or both null together.
   const agent = run.agentName !== null && run.agentKind !== null
@@ -532,6 +659,9 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     run.deviceHostname ? { hostname: run.deviceHostname } : null,
     ledgerRows,
     intentRows,
+    deviceHostnames,
+    narrativeArtifact,
+    draftRows,
   );
   return c.json({ data: detail });
 });
@@ -627,6 +757,7 @@ aiAgentsRoutes.get(
         deviceId: aiAgentRuns.deviceId,
         status: aiAgentRuns.status,
         triggerKind: aiAgentRuns.triggerKind,
+        profile: aiAgentRuns.profile,
         runVerdict: sql<string | null>`${aiAgentRuns.outcome}->>'runVerdict'`,
         queuedAt: aiAgentRuns.queuedAt,
         finishedAt: aiAgentRuns.finishedAt,
