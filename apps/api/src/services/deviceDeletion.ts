@@ -237,6 +237,17 @@ export async function deleteDeviceCascade(
   }
 
   for (const table of getDeviceCascadeDeleteTables()) {
+    if (table === 'peripheral_policy_delivery_events') {
+      // Delivery events are append-only and breeze_app has no DELETE grant.
+      // Permanent device deletion is an audited retention boundary, so arm
+      // both layers only for this one statement and immediately restore the
+      // caller's role before continuing through ordinary child tables.
+      await tx.execute(sql`SET LOCAL ROLE breeze_audit_admin`);
+      await tx.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
+      await tx.execute(sql`DELETE FROM peripheral_policy_delivery_events WHERE device_id = ${deviceId}`);
+      await tx.execute(sql`RESET ROLE`);
+      continue;
+    }
     await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
   }
 

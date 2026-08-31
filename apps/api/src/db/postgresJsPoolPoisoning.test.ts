@@ -1,9 +1,26 @@
 import { EventEmitter } from 'node:events';
-import postgres from 'postgres';
+import { createRequire } from 'node:module';
+import postgresEsm from 'postgres';
 import { describe, expect, it } from 'vitest';
 
+// The patch lands in THREE independent hunks (src/, cjs/src/, cf/src/), and the
+// two that matter here resolve to different files: this test file's ESM import
+// follows the package's `import` condition to `src/index.js`, while production
+// (`dist/index.cjs`, tsup externalizes postgres) `require()`s the `default`
+// condition — `cjs/src/index.js`. Exercising only one build would stay green
+// while the other's hunk silently stopped applying (empirically confirmed:
+// reverting only the cjs hunk left the ESM-only suite passing). So every test
+// below runs against BOTH entries.
+const postgresCjs = createRequire(import.meta.url)('postgres') as typeof postgresEsm;
+
+const DRIVER_BUILDS = [
+  ['esm (src/ — what this test file imports)', postgresEsm],
+  ['cjs (cjs/src/ — what production dist/index.cjs loads)', postgresCjs],
+] as const;
+
 /**
- * KNOWN-DEFECT PIN for the postgres.js pool-poisoning bug behind #3214.
+ * Regression guard for the postgres.js pool-poisoning bug behind #3214,
+ * repaired by the vendored patch tracked in #3225.
  *
  * ---------------------------------------------------------------------------
  * THE DEFECT (postgres.js 3.4.9, `src/connection.js`)
@@ -50,21 +67,26 @@ import { describe, expect, it } from 'vitest';
  * process restart (fresh closures).
  *
  * ---------------------------------------------------------------------------
- * WHY THIS TEST ASSERTS THE BUG RATHER THAN THE FIX
+ * THE REPAIR THIS TEST NOW GUARDS (#3225)
  * ---------------------------------------------------------------------------
- * postgres.js 3.4.9 is the LATEST published release — there is no version to
- * upgrade to, and the broken state lives inside a closure that nothing outside
- * the driver can reach. The repo therefore ships a WATCHDOG
- * (`db/dbPoolHealthMonitor.ts`), not a repair.
+ * `patches/postgres@3.4.9.patch` (pnpm patchedDependencies) adds
+ * `chunk = nextWriteTimer = null` after the `clearImmediate` in BOTH teardown
+ * paths — `terminate()` and `closed()` — in all three shipped builds
+ * (src/, cjs/src/, cf/src/). With the patch applied, a reconnect after a
+ * mid-write socket death schedules its flush normally and the handshake bytes
+ * reach the wire.
  *
- * This test pins the defect so that:
- *   1. the mechanism is documented executably rather than in prose that rots;
- *   2. there is a dependency-free reproduction to attach to an upstream report;
- *   3. the day the driver is fixed (or patched locally), this test FAILS and
- *      says so — which is the signal to drop the watchdog and its metrics.
+ * This file originally pinned the DEFECT (so the mechanism was documented
+ * executably and reproducible for an upstream report). Now that the patch is
+ * vendored, the poisoning test asserts the FIX instead: if it goes red, the
+ * patch has stopped applying — most likely a `postgres` version bump that
+ * dropped `patchedDependencies` without the new release containing the
+ * upstream repair. Re-verify src/connection.js teardown before removing the
+ * patch or weakening this test.
  *
- * A test that goes red on an upstream *improvement* is deliberate. Read the
- * failure message before "fixing" it.
+ * The `db/dbPoolHealthMonitor.ts` watchdog predates the patch and stays as
+ * defense-in-depth: it detects pool degradation from ANY cause, not just this
+ * one.
  */
 
 interface FakeSocket extends EventEmitter {
@@ -107,6 +129,7 @@ function createFakeSocket(): FakeSocket {
  * the race — no timing luck involved.
  */
 async function runHandshakeAttempts(options: {
+  postgres: typeof postgresEsm;
   killAttempts: ReadonlySet<number>;
   settleMs: number;
   /**
@@ -117,6 +140,7 @@ async function runHandshakeAttempts(options: {
    */
   killDelayMs?: number;
 }): Promise<number[]> {
+  const postgres = options.postgres;
   const sockets: FakeSocket[] = [];
 
   // `socket` is a genuine postgres.js option — `parseOptions` copies it
@@ -160,11 +184,12 @@ async function runHandshakeAttempts(options: {
   return sockets.map((s) => s.bytesWritten);
 }
 
-describe('postgres.js deferred-write pool poisoning (#3214)', () => {
+describe.each(DRIVER_BUILDS)('postgres.js deferred-write pool poisoning (#3214) — %s', (_buildName, postgres) => {
   it('control: an undisturbed connection flushes its StartupMessage', async () => {
     // Proves the harness itself works — without this, the poisoning assertion
     // below could pass simply because the fake socket never receives anything.
     const written = await runHandshakeAttempts({
+      postgres,
       killAttempts: new Set(),
       settleMs: 250,
     });
@@ -181,6 +206,7 @@ describe('postgres.js deferred-write pool poisoning (#3214)', () => {
     // completes its handshake write normally. That isolates the buffered write
     // as the actual cause, which is the claim an upstream report has to make.
     const written = await runHandshakeAttempts({
+      postgres,
       killAttempts: new Set([1]),
       killDelayMs: 60,
       settleMs: 1_500,
@@ -195,12 +221,15 @@ describe('postgres.js deferred-write pool poisoning (#3214)', () => {
     ).toBeGreaterThan(0);
   }, 15_000);
 
-  it('a socket that dies with a buffered write leaves the connection permanently unable to flush', async () => {
+  it('a socket that dies with a buffered write can still flush after reconnect (patched)', async () => {
     // Attempt 1's socket is closed while the StartupMessage flush is still
-    // queued. `closed()` cancels the immediate but leaves `nextWriteTimer`
-    // non-null, so attempt 2 — a full reconnect with a brand-new socket —
-    // schedules no flush at all and writes zero bytes.
+    // queued. Unpatched 3.4.9 leaves `nextWriteTimer` non-null in `closed()`,
+    // so attempt 2 — a full reconnect with a brand-new socket — schedules no
+    // flush and writes zero bytes (the #3214 pool poisoning). With
+    // patches/postgres@3.4.9.patch applied, both teardown paths null the timer
+    // and drop the stale chunk, so the reconnect handshake reaches the wire.
     const written = await runHandshakeAttempts({
+      postgres,
       killAttempts: new Set([1]),
       settleMs: 1_500,
     });
@@ -208,17 +237,17 @@ describe('postgres.js deferred-write pool poisoning (#3214)', () => {
     expect(
       written.length,
       'expected the driver to reconnect after the socket closed. If it no longer '
-        + 'reconnects at all, that is also an upstream behaviour change — re-read this '
-        + 'pin against src/connection.js rather than adjusting the harness.',
+        + 'reconnects at all, that is an upstream behaviour change — re-read this '
+        + 'test against src/connection.js rather than adjusting the harness.',
     ).toBeGreaterThanOrEqual(2);
 
     expect(
       written[1],
-      'postgres.js appears to FLUSH after a socket death with a buffered write — the '
-        + 'deferred-write defect behind #3214 looks fixed. Confirm against '
-        + 'src/connection.js (does closed()/terminate() now reset nextWriteTimer and '
-        + 'chunk to null?), then delete this pin AND the db/dbPoolHealthMonitor.ts '
-        + 'watchdog it exists to justify.',
-    ).toBe(0);
+      'the reconnect after a mid-write socket death wrote ZERO bytes — the #3214 '
+        + 'pool poisoning is back, meaning patches/postgres@3.4.9.patch is no longer '
+        + 'applying (a postgres version bump that dropped pnpm patchedDependencies?). '
+        + 'Re-apply the patch against the new version, or verify upstream now nulls '
+        + 'nextWriteTimer and chunk in terminate()/closed() before removing it.',
+    ).toBeGreaterThan(0);
   }, 15_000);
 });

@@ -5,11 +5,13 @@ import { apiKeys } from '../../db/schema/apiKeys';
 import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
 import { organizations } from '../../db/schema/orgs';
 import { devices } from '../../db/schema/devices';
+import { tickets } from '../../db/schema/portal';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 import {
   AgentRunOwnershipError,
   buildAgentAuthContext,
 } from '../aiAgents/agentAuthContext';
+import { IntentScopeLostError, resolveIntentTargetDevice, resolveIntentTargetTicket } from './intentTargetScope';
 import { getUserPermissions, canAccessOrg as permsCanAccessOrg } from '../permissions';
 import { buildOrgAccessClosures, siteAccessCheck, type AuthContext } from '../../middleware/auth';
 import type { TokenPayload } from '../jwt';
@@ -27,6 +29,13 @@ import type { TokenPayload } from '../jwt';
  * the SAME closure factories `authMiddleware` uses to build the request-path
  * AuthContext — so org/site access semantics can never drift between "live
  * request" and "durable release" execution.
+ *
+ * ONE typed exception escapes instead of collapsing to `null`:
+ * `IntentScopeLostError` (P2-2, #4189), when an agent intent's device SCOPE
+ * is gone. It is distinguished from `null`/`actor_invalid` on purpose —
+ * `revalidateApprovedIntentForRelease` maps it to the terminal
+ * `agent_scope_lost` errorCode the controller ruling names, which tells an
+ * operator "the target device went away", not "the actor is broken".
  */
 export async function buildAuthContextForIntent(intent: ActionIntent): Promise<AuthContext | null> {
   if (intent.requestedByUserId) {
@@ -294,18 +303,84 @@ async function buildAgentOwnedAuthContext(
       if (!org) {
         return null;
       }
+      // P2-2 (#4189): the intent's TARGET device, not the run's. A sweep run
+      // is device-less and pins its intents one device at a time via
+      // scope_kind/scope_device_id; a tombstoned scope (device deleted, or
+      // detached by a moveOrg) can never be released, so fail closed here
+      // rather than silently falling back to the run's own (null) device,
+      // which would rebuild an UNSCOPED, org-wide agent context.
+      const target = resolveIntentTargetDevice(intent, run);
+      if (target.kind === 'tombstone') {
+        throw new IntentScopeLostError(
+          `agent_scope_lost: intent ${intent.id} is device-scoped but its scope_device_id was tombstoned`,
+        );
+      }
       // The device's CURRENT site, not the site at proposal time — spec §3.2
       // pins a device-bound run to its device's site, and release must
       // reflect where the device lives NOW.
       let deviceSiteId: string | null = null;
-      if (run.deviceId) {
+      if (target.kind === 'scope') {
+        // Controller ruling (P2-2 A3): for a SCOPED target the device must
+        // still exist AND still belong to the intent's org — a device
+        // org-move that landed through the DB-side cascade rather than the
+        // HTTP moveOrg route leaves scope_device_id set, and this is the
+        // backstop. Treated exactly like a tombstone.
+        const [device] = await db
+          .select({ orgId: devices.orgId, siteId: devices.siteId })
+          .from(devices)
+          .where(eq(devices.id, target.deviceId))
+          .limit(1);
+        if (!device || device.orgId !== intent.orgId) {
+          throw new IntentScopeLostError(
+            `agent_scope_lost: intent ${intent.id}'s scoped device ${target.deviceId} is missing or no longer in org ${intent.orgId}`,
+          );
+        }
+        deviceSiteId = device.siteId ?? null;
+      } else if (target.deviceId) {
         const [device] = await db
           .select({ siteId: devices.siteId })
           .from(devices)
-          .where(eq(devices.id, run.deviceId))
+          .where(eq(devices.id, target.deviceId))
           .limit(1);
         deviceSiteId = device?.siteId ?? null;
       }
+
+      // P2-4 (Task A3, #4189/#4191): the TICKET-scope mirror of the device
+      // check above. `resolveIntentTargetTicket` never falls back to
+      // anything (there is no run-level "own ticket" to fall back to — see
+      // its doc comment in intentTargetScope.ts), so 'none' here just means
+      // this intent has no ticket target at all, and the branch is a no-op.
+      const ticketTarget = resolveIntentTargetTicket(intent);
+      if (ticketTarget.kind === 'tombstone') {
+        throw new IntentScopeLostError(
+          `agent_scope_lost: intent ${intent.id} is ticket-scoped but its scope_ticket_id was tombstoned`,
+        );
+      }
+      if (ticketTarget.kind === 'scope') {
+        const [ticket] = await db
+          .select({ id: tickets.id, orgId: tickets.orgId, status: tickets.status, deletedAt: tickets.deletedAt })
+          .from(tickets)
+          .where(eq(tickets.id, ticketTarget.ticketId))
+          .limit(1);
+        // Missing, soft-deleted, moved to another org, or closed — all
+        // treated exactly like a lost device scope. `resolved` is
+        // deliberately EXCLUDED from this list: resolution-note drafts
+        // (`manage_tickets:draft`, kind `draftResolutionNote`) are the
+        // motivating case for proposing against a ticket that has already
+        // moved to `resolved`, and every other ticket-triage tool call is
+        // equally valid against a resolved (not yet closed) ticket.
+        if (
+          !ticket
+          || ticket.deletedAt !== null
+          || ticket.orgId !== intent.orgId
+          || ticket.status === 'closed'
+        ) {
+          throw new IntentScopeLostError(
+            `agent_scope_lost: intent ${intent.id}'s scoped ticket ${ticketTarget.ticketId} is missing, deleted, closed, or no longer in org ${intent.orgId}`,
+          );
+        }
+      }
+
       try {
         return buildAgentAuthContext(
           {
@@ -315,7 +390,10 @@ async function buildAgentOwnedAuthContext(
             name: agent.name,
             kind: agent.kind,
           },
-          { id: run.id, orgId: run.orgId, deviceId: run.deviceId, deviceSiteId },
+          // The run row's own deviceId is deliberately NOT used here: the
+          // rebuilt context is pinned to the intent's target device (and its
+          // site), which for a scoped intent is not the run's.
+          { id: run.id, orgId: run.orgId, deviceId: target.deviceId, deviceSiteId },
           { id: run.orgId, partnerId: org.partnerId },
         );
       } catch (error) {

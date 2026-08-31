@@ -24,6 +24,7 @@ const TICKET_ID = '00000000-0000-4000-8000-0000000000b4';
 const ANOMALY_INCIDENT_ID = '00000000-0000-4000-8000-0000000000c9';
 const GROUP_A = '00000000-0000-4000-8000-0000000000b5';
 const GROUP_B = '00000000-0000-4000-8000-0000000000b6';
+const SCHEDULE_ID = '00000000-0000-4000-8000-0000000000d1';
 
 interface CapturedSelect {
   table: string;
@@ -1183,6 +1184,87 @@ describe('createAndEnqueueAgentRun — ticket-triggered admission (#3828 wave-6-
   });
 });
 
+// P2-4 Task A6 (#4191) — the forced-shadow LIFT. `triggers.ticketAutonomousWrites`
+// is the org's own explicit opt-in (see AiAgentTriggers.ticketAutonomousWrites's
+// docstring and effectivePolicy.ts's org-row-only merge): a ticket-triggered
+// run is admitted as `act` ONLY when both gates are open at once (agent
+// `mode: 'act'` AND `triggers.ticketAutonomousWrites: true`). Any other
+// combination — including the toggle set on an anomaly-triggered run — still
+// forces shadow, per the truth table in the task brief.
+describe('createAndEnqueueAgentRun — ticket-autonomy forced-shadow LIFT (P2-4 #4191 task A6)', () => {
+  function ticketInput(over: Partial<CreateAgentRunInput> = {}): CreateAgentRunInput {
+    return input({
+      kind: 'helpdesk',
+      triggerKind: 'ticket',
+      deviceId: null,
+      ticketId: TICKET_ID,
+      triggerRef: { ticketId: TICKET_ID },
+      dedupeKey: `ticket-created:${TICKET_ID}`,
+      ...over,
+    });
+  }
+
+  it('ticket + act + ticketAutonomousWrites:true -> modeAtStart is act (both gates open)', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(
+      snapshot({ mode: 'act', triggers: triggers({ ticketAutonomousWrites: true }) }),
+    );
+    seedAdmissionReads();
+    const result = await createAndEnqueueAgentRun(ticketInput());
+
+    expect(result.created).toBe(true);
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values).toMatchObject({ triggerKind: 'ticket', modeAtStart: 'act' });
+  });
+
+  it('ticket + act WITHOUT the toggle -> modeAtStart stays shadow (only one gate open)', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(
+      snapshot({ mode: 'act', triggers: triggers() }), // no ticketAutonomousWrites key at all
+    );
+    seedAdmissionReads();
+    const result = await createAndEnqueueAgentRun(ticketInput());
+
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values.modeAtStart).toBe('shadow');
+  });
+
+  it('ticket + shadow + ticketAutonomousWrites:true -> modeAtStart stays shadow (only one gate open)', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(
+      snapshot({ mode: 'shadow', triggers: triggers({ ticketAutonomousWrites: true }) }),
+    );
+    seedAdmissionReads();
+    const result = await createAndEnqueueAgentRun(ticketInput());
+
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values.modeAtStart).toBe('shadow');
+  });
+
+  // Regression: the lift is keyed on `triggerKind === 'ticket' || input.ticketId`
+  // specifically — an anomaly-triggered run must NEVER be lifted by this
+  // toggle, even when both of its own inputs happen to be set. The anomaly
+  // force (wave 6 PR 4, #3828) has no lift at all: an unproven detector must
+  // never drive act mode, full stop.
+  it('anomaly + act + ticketAutonomousWrites:true -> modeAtStart STILL shadow (anomaly force has no lift)', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(
+      snapshot({
+        mode: 'act',
+        triggers: triggers({ anomalyEnabled: true, ticketAutonomousWrites: true }),
+      }),
+    );
+    seedAdmissionReads();
+    const result = await createAndEnqueueAgentRun(input({
+      kind: 'triage',
+      triggerKind: 'anomaly',
+      anomalyIncidentId: ANOMALY_INCIDENT_ID,
+      triggerRef: { incidentId: ANOMALY_INCIDENT_ID },
+      dedupeKey: `anomaly:${ANOMALY_INCIDENT_ID}`,
+    }));
+
+    expect(result.created).toBe(true);
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values).toMatchObject({ triggerKind: 'anomaly', modeAtStart: 'shadow' });
+  });
+});
+
 // Wave 6 PR 4 (#3828 Task 3) — anomaly-shadow admission. Anomaly-triggered
 // runs ARE device-bound (unlike ticket runs), so device pinning, site scope,
 // and maintenance-window checks apply normally; the ONLY forced downgrade is
@@ -1910,6 +1992,232 @@ describe('createAndEnqueueAgentRun verdict-profile admission (P2-1)', () => {
     seedVerdictAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentVerdictRuns });
     await createAndEnqueueAgentRun(
       input({ profile: 'verdict', dedupeKey: 'alert-verdict:a5' }),
+    );
+    expect(publishEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('createAndEnqueueAgentRun sweep-profile admission (P2-2)', () => {
+  /**
+   * Sweep-profile runs skip the cooldown probe entirely (step 5 wraps in
+   * `profile === 'full'`), same as verdict — see
+   * `seedVerdictAdmissionReads`' docstring above for why this seeds only
+   * [reap, concurrency, per-hour, daily spend] rather than reusing
+   * `seedAdmissionReads`' 5-slot cooldown-inclusive queue.
+   */
+  function seedSweepAdmissionReads(options: {
+    concurrent?: number;
+    perHour?: number;
+    dailyCents?: number | null;
+  } = {}): void {
+    const { concurrent = 0, perHour = 0, dailyCents = 0 } = options;
+    seedAdmissionReads({ concurrent, perHour, dailyCents, deviceInOrg: true });
+    dbMockState.rowQueues.ai_agent_runs = [
+      [], // 4c reap candidates
+      [{ value: concurrent }], // 6b concurrency
+      [{ value: perHour }], // 6b per-hour
+      [{ totalCostCents: dailyCents }], // 7 daily spend
+    ];
+  }
+
+  it('max_concurrent_sweep_runs when queued+running sweep runs reach the sweep-only cap', async () => {
+    seedSweepAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentSweepRuns });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'sweep', deviceId: null, dedupeKey: 'sweep:s1' }),
+    );
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_sweep_runs' });
+  });
+
+  it('a sweep run is not blocked by 5 queued full runs — the sweep cap is scoped and counted independently', async () => {
+    // The real concurrency count is profile-scoped and excludes full rows
+    // entirely, so 5 queued full runs (which would already saturate the
+    // default maxConcurrentRuns: 1) have zero effect on the sweep count.
+    seedSweepAdmissionReads({ concurrent: 0 });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'sweep', deviceId: null, dedupeKey: 'sweep:s2' }),
+    );
+    expect(result).toMatchObject({ created: true });
+    const runSelects = dbMockState.selects.filter((s) => s.table === 'ai_agent_runs');
+    // [0] reap, [1] concurrency, [2] per-hour — no cooldown probe for sweep.
+    expect(compiled(runSelects[1]?.where)).toContain('"profile"');
+  });
+
+  it('rate-limits sweep-profile runs on maxSweepRunsPerHour with skip sweep_rate', async () => {
+    seedSweepAdmissionReads({ perHour: AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'sweep', deviceId: null, dedupeKey: 'sweep:s3' }),
+    );
+    expect(result).toEqual({ created: false, skipped: 'sweep_rate' });
+  });
+
+  it('skips the cooldown step entirely for a sweep run queued 1s after another device-less run, even with cooldownSeconds > 0', async () => {
+    // Default snapshot() carries cooldownSeconds: 900. If step 5's
+    // `profile === 'full'` guard ever regressed to also cover 'sweep', this
+    // would probe a cooldown SELECT this queue never seeded — the mock's
+    // `nextRows` throws "No queued rows for table ai_agent_runs" and the
+    // test fails, rather than silently misreading an unrelated row.
+    seedSweepAdmissionReads({ concurrent: 0, perHour: 0, dailyCents: 0 });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'sweep', deviceId: null, dedupeKey: 'sweep:s4' }),
+    );
+    expect(result).toMatchObject({ created: true });
+  });
+
+  it('a full run is not blocked by concurrent sweep runs — the full cap is scoped by profile too', async () => {
+    seedAdmissionReads({ concurrent: 0 });
+    const result = await createAndEnqueueAgentRun(input());
+    expect(result).toMatchObject({ created: true });
+    const runSelects = dbMockState.selects.filter((s) => s.table === 'ai_agent_runs');
+    // [0] reap, [1] cooldown, [2] concurrency, [3] per-hour, [4] daily spend
+    expect(compiled(runSelects[2]?.where)).toContain('"profile"');
+    expect(compiled(runSelects[3]?.where)).toContain('"profile"');
+  });
+
+  it('writes scheduleId on the run row when the trigger is a schedule', async () => {
+    seedSweepAdmissionReads();
+    await createAndEnqueueAgentRun(
+      input({ profile: 'sweep', deviceId: null, dedupeKey: 'sweep:s5', scheduleId: SCHEDULE_ID }),
+    );
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values).toMatchObject({ profile: 'sweep', scheduleId: SCHEDULE_ID });
+  });
+
+  it('defaults scheduleId to null when omitted', async () => {
+    seedAdmissionReads();
+    await createAndEnqueueAgentRun(input());
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values).toMatchObject({ scheduleId: null });
+  });
+
+  it('does not publish max_concurrent_sweep_runs or sweep_rate — logged only, volume guards not policy events', async () => {
+    seedSweepAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentSweepRuns });
+    await createAndEnqueueAgentRun(
+      input({ profile: 'sweep', deviceId: null, dedupeKey: 'sweep:s6' }),
+    );
+    expect(publishEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('createAndEnqueueAgentRun narrative-profile admission (P2-3)', () => {
+  /**
+   * Narrative-profile runs skip the cooldown probe entirely (step 5 wraps in
+   * `profile === 'full'`), same as verdict and sweep — so this seeds only
+   * [reap, concurrency, per-hour, daily spend], NOT `seedAdmissionReads`'
+   * 5-slot cooldown-inclusive queue. See `seedVerdictAdmissionReads`'
+   * docstring for the full rationale.
+   */
+  function seedNarrativeAdmissionReads(options: {
+    concurrent?: number;
+    perHour?: number;
+    dailyCents?: number | null;
+  } = {}): void {
+    const { concurrent = 0, perHour = 0, dailyCents = 0 } = options;
+    seedAdmissionReads({ concurrent, perHour, dailyCents, deviceInOrg: true });
+    dbMockState.rowQueues.ai_agent_runs = [
+      [], // 4c reap candidates
+      [{ value: concurrent }], // 6b concurrency
+      [{ value: perHour }], // 6b per-hour
+      [{ totalCostCents: dailyCents }], // 7 daily spend
+    ];
+  }
+
+  it('max_concurrent_narrative_runs when queued+running narrative runs reach the narrative-only cap', async () => {
+    seedNarrativeAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentNarrativeRuns });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'narrative', deviceId: null, dedupeKey: 'narrative:n1' }),
+    );
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_narrative_runs' });
+  });
+
+  it('rate-limits narrative-profile runs on maxNarrativeRunsPerHour with skip narrative_rate', async () => {
+    seedNarrativeAdmissionReads({ perHour: AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'narrative', deviceId: null, dedupeKey: 'narrative:n2' }),
+    );
+    expect(result).toEqual({ created: false, skipped: 'narrative_rate' });
+  });
+
+  it('a narrative run is not blocked by saturated full/verdict/sweep counts — its counters are its own', async () => {
+    // The real concurrency/rate counts are profile-scoped, so rows of any
+    // OTHER profile are excluded from both SELECTs entirely. The seeded
+    // counts below are therefore the narrative-only counts, and 0 admits.
+    seedNarrativeAdmissionReads({ concurrent: 0, perHour: 0 });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'narrative', deviceId: null, dedupeKey: 'narrative:n3' }),
+    );
+    expect(result).toMatchObject({ created: true });
+    const runSelects = dbMockState.selects.filter((s) => s.table === 'ai_agent_runs');
+    // [0] reap, [1] concurrency, [2] per-hour — no cooldown probe for narrative.
+    expect(compiled(runSelects[1]?.where)).toContain('"profile"');
+    expect(compiled(runSelects[2]?.where)).toContain('"profile"');
+  });
+
+  it('narrative and sweep caps are distinct values, so one cannot starve the other', () => {
+    // A regression guard on the caps themselves rather than the SELECTs: if
+    // profileCaps' narrative arm were ever copy-pasted to read the sweep
+    // fields, the two would silently share one budget.
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxConcurrentNarrativeRuns)
+      .not.toBe(AI_AGENT_LIMIT_DEFAULTS.maxConcurrentSweepRuns);
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour)
+      .not.toBe(AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour);
+  });
+
+  it('reads the caps off the SNAPSHOT, not a hard-coded default', async () => {
+    // The concurrent/per-hour counts seeded here both EXCEED the v7 defaults
+    // (1 and 5), so this only admits if profileCaps actually read the
+    // policy's own raised caps.
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({
+      limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxConcurrentNarrativeRuns: 3, maxNarrativeRunsPerHour: 20 },
+    }));
+    seedNarrativeAdmissionReads({ concurrent: 2, perHour: 9 });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'narrative', deviceId: null, dedupeKey: 'narrative:n4' }),
+    );
+    expect(result).toMatchObject({ created: true });
+  });
+
+  it('falls back to the v7 defaults on a pre-v7 snapshot with no narrative caps at all', async () => {
+    // A policy snapshot resolved before the v7 limits bump carries neither
+    // field. Without the `?? AI_AGENT_LIMIT_DEFAULTS...` tolerant read the
+    // comparison would be `>= undefined` (always false) and the cap would
+    // silently not exist.
+    const { maxConcurrentNarrativeRuns: _c, maxNarrativeRunsPerHour: _h, ...preV7 } =
+      AI_AGENT_LIMIT_DEFAULTS;
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({
+      limits: preV7 as typeof AI_AGENT_LIMIT_DEFAULTS,
+    }));
+    seedNarrativeAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentNarrativeRuns });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'narrative', deviceId: null, dedupeKey: 'narrative:n8' }),
+    );
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_narrative_runs' });
+  });
+
+  it('skips the cooldown step entirely for a narrative run, even with cooldownSeconds > 0', async () => {
+    // Default snapshot() carries cooldownSeconds: 900. If step 5's
+    // `profile === 'full'` guard ever regressed to also cover 'narrative',
+    // this would probe a cooldown SELECT this queue never seeded — the
+    // mock's `nextRows` throws "No queued rows for table ai_agent_runs".
+    seedNarrativeAdmissionReads({ concurrent: 0, perHour: 0, dailyCents: 0 });
+    const result = await createAndEnqueueAgentRun(
+      input({ profile: 'narrative', deviceId: null, dedupeKey: 'narrative:n5' }),
+    );
+    expect(result).toMatchObject({ created: true });
+  });
+
+  it('writes profile=narrative and the scheduleId on the run row', async () => {
+    seedNarrativeAdmissionReads();
+    await createAndEnqueueAgentRun(
+      input({ profile: 'narrative', deviceId: null, dedupeKey: 'narrative:n6', scheduleId: SCHEDULE_ID }),
+    );
+    const values = dbMockState.insertValues[0] as Record<string, unknown>;
+    expect(values).toMatchObject({ profile: 'narrative', scheduleId: SCHEDULE_ID });
+  });
+
+  it('does not publish max_concurrent_narrative_runs or narrative_rate — logged only, volume guards not policy events', async () => {
+    seedNarrativeAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentNarrativeRuns });
+    await createAndEnqueueAgentRun(
+      input({ profile: 'narrative', deviceId: null, dedupeKey: 'narrative:n7' }),
     );
     expect(publishEvent).not.toHaveBeenCalled();
   });

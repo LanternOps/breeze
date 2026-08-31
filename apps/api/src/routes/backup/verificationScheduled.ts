@@ -19,7 +19,7 @@ import {
   BackupVerificationDispatchError,
   listBackupVerifications,
   persistVerificationToDb,
-  runBackupVerification,
+  runScheduledBackupVerification,
   safePublish
 } from './verificationService';
 import {
@@ -480,12 +480,11 @@ export async function ensurePostBackupIntegrityChecks(orgId?: string): Promise<n
     if (existing.length > 0) continue;
 
     try {
-      await runBackupVerification({
+      await runScheduledBackupVerification({
         orgId: effectiveOrgId,
         deviceId: job.deviceId,
         verificationType: 'integrity',
         backupJobId: job.id,
-        snapshotId: job.snapshotId ?? undefined,
         source: 'post-backup-integrity-check'
       });
       created += 1;
@@ -558,12 +557,11 @@ export async function runWeeklyTestRestore(orgId?: string): Promise<number> {
     if (hasRecentRestoreTest) continue;
 
     try {
-      await runBackupVerification({
+      await runScheduledBackupVerification({
         orgId: targetOrg,
         deviceId: job.deviceId,
         verificationType: 'test_restore',
         backupJobId: job.id,
-        snapshotId: job.snapshotId ?? undefined,
         source: 'weekly-test-restore'
       });
       queued += 1;

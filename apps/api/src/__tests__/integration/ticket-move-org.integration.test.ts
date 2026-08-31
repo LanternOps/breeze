@@ -24,6 +24,7 @@ import './setup';
 import { describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { randomUUID } from 'node:crypto';
 import {
   tickets,
   ticketComments,
@@ -37,6 +38,11 @@ import {
   devices,
   organizations,
   sites,
+  ticketDrafts,
+  actionIntents,
+  aiAgents,
+  aiAgentRuns,
+  users,
 } from '../../db/schema';
 import { moveTicketOrg, TicketServiceError } from '../../services/ticketService';
 import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
@@ -499,5 +505,191 @@ describe('moveTicketOrg — cross-currency guard (#3776)', () => {
     expect(err.details).toMatchObject({ unbilledTimeEntries: 0, unbilledParts: 1 });
     expect((await readTicketPart(ticketPart.id))?.orgId).toBe(orgA.id);
     expect((await readTicket(ticket.id))?.orgId).toBe(orgA.id);
+  });
+});
+
+// ── C1 fix (final review #4191): ticket_drafts cleanup + scope_ticket_id
+// tombstone (ALL statuses) inside moveTicketOrg's own transaction ──────────
+
+/**
+ * Seeds an agent (in orgA) + a live ai_agent_runs row + one action_intents
+ * row scoped to the given ticket via scope_kind='ticket'/scope_ticket_id,
+ * at the given terminal/live status. Mirrors
+ * `actionIntentsImmutabilityTrigger.integration.test.ts`'s `seedPendingIntent`
+ * fixture shape (same required-column set), parameterized by status so both
+ * a completed (terminal) and a pending_approval (live) row can be seeded in
+ * the same test — proving the C1 tombstone applies to BOTH, not just the
+ * two live pre-release statuses the old AI-tool-path-only tombstone covered.
+ */
+/**
+ * Seeds one `ai_agents` row for the org (a fixture prerequisite for the
+ * `ai_agent_runs` that `seedTicketScopedIntent` needs). `ai_agents` has a
+ * `(org_id, kind)` unique constraint, so this must be called ONCE per org
+ * and its id reused across every intent seeded for that org in the same
+ * test — NOT re-seeded per intent.
+ */
+async function seedTriageAgent(orgId: string, partnerId: string): Promise<{ id: string }> {
+  const adminDb = getTestDb() as any;
+  const unique = uid();
+  const [user] = await adminDb
+    .insert(users)
+    .values({
+      partnerId,
+      orgId,
+      email: `move-org-intent-actor-${unique}@example.test`,
+      name: 'Move Org Intent Actor',
+      status: 'active',
+    })
+    .returning();
+  const [agent] = await adminDb
+    .insert(aiAgents)
+    .values({ orgId, partnerId: null, kind: 'triage', name: 'Triage', createdBy: user.id })
+    .returning();
+  return { id: agent.id };
+}
+
+/**
+ * Seeds one live `ai_agent_runs` row plus one `action_intents` row scoped to
+ * `ticketId` via scope_kind='ticket'/scope_ticket_id, at the given
+ * terminal/live `status`. Reuses the given `agentId` (see `seedTriageAgent`
+ * — `ai_agents` has a `(org_id, kind)` unique constraint, so a fresh agent
+ * per intent would collide when two intents are seeded for the same org in
+ * one test). Parameterized by status so both a completed (terminal) and a
+ * pending_approval (live) row can be seeded in the same test — proving the
+ * C1 tombstone applies to BOTH, not just the two live pre-release statuses
+ * the old AI-tool-path-only tombstone covered.
+ */
+async function seedTicketScopedIntent(
+  orgId: string,
+  partnerId: string,
+  agentId: string,
+  ticketId: string,
+  status: (typeof actionIntents.$inferSelect)['status'],
+): Promise<{ id: string }> {
+  const adminDb = getTestDb() as any;
+  const unique = uid();
+
+  const [run] = await adminDb
+    .insert(aiAgentRuns)
+    .values({
+      agentId,
+      orgId,
+      triggerKind: 'ticket',
+      dedupeKey: `move-org-intent-${unique}`,
+      modeAtStart: 'shadow',
+      policySnapshot: { schemaVersion: 1 },
+    })
+    .returning();
+  const [intent] = await adminDb
+    .insert(actionIntents)
+    .values({
+      orgId,
+      partnerId,
+      requestedByUserId: null,
+      requestingApiKeyId: null,
+      requestingAgentRunId: run.id,
+      source: 'ai_agent',
+      originPrincipalKind: 'ai_agent',
+      originPrincipalId: agentId,
+      actionName: 'manage_tickets',
+      actionVersion: 1,
+      arguments: { ticketId },
+      argumentDigest: 'b'.repeat(64),
+      targetSummary: `Ticket ${ticketId}`,
+      impactSummary: 'Ticket triage action',
+      reason: 'Triage proposal',
+      riskTier: 1,
+      connectionId: randomUUID(),
+      tenantId: randomUUID(),
+      idempotencyKey: `move-org-idem-${unique}`,
+      correlationId: randomUUID(),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      status,
+      scopeKind: 'ticket',
+      scopeTicketId: ticketId,
+    })
+    .returning();
+  return { id: intent.id };
+}
+
+async function readDraftsForTicket(ticketId: string) {
+  const adminDb = getTestDb() as any;
+  return adminDb.select().from(ticketDrafts).where(eq(ticketDrafts.ticketId, ticketId));
+}
+
+async function readIntent(id: string) {
+  const adminDb = getTestDb() as any;
+  const [row] = await adminDb.select().from(actionIntents).where(eq(actionIntents.id, id)).limit(1);
+  return row as (typeof actionIntents.$inferSelect) | undefined;
+}
+
+describe('moveTicketOrg — ticket_drafts cleanup + scope_ticket_id tombstone (C1, final review #4191)', () => {
+  it('deletes ticket_drafts and nulls scope_ticket_id on BOTH a completed and a pending intent', async () => {
+    const { orgA, orgB, partner, actor, ticket } = await seedMoveOrgFixture();
+    const adminDb = getTestDb() as any;
+
+    const [draft] = await adminDb
+      .insert(ticketDrafts)
+      .values({
+        orgId: orgA.id,
+        ticketId: ticket.id,
+        kind: 'reply',
+        content: 'Proposed reply draft',
+        state: 'active',
+      })
+      .returning();
+
+    const agent = await seedTriageAgent(orgA.id, partner.id);
+    const completedIntent = await seedTicketScopedIntent(orgA.id, partner.id, agent.id, ticket.id, 'completed');
+    const pendingIntent = await seedTicketScopedIntent(orgA.id, partner.id, agent.id, ticket.id, 'pending_approval');
+
+    // Sanity: both rows exist and are scoped to the pre-move ticket/org before the move.
+    expect((await readDraftsForTicket(ticket.id))).toHaveLength(1);
+    expect((await readIntent(completedIntent.id))?.scopeTicketId).toBe(ticket.id);
+    expect((await readIntent(pendingIntent.id))?.scopeTicketId).toBe(ticket.id);
+
+    await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgB.id, actor));
+
+    // Ticket actually moved (would previously 23503 before draft/intent rows
+    // referencing the old (ticket_id, org_id) pair were cleared).
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgB.id);
+
+    // ticket_drafts rows for this ticket are gone — both the query by
+    // ticket_id and a direct by-id lookup of the specific seeded row.
+    expect(await readDraftsForTicket(ticket.id)).toHaveLength(0);
+    const draftAfter = await adminDb.select().from(ticketDrafts).where(eq(ticketDrafts.id, draft.id)).limit(1);
+    expect(draftAfter).toHaveLength(0);
+
+    // scope_ticket_id is NULL on BOTH the completed (terminal) and the
+    // pending (live) intent — proving the tombstone is not status-gated.
+    const completedAfter = await readIntent(completedIntent.id);
+    const pendingAfter = await readIntent(pendingIntent.id);
+    expect(completedAfter?.scopeTicketId).toBeNull();
+    expect(completedAfter?.status).toBe('completed');
+    expect(pendingAfter?.scopeTicketId).toBeNull();
+    expect(pendingAfter?.status).toBe('pending_approval');
+  });
+
+  it('a second move of the same ticket to a third org does not 23503 (regression: this is exactly how the bug reproduced)', async () => {
+    const { orgA, orgB, partner, actor, ticket } = await seedMoveOrgFixture();
+    const orgC = await createOrganization({ partnerId: partner.id });
+    const adminDb = getTestDb() as any;
+
+    await adminDb.insert(ticketDrafts).values({
+      orgId: orgA.id,
+      ticketId: ticket.id,
+      kind: 'resolution_note',
+      content: 'Proposed resolution',
+      state: 'active',
+    });
+    const agent = await seedTriageAgent(orgA.id, partner.id);
+    await seedTicketScopedIntent(orgA.id, partner.id, agent.id, ticket.id, 'failed');
+
+    await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgB.id, actor));
+    // Before the fix, this second move would 23503 on the leftover
+    // ticket_drafts_ticket_org_fk / action_intents_scope_ticket_org_fk rows.
+    await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgC.id, actor));
+
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgC.id);
   });
 });

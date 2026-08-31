@@ -159,7 +159,14 @@ const legacyToBuilderType: Record<LegacyReportType, BuilderReportType> = {
   executive_summary: 'activity',
   // Posture is delivered via a curated template, not the freeform builder; map to
   // the closest builder data-source so the legacy builder degrades gracefully.
-  security_compliance_posture: 'compliance'
+  security_compliance_posture: 'compliance',
+  // The AI schedule owns `ai_org_narrative` end to end — the builder never
+  // offers it (it is absent from `reportTypeOptions`, so no create-flow tile
+  // exists) and the API refuses every mutation on it with a 409. The entry
+  // exists only to keep this Record exhaustive and to make
+  // `reportTypeSurvivesBuilder('ai_org_narrative')` false, so any code path
+  // that did reach the builder degrades to a data source rather than crashing.
+  ai_org_narrative: 'activity'
 };
 
 const scheduleOptions: { value: ReportSchedule; label: string; description: string }[] = [

@@ -150,6 +150,7 @@ vi.mock('../services/mfaStepUpGrant', () => ({
   mintStepUpGrant: vi.fn(),
   validateStepUpGrant: vi.fn(),
   consumeStepUpGrant: vi.fn(),
+  rollbackResourceDigest: vi.fn(() => 'sha256:600d9bcdbac702fc40c080c8a0dddec84fc2a84564f79ec13410b0f6942edf80'),
 }));
 
 // mfa.ts's POST /mfa/step-up passkey branch calls verifyStepUpPasskeyAssertion
@@ -3478,6 +3479,38 @@ describe('auth routes', () => {
   // passkey-only user — who has no TOTP/SMS fallback — is never locked out
   // of adding a second factor.
   describe('POST /auth/mfa/step-up', () => {
+		it('mints an agent_rollback grant only with an exact resource binding after factor proof', async () => {
+			vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-rollback');
+			const resource = {
+				deviceId: '00000000-0000-4000-8000-000000000004',
+				currentVersion: '2.0.0',
+				targetVersion: '1.9.0',
+				reason: 'incident rollback',
+			};
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'agent_rollback', resource }),
+			});
+			expect(res.status).toBe(200);
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'agent_rollback',
+				resourceDigest: 'sha256:600d9bcdbac702fc40c080c8a0dddec84fc2a84564f79ec13410b0f6942edf80',
+			}));
+		});
+
+		it('rejects agent_rollback before factor verification when the resource binding is absent', async () => {
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'passkey', credential: { id: 'credential-1' }, operation: 'agent_rollback' }),
+			});
+			expect(res.status).toBe(400);
+			expect(verifyStepUpPasskeyAssertion).not.toHaveBeenCalled();
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
+		});
+
     it('mints a grant for a passkey-only user via method: passkey (I2)', async () => {
       vi.mocked(verifyStepUpPasskeyAssertion).mockResolvedValueOnce(true);
       vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-abc');

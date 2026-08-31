@@ -31,6 +31,7 @@ const RUN_1 = {
   deviceId: 'd1',
   status: 'completed' as const,
   triggerKind: 'alert' as const,
+  profile: 'full' as const,
   runVerdict: 'remediated' as const,
   queuedAt: '2026-08-20T10:00:00.000Z',
   finishedAt: '2026-08-20T10:05:00.000Z',
@@ -47,6 +48,7 @@ const RUN_2 = {
   deviceId: null,
   status: 'failed' as const,
   triggerKind: 'manual' as const,
+  profile: 'full' as const,
   runVerdict: null,
   queuedAt: '2026-08-19T10:00:00.000Z',
   finishedAt: null,
@@ -180,6 +182,47 @@ describe('RunsListPage', () => {
     await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
     expect(screen.getByRole('columnheader', { name: 'Organization' })).toBeInTheDocument();
     expect(screen.getAllByText('Acme Corp')).toHaveLength(2);
+  });
+
+  // Phase 2 wave P2-2 (#4189, Task 14) — a sweep-profile run is a fleet-wide
+  // scheduled read, not a device incident, so it reads very differently from
+  // the alert/anomaly runs beside it in the list.
+  it('badges a sweep-profile run beside its verdict', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, id: 'run-9', profile: 'sweep' as const }] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-9')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-profile-sweep-run-9')).toHaveTextContent('Sweep');
+  });
+
+  it('omits the sweep badge for every other run profile', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, id: 'run-8', profile: 'verdict' as const }, RUN_2] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-8')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-profile-sweep-run-8')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-run-profile-sweep-run-2')).not.toBeInTheDocument();
+  });
+
+  // Phase 2 wave P2-3 (#4190) — a narrative-profile run is the weekly org
+  // report, not a device outcome; the badge is what tells the two apart.
+  it('badges a narrative-profile run beside its verdict', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, id: 'run-7', profile: 'narrative' as const }] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-table')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-profile-narrative-run-7')).toHaveTextContent('Weekly report');
+    // The two profile badges are mutually exclusive.
+    expect(screen.queryByTestId('ai-agent-run-profile-sweep-run-7')).not.toBeInTheDocument();
+  });
+
+  it('omits the narrative badge for every other run profile', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, id: 'run-6', profile: 'sweep' as const }, RUN_2] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-table')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-profile-narrative-run-6')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-run-profile-narrative-run-2')).not.toBeInTheDocument();
   });
 
   it('hides the Organization column when a single org is selected', async () => {

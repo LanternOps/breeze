@@ -74,7 +74,29 @@ jobs:
           fi
 
           # Unreachable. That is an OBSERVATION; the cause is not yet known, so
-          # do not print one until the side-branch case has been ruled out.
+          # classify reviewed candidate lineage before considering the stable
+          # side-branch fallback. The registry comes from authoritative main,
+          # even for a manual dispatch from another branch.
+          LINEAGE_OUTPUT=$(mktemp)
+          trap 'rm -f "$LINEAGE_OUTPUT"' EXIT
+          GITHUB_OUTPUT="$LINEAGE_OUTPUT" \
+            bash scripts/release/check-release-lineage.sh \
+              --tag "$LATEST_TAG" \
+              --main-ref origin/main \
+              --candidate-registry-ref origin/main \
+              --allow-unclassified
+          LINEAGE_CHANNEL=$(awk -F= '$1 == "channel" { print $2; exit }' "$LINEAGE_OUTPUT")
+          if [ "$LINEAGE_CHANNEL" = "candidate" ]; then
+            echo "OK: main rooted at $EXPECTED_ROOT"
+            echo "$LATEST_TAG has exact reviewed candidate release lineage; main does not yet reach it."
+            exit 0
+          fi
+          if [ "$LINEAGE_CHANNEL" != "unclassified" ]; then
+            echo "::error::unexpected lineage channel '$LINEAGE_CHANNEL' for unreachable tag $LATEST_TAG"
+            exit 1
+          fi
+
+          # Unclassified tags retain the existing stable side-branch fallback.
           PROVENANCE=.github/release-provenance/side-branch-tags.tsv
           EXPECTED_EQUIV=$(awk -v tag="$LATEST_TAG" '
             $0 !~ /^#/ && $1 == tag { print $2; exit }' "$PROVENANCE" 2>/dev/null)

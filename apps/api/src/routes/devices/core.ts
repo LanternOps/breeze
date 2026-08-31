@@ -73,6 +73,7 @@ import {
   withExtensionDeviceOrgMoveDelete,
 } from '../../extensions/tenancyRegistry';
 import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
+import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 
 
 /**
@@ -215,6 +216,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_group_memberships', 'device_hardware', 'device_ip_history',
   'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
+  'agent_rollback_events', 'agent_rollback_directives',
   'device_reliability', 'device_reliability_history', 'device_sessions',
   'device_vulnerabilities', 'device_warranty',
   'dns_event_aggregations', 'dns_security_events',
@@ -224,7 +226,8 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
   'metric_anomaly_candidates', 'metric_anomalies', 'metric_anomaly_incidents', 'metric_rollups',
   'onedrive_device_state',
-  'peripheral_events', 'playbook_executions', 'provision_credential_handles',
+  'peripheral_events', 'peripheral_policy_delivery_events', 'peripheral_policy_device_states',
+  'playbook_executions', 'provision_credential_handles',
   'recovery_key_access_events',
   'recovery_readiness', 'recovery_tokens', 'remediation_suggestions', 'remote_sessions', 'restore_jobs',
   's1_actions', 's1_agents', 's1_threats',
@@ -334,7 +337,8 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // CASCADE; recovery_key_access_events.key_id → device_recovery_keys.id
   // ON DELETE CASCADE, so delete the access-event ledger before its parent keys.
   'recovery_key_access_events', 'device_recovery_keys',
-  'peripheral_events',
+  'peripheral_policy_delivery_events', 'peripheral_policy_device_states', 'peripheral_events',
+  'agent_rollback_events', 'agent_rollback_directives',
   's1_agents', 's1_threats', 's1_actions',
   'huntress_agents', 'huntress_incidents',
   // AI & context
@@ -1424,6 +1428,12 @@ coreRoutes.patch(
         .where(eq(devices.id, deviceId))
         .returning();
       updated = row;
+    }
+
+    if (siteChanged) {
+      await schedulePeripheralPolicyDevice(deviceId, 'device_site_changed').catch((error) => {
+        console.error(`[devices] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+      });
     }
 
     writeRouteAudit(c, {

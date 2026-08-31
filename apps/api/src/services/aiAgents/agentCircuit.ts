@@ -112,6 +112,22 @@ const INCREMENT_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
 export type TerminalClassification = 'increment' | 'reset' | 'neutral';
 
 /**
+ * Profiles whose SUCCESS carries no information about the org's remediation
+ * health, so a terminal `completed`/`awaiting_approval` neither resets nor
+ * increments the streak — see `classifyTerminal`'s docstring for the
+ * per-profile reasoning. `failed` is deliberately NOT governed by this set:
+ * every profile can genuinely error out, and the runner/ceiling allowlist is
+ * the only thing that decides `increment` vs `neutral` there.
+ *
+ * Typed `ReadonlySet<AiAgentRunProfile>` so a misspelled member is a compile
+ * error. Membership is still a DECISION, not a derivation — see the "fifth
+ * profile" note on `classifyTerminal`.
+ */
+const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
+  'verdict', 'sweep', 'narrative', 'triage',
+]);
+
+/**
  * Pure, exhaustive-tested classification of one terminal run transition.
  *
  * - `increment`: `failed` with a runner/ceiling error code, OR `completed`
@@ -134,6 +150,41 @@ export type TerminalClassification = 'increment' | 'reset' | 'neutral';
  * unaffected by profile — the runner/ceiling increment allowlist still
  * applies, since a verdict run can genuinely error out the same way a full
  * run can.
+ *
+ * Phase 2 wave P2-2 (scheduled sweeps, design-review ruling): a
+ * `sweep`-profile run gets the SAME `completed`/`awaiting_approval` →
+ * `neutral` treatment as `verdict`, for a different reason — a sweep run's
+ * success says nothing about the org's remediation health (it is read-only
+ * reconnaissance, never a remediation attempt), so it never RESETS the
+ * streak, clean or `needs_attention` alike; a genuine failure still
+ * increments, exactly as for every other profile.
+ *
+ * Phase 2 wave P2-3 (weekly org narrative): a `narrative`-profile run is
+ * classified identically, and it is the strongest case of the same argument
+ * — a narrative run does not even READ live data (its whole input is the
+ * pre-collected weekly context) and its tool floor holds nothing but the
+ * outcome tool, so its outcome carries no information whatsoever about
+ * whether the org's remediation is working. It must therefore never reset a
+ * streak the fleet's real remediation runs earned, nor increment one on a
+ * `needs_attention` verdict about last week's prose. `failed` stays
+ * profile-independent: a narrative run can hit `llm_unavailable` or blow the
+ * turn/budget ceiling exactly like any other, and that is a real signal.
+ *
+ * Phase 2 wave P2-4 (ticket triage, #4191): a `triage`-profile run gets the
+ * SAME `completed`/`awaiting_approval` -> `neutral` treatment, for the
+ * same-shaped reason as `narrative` — it does not read any live data (its
+ * whole input is the system-assembled ticket context) and its output is a
+ * PROPOSAL a human must still accept before anything changes, so a clean
+ * completion carries no information about the org's remediation health
+ * either. `failed` stays profile-independent here too.
+ *
+ * NOTE for whoever adds the sixth profile: this function compares `profile`
+ * as a plain string and has NO exhaustive `never` guard (unlike
+ * `profileCaps` in `runService.ts` or `outcomeToolsForProfile` in
+ * `outcomeTools.ts`). Adding a value to `AI_AGENT_RUN_PROFILES` will NOT
+ * fail to compile here — it will silently inherit `full`'s reset/increment
+ * behaviour. `agentCircuit.test.ts` carries an explicit row per profile for
+ * exactly that reason.
  */
 export function classifyTerminal(
   to: AiAgentRunStatus,
@@ -142,10 +193,10 @@ export function classifyTerminal(
   profile: AiAgentRunProfile = 'full',
 ): TerminalClassification {
   if (to === 'completed') {
-    if (profile === 'verdict') return 'neutral';
+    if (STREAK_NEUTRAL_PROFILES.has(profile)) return 'neutral';
     return runVerdict === 'needs_attention' ? 'increment' : 'reset';
   }
-  if (to === 'awaiting_approval') return profile === 'verdict' ? 'neutral' : 'reset';
+  if (to === 'awaiting_approval') return STREAK_NEUTRAL_PROFILES.has(profile) ? 'neutral' : 'reset';
   if (to === 'failed') {
     return errorCode !== null && INCREMENT_FAILURE_ERROR_CODES.has(errorCode) ? 'increment' : 'neutral';
   }

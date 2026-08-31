@@ -173,21 +173,52 @@ export async function renameApproverDevice(id: string, label: string): Promise<R
 }
 
 /**
- * Run the approval-scoped assertion ceremony and return the proof body to attach
- * to an approve call. `basePath` is the decide resource — e.g. `/approvals` or
- * `/pam/elevation-requests`. challenge → Windows Hello → assertion proof.
+ * A challenge the server REFUSED, carrying the machine token it answered with
+ * (`batch_not_homogeneous`, `step_up_required`, …) alongside the status.
+ *
+ * The batch challenge route re-validates the whole set before minting anything,
+ * so the 422 a raced set produces arrives here rather than at the decide call —
+ * without the token the caller could only report a generic "verification
+ * failed" and the approver would never learn the set had drifted. `message` is
+ * unchanged from the pre-existing plain `Error`, so the single-card callers see
+ * exactly what they always did.
  */
-export async function getApprovalAssertion(basePath: string, id: string): Promise<AssertionProof> {
-  const challengeResponse = await fetchWithAuth(`${basePath}/${id}/assertion-challenge`, {
-    method: 'POST',
-  });
+export class AssertionChallengeError extends Error {
+  status: number;
+  token?: string;
+  constructor(message: string, status: number, token?: string) {
+    super(message);
+    this.name = 'AssertionChallengeError';
+    this.status = status;
+    this.token = token;
+  }
+}
+
+/**
+ * Everything after the challenge POST: validate the body, detect the
+ * device-less case, run the WebAuthn ceremony, shape the proof.
+ *
+ * Shared by the single-card and batch entry points so the two can never drift —
+ * a batch that skipped, say, the `NoApproverDeviceError` branch would fire a
+ * Windows Hello prompt the technician cannot satisfy, and one that skipped the
+ * malformed-2xx guard would tell a user who HAS a registered authenticator to
+ * go register one.
+ */
+async function completeAssertionCeremony(
+  challengeResponse: Response,
+): Promise<AssertionProof> {
   const challengeData = await challengeResponse.json().catch(() => null);
   // A genuine server error (500/404/403) must surface as a REAL error — NOT be
   // misclassified as the device-less case below (which would silently downgrade
   // a real outage to an L1 approval). Only a 2xx with no allowCredentials is the
   // benign "no registered device" fallback. (fetchWithAuth doesn't throw on non-2xx.)
   if (!challengeResponse.ok) {
-    throw new Error(challengeData?.error ?? `Could not start verification (${challengeResponse.status}).`);
+    const token = typeof challengeData?.error === 'string' ? challengeData.error : undefined;
+    throw new AssertionChallengeError(
+      token ?? `Could not start verification (${challengeResponse.status}).`,
+      challengeResponse.status,
+      token,
+    );
   }
   // A 2xx whose body isn't a usable challenge (empty body, truncated proxy
   // response, a future field rename) must NOT fall through to the device-less
@@ -231,4 +262,45 @@ export async function getApprovalAssertion(basePath: string, id: string): Promis
     signature: response.response.signature,
     userHandle: response.response.userHandle ?? null,
   };
+}
+
+/**
+ * Run the approval-scoped assertion ceremony and return the proof body to attach
+ * to an approve call. `basePath` is the decide resource — e.g. `/approvals` or
+ * `/pam/elevation-requests`. challenge → Windows Hello → assertion proof.
+ */
+export async function getApprovalAssertion(basePath: string, id: string): Promise<AssertionProof> {
+  return completeAssertionCeremony(
+    await fetchWithAuth(`${basePath}/${id}/assertion-challenge`, { method: 'POST' }),
+  );
+}
+
+/**
+ * P2-2 (#4189): ONE ceremony for a whole homogeneous set of supervised,
+ * agent-originated cards — a scheduled sweep fans one card out per device, so
+ * deciding a fleet-wide finding otherwise costs one Touch ID prompt per device.
+ *
+ * The challenge the server mints is bound to the exact set AND direction
+ * (`batchAssertionKey` in `services/approvals/batchDecide.ts`), so the proof
+ * this returns can only be spent on `decision` over `ids` — never replayed to
+ * flip an approve into a deny, nor to sweep in a card that was not signed for.
+ * `decision` therefore uses the SERVER's spelling (`approved`/`denied`), since
+ * it is part of that binding rather than a UI label.
+ *
+ * The route re-validates homogeneity before minting, so a set that has drifted
+ * (a row decided elsewhere, an org moved) rejects here with 422
+ * `batch_not_homogeneous` — surfaced as an `AssertionChallengeError` carrying
+ * that token so the caller can say so precisely.
+ */
+export async function getBatchApprovalAssertion(
+  basePath: string,
+  ids: string[],
+  decision: 'approved' | 'denied',
+): Promise<AssertionProof> {
+  return completeAssertionCeremony(
+    await fetchWithAuth(`${basePath}/batch/assertion-challenge`, {
+      method: 'POST',
+      body: JSON.stringify({ approvalRequestIds: ids, decision }),
+    }),
+  );
 }

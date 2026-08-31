@@ -18,7 +18,12 @@ import {
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { setCooldown, markConfigPolicyRuleCooldown } from '../services/alertCooldown';
-import { ALERT_CAS_LOST_MESSAGE, buildResolveAlertCas } from '../services/alertService';
+import {
+  ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE,
+  ALERT_CAS_LOST_MESSAGE,
+  buildAcknowledgeAlertCas,
+  buildResolveAlertCas,
+} from '../services/alertService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { publishEvent } from '../services/eventBus';
 import { escapeLike } from '../utils/sql';
@@ -904,11 +909,23 @@ mobileRoutes.post(
       return c.json({ error: 'Alert not found' }, 404);
     }
 
+    // Fast path with a specific message. It is NOT the concurrency control — the
+    // compare-and-swap below is. See the twin handler in routes/alerts/alerts.ts
+    // for why `acknowledged` carries the CAS loser's 409 rather than a 400.
+    if (alert.status === 'acknowledged') {
+      return c.json({ error: 'Alert is already acknowledged' }, 409);
+    }
     if (alert.status !== 'active') {
       return c.json({ error: `Cannot acknowledge alert with status: ${alert.status}` }, 400);
     }
 
     const acknowledgedAt = new Date();
+    // Winner-takes-all (#4101) — same predicate as the twin handler in
+    // routes/alerts/alerts.ts. This path additionally never looked at the
+    // `RETURNING` at all (`updated?.id ?? alertId`), so a write that matched zero
+    // rows — a lost race, or a row this tenant context cannot see, which raises no
+    // error under breeze_app RLS — still published `alert.acknowledged`, still fed
+    // the ML loop and still answered 200 with a null body.
     const [updated] = await db
       .update(alerts)
       .set({
@@ -916,15 +933,18 @@ mobileRoutes.post(
         acknowledgedAt,
         acknowledgedBy: auth.user.id
       })
-      .where(eq(alerts.id, alertId))
+      .where(buildAcknowledgeAlertCas(alertId))
       .returning();
+    if (!updated) {
+      return c.json({ error: ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE }, 409);
+    }
 
     try {
       await publishEvent(
         'alert.acknowledged',
         alert.orgId,
         {
-          alertId: updated?.id ?? alertId,
+          alertId: updated.id,
           ruleId: alert.ruleId,
           deviceId: alert.deviceId,
           acknowledgedBy: auth.user.id
@@ -938,7 +958,7 @@ mobileRoutes.post(
 
     await emitAlertStateFeedback({
       orgId: alert.orgId,
-      alertId: updated?.id ?? alertId,
+      alertId: updated.id,
       eventType: 'alert.acknowledged',
       outcome: 'acknowledged',
       actorUserId: auth.user.id,
@@ -953,8 +973,8 @@ mobileRoutes.post(
       orgId: alert.orgId,
       action: 'mobile.alert.acknowledge',
       resourceType: 'alert',
-      resourceId: updated?.id ?? alertId,
-      resourceName: updated?.title ?? alert.title
+      resourceId: updated.id,
+      resourceName: updated.title
     });
 
     return c.json(updated);

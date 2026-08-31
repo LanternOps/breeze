@@ -6,6 +6,7 @@ RUN npm install -g pnpm@10.34.5
 WORKDIR /app
 
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY patches ./patches
 COPY turbo.json tsconfig.json ./
 
 COPY apps/portal/package.json ./apps/portal/

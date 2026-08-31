@@ -702,7 +702,7 @@ ticketsRoutes.post(
     try {
       const ticket = await changeTicketStatus(id,
         { status: body.status, statusId: body.statusId },
-        { resolutionNote: body.resolutionNote, pendingReason: body.pendingReason },
+        { resolutionNote: body.resolutionNote, pendingReason: body.pendingReason, aiDraftId: body.aiDraftId },
         actorFrom(c)
       );
       return c.json({ data: ticket });
