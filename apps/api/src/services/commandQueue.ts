@@ -9,6 +9,10 @@ import {
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
 import { commandAuditDetails } from './commandAudit';
+import {
+  AGENT_BINARY_UPDATE_COMMAND_TYPES,
+  agentBinaryUpdateDispatchRefusal,
+} from './agentEditionCompat';
 import { recordCommandDispatch } from './anomalyMetrics';
 import {
   decryptCommandForDelivery,
@@ -605,6 +609,21 @@ export async function queueCommand(
   // default. Never accept a client-supplied value.
   options: { commandId?: string } = {}
 ): Promise<QueuedCommand> {
+  // #4093 — agent-binary updates must not be created here. This insert site
+  // cannot set target_role (the row would default to 'agent', which has no
+  // handler for these types) and has no device row to evaluate the
+  // artifact-edition gate against. `executeCommand` is the one dispatch path
+  // that does both; refuse loudly rather than let this become the ungated
+  // back door. Checked FIRST: it is a pure Set lookup, so a refused type never
+  // pays for the `resolveCommandCreatedBy` users probe below.
+  if (AGENT_BINARY_UPDATE_COMMAND_TYPES.has(type)) {
+    throw new Error(
+      `${type} cannot be queued through queueCommand — dispatch it via ` +
+        `executeCommand(deviceId, '${type}', payload, { targetRole: 'watchdog' }) ` +
+        `so the artifact-edition gate (#4093) and the watchdog target role are applied.`,
+    );
+  }
+
   // Never stamp `userId` verbatim — it may be a synthetic-auth id with no
   // `users` row, which would fail the created_by FK with 23503 (#3978).
   const safeUserId = await resolveCommandCreatedBy(deviceId, userId);
@@ -930,6 +949,8 @@ export async function executeCommand(
   const dispatchViaWs = targetRole === 'agent' && !preferHeartbeat;
 
   // 1. Verify device inside the auth transaction (RLS-protected).
+  // agentEdition/agentVersion/watchdogVersion feed the artifact-edition gate
+  // below (#4093) — cheap here because this SELECT already runs.
   const [device] = await db
     .select({
       id: devices.id,
@@ -938,6 +959,9 @@ export async function executeCommand(
       orgId: devices.orgId,
       hostname: devices.hostname,
       watchdogLastSeen: devices.watchdogLastSeen,
+      agentEdition: devices.agentEdition,
+      agentVersion: devices.agentVersion,
+      watchdogVersion: devices.watchdogVersion,
     })
     .from(devices)
     .where(eq(devices.id, deviceId))
@@ -945,6 +969,24 @@ export async function executeCommand(
 
   if (!device) {
     return { status: 'failed', error: 'Device not found' };
+  }
+
+  // #4093 — artifact-edition gate for agent-binary updates, at the dispatch
+  // chokepoint. Runs BEFORE the liveness gates below on purpose: an edition
+  // mismatch is a permanent property of the installed build, so reporting the
+  // transient "watchdog is not reporting" first would send the operator back
+  // to retry a dispatch that can never succeed. Inert for every other command
+  // type (see AGENT_BINARY_UPDATE_COMMAND_TYPES).
+  const editionRefusal = agentBinaryUpdateDispatchRefusal({
+    commandType: type,
+    targetRole,
+    device,
+  });
+  if (editionRefusal) {
+    console.warn(
+      `[commandQueue] ${type} dispatch refused for device ${deviceId} (#4093): ${editionRefusal}`,
+    );
+    return { status: 'failed', error: editionRefusal };
   }
 
   if (targetRole === 'watchdog') {
