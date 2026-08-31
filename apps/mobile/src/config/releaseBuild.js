@@ -66,9 +66,11 @@ function easEnvironmentFor(env) {
 
 /**
  * Warnings go straight to stderr, not `console.warn`: `expo config` swallows
- * console output while it evaluates the config (verified — the warning vanished
- * entirely), and a silenced warning about a suppressed guard is the exact
- * failure these guards exist to prevent.
+ * console output while it evaluates the config — observed on Expo SDK 57, where
+ * the warning vanished entirely — and a silenced warning about a suppressed
+ * guard is the exact failure these guards exist to prevent. It is a point-in-
+ * time finding about a third-party CLI, so re-check it on a major Expo upgrade;
+ * nothing in the test suite can hold Expo to it.
  *
  * @param {{ warn?: (message: string) => void } | undefined} io
  * @returns {(message: string) => void}
@@ -96,7 +98,14 @@ function warnFn(io) {
  *    included) ships a `__DEV__ === false` bundle to a real device.
  *  - `NODE_ENV === 'production'` — what `expo export` and the Android release
  *    bundling task run under. Also the mode `@expo/env` uses to pick
- *    `.env.production`.
+ *    `.env.production`. This is the signal that covers a LOCAL Android release
+ *    (`./gradlew bundleRelease`), which sets neither `CONFIGURATION` nor
+ *    `EAS_BUILD_PROFILE`: the Gradle task shells out to `expo export:embed
+ *    --dev false`, and `@expo/cli` does `setNodeEnv('production')` at the top of
+ *    `exportEmbedAsync` (build/src/export/embed/exportEmbedAsync.js:208 on SDK
+ *    57) — before the `getConfig` call further down that evaluates this config.
+ *    `expo run:android --variant release` and `expo run:ios --configuration
+ *    Release` set it in their own entry points for the same reason.
  *
  * This function deliberately does NOT consider `BREEZE_MOBILE_DEV`. Detection
  * and suppression are separate steps so that suppressing a real signal can be

@@ -105,6 +105,41 @@ describe('describeApiUrlProblem', () => {
     expect(describeApiUrlProblem('http://breeze.acme-msp.co.uk')).toMatch(/plaintext http/);
   });
 
+  // The opt-in says "a private host is fine", never "plaintext to the open
+  // internet is fine". Gating the plaintext branch on it — which the first cut
+  // of this file did — let a build that had the flag set for LAN testing ship
+  // http:// to a public host, which ATS then blocks on the device, silently.
+  it('still rejects plaintext to a PUBLIC host under the private opt-in', () => {
+    expect(describeApiUrlProblem('http://us.2breeze.app', { allowPrivate: true })).toMatch(
+      /plaintext http/
+    );
+    expect(describeApiUrlProblem('http://breeze.acme-msp.co.uk', { allowPrivate: true })).toMatch(
+      /plaintext http/
+    );
+  });
+
+  // The WHATWG parser normalises an IPv4-mapped IPv6 literal into hex groups
+  // (`::ffff:127.0.0.1` -> `::ffff:7f00:1`), so the dotted-quad rules only see
+  // it if `normalizeHost` folds it back.
+  it('sees through IPv4-mapped IPv6 literals', () => {
+    expect(describeApiUrlProblem('https://[::ffff:127.0.0.1]')).toMatch(/the phone itself/);
+    expect(describeApiUrlProblem('https://[::ffff:7f00:1]')).toMatch(/the phone itself/);
+    expect(describeApiUrlProblem('https://[::ffff:192.168.1.50]')).toMatch(
+      /private-network address/
+    );
+    // A mapped PUBLIC address is still fine — the folding must not over-reject.
+    expect(describeApiUrlProblem('https://[::ffff:203.0.113.10]')).toBeNull();
+  });
+
+  // The URL parser canonicalises octal, decimal and short-form IPv4 before the
+  // dotted-quad rules run, so obfuscated loopback needs no special handling —
+  // but it must actually be caught, so assert it rather than assume it.
+  it('catches obfuscated IPv4 loopback spellings', () => {
+    for (const value of ['https://0177.0.0.1', 'https://2130706433', 'https://127.1']) {
+      expect(describeApiUrlProblem(value)).toMatch(/the phone itself/);
+    }
+  });
+
   it('rejects values that are not usable URLs', () => {
     for (const value of [
       'us.2breeze.app', // no scheme
@@ -136,6 +171,21 @@ describe('describeApiUrlProblem', () => {
   it('does not read placeholder markers out of the path or query', () => {
     expect(describeApiUrlProblem('https://us.2breeze.app/example.com/todo')).toBeNull();
     expect(describeApiUrlProblem('https://us.2breeze.app/?next=changeme')).toBeNull();
+  });
+
+  // Reserved domains match as a suffix and marker words as a whole LABEL. A
+  // substring match would break real customers: `forexample.com` contains
+  // `example.com`, and `changemedia.com` contains `changeme`.
+  it('does not reject real hosts that merely contain a marker', () => {
+    for (const value of [
+      'https://forexample.com',
+      'https://changemedia.com',
+      'https://api.exampleco.com',
+      'https://yourdomainname.io',
+      'https://placeholders.acme.com',
+    ]) {
+      expect(describeApiUrlProblem(value)).toBeNull();
+    }
   });
 });
 
@@ -204,9 +254,53 @@ describe('assertReleaseApiUrl', () => {
     it('lets a LAN release build through', () => {
       expect(() =>
         assertReleaseApiUrl(
-          archive({ [API_URL_VAR]: 'http://192.168.1.50:3001', [ALLOW_PRIVATE_API_URL_VAR]: '1' })
+          archive({ [API_URL_VAR]: 'http://192.168.1.50:3001', [ALLOW_PRIVATE_API_URL_VAR]: '1' }),
+          { warn: vi.fn() }
         )
       ).not.toThrow();
+    });
+
+    // An escape hatch that suppresses a guard in silence is the exact failure
+    // this module exists to stop, and it is the pattern
+    // BREEZE_MOBILE_ALLOW_NO_SENTRY already set next door. The first cut of this
+    // file folded the flag into the problem calculation, so the rescue happened
+    // before anything could report it.
+    it('says so on every build where it rescued a value', () => {
+      const warn = vi.fn();
+      assertReleaseApiUrl(
+        archive({ [API_URL_VAR]: 'http://192.168.1.50:3001', [ALLOW_PRIVATE_API_URL_VAR]: '1' }),
+        { warn }
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = warn.mock.calls[0][0] as string;
+      expect(message).toContain(ALLOW_PRIVATE_API_URL_VAR);
+      expect(message).toContain('192.168.1.50');
+      expect(message).toContain('CONFIGURATION="Release"');
+    });
+
+    it('stays silent when the URL needed no rescuing', () => {
+      const warn = vi.fn();
+      assertReleaseApiUrl(archive({ [API_URL_VAR]: HOSTED, [ALLOW_PRIVATE_API_URL_VAR]: '1' }), {
+        warn,
+      });
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('does not fire on a non-release build', () => {
+      const warn = vi.fn();
+      assertReleaseApiUrl(
+        { [API_URL_VAR]: 'http://192.168.1.50:3001', [ALLOW_PRIVATE_API_URL_VAR]: '1' },
+        { warn }
+      );
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('does not extend to plaintext http on a public host', () => {
+      expect(() =>
+        assertReleaseApiUrl(
+          archive({ [API_URL_VAR]: 'http://us.2breeze.app', [ALLOW_PRIVATE_API_URL_VAR]: '1' })
+        )
+      ).toThrow(/plaintext http/);
     });
 
     // Same convention as BREEZE_MOBILE_ALLOW_NO_SENTRY: a near-miss spelling

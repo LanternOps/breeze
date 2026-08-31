@@ -6,10 +6,11 @@
  * ---------------
  * `EXPO_PUBLIC_API_URL` is the base URL every service module falls back to
  * before the user has picked a server (`getServerUrl()` in
- * `src/services/serverConfig.ts` returns null) — see the identical
- * `const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ||
- * 'http://localhost:3001'` line at the top of `services/api.ts`,
- * `services/aiChat.ts`, `services/approvals.ts` and six more.
+ * `src/services/serverConfig.ts` returns null) — see the same
+ * `FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ||
+ * 'http://localhost:3001'` fallback at the top of `services/api.ts`,
+ * `services/aiChat.ts`, `services/approvals.ts` and six more (exported from
+ * `api.ts`, module-private in the other eight).
  *
  * Ship a build where that value is unset or points at `localhost` and the
  * literal string `http://localhost:3001` is compiled into the IPA. On a phone
@@ -48,14 +49,22 @@
  * address IS legitimate for an MSP building an internal-distribution app for a
  * LAN-hosted Breeze, so that one gets a named opt-in rather than a veto —
  * `BREEZE_MOBILE_ALLOW_PRIVATE_API_URL=1`, which is deliberately narrower than
- * `BREEZE_MOBILE_DEV=1` so it does not also switch off the Sentry guard.
+ * `BREEZE_MOBILE_DEV=1` so it does not also switch off the Sentry guard. Like
+ * the Sentry guard's `BREEZE_MOBILE_ALLOW_NO_SENTRY`, it WARNS on every build
+ * where it rescued a value that would otherwise have failed: an escape hatch
+ * nobody can see is the failure mode this file exists to stop.
  *
  * Plain CommonJS on purpose: Expo transpiles `app.config.js` but NOT the
  * modules it requires, so a `.ts` file here fails `expo config` with
  * "Cannot find module".
  */
 
-const { easEnvironmentFor, isSuppressed, releaseBuildReason } = require('./releaseBuild');
+const {
+  easEnvironmentFor,
+  isSuppressed,
+  releaseBuildReason,
+  warnFn,
+} = require('./releaseBuild');
 
 /** The public (bundle-inlined) API base URL. Not a secret; see .env.example. */
 const API_URL_VAR = 'EXPO_PUBLIC_API_URL';
@@ -64,19 +73,24 @@ const API_URL_VAR = 'EXPO_PUBLIC_API_URL';
 const ALLOW_PRIVATE_API_URL_VAR = 'BREEZE_MOBILE_ALLOW_PRIVATE_API_URL';
 
 /**
- * Hostname substrings that mean "somebody left the example value in place".
+ * Domains reserved by RFC 2606 / RFC 6761 for documentation and examples.
  *
- * Matched against the HOSTNAME, not the whole URL, so a real domain that
- * happens to contain one of these words in its path or query is not rejected.
- * `example.com`/`.org`/`.net` are RFC 2606 documentation domains and can never
- * be a real deployment. Angle-bracketed placeholders (`https://<your-host>`)
- * never reach here — `<` and `>` are forbidden host characters, so the URL
- * parse fails first.
+ * Matched as an exact host or a suffix — NOT as a substring, which would
+ * reject the real domain `forexample.com` for containing `example.com`.
  */
-const PLACEHOLDER_HOST_MARKERS = [
-  'example.com',
-  'example.org',
-  'example.net',
+const RESERVED_EXAMPLE_DOMAINS = ['example.com', 'example.org', 'example.net', 'example'];
+
+/**
+ * Hostname LABELS that mean "somebody left the example value in place".
+ *
+ * Compared label-by-label rather than as substrings, because a substring match
+ * rejects real hosts: `changemedia.com` contains `changeme`. `CHANGEME.acme.com`
+ * has `changeme` as a whole label and is caught; `changemedia.com` is not.
+ *
+ * Angle-bracketed placeholders (`https://<your-host>`) never reach here — `<`
+ * and `>` are forbidden host characters, so the URL parse fails first.
+ */
+const PLACEHOLDER_HOST_LABELS = [
   'changeme',
   'change-me',
   'replaceme',
@@ -84,21 +98,61 @@ const PLACEHOLDER_HOST_MARKERS = [
   'your-domain',
   'yourdomain',
   'your-host',
+  'yourhost',
   'placeholder',
 ];
 
 /**
+ * @param {string} host already normalized
+ * @returns {boolean}
+ */
+function isPlaceholderHost(host) {
+  for (const domain of RESERVED_EXAMPLE_DOMAINS) {
+    if (host === domain || host.endsWith(`.${domain}`)) return true;
+  }
+  return host.split('.').some((label) => PLACEHOLDER_HOST_LABELS.includes(label));
+}
+
+/**
+ * Fold an IPv4-mapped IPv6 literal back to its dotted quad.
+ *
+ * `new URL('https://[::ffff:127.0.0.1]')` normalises the host to
+ * `[::ffff:7f00:1]`, so without this the dotted-quad rules below would miss a
+ * loopback address written that way and wave the build through.
+ *
+ * @param {string} host bracket-stripped, lowercased
+ * @returns {string}
+ */
+function unmapIpv4(host) {
+  const dotted = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(host);
+  if (dotted) return dotted[1];
+
+  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+  if (!hex) return host;
+
+  const high = parseInt(hex[1], 16);
+  const low = parseInt(hex[2], 16);
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+}
+
+/**
  * Strip the brackets the WHATWG URL parser keeps around an IPv6 literal
- * (`new URL('http://[::1]:3001').hostname === '[::1]'`) and lowercase.
+ * (`new URL('http://[::1]:3001').hostname === '[::1]'`), lowercase, and undo
+ * IPv4 mapping so one set of rules covers every spelling.
+ *
+ * Obfuscated IPv4 forms need no handling here: the URL parser already
+ * normalises them, so `https://0177.0.0.1` and `https://2130706433` both arrive
+ * as `127.0.0.1`.
  *
  * @param {string} hostname
  * @returns {string}
  */
 function normalizeHost(hostname) {
-  return String(hostname || '')
+  const bare = String(hostname || '')
     .toLowerCase()
     .replace(/^\[/, '')
     .replace(/\]$/, '');
+  return unmapIpv4(bare);
 }
 
 /**
@@ -117,9 +171,10 @@ function parseIpv4(host) {
 /**
  * Addresses that resolve to the device itself, or to nothing at all.
  *
- * `0.0.0.0` is here rather than under "private" because it is the unspecified
- * address — a bind address someone pasted out of a server config, never a
- * client destination — so there is no opt-in that should make it acceptable.
+ * `0.0.0.0` — and the rest of the `0.0.0.0/8` block, which the octet test below
+ * also covers — is here rather than under "private" because it is the
+ * unspecified address, a bind address someone pasted out of a server config and
+ * never a client destination. No opt-in should make it acceptable.
  *
  * @param {string} host already normalized
  * @returns {boolean}
@@ -191,9 +246,7 @@ function describeApiUrlProblem(value, options) {
   const host = normalizeHost(url.hostname);
   if (!host) return invalid;
 
-  for (const marker of PLACEHOLDER_HOST_MARKERS) {
-    if (host.includes(marker)) return `still holds a placeholder value (${quoted})`;
-  }
+  if (isPlaceholderHost(host)) return `still holds a placeholder value (${quoted})`;
 
   if (isLoopbackHost(host)) {
     return `points at ${quoted}, which on a phone is the phone itself — every request will fail`;
@@ -205,12 +258,19 @@ function describeApiUrlProblem(value, options) {
     if (!allowPrivate) {
       return `points at the private-network address ${quoted}, which no device outside that network can reach`;
     }
-    // An opted-in LAN deployment is also the one place plaintext is defensible,
-    // so stop here rather than falling through to the ATS check below.
+    // An opted-in LAN deployment is also the one place plaintext is defensible
+    // (a box on someone's network often has no publicly-issued certificate), so
+    // stop here rather than falling through to the ATS check below.
     return null;
   }
 
-  if (url.protocol === 'http:' && !allowPrivate) {
+  // Reached only for a PUBLIC host, because every private one returned above.
+  // So this must NOT consult `allowPrivate`: that flag says "a private host is
+  // fine", never "plaintext to the open internet is fine". Gating it here let a
+  // build that had the flag set for LAN testing ship http:// to a public host —
+  // ATS blocks that on the device, silently, which is the whole failure class
+  // this module exists to stop.
+  if (url.protocol === 'http:') {
     return `uses plaintext http (${quoted}); iOS App Transport Security blocks it, and credentials would cross the internet in the clear`;
   }
 
@@ -246,9 +306,10 @@ function buildFailureMessage(problem, reason, env) {
     '',
     'Hosted regions are https://us.2breeze.app and https://eu.2breeze.app.',
     '',
-    `If this build really does target a LAN or self-hosted server on a private`,
-    `address, set ${ALLOW_PRIVATE_API_URL_VAR}=1 — that opts out of the`,
-    'private-address and plaintext checks only, and leaves every other guard on.',
+    'If this build really does target a LAN or self-hosted server on a private',
+    `address, set ${ALLOW_PRIVATE_API_URL_VAR}=1. That accepts a private-network`,
+    'host, plaintext http included, and warns on every build that it did. It does',
+    'NOT accept loopback, a placeholder, or plaintext to a public host.',
   ].join('\n');
 }
 
@@ -270,8 +331,16 @@ function buildFailureMessage(problem, reason, env) {
  * @throws {Error} on a release build with a missing or unreachable API URL
  */
 function assertReleaseApiUrl(env, io) {
-  const allowPrivate = isSuppressed(env[ALLOW_PRIVATE_API_URL_VAR]);
-  const problem = describeApiUrlProblem(env[API_URL_VAR], { allowPrivate });
+  const value = env[API_URL_VAR];
+
+  // The STRICTEST reading first, before any opt-in is applied. Order matters
+  // for the same reason it does in `releaseBuildReason`: a flag that turns a
+  // real problem into a non-problem has to be able to say so, and it cannot if
+  // the problem was never computed. Folding `allowPrivate` in here — as this
+  // did originally — made the opt-in the one escape hatch in this file that
+  // suppressed a guard in total silence, which is the failure shape the whole
+  // module exists to prevent.
+  const problem = describeApiUrlProblem(value);
   if (!problem) return;
 
   const reason = releaseBuildReason(env, io, {
@@ -279,6 +348,19 @@ function assertReleaseApiUrl(env, io) {
     consequence: 'it will ship unable to reach the API.',
   });
   if (!reason) return;
+
+  if (
+    isSuppressed(env[ALLOW_PRIVATE_API_URL_VAR]) &&
+    !describeApiUrlProblem(value, { allowPrivate: true })
+  ) {
+    warnFn(io)(
+      `[breeze] WARNING: ${API_URL_VAR} ${problem}, but ${ALLOW_PRIVATE_API_URL_VAR} is set. ` +
+        `Building a release (${reason}) against an address only reachable from inside ` +
+        'that network. Anyone installing this build from outside it will not be able ' +
+        'to sign in.'
+    );
+    return;
+  }
 
   throw new Error(buildFailureMessage(problem, reason, env));
 }

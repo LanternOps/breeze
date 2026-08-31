@@ -53,6 +53,19 @@ describe('app.config.js — EXPO_PUBLIC_API_URL gate', () => {
     expect(result.extra.existing).toBe('kept');
   });
 
+  // Documenting intent, not accidental behaviour: the two gates are independent
+  // and the first one to fail wins. A release build missing BOTH reports only
+  // the DSN, which costs one extra rebuild. Aggregating would mean changing
+  // `resolveSentryDsn`'s shipped contract, and `.env.example` ships a working
+  // API URL with a blank DSN, so the realistic single failure is the DSN.
+  it('reports the Sentry gate first when a release build fails both', () => {
+    vi.stubEnv('CONFIGURATION', 'Release');
+    vi.stubEnv('EXPO_PUBLIC_SENTRY_DSN', '');
+    vi.stubEnv('EXPO_PUBLIC_API_URL', 'http://localhost:3001');
+    expect(() => appConfig({ config: baseConfig() })).toThrow(/EXPO_PUBLIC_SENTRY_DSN/);
+    expect(() => appConfig({ config: baseConfig() })).not.toThrow(/EXPO_PUBLIC_API_URL/);
+  });
+
   // The dev loop and CI evaluate this file constantly with no API URL set.
   // A throw here would be reverted within the day.
   it('never breaks a non-release build', () => {
