@@ -10,6 +10,7 @@ import {
   startTimer,
   stopTimer,
   TimeEntryError,
+  updateTimeEntry,
 } from './timeEntries';
 
 const ENTRY = {
@@ -36,7 +37,15 @@ describe('getRunningTimer', () => {
       data: { id: 't1', ticketId: 'k1', startedAt: '2026-08-23T10:00:00Z', description: 'onsite', extra: 'ignored' },
     });
     const timer = await getRunningTimer();
-    expect(timer).toEqual({ id: 't1', ticketId: 'k1', startedAt: '2026-08-23T10:00:00Z', description: 'onsite' });
+    // `localId: null` is the marker that the SERVER owns this timer, as
+    // opposed to one this device is ticking that has no entry yet.
+    expect(timer).toEqual({
+      id: 't1',
+      localId: null,
+      ticketId: 'k1',
+      startedAt: '2026-08-23T10:00:00Z',
+      description: 'onsite',
+    });
   });
 });
 
@@ -159,5 +168,35 @@ describe('getTimesheet', () => {
     expect(week.days).toHaveLength(1);
     expect(week.days[0]).toMatchObject({ date: '2026-08-17', totalMinutes: 60, billableMinutes: 30 });
     expect(week.days[0].entries[0]).toEqual({ ...ENTRY, endedAt: 'x', durationMinutes: 60 });
+  });
+});
+
+describe('updateTimeEntry', () => {
+  it('PATCHes only the fields the caller passed', async () => {
+    coreRequest.mockResolvedValue({ data: { ...ENTRY, description: 'fixed' } });
+    await updateTimeEntry('e1', { description: 'fixed' });
+    const [path, options] = coreRequest.mock.calls[0];
+    expect(path).toBe('/time-entries/e1');
+    expect((options as { method: string }).method).toBe('PATCH');
+    expect(JSON.parse((options as { body: string }).body)).toEqual({ description: 'fixed' });
+  });
+
+  it('sends an explicit false for isBillable rather than dropping it', async () => {
+    // `compact` drops undefined, and `false` is a legitimate value here — a
+    // dropped one silently leaves the entry billable.
+    coreRequest.mockResolvedValue({ data: { ...ENTRY, isBillable: false } });
+    await updateTimeEntry('e1', { isBillable: false });
+    const [, options] = coreRequest.mock.calls[0];
+    expect(JSON.parse((options as { body: string }).body)).toEqual({ isBillable: false });
+  });
+
+  it('surfaces a locked row as a typed error the screen can name', async () => {
+    coreRequest.mockRejectedValue(
+      Object.assign(new Error('Entry is billed'), { statusCode: 409, code: 'ENTRY_BILLED' })
+    );
+    await expect(updateTimeEntry('e1', { description: 'x' })).rejects.toMatchObject({
+      code: 'ENTRY_BILLED',
+      status: 409,
+    });
   });
 });

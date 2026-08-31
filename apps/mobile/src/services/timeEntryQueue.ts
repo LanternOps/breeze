@@ -109,6 +109,20 @@ export class QueueStorageError extends Error {
   }
 }
 
+/**
+ * The unsent rows could not be copied aside, so they were NOT deleted.
+ *
+ * Distinct from QueueStorageError: nothing is lost, but the cross-account
+ * window stays open until `reconcileQueueOwner` closes it, and `clearAuthData`
+ * reports it as a partial wipe rather than a clean sign-out.
+ */
+export class QueueParkError extends Error {
+  constructor() {
+    super('unsent time entries could not be parked, so the queue was left in place');
+    this.name = 'QueueParkError';
+  }
+}
+
 let storageChain: Promise<void> = Promise.resolve();
 let drainChain: Promise<void> = Promise.resolve();
 
@@ -287,6 +301,193 @@ export async function enqueue(
   });
 }
 
+/**
+ * Where a queue that belonged to a previous session is parked instead of being
+ * deleted. An APPENDED list of batches: overwriting it would let a second
+ * sign-out destroy the first technician's only remaining copy.
+ */
+export const QUEUE_ORPHANED_KEY = 'breeze.timeEntryQueue.v2.orphaned';
+/** The user id whose session produced the rows currently in QUEUE_KEY. */
+export const QUEUE_OWNER_KEY = 'breeze.timeEntryQueue.v2.owner';
+
+/**
+ * Bumped whenever the queue is deliberately emptied. A drain that started
+ * before the bump holds a snapshot of the PREVIOUS account's rows; persisting
+ * it would write them straight back and re-open the leak the clear closed.
+ */
+let queueGeneration = 0;
+
+export interface OrphanedBatch {
+  parkedAt: string;
+  owner: string | null;
+  writes: QueuedWrite[];
+  needsAttention: NeedsAttentionRow[];
+}
+
+export async function readOrphanedQueues(): Promise<OrphanedBatch[]> {
+  let stored: string | null;
+  try {
+    stored = await AsyncStorage.getItem(QUEUE_ORPHANED_KEY);
+  } catch {
+    return [];
+  }
+  if (stored === null) return [];
+  try {
+    const parsed: unknown = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((value) => {
+      const batch = (typeof value === 'object' && value !== null ? value : {}) as Partial<OrphanedBatch>;
+      return {
+        parkedAt: typeof batch.parkedAt === 'string' ? batch.parkedAt : new Date(0).toISOString(),
+        owner: typeof batch.owner === 'string' ? batch.owner : null,
+        writes: (Array.isArray(batch.writes) ? batch.writes : [])
+          .map(asQueuedWrite)
+          .filter((write): write is QueuedWrite => write !== null),
+        needsAttention: (Array.isArray(batch.needsAttention) ? batch.needsAttention : [])
+          .map(asNeedsAttentionRow)
+          .filter((row): row is NeedsAttentionRow => row !== null),
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Empties the queue into the orphan park. Assumes the storage lock is held.
+ *
+ * Returns how many writes moved. THROWS if the park did not land: deleting the
+ * rows anyway is what turned "recoverable by hand" into a claim nobody could
+ * act on, and keeping them costs only the (already narrow) window until
+ * `reconcileQueueOwner` runs at the next sign-in.
+ */
+async function parkAndEmptyQueue(reason: string, owner: string | null): Promise<number> {
+  const storedQueue = await AsyncStorage.getItem(QUEUE_KEY);
+  const parsedQueue = ((): QueuedWrite[] => {
+    if (storedQueue === null) return [];
+    try {
+      const parsed: unknown = JSON.parse(storedQueue);
+      return Array.isArray(parsed)
+        ? parsed.map(asQueuedWrite).filter((write): write is QueuedWrite => write !== null)
+        : [];
+    } catch {
+      return [];
+    }
+  })();
+  const parkedAttention = await readNeedsAttentionUnlocked();
+  // The last act of this function is `setItem(QUEUE_NEEDS_ATTENTION_KEY, '[]')`.
+  // Rows that could not be READ were never copied into the orphan batch, so
+  // continuing would delete them — the same rule the park below follows: never
+  // destroy what could not be backed up first. A storage failure is transient,
+  // and the next sign-out or `reconcileQueueOwner` retries the whole park.
+  if (parkedAttention === null) {
+    Sentry.captureException(new Error(`unsent time entries orphaned at ${reason}`), {
+      tags: { area: 'time-entry-queue' },
+      extra: { reason, parked: false, parkError: 'needs-attention-unreadable' },
+    });
+    throw new QueueParkError();
+  }
+  const count = parsedQueue.length + parkedAttention.length;
+
+  // Nothing to preserve: emptying is unconditional and cannot fail.
+  if (count === 0) {
+    queueGeneration += 1;
+    await AsyncStorage.removeItem(QUEUE_KEY).catch(() => undefined);
+    await AsyncStorage.removeItem(QUEUE_TOMBSTONE_KEY).catch(() => undefined);
+    return 0;
+  }
+
+  let parked = true;
+  let parkError: string | undefined;
+  try {
+    const batches = await readOrphanedQueues();
+    batches.push({
+      parkedAt: new Date().toISOString(),
+      owner,
+      writes: parsedQueue,
+      needsAttention: parkedAttention,
+    });
+    await AsyncStorage.setItem(QUEUE_ORPHANED_KEY, JSON.stringify(batches));
+  } catch (error) {
+    parked = false;
+    parkError = error instanceof Error ? error.message : String(error);
+  }
+
+  Sentry.captureException(new Error(`unsent time entries orphaned at ${reason}`), {
+    tags: { area: 'time-entry-queue' },
+    extra: { reason, count, parked, ...(parkError === undefined ? {} : { parkError }) },
+  });
+
+  if (!parked) {
+    throw new QueueParkError();
+  }
+
+  // Only now is the deletion non-destructive.
+  queueGeneration += 1;
+  await AsyncStorage.removeItem(QUEUE_KEY);
+  await AsyncStorage.removeItem(QUEUE_TOMBSTONE_KEY);
+  await AsyncStorage.setItem(QUEUE_NEEDS_ATTENTION_KEY, '[]');
+  return count;
+}
+
+/**
+ * Teardown for a DELIBERATE sign-out only.
+ *
+ * QUEUE_KEY is a single, un-namespaced AsyncStorage key and a queued write
+ * carries no owner, while the replay sends with whatever bearer token the
+ * CURRENT session holds. Left in place across a sign-out on a shared field
+ * phone, technician A's unsent minutes are created under technician B.
+ *
+ * It must NOT run on an involuntary session loss — a 401 token expiry or a
+ * locked keychain also reach `clearAuthData`, and a technician who worked
+ * offline all day would lose the whole backlog on relaunch through no action of
+ * their own. `clearAuthData` therefore takes an explicit `deliberate` flag, and
+ * `reconcileQueueOwner` is what protects the next account on every other path.
+ */
+export async function clearQueueForSignOut(): Promise<{ cleared: number; parked: boolean }> {
+  return withStorageLock(async () => {
+    const owner = await AsyncStorage.getItem(QUEUE_OWNER_KEY).catch(() => null);
+    const cleared = await parkAndEmptyQueue('sign-out', owner);
+    await AsyncStorage.removeItem(QUEUE_OWNER_KEY).catch(() => undefined);
+    return { cleared, parked: true };
+  });
+}
+
+/**
+ * Claims the queue for `userId`, parking it first if it belonged to somebody
+ * else.
+ *
+ * This — not the sign-out hook — is what actually makes a cross-account replay
+ * impossible, because it fires on every path into a session: deliberate
+ * sign-in, a re-login after a token expiry, a reinstall. An UNOWNED queue is
+ * adopted rather than destroyed; a queue this account already owns is left
+ * exactly where it is, which is the whole point of keeping it across an
+ * involuntary session loss.
+ *
+ * Returns null when nothing was parked.
+ */
+export async function reconcileQueueOwner(userId: string): Promise<{ cleared: number } | null> {
+  return withStorageLock(async () => {
+    let owner: string | null = null;
+    try {
+      owner = await AsyncStorage.getItem(QUEUE_OWNER_KEY);
+    } catch {
+      // Unreadable ownership is not evidence of a different owner; adopting is
+      // the non-destructive direction and the next read re-establishes it.
+      return null;
+    }
+    if (owner === userId) return null;
+    if (owner === null) {
+      await AsyncStorage.setItem(QUEUE_OWNER_KEY, userId).catch(() => undefined);
+      return null;
+    }
+
+    const cleared = await parkAndEmptyQueue('account-switch', owner);
+    await AsyncStorage.setItem(QUEUE_OWNER_KEY, userId);
+    return { cleared };
+  });
+}
+
 // --- Needs attention ---------------------------------------------------------
 
 function asNeedsAttentionRow(value: unknown): NeedsAttentionRow | null {
@@ -439,6 +640,10 @@ function isPermanentRejection(error: unknown): boolean {
 }
 
 async function drainQueue(send: (write: QueuedWrite) => Promise<void>): Promise<DrainResult> {
+  // Captured before the first read. Anything that deliberately empties the
+  // queue bumps this, and the reconcile below refuses to write a snapshot taken
+  // under the previous owner back to storage.
+  const generation = queueGeneration;
   const priorTombstone = await readTombstone();
   const queue = await readQueue();
   const snapshotIds = new Set(queue.map((write) => write.id));
@@ -491,6 +696,10 @@ async function drainQueue(send: (write: QueuedWrite) => Promise<void>): Promise<
   let remainingQueue: QueuedWrite[];
   try {
     remainingQueue = await withStorageLock(async () => {
+      // The queue was deliberately emptied while this drain was in flight (a
+      // sign-out, or a different account signing in). Persisting the snapshot
+      // would hand the previous technician's unsent entries to the new session.
+      if (queueGeneration !== generation) return [];
       const currentQueue = await readQueue();
       const appendedWrites = currentQueue.filter((write) => !snapshotIds.has(write.id));
       const kept = [...queue.slice(nextIndex), ...appendedWrites];
@@ -505,8 +714,15 @@ async function drainQueue(send: (write: QueuedWrite) => Promise<void>): Promise<
     remainingQueue = queue.slice(nextIndex);
     // Under the lock: an enqueue that lands between the failure and this write
     // would otherwise clear the tombstone it never saw, and the sent writes
-    // would be replayed after all.
-    await withStorageLock(() => recordTombstone(priorTombstone, sentIds, parkedIds, error));
+    // would be replayed after all. A tombstone is NOT recorded across a
+    // deliberate clear: it names ids from a queue that no longer exists.
+    await withStorageLock(async () => {
+      if (queueGeneration !== generation) {
+        remainingQueue = [];
+        return;
+      }
+      await recordTombstone(priorTombstone, sentIds, parkedIds, error);
+    });
   }
 
   return {

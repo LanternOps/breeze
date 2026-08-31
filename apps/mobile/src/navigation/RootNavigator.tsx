@@ -52,7 +52,9 @@ export function RootNavigator() {
       if (blockedHandledRef.current) return;
       blockedHandledRef.current = true;
       setBlockedReason(reason);
-      void dispatch(logoutAsync());
+      // A blocked device is an INVOLUNTARY invalidation: the unsent
+      // time-entry backlog is kept (services/auth.ts).
+      void dispatch(logoutAsync({ deliberate: false }));
     });
     return off;
   }, [dispatch]);

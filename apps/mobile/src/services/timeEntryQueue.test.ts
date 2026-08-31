@@ -8,6 +8,8 @@ let getItemFailures = 0;
  * callback to target the re-read at the end of a drain specifically.
  */
 let failNextQueueRead = false;
+/** Same, for the parked-rows blob, which the sign-out park reads third. */
+let failNextNeedsAttentionRead = false;
 /** Keys whose setItem rejects, so a failed quarantine copy can be exercised. */
 const setItemFailKeys = new Set<string>();
 vi.mock('@react-native-async-storage/async-storage', () => ({
@@ -16,6 +18,10 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
       // Literal, not the imported const: this factory is hoisted above imports.
       if (failNextQueueRead && k === 'breeze.timeEntryQueue.v2') {
         failNextQueueRead = false;
+        throw new Error('SQLite busy');
+      }
+      if (failNextNeedsAttentionRead && k === 'breeze.timeEntryQueue.v2.needsAttention') {
+        failNextNeedsAttentionRead = false;
         throw new Error('SQLite busy');
       }
       if (getItemFailures > 0) {
@@ -48,9 +54,15 @@ import {
   readNeedsAttention,
   clearNeedsAttention,
   parkNeedsAttention,
+  clearQueueForSignOut,
+  reconcileQueueOwner,
+  readOrphanedQueues,
+  QUEUE_ORPHANED_KEY,
+  QUEUE_OWNER_KEY,
   QUEUE_KEY,
   QUEUE_CORRUPT_KEY,
   QUEUE_NEEDS_ATTENTION_KEY,
+  QUEUE_TOMBSTONE_KEY,
   QUEUED_KINDS,
 } from './timeEntryQueue';
 import type { QueuedWrite } from './timeEntryQueue';
@@ -59,6 +71,7 @@ beforeEach(() => {
   store.clear();
   getItemFailures = 0;
   failNextQueueRead = false;
+  failNextNeedsAttentionRead = false;
   setItemFailKeys.clear();
   vi.clearAllMocks();
 });
@@ -633,5 +646,151 @@ describe('timeEntryQueue', () => {
     await expect(readQueue()).resolves.toEqual([]);
     expect(lastSentryExtra()).toMatchObject({ reason: 'unparseable-queue', parked: true });
     expect(store.get(QUEUE_CORRUPT_KEY)).toBe('[{"id":"a","kind":"cre');
+  });
+
+  // --- Sign-out, session loss, and the drain that outlives both ---
+
+  it('parks and clears the queue on a deliberate sign-out', async () => {
+    await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'k1' } });
+    const outcome = await clearQueueForSignOut();
+
+    expect(outcome).toMatchObject({ cleared: 1, parked: true });
+    await expect(readQueue()).resolves.toEqual([]);
+    const orphaned = await readOrphanedQueues();
+    expect(orphaned).toHaveLength(1);
+    expect(orphaned[0].writes[0].payload).toMatchObject({ ticketId: 'k1' });
+  });
+
+  it('APPENDS to the orphan park, so a second sign-out cannot destroy the first', async () => {
+    // The park is the only remaining copy of unsent billable work. Overwriting
+    // it turns "recoverable by hand" into a claim nobody can act on.
+    await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'first' } });
+    await clearQueueForSignOut();
+    await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'second' } });
+    await clearQueueForSignOut();
+
+    const orphaned = await readOrphanedQueues();
+    expect(orphaned).toHaveLength(2);
+    expect(orphaned.flatMap((batch) => batch.writes.map((w) => w.payload.ticketId))).toEqual([
+      'first',
+      'second',
+    ]);
+  });
+
+  it('refuses to delete the queue when the park did not happen', async () => {
+    // Deleting anyway was the defect: the failure was swallowed while the only
+    // copy of the work was destroyed. Keeping it leaves the (already narrow)
+    // cross-account window to `reconcileQueueOwner`, which closes it at the
+    // next sign-in without losing anything.
+    setItemFailKeys.add(QUEUE_ORPHANED_KEY);
+    await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'k1' } });
+
+    await expect(clearQueueForSignOut()).rejects.toThrow(/could not be parked/i);
+    await expect(readQueue()).resolves.toHaveLength(1);
+    expect(lastSentryExtra()).toMatchObject({ reason: 'sign-out', parked: false });
+  });
+
+  it('refuses the sign-out when the parked rows cannot be read', async () => {
+    // The last act of the park is `setItem(QUEUE_NEEDS_ATTENTION_KEY, '[]')`.
+    // Rows that could not be read were never copied into the orphan batch, so
+    // proceeding would wipe them — the same rule as a failed park: never delete
+    // what you could not back up first.
+    await enqueue({ kind: 'create', payload: { ...SPAN } });
+    await drain(async () => {
+      throw Object.assign(new Error('bad'), { status: 400 });
+    });
+    await expect(readNeedsAttention()).resolves.toHaveLength(1);
+
+    failNextNeedsAttentionRead = true;
+    await expect(clearQueueForSignOut()).rejects.toThrow(/could not be parked/i);
+
+    await expect(readNeedsAttention()).resolves.toHaveLength(1);
+  });
+
+  it('parks the needs-attention rows too — they are the previous account\'s work as well', async () => {
+    await enqueue({ kind: 'create', payload: { ...SPAN } });
+    await drain(async () => {
+      throw Object.assign(new Error('bad'), { status: 400 });
+    });
+    await expect(readNeedsAttention()).resolves.toHaveLength(1);
+
+    await clearQueueForSignOut();
+    await expect(readNeedsAttention()).resolves.toEqual([]);
+    expect((await readOrphanedQueues())[0].needsAttention).toHaveLength(1);
+  });
+
+  it('an in-flight drain cannot write the queue back after a sign-out cleared it', async () => {
+    // The drain holds a snapshot taken before the sign-out. Persisting it would
+    // hand the previous technician's unsent entries straight to the next
+    // account — re-opening the exact leak the sign-out wipe exists to close.
+    await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'a' } });
+    await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'b' } });
+
+    const result = await drain(async (write) => {
+      if (write.payload.ticketId === 'a') await clearQueueForSignOut();
+      // 'b' fails transiently, so the pre-fix code would persist it back.
+      if (write.payload.ticketId === 'b') throw new Error('offline');
+    });
+
+    expect(result.remaining).toBe(0);
+    await expect(readQueue()).resolves.toEqual([]);
+    expect(JSON.parse(store.get(QUEUE_KEY) ?? '[]')).toEqual([]);
+  });
+
+  it('an in-flight drain does not leave a tombstone behind a sign-out either', async () => {
+    // Same race on the storage-failure path: the tombstone names ids from a
+    // queue that no longer exists, and applying it to the NEXT account's queue
+    // could silently swallow their writes if an id ever collided.
+    await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'a' } });
+    await drain(async () => {
+      await clearQueueForSignOut();
+      failNextQueueRead = true;
+    });
+    expect(store.has(QUEUE_TOMBSTONE_KEY)).toBe(false);
+  });
+
+  it('keeps the queue for an INVOLUNTARY session loss — that is a token expiry, not a sign-out', async () => {
+    // A technician who worked offline all day and whose token expired must not
+    // lose the backlog: `clearQueueForSignOut` is only reached on a deliberate
+    // sign-out now, and ownership is what protects the next account.
+    await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'k1' } });
+    await reconcileQueueOwner('user-a');
+    // The same technician signs back in after the token expiry.
+    const outcome = await reconcileQueueOwner('user-a');
+    expect(outcome).toBeNull();
+    await expect(readQueue()).resolves.toHaveLength(1);
+  });
+
+  it('parks and clears a queue owned by a DIFFERENT account at sign-in', async () => {
+    await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'k1' } });
+    await reconcileQueueOwner('user-a');
+
+    const outcome = await reconcileQueueOwner('user-b');
+    expect(outcome).toMatchObject({ cleared: 1 });
+    await expect(readQueue()).resolves.toEqual([]);
+    expect((await readOrphanedQueues())[0].owner).toBe('user-a');
+    expect(store.get(QUEUE_OWNER_KEY)).toBe('user-b');
+  });
+
+  it('adopts an unowned queue rather than destroying it', async () => {
+    // A queue written before the owner stamp existed, or by this same account
+    // before the first reconcile. Deleting it would lose real work for no gain.
+    await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'k1' } });
+    expect(await reconcileQueueOwner('user-a')).toBeNull();
+    await expect(readQueue()).resolves.toHaveLength(1);
+    expect(store.get(QUEUE_OWNER_KEY)).toBe('user-a');
+  });
+
+  it('a drain that started before an owner switch cannot restore the old queue', async () => {
+    await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'a' } });
+    await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'b' } });
+    await reconcileQueueOwner('user-a');
+
+    const result = await drain(async (write) => {
+      if (write.payload.ticketId === 'a') await reconcileQueueOwner('user-b');
+      if (write.payload.ticketId === 'b') throw new Error('offline');
+    });
+    expect(result.remaining).toBe(0);
+    await expect(readQueue()).resolves.toEqual([]);
   });
 });

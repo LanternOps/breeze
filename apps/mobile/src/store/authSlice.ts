@@ -114,10 +114,20 @@ export const verifyMfaAsync = createAsyncThunk(
   }
 );
 
+/**
+ * `deliberate: true` ONLY when the technician chose to sign out. An automatic
+ * invalidation (a blocked device, a revoked session) must leave the unsent
+ * time-entry queue in place — see services/auth.ts.
+ */
 export const logoutAsync = createAsyncThunk(
   'auth/logout',
-  async (_, { rejectWithValue, getState }) => {
-    const invalidation = beginSessionInvalidation();
+  async (
+    options: Readonly<{ deliberate?: boolean }> | undefined,
+    { rejectWithValue, getState }
+  ) => {
+    const invalidation = beginSessionInvalidation({
+      deliberate: options?.deliberate === true,
+    });
     const bearerToken = (getState() as { auth: AuthState }).auth.token;
     // Best-effort server logout; we tear down local state regardless of its
     // outcome so the user always leaves the authenticated surface.
@@ -312,6 +322,11 @@ export const logout = Object.assign(
   (): ReturnType<typeof reduceLogout> => {
     // Action creation is synchronous, so request/write fencing happens before
     // Redux publishes the signed-out state to the UI.
+    //
+    // Always INVOLUNTARY: every call site is an automatic invalidation (a
+    // 401/403 on cold-start revalidation, an unreadable keychain, a missing
+    // token). The unsent time-entry queue therefore survives; `logoutAsync({
+    // deliberate: true })` is what the user-facing Sign out buttons dispatch.
     const { cleanup } = beginSessionInvalidation();
     void cleanup.catch(() => undefined); // clearAuthData already reports failures
     return reduceLogout();
