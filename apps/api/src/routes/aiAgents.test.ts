@@ -1766,3 +1766,99 @@ describe('mapError — supervisedActionKeys write-time rejection (wave 5 Part B,
     );
   });
 });
+
+/**
+ * Regression for #4020. The create race is settled by the partial unique index,
+ * and the insert that loses it is issued through Drizzle — which catches the
+ * postgres-js `PostgresError` and rethrows a `DrizzleQueryError` whose own
+ * `.code` is undefined, with the SQLSTATE on `.cause`. A flat fixture passes
+ * whether or not the handler unwraps, so the wrapped shape is the one that
+ * actually discriminates.
+ */
+describe('mapError — create-race unique violation (#4020)', () => {
+  const callMapError = (err: unknown) => {
+    const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
+    const ctx = { json: jsonMock } as unknown as Parameters<typeof mapError>[0];
+    let threw: unknown;
+    try {
+      mapError(ctx, err);
+    } catch (e) {
+      threw = e;
+    }
+    return { jsonMock, threw };
+  };
+
+  const CONFLICT = { error: 'An agent of this kind already exists', code: 'agent_kind_exists' };
+
+  it('maps a flat postgres.js 23505 to 409', () => {
+    const { jsonMock } = callMapError(
+      Object.assign(
+        new Error('duplicate key value violates unique constraint "ai_agents_org_kind_uq"'),
+        { code: '23505', constraint_name: 'ai_agents_org_kind_uq' },
+      ),
+    );
+
+    expect(jsonMock).toHaveBeenCalledWith(CONFLICT, 409);
+  });
+
+  it('maps a 23505 WRAPPED in a DrizzleQueryError to 409, not a 500', () => {
+    // Faithful to Drizzle: own `.code` undefined, SQLSTATE on `.cause`.
+    const cause = Object.assign(
+      new Error('duplicate key value violates unique constraint "ai_agents_org_kind_uq"'),
+      { code: '23505', constraint_name: 'ai_agents_org_kind_uq' },
+    );
+    const wrapped = Object.assign(new Error('Failed query: insert into "ai_agents" ...'), { cause });
+    wrapped.name = 'DrizzleQueryError';
+
+    const { jsonMock, threw } = callMapError(wrapped);
+
+    expect(threw).toBeUndefined();
+    expect(jsonMock).toHaveBeenCalledWith(CONFLICT, 409);
+  });
+
+  /**
+   * The constraint scoping is itself a discriminating property, and needs a
+   * fixture that can tell the difference. A 23505 from some OTHER unique index
+   * does not mean "this kind is taken", so answering `agent_kind_exists` would
+   * be a wrong-but-plausible 409 that nothing logs — strictly worse than the
+   * 500 it would otherwise get, which is loud and reaches Sentry.
+   */
+  it('does not mislabel a 23505 from an unrelated constraint as agent_kind_exists', () => {
+    const cause = Object.assign(
+      new Error('duplicate key value violates unique constraint "some_other_table_uq"'),
+      { code: '23505', constraint_name: 'some_other_table_uq' },
+    );
+    const wrapped = Object.assign(new Error('Failed query: insert into "some_other_table" ...'), { cause });
+    wrapped.name = 'DrizzleQueryError';
+
+    const { jsonMock, threw } = callMapError(wrapped);
+
+    expect(threw).toBe(wrapped);
+    expect(jsonMock).not.toHaveBeenCalled();
+  });
+
+  it('maps a wrapped 23505 on the PARTNER-wide index to 409 too', () => {
+    const cause = Object.assign(
+      new Error('duplicate key value violates unique constraint "ai_agents_partner_kind_uq"'),
+      { code: '23505', constraint_name: 'ai_agents_partner_kind_uq' },
+    );
+    const wrapped = Object.assign(new Error('Failed query: insert into "ai_agents" ...'), { cause });
+    wrapped.name = 'DrizzleQueryError';
+
+    const { jsonMock, threw } = callMapError(wrapped);
+
+    expect(threw).toBeUndefined();
+    expect(jsonMock).toHaveBeenCalledWith(CONFLICT, 409);
+  });
+
+  it('rethrows a wrapped SQLSTATE that is not a unique violation', () => {
+    const cause = Object.assign(new Error('null value in column violates not-null constraint'), { code: '23502' });
+    const wrapped = Object.assign(new Error('Failed query: insert into "ai_agents" ...'), { cause });
+    wrapped.name = 'DrizzleQueryError';
+
+    const { jsonMock, threw } = callMapError(wrapped);
+
+    expect(threw).toBe(wrapped);
+    expect(jsonMock).not.toHaveBeenCalled();
+  });
+});
