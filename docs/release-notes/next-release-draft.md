@@ -36,6 +36,7 @@ Last release: **v0.106.0** (2026-08-17).
   `time_entries:read` / `time_entries:write`.
 - **New field:** time entries returned by the API now carry `source`
   (`manual | timer | location | remote_session | support_session`). It is server-stamped
-  and read-only; sending it on a create or update request is rejected.
+  and read-only: the create/update schemas do not declare it, so a client that sends
+  `source` has it stripped by validation and the server's own stamp always wins.
 - No new environment variables. No action required for existing deployments beyond the
   migration note above.
