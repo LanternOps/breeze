@@ -17,6 +17,7 @@
     "test:override-floors": "node --test scripts/security/check-override-floors.test.mjs",
     "check:override-floors": "node scripts/security/check-override-floors.mjs",
     "test:release-trust-allowlist": "node --test scripts/security/check-release-trust-allowlist.test.mjs",
+    "test:release-lineage": "node --test scripts/release/check-release-lineage.test.mjs scripts/check-migration-immutability.test.mjs",
     "check:release-trust-allowlist": "node scripts/security/check-release-trust-allowlist.mjs",
     "check:agent-mtls-edge-policy": "bash scripts/check-agent-mtls-edge-policy.sh",
     "check:agent-binary-signatures": "bash scripts/security/check-agent-binary-signatures.sh --source",

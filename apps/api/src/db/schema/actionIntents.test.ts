@@ -263,6 +263,8 @@ describe('action_intents schema', () => {
         'originPrincipalId',
         'requestingApiKeyId',
         'requestingAgentRunId',
+        'scopeKind',
+        'scopeDeviceId',
         'source',
         'requestingClientLabel',
         'actionName',

@@ -78,6 +78,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_agent_circuit_state',
   'ai_agent_fix_watches',
   'ai_agent_runs',
+  // ai_agent_schedules (P2-2, #4189): dual-owner config. org override rows
+  // cascade with the org; partner rows have org_id NULL and are untouched by
+  // an org erasure. FK to ai_agents is ON DELETE CASCADE and ai_agent_runs →
+  // schedule_id is SET NULL, so relative position is cosmetic (topological
+  // order decides the real DELETE order).
+  'ai_agent_schedules',
   'ai_agents',
   // ai_alert_verdicts (Phase 2 wave P2-1, #4187): references ai_agent_runs
   // (ON DELETE CASCADE) and action_intents (SET NULL). Both carry an
@@ -115,6 +121,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'audit_policy_states',
   'audit_retention_policies',
   'automation_policies',
+  'automation_resource_bindings',
   'automation_run_device_results',
   'automations',
   'backup_chains',
@@ -277,6 +284,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // requirement that every org_id-columned table be listed for auditability.
   'organization_external_links',
   'organization_users',
+  'agent_rollback_events',
+  'agent_rollback_directives',
   'pam_org_config',
   'pam_rules',
   'pam_signer_groups',
@@ -290,6 +299,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'pax8_subscription_snapshots',
   'peripheral_events',
   'peripheral_policies',
+  'peripheral_policy_delivery_events',
+  'peripheral_policy_device_states',
   'playbook_definitions',
   'playbook_executions',
   'plugin_installations',
@@ -536,6 +547,32 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
       WHERE catalog_id IN (SELECT id FROM software_catalog WHERE org_id = ${orgId})
     `,
   },
+  // report_runs has NO org_id column of its own — its tenancy is its parent
+  // definition's — so neither the org cascade list nor the partner-axis sweep
+  // reaches it, yet `report_runs_report_id_reports_id_fk` is declared without
+  // an explicit ON DELETE (verified in pg_constraint: confdeltype 'a' =
+  // NO ACTION). The main loop's `DELETE FROM reports WHERE org_id = ...`
+  // therefore aborts with 23503 for ANY org that has ever generated a report
+  // — a PRE-EXISTING latent GDPR erasure bug (found by P2-3's own
+  // narrative-artifact fixture, #4190, but not caused by it: an ordinary
+  // scheduled report has produced these rows since the feature shipped).
+  //
+  // Safe to clear first: the only FK INTO report_runs is
+  // `ai_agent_runs.report_run_id`, which is ON DELETE SET NULL (confdeltype
+  // 'n'), so the run rows survive this statement with a null link and are
+  // then deleted by the main loop on their own org_id.
+  //
+  // No partner-axis twin is needed (unlike the SSO/PSA/software entries):
+  // `reports.org_id` is NOT NULL, so every definition — and therefore every
+  // report_runs row — is reached through the per-child-org cascadeDeleteOrg
+  // calls the partner purge already makes.
+  {
+    table: 'report_runs',
+    clearSql: (orgId) => sql`
+      DELETE FROM report_runs
+      WHERE report_id IN (SELECT id FROM reports WHERE org_id = ${orgId})
+    `,
+  },
 ];
 
 /**
@@ -548,6 +585,8 @@ const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
   'audit_log_chain',
   'audit_chain_anchors',
   'ml_feedback_events',
+  'peripheral_policy_delivery_events',
+  'agent_rollback_events',
 ]);
 
 interface FkEdge {

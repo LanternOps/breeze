@@ -11,11 +11,14 @@ import {
   assertReportExecutionPreflight,
   generateReport,
   previousBaselineFor,
+  StoredArtifactOnlyReportError,
   UnexecutableReportScopeError,
   type ReportResult,
 } from '../../services/reportGenerationService';
 import { rowsToCsv, rowsToTsv } from '@breeze/shared';
-import { getPagination, getReportWithOrgCheck, getReportRunWithOrgCheck } from './helpers';
+import {
+  getPagination, getReportWithOrgCheck, getReportRunWithOrgCheck, isSystemManagedReportDefinition,
+} from './helpers';
 import { downloadQuerySchema, listRunsSchema } from './schemas';
 import {
   decodeSiteScope,
@@ -68,6 +71,16 @@ runsRoutes.post(
     const report = await getReportWithOrgCheck(reportId, auth);
     if (!report) {
       return c.json({ error: 'Report not found' }, 404);
+    }
+
+    // P2-3 (#4190) — a system-managed definition has NO acting user to execute
+    // as, and the agent scheduler owns when it runs. Refused before the
+    // authority resolution below, which would otherwise resolve the CALLER as
+    // the principal for a report they do not own. 409, not 403: the caller's
+    // permissions are fine (they can read and download this very report) —
+    // it is the report that cannot be generated on request.
+    if (isSystemManagedReportDefinition(report)) {
+      return c.json({ error: 'system_managed_report' }, 409);
     }
 
     const liveResult = await resolveRequestReportAuthority(
@@ -178,6 +191,15 @@ runsRoutes.post(
           errorMessage: err instanceof Error ? err.message : 'Failed to generate report'
         })
         .where(eq(reportRuns.id, run.id));
+      // P2-3 (#4190) — belt to the braces of the `isSystemManagedReportDefinition`
+      // gate above, which today refuses every stored-artifact type before this
+      // point (its `type` leg matches `ai_org_narrative` regardless of
+      // principal). Kept so a FUTURE stored-artifact type that is not
+      // system-managed surfaces as a 409 the first time someone presses
+      // Generate, instead of a 500 with "Invalid report type" in the run row.
+      if (err instanceof StoredArtifactOnlyReportError) {
+        return c.json({ error: 'stored_artifact_only' }, 409);
+      }
       return c.json({ message: 'Report generation failed', runId: run.id, status: 'failed' }, 500);
     }
   }
@@ -319,6 +341,7 @@ runsRoutes.get(
         executionScopeUserId: reportRuns.executionScopeUserId,
         executionScopeFingerprint: reportRuns.executionScopeFingerprint,
         executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+        executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
       })
       .from(reportRuns)
       .innerJoin(reports, eq(reportRuns.reportId, reports.id))
@@ -430,6 +453,7 @@ runsRoutes.get(
         executionScopeUserId: reportRuns.executionScopeUserId,
         executionScopeFingerprint: reportRuns.executionScopeFingerprint,
         executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+        executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
         reportName: reports.name,
         reportType: reports.type,
         reportFormat: reports.format,

@@ -95,6 +95,7 @@ import { aiAlertVerdicts, alertCorrelationMembers, alerts, type AiAlertVerdictRo
 import type { AuthContext } from '../../middleware/auth';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { createActionIntent } from '../actionIntents/intentService';
+import { isToolAllowlisted } from './toolAllowlist';
 
 /**
  * `ai_alert_verdicts_live_{alert,group}_uq` (migrations/2026-09-22-ai-alert-
@@ -298,13 +299,13 @@ export async function persistAlertVerdict(
         console.warn('[alertVerdicts] suggestion refused — target alert not found in org', {
           runId: run.id, alertId: suggestion.alertId,
         });
-      } else if (
-        !run.toolAllowlist.includes('manage_alerts')
-        && !run.toolAllowlist.includes(`manage_alerts:${suggestion.action}`)
-      ) {
+      } else if (!isToolAllowlisted(run.toolAllowlist, 'manage_alerts', suggestion.action)) {
         // Review round 2 (IMPORTANT 1a) — same matching rule as
         // `checkAgentGuardrails` (aiGuardrails.ts): a bare `manage_alerts`
         // entry OR the specific `manage_alerts:<action>` entry admits it.
+        // Shared with `sweepFindings.ts`'s proposal gate via
+        // `isToolAllowlisted` (P2-2 Task A7, review round 1) so the two
+        // creation-time gates cannot drift apart from each other.
         suggestionReason = 'not_allowlisted';
         console.warn('[alertVerdicts] suggestion refused — manage_alerts not in the run\'s effective allowlist', {
           runId: run.id, alertId: suggestion.alertId, action: suggestion.action,

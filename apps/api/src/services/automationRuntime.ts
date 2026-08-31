@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import { and, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { scriptParametersSchema, type DeploymentTargetConfig } from '@breeze/shared';
 import { db } from '../db';
 import {
@@ -7,9 +7,12 @@ import {
   alerts,
   alertTemplates,
   automations,
+  automationResourceBindings,
   automationRuns,
   automationRunDeviceResults,
   configPolicyAutomations,
+  configPolicyFeatureLinks,
+  configurationPolicies,
   deviceGroupMemberships,
   devices,
   notificationChannels,
@@ -34,70 +37,19 @@ import {
   sendEmailNotification,
   sendWebhookNotification,
 } from './notificationSenders';
+import {
+  AutomationReferenceAuthorizationError,
+  resolveOwnedAutomationReferences,
+  type AutomationReferenceOwner,
+  type ResolvedAutomationReferences,
+} from './automationReferenceAuthorization';
 // softwareDeployment and softwareCurrency are imported lazily inside
 // executeDeploySoftwareActions to avoid pulling the agentWs→configurationPolicy
 // import chain into partial-mock test suites at module-load time.
 
 const ALERT_SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
-
-/**
- * Delivery rails are dual-owned (#2130): an automation's notify targets may
- * reference the org's own channels OR partner-wide channels (org_id NULL)
- * owned by the org's partner. A plain eq(orgId, ...) silently drops
- * partner-wide channels (the #1724 trap; automation runs execute under
- * system context, so RLS is not the filter here).
- *
- * Automations are dual-owned too (#2133), so the owner is `{orgId, partnerId}`
- * (exactly one set). An org-owned automation reaches its org's channels plus
- * the org's partner's partner-wide channels; a partner-wide automation reaches
- * the partner's partner-wide channels plus any member org's channels — all of
- * which stay inside the owning partner's tenancy.
- */
-async function notificationChannelOwnershipCondition(
-  owner: { orgId: string | null; partnerId: string | null },
-): Promise<SQL> {
-  if (owner.orgId) {
-    const [org] = await db
-      .select({ partnerId: organizations.partnerId })
-      .from(organizations)
-      .where(eq(organizations.id, owner.orgId))
-      .limit(1);
-
-    if (!org?.partnerId) {
-      return eq(notificationChannels.orgId, owner.orgId);
-    }
-
-    return or(
-      eq(notificationChannels.orgId, owner.orgId),
-      and(isNull(notificationChannels.orgId), eq(notificationChannels.partnerId, org.partnerId))
-    ) as SQL;
-  }
-
-  // Partner-wide automation: the one-owner CHECK guarantees partnerId is set;
-  // guard against bad legacy data with an always-false condition. Log loudly —
-  // if this ever fires, the symptom downstream is "notifications silently
-  // stopped", which is undebuggable without this line.
-  if (!owner.partnerId) {
-    console.error(
-      '[AutomationRuntime] notificationChannelOwnershipCondition called with neither orgId nor partnerId — matching no channels',
-    );
-    return sql`false`;
-  }
-
-  return or(
-    and(isNull(notificationChannels.orgId), eq(notificationChannels.partnerId, owner.partnerId)),
-    inArray(
-      notificationChannels.orgId,
-      db
-        .select({ id: organizations.id })
-        .from(organizations)
-        // The hidden per-partner 'quick_support' org never owns notification
-        // channels and is never an automation target — keep it out of both
-        // partner fan-outs here and in automationOwnerOrgIds below.
-        .where(and(eq(organizations.partnerId, owner.partnerId), ne(organizations.type, 'quick_support'))),
-    )
-  ) as SQL;
-}
+type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type AutomationOwnerAxes = { orgId: string | null; partnerId: string | null };
 
 /**
  * Ownership → org fan-out (#2133). An org-owned automation targets devices in
@@ -213,6 +165,11 @@ export type AutomationTriggerContext = {
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info' | null;
   ruleId: string | null;
 };
+
+// Normalization is the trust boundary for persisted action JSON. Keep the
+// explicit name for authorization/storage callers while preserving the
+// existing AutomationAction public type for runtime consumers.
+export type NormalizedAutomationAction = AutomationAction;
 
 export type NotificationTargets = {
   channelIds?: string[];
@@ -534,6 +491,178 @@ export function normalizeAutomationInput(input: {
     onFailure,
     notificationTargets: normalizeNotificationTargets(input.notificationTargets),
   };
+}
+
+type AutomationResourceKind = 'script' | 'software_catalog' | 'notification_channel';
+type AutomationReferenceDescriptor = {
+  resourceKind: AutomationResourceKind;
+  resourceId: string;
+  expectedResourceOrgId: string | null;
+  expectedResourcePartnerId: string | null;
+  expectedResourceIsSystem: boolean;
+};
+
+function automationReferenceKey(kind: AutomationResourceKind, id: string): string {
+  return `${kind}:${id}`;
+}
+
+function requestedAutomationReferenceKeys(
+  actions: readonly AutomationAction[],
+  notificationTargets?: NotificationTargets,
+): Set<string> {
+  const keys = new Set<string>();
+  for (const action of actions) {
+    if (action.type === 'run_script') {
+      keys.add(automationReferenceKey('script', action.scriptId));
+    } else if (action.type === 'deploy_software') {
+      keys.add(automationReferenceKey('software_catalog', action.catalogId));
+    } else if (action.type === 'send_notification') {
+      keys.add(automationReferenceKey('notification_channel', action.notificationChannelId));
+    }
+  }
+  for (const channelId of notificationTargets?.channelIds ?? []) {
+    keys.add(automationReferenceKey('notification_channel', channelId));
+  }
+  return keys;
+}
+
+function descriptorsFromResolvedReferences(
+  resolved: ResolvedAutomationReferences,
+): Map<string, AutomationReferenceDescriptor> {
+  const descriptors = new Map<string, AutomationReferenceDescriptor>();
+  for (const row of resolved.scriptsById.values()) {
+    const descriptor: AutomationReferenceDescriptor = {
+      resourceKind: 'script',
+      resourceId: row.id,
+      expectedResourceOrgId: row.isSystem ? null : row.orgId,
+      expectedResourcePartnerId: row.isSystem ? null : row.partnerId,
+      expectedResourceIsSystem: row.isSystem,
+    };
+    descriptors.set(automationReferenceKey(descriptor.resourceKind, descriptor.resourceId), descriptor);
+  }
+  for (const row of resolved.softwareCatalogsById.values()) {
+    const descriptor: AutomationReferenceDescriptor = {
+      resourceKind: 'software_catalog',
+      resourceId: row.id,
+      expectedResourceOrgId: row.orgId,
+      expectedResourcePartnerId: row.partnerId,
+      expectedResourceIsSystem: false,
+    };
+    descriptors.set(automationReferenceKey(descriptor.resourceKind, descriptor.resourceId), descriptor);
+  }
+  for (const row of resolved.notificationChannelsById.values()) {
+    const descriptor: AutomationReferenceDescriptor = {
+      resourceKind: 'notification_channel',
+      resourceId: row.id,
+      expectedResourceOrgId: row.orgId,
+      expectedResourcePartnerId: row.partnerId,
+      expectedResourceIsSystem: false,
+    };
+    descriptors.set(automationReferenceKey(descriptor.resourceKind, descriptor.resourceId), descriptor);
+  }
+  return descriptors;
+}
+
+async function resolveAutomationReferenceOwner(
+  tx: DbTransaction,
+  axes: AutomationOwnerAxes,
+): Promise<AutomationReferenceOwner> {
+  if (axes.orgId) {
+    const [org] = await tx
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, axes.orgId))
+      .limit(1);
+    if (!org?.partnerId) throw new AutomationReferenceAuthorizationError();
+    return { scope: 'organization', orgId: axes.orgId, partnerId: org.partnerId };
+  }
+  if (axes.partnerId) {
+    return { scope: 'partner', orgId: null, partnerId: axes.partnerId };
+  }
+  throw new AutomationReferenceAuthorizationError();
+}
+
+export async function resolveAutomationReferencesForOwner(
+  tx: DbTransaction,
+  axes: AutomationOwnerAxes,
+  actions: readonly AutomationAction[],
+  notificationTargets?: NotificationTargets,
+): Promise<ResolvedAutomationReferences> {
+  const owner = await resolveAutomationReferenceOwner(tx, axes);
+  return resolveOwnedAutomationReferences(
+    tx,
+    owner,
+    axes.orgId ? [axes.orgId] : [],
+    actions,
+    notificationTargets?.channelIds ?? [],
+  );
+}
+
+export async function replaceAutomationResourceBindings(
+  tx: DbTransaction,
+  automationId: string,
+  axes: AutomationOwnerAxes,
+  resolved: ResolvedAutomationReferences,
+): Promise<void> {
+  await tx
+    .delete(automationResourceBindings)
+    .where(eq(automationResourceBindings.automationId, automationId));
+
+  const descriptors = [...descriptorsFromResolvedReferences(resolved).values()];
+  if (descriptors.length === 0) return;
+  await tx.insert(automationResourceBindings).values(descriptors.map((descriptor) => ({
+    automationId,
+    orgId: axes.orgId,
+    partnerId: axes.partnerId,
+    ...descriptor,
+    state: 'active' as const,
+    reason: null,
+  })));
+}
+
+async function resolveStandaloneAutomationReferencesForAdmission(
+  tx: DbTransaction,
+  automation: AutomationRow,
+  normalized: NormalizedAutomationInput,
+): Promise<ResolvedAutomationReferences> {
+  const requestedKeys = requestedAutomationReferenceKeys(
+    normalized.actions,
+    normalized.notificationTargets,
+  );
+  const bindings = await tx
+    .select()
+    .from(automationResourceBindings)
+    .where(eq(automationResourceBindings.automationId, automation.id));
+
+  if (bindings.length !== requestedKeys.size) {
+    throw new AutomationReferenceAuthorizationError();
+  }
+  for (const binding of bindings) {
+    const key = automationReferenceKey(binding.resourceKind, binding.resourceId);
+    if (binding.state !== 'active' || !requestedKeys.has(key)) {
+      throw new AutomationReferenceAuthorizationError();
+    }
+  }
+
+  const resolved = await resolveAutomationReferencesForOwner(
+    tx,
+    { orgId: automation.orgId, partnerId: automation.partnerId },
+    normalized.actions,
+    normalized.notificationTargets,
+  );
+  const descriptors = descriptorsFromResolvedReferences(resolved);
+  for (const binding of bindings) {
+    const descriptor = descriptors.get(automationReferenceKey(binding.resourceKind, binding.resourceId));
+    if (
+      !descriptor
+      || descriptor.expectedResourceOrgId !== binding.expectedResourceOrgId
+      || descriptor.expectedResourcePartnerId !== binding.expectedResourcePartnerId
+      || descriptor.expectedResourceIsSystem !== binding.expectedResourceIsSystem
+    ) {
+      throw new AutomationReferenceAuthorizationError();
+    }
+  }
+  return resolved;
 }
 
 function coerceToFilterValue(condition: Record<string, unknown>): string {
@@ -983,6 +1112,15 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   // high-frequency, cheap run shape, not an integrity failure.
   max_concurrent_verdict_runs: false,
   verdict_rate: false,
+  // Phase 2 wave P2-2 (scheduled sweeps) — the sweep-profile equivalents,
+  // same classification as the verdict pair above.
+  max_concurrent_sweep_runs: false,
+  sweep_rate: false,
+  // Phase 2 wave P2-3 (weekly org narrative) — the narrative-profile
+  // equivalents. Same classification again: a scheduled narrative run being
+  // declined for volume is a cap doing its job, not a data-integrity bug.
+  max_concurrent_narrative_runs: false,
+  narrative_rate: false,
 });
 
 // Exported for direct unit coverage of the script_executions correlation
@@ -1649,6 +1787,7 @@ export async function executeDeploySoftwareActions(args: {
   devices: Array<{ id: string; osType: 'windows' | 'macos' | 'linux'; orgId: string }>;
   createdBy: string | null;
   runId: string;
+  resolvedReferences?: ResolvedAutomationReferences;
 }): Promise<{ logs: AutomationLogEntry[]; deployedDeviceIds: Set<string>; failedDeviceIds: Set<string>; failed: boolean }> {
   const deployActions = args.actions.filter(
     (a): a is DeploySoftwareAction => a.type === 'deploy_software',
@@ -1665,11 +1804,19 @@ export async function executeDeploySoftwareActions(args: {
   // Lazy imports — avoid pulling the agentWs→configurationPolicy chain into
   // partial-mock test suites at module-load time.
   const { createSoftwareDeployment } = await import('./softwareDeployment');
-  const { resolveLatestVersionsByCatalogId, isDeviceSoftwareCurrent } = await import('./softwareCurrency');
+  const {
+    isDeviceSoftwareCurrent,
+    latestVersionsFromResolvedAutomationReferences,
+    resolveLatestVersionsByCatalogId,
+  } = await import('./softwareCurrency');
 
-  const latest = await resolveLatestVersionsByCatalogId(
-    [...new Set(deployActions.map((a) => a.catalogId))],
-  );
+  // Protected runtime paths always pass ownership-resolved rows. The fallback
+  // remains for isolated legacy callers of this exported batch helper only.
+  const latest = args.resolvedReferences
+    ? latestVersionsFromResolvedAutomationReferences(args.resolvedReferences)
+    : await resolveLatestVersionsByCatalogId(
+      [...new Set(deployActions.map((a) => a.catalogId))],
+    );
 
   for (const [actionIndex, action] of deployActions.entries()) {
     const info = latest.get(action.catalogId);
@@ -1756,41 +1903,53 @@ export async function createAutomationRunRecord(options: {
    * devices and resolveAutomationTargetDeviceIds is NOT consulted. */
   boundDeviceIds?: string[];
 }): Promise<{ run: AutomationRunRow; targetDeviceIds: string[] }> {
+  const normalized = normalizeAutomationInput({
+    trigger: options.automation.trigger,
+    actions: options.automation.actions,
+    conditions: options.automation.conditions,
+    onFailure: options.automation.onFailure,
+    notificationTargets: options.automation.notificationTargets,
+  });
   const targetDeviceIds = options.boundDeviceIds
     ?? await resolveAutomationTargetDeviceIds(options.automation);
 
-  const [run] = await db
-    .insert(automationRuns)
-    .values({
-      automationId: options.automation.id,
-      triggeredBy: options.triggeredBy,
-      status: 'running',
-      devicesTargeted: targetDeviceIds.length,
-      devicesSucceeded: 0,
-      devicesFailed: 0,
-      logs: [
-        logEntry('Automation run created', 'info', {
-          details: {
-            triggeredBy: options.triggeredBy,
-            ...options.details,
-          },
-        }),
-      ],
-    })
-    .returning();
+  const run = await db.transaction(async (tx) => {
+    await resolveStandaloneAutomationReferencesForAdmission(tx, options.automation, normalized);
 
-  if (!run) {
-    throw new Error('Failed to create automation run record');
-  }
+    const [created] = await tx
+      .insert(automationRuns)
+      .values({
+        automationId: options.automation.id,
+        triggeredBy: options.triggeredBy,
+        status: 'running',
+        devicesTargeted: targetDeviceIds.length,
+        devicesSucceeded: 0,
+        devicesFailed: 0,
+        logs: [
+          logEntry('Automation run created', 'info', {
+            details: {
+              triggeredBy: options.triggeredBy,
+              ...options.details,
+            },
+          }),
+        ],
+      })
+      .returning();
 
-  await db
-    .update(automations)
-    .set({
-      runCount: sql`${automations.runCount} + 1`,
-      lastRunAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(eq(automations.id, options.automation.id));
+    if (!created) {
+      throw new Error('Failed to create automation run record');
+    }
+
+    await tx
+      .update(automations)
+      .set({
+        runCount: sql`${automations.runCount} + 1`,
+        lastRunAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(automations.id, options.automation.id));
+    return created;
+  });
 
   // Lifecycle events carry an org. An org-owned automation publishes to its
   // own org (unchanged); a partner-wide automation (orgId NULL, #2133) has no
@@ -2033,6 +2192,11 @@ async function executeAutomationRunInner(
     notificationTargets: automation.notificationTargets,
   });
 
+  // A queued job is not authorization. Re-check the active binding snapshot
+  // and live resource ownership before any dispatch-side write.
+  const resolvedReferences = await db.transaction((tx) =>
+    resolveStandaloneAutomationReferencesForAdmission(tx, automation, normalized));
+
   const targetDeviceIds = targetDeviceIdsFromQueue && targetDeviceIdsFromQueue.length > 0
     ? targetDeviceIdsFromQueue
     : await resolveAutomationTargetDeviceIds(automation);
@@ -2064,50 +2228,8 @@ async function executeAutomationRunInner(
       .where(inArray(devices.id, targetDeviceIds))
     : [];
 
-  const scriptIds = [...new Set(
-    normalized.actions
-      .filter((action): action is RunScriptAction => action.type === 'run_script')
-      .map((action) => action.scriptId),
-  )];
-
-  const scriptRows = scriptIds.length > 0
-    ? await db
-      .select()
-      .from(scripts)
-      .where(and(inArray(scripts.id, scriptIds), isNull(scripts.deletedAt)))
-    : [];
-
-  const scriptsById = new Map(scriptRows.map((script) => [script.id, script]));
-
-  const notificationChannelIds = new Set<string>();
-  for (const action of normalized.actions) {
-    if (action.type === 'send_notification') {
-      notificationChannelIds.add(action.notificationChannelId);
-    }
-  }
-  for (const channelId of normalized.notificationTargets?.channelIds ?? []) {
-    notificationChannelIds.add(channelId);
-  }
-
-  // Dual-axis (#2130/#2133): an automation's notify targets may reference the
-  // owner org's channels, partner-wide channels of its partner, or — for a
-  // partner-wide automation — any member org's channels.
-  const channelRows = notificationChannelIds.size > 0
-    ? await db
-      .select()
-      .from(notificationChannels)
-      .where(
-        and(
-          await notificationChannelOwnershipCondition({
-            orgId: automation.orgId,
-            partnerId: automation.partnerId,
-          }),
-          inArray(notificationChannels.id, [...notificationChannelIds]),
-        ),
-      )
-    : [];
-
-  const channelsById = new Map(channelRows.map((channel) => [channel.id, channel]));
+  const scriptsById = resolvedReferences.scriptsById;
+  const channelsById = resolvedReferences.notificationChannelsById;
 
   // Seed a per-device result row (pending) for every targeted device so the
   // execution-history UI can show live progress as each device finishes (#2023).
@@ -2225,6 +2347,7 @@ async function executeAutomationRunInner(
     devices: deviceRows.map((d) => ({ id: d.id, osType: d.osType, orgId: d.orgId })),
     createdBy: automation.createdBy ?? null,
     runId: run.id,
+    resolvedReferences,
   });
   logs.push(...deployOutcome.logs);
   // Per-device install status is tracked asynchronously in deploymentResults; the per-device loop above already counted each device once. A deploy-dispatch failure degrades the run status below.
@@ -2332,18 +2455,16 @@ export { isCronDue, matchesCronField } from './cronDue';
 
 type ConfigPolicyAutomationRow = typeof configPolicyAutomations.$inferSelect;
 
-/**
- * Resolves the orgId for a configPolicyAutomation by traversing:
- *   configPolicyAutomations -> configPolicyFeatureLinks -> configurationPolicies.orgId
- *
- * This is needed because configPolicyAutomations does not store orgId directly.
- */
-async function resolveConfigPolicyOrgId(featureLinkId: string): Promise<string | null> {
-  // Import here to avoid circular dependency at module level
-  const { configPolicyFeatureLinks, configurationPolicies } = await import('../db/schema');
-
-  const [row] = await db
-    .select({ orgId: configurationPolicies.orgId })
+async function resolveConfigPolicyAutomationContext(
+  tx: DbTransaction,
+  featureLinkId: string,
+): Promise<{ configPolicyId: string; orgId: string | null; partnerId: string | null } | null> {
+  const [row] = await tx
+    .select({
+      configPolicyId: configurationPolicies.id,
+      orgId: configurationPolicies.orgId,
+      partnerId: configurationPolicies.partnerId,
+    })
     .from(configPolicyFeatureLinks)
     .innerJoin(
       configurationPolicies,
@@ -2351,33 +2472,68 @@ async function resolveConfigPolicyOrgId(featureLinkId: string): Promise<string |
     )
     .where(eq(configPolicyFeatureLinks.id, featureLinkId))
     .limit(1);
-
-  return row?.orgId ?? null;
+  return row ?? null;
 }
 
-/**
- * Resolves the owning `configurationPolicies.id` for a configPolicyAutomation by
- * traversing configPolicyFeatureLinks -> configurationPolicies.
- *
- * `automationRuns.config_policy_id` is read by every consumer (the RLS
- * EXISTS-join in `2026-05-30-fk-child-tables-rls.sql` and the read route in
- * `routes/automations.ts`) as a `configurationPolicies.id`, NOT a feature-link
- * id. Writing the feature-link id here would make the run RLS-invisible to any
- * org-scoped reader (it matches no `configurationPolicies` row), so the run is
- * silently un-readable in the portal even though the INSERT succeeds under the
- * worker's system db context (issue #1855).
- */
-async function resolveConfigPolicyId(featureLinkId: string): Promise<string | null> {
-  // Import here to avoid circular dependency at module level
-  const { configPolicyFeatureLinks } = await import('../db/schema');
+async function admitConfigPolicyAutomationRun(
+  options: {
+    automation: ConfigPolicyAutomationRow;
+    targetDeviceIds: string[];
+    triggeredBy: string;
+    details?: Record<string, unknown>;
+  },
+  actions: readonly AutomationAction[] | null,
+  requireOrgId: boolean,
+): Promise<{
+  run: AutomationRunRow;
+  context: { configPolicyId: string; orgId: string | null; partnerId: string | null };
+  resolvedReferences: ResolvedAutomationReferences | null;
+}> {
+  return db.transaction(async (tx) => {
+    const context = await resolveConfigPolicyAutomationContext(tx, options.automation.featureLinkId);
+    if (!context) {
+      throw new Error(
+        `Could not resolve configurationPolicies.id for config policy automation ${options.automation.id} (featureLinkId=${options.automation.featureLinkId})`,
+      );
+    }
+    if (requireOrgId && !context.orgId) {
+      throw new Error(`Could not resolve orgId for config policy automation ${options.automation.id}`);
+    }
 
-  const [row] = await db
-    .select({ configPolicyId: configPolicyFeatureLinks.configPolicyId })
-    .from(configPolicyFeatureLinks)
-    .where(eq(configPolicyFeatureLinks.id, featureLinkId))
-    .limit(1);
+    const resolvedReferences = actions
+      ? await resolveAutomationReferencesForOwner(
+        tx,
+        { orgId: context.orgId, partnerId: context.partnerId },
+        actions,
+      )
+      : null;
+    const [run] = await tx
+      .insert(automationRuns)
+      .values({
+        automationId: null,
+        configPolicyId: context.configPolicyId,
+        configItemName: options.automation.name,
+        triggeredBy: options.triggeredBy,
+        status: 'running',
+        devicesTargeted: options.targetDeviceIds.length,
+        devicesSucceeded: 0,
+        devicesFailed: 0,
+        logs: [
+          logEntry('Config policy automation run created', 'info', {
+            details: {
+              triggeredBy: options.triggeredBy,
+              configPolicyAutomationId: options.automation.id,
+              configItemName: options.automation.name,
+              ...options.details,
+            },
+          }),
+        ],
+      })
+      .returning();
 
-  return row?.configPolicyId ?? null;
+    if (!run) throw new Error('Failed to create config policy automation run record');
+    return { run, context, resolvedReferences };
+  });
 }
 
 /**
@@ -2394,48 +2550,9 @@ export async function createConfigPolicyAutomationRun(options: {
   triggeredBy: string;
   details?: Record<string, unknown>;
 }): Promise<AutomationRunRow> {
-  const configPolicyId = await resolveConfigPolicyId(options.automation.featureLinkId);
-  if (!configPolicyId) {
-    // The feature link is missing/orphaned, so we can't key the run to a real
-    // configuration_policies.id. Fail loudly with a domain message rather than
-    // writing a null config_policy_id, which the automation_runs RLS WITH CHECK
-    // would reject with an opaque "violates row-level security policy" error
-    // (and, if it didn't, would re-create the RLS-invisible run this fix
-    // removes). Symmetric to the orgId guard in executeConfigPolicyAutomationRun.
-    throw new Error(
-      `Could not resolve configurationPolicies.id for config policy automation ${options.automation.id} (featureLinkId=${options.automation.featureLinkId})`,
-    );
-  }
-
-  const [run] = await db
-    .insert(automationRuns)
-    .values({
-      automationId: null,
-      configPolicyId,
-      configItemName: options.automation.name,
-      triggeredBy: options.triggeredBy,
-      status: 'running',
-      devicesTargeted: options.targetDeviceIds.length,
-      devicesSucceeded: 0,
-      devicesFailed: 0,
-      logs: [
-        logEntry('Config policy automation run created', 'info', {
-          details: {
-            triggeredBy: options.triggeredBy,
-            configPolicyAutomationId: options.automation.id,
-            configItemName: options.automation.name,
-            ...options.details,
-          },
-        }),
-      ],
-    })
-    .returning();
-
-  if (!run) {
-    throw new Error('Failed to create config policy automation run record');
-  }
-
-  return run;
+  const actions = normalizeAutomationActions(options.automation.actions);
+  const admission = await admitConfigPolicyAutomationRun(options, actions, false);
+  return admission.run;
 }
 
 /**
@@ -2452,24 +2569,18 @@ export async function executeConfigPolicyAutomationRun(
   devicesSucceeded: number;
   devicesFailed: number;
 }> {
-  // Resolve the orgId from the policy hierarchy
-  const orgId = await resolveConfigPolicyOrgId(automation.featureLinkId);
-  if (!orgId) {
-    throw new Error(`Could not resolve orgId for config policy automation ${automation.id}`);
-  }
-
-  // Create the run record
-  const run = await createConfigPolicyAutomationRun({
-    automation,
-    targetDeviceIds,
-    triggeredBy,
-  });
-
-  // Parse the actions from the jsonb column
   let actions: AutomationAction[];
   try {
     actions = normalizeAutomationActions(automation.actions);
   } catch (error) {
+    // Legacy/corrupt rows still produce an observable failed run, matching the
+    // pre-authorization runtime contract. No action can be dispatched because
+    // parsing failed, so this branch deliberately skips reference resolution.
+    const admission = await admitConfigPolicyAutomationRun(
+      { automation, targetDeviceIds, triggeredBy },
+      null,
+      true,
+    );
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     await db
       .update(automationRuns)
@@ -2477,19 +2588,29 @@ export async function executeConfigPolicyAutomationRun(
         status: 'failed',
         completedAt: new Date(),
         logs: [
-          ...getExistingLogs(run.logs),
+          ...getExistingLogs(admission.run.logs),
           logEntry(`Failed to parse automation actions: ${errorMsg}`, 'error'),
         ],
       })
-      .where(eq(automationRuns.id, run.id));
+      .where(eq(automationRuns.id, admission.run.id));
 
     return {
-      runId: run.id,
+      runId: admission.run.id,
       status: 'failed',
       devicesSucceeded: 0,
       devicesFailed: targetDeviceIds.length,
     };
   }
+  const admission = await admitConfigPolicyAutomationRun(
+    { automation, targetDeviceIds, triggeredBy },
+    actions,
+    true,
+  );
+  if (!admission.resolvedReferences) {
+    throw new Error('Config policy automation admission did not resolve references');
+  }
+  const orgId = admission.context.orgId!;
+  const run = admission.run;
 
   const onFailure = automation.onFailure ?? 'stop';
 
@@ -2513,19 +2634,6 @@ export async function executeConfigPolicyAutomationRun(
       .where(inArray(devices.id, targetDeviceIds))
     : [];
 
-  // Pre-fetch scripts referenced in actions
-  const scriptIds = [...new Set(
-    actions
-      .filter((action): action is RunScriptAction => action.type === 'run_script')
-      .map((action) => action.scriptId),
-  )];
-
-  const scriptRows = scriptIds.length > 0
-    ? await db.select().from(scripts).where(and(inArray(scripts.id, scriptIds), isNull(scripts.deletedAt)))
-    : [];
-  const scriptsById = new Map(scriptRows.map((s) => [s.id, s]));
-
-  // Pre-fetch notification channels referenced in actions
   const notificationChannelIds = new Set<string>();
   for (const action of actions) {
     if (action.type === 'send_notification') {
@@ -2533,19 +2641,8 @@ export async function executeConfigPolicyAutomationRun(
     }
   }
 
-  // Dual-axis (#2130) — see the automation notify-channel lookup above.
-  const channelRows = notificationChannelIds.size > 0
-    ? await db
-      .select()
-      .from(notificationChannels)
-      .where(
-        and(
-          await notificationChannelOwnershipCondition({ orgId, partnerId: null }),
-          inArray(notificationChannels.id, [...notificationChannelIds]),
-        ),
-      )
-    : [];
-  const channelsById = new Map(channelRows.map((ch) => [ch.id, ch]));
+  const scriptsById = admission.resolvedReferences.scriptsById;
+  const channelsById = admission.resolvedReferences.notificationChannelsById;
 
   const syntheticAutomation = {
     id: automation.id,
@@ -2627,6 +2724,7 @@ export async function executeConfigPolicyAutomationRun(
     devices: deviceRows.map((d) => ({ id: d.id, osType: d.osType, orgId: d.orgId })),
     createdBy: null,
     runId: run.id,
+    resolvedReferences: admission.resolvedReferences,
   });
   logs.push(...deployOutcome.logs);
   // Per-device install status is tracked asynchronously in deploymentResults; the per-device loop above already counted each device once. A deploy-dispatch failure degrades the run status below.
