@@ -360,6 +360,50 @@ describe('timeEntryQueue', () => {
     await expect(readQueue()).resolves.toHaveLength(1);
   });
 
+  it('refuses the park rather than overwriting the store when its own read fails', async () => {
+    // A failed read of the needs-attention blob is NOT an empty store. Pushing
+    // onto [] persists ONE row over every previously parked one AND reports
+    // success, and the drain's next step on a `true` is to drop the queued
+    // original — the same silent destruction of billable work that `readQueue`
+    // refuses on the queue side.
+    const first = await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'first' } });
+    await drain(async () => {
+      throw Object.assign(new Error('bad'), { status: 400 });
+    });
+    await expect(readNeedsAttention()).resolves.toHaveLength(1);
+
+    getItemFailures = 1;
+    const landed = await parkNeedsAttention({
+      write: { id: 'clock-backwards', kind: 'create', payload: { ...SPAN }, queuedAt: SPAN.startedAt, attempts: 0 },
+      status: 0,
+      code: 'CLOCK_WENT_BACKWARDS',
+      message: 'the device clock moved backwards mid-span',
+      failedAt: SPAN.endedAt,
+    });
+
+    expect(landed).toBe(false);
+    const rows = await readNeedsAttention();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].write.id).toBe(first.id);
+  });
+
+  it('leaves every parked row in place when the read behind a clear fails', async () => {
+    await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'a' } });
+    await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'b' } });
+    await drain(async () => {
+      throw Object.assign(new Error('bad'), { status: 400 });
+    });
+    const parked = await readNeedsAttention();
+    expect(parked).toHaveLength(2);
+
+    getItemFailures = 1;
+    await clearNeedsAttention([parked[0].write.id]);
+
+    // A clear that could not read the store must not write one either: the
+    // rows it would persist are [] and both records would be gone.
+    await expect(readNeedsAttention()).resolves.toHaveLength(2);
+  });
+
   it('a poison entry is parked once and never re-sent; later entries drain', async () => {
     await enqueue({ kind: 'closeEntry', payload: { id: 'E', endedAt: SPAN.endedAt } });
     await enqueue({ kind: 'create', payload: { ...SPAN, ticketId: 'a' } });

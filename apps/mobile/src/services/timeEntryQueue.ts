@@ -35,6 +35,13 @@ export const QUEUE_TOMBSTONE_KEY = 'breeze.timeEntryQueue.v2.tombstone';
  * default Partner Technician genuinely lacks `time_entries:write`.
  */
 export const QUEUE_NEEDS_ATTENTION_KEY = 'breeze.timeEntryQueue.v2.needsAttention';
+/**
+ * Where an unparseable parked-rows blob is copied. Separate from
+ * QUEUE_CORRUPT_KEY so a corrupt queue and a corrupt parked store cannot
+ * overwrite each other's only surviving bytes.
+ */
+export const QUEUE_NEEDS_ATTENTION_CORRUPT_KEY =
+  'breeze.timeEntryQueue.v2.needsAttention.corrupt';
 
 /**
  * Exported as a runtime value, not just a type, so a test can assert the union
@@ -184,14 +191,19 @@ async function persistQueue(queue: QueuedWrite[]): Promise<void> {
 }
 
 /** Copies the corrupt bytes aside. Returns false if the copy did not happen. */
-async function quarantine(stored: string, reason: string, cause?: unknown): Promise<boolean> {
+async function quarantine(
+  stored: string,
+  destinationKey: string,
+  reason: string,
+  cause?: unknown
+): Promise<boolean> {
   // Move the bytes aside BEFORE returning []: the next enqueue/drain rewrites
   // QUEUE_KEY, so without this copy the rows are destroyed within one tap and
   // "recoverable by hand" stops being true.
   let parked = true;
   let parkError: string | undefined;
   try {
-    await AsyncStorage.setItem(QUEUE_CORRUPT_KEY, stored);
+    await AsyncStorage.setItem(destinationKey, stored);
   } catch (error) {
     parked = false;
     parkError = error instanceof Error ? error.message : String(error);
@@ -228,11 +240,13 @@ export async function readQueue(): Promise<QueuedWrite[]> {
   try {
     parsed = JSON.parse(stored);
   } catch (error) {
-    if (!(await quarantine(stored, 'unparseable-queue', error))) throw new QueueStorageError(error);
+    if (!(await quarantine(stored, QUEUE_CORRUPT_KEY, 'unparseable-queue', error))) {
+      throw new QueueStorageError(error);
+    }
     return [];
   }
   if (!Array.isArray(parsed)) {
-    if (!(await quarantine(stored, 'queue-not-an-array'))) {
+    if (!(await quarantine(stored, QUEUE_CORRUPT_KEY, 'queue-not-an-array'))) {
       throw new QueueStorageError(new Error('queue-not-an-array'));
     }
     return [];
@@ -243,7 +257,7 @@ export async function readQueue(): Promise<QueuedWrite[]> {
     // A malformed element would otherwise throw out of the drain forever, since
     // nothing rewrites the blob on that path. If the park failed, refusing the
     // read is what stops the next write from destroying the valid rows too.
-    if (!(await quarantine(stored, 'malformed-queue-elements'))) {
+    if (!(await quarantine(stored, QUEUE_CORRUPT_KEY, 'malformed-queue-elements'))) {
       throw new QueueStorageError(new Error('malformed-queue-elements'));
     }
   }
@@ -289,26 +303,64 @@ function asNeedsAttentionRow(value: unknown): NeedsAttentionRow | null {
   };
 }
 
-/** Reads without the lock; a torn read here degrades to an empty list, never a throw. */
-async function readNeedsAttentionUnlocked(): Promise<NeedsAttentionRow[]> {
+/**
+ * Reads without the lock. Returns null when STORAGE ITSELF failed.
+ *
+ * That distinction is the whole point: a failed read is NOT an empty store. A
+ * park that pushed onto `[]` here would persist one row over every previously
+ * parked one and still report success, and the drain's next step on a `true` is
+ * to drop the queued original — the silent destruction of billable work that
+ * `readQueue` already refuses on the queue side.
+ *
+ * Unparseable content is treated differently, because it is deterministic:
+ * refusing it forever would wedge every later park behind one bad blob, and a
+ * poison entry would then block the queue for good. Those bytes are copied
+ * aside instead and the read succeeds as empty.
+ */
+async function readNeedsAttentionUnlocked(): Promise<NeedsAttentionRow[] | null> {
   let stored: string | null;
   try {
     stored = await AsyncStorage.getItem(QUEUE_NEEDS_ATTENTION_KEY);
-  } catch {
-    return [];
+  } catch (error) {
+    Sentry.captureException(error instanceof Error ? error : new QueueStorageError(error), {
+      tags: { area: 'time-entry-queue' },
+      extra: { reason: 'needs-attention-read-failed' },
+    });
+    return null;
   }
   if (stored === null) return [];
+
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(stored);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map(asNeedsAttentionRow).filter((row): row is NeedsAttentionRow => row !== null);
-  } catch {
+    parsed = JSON.parse(stored);
+  } catch (error) {
+    if (!(await quarantine(stored, QUEUE_NEEDS_ATTENTION_CORRUPT_KEY, 'unparseable-needs-attention', error))) {
+      return null;
+    }
     return [];
   }
+  if (!Array.isArray(parsed)) {
+    if (!(await quarantine(stored, QUEUE_NEEDS_ATTENTION_CORRUPT_KEY, 'needs-attention-not-an-array'))) {
+      return null;
+    }
+    return [];
+  }
+
+  const rows = parsed.map(asNeedsAttentionRow).filter((row): row is NeedsAttentionRow => row !== null);
+  if (rows.length !== parsed.length) {
+    // Keeping the original bytes matters more here than on the queue: a
+    // malformed parked row is a record of work nothing else holds a copy of.
+    if (!(await quarantine(stored, QUEUE_NEEDS_ATTENTION_CORRUPT_KEY, 'malformed-needs-attention-elements'))) {
+      return null;
+    }
+  }
+  return rows;
 }
 
 export async function readNeedsAttention(): Promise<NeedsAttentionRow[]> {
-  return withStorageLock(readNeedsAttentionUnlocked);
+  // A torn read degrades to an empty list for a caller that only renders it;
+  // the writers below branch on the null instead of persisting over it.
+  return (await withStorageLock(readNeedsAttentionUnlocked)) ?? [];
 }
 
 /** Removes parked rows by WRITE id, once the technician has dealt with them. */
@@ -317,6 +369,9 @@ export async function clearNeedsAttention(ids: string[]): Promise<void> {
   const gone = new Set(ids);
   await withStorageLock(async () => {
     const rows = await readNeedsAttentionUnlocked();
+    // The rows this would persist are `[]`, so a storage hiccup during a
+    // dismiss would clear every parked record rather than the one named.
+    if (rows === null) return;
     const kept = rows.filter((row) => !gone.has(row.write.id));
     await AsyncStorage.setItem(QUEUE_NEEDS_ATTENTION_KEY, JSON.stringify(kept));
   });
@@ -337,6 +392,7 @@ export async function parkNeedsAttention(row: NeedsAttentionRow): Promise<boolea
   return withStorageLock(async () => {
     try {
       const rows = await readNeedsAttentionUnlocked();
+      if (rows === null) return false;
       rows.push(row);
       await AsyncStorage.setItem(QUEUE_NEEDS_ATTENTION_KEY, JSON.stringify(rows));
       return true;
@@ -456,7 +512,7 @@ async function drainQueue(send: (write: QueuedWrite) => Promise<void>): Promise<
   return {
     sent,
     needsAttention: parked,
-    needsAttentionTotal: (await readNeedsAttentionUnlocked()).length,
+    needsAttentionTotal: (await readNeedsAttentionUnlocked())?.length ?? 0,
     remaining: remainingQueue.length,
     headAttempts: remainingQueue[0]?.attempts ?? 0,
   };
