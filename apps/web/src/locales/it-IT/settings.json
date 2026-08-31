@@ -2238,6 +2238,7 @@
     "ssoReauthEmailUnverified": "Il tuo provider di identità segnala che il tuo indirizzo e-mail non è verificato. Verificalo lì, quindi riprova.",
     "ssoReauthProofExpired": "La verifica tramite il provider di identità è scaduta. Eseguila di nuovo per completare la configurazione dell'autenticazione a più fattori.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Questo account accede tramite un provider di identità e non ha una password. Esegui di nuovo la verifica presso il provider prima di aggiungere una passkey.",
+    "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "La tua identità è stata verificata. Assegna un nome a questa passkey e continua.",
     "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità",
     "passkeyIdpVerificationRequired": "Verifica con il tuo provider di identità prima di aggiungere una passkey.",
     "ssoReauthFailed": "Non è stato possibile verificare con il tuo provider di identità. Riprova.",

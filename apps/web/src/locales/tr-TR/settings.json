@@ -2243,6 +2243,7 @@
     "ssoReauthEmailUnverified": "Kimlik sağlayıcınız e-posta adresinizin doğrulanmadığını bildiriyor. Adresi orada doğrulayıp tekrar deneyin.",
     "ssoReauthProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Çok faktörlü kimlik doğrulama kurulumunu tamamlamak için yeniden doğrulayın.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Bu hesap bir kimlik sağlayıcı üzerinden oturum açıyor ve parolası yok. Geçiş anahtarı eklemeden önce sağlayıcınızda yeniden doğrulayın.",
+    "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Kimliğiniz doğrulandı. Bu geçiş anahtarına bir ad verin ve devam edin.",
     "verifyWithYourIdentityProvider": "Kimlik sağlayıcınızla doğrulayın",
     "passkeyIdpVerificationRequired": "Geçiş anahtarı eklemeden önce kimlik sağlayıcınızla doğrulayın.",
     "ssoReauthFailed": "Kimlik sağlayıcınızla doğrulanamadı. Lütfen tekrar deneyin.",
