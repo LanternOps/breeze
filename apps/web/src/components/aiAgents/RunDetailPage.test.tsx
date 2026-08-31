@@ -1,12 +1,18 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../reports/reportExport', () => ({
+  exportReport: vi.fn().mockResolvedValue(undefined),
+  getBrowserTimezone: () => 'UTC',
+}));
 
 import RunDetailPage from './RunDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { exportReport } from '../reports/reportExport';
 
 const fetchMock = vi.mocked(fetchWithAuth);
+const exportReportMock = vi.mocked(exportReport);
 
 const json = (payload: unknown, ok = true, status = 200): Response =>
   ({ ok, status, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
@@ -193,6 +199,29 @@ const SWEEP = {
   ],
 };
 
+// Phase 2 wave P2-3 (#4190) — a `narrative`-profile run's outcome projection
+// (`AiAgentRunNarrativeDto`). All eight sections, in NARRATIVE_SECTION_KEYS
+// order, with the server-attached titles the report itself uses.
+const NARRATIVE = {
+  headline: 'A quiet week: 3 alerts closed and every backup green.',
+  sections: [
+    { key: 'overview', title: 'Overview', bullets: ['12 devices monitored all week.'] },
+    { key: 'alerts', title: 'Alerts', bullets: ['3 alerts raised, all closed.', 'No repeat offenders.'] },
+    { key: 'sweeps_and_fixes', title: 'Sweeps & fixes', bullets: ['Spooler restarted on WKS-01.'] },
+    { key: 'tickets', title: 'Tickets', bullets: ['2 tickets resolved.'] },
+    { key: 'patching_and_security', title: 'Patching & security', bullets: ['No critical CVEs outstanding.'] },
+    { key: 'backups', title: 'Backups', bullets: ['Every nightly job succeeded.'] },
+    { key: 'fleet', title: 'Fleet', bullets: ['One device added.'] },
+    { key: 'recommendations', title: 'Recommendations', bullets: ['Schedule the SRV-03 reboot.'] },
+  ],
+  reportRunId: 'rr-1',
+  reportId: 'rep-1',
+  downloadPath: '/api/reports/runs/rr-1/download',
+  periodStart: '2026-08-17T00:00:00.000Z',
+  periodEnd: '2026-08-24T00:00:00.000Z',
+  contextTruncated: false,
+};
+
 function mockEndpoints(opts: {
   detail?: unknown;
   detailOk?: boolean;
@@ -214,6 +243,8 @@ function mockEndpoints(opts: {
 
 beforeEach(() => {
   fetchMock.mockReset();
+  exportReportMock.mockReset();
+  exportReportMock.mockResolvedValue(undefined);
 });
 
 describe('RunDetailPage', () => {
@@ -441,5 +472,139 @@ describe('RunDetailPage sweep findings', () => {
     expect(kinds).toHaveTextContent('Service down');
     expect(kinds).toHaveTextContent('Failed backups');
     expect(kinds.textContent).not.toContain('service_down');
+  });
+});
+
+// Phase 2 wave P2-3 (#4190) — the weekly-narrative section.
+describe('RunDetailPage narrative', () => {
+  it('renders nothing when the run produced no narrative', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: null } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-narrative')).not.toBeInTheDocument();
+  });
+
+  it('renders the headline and all eight sections with their bullets', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-narrative-headline')).toHaveTextContent(
+      'A quiet week: 3 alerts closed and every backup green.',
+    );
+    for (const section of NARRATIVE.sections) {
+      const block = screen.getByTestId(`ai-agent-run-narrative-section-${section.key}`);
+      expect(block).toHaveTextContent(section.title);
+      for (const bullet of section.bullets) expect(block).toHaveTextContent(bullet);
+    }
+  });
+
+  it('renders a model-authored bullet as text, never as markup', async () => {
+    const injected = '<img src=x onerror="alert(1)"> and **not bold**';
+    const narrative = {
+      ...NARRATIVE,
+      sections: NARRATIVE.sections.map((section, index) =>
+        index === 0 ? { ...section, bullets: [injected] } : section),
+    };
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+    const block = screen.getByTestId('ai-agent-run-narrative-section-overview');
+    // The literal characters survive as text; no element was created from them.
+    expect(block).toHaveTextContent(injected);
+    expect(block.querySelector('img')).toBeNull();
+  });
+
+  it('links to the generated report and offers the download as a button, never a raw API anchor', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-narrative-report-link')).toHaveAttribute('href', '/reports');
+
+    // The download route answers JSON and authenticates from the Authorization
+    // header only, so an <a href> to it is dead in a browser. It must be a
+    // button that fetches + renders client-side.
+    const download = screen.getByTestId('ai-agent-run-narrative-download');
+    expect(download.tagName).toBe('BUTTON');
+    expect(download).not.toHaveAttribute('href');
+  });
+
+  it('fetches the stored snapshot and hands the narrative summary to exportReport', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
+    const snapshot = {
+      type: 'ai_org_narrative',
+      format: 'pdf',
+      data: { rows: [], summary: { narrative: { headline: NARRATIVE.headline, sections: NARRATIVE.sections } } },
+    };
+    render(<RunDetailPage runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(url.startsWith('/reports/runs/') ? json(snapshot) : json({ data: [] })));
+    fireEvent.click(screen.getByTestId('ai-agent-run-narrative-download'));
+
+    await waitFor(() => expect(exportReportMock).toHaveBeenCalledTimes(1));
+    // Bearer-authenticated fetch against the API-relative path, not the raw
+    // /api/... downloadPath a browser navigation would have used.
+    expect(fetchMock).toHaveBeenCalledWith('/reports/runs/rr-1/download');
+    expect(exportReportMock).toHaveBeenCalledWith([], expect.objectContaining({
+      format: 'pdf',
+      reportType: 'ai_org_narrative',
+      summary: snapshot.data.summary,
+    }));
+    expect(screen.queryByTestId('ai-agent-run-narrative-download-error')).not.toBeInTheDocument();
+  });
+
+  it('surfaces an inline error when the snapshot fetch fails, and never calls exportReport', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
+    render(<RunDetailPage runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(url.startsWith('/reports/runs/')
+        ? json({ error: 'nope' }, false, 404)
+        : json({ data: [] })));
+    fireEvent.click(screen.getByTestId('ai-agent-run-narrative-download'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('ai-agent-run-narrative-download-error')).toBeInTheDocument());
+    expect(exportReportMock).not.toHaveBeenCalled();
+  });
+
+  it('omits both links for a narrative that never reached a report run', async () => {
+    const narrative = { ...NARRATIVE, reportRunId: null, reportId: null, downloadPath: null };
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-narrative-report-link')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-run-narrative-download')).not.toBeInTheDocument();
+  });
+
+  it('says so when the run\'s context was cut short, and stays quiet when it was not', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: { ...NARRATIVE, contextTruncated: true } } });
+    const { unmount } = render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative-truncated')).toBeInTheDocument());
+    unmount();
+
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
+    render(<RunDetailPage runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-narrative-truncated')).not.toBeInTheDocument();
+  });
+
+  it('names the reporting window it covers', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative-period')).toBeInTheDocument());
+    const period = screen.getByTestId('ai-agent-run-narrative-period');
+    // Formatted through the locale date formatter, never the raw ISO string.
+    expect(period.textContent).not.toContain('2026-08-17T00:00:00.000Z');
+    expect(period.textContent).toContain('2026');
   });
 });

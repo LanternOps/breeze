@@ -426,6 +426,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // cross-partner forge + evaluation fan-out proof:
   // automationPoliciesPartnerRls.integration.test.ts.
   'automation_policies',
+  // automation_resource_bindings (S0 Track A): copies the standalone
+  // automation's org XOR partner owner axes. The parent-owner constraint
+  // trigger rejects drift, and automationResourceBindings.integration.test.ts
+  // proves both org and partner forge paths through the real app role.
+  'automation_resource_bindings',
   // automations (#2133, epic #2135): org-scoped OR partner-wide standalone
   // automation ("on device.offline run diagnostic script" across all orgs).
   // automation_runs stays parent-join (its EXISTS policies gained the partner
@@ -1928,7 +1933,11 @@ describe('manifest_signing_keys RLS — system-only enforcement (#639)', () => {
           keyId: seededKeyId,
           publicKeyB64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
           privateKeyEnc: 'enc:v1:forge',
-          status: 'active',
+          // Visibility is independent of lifecycle status. Use a retired row
+          // so this suite remains isolated when a preceding signing/rollback
+          // suite has legitimately created the deployment's one active key.
+          status: 'retired',
+          retiredAt: new Date(),
         });
       });
       insertedKeyIds.push(seededKeyId);

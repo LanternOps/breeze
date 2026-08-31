@@ -79,23 +79,35 @@ describe('AiAgentRunTraceEntryDto (leak-impossible union, #3828)', () => {
   });
 });
 
-describe('AiAgentRunTicketProposalDto (wave 6 PR 3, #3828) — safe projection, no autonomous notes', () => {
-  it('accepts the minimal shape (summary + empty notes) and the full shape', () => {
-    const minimal: AiAgentRunTicketProposalDto = { summary: 'Investigated printer spooler crash.', notes: [] };
+describe('AiAgentRunTicketProposalDto (phase 2 P2-4, #4191) — safe projection, no autonomous notes', () => {
+  it('accepts the minimal shape (version + summary) and the full shape', () => {
+    const minimal: AiAgentRunTicketProposalDto = { version: 1, summary: 'Investigated printer spooler crash.' };
     const full: AiAgentRunTicketProposalDto = {
+      version: 1,
       summary: 'Spooler service was stuck; a restart resolved it in shadow-mode analysis.',
-      proposedReply: 'Hi — this looks like a stuck print spooler. We recommend a restart.',
-      proposedStatus: 'pending',
-      proposedPriority: 'normal',
+      fields: {
+        categoryId: { value: '11111111-1111-4111-8111-111111111111', confidence: 0.9 },
+        priority: { value: 'normal', confidence: 0.8 },
+      },
+      device: { hostname: 'WKS-042' },
+      draftReply: 'Hi — this looks like a stuck print spooler. We recommend a restart.',
+      draftResolutionNote: 'Restarted the print spooler service; issue resolved.',
       notes: ['Spooler.exe was consuming 100% CPU', 'No related alerts in the last 24h'],
+      intentIds: ['22222222-2222-4222-8222-222222222222'],
+      draftsWritten: [{ kind: 'reply', draftId: '33333333-3333-4333-8333-333333333333' }],
     };
-    expect(minimal.notes).toEqual([]);
-    expect(full.proposedReply).toContain('spooler');
+    expect(minimal.notes).toBeUndefined();
+    expect(full.draftReply).toContain('spooler');
+    expect(full.draftsWritten?.[0]?.kind).toBe('reply');
   });
 
   it('has no field literally named args/toolInput/toolOutput/arguments on the DTO — it is text-only, never a tool payload', () => {
     const sample: AiAgentRunTicketProposalDto = {
-      summary: 'x', proposedReply: 'y', proposedStatus: 'z', proposedPriority: 'normal', notes: ['n'],
+      version: 1,
+      summary: 'x',
+      draftReply: 'y',
+      notes: ['n'],
+      intentIds: ['11111111-1111-4111-8111-111111111111'],
     };
     const keys = Object.keys(sample);
     for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {

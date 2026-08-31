@@ -1,4 +1,4 @@
-import { Hono, type Context } from 'hono';
+import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq, and, desc, gte, lte, sql, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
@@ -7,10 +7,14 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { writeRouteAudit } from '../../services/auditEvents';
 import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 import { CommandTypes, queueBackupStopCommand, queueCommandForExecution } from '../../services/commandQueue';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveBackupProviderConfig, resolveBackupDestinationError } from '../../services/backupProviderConfig';
 import { resolveScopedOrgId } from './helpers';
 import { restoreListSchema, restoreSchema } from './schemas';
+import {
+  authorizeRouteResilienceResources,
+  resolveRouteAuthorizedDeviceIds,
+} from './resilienceAuthorization';
 
 export const restoreRoutes = new Hono();
 
@@ -25,17 +29,6 @@ function runInOrg<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
 
 function mapDispatchErrorStatus(error: string): number {
   return error.startsWith('Device is ') ? 409 : 502;
-}
-
-function isDeviceSiteDenied(c: Context, siteId: string | null | undefined): boolean {
-  const permissions = c.get('permissions') as UserPermissions | undefined;
-  return Boolean(permissions?.allowedSiteIds && (typeof siteId !== 'string' || !canAccessSite(permissions, siteId)));
-}
-
-async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions | undefined): Promise<string[] | null> {
-  if (!perms?.allowedSiteIds) return null;
-  const orgDevices = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices).where(eq(devices.orgId, orgId));
-  return orgDevices.filter((d) => typeof d.siteId === 'string' && canAccessSite(perms, d.siteId)).map((d) => d.id);
 }
 
 function dispatchFailureReason(error: string): string {
@@ -96,22 +89,28 @@ restoreRoutes.get(
     }
 
     const query = c.req.valid('query');
-    const perms = c.get('permissions') as UserPermissions | undefined;
     const conditions = [eq(restoreJobs.orgId, orgId)];
 
     if (query.deviceId) {
       conditions.push(eq(restoreJobs.deviceId, query.deviceId));
     }
 
-    if (perms?.allowedSiteIds) {
-      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, perms);
-      if (query.deviceId && !allowedDeviceIds!.includes(query.deviceId)) {
-        return c.json({ error: 'Device not found or access denied' }, 403);
+    const allowedDeviceIds = await resolveRouteAuthorizedDeviceIds(c, orgId);
+    if (allowedDeviceIds) {
+      if (query.deviceId && !allowedDeviceIds.includes(query.deviceId)) {
+        return c.json({ error: 'site_access_denied' }, 403);
       }
-      if (!allowedDeviceIds || allowedDeviceIds.length === 0) {
+      if (allowedDeviceIds.length === 0) {
         return c.json({ data: [] });
       }
       conditions.push(inArray(restoreJobs.deviceId, allowedDeviceIds));
+      conditions.push(sql`exists (
+        select 1
+        from ${backupSnapshots}
+        where ${backupSnapshots.id} = ${restoreJobs.snapshotId}
+          and ${backupSnapshots.orgId} = ${restoreJobs.orgId}
+          and ${inArray(backupSnapshots.deviceId, allowedDeviceIds)}
+      )`);
     }
     if (query.snapshotId) {
       conditions.push(eq(restoreJobs.snapshotId, query.snapshotId));
@@ -154,6 +153,12 @@ restoreRoutes.get(
     }
 
     const restoreId = c.req.param('id')!;
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'restore_job', id: restoreId, role: 'source' },
+      { kind: 'restore_job', id: restoreId, role: 'target' },
+    ], 'read');
+    if (!authorization.ok) return authorization.response;
+
     const [row] = await db
       .select()
       .from(restoreJobs)
@@ -183,6 +188,14 @@ restoreRoutes.post(
     }
 
     const payload = c.req.valid('json');
+
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'snapshot', id: payload.snapshotId, role: 'source' },
+      payload.deviceId
+        ? { kind: 'device', id: payload.deviceId, role: 'target' }
+        : { kind: 'snapshot', id: payload.snapshotId, role: 'target' },
+    ], 'restore');
+    if (!authorization.ok) return authorization.response;
 
     // Verify snapshot exists and belongs to this org
     const [snapshot] = await db
@@ -218,20 +231,16 @@ restoreRoutes.post(
     }
 
     const now = new Date();
-    const targetDeviceId = payload.deviceId ?? snapshot.deviceId;
+    const resolvedTargetDeviceId = payload.deviceId ?? snapshot.deviceId;
     const [targetDevice] = await db
       .select({ id: devices.id, status: devices.status, siteId: devices.siteId })
       .from(devices)
-      .where(and(eq(devices.id, targetDeviceId), eq(devices.orgId, orgId)))
+      .where(and(eq(devices.id, resolvedTargetDeviceId), eq(devices.orgId, orgId)))
       .limit(1);
 
     if (!targetDevice) {
       return c.json({ error: 'Target device not found' }, 404);
     }
-    if (isDeviceSiteDenied(c, targetDevice.siteId)) {
-      return c.json({ error: 'Access to this site denied' }, 403);
-    }
-
     if (targetDevice.status !== 'online') {
       recordBackupDispatchFailure('manual_restore', 'device_offline');
       return c.json({ error: `Device is ${targetDevice.status}, cannot execute command` }, 409);
@@ -264,7 +273,7 @@ restoreRoutes.post(
         .values({
           orgId,
           snapshotId: snapshot.id,
-          deviceId: targetDeviceId,
+          deviceId: resolvedTargetDeviceId,
           restoreType: payload.restoreType,
           targetPath: payload.targetPath ?? null,
           selectedPaths: payload.restoreType === 'selective' ? (payload.selectedPaths ?? []) : [],
@@ -405,6 +414,12 @@ restoreRoutes.post(
     }
 
     const restoreId = c.req.param('id')!;
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'restore_job', id: restoreId, role: 'source' },
+      { kind: 'restore_job', id: restoreId, role: 'target' },
+    ], 'revoke');
+    if (!authorization.ok) return authorization.response;
+
     const [current] = await db
       .select()
       .from(restoreJobs)
@@ -414,10 +429,6 @@ restoreRoutes.post(
     if (!current) {
       return c.json({ error: 'Restore job not found' }, 404);
     }
-    if (await isDeviceSiteDenied(c, current.deviceId)) {
-      return c.json({ error: 'Access to this site denied' }, 403);
-    }
-
     if (current.status !== 'pending' && current.status !== 'running') {
       return c.json({ error: 'Restore job is not cancelable' }, 409);
     }

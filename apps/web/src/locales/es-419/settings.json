@@ -1342,13 +1342,20 @@
       "cronHint": "Cinco campos: minuto hora día-del-mes mes día-de-la-semana. Por ejemplo, 0 3 * * * se ejecuta todos los días a las 03:00.",
       "cronInvalid": "Ingresa una expresión cron válida de cinco campos antes de guardar.",
       "timezone": "Zona horaria",
-      "kinds": "Comprobaciones a ejecutar",
+      "kinds": {
+        "sweep": "Barrido",
+        "narrative": "Informe semanal"
+      },
+      "kindsLabel": "Comprobaciones a ejecutar",
+      "kind": "Tipo de programación",
+      "weeklyOnlyHint": "Un informe semanal se dispara exactamente una vez por semana: minuto y hora literales, * para día-del-mes y mes, y un solo día de la semana de 0 a 6. Por ejemplo, 0 7 * * 1 se ejecuta todos los lunes a las 07:00.",
       "kindsRequired": "Selecciona al menos una comprobación.",
       "enabled": "Habilitado",
       "override": "Anular para esta organización",
       "editOverride": "Editar la excepción de esta organización",
       "overrideHint": "La excepción de esta organización sobre la línea base del partner. Siempre se ejecuta con la cadencia de la línea base.",
       "overrideSummary": "Esta organización: {{state}} · {{kinds}}",
+      "overrideSummaryNarrative": "Esta organización: {{state}}",
       "tightenOnly": "Una excepción solo puede restringir la línea base: puede desactivar el barrido o quitar comprobaciones, nunca agregarlas.",
       "noKinds": "Sin comprobaciones",
       "lastRun": "Última ejecución {{at}} · {{admitted}} de {{total}} organizaciones barridas, {{skipped}} omitidas.",
@@ -1376,7 +1383,9 @@
         "baselineNotPartnerRow": "Esa línea base no tiene propietario y no se puede anular.",
         "baselineAgentMismatch": "Esa línea base pertenece a otro agente.",
         "agentNotPartnerWide": "Las programaciones de barrido requieren un agente de todo el partner.",
-        "agentKindNotTriage": "Solo se puede programar un agente de triaje."
+        "agentKindNotTriage": "Solo se puede programar un agente de triaje.",
+        "kindsNotEmpty": "Una programación de informe semanal no ejecuta comprobaciones. Quita las comprobaciones seleccionadas antes de guardar.",
+        "invalidCronForKind": "Un informe semanal debe dispararse exactamente una vez por semana. Usa minuto y hora literales, * para día-del-mes y mes, y un solo día de la semana."
       }
     },
     "title": "Agentes de IA",
@@ -1530,7 +1539,8 @@
         "anomaly": "Anomalía"
       },
       "profile": {
-        "sweep": "Barrido"
+        "sweep": "Barrido",
+        "narrative": "Informe semanal"
       },
       "sweep": {
         "title": "Hallazgos del barrido",
@@ -1569,6 +1579,14 @@
           "intent_error": "No se pudo crear la aprobación",
           "max_actions_per_run": "Se alcanzó el límite de acciones de esta ejecución"
         }
+      },
+      "narrative": {
+        "title": "Narrativa semanal",
+        "period": "Cubre del {{start}} al {{end}}",
+        "truncatedNote": "El contexto del agente se recortó: esta narrativa no vio la semana completa.",
+        "openReport": "Abrir informe",
+        "download": "Descargar PDF",
+        "downloadFailed": "No se pudo descargar el PDF."
       },
       "noAgent": "Agente desconocido",
       "loading": "Cargando ejecuciones…",

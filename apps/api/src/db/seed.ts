@@ -108,12 +108,15 @@ export const DEFAULT_PERMISSIONS = [
   // Backup / recovery
   { resource: 'backup', action: 'read', description: 'View backup and recovery resources' },
   { resource: 'backup', action: 'write', description: 'Create and manage backup and recovery resources' },
+  { resource: 'backup', action: 'cross_site_restore', description: 'Restore backup data across sites' },
 
   // Devices
   { resource: 'devices', action: 'read', description: 'View devices and their details' },
   { resource: 'devices', action: 'write', description: 'Create and update devices' },
   { resource: 'devices', action: 'delete', description: 'Delete/decommission devices' },
   { resource: 'devices', action: 'execute', description: 'Execute commands on devices' },
+
+  { resource: 'agent_rollback', action: 'create', description: 'Authorize a signed agent rollback' },
 
   // Network topology (discovery topology view + saved layout)
   { resource: 'topology', action: 'read', description: 'View network topology and saved layout' },
@@ -286,7 +289,7 @@ export const SYSTEM_ROLES = [
     scope: 'organization' as const,
     description: 'Full access within organization',
     permissions: [
-      'backup:read', 'backup:write',
+      'backup:read', 'backup:write', 'backup:cross_site_restore',
       'devices:read', 'devices:write', 'devices:delete', 'devices:execute',
       'scripts:read', 'scripts:write', 'scripts:delete', 'scripts:execute',
       'alerts:read', 'alerts:write', 'alerts:acknowledge',
@@ -305,6 +308,7 @@ export const SYSTEM_ROLES = [
       // reach across orgs.
       'ai_agents:read', 'ai_agents:write',
       'approvals:decide',
+      'agent_rollback:create',
       // Tenant variables (#3409): managing the definitions is an admin task;
       // running a script that USES one only needs scripts:execute.
       'variables:read', 'variables:manage'

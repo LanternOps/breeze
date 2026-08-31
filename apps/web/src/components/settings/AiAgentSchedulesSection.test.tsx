@@ -24,12 +24,14 @@ const json = (payload: unknown, ok = true, status = 200): Response =>
 
 const BASELINE: AiAgentEffectiveScheduleDto = {
   id: 's-1',
-  kind: 'sweep',
   ownerScope: 'partner',
   orgId: null,
   partnerId: 'p-1',
   agentId: 'a-1',
   baselineScheduleId: null,
+  // P2-3: every schedule row now declares which run profile its occurrence
+  // produces. `sweep` is what every pre-P2-3 row means.
+  kind: 'sweep',
   cron: '0 3 * * *',
   timezone: 'America/New_York',
   sweepKinds: ['disk_pressure', 'stale_agents'],
@@ -317,6 +319,152 @@ describe('AiAgentSchedulesSection', () => {
 
     expect(await screen.findByTestId('ai-agent-schedules-failed')).toBeInTheDocument();
     expect(screen.queryByTestId('ai-agent-schedules-list')).toBeNull();
+  });
+
+  // ── Phase 2 wave P2-3 (#4190) — the narrative schedule kind ────────────
+  //
+  // A narrative baseline produces the weekly org report rather than sweep
+  // findings, and the two kinds carry incompatible server rules: narrative
+  // must fire on a WEEKLY LITERAL cron and evaluates NO sweep kinds, where a
+  // sweep may fire hourly and must select at least one. The editor has to
+  // make the wrong body unauthorable, not merely rejected.
+
+  const NARRATIVE_BASELINE: AiAgentEffectiveScheduleDto = {
+    ...BASELINE,
+    id: 'n-1',
+    kind: 'narrative',
+    cron: '0 7 * * 1',
+    sweepKinds: [],
+    effective: { enabled: true, sweepKinds: [] },
+  };
+
+  it('offers the schedule kind on create only, never on an edit', async () => {
+    mockList([BASELINE]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    // Editing a saved baseline: `kind` is immutable (the update schema is
+    // .strict() and admits none), so the control must not be offered.
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    expect(screen.queryByTestId('ai-agent-schedule-kind')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-cancel'));
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-add'));
+    expect(screen.getByTestId('ai-agent-schedule-kind')).toHaveValue('sweep');
+  });
+
+  it('switches the create form to a weekly-literal cron with no checks when narrative is chosen', async () => {
+    mockList([]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+    // Sweep default: nightly cron, every check offered.
+    expect(screen.getByTestId('ai-agent-schedule-cron')).toHaveValue('0 3 * * *');
+    expect(screen.getByTestId('ai-agent-schedule-kinds')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-kind'), { target: { value: 'narrative' } });
+
+    expect(screen.getByTestId('ai-agent-schedule-cron')).toHaveValue('0 7 * * 1');
+    // A narrative schedule evaluates no sweep kinds — the whole block goes.
+    expect(screen.queryByTestId('ai-agent-schedule-kinds')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-schedule-kind-disk_pressure')).toBeNull();
+    // Weekly-only cadence hint replaces the five-field sweep hint.
+    expect(screen.getByTestId('ai-agent-schedule-weekly-hint')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-schedule-cron-hint')).toBeNull();
+    // Save is live: the default cron is already a valid weekly literal, and
+    // "no kinds" is the narrative branch's correct state, not an error.
+    expect(screen.getByTestId('ai-agent-schedule-save')).not.toBeDisabled();
+  });
+
+  it('refuses a narrative cron that fires more than once a week', async () => {
+    mockList([]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-kind'), { target: { value: 'narrative' } });
+
+    // Structurally valid, inside the hourly floor, and DAILY — the exact
+    // body the server answers with `invalid_cron_for_kind`.
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-cron'), { target: { value: '0 7 * * *' } });
+    expect(screen.getByTestId('ai-agent-schedule-save')).toBeDisabled();
+    expect(screen.getByTestId('ai-agent-schedule-cron-invalid')).toBeInTheDocument();
+
+    // A weekday list fires twice a week — also refused.
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-cron'), { target: { value: '0 7 * * 1,3' } });
+    expect(screen.getByTestId('ai-agent-schedule-save')).toBeDisabled();
+
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-cron'), { target: { value: '30 6 * * 5' } });
+    expect(screen.getByTestId('ai-agent-schedule-save')).not.toBeDisabled();
+  });
+
+  it('posts a narrative baseline carrying kind and NO sweepKinds', async () => {
+    mockList([], () => json({ data: NARRATIVE_BASELINE }, true, 201));
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-kind'), { target: { value: 'narrative' } });
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-timezone'), {
+      target: { value: 'Europe/Paris' },
+    });
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-save'));
+
+    await waitFor(() => expect(mutations()).toHaveLength(1));
+    const { url, method, body } = lastMutation();
+    expect(url).toBe('/ai/agents/schedules');
+    expect(method).toBe('POST');
+    expect(body).toEqual({
+      ownerScope: 'partner',
+      kind: 'narrative',
+      agentId: 'a-1',
+      cron: '0 7 * * 1',
+      timezone: 'Europe/Paris',
+      enabled: true,
+    });
+    // Not merely empty — absent. `[]` would parse, but the key has no meaning
+    // on this branch and shipping it invites a future reader to populate it.
+    expect(body).not.toHaveProperty('sweepKinds');
+  });
+
+  it('badges each schedule row with the kind its occurrences produce', async () => {
+    mockList([BASELINE, NARRATIVE_BASELINE]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-schedule-n-1')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-schedule-kind-badge-s-1')).toHaveTextContent('Sweep');
+    expect(screen.getByTestId('ai-agent-schedule-kind-badge-n-1')).toHaveTextContent('Weekly report');
+    // A narrative row names no checks — "No checks" would read as a
+    // misconfiguration rather than as the kind's defining property.
+    expect(screen.getByTestId('ai-agent-schedule-n-1').textContent).not.toContain('No checks');
+  });
+
+  it('offers an org override of a narrative baseline only the enabled toggle', async () => {
+    mockList([NARRATIVE_BASELINE], () => json({ data: { ...NARRATIVE_BASELINE, id: 'o-2' } }, true, 201));
+    render(<AiAgentSchedulesSection {...orgProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-override-n-1'));
+
+    // No kinds (the baseline evaluates none and an override inherits its
+    // kind), no cadence (an override never carries one).
+    expect(screen.queryByTestId('ai-agent-schedule-kinds')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-schedule-cron')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-schedule-timezone')).toBeNull();
+    expect(screen.getByTestId('ai-agent-schedule-enabled')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-enabled'));
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-save'));
+
+    await waitFor(() => expect(mutations()).toHaveLength(1));
+    const { url, method, body } = lastMutation();
+    expect(url).toBe('/ai/agents/schedules');
+    expect(method).toBe('POST');
+    // `sweepKinds` is REQUIRED on the org-override create branch, and `[]` is
+    // the only value a narrative baseline admits.
+    expect(body).toEqual({
+      ownerScope: 'organization',
+      orgId: 'org-1',
+      baselineScheduleId: 'n-1',
+      enabled: false,
+      sweepKinds: [],
+    });
   });
 
   it('does not fetch or offer schedules for an org-owned agent', async () => {

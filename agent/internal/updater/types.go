@@ -37,3 +37,75 @@ type UpdateOptions struct {
 	// is no independent backup update directive.
 	Backup *BinaryPair
 }
+
+// RollbackComponent is one binary owned by the agent installation. These
+// values are deliberately identical to release-manifest component names.
+type RollbackComponent string
+
+const (
+	RollbackComponentAgent      RollbackComponent = "agent"
+	RollbackComponentHelper     RollbackComponent = "helper"
+	RollbackComponentUserHelper RollbackComponent = "user-helper"
+	RollbackComponentWatchdog   RollbackComponent = "watchdog"
+	RollbackComponentBackup     RollbackComponent = "backup"
+)
+
+type RollbackComponentVersion struct {
+	Current string
+	Target  string
+}
+
+// RollbackArtifactMetadata is the directive-bound description of one target
+// artifact. Authorization and directive-signature verification belong to the
+// rollback state machine; the updater only verifies this metadata against the
+// signed release manifest and downloaded bytes.
+type RollbackArtifactMetadata struct {
+	Component      RollbackComponent
+	CurrentVersion string
+	TargetVersion  string
+	DownloadURL    string
+	SHA256         string
+	Size           int64
+}
+
+type RollbackStageRequest struct {
+	DirectiveID          string
+	Platform             string
+	Architecture         string
+	CurrentVersion       string
+	TargetVersion        string
+	ComponentVersions    map[RollbackComponent]RollbackComponentVersion
+	ReleaseManifest      string
+	ManifestSignature    string
+	ManifestSigningKeyID string
+	Artifacts            []RollbackArtifactMetadata
+}
+
+type StagedRollbackArtifact struct {
+	RollbackArtifactMetadata
+	StagedPath string
+}
+
+type StagedRollbackSet struct {
+	DirectiveID string
+	Artifacts   []StagedRollbackArtifact
+}
+
+// Cleanup removes staged downloads. It is safe to call after partial work.
+func (s StagedRollbackSet) Cleanup() {
+	for _, artifact := range s.Artifacts {
+		removeCleanup(artifact.StagedPath)
+	}
+}
+
+type RollbackSwapArtifact struct {
+	Component  RollbackComponent
+	StagedPath string
+	LivePath   string
+}
+
+type RollbackSwapSet struct {
+	DirectiveID string
+	JournalPath string
+	Artifacts   []RollbackSwapArtifact
+}

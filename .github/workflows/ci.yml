@@ -361,6 +361,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
 
       - name: Setup pnpm
@@ -380,6 +382,9 @@ jobs:
       # Migrating an EMPTY DB below cannot catch edits to already-shipped
       # migrations (no recorded checksums to mismatch) — but autoMigrate
       # refuses to boot on them in prod. Enforce immutability statically.
+      - name: Release-lineage and migration-guard tests
+        run: pnpm test:release-lineage
+
       - name: Shipped-migration immutability guard
         run: bash scripts/check-migration-immutability.sh
 

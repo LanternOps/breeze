@@ -1342,13 +1342,20 @@
       "cronHint": "Fünf Felder: Minute Stunde Tag-des-Monats Monat Wochentag. Beispiel: 0 3 * * * läuft täglich um 03:00 Uhr.",
       "cronInvalid": "Geben Sie vor dem Speichern einen gültigen Cron-Ausdruck mit fünf Feldern ein.",
       "timezone": "Zeitzone",
-      "kinds": "Auszuführende Prüfungen",
+      "kinds": {
+        "sweep": "Prüflauf",
+        "narrative": "Wochenbericht"
+      },
+      "kindsLabel": "Auszuführende Prüfungen",
+      "kind": "Zeitplantyp",
+      "weeklyOnlyHint": "Ein Wochenbericht wird genau einmal pro Woche ausgelöst: feste Minute und Stunde, * für Tag-des-Monats und Monat sowie ein einzelner Wochentag von 0 bis 6. Beispiel: 0 7 * * 1 läuft jeden Montag um 07:00 Uhr.",
       "kindsRequired": "Wählen Sie mindestens eine Prüfung aus.",
       "enabled": "Aktiviert",
       "override": "Für diese Organisation überschreiben",
       "editOverride": "Ausnahme dieser Organisation bearbeiten",
       "overrideHint": "Die Ausnahme dieser Organisation zur Partner-Basis. Sie läuft immer im Takt der Basis.",
       "overrideSummary": "Diese Organisation: {{state}} · {{kinds}}",
+      "overrideSummaryNarrative": "Diese Organisation: {{state}}",
       "tightenOnly": "Eine Ausnahme kann die Basis nur einschränken: Sie kann den Sweep deaktivieren oder Prüfungen entfernen, aber nie hinzufügen.",
       "noKinds": "Keine Prüfungen",
       "lastRun": "Letzter Lauf {{at}} · {{admitted}} von {{total}} Organisationen geprüft, {{skipped}} übersprungen.",
@@ -1376,7 +1383,9 @@
         "baselineNotPartnerRow": "Diese Basis hat keinen Eigentümer und kann nicht überschrieben werden.",
         "baselineAgentMismatch": "Diese Basis gehört zu einem anderen Agenten.",
         "agentNotPartnerWide": "Sweep-Zeitpläne erfordern einen partnerweiten Agenten.",
-        "agentKindNotTriage": "Nur ein Triage-Agent kann geplant werden."
+        "agentKindNotTriage": "Nur ein Triage-Agent kann geplant werden.",
+        "kindsNotEmpty": "Ein Wochenbericht-Zeitplan führt keine Prüfungen aus. Entfernen Sie die ausgewählten Prüfungen vor dem Speichern.",
+        "invalidCronForKind": "Ein Wochenbericht muss genau einmal pro Woche ausgelöst werden. Verwenden Sie feste Minute und Stunde, * für Tag-des-Monats und Monat sowie einen einzelnen Wochentag."
       }
     },
     "title": "KI-Agenten",
@@ -1530,7 +1539,8 @@
         "anomaly": "Anomalie"
       },
       "profile": {
-        "sweep": "Prüflauf"
+        "sweep": "Prüflauf",
+        "narrative": "Wochenbericht"
       },
       "sweep": {
         "title": "Ergebnisse des Prüflaufs",
@@ -1569,6 +1579,14 @@
           "intent_error": "Genehmigung konnte nicht erstellt werden",
           "max_actions_per_run": "Aktionslimit für diesen Lauf erreicht"
         }
+      },
+      "narrative": {
+        "title": "Wöchentliche Zusammenfassung",
+        "period": "Zeitraum {{start}} bis {{end}}",
+        "truncatedNote": "Der Kontext des Agenten wurde gekürzt — diese Zusammenfassung hat nicht die ganze Woche gesehen.",
+        "openReport": "Bericht öffnen",
+        "download": "PDF herunterladen",
+        "downloadFailed": "Das PDF konnte nicht heruntergeladen werden."
       },
       "noAgent": "Unbekannter Agent",
       "loading": "Läufe werden geladen…",

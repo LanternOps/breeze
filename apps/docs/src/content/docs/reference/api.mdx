@@ -229,9 +229,9 @@ audit log.
 | `GET` | `/alerts` | List alerts |
 | `GET` | `/alerts/summary` | Alert summary counts |
 | `GET` | `/alerts/:id` | Get alert details |
-| `POST` | `/alerts/:id/acknowledge` | Acknowledge alert |
-| `POST` | `/alerts/:id/resolve` | Resolve alert |
-| `POST` | `/alerts/:id/suppress` | Suppress alert |
+| `POST` | `/alerts/:id/acknowledge` | Acknowledge alert. Valid only from `active`; returns `409` if the alert left that status first (another user, or the auto-resolve sweep, got there first) |
+| `POST` | `/alerts/:id/resolve` | Resolve alert. Returns `409` if the alert already reached a terminal status |
+| `POST` | `/alerts/:id/suppress` | Suppress alert. Returns `409` if the alert already reached a terminal status |
 | `POST` | `/alerts/:id/dismiss` | Permanently dismiss an alert. Terminal and valid from any status (including `resolved`); dismissed alerts are hidden from `GET /alerts` unless you filter to `status=dismissed` |
 | `POST` | `/alerts/bulk` | Bulk state change for up to 100 alerts — `action` is one of `acknowledge`, `resolve`, `suppress`, or `dismiss` |
 
@@ -1159,8 +1159,8 @@ Over the transport, the server speaks JSON-RPC 2.0. Alongside `tools/*` and `res
 | `GET` | `/mobile/devices/:id/settings` | Device settings |
 | `GET` | `/mobile/devices/:id` | Device details |
 | `GET` | `/mobile/alerts/inbox` | Alert inbox |
-| `POST` | `/mobile/alerts/:id/acknowledge` | Acknowledge alert |
-| `POST` | `/mobile/alerts/:id/resolve` | Resolve alert |
+| `POST` | `/mobile/alerts/:id/acknowledge` | Acknowledge alert. Same `409`-on-conflict contract as `POST /alerts/:id/acknowledge` |
+| `POST` | `/mobile/alerts/:id/resolve` | Resolve alert. Same `409`-on-conflict contract as `POST /alerts/:id/resolve` |
 | `POST` | `/mobile/devices/:id/actions` | Send device action |
 | `GET` | `/mobile/summary` | Dashboard summary |
 

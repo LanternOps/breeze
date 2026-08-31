@@ -355,6 +355,17 @@ export default function RunsListPage() {
                           {t('aiAgentsPage.runs.profile.sweep')}
                         </span>
                       )}
+                      {/* Phase 2 wave P2-3 (#4190) — a narrative-profile run
+                          is the weekly org report, not a device outcome; the
+                          badge is what tells the two apart in a mixed list. */}
+                      {run.profile === 'narrative' && (
+                        <span
+                          data-testid={`ai-agent-run-profile-narrative-${run.id}`}
+                          className="ml-1.5 inline-flex rounded bg-violet-500/10 px-1.5 py-0.5 text-xs font-medium text-violet-700"
+                        >
+                          {t('aiAgentsPage.runs.profile.narrative')}
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
                       {formatDateTime(run.queuedAt)}
