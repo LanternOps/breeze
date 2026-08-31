@@ -11,6 +11,7 @@ import {
   uniqueIndex,
   uuid,
   varchar,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import type {
   AiAgentActAssets,
@@ -27,10 +28,12 @@ import type {
 } from '@breeze/shared';
 import { alertCorrelationGroups, alerts } from './alerts';
 import { aiSessions } from './ai';
+import { aiAgentSchedules } from './aiAgentSchedules';
 import { devices } from './devices';
 import { metricAnomalyIncidents } from './metricAnomalyIncidents';
 import { organizations, partners } from './orgs';
 import { tickets } from './portal';
+import { reportRuns } from './reports';
 import { users } from './users';
 
 // Dual-ownership (#2135, spec §4.1): an agent belongs to EITHER one org
@@ -90,6 +93,22 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   profile: text('profile').$type<AiAgentRunProfile>().notNull().default('full'),
   correlationGroupId: uuid('correlation_group_id')
     .references(() => alertCorrelationGroups.id, { onDelete: 'set null' }),
+  // P2-2: the partner schedule whose occurrence admitted this sweep run.
+  // ON DELETE SET NULL — a deleted schedule keeps its historical runs.
+  // Lazy `(): AnyPgColumn =>` reference (not a plain `() =>` typed one):
+  // aiAgentSchedules.ts imports `aiAgents` from this file for its own
+  // agentId FK, so this is a genuine cross-file cycle, not merely a
+  // same-file self-reference like `aiAlertVerdicts.supersededBy` — same
+  // workaround, applied across the module boundary this time.
+  scheduleId: uuid('schedule_id').references((): AnyPgColumn => aiAgentSchedules.id, { onDelete: 'set null' }),
+  // P2-3 (#4190): the narrative ARTIFACT (`report_runs`), not the definition —
+  // the trace links to something downloadable; the definition is
+  // `report_runs.report_id`. ON DELETE SET NULL, same treatment as
+  // scheduleId/alertId: run history survives artifact deletion. A plain
+  // `() =>` reference is safe here: reports.ts imports only orgs/users, so
+  // this edge introduces no cycle (and reports.sourceAiAgentScheduleId is
+  // deliberately SQL-only for exactly that reason — see its comment).
+  reportRunId: uuid('report_run_id').references(() => reportRuns.id, { onDelete: 'set null' }),
   sessionId: uuid('session_id').references(() => aiSessions.id, { onDelete: 'set null' }),
   // Wave 6 PR 3 (#3828): the triggering ticket for a `triggerKind==='ticket'`
   // run. ON DELETE SET NULL (run history survives ticket deletion — mirrors
@@ -131,10 +150,15 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // Tenant-scoped (see 2026-09-02-ai-agents.sql): a global unique on
   // dedupe_key is enforced below RLS and leaks cross-tenant existence.
   dedupeUq: unique('ai_agent_runs_org_dedupe_key_uq').on(table.orgId, table.dedupeKey),
-  // Declares the tuple the action_intents composite tenant FK references.
-  // `id` is already PK, so this adds no new tenancy invariant on its own —
-  // it exists so (requesting_agent_run_id, org_id) has a target.
-  idOrgUq: unique('ai_agent_runs_id_org_id_key').on(table.id, table.orgId),
+  // Declares the tuple the action_intents AND ticket_drafts composite
+  // tenant FKs reference. `id` is already PK, so this adds no new tenancy
+  // invariant on its own — it exists so (requesting_agent_run_id, org_id) /
+  // (run_id, org_id) have a target. Renamed from the original
+  // ai_agent_runs_id_org_id_key (2026-09-05-a-agent-originated-intents.sql)
+  // to ai_agent_runs_id_org_uq by 2026-09-25-ai-agents-ticket-triage.sql —
+  // same physical index, new name only — see that migration's comment for
+  // why (a second composite-FK dependent forced the rename).
+  idOrgUq: unique('ai_agent_runs_id_org_uq').on(table.id, table.orgId),
   agentQueuedIdx: index('ai_agent_runs_agent_queued_idx').on(table.agentId, table.queuedAt.desc()),
   orgQueuedIdx: index('ai_agent_runs_org_queued_idx').on(table.orgId, table.queuedAt.desc()),
   // Wave 6 PR 1 (#3828, migrations/2026-09-17-ai-agent-runs-keyset-index.sql):
@@ -152,6 +176,10 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
     .on(table.agentId, table.orgId, table.profile, table.queuedAt.desc()),
   correlationGroupIdx: index('ai_agent_runs_correlation_group_idx')
     .on(table.correlationGroupId).where(sql`${table.correlationGroupId} IS NOT NULL`),
+  // P2-2: mirrors migrations/2026-09-23-ai-agents-scheduled-sweeps.sql's
+  // ai_agent_runs_schedule_idx.
+  scheduleIdx: index('ai_agent_runs_schedule_idx')
+    .on(table.scheduleId).where(sql`${table.scheduleId} IS NOT NULL`),
 }));
 
 export type AiAgentRow = typeof aiAgents.$inferSelect;

@@ -14,7 +14,8 @@ import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 import { useOrgScope } from '@/hooks/useOrgScope';
-import type { OwnerScope } from '@/hooks/useDefaultOwnerScope';
+import { useDefaultOwnerScope, type OwnerScope } from '@/hooks/useDefaultOwnerScope';
+import AiAgentSchedulesSection from './AiAgentSchedulesSection';
 
 // Severities come from @breeze/shared, the same constant the server validator
 // uses. A local copy meant draftFrom() would silently DROP a stored severity
@@ -210,6 +211,12 @@ export default function AiAgentForm({
 }: Props) {
   const { t } = useTranslation('settings');
   const orgScope = useOrgScope();
+  // Read from the single source of the partner-scope rule rather than reusing
+  // `showOwnerScope`: that prop means "offer the create-only owner selector",
+  // which happens to be the same boolean today but is not the same QUESTION —
+  // the schedules section asks whether this session may write partner-wide
+  // policy at all (canManagePartnerWidePolicies' client-side counterpart).
+  const { isPartnerScope } = useDefaultOwnerScope();
   const isCreate = agent === null;
 
   const [draft, setDraft] = useState<Draft>(() =>
@@ -785,6 +792,20 @@ export default function AiAgentForm({
             </div>
           )}
         </fieldset>
+
+        {/* Scheduled sweeps (P2-2, #4189). Edit-only, because a schedule row
+            references a persisted agent id that does not exist until the first
+            save; triage-only, because the API refuses every other kind
+            (`agent_kind_not_triage`). Gated on the STORED kind, not the draft:
+            kind is create-only, so the two cannot diverge on this form. */}
+        {!isCreate && agent.kind === 'triage' && (
+          <AiAgentSchedulesSection
+            agentId={agent.id}
+            agentOwnerScope={agent.ownerScope}
+            isPartnerScope={isPartnerScope}
+            orgId={orgScope.orgId}
+          />
+        )}
 
         <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">
           <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">

@@ -67,8 +67,15 @@ with anything.
 `breeze_migrations` records a SHA-256 of each applied file, and the API refuses
 to boot on a mismatch — so *any* content change (even a comment) bricks every
 database that already applied it, while CI stays green migrating from empty.
-`scripts/check-migration-immutability.sh` enforces this against the latest
-release tag. Fix forward with a new migration.
+`scripts/check-migration-immutability.sh` enforces this against the highest
+semantic-version release tag reachable from the checked commit. Higher tags on
+other lineages must have reviewed provenance: exact registered candidates stay
+frozen on their candidate lineage, while applicable stable side-branch releases
+are checked as additional baselines. A higher tag already reachable from
+`origin/main` means the checked branch is behind main and fails closed. Automatic
+resolution requires full history and tags; pass an explicit base ref only when
+you deliberately need a deterministic one-baseline comparison. Fix forward with
+a new migration.
 
 **Renaming counts as editing**, and it has a second blast radius: integration
 suites replay migrations **by path**

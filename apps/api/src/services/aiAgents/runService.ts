@@ -5,6 +5,7 @@ import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import type {
   AgentRunVerdict,
   AiAgentKind,
+  AiAgentLimits,
   AiAgentPolicySnapshot,
   AiAgentRunProfile,
   AiAgentRunStatus,
@@ -79,6 +80,51 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *  - verdictBudgetCentsPerRun — run loop (verdictLimits(), verdictProfile.ts):
  *                            substitutes for maxBudgetCentsPerRun on a
  *                            verdict-profile run; not enforced here.
+ *  - maxSweepRunsPerHour   — HERE (admission rule 6b, via profileCaps()),
+ *                            sweep-profile runs only — counted separately
+ *                            from maxRunsPerHour/maxVerdictRunsPerHour so
+ *                            scheduled-sweep volume can never starve either.
+ *  - maxConcurrentSweepRuns — HERE (admission rule 6b, via profileCaps()),
+ *                            sweep-profile runs only — counted separately
+ *                            from maxConcurrentRuns/maxConcurrentVerdictRuns.
+ *  - sweepBudgetCentsPerRun — run loop (sweepLimits(), sweepProfile.ts):
+ *                            substitutes for maxBudgetCentsPerRun on a
+ *                            sweep-profile run; not enforced here.
+ *  - sweepMaxTurns         — run loop (sweepLimits(), sweepProfile.ts):
+ *                            substitutes for maxTurnsPerRun on a sweep-profile
+ *                            run; not enforced here.
+ *  - maxConcurrentNarrativeRuns — HERE (admission rule 6b, via profileCaps()),
+ *                            narrative-profile runs only — counted separately
+ *                            from maxConcurrentRuns/maxConcurrentVerdictRuns/
+ *                            maxConcurrentSweepRuns (phase 2 P2-3).
+ *  - maxNarrativeRunsPerHour — HERE (admission rule 6b, via profileCaps()),
+ *                            narrative-profile runs only — counted separately
+ *                            from every other per-hour cap, so the weekly
+ *                            narrative can never starve sweeps or verdicts
+ *                            (or be starved by them).
+ *  - narrativeBudgetCentsPerRun — run loop (narrativeLimits(),
+ *                            narrativeProfile.ts): substitutes for
+ *                            maxBudgetCentsPerRun on a narrative-profile run;
+ *                            not enforced here.
+ *  - narrativeMaxTurns     — run loop (narrativeLimits(),
+ *                            narrativeProfile.ts): substitutes for
+ *                            maxTurnsPerRun on a narrative-profile run; not
+ *                            enforced here.
+ *  - maxConcurrentTriageRuns — HERE (admission rule 6b, via profileCaps()),
+ *                            triage-profile runs only — counted separately
+ *                            from every other per-run-shape concurrency cap
+ *                            above (phase 2 P2-4).
+ *  - maxTriageRunsPerHour  — HERE (admission rule 6b, via profileCaps()),
+ *                            triage-profile runs only — counted separately
+ *                            from every other per-hour cap, so ticket triage
+ *                            can never starve, or be starved by, sweeps,
+ *                            verdicts or narratives.
+ *  - triageBudgetCentsPerRun — run loop (triageLimits(), triageProfile.ts):
+ *                            substitutes for maxBudgetCentsPerRun on a
+ *                            triage-profile run; not enforced here.
+ *  - triageMaxTurns        — run loop (triageLimits(), triageProfile.ts):
+ *                            substitutes for maxTurnsPerRun on a
+ *                            triage-profile run; not enforced here.
  */
 
 export interface CreateAgentRunInput {
@@ -155,6 +201,15 @@ export interface CreateAgentRunInput {
    * single alert. `null`/omitted for every other run.
    */
   correlationGroupId?: string | null;
+  /**
+   * Phase 2 wave P2-2 (scheduled sweeps). Set for a `profile: 'sweep'` run
+   * triggered by `ai_agent_schedules`; `null`/omitted for every other run.
+   * Written straight to `ai_agent_runs.schedule_id` (step 9 insert below) —
+   * this module does not validate it against the schedule's own org/agent,
+   * that is the caller's (scheduleService.ts / the sweep dispatcher's)
+   * responsibility, same posture as `alertId`/`ticketId`/`anomalyIncidentId`.
+   */
+  scheduleId?: string | null;
 }
 
 export type AgentRunSkipReason =
@@ -170,7 +225,26 @@ export type AgentRunSkipReason =
   // 6b). Deliberately NOT added to PUBLISHED_SKIP_REASONS below: these are
   // volume guards on a high-frequency, cheap run shape, not a policy event
   // worth a bus publish.
-  | 'max_concurrent_verdict_runs' | 'verdict_rate';
+  | 'max_concurrent_verdict_runs' | 'verdict_rate'
+  // Phase 2 wave P2-2 (scheduled sweeps) — the sweep-profile equivalents,
+  // counted against maxConcurrentSweepRuns/maxSweepRunsPerHour instead
+  // (admission rule 6b, via profileCaps()). Same posture as the verdict pair
+  // above: deliberately NOT added to PUBLISHED_SKIP_REASONS — volume guards,
+  // not policy events.
+  | 'max_concurrent_sweep_runs' | 'sweep_rate'
+  // Phase 2 wave P2-3 (weekly org narrative) — the narrative-profile
+  // equivalents, counted against
+  // maxConcurrentNarrativeRuns/maxNarrativeRunsPerHour instead (admission
+  // rule 6b, via profileCaps()). Same posture as the verdict and sweep pairs
+  // above: deliberately NOT added to PUBLISHED_SKIP_REASONS — volume guards
+  // on a scheduled, low-frequency run shape, not policy events.
+  | 'max_concurrent_narrative_runs' | 'narrative_rate'
+  // Phase 2 wave P2-4 (ticket triage) — the triage-profile equivalents,
+  // counted against maxConcurrentTriageRuns/maxTriageRunsPerHour instead
+  // (admission rule 6b, via profileCaps()). Same posture as the verdict,
+  // sweep and narrative pairs above: deliberately NOT added to
+  // PUBLISHED_SKIP_REASONS — volume guards, not policy events.
+  | 'max_concurrent_triage_runs' | 'triage_rate';
 
 export type CreateAgentRunResult =
   | { created: true; run: AiAgentRunRow }
@@ -392,9 +466,13 @@ export async function evaluateAnomalyTriggerFilters(
  * non-event. Once a live agent has genuinely declined a trigger, the skip IS
  * the news, so it goes on the bus.
  *
- * `max_concurrent_verdict_runs`/`verdict_rate` (phase 2 P2-1) are
- * deliberately absent: they are volume guards on a high-frequency, cheap
- * run shape, not a policy event — see `AgentRunSkipReason`'s docstring.
+ * `max_concurrent_verdict_runs`/`verdict_rate` (phase 2 P2-1),
+ * `max_concurrent_sweep_runs`/`sweep_rate` (phase 2 P2-2) and
+ * `max_concurrent_narrative_runs`/`narrative_rate` (phase 2 P2-3) and
+ * `max_concurrent_triage_runs`/`triage_rate` (phase 2 P2-4) are
+ * deliberately absent: they are volume guards on a scheduled or
+ * high-frequency, cheap run shape, not a policy event — see
+ * `AgentRunSkipReason`'s docstring.
  */
 const PUBLISHED_SKIP_REASONS: ReadonlySet<AgentRunSkipReason> = new Set([
   'circuit_open',
@@ -548,6 +626,72 @@ export async function reapStalledAgentRuns(scope: {
 }
 
 /**
+ * Per-profile concurrency/rate caps for admission rule 6b — one exhaustive
+ * `switch` replacing what used to be two separate `profile === 'verdict' ?
+ * ... : ...` ternaries (phase 2 wave P2-1; P2-2 added a third arm, P2-3 a
+ * fourth). Every profile gets its OWN (agent, org) counters and its own pair
+ * of skip reasons, so no profile's volume can starve another's admission.
+ * The `default: never` assertion is deliberate: a FUTURE profile added to
+ * `AI_AGENT_RUN_PROFILES` without a matching arm here must fail to compile
+ * rather than silently falling through to inherit `full`'s caps (which a
+ * ternary chain would have done for any un-matched value).
+ */
+function profileCaps(
+  profile: AiAgentRunProfile,
+  limits: AiAgentLimits,
+): { maxConcurrent: number; maxPerHour: number; concurrentSkip: AgentRunSkipReason; rateSkip: AgentRunSkipReason } {
+  switch (profile) {
+    case 'full':
+      return {
+        maxConcurrent: limits.maxConcurrentRuns,
+        maxPerHour: limits.maxRunsPerHour,
+        concurrentSkip: 'max_concurrent_runs',
+        rateSkip: 'max_runs_per_hour',
+      };
+    case 'verdict':
+      return {
+        maxConcurrent: limits.maxConcurrentVerdictRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentVerdictRuns,
+        maxPerHour: limits.maxVerdictRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxVerdictRunsPerHour,
+        concurrentSkip: 'max_concurrent_verdict_runs',
+        rateSkip: 'verdict_rate',
+      };
+    case 'sweep':
+      return {
+        maxConcurrent: limits.maxConcurrentSweepRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentSweepRuns,
+        maxPerHour: limits.maxSweepRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxSweepRunsPerHour,
+        concurrentSkip: 'max_concurrent_sweep_runs',
+        rateSkip: 'sweep_rate',
+      };
+    case 'narrative':
+      return {
+        maxConcurrent:
+          limits.maxConcurrentNarrativeRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentNarrativeRuns,
+        maxPerHour: limits.maxNarrativeRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxNarrativeRunsPerHour,
+        concurrentSkip: 'max_concurrent_narrative_runs',
+        rateSkip: 'narrative_rate',
+      };
+    // Phase 2 wave P2-4 (ticket triage), task A6 — same real cap-resolution
+    // shape as the verdict/sweep/narrative arms above, counted against
+    // maxConcurrentTriageRuns/maxTriageRunsPerHour so triage volume can
+    // never starve, or be starved by, any other profile's admission. Task A9
+    // is what wires the ticket-created subscriber to actually admit
+    // `triage` runs; until then this arm is exercised only by direct/manual
+    // callers, not left unenforced.
+    case 'triage':
+      return {
+        maxConcurrent: limits.maxConcurrentTriageRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentTriageRuns,
+        maxPerHour: limits.maxTriageRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxTriageRunsPerHour,
+        concurrentSkip: 'max_concurrent_triage_runs',
+        rateSkip: 'triage_rate',
+      };
+    default: {
+      const exhaustive: never = profile;
+      throw new Error(`[profileCaps] Unknown run profile: ${String(exhaustive)}`);
+    }
+  }
+}
+
+/**
  * The single admission gate for agent runs (spec §7): resolve the effective
  * policy, apply trigger filters and every per-agent cap, establish the
  * cross-table ownership invariant, insert the ledger row, enqueue.
@@ -655,8 +799,21 @@ export async function createAndEnqueueAgentRun(
   // guardrail tool gate's shadow branch) — device pinning, site scope, and
   // maintenance-window checks below still apply normally, exactly as they
   // would for any other device-bound trigger.
-  const modeAtStart = (triggerKind === 'ticket' || input.ticketId
-    || triggerKind === 'anomaly' || input.anomalyIncidentId) ? 'shadow' : effective.mode;
+  //
+  // P2-4 Task A6 (#4191) — the forced-shadow LIFT (spec §4.4 amendment).
+  // A ticket-triggered run is admitted as `act` ONLY when BOTH gates are
+  // open at once: the agent's effective mode is already `act` AND its
+  // effective `triggers.ticketAutonomousWrites` is `true` — the SAME
+  // org-row-only opt-in `effectivePolicy.ts`'s merge resolves onto
+  // `effective` above (never the partner baseline alone; see
+  // `AiAgentTriggers.ticketAutonomousWrites`'s docstring). Deliberately
+  // narrower than "not forced shadow": the lift is keyed on the ticket
+  // condition specifically, so it can never reach the anomaly force below —
+  // an unproven detector has no lift at all, full stop.
+  const ticketAutonomy = (triggerKind === 'ticket' || input.ticketId)
+    && effective.mode === 'act' && effective.triggers.ticketAutonomousWrites === true;
+  const modeAtStart = ((triggerKind === 'ticket' || input.ticketId) && !ticketAutonomy)
+    || triggerKind === 'anomaly' || input.anomalyIncidentId ? 'shadow' : effective.mode;
 
   // 2b. Circuit breaker (wave 6 PR 2, #3828). Placed as early as possible
   // after the kill switch — this is the first point `resolved.agentId` is
@@ -765,11 +922,14 @@ export async function createAndEnqueueAgentRun(
     //     them, or one SIGKILLed replica wedges this (agent, org) forever.
     await reapStalledAgentRuns({ agentId: resolved.agentId, orgId });
 
-    // 5. Cooldown for this exact target. Verdict-profile runs skip this
-    //    entirely — they dedupe on `dedupeKey` (`alert-verdict:<id>` /
-    //    `group-verdict:<id>`), not cooldown, and a cheap verdict run must
-    //    never wait out a full-profile agent's cooldown window (or vice
-    //    versa).
+    // 5. Cooldown for this exact target. EVERY non-full profile skips this
+    //    entirely (the guard is `profile === 'full'`, not a list, so a new
+    //    profile is opted out by default rather than silently inheriting a
+    //    window sized for full runs): verdict runs dedupe on `dedupeKey`
+    //    (`alert-verdict:<id>` / `group-verdict:<id>`), and sweep/narrative
+    //    runs are schedule-driven and already rate-capped by their own
+    //    per-profile counters at 6b. A cheap or scheduled run must never
+    //    wait out a full-profile agent's cooldown window (or vice versa).
     if (profile === 'full' && effective.cooldownSeconds > 0) {
       const deviceScope: SQL | undefined = deviceId
         ? eq(aiAgentRuns.deviceId, deviceId)
@@ -786,35 +946,33 @@ export async function createAndEnqueueAgentRun(
       if (recent) return skip('cooldown');
     }
 
-    // 6b. Concurrency and rate — counted PER PROFILE (phase 2 P2-1), against
-    //    that profile's own cap: maxConcurrentVerdictRuns/maxVerdictRunsPerHour
-    //    for a verdict run, maxConcurrentRuns/maxRunsPerHour (unchanged) for a
-    //    full run. Plain counts are sufficient BECAUSE step 4b serialises
-    //    every concurrent admission for this (agent, org) — they were not
-    //    before, and the caps were bypassable by an unbounded factor.
-    //    The v5 limits fields (`?? AI_AGENT_LIMIT_DEFAULTS...`) may be absent
-    //    on a v1-v4 policy snapshot — same tolerant-read pattern the file uses
-    //    elsewhere for a limits field added in a later schema version.
+    // 6b. Concurrency and rate — counted PER PROFILE (phase 2 P2-1, P2-2,
+    //    P2-3), against that profile's own cap (see `profileCaps` above:
+    //    verdict's maxConcurrentVerdictRuns/maxVerdictRunsPerHour, sweep's
+    //    maxConcurrentSweepRuns/maxSweepRunsPerHour, narrative's
+    //    maxConcurrentNarrativeRuns/maxNarrativeRunsPerHour, full's unchanged
+    //    maxConcurrentRuns/maxRunsPerHour). Plain counts are sufficient
+    //    BECAUSE step 4b serialises every concurrent admission for this
+    //    (agent, org) — they were not before, and the caps were bypassable by
+    //    an unbounded factor. The v5/v6 limits fields (`?? AI_AGENT_LIMIT_
+    //    DEFAULTS...`, inside profileCaps) may be absent on an older policy
+    //    snapshot — same tolerant-read pattern the file uses elsewhere for a
+    //    limits field added in a later schema version.
+    const caps = profileCaps(profile, effective.limits);
     const [concurrent] = await db
       .select({ value: count() })
       .from(aiAgentRuns)
       .where(and(agentOrgScope, profileScope, inArray(aiAgentRuns.status, ['queued', 'running'])));
-    const maxConcurrentForProfile = profile === 'verdict'
-      ? (effective.limits.maxConcurrentVerdictRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentVerdictRuns)
-      : effective.limits.maxConcurrentRuns;
-    if ((concurrent?.value ?? 0) >= maxConcurrentForProfile) {
-      return skip(profile === 'verdict' ? 'max_concurrent_verdict_runs' : 'max_concurrent_runs');
+    if ((concurrent?.value ?? 0) >= caps.maxConcurrent) {
+      return skip(caps.concurrentSkip);
     }
 
     const [lastHour] = await db
       .select({ value: count() })
       .from(aiAgentRuns)
       .where(and(agentOrgScope, profileScope, gte(aiAgentRuns.queuedAt, new Date(now - 3_600_000))));
-    const maxPerHourForProfile = profile === 'verdict'
-      ? (effective.limits.maxVerdictRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxVerdictRunsPerHour)
-      : effective.limits.maxRunsPerHour;
-    if ((lastHour?.value ?? 0) >= maxPerHourForProfile) {
-      return skip(profile === 'verdict' ? 'verdict_rate' : 'max_runs_per_hour');
+    if ((lastHour?.value ?? 0) >= caps.maxPerHour) {
+      return skip(caps.rateSkip);
     }
 
     // 7. Budgets: the org's AI budget first, then the agent's own daily cap
@@ -906,6 +1064,8 @@ export async function createAndEnqueueAgentRun(
         anomalyIncidentId: input.anomalyIncidentId ?? null,
         profile,
         correlationGroupId: input.correlationGroupId ?? null,
+        // Phase 2 wave P2-2 (scheduled sweeps).
+        scheduleId: input.scheduleId ?? null,
         triggerKind,
         triggerEventId: input.triggerEventId ?? null,
         triggerRef: input.triggerRef ?? {},

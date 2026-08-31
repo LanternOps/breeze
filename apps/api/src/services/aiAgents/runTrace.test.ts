@@ -20,7 +20,18 @@ function baseRun(overrides: Partial<RunTraceRunInput> = {}): RunTraceRunInput {
     modeAtStart: 'shadow',
     status: 'completed',
     summary: 'Restarted the print spooler.',
+    // Phase 2 wave P2-2 (scheduled sweeps), Task A7 — `null`/`{}` for every
+    // non-sweep run; the sweep projection reads the occurrence + kinds off
+    // `triggerRef` (see `projectSweep`).
+    scheduleId: null,
+    triggerRef: {},
+    // Phase 2 wave P2-3 (weekly org narrative), Task A7 — the report_runs
+    // artifact a narrative run was materialised into; `null` everywhere else.
+    reportRunId: null,
     outcome: {},
+    // P2-4 (#4191), Task A10 — see RunTraceRunInput.intentIds's docstring.
+    // Empty by default; ticketProposal-specific tests below override it.
+    intentIds: [],
     turnCount: 3,
     costCents: 12,
     errorCode: null,
@@ -190,10 +201,10 @@ describe('buildRunTrace — safe projection (#3828)', () => {
             deniedActions: [],
             toolExecutionCount: 0,
             ticketProposal: {
+              version: 1,
               summary: 'The print spooler was stuck; a restart would likely fix it.',
-              proposedReply: 'Hi — please try restarting your computer; this often clears it.',
-              proposedStatus: 'pending',
-              proposedPriority: 'normal',
+              draftReply: 'Hi — please try restarting your computer; this often clears it.',
+              fields: { priority: { value: 'normal', confidence: 0.9 } },
               notes: ['Spooler.exe pegged at 100% CPU'],
             },
           },
@@ -205,10 +216,12 @@ describe('buildRunTrace — safe projection (#3828)', () => {
       );
 
       expect(detail.ticketProposal).toEqual({
+        version: 1,
         summary: 'The print spooler was stuck; a restart would likely fix it.',
-        proposedReply: 'Hi — please try restarting your computer; this often clears it.',
-        proposedStatus: 'pending',
-        proposedPriority: 'normal',
+        draftReply: 'Hi — please try restarting your computer; this often clears it.',
+        fields: { priority: { value: 'normal', confidence: 0.9 } },
+        device: undefined,
+        draftResolutionNote: undefined,
         notes: ['Spooler.exe pegged at 100% CPU'],
       });
     });
@@ -216,6 +229,55 @@ describe('buildRunTrace — safe projection (#3828)', () => {
     it('is null for a non-ticket run (no ticketProposal on the outcome at all)', () => {
       const detail = buildRunTrace(baseRun({ outcome: { findings: [] } }), AGENT, DEVICE, [], []);
       expect(detail.ticketProposal).toBeNull();
+    });
+
+    describe('intentIds + draftsWritten (P2-4, #4191, Task A10)', () => {
+      const PROPOSAL_OUTCOME = {
+        ticketProposal: { version: 1, summary: 'Restart the spooler.', notes: [] },
+      };
+
+      it('projects the run\'s own intent_ids column as ticketProposal.intentIds', () => {
+        const detail = buildRunTrace(
+          baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [INTENT_ID] }),
+          AGENT, null, [], [],
+        );
+        expect(detail.ticketProposal?.intentIds).toEqual([INTENT_ID]);
+      });
+
+      it('leaves intentIds undefined (not an empty array) when the run created none', () => {
+        const detail = buildRunTrace(
+          baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
+          AGENT, null, [], [],
+        );
+        expect(detail.ticketProposal?.intentIds).toBeUndefined();
+      });
+
+      it('projects the caller\'s live ticket_drafts rows as draftsWritten', () => {
+        const draftRows = [{ id: 'draft-1', kind: 'reply' as const }];
+        const detail = buildRunTrace(
+          baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
+          AGENT, null, [], [], new Map(), null, draftRows,
+        );
+        expect(detail.ticketProposal?.draftsWritten).toEqual([{ kind: 'reply', draftId: 'draft-1' }]);
+      });
+
+      it('leaves draftsWritten undefined when no draft rows are linked to the run', () => {
+        const detail = buildRunTrace(
+          baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
+          AGENT, null, [], [], new Map(), null, [],
+        );
+        expect(detail.ticketProposal?.draftsWritten).toBeUndefined();
+      });
+
+      it('never carries draft content — only id/kind — even if the caller\'s row shape somehow had it', () => {
+        const draftRows = [{ id: 'draft-1', kind: 'resolution_note' as const, content: 'leak-marker-zzz' } as never];
+        const detail = buildRunTrace(
+          baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
+          AGENT, null, [], [], new Map(), null, draftRows,
+        );
+        const json = JSON.stringify(detail.ticketProposal);
+        expect(json).not.toContain('leak-marker-zzz');
+      });
     });
 
     it('never carries an args/toolInput/toolOutput/arguments key even if a malformed outcome tried to smuggle one in', () => {
@@ -435,6 +497,268 @@ describe('buildRunTrace — safe projection (#3828)', () => {
       expect(detail.alertVerdict?.suggestedAction).toEqual({
         tool: 'manage_alerts', action: 'suppress', disposition: 'not_created', reason: 'no_eligible_approvers',
       });
+    });
+  });
+
+  // Phase 2 wave P2-2 (scheduled sweeps), Task A7.
+  describe('sweep projection (P2-2, Task A7)', () => {
+    const SCHEDULE_ID = '66666666-6666-4666-8666-666666666666';
+
+    it('is null for every non-sweep run (no sweepFindings on the outcome)', () => {
+      const detail = buildRunTrace(baseRun({ outcome: {} }), AGENT, DEVICE, [], []);
+      expect(detail.sweep).toBeNull();
+    });
+
+    it('projects a sweep run\'s findings with batched hostnames and leaks no tripwire key', () => {
+      const detail = buildRunTrace(
+        baseRun({
+          deviceId: null,
+          triggerKind: 'schedule',
+          scheduleId: SCHEDULE_ID,
+          triggerRef: {
+            scheduleId: SCHEDULE_ID,
+            occurrenceKey: '2026-08-29T06:00:00Z',
+            sweepKinds: ['service_down'],
+          },
+          outcome: {
+            executedActions: [],
+            proposedActions: [],
+            deniedActions: [],
+            toolExecutionCount: 0,
+            sweepFindings: {
+              summary: 'One service is down.',
+              findings: [{
+                kind: 'service_down',
+                severity: 'critical',
+                deviceId: DEVICE_ID,
+                title: 'Spooler is stopped',
+                detail: 'Spooler has been stopped for 3 days.',
+                evidence: { state: 'stopped' },
+                proposedAction: {
+                  tool: 'manage_services', action: 'restart',
+                  deviceId: DEVICE_ID, serviceName: 'Spooler',
+                },
+              }],
+            },
+            sweepProposals: [{
+              findingIndex: 0,
+              tool: 'manage_services',
+              action: 'restart',
+              deviceId: DEVICE_ID,
+              disposition: 'intent_created',
+              intentId: INTENT_ID,
+            }],
+            sweepEvidenceTruncated: false,
+          },
+        }),
+        AGENT,
+        null,
+        [],
+        [],
+        new Map([[DEVICE_ID, 'WS-ACCT-04']]),
+      );
+
+      expect(detail.sweep).toEqual({
+        scheduleId: SCHEDULE_ID,
+        occurrenceKey: '2026-08-29T06:00:00Z',
+        kinds: ['service_down'],
+        summary: 'One service is down.',
+        evidenceTruncated: false,
+        findings: [{
+          kind: 'service_down',
+          severity: 'critical',
+          deviceId: DEVICE_ID,
+          deviceHostname: 'WS-ACCT-04',
+          title: 'Spooler is stopped',
+          detail: 'Spooler has been stopped for 3 days.',
+          evidence: { state: 'stopped' },
+          proposal: {
+            tool: 'manage_services',
+            action: 'restart',
+            disposition: 'intent_created',
+            reason: null,
+            intentId: INTENT_ID,
+          },
+        }],
+      });
+
+      const json = JSON.stringify(detail);
+      for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+        expect(json).not.toContain(`"${forbidden}"`);
+      }
+      expect(json).not.toContain('proposedAction');
+      expect(json).not.toContain('serviceName');
+    });
+
+    // #4189 bug fix: a finding that omitted `deviceId` (the model didn't
+    // repeat the id it already put on `proposedAction`) must still project a
+    // resolved device and hostname — never "—" — via the proposal record.
+    it('projects the proposal device and hostname for a finding that omitted its own deviceId', () => {
+      const detail = buildRunTrace(
+        baseRun({
+          deviceId: null,
+          triggerKind: 'schedule',
+          scheduleId: SCHEDULE_ID,
+          triggerRef: { scheduleId: SCHEDULE_ID, sweepKinds: ['service_down'] },
+          outcome: {
+            executedActions: [],
+            proposedActions: [],
+            deniedActions: [],
+            toolExecutionCount: 0,
+            sweepFindings: {
+              summary: 'One service is down.',
+              findings: [{
+                kind: 'service_down',
+                severity: 'critical',
+                // deviceId intentionally omitted — only the proposal names it.
+                title: 'Spooler is stopped',
+                detail: 'Spooler has been stopped for 3 days.',
+                evidence: { state: 'stopped' },
+                proposedAction: {
+                  tool: 'manage_services', action: 'restart',
+                  deviceId: DEVICE_ID, serviceName: 'Spooler',
+                },
+              }],
+            },
+            sweepProposals: [{
+              findingIndex: 0,
+              tool: 'manage_services',
+              action: 'restart',
+              deviceId: DEVICE_ID,
+              disposition: 'intent_created',
+              intentId: INTENT_ID,
+            }],
+            sweepEvidenceTruncated: false,
+          },
+        }),
+        AGENT,
+        null,
+        [],
+        [],
+        new Map([[DEVICE_ID, 'WS-ACCT-04']]),
+      );
+
+      expect(detail.sweep?.findings[0]?.deviceId).toBe(DEVICE_ID);
+      expect(detail.sweep?.findings[0]?.deviceHostname).toBe('WS-ACCT-04');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 2 wave P2-3 (weekly org narrative), task 6 — leak tripwire.
+  //
+  // The weekly `NarrativeContext` is a whole organization's activity,
+  // assembled under a SYSTEM db context that bypasses RLS. It exists to be
+  // rendered into ONE prompt. `buildRunTrace` is a named-field projection, so
+  // the guarantee is structural rather than filtered — this case pins it, and
+  // pins it against the shape a future task is most likely to reach for
+  // (stashing the context on the outcome "so the report can quote it").
+  // -------------------------------------------------------------------------
+  describe('narrative run projection (P2-3)', () => {
+    const SCHEDULE_ID = '77777777-7777-4777-8777-777777777777';
+
+    it('never carries the weekly narrative context onto the trace, even when the outcome holds one', () => {
+      const detail = buildRunTrace(
+        baseRun({
+          deviceId: null,
+          triggerKind: 'schedule',
+          scheduleId: SCHEDULE_ID,
+          triggerRef: { scheduleId: SCHEDULE_ID, occurrenceKey: '2026-08-31T07:00:00Z', kind: 'narrative' },
+          outcome: {
+            executedActions: [],
+            proposedActions: [],
+            deniedActions: [],
+            toolExecutionCount: 0,
+            narrative: {
+              version: 1,
+              headline: 'A quiet week.',
+              sections: [{ key: 'overview', title: 'Overview', bullets: ['Nothing needed a person.'] }],
+              markdown: '# A quiet week.\n\n## Overview\n- Nothing needed a person.',
+            },
+            // Not a field of `AgentRunOutcome` — deliberately forged onto the
+            // stored jsonb, which is exactly how this would reach the DTO if
+            // the projection ever became a spread.
+            narrativeContext: {
+              org: { name: 'Acme Dental', partnerName: 'zzz-leak-marker-zzz' },
+              unavailable: ['alerts.suppressedInWindow'],
+              toolInput: { secret: 'zzz-leak-marker-zzz' },
+            },
+          } as never,
+        }),
+        AGENT,
+        null,
+        [],
+        [],
+      );
+
+      const json = JSON.stringify(detail);
+      for (const forbidden of AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS) {
+        expect(json).not.toContain(`"${forbidden}"`);
+      }
+      for (const forbidden of ['narrativeContext', 'context', 'unavailable', 'partnerName']) {
+        expect(json, `trace must not carry "${forbidden}"`).not.toContain(`"${forbidden}"`);
+      }
+      expect(json).not.toContain('zzz-leak-marker-zzz');
+      // Control: the run itself still projected — a trace that dropped
+      // everything would pass every assertion above vacuously.
+      expect(detail.id).toBe(RUN_ID);
+      expect(detail.status).toBe('completed');
+
+      // The narrative IS projected (a run that produced one must render), and
+      // still leaks nothing — this is the discriminating half of the tripwire
+      // above, which would otherwise pass on a DTO that dropped everything.
+      expect(detail.narrative?.headline).toBe('A quiet week.');
+      expect(detail.narrative?.sections.map((s) => s.key)).toEqual(['overview']);
+    });
+
+    it('projects the artifact linkage a narrative run was materialised into', () => {
+      const REPORT_ID = '88888888-8888-4888-8888-888888888888';
+      const REPORT_RUN_ID = '99999999-9999-4999-8999-999999999999';
+
+      const detail = buildRunTrace(
+        baseRun({
+          deviceId: null,
+          triggerKind: 'schedule',
+          scheduleId: SCHEDULE_ID,
+          reportRunId: REPORT_RUN_ID,
+          outcome: {
+            narrative: {
+              version: 1,
+              headline: 'A quiet week.',
+              sections: [{ key: 'overview', title: 'Overview', bullets: ['Nothing needed a person.'] }],
+              markdown: '# A quiet week.',
+            },
+            narrativeReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+          } as never,
+        }),
+        AGENT,
+        null,
+        [],
+        [],
+        new Map(),
+        {
+          reportId: REPORT_ID,
+          periodStart: '2026-08-24T07:00:00+02:00',
+          periodEnd: '2026-08-31T07:00:00+02:00',
+          contextTruncated: true,
+        },
+      );
+
+      expect(detail.reportRunId).toBe(REPORT_RUN_ID);
+      expect(detail.narrative).toMatchObject({
+        reportRunId: REPORT_RUN_ID,
+        reportId: REPORT_ID,
+        downloadPath: `/api/reports/runs/${REPORT_RUN_ID}/download`,
+        periodStart: '2026-08-24T07:00:00+02:00',
+        periodEnd: '2026-08-31T07:00:00+02:00',
+        contextTruncated: true,
+      });
+    });
+
+    it('projects null narrative/reportRunId for every non-narrative run', () => {
+      const detail = buildRunTrace(baseRun(), AGENT, DEVICE, [], []);
+
+      expect(detail.narrative).toBeNull();
+      expect(detail.reportRunId).toBeNull();
     });
   });
 });
