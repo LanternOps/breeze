@@ -2,7 +2,7 @@ import './setup';
 
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import {
   db,
@@ -120,6 +120,32 @@ describe('PAM actuation lifecycle schema governance', () => {
   beforeEach(async () => {
     fixtureA = await createFixture();
     fixtureB = await createFixture();
+  });
+
+  // The 'idempotently quarantines legacy...' case below re-executes
+  // 2026-09-16-pam-actuation-lifecycle.sql's raw SQL directly (via
+  // sql.raw) to prove that file's own idempotency. That file's
+  // CREATE OR REPLACE FUNCTION pam_actuations_transition_guard() body
+  // predates the org_id-immutability hardening added in
+  // 2026-09-25-pam-actuation-org-immutable.sql, so replaying it reverts
+  // the trigger function to its pre-hardening (org_id-mutable) body as a
+  // side effect on the live database — regardless of which test runs it
+  // or in what order. That's harmless within THIS file (the immutability
+  // test above runs earlier in declaration order, and
+  // vitest.integration.config.ts pins fileParallelism/sequence.concurrent
+  // to false, so ordering here is deterministic) — but it leaves the
+  // shared database un-hardened for whatever runs against it afterward in
+  // the same process, including other test files in the same CI job/shard
+  // (e.g. Task 4's org-merge trigger-classification tests, which depend on
+  // this trigger actually being BLOCKING). Re-apply the hardening migration
+  // unconditionally after every test in this file so the database is left
+  // hardened no matter which tests ran or in what order.
+  afterAll(async () => {
+    const hardening = await readFile(
+      new URL('../../../migrations/2026-09-25-pam-actuation-org-immutable.sql', import.meta.url),
+      'utf8',
+    );
+    await getTestDb().execute(sql.raw(hardening));
   });
 
   it('persists capability and request revision with fail-closed defaults', async () => {
