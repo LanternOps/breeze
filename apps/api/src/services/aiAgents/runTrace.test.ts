@@ -29,6 +29,9 @@ function baseRun(overrides: Partial<RunTraceRunInput> = {}): RunTraceRunInput {
     // artifact a narrative run was materialised into; `null` everywhere else.
     reportRunId: null,
     outcome: {},
+    // P2-4 (#4191), Task A10 — see RunTraceRunInput.intentIds's docstring.
+    // Empty by default; ticketProposal-specific tests below override it.
+    intentIds: [],
     turnCount: 3,
     costCents: 12,
     errorCode: null,
@@ -226,6 +229,55 @@ describe('buildRunTrace — safe projection (#3828)', () => {
     it('is null for a non-ticket run (no ticketProposal on the outcome at all)', () => {
       const detail = buildRunTrace(baseRun({ outcome: { findings: [] } }), AGENT, DEVICE, [], []);
       expect(detail.ticketProposal).toBeNull();
+    });
+
+    describe('intentIds + draftsWritten (P2-4, #4191, Task A10)', () => {
+      const PROPOSAL_OUTCOME = {
+        ticketProposal: { version: 1, summary: 'Restart the spooler.', notes: [] },
+      };
+
+      it('projects the run\'s own intent_ids column as ticketProposal.intentIds', () => {
+        const detail = buildRunTrace(
+          baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [INTENT_ID] }),
+          AGENT, null, [], [],
+        );
+        expect(detail.ticketProposal?.intentIds).toEqual([INTENT_ID]);
+      });
+
+      it('leaves intentIds undefined (not an empty array) when the run created none', () => {
+        const detail = buildRunTrace(
+          baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
+          AGENT, null, [], [],
+        );
+        expect(detail.ticketProposal?.intentIds).toBeUndefined();
+      });
+
+      it('projects the caller\'s live ticket_drafts rows as draftsWritten', () => {
+        const draftRows = [{ id: 'draft-1', kind: 'reply' as const }];
+        const detail = buildRunTrace(
+          baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
+          AGENT, null, [], [], new Map(), null, draftRows,
+        );
+        expect(detail.ticketProposal?.draftsWritten).toEqual([{ kind: 'reply', draftId: 'draft-1' }]);
+      });
+
+      it('leaves draftsWritten undefined when no draft rows are linked to the run', () => {
+        const detail = buildRunTrace(
+          baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
+          AGENT, null, [], [], new Map(), null, [],
+        );
+        expect(detail.ticketProposal?.draftsWritten).toBeUndefined();
+      });
+
+      it('never carries draft content — only id/kind — even if the caller\'s row shape somehow had it', () => {
+        const draftRows = [{ id: 'draft-1', kind: 'resolution_note' as const, content: 'leak-marker-zzz' } as never];
+        const detail = buildRunTrace(
+          baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
+          AGENT, null, [], [], new Map(), null, draftRows,
+        );
+        const json = JSON.stringify(detail.ticketProposal);
+        expect(json).not.toContain('leak-marker-zzz');
+      });
     });
 
     it('never carries an args/toolInput/toolOutput/arguments key even if a malformed outcome tried to smuggle one in', () => {

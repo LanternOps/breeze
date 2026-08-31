@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, ticketStatusEnum, ticketSourceEnum, ticketOutbox, type TicketOutboxEvent } from '../db/schema';
+import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, type TicketOutboxEvent } from '../db/schema';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
@@ -539,6 +539,20 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
 export interface ChangeStatusOptions {
   resolutionNote?: string;
   pendingReason?: string;
+  /**
+   * P2-4 (#4191), Task A10 — an active `resolution_note`-kind `ticket_drafts`
+   * row to apply as the resolution note (the web resolve modal's "use the AI
+   * draft" prefill, PR B). Only valid alongside a resolve (`status:
+   * 'resolved'`/a statusId resolving to `resolved`) — the schema-level
+   * refinement in `changeTicketStatusSchema` also relaxes `resolutionNote`'s
+   * required-ness whenever this is present, since the draft supplies the
+   * text. Locked and consumed (`state: 'consumed'`) in the SAME per-request
+   * transaction as the ticket's status CAS update below, via `SELECT ... FOR
+   * UPDATE` (mirrors `sendTicketDraft`'s locking contract) — a draft that is
+   * missing, the wrong kind, or no longer `active` fails the whole resolve
+   * with a 404/409 rather than silently resolving without it.
+   */
+  aiDraftId?: string;
 }
 
 export interface ChangeStatusTarget {
@@ -634,11 +648,42 @@ export async function changeTicketStatus(
     return updated[0];
   }
 
+  if (opts.aiDraftId && toStatus !== 'resolved') {
+    throw new TicketServiceError('aiDraftId is only accepted when resolving a ticket', 400, 'INVALID_INPUT');
+  }
+
   if (!TICKET_STATUS_TRANSITIONS[fromStatus]?.includes(toStatus)) {
     throw new TicketServiceError(`Cannot transition ticket from ${fromStatus} to ${toStatus}`, 409, 'INVALID_TRANSITION');
   }
-  if (toStatus === 'resolved' && !opts.resolutionNote) {
+  if (toStatus === 'resolved' && !opts.resolutionNote && !opts.aiDraftId) {
     throw new TicketServiceError('A resolution note is required to resolve a ticket', 400);
+  }
+
+  // P2-4 (#4191), Task A10 — lock + validate the `resolution_note` draft
+  // BEFORE the ticket's own CAS update below: a missing/wrong-kind/inactive
+  // draft must fail the whole resolve, not silently resolve without it.
+  // `for('update')` mirrors `sendTicketDraft`'s locking contract — a second,
+  // concurrent resolve (or a `POST .../discard`) racing the same draft blocks
+  // here until this transaction commits or rolls back, then observes the
+  // now-committed state rather than a stale 'active' read.
+  let resolutionNote = opts.resolutionNote;
+  let draftToConsume: { id: string } | null = null;
+  if (toStatus === 'resolved' && opts.aiDraftId) {
+    const [draft] = await db
+      .select()
+      .from(ticketDrafts)
+      .where(and(eq(ticketDrafts.id, opts.aiDraftId), eq(ticketDrafts.ticketId, ticketId)))
+      .limit(1)
+      .for('update');
+    if (!draft) throw new TicketServiceError('Draft not found', 404);
+    if (draft.kind !== 'resolution_note') {
+      throw new TicketServiceError('Only resolution-note drafts can be applied when resolving', 409);
+    }
+    if (draft.state !== 'active') {
+      throw new TicketServiceError('Draft is no longer active', 409);
+    }
+    resolutionNote = draft.content;
+    draftToConsume = { id: draft.id };
   }
 
   const now = new Date();
@@ -646,7 +691,7 @@ export async function changeTicketStatus(
 
   if (toStatus === 'resolved') {
     patch.resolvedAt = ticket.resolvedAt ?? now;
-    patch.resolutionNote = opts.resolutionNote;
+    patch.resolutionNote = resolutionNote;
     patch.pendingReason = null;
   } else if (toStatus === 'closed') {
     patch.closedAt = now;
@@ -691,13 +736,30 @@ export async function changeTicketStatus(
     throw new TicketServiceError('Ticket was modified concurrently', 409, 'CONCURRENT_MODIFICATION');
   }
 
+  // Consume the draft in the SAME transaction as the ticket's own CAS update
+  // above — a failure here (already consumed by a racing caller between the
+  // lock and this point is impossible under the held row lock, but the CAS
+  // WHERE stays as defense-in-depth matching sendTicketDraft) throws and
+  // rolls back the whole request transaction, including the status change
+  // just written.
+  if (draftToConsume) {
+    const consumed = await db
+      .update(ticketDrafts)
+      .set({ state: 'consumed', consumedBy: actor.userId, consumedAt: new Date() })
+      .where(and(eq(ticketDrafts.id, draftToConsume.id), eq(ticketDrafts.state, 'active')))
+      .returning({ id: ticketDrafts.id });
+    if (consumed.length === 0) {
+      throw new TicketServiceError('Draft was already consumed', 409);
+    }
+  }
+
   await db.insert(ticketComments).values({
     ticketId,
     userId: actor.userId,
     authorName: actor.name ?? null,
     authorType: 'internal',
     commentType: 'status_change',
-    content: opts.resolutionNote ?? opts.pendingReason ?? customStatusName ?? '',
+    content: resolutionNote ?? opts.pendingReason ?? customStatusName ?? '',
     isPublic: false,
     oldValue: fromStatus,
     newValue: toStatus
@@ -1258,6 +1320,162 @@ export async function applyAiFieldUpdates(
       : { applied: false, skipped: after.fieldProvenance?.priority === 'user' ? 'human_set' : 'concurrent_change' };
   }
   return result;
+}
+
+// Task A10 (#4191) — human draft routes (list / send / discard)
+
+export interface ActiveTicketDraftRow {
+  id: string;
+  kind: 'reply' | 'resolution_note';
+  content: string;
+  createdAt: Date;
+  runId: string | null;
+}
+
+/**
+ * The active drafts for a ticket (at most one per `kind` —
+ * `ticket_drafts_active_uq`). `runId` is a bare link to the producing
+ * `ai_agent_runs` row (the run-detail page), never the run's own outcome.
+ */
+export async function listActiveTicketDrafts(ticketId: string): Promise<ActiveTicketDraftRow[]> {
+  return db
+    .select({
+      id: ticketDrafts.id,
+      kind: ticketDrafts.kind,
+      content: ticketDrafts.content,
+      createdAt: ticketDrafts.createdAt,
+      runId: ticketDrafts.runId,
+    })
+    .from(ticketDrafts)
+    .where(and(eq(ticketDrafts.ticketId, ticketId), eq(ticketDrafts.state, 'active')))
+    .orderBy(desc(ticketDrafts.createdAt))
+    // Defensive bound only — ticket_drafts_active_uq caps this at one active
+    // row per (ticketId, kind), and there are two kinds, so the real result
+    // is never more than 2 rows.
+    .limit(10);
+}
+
+/**
+ * Post a `reply`-kind draft as a PUBLIC comment under the CALLING
+ * technician's own identity — sending is a human act, so this is
+ * `originPrincipalKind: 'user'` and `userId: actor.userId`, never an
+ * AI-attributed row (contrast `addAiTriageNote`). `content` overrides the
+ * draft's stored text when the technician edited it before sending;
+ * otherwise the draft's own content is posted verbatim.
+ *
+ * `SELECT ... FOR UPDATE` locks the draft row for the rest of this
+ * transaction: a concurrent second send/discard call blocks on the same row
+ * until this one commits or rolls back, then observes the now-committed
+ * `state` — so a double-send under a race is a clean 409 with ZERO duplicate
+ * comments, never two racing inserts. The final CAS `UPDATE ... WHERE
+ * state='active'` is defense-in-depth (unreachable while the lock above
+ * holds, since nothing else in this same transaction can have changed the
+ * row) rather than the load-bearing guard.
+ */
+export async function sendTicketDraft(
+  ticketId: string,
+  draftId: string,
+  content: string | undefined,
+  actor: TicketActor
+): Promise<{ comment: { id: string }; firstResponseStamped: boolean }> {
+  const ticket = await getTicketOrThrow(ticketId);
+
+  const [draft] = await db
+    .select()
+    .from(ticketDrafts)
+    .where(and(eq(ticketDrafts.id, draftId), eq(ticketDrafts.ticketId, ticketId)))
+    .limit(1)
+    .for('update');
+  if (!draft) throw new TicketServiceError('Draft not found', 404);
+  if (draft.kind !== 'reply') {
+    throw new TicketServiceError('Only reply drafts can be sent — a resolution-note draft is consumed by resolving the ticket', 409);
+  }
+  if (draft.state !== 'active') {
+    throw new TicketServiceError('Draft is no longer active', 409);
+  }
+
+  const body = content && content.trim().length > 0 ? content : draft.content;
+
+  const inserted = await db.insert(ticketComments).values({
+    ticketId,
+    userId: actor.userId,
+    authorName: actor.name ?? null,
+    authorType: 'internal',
+    commentType: 'comment',
+    content: body,
+    isPublic: true,
+    originPrincipalKind: 'user'
+  }).returning({ id: ticketComments.id });
+  const comment = inserted[0];
+  if (!comment) throw new TicketServiceError('Failed to send draft', 500);
+
+  const consumed = await db
+    .update(ticketDrafts)
+    .set({ state: 'consumed', consumedBy: actor.userId, consumedAt: new Date() })
+    .where(and(eq(ticketDrafts.id, draftId), eq(ticketDrafts.state, 'active')))
+    .returning({ id: ticketDrafts.id });
+  if (consumed.length === 0) {
+    throw new TicketServiceError('Draft was already consumed', 409);
+  }
+
+  // Same first-PUBLIC-response stamping rule as addTicketComment.
+  let firstResponseStamped = false;
+  if (!ticket.firstResponseAt) {
+    await db.update(tickets)
+      .set({ firstResponseAt: new Date(), updatedAt: new Date() })
+      .where(eq(tickets.id, ticketId));
+    firstResponseStamped = true;
+  }
+
+  await emitTicketEvent({
+    type: 'ticket.commented',
+    ticketId,
+    orgId: ticket.orgId,
+    partnerId: ticket.partnerId ?? null,
+    actorUserId: actor.userId,
+    payload: { commentId: comment.id, isPublic: true }
+  });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: true });
+  await createAuditLogAsync({
+    orgId: ticket.orgId,
+    actorId: actor.userId,
+    action: 'ticket.comment',
+    resourceType: 'ticket',
+    resourceId: ticketId,
+    details: { commentId: comment.id, isInternal: false, fromAiDraft: draftId },
+    result: 'success'
+  });
+
+  return { comment, firstResponseStamped };
+}
+
+/**
+ * CAS `active -> discarded`. Distinguishes "no such draft for this ticket"
+ * (404) from "found, but no longer active" (409) via a plain read before the
+ * CAS write — the write's own `WHERE state='active'` is what actually
+ * enforces the transition against a concurrent racer.
+ */
+export async function discardTicketDraft(ticketId: string, draftId: string): Promise<{ id: string }> {
+  const [draft] = await db
+    .select({ id: ticketDrafts.id, state: ticketDrafts.state })
+    .from(ticketDrafts)
+    .where(and(eq(ticketDrafts.id, draftId), eq(ticketDrafts.ticketId, ticketId)))
+    .limit(1);
+  if (!draft) throw new TicketServiceError('Draft not found', 404);
+  if (draft.state !== 'active') {
+    throw new TicketServiceError('Draft is no longer active', 409);
+  }
+
+  const updated = await db
+    .update(ticketDrafts)
+    .set({ state: 'discarded' })
+    .where(and(eq(ticketDrafts.id, draftId), eq(ticketDrafts.state, 'active')))
+    .returning({ id: ticketDrafts.id });
+  const row = updated[0];
+  if (!row) {
+    throw new TicketServiceError('Draft was already consumed or discarded', 409);
+  }
+  return row;
 }
 
 // Task 8 — Alert linking

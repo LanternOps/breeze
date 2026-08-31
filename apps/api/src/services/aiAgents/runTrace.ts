@@ -85,6 +85,20 @@ export interface RunTraceRunInput {
    * defaults against a maximally-corrupt row.
    */
   outcome: Record<string, unknown>;
+  /**
+   * P2-4 (#4191), Task A10 — the raw `ai_agent_runs.intent_ids` column. For
+   * every OTHER profile this only ever lists intents still `pending_approval`
+   * (see `routes/aiAgents.ts`'s own comment on this same column) — but for a
+   * `triage`-profile run it is the ONE place `finalizeTicketTriage`
+   * (runLoop.ts) records every `manage_tickets` intent `persistTicketTriage`
+   * created, decided or not (a granted `ticket_autonomy` intent lands
+   * `approved` at creation and is never pruned back out of this array). Since
+   * `ticketProposal` is non-null only for a triage-profile run, and a triage
+   * run's `intent_ids` column holds ONLY the ids this proposal produced,
+   * `mapTicketProposal` below can project it directly as the DTO's
+   * `intentIds` with no extra filtering.
+   */
+  intentIds: string[];
   turnCount: number;
   costCents: number;
   errorCode: string | null;
@@ -124,6 +138,27 @@ export interface RunTraceNarrativeArtifactInput {
   periodStart: string | null;
   periodEnd: string | null;
   contextTruncated: boolean;
+}
+
+/**
+ * P2-4 (#4191), Task A10 — the safe-projected subset of one `ticket_drafts`
+ * row LINKED TO THIS RUN (`run_id = run.id`), for `ticketProposal.draftsWritten`.
+ * Deliberately id/kind only — never `content` (the draft's own text lives on
+ * the ticket's "AI draft" surface, not this run-trace DTO — same posture as
+ * every other mapper in this file).
+ *
+ * This is a LIVE query the route runs at projection time (see
+ * `routes/aiAgents.ts`), not something read out of the persisted `outcome`
+ * jsonb: unlike `intentIds` (decided synchronously inside
+ * `finalizeTicketTriage`, before the run terminates), a draft intent that
+ * was left `pending_approval` has not written its `ticket_drafts` row yet —
+ * that only happens later, when a human approves and the intent RELEASES
+ * (Task 5's `draft` executor). Reading it live is the only way this field is
+ * ever correct for a still-pending draft intent.
+ */
+export interface RunTraceDraftRowInput {
+  id: string;
+  kind: 'reply' | 'resolution_note';
 }
 
 /** The safe-projected subset of one linked `action_intents` row. */
@@ -186,11 +221,22 @@ function mapDenied(action: { tool: string; reason: string }): AiAgentRunTraceEnt
  * alias onto `TicketTriageProposal` (`@breeze/shared`); this projects the new
  * shape's fields (`version`, `summary`, `fields`, `device`, `draftReply`,
  * `draftResolutionNote`, `notes`) rather than the retired
- * `proposedReply`/`proposedStatus`/`proposedPriority` fields. `intentIds`/
- * `draftsWritten` are left unset here — nothing populates them yet; A8/A10
- * wire those in.
+ * `proposedReply`/`proposedStatus`/`proposedPriority` fields.
+ *
+ * Task A10 wires `intentIds`/`draftsWritten` in: `intentIds` is the run's own
+ * `intent_ids` column verbatim (see `RunTraceRunInput.intentIds`'s docstring
+ * for why that is safe for a triage run specifically), left `undefined`
+ * rather than `[]` when empty so an old run that predates A8's finalizer (or
+ * one whose persistence step failed outright) renders as "no intents" rather
+ * than a misleadingly-present empty list. `draftsWritten` is the caller's
+ * live `ticket_drafts` query result (`RunTraceDraftRowInput[]`), same
+ * undefined-when-empty treatment.
  */
-function mapTicketProposal(proposal: TicketProposalOutcome): AiAgentRunTicketProposalDto {
+function mapTicketProposal(
+  proposal: TicketProposalOutcome,
+  intentIds: string[],
+  draftRows: RunTraceDraftRowInput[],
+): AiAgentRunTicketProposalDto {
   return {
     version: proposal.version,
     summary: proposal.summary,
@@ -199,6 +245,10 @@ function mapTicketProposal(proposal: TicketProposalOutcome): AiAgentRunTicketPro
     draftReply: proposal.draftReply,
     draftResolutionNote: proposal.draftResolutionNote,
     notes: proposal.notes,
+    intentIds: intentIds.length > 0 ? intentIds : undefined,
+    draftsWritten: draftRows.length > 0
+      ? draftRows.map((row) => ({ kind: row.kind, draftId: row.id }))
+      : undefined,
   };
 }
 
@@ -260,6 +310,12 @@ export function buildRunTrace(
   // `null` for every run that has none. Defaults null so every existing caller
   // is unchanged.
   narrativeArtifact: RunTraceNarrativeArtifactInput | null = null,
+  // Phase 2 wave P2-4, Task A10 — the `ticket_drafts` rows LINKED TO THIS RUN
+  // (`run_id = run.id`), for `ticketProposal.draftsWritten`. Defaults empty
+  // so every non-triage caller (and every triage run with no draft rows) is
+  // unchanged; see `RunTraceDraftRowInput`'s docstring for why this is a live
+  // query rather than something read off the persisted outcome.
+  draftRows: RunTraceDraftRowInput[] = [],
 ): AiAgentRunDetailDto {
   const outcome = run.outcome as Partial<AgentRunOutcome>;
   return {
@@ -290,7 +346,7 @@ export function buildRunTrace(
     trace: buildTraceEntries(outcome),
     ledger: ledgerRows.map(mapLedgerRow),
     intents: intents.map(mapIntentRow),
-    ticketProposal: outcome.ticketProposal ? mapTicketProposal(outcome.ticketProposal) : null,
+    ticketProposal: outcome.ticketProposal ? mapTicketProposal(outcome.ticketProposal, run.intentIds, draftRows) : null,
     // Phase 2 wave P2-1 (alert verdicts), Task 8: null for every full-profile
     // run and for a verdict-profile run that has not (yet, or ever)
     // produced one — see `projectAlertVerdict`'s own safe-projection
