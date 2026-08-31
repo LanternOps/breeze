@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Build only the isolated executor workspace from the frozen monorepo lockfile.
-FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS build
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS build
 RUN npm install -g pnpm@10.34.5
 WORKDIR /app
 
@@ -19,7 +19,7 @@ RUN pnpm --filter=@breeze/m365-communications-executor build && \
 # The runner contains the compiled entrypoint and production dependencies only.
 # Credentials, identity tokens, JWKs, and tenant descriptors are injected by the
 # identity-capable deployment environment at runtime; none enter this image.
-FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS runner
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV M365_COMMS_EXECUTOR_AUTOSTART=1
