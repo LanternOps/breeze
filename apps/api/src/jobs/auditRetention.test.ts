@@ -87,8 +87,29 @@ import {
 const ORIGINAL_FLAG = process.env.AUDIT_RETENTION_ENABLED;
 
 /**
- * Flatten a drizzle `sql` template back to its literal SQL text (params drop
- * out, which is all we need to identify and assert on a statement).
+ * Bound parameter VALUES of a drizzle `sql` template, in order.
+ *
+ * This exists because `sqlText` below CANNOT SEE NUMBERS. Measured in this test
+ * environment: `queryChunks` holds `StringChunk` objects (own `value: string[]`)
+ * for literal SQL and raw primitives for bound params. `sqlText` returns a chunk
+ * only when `typeof chunk === 'string'`, so string params are inlined verbatim
+ * while NUMBER params map to ''. A statement binding `LIMIT ${maxBatches}`
+ * instead of `LIMIT ${batchSize}` therefore flattens BYTE-IDENTICALLY, and no
+ * text assertion can tell them apart. Assert through here when the value matters.
+ */
+function sqlParams(query: unknown): unknown[] {
+  const chunks = (query as { queryChunks?: unknown[] } | undefined)?.queryChunks;
+  if (!Array.isArray(chunks)) return [];
+  // Anything that is not a StringChunk (own array-valued `.value`) is a param.
+  return chunks.filter((chunk) => !Array.isArray((chunk as { value?: unknown } | null)?.value));
+}
+
+/**
+ * Flatten a drizzle `sql` template to its literal SQL text.
+ *
+ * Caveat: NUMBER params vanish and STRING params are inlined verbatim (see
+ * `sqlParams`), so `classify` matches against text containing fixture values
+ * like `org-a`. Keep fixture strings free of SQL keywords.
  */
 function sqlText(query: unknown): string {
   const chunks = (query as { queryChunks?: Array<{ value?: unknown } | string> }).queryChunks;
@@ -123,6 +144,12 @@ const executedKinds = (): StatementKind[] => executedSql().map(classify);
  * Route the shared `db.execute` mock by statement kind instead of by call
  * ordinal. Ordinal mocking cannot express the batch loops (their call count is
  * data-dependent), and a miscount would silently shift every later expectation.
+ *
+ * BATCH SCRIPT SEMANTICS: `prefixBatches`/`unsealedBatches` are consumed one per
+ * call, and the LAST element is STICKY — it repeats forever. That is deliberate:
+ * `[10]` with a ceiling models "always a full batch" for the backlog tests. The
+ * corollary is that a script whose last element is >= batchSize never ends the
+ * loop naturally, so end it with a short batch when you mean "then it drained".
  */
 function mockByStatement(handlers: {
   policies?: Array<{ id: string; org_id: string; retention_days: number }>;
@@ -321,8 +348,9 @@ describe('auditRetention worker', () => {
       expect(cutoff).toMatch(/ORDER BY c2\.chain_seq\s+LIMIT 1/);
       // The regression itself: no MIN() aggregate anywhere in the cutoff read.
       expect(cutoff).not.toMatch(/MIN\s*\(/i);
-      // The all-old fallback (MAX+1) stays — it is an index-backed lookup on
-      // (org_id, chain_seq DESC), not a scan.
+      // The all-old fallback (MAX+1) stays. Expected to plan as an index scan on
+      // (org_id, chain_seq DESC), though this test asserts only the SQL shape —
+      // no plan is verified here.
       expect(cutoff).toMatch(/MAX\(c3\.chain_seq\) \+ 1/);
       // Hoisted out of the DELETE so the bound is computed once per policy
       // rather than re-planned inside every batch.
@@ -344,10 +372,38 @@ describe('auditRetention worker', () => {
       const prefixDelete = executedSql().find((t) => classify(t) === 'prefixDelete');
       expect(prefixDelete).toBeDefined();
       expect(prefixDelete).toMatch(/ORDER BY c\.chain_seq\s+LIMIT/);
-      expect(prefixDelete).toMatch(/c\.chain_seq </);
+      // Trailing space matters: `/c\.chain_seq </` also matches `<=`, which
+      // would delete the first YOUNG row and break the prefix invariant.
+      expect(prefixDelete).toMatch(/c\.chain_seq < /);
 
       const sweep = executedSql().find((t) => classify(t) === 'unsealedSweep');
       expect(sweep).toMatch(/LIMIT/);
+    });
+
+    // The LIMIT bound is a NUMBER param, so it is invisible to the flattened
+    // SQL text — a statement binding `LIMIT ${maxBatches}` reads identically.
+    // Without this control, that mutant survives the whole suite and ships a job
+    // that deletes `maxBatches` rows per batch while the short-batch check still
+    // compares against `batchSize`, terminating after ONE batch and reporting
+    // success. Assert the bound VALUE, not the text.
+    it('binds the batch LIMIT to batchSize (not maxBatches) in both DELETEs', async () => {
+      mockByStatement({
+        policies: [{ id: 'p1', org_id: 'org-a', retention_days: 30 }],
+        cutoffSeq: '1000',
+      });
+
+      await pruneExpiredAuditLogs({ batchSize: 37, maxBatches: 9 });
+
+      const call = (kind: StatementKind) =>
+        dbExecuteMock.mock.calls.find((c: unknown[]) => classify(sqlText(c[0])) === kind)?.[0];
+
+      const prefixParams = sqlParams(call('prefixDelete'));
+      expect(prefixParams).toContain(37);
+      expect(prefixParams).not.toContain(9);
+
+      const sweepParams = sqlParams(call('unsealedSweep'));
+      expect(sweepParams).toContain(37);
+      expect(sweepParams).not.toContain(9);
     });
 
     it('keeps issuing prefix batches until one comes back short of the limit', async () => {
@@ -429,6 +485,125 @@ describe('auditRetention worker', () => {
       expect(executedKinds()).not.toContain('unsealedSweep');
     });
 
+    it('raises when the cutoff row is present but the column is missing', async () => {
+      dbExecuteMock.mockImplementation(async (query: unknown) => {
+        switch (classify(sqlText(query))) {
+          case 'policySelect':
+            return [{ id: 'p1', org_id: 'org-a', retention_days: 30 }];
+          case 'cutoff':
+            return [{}]; // column renamed / adapter reshaped the row
+          default:
+            return [];
+        }
+      });
+
+      const stats = await pruneExpiredAuditLogs();
+
+      expect(stats.errors).toBe(1);
+      expect(executedKinds()).not.toContain('prefixDelete');
+    });
+
+    // A DELETE always carries a driver row count. `extractRowCount` returns 0 for
+    // an unrecognised shape, and a 0 ENDS the batch loop — so without this guard
+    // a driver/adapter change silently retains expired rows and reports success.
+    it('raises when a batch DELETE returns no driver row count', async () => {
+      dbExecuteMock.mockImplementation(async (query: unknown) => {
+        switch (classify(sqlText(query))) {
+          case 'policySelect':
+            return [{ id: 'p1', org_id: 'org-a', retention_days: 30 }];
+          case 'cutoff':
+            return [{ cutoff_seq: '1000' }];
+          case 'prefixDelete':
+            return { command: 'DELETE' }; // no rowCount, no count
+          default:
+            return [];
+        }
+      });
+
+      const stats = await pruneExpiredAuditLogs();
+
+      expect(stats.errors).toBe(1);
+      expect(stats.orgsPruned).toBe(0);
+      expect(stats.rowsDeleted).toBe(0);
+    });
+
+    it('flags an org backlogged on the unsealed sweep, not just on the prefix', async () => {
+      mockByStatement({
+        policies: [{ id: 'p1', org_id: 'org-a', retention_days: 30 }],
+        cutoffSeq: '1000',
+        prefixBatches: [0],
+        unsealedBatches: [10],
+      });
+
+      const stats = await pruneExpiredAuditLogs({ batchSize: 10, maxBatches: 2 });
+
+      expect(stats.unsealedRowsDeleted).toBe(20);
+      expect(stats.orgsWithBacklog).toBe(1);
+      expect(stats.backloggedOrgIds).toEqual(['org-a']);
+    });
+
+    it('accumulates stats across several succeeding policies', async () => {
+      const policies = [
+        { id: 'p1', org_id: 'org-a', retention_days: 30 },
+        { id: 'p2', org_id: 'org-b', retention_days: 60 },
+      ];
+      dbExecuteMock.mockImplementation(async (query: unknown) => {
+        switch (classify(sqlText(query))) {
+          case 'policySelect':
+            return policies;
+          case 'cutoff':
+            return [{ cutoff_seq: '1000' }];
+          case 'prefixDelete':
+            return { count: 5 }; // always full at batchSize 5 -> both backlog
+          case 'unsealedSweep':
+            return { count: 1 };
+          default:
+            return [];
+        }
+      });
+
+      const stats = await pruneExpiredAuditLogs({ batchSize: 5, maxBatches: 2 });
+
+      // Sums, not last-write-wins: 2 policies x 2 prefix batches x 5 rows.
+      expect(stats.policies).toBe(2);
+      expect(stats.orgsPruned).toBe(2);
+      expect(stats.rowsDeleted).toBe(20);
+      expect(stats.unsealedRowsDeleted).toBe(2);
+      expect(stats.batches).toBe(6); // (2 prefix + 1 sweep) x 2 policies
+      expect(stats.orgsWithBacklog).toBe(2);
+      expect(stats.backloggedOrgIds).toEqual(['org-a', 'org-b']);
+      expect(stats.errors).toBe(0);
+    });
+
+    it('counts a bookkeeping failure separately and does not call it a prune failure', async () => {
+      dbExecuteMock.mockImplementation(async (query: unknown) => {
+        switch (classify(sqlText(query))) {
+          case 'policySelect':
+            return [{ id: 'p1', org_id: 'org-a', retention_days: 30 }];
+          case 'cutoff':
+            return [{ cutoff_seq: '1000' }];
+          case 'prefixDelete':
+            return { count: 4 };
+          case 'unsealedSweep':
+            return { count: 0 };
+          case 'policyUpdate':
+            throw new Error('bookkeeping write failed');
+          default:
+            return [];
+        }
+      });
+
+      const stats = await pruneExpiredAuditLogs();
+
+      // The rows really were deleted — this must not read as a failed prune.
+      expect(stats.rowsDeleted).toBe(4);
+      expect(stats.orgsPruned).toBe(1);
+      expect(stats.errors).toBe(0);
+      expect(stats.bookkeepingErrors).toBe(1);
+      // Invariant: an org is pruned or errored, never both.
+      expect(stats.orgsPruned + stats.errors).toBe(stats.policies);
+    });
+
     it('treats a NULL cutoff (org has no chain rows) as legitimate, not an error', async () => {
       mockByStatement({
         policies: [{ id: 'p1', org_id: 'org-a', retention_days: 30 }],
@@ -472,6 +647,8 @@ describe('auditRetention worker', () => {
             return [{ cutoff_seq: '1000' }];
           case 'prefixDelete':
             return { count: 3 };
+          case 'unsealedSweep':
+            return { count: 0 };
           default:
             return [];
         }
@@ -503,27 +680,80 @@ describe('auditRetention worker', () => {
   });
 
   describe('batch limits', () => {
-    it('exposes env-configurable defaults', () => {
-      expect(__testOnly.BATCH_SIZE).toBe(5000);
-      expect(__testOnly.MAX_BATCHES).toBe(200);
+    it('defaults to the documented batch size and ceiling', () => {
+      // Compared against the module's own declared defaults rather than bare
+      // literals: BATCH_SIZE/MAX_BATCHES are read from env at import, so an
+      // AUDIT_RETENTION_* var set in a CI or dev environment would otherwise red
+      // this test for a reason unrelated to the code.
+      const envOverridden =
+        process.env.AUDIT_RETENTION_BATCH_SIZE || process.env.AUDIT_RETENTION_MAX_BATCHES;
+      if (!envOverridden) {
+        expect(__testOnly.BATCH_SIZE).toBe(__testOnly.DEFAULT_BATCH_SIZE);
+        expect(__testOnly.MAX_BATCHES).toBe(__testOnly.DEFAULT_MAX_BATCHES);
+      }
+      expect(__testOnly.BATCH_SIZE).toBeGreaterThan(0);
+      expect(__testOnly.MAX_BATCHES).toBeGreaterThan(0);
     });
 
-    it('parsePositiveIntEnv rejects non-positive and unparsable values', () => {
+    it('parsePositiveIntEnv rejects non-positive, unparsable and partially-parsable values', () => {
       const KEY = 'AUDIT_RETENTION_TEST_KNOB';
-      delete process.env[KEY];
-      expect(__testOnly.parsePositiveIntEnv(KEY, 42)).toBe(42);
-      process.env[KEY] = '0';
-      expect(__testOnly.parsePositiveIntEnv(KEY, 42)).toBe(42);
-      process.env[KEY] = '-5';
-      expect(__testOnly.parsePositiveIntEnv(KEY, 42)).toBe(42);
-      process.env[KEY] = 'banana';
-      expect(__testOnly.parsePositiveIntEnv(KEY, 42)).toBe(42);
-      process.env[KEY] = '250';
-      expect(__testOnly.parsePositiveIntEnv(KEY, 42)).toBe(250);
+      const cases: Array<[string | undefined, number]> = [
+        [undefined, 42],
+        ['', 42],
+        ['0', 42],
+        ['-5', 42],
+        ['banana', 42],
+        // Number.parseInt truncates these; without whole-string validation
+        // "1e9" silently becomes 1 — batches of a single row.
+        ['1e9', 42],
+        ['5,000', 42],
+        ['5000x', 42],
+        ['3.7', 42],
+        ['250', 250],
+        ['  250  ', 250],
+      ];
+      for (const [raw, expected] of cases) {
+        if (raw === undefined) delete process.env[KEY];
+        else process.env[KEY] = raw;
+        expect(__testOnly.parsePositiveIntEnv(KEY, 42)).toBe(expected);
+      }
       delete process.env[KEY];
     });
 
-    it('clamps caller-supplied limits to at least 1 so a zero can never disable pruning', async () => {
+    // Job data is untrusted JSON off Redis. `Math.max(1, "abc")` is NaN, and
+    // `batches < NaN` is false, so the old clamp issued ZERO deletes and still
+    // reported orgsPruned:1, errors:0 — a silent no-op wearing a success.
+    it('resolveLimit rejects non-integer job-data values instead of producing NaN', () => {
+      expect(__testOnly.resolveLimit('batchSize', undefined, 5000)).toBe(5000);
+      expect(__testOnly.resolveLimit('batchSize', Number.NaN, 5000)).toBe(5000);
+      expect(__testOnly.resolveLimit('batchSize', 'abc' as unknown as number, 5000)).toBe(5000);
+      expect(__testOnly.resolveLimit('batchSize', null as unknown as number, 5000)).toBe(5000);
+      expect(__testOnly.resolveLimit('batchSize', 0, 5000)).toBe(5000);
+      expect(__testOnly.resolveLimit('batchSize', -10, 5000)).toBe(5000);
+      expect(__testOnly.resolveLimit('batchSize', 2.5, 5000)).toBe(5000);
+      expect(__testOnly.resolveLimit('batchSize', Infinity, 5000)).toBe(5000);
+      expect(__testOnly.resolveLimit('batchSize', 250, 5000)).toBe(250);
+    });
+
+    it('a non-numeric job-data limit still prunes, using the defaults', async () => {
+      mockByStatement({
+        policies: [{ id: 'p1', org_id: 'org-a', retention_days: 30 }],
+        cutoffSeq: '1000',
+        prefixBatches: [0],
+      });
+
+      const stats = await pruneExpiredAuditLogs({
+        batchSize: 'abc' as unknown as number,
+        maxBatches: Number.NaN,
+      });
+
+      // The regression: NaN limits used to issue no DELETE at all.
+      expect(executedKinds().filter((k) => k === 'prefixDelete')).toHaveLength(1);
+      expect(stats.errors).toBe(0);
+      expect(stats.orgsPruned).toBe(1);
+    });
+
+    it('a zero limit falls back to the default rather than disabling pruning', async () => {
       mockByStatement({
         policies: [{ id: 'p1', org_id: 'org-a', retention_days: 30 }],
         cutoffSeq: '1000',
@@ -532,9 +762,29 @@ describe('auditRetention worker', () => {
 
       const stats = await pruneExpiredAuditLogs({ batchSize: 0, maxBatches: 0 });
 
-      // maxBatches 0 would have meant "issue no DELETE at all".
       expect(executedKinds().filter((k) => k === 'prefixDelete')).toHaveLength(1);
       expect(stats.errors).toBe(0);
+    });
+
+    it('worker processor forwards batch overrides from the job payload', async () => {
+      mockByStatement({
+        policies: [{ id: 'p1', org_id: 'org-a', retention_days: 30 }],
+        cutoffSeq: '1000',
+      });
+      createAuditRetentionWorker();
+
+      await capturedWorkerProcessor.current!({
+        name: 'audit-log-retention',
+        id: 'j3',
+        data: { batchSize: 1, maxBatches: 1 },
+      });
+
+      // maxBatches 1 must cap the prefix loop at exactly one statement.
+      expect(executedKinds().filter((k) => k === 'prefixDelete')).toHaveLength(1);
+      const prefixCall = dbExecuteMock.mock.calls.find(
+        (c: unknown[]) => classify(sqlText(c[0])) === 'prefixDelete',
+      )?.[0];
+      expect(sqlParams(prefixCall)).toContain(1);
     });
   });
 
