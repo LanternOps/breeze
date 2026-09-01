@@ -1883,8 +1883,14 @@ coreRoutes.delete(
       // Durable, not just console: this is a post-commit failure on an
       // irreversible operation, and a console line on a droplet is not a record
       // anyone will find later.
+      //
+      // `err` goes in RAW. captureException takes `unknown` deliberately — it
+      // runs connectTimeoutClassifier and pgErrorCode over the value to derive
+      // its tags, so pre-wrapping a non-Error in `new Error(String(err))` would
+      // throw those away (and String() on a hostile object can itself throw,
+      // out of the very catch that exists to keep this block from escaping).
       console.error(`[devices] best-effort self_uninstall failed for ${deviceId}:`, err);
-      captureException(err instanceof Error ? err : new Error(String(err)), c);
+      captureException(err, c);
     }
 
     writeRouteAudit(c, {

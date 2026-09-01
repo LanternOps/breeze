@@ -511,11 +511,16 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // clearAllMocks clears CALLS but keeps implementations, and the ordering
-    // test below wraps db.transaction in a closure over its own rig. Without
-    // this reset that wrapper leaks into any later test that forgets to
-    // re-rig, which would silently record ordering from the wrong test.
+    // clearAllMocks clears CALLS but keeps IMPLEMENTATIONS, so every impl
+    // installed by a test leaks into the next one that forgets to re-rig.
+    // Proven, not theoretical: the ordering test wraps db.transaction in a
+    // closure over its own rig, and the dispatch-throws test makes
+    // isAgentConnected throw. A test appended after either would silently run
+    // against the wrong world — recording another test's ordering, or
+    // exercising the catch path while looking like a happy-path test.
     vi.mocked(db.transaction).mockReset();
+    vi.mocked(isAgentConnected).mockReset();
+    vi.mocked(sendCommandToAgent).mockReset();
     app = new Hono();
     app.route('/devices', coreRoutes);
   });
@@ -840,6 +845,10 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
 
     expect(res.status).toBe(200);
     expect(sendCommandToAgent).not.toHaveBeenCalled();
+    // The `device.agentId &&` short-circuit is itself load-bearing:
+    // isAgentConnected asserts the process role and throws in the worker role,
+    // so it must not be reached for a device that never had an agent.
+    expect(isAgentConnected).not.toHaveBeenCalled();
     const body = await res.json() as { agentUninstallSent: boolean; warning?: string };
     expect(body.agentUninstallSent).toBe(false);
     // No agentId means there is no endpoint to go clean up by hand, so the
@@ -858,8 +867,9 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     rigDeviceLookup(CONNECTED_DEVICE);
     rigDeleteTransaction();
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const roleError = new Error('[BREEZE_ROLE] isAgentConnected is socket-local');
     vi.mocked(isAgentConnected).mockImplementation(() => {
-      throw new Error('[BREEZE_ROLE] isAgentConnected is socket-local');
+      throw roleError;
     });
 
     try {
@@ -876,8 +886,51 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
       // Not swallowed in silence: the committed delete plus a failed uninstall
       // is exactly the state someone will need to reconstruct later.
       expect(await auditDetails()).toMatchObject({ uninstallCommandSent: false });
+      // Second arg pins the request context, which carries user/route scope
+      // into Sentry. (The raw-value passthrough that matters for Sentry's
+      // tagging is pinned by the non-Error test below — with an Error input
+      // the usual `err instanceof Error ? err : …` wrap is a no-op and cannot
+      // be discriminated here. Verified by mutation.)
       const { captureException } = await import('../../services/sentry');
-      expect(captureException).toHaveBeenCalled();
+      expect(captureException).toHaveBeenCalledWith(roleError, expect.anything());
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  /**
+   * captureException must receive the thrown value RAW. It takes `unknown`
+   * deliberately and derives its Sentry tags by inspecting what it is handed
+   * (connectTimeoutClassifier, pgErrorCode), so the reflex
+   * `err instanceof Error ? err : new Error(String(err))` at a call site
+   * silently strips `pg_code` and the CONNECT_TIMEOUT classification off every
+   * non-Error throw — and `String()` on a hostile object can itself throw, out
+   * of the catch whose whole job is keeping this block from escaping.
+   *
+   * A non-Error fixture is what makes this checkable: with an Error input that
+   * wrap is a no-op, so the test above cannot discriminate it.
+   */
+  it('hands captureException the raw thrown value, not a wrapped Error', async () => {
+    rigDeviceLookup(CONNECTED_DEVICE);
+    rigDeleteTransaction();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Shaped like a postgres-js error: exactly the payload whose `code` the
+    // Sentry tagging reads and a wrap would discard.
+    const nonError = { code: '57P01', message: 'terminating connection' };
+    vi.mocked(isAgentConnected).mockImplementation(() => {
+      throw nonError;
+    });
+
+    try {
+      const res = await app.request(`/devices/${CONNECTED_DEVICE.id}/permanent`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      // A non-Error throw must not escape the handler either.
+      expect(res.status).toBe(200);
+      const { captureException } = await import('../../services/sentry');
+      expect(captureException).toHaveBeenCalledWith(nonError, expect.anything());
     } finally {
       consoleError.mockRestore();
     }
