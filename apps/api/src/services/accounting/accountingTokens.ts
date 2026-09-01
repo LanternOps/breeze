@@ -37,7 +37,12 @@ interface LockedConnectionRow {
   accessTokenExpiresAt: Date | null;
   refreshTokenEncrypted: string | null;
   refreshTokenExpiresAt: Date | null;
-  updatedAt: Date | null;
+}
+
+/** Decrypts the row's refresh token, or null if it has none. Shared by the
+ *  peer-rotation checks in both Transaction B and `handleRefreshFailure`. */
+function decryptRowRefreshToken(row: LockedConnectionRow): string | null {
+  return row.refreshTokenEncrypted ? decryptSecret(row.refreshTokenEncrypted) : null;
 }
 
 /** `SELECT ... FOR UPDATE` the connection row inside an already-open
@@ -71,10 +76,6 @@ function freshAccessTokenFromRow(row: LockedConnectionRow, now: number): string 
   return decryptSecret(row.accessTokenEncrypted);
 }
 
-function generationChanged(current: Date | null, captured: Date | null): boolean {
-  return (current?.getTime() ?? null) !== (captured?.getTime() ?? null);
-}
-
 type RefreshTokens = Awaited<ReturnType<ReturnType<typeof getAccountingProvider>['refresh']>>;
 
 /**
@@ -91,7 +92,6 @@ async function handleRefreshFailure(
   connection: AccountingConnection,
   attemptedRefreshToken: string,
   err: unknown,
-  now: number,
 ): Promise<string> {
   if (err instanceof ReauthRequiredError) throw err;
   if (!isInvalidGrant(err)) {
@@ -102,13 +102,17 @@ async function handleRefreshFailure(
 
   return db.transaction(async (tx) => {
     const row = await lockConnectionRow(tx, connection);
-    const currentRefreshToken = row.refreshTokenEncrypted ? decryptSecret(row.refreshTokenEncrypted) : null;
+    const currentRefreshToken = decryptRowRefreshToken(row);
 
     if (currentRefreshToken !== attemptedRefreshToken) {
       // A peer already rotated past the token we tried — this invalid_grant
       // was us losing the race, not a real revocation. Leave status
-      // untouched; hand back the peer's fresh token if it left one.
-      const peerToken = freshAccessTokenFromRow(row, now);
+      // untouched; hand back the peer's fresh token if it left one. Freshness
+      // is judged against a NOW captured HERE, inside the lock — reusing the
+      // pre-fetch `now` would judge it against a clock that predates the
+      // entire refresh round trip, and could report a token stale that is
+      // actually still comfortably within the buffer, or vice versa.
+      const peerToken = freshAccessTokenFromRow(row, Date.now());
       if (peerToken) return peerToken;
       // The refresh token changed but the row carries no fresh access token
       // (a peer's rotation still mid-flight, or a state this function did
@@ -165,27 +169,34 @@ export async function getValidAccessToken(db: DbTransactor, connection: Accounti
   //
   //   A. Lock the row, re-check under the lock (double-checked: a peer may
   //      already have refreshed while we waited for the lock). If still
-  //      stale, capture the refresh token + a generation marker (`updatedAt`)
-  //      and COMMIT — no transaction stays open while we call QuickBooks.
+  //      stale, capture the refresh token and COMMIT — no transaction stays
+  //      open while we call QuickBooks.
   //   (fetch — no transaction open)
-  //   B. Lock the row again. If its generation moved since A, a peer won the
-  //      race while we were mid-fetch — DISCARD our rotation (never overwrite
-  //      a newer one) and return the peer's fresh token. Otherwise persist
-  //      ours, same zero-row-throw `updateTokens` as before.
+  //   B. Lock the row again. Peer rotation is detected BY VALUE, not by a
+  //      timestamp: if the row's CURRENT refresh token no longer matches the
+  //      one we captured in A, a peer already rotated it while we were
+  //      mid-fetch — DISCARD our rotation (never overwrite a newer one) and
+  //      return the peer's fresh token. A ms-resolution `updated_at` compare
+  //      was tried first and rejected in review — two commits landing in the
+  //      same millisecond would false-negative it, letting the loser persist
+  //      tokens derived from an already-invalidated refresh token and brick
+  //      the connection until reauth. Comparing the actual token value has no
+  //      such collision window. Otherwise persist ours, same zero-row-throw
+  //      `updateTokens` as before.
   const captured = await db.transaction(async (tx) => {
     const row = await lockConnectionRow(tx, connection);
 
     const winnerToken = freshAccessTokenFromRow(row, now);
     if (winnerToken) return { needsRefresh: false as const, accessToken: winnerToken };
 
-    const lockedRefreshToken = row.refreshTokenEncrypted ? decryptSecret(row.refreshTokenEncrypted) : null;
+    const lockedRefreshToken = decryptRowRefreshToken(row);
     const lockedRefreshExpiresAt = row.refreshTokenExpiresAt?.getTime() ?? 0;
     if (!lockedRefreshToken || lockedRefreshExpiresAt <= now) {
       await markStatus(tx, connection.id, connection.partnerId, 'reauth_required', 'QuickBooks refresh token expired');
       throw new ReauthRequiredError();
     }
 
-    return { needsRefresh: true as const, refreshToken: lockedRefreshToken, generation: row.updatedAt };
+    return { needsRefresh: true as const, refreshToken: lockedRefreshToken };
   });
 
   if (!captured.needsRefresh) return captured.accessToken;
@@ -198,21 +209,24 @@ export async function getValidAccessToken(db: DbTransactor, connection: Accounti
     // permanently breaks the connection. No transaction is open here.
     tokens = await runOutsideDbContext(() => provider.refresh(captured.refreshToken));
   } catch (err) {
-    return handleRefreshFailure(db, connection, captured.refreshToken, err, now);
+    return handleRefreshFailure(db, connection, captured.refreshToken, err);
   }
 
   return db.transaction(async (tx) => {
     const row = await lockConnectionRow(tx, connection);
 
-    if (generationChanged(row.updatedAt, captured.generation)) {
+    if (decryptRowRefreshToken(row) !== captured.refreshToken) {
       // A peer already committed a rotation while we were fetching — never
       // overwrite a newer one with our now-stale result. Prefer the peer's
-      // fresh token when it left one.
-      const peerToken = freshAccessTokenFromRow(row, now);
+      // fresh token when it left one. Freshness is judged against a NOW
+      // captured HERE, inside the lock, not the pre-fetch `now` above — that
+      // clock predates the entire refresh round trip, and reusing it here
+      // could misjudge a token that has since crossed the buffer either way.
+      const peerToken = freshAccessTokenFromRow(row, Date.now());
       if (peerToken) return peerToken;
-      // The generation moved but the row carries no fresh token yet (an
-      // in-flight peer write we raced past, or an unrelated write to this
-      // row) — our own freshly-fetched, still-valid rotation is the best
+      // The refresh token changed but the row carries no fresh access token
+      // yet (an in-flight peer write we raced past, or an unrelated write to
+      // this row) — our own freshly-fetched, still-valid rotation is the best
       // available result, so fall through and persist it.
     }
 

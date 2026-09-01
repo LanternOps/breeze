@@ -253,13 +253,14 @@ describe('accountingTokens', () => {
 
     mocks.provider.refresh.mockImplementation(async () => {
       // Simulate a peer committing its OWN rotation while we are mid-fetch:
-      // the row's generation (updatedAt) and access token move underneath us.
+      // the row's refresh token (the value Transaction B actually compares)
+      // and access token move underneath us.
       state.row = {
         ...(state.row as Record<string, unknown>),
         accessTokenEncrypted: encryptSecret('PEER-at'),
         accessTokenExpiresAt: new Date(Date.now() + 3600_000),
         refreshTokenEncrypted: encryptSecret('PEER-rt'),
-        updatedAt: new Date('2026-09-01T00:05:00.000Z'), // generation moved
+        updatedAt: new Date('2026-09-01T00:05:00.000Z'),
       };
       return {
         realmId: 'realm-1',
@@ -275,6 +276,44 @@ describe('accountingTokens', () => {
 
     expect(token).toBe('PEER-at'); // the peer's token, never ours
     expect(mocks.updateTokens).not.toHaveBeenCalled(); // our rotation is discarded, not persisted
+  });
+
+  it('LOSER DISCARDS ROTATION even with an IDENTICAL updated_at (regression, review round 2): peer rotation is detected BY VALUE, not by timestamp', async () => {
+    // Review round 2 finding: an earlier version of this fix compared
+    // `row.updatedAt` (ms resolution) to detect a peer rotation. Two commits
+    // landing in the SAME millisecond would false-negative that compare,
+    // letting the loser overwrite a newer rotation with tokens derived from
+    // an already-invalidated refresh token — bricking the connection until
+    // reauth. This test pins the peer's `updatedAt` to the EXACT same
+    // millisecond as the row Transaction A captured, so the ONLY way this
+    // test can pass is if peer-rotation detection compares the refresh token
+    // VALUE, not the timestamp.
+    const conn = connection({ accessTokenExpiresAt: new Date(Date.now() + 60_000) });
+    const sameInstant = new Date('2026-09-01T00:00:00.000Z');
+    const { db, state } = makeLockableDb(lockedRow({ updatedAt: sameInstant }));
+
+    mocks.provider.refresh.mockImplementation(async () => {
+      state.row = {
+        ...(state.row as Record<string, unknown>),
+        accessTokenEncrypted: encryptSecret('PEER-at'),
+        accessTokenExpiresAt: new Date(Date.now() + 3600_000),
+        refreshTokenEncrypted: encryptSecret('PEER-rt'),
+        updatedAt: sameInstant, // IDENTICAL to the Transaction A capture, deliberately
+      };
+      return {
+        realmId: 'realm-1',
+        accessToken: 'OURS-at',
+        refreshToken: 'OURS-rt',
+        accessTokenExpiresAt: new Date(Date.now() + 3600_000),
+        refreshTokenExpiresAt: new Date(Date.now() + 8640000_000),
+      };
+    });
+
+    const { getValidAccessToken } = await import('./accountingTokens');
+    const token = await getValidAccessToken(db, conn);
+
+    expect(token).toBe('PEER-at');
+    expect(mocks.updateTokens).not.toHaveBeenCalled();
   });
 
   it('marks reauth_required when refresh returns an explicit invalid_grant AND the row still holds the token we tried (genuine revocation)', async () => {
