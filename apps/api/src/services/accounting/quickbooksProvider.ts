@@ -5,9 +5,12 @@ import type {
   AccountingProvider,
   ChangeSet,
   ConnectionTokens,
+  CustomerUpsertInput,
+  ItemUpsertInput,
   RemoteAddress,
   RemoteCustomer,
-  RemoteEntity,
+  RemoteIncomeAccount,
+  RemoteItem,
   RemoteRef,
 } from './types';
 import type { AccountingConnection } from './accountingConnectionService';
@@ -16,7 +19,7 @@ const QBO_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
 const QBO_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
 const QBO_SCOPE = 'com.intuit.quickbooks.accounting';
 const QBO_API_MINOR_VERSION = '70';
-const QBO_CUSTOMER_PAGE_SIZE = 1000; // QBO hard cap per query page
+const QBO_QUERY_PAGE_SIZE = 1000; // QBO hard cap per query page
 
 function qboApiBase(environment: 'sandbox' | 'production'): string {
   return environment === 'production'
@@ -31,6 +34,7 @@ interface QboRawAddress {
 
 interface QboRawCustomer {
   Id: string;
+  SyncToken?: string;
   DisplayName?: string;
   CompanyName?: string;
   PrimaryEmailAddr?: { Address?: string };
@@ -40,6 +44,25 @@ interface QboRawCustomer {
   Active?: boolean;
   BillAddr?: QboRawAddress;
   ShipAddr?: QboRawAddress;
+}
+
+interface QboRawItem {
+  Id: string;
+  Name?: string;
+  Sku?: string;
+  Description?: string;
+  Type?: string;
+  UnitPrice?: number;
+  Active?: boolean;
+  SyncToken?: string;
+}
+
+interface QboRawAccount {
+  Id: string;
+  Name?: string;
+  AccountType?: string;
+  AccountSubType?: string;
+  Active?: boolean;
 }
 
 export function mapQboAddress(raw: QboRawAddress | undefined): RemoteAddress | undefined {
@@ -67,7 +90,43 @@ export function mapQboCustomer(raw: QboRawCustomer): RemoteCustomer {
     active: raw.Active,
     billAddr: mapQboAddress(raw.BillAddr),
     shipAddr: mapQboAddress(raw.ShipAddr),
+    syncToken: raw.SyncToken,
   };
+}
+
+function mapRemoteItem(raw: QboRawItem): RemoteItem {
+  return {
+    id: raw.Id,
+    displayName: raw.Name || raw.Id,
+    sku: raw.Sku || undefined,
+    description: raw.Description || undefined,
+    type: raw.Type,
+    unitPrice: raw.UnitPrice,
+    active: raw.Active,
+    syncToken: raw.SyncToken,
+  };
+}
+
+function mapRemoteIncomeAccount(raw: QboRawAccount): RemoteIncomeAccount {
+  return {
+    id: raw.Id,
+    displayName: raw.Name || raw.Id,
+    accountType: raw.AccountType || 'Income',
+    accountSubType: raw.AccountSubType || undefined,
+  };
+}
+
+function mapAddressToQbo(address: RemoteAddress | undefined): Record<string, string | undefined> | undefined {
+  if (!address) return undefined;
+  const result = {
+    Line1: address.line1,
+    Line2: address.line2,
+    City: address.city,
+    CountrySubDivisionCode: address.region,
+    PostalCode: address.postalCode,
+    Country: address.country,
+  };
+  return Object.values(result).some((value) => value !== undefined) ? result : undefined;
 }
 
 interface QboTokenResponse {
@@ -104,55 +163,116 @@ export class QuickbooksProvider implements AccountingProvider {
   // resolve it via getValidAccessToken(db, conn) first (which refreshes +
   // persists rotation) — this method stays pure HTTP and issues no DB queries.
   async listRemoteCustomers(conn: AccountingConnection): Promise<RemoteCustomer[]> {
-    if (!conn.realmId) throw new Error('QuickBooks connection is missing a realmId');
-    if (!conn.accessToken) throw new Error('QuickBooks connection is missing an access token');
-
-    const base = qboApiBase(conn.environment);
     const customers: RemoteCustomer[] = [];
     let startPosition = 1;
 
     // Page until a short page (< page size) signals the end.
     for (;;) {
-      const query = `SELECT * FROM Customer STARTPOSITION ${startPosition} MAXRESULTS ${QBO_CUSTOMER_PAGE_SIZE}`;
-      const url = `${base}/v3/company/${conn.realmId}/query?query=${encodeURIComponent(query)}&minorversion=${QBO_API_MINOR_VERSION}`;
-      const response = await runOutsideDbContext(() =>
-        fetch(url, {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${conn.accessToken}`,
-            Accept: 'application/json',
-          },
-        })
+      const query = `SELECT * FROM Customer STARTPOSITION ${startPosition} MAXRESULTS ${QBO_QUERY_PAGE_SIZE}`;
+      const parsed = await this.qboRequest<{ QueryResponse?: { Customer?: QboRawCustomer[] } }>(
+        conn,
+        `query?query=${encodeURIComponent(query)}&minorversion=${QBO_API_MINOR_VERSION}`,
+        'QuickBooks customer query',
       );
-
-      if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        const err = new Error(`QuickBooks customer query failed with ${response.status}`);
-        (err as Error & { status?: number; body?: string }).status = response.status;
-        (err as Error & { status?: number; body?: string }).body = body.slice(0, 500);
-        throw err;
-      }
-
-      const parsed = await response.json() as { QueryResponse?: { Customer?: QboRawCustomer[] } };
       const page = parsed.QueryResponse?.Customer ?? [];
       for (const raw of page) customers.push(mapQboCustomer(raw));
-      if (page.length < QBO_CUSTOMER_PAGE_SIZE) break;
-      startPosition += QBO_CUSTOMER_PAGE_SIZE;
+      if (page.length < QBO_QUERY_PAGE_SIZE) break;
+      startPosition += QBO_QUERY_PAGE_SIZE;
     }
 
     return customers;
   }
 
-  async listRemoteItems(_conn: AccountingConnection, _query?: string): Promise<RemoteEntity[]> {
-    throw new Error('NotImplemented: Phase B');
+  async listRemoteItems(conn: AccountingConnection, _query?: string): Promise<RemoteItem[]> {
+    const items: RemoteItem[] = [];
+    let startPosition = 1;
+    for (;;) {
+      const query = `SELECT * FROM Item STARTPOSITION ${startPosition} MAXRESULTS ${QBO_QUERY_PAGE_SIZE}`;
+      const parsed = await this.qboRequest<{ QueryResponse?: { Item?: QboRawItem[] } }>(
+        conn,
+        `query?query=${encodeURIComponent(query)}&minorversion=${QBO_API_MINOR_VERSION}`,
+        'QuickBooks item query',
+      );
+      const page = parsed.QueryResponse?.Item ?? [];
+      items.push(...page.map(mapRemoteItem));
+      if (page.length < QBO_QUERY_PAGE_SIZE) break;
+      startPosition += QBO_QUERY_PAGE_SIZE;
+    }
+    return items;
   }
 
-  async upsertCustomer(..._args: unknown[]): Promise<RemoteRef> {
-    throw new Error('NotImplemented: Phase B');
+  async listRemoteIncomeAccounts(conn: AccountingConnection): Promise<RemoteIncomeAccount[]> {
+    const accounts: RemoteIncomeAccount[] = [];
+    let startPosition = 1;
+    for (;;) {
+      const query = `SELECT * FROM Account WHERE AccountType = 'Income' AND Active = true STARTPOSITION ${startPosition} MAXRESULTS ${QBO_QUERY_PAGE_SIZE}`;
+      const parsed = await this.qboRequest<{ QueryResponse?: { Account?: QboRawAccount[] } }>(
+        conn,
+        `query?query=${encodeURIComponent(query)}&minorversion=${QBO_API_MINOR_VERSION}`,
+        'QuickBooks income account query',
+      );
+      const page = parsed.QueryResponse?.Account ?? [];
+      accounts.push(...page.map(mapRemoteIncomeAccount));
+      if (page.length < QBO_QUERY_PAGE_SIZE) break;
+      startPosition += QBO_QUERY_PAGE_SIZE;
+    }
+    return accounts;
   }
 
-  async upsertItem(..._args: unknown[]): Promise<RemoteRef> {
-    throw new Error('NotImplemented: Phase B');
+  async upsertCustomer(conn: AccountingConnection, input: CustomerUpsertInput): Promise<RemoteRef> {
+    if (input.existing && !input.existing.syncToken) {
+      throw new Error('QuickBooks Customer update requires the current SyncToken');
+    }
+    const payload = {
+      ...(input.existing ? {
+        sparse: true,
+        Id: input.existing.id,
+        SyncToken: input.existing.syncToken,
+      } : {}),
+      DisplayName: input.displayName,
+      CompanyName: input.companyName,
+      PrimaryEmailAddr: input.email ? { Address: input.email } : undefined,
+      PrimaryPhone: input.phone ? { FreeFormNumber: input.phone } : undefined,
+      PrimaryTaxIdentifier: input.taxId,
+      BillAddr: mapAddressToQbo(input.billingAddress),
+    };
+    const parsed = await this.qboRequest<{ Customer?: QboRawCustomer }>(
+      conn,
+      `customer?minorversion=${QBO_API_MINOR_VERSION}`,
+      'QuickBooks customer upsert',
+      { method: 'POST', body: JSON.stringify(payload) },
+    );
+    if (!parsed.Customer?.Id) throw new Error('QuickBooks customer response was missing an Id');
+    return { id: parsed.Customer.Id, syncToken: parsed.Customer.SyncToken };
+  }
+
+  async upsertItem(conn: AccountingConnection, input: ItemUpsertInput): Promise<RemoteRef> {
+    if (input.existing && !input.existing.syncToken) {
+      throw new Error('QuickBooks Item update requires the current SyncToken');
+    }
+    const payload = {
+      ...(input.existing ? {
+        sparse: true,
+        Id: input.existing.id,
+        SyncToken: input.existing.syncToken,
+      } : {}),
+      Name: input.name,
+      Sku: input.sku,
+      Description: input.description,
+      Type: input.type,
+      UnitPrice: input.unitPrice,
+      Taxable: input.taxable,
+      Active: input.active,
+      IncomeAccountRef: { value: input.incomeAccountRef },
+    };
+    const parsed = await this.qboRequest<{ Item?: QboRawItem }>(
+      conn,
+      `item?minorversion=${QBO_API_MINOR_VERSION}`,
+      'QuickBooks item upsert',
+      { method: 'POST', body: JSON.stringify(payload) },
+    );
+    if (!parsed.Item?.Id) throw new Error('QuickBooks item response was missing an Id');
+    return { id: parsed.Item.Id, syncToken: parsed.Item.SyncToken };
   }
 
   async pushInvoice(..._args: unknown[]): Promise<RemoteRef> {
@@ -174,6 +294,40 @@ export class QuickbooksProvider implements AccountingProvider {
     const right = Buffer.from(expected, 'utf8');
     if (left.length !== right.length) return false;
     return timingSafeEqual(left, right);
+  }
+
+  private async qboRequest<T>(
+    conn: AccountingConnection,
+    path: string,
+    operation: string,
+    init: RequestInit = {},
+  ): Promise<T> {
+    if (!conn.realmId) throw new Error('QuickBooks connection is missing a realmId');
+    if (!conn.accessToken) throw new Error('QuickBooks connection is missing an access token');
+
+    const response = await runOutsideDbContext(() => fetch(
+      `${qboApiBase(conn.environment)}/v3/company/${conn.realmId}/${path}`,
+      {
+        ...init,
+        headers: {
+          Authorization: `Bearer ${conn.accessToken}`,
+          Accept: 'application/json',
+          ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+          ...init.headers,
+        },
+      },
+    ));
+    const text = await response.text();
+    if (!response.ok) {
+      const error = new Error(`${operation} failed with ${response.status}`);
+      Object.assign(error, { status: response.status, body: text.slice(0, 500) });
+      throw error;
+    }
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      throw new Error(`${operation} returned invalid JSON`);
+    }
   }
 
   private async requestTokens(

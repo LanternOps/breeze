@@ -32,12 +32,49 @@ export interface RemoteCustomer extends RemoteEntity {
   billAddr?: RemoteAddress;
   shipAddr?: RemoteAddress;
   active?: boolean;
+  syncToken?: string;
+}
+
+export interface RemoteItem extends RemoteEntity {
+  sku?: string;
+  description?: string;
+  type?: 'Service' | 'NonInventory' | 'Inventory' | 'Category' | string;
+  unitPrice?: number;
+  active?: boolean;
+  syncToken?: string;
+}
+
+export interface RemoteIncomeAccount extends RemoteEntity {
+  accountType: string;
+  accountSubType?: string;
 }
 
 export interface RemoteRef {
   id: string;
   syncToken?: string;
   docNumber?: string;
+}
+
+export interface CustomerUpsertInput {
+  displayName: string;
+  companyName?: string;
+  email?: string;
+  phone?: string;
+  taxId?: string;
+  billingAddress?: RemoteAddress;
+  existing?: RemoteRef;
+}
+
+export interface ItemUpsertInput {
+  name: string;
+  sku?: string;
+  description?: string;
+  type: 'Service' | 'NonInventory';
+  unitPrice: number;
+  taxable: boolean;
+  incomeAccountRef: string;
+  active: boolean;
+  existing?: RemoteRef;
 }
 
 export interface ChangeSet {
@@ -57,9 +94,10 @@ export interface AccountingProvider {
   exchangeCode(code: string, realmId: string): Promise<ConnectionTokens>;
   refresh(refreshToken: string): Promise<ConnectionTokens>;
   listRemoteCustomers(conn: AccountingConnection, query?: string): Promise<RemoteCustomer[]>;
-  listRemoteItems(conn: AccountingConnection, query?: string): Promise<RemoteEntity[]>;
-  upsertCustomer(...args: unknown[]): Promise<RemoteRef>;
-  upsertItem(...args: unknown[]): Promise<RemoteRef>;
+  listRemoteItems(conn: AccountingConnection, query?: string): Promise<RemoteItem[]>;
+  listRemoteIncomeAccounts(conn: AccountingConnection): Promise<RemoteIncomeAccount[]>;
+  upsertCustomer(conn: AccountingConnection, input: CustomerUpsertInput): Promise<RemoteRef>;
+  upsertItem(conn: AccountingConnection, input: ItemUpsertInput): Promise<RemoteRef>;
   pushInvoice(...args: unknown[]): Promise<RemoteRef>;
   voidInvoice(...args: unknown[]): Promise<void>;
   reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet>;
