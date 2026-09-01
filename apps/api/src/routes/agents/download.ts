@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { statSync, createReadStream } from 'node:fs';
+import { Readable } from 'node:stream';
 import { join, resolve } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl, isS3NotFound } from '../../services/s3Storage';
@@ -211,26 +212,10 @@ downloadRoutes.get('/download/windows/amd64/msi', async (c) => {
     );
   }
 
-  const webStream = new ReadableStream({
-    start(controller) {
-      stream.on('data', (chunk: string | Buffer) => {
-        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
-        controller.enqueue(new Uint8Array(bytes));
-      });
-      stream.on('end', () => {
-        controller.close();
-      });
-      stream.on('error', (err) => {
-        console.error('[agent-msi-download] Stream error while serving breeze-agent.msi:', err);
-        controller.error(err);
-      });
-    },
-    cancel() {
-      stream.destroy();
-    },
-  });
-
-  return new Response(webStream, {
+  // Readable.toWeb (not the hand-rolled bridge the older routes in this file
+  // still use) gets backpressure and zero-copy chunk transfer for free — same
+  // as the ticket-attachment streams.
+  return new Response(Readable.toWeb(stream) as ReadableStream, {
     status: 200,
     headers: {
       'Content-Type': 'application/octet-stream',

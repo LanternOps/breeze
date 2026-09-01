@@ -45,27 +45,34 @@
  * mismatch if the file changes between dispatch and download — in which case
  * the script verifies-then-aborts before touching the installed agent.
  *
- * Runs in the heartbeat's ambient org-scoped DB context: system scripts are
- * org-readable (2026-05-15-scripts-is-system-rls-select.sql) and the
- * script_executions/device claim writes are to the device's own org.
+ * MUST be invoked outside the heartbeat's request transaction (the hook wraps
+ * the call in runOutsideDbContext + withSystemDbAccessContext): the caller
+ * fires it detached, and the org-scoped withDbAccessContext transaction it
+ * would otherwise inherit commits when the handler returns — leaving this
+ * promise's queries pointed at a dead tx handle. System context is safe here:
+ * every value dispatched was validated inside the org-scoped block, and
+ * dispatchScriptToDevice's own org-equality invariant still applies.
  */
 
 import { createHash } from 'node:crypto';
-import { statSync, readFileSync } from 'node:fs';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { pipeline } from 'node:stream/promises';
 import { join, resolve } from 'node:path';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../db';
+import { envFlag } from '../config/env';
 import { devices } from '../db/schema/devices';
 import { scripts } from '../db/schema/scripts';
 import { getBinaryEdition } from './binaryEdition';
 import { compareAgentVersions } from './agentEditionCompat';
 import { dispatchScriptToDevice, type DispatchScriptInput } from './scriptDispatch';
-import { captureException } from './sentry';
+import { captureException, captureMessage } from './sentry';
 
 export const EDITION_MIGRATION_SCRIPT_NAME = 'Migrate Agent Edition (Windows)';
 
 export function editionAutoMigrateEnabled(): boolean {
-  return process.env.AGENT_EDITION_AUTO_MIGRATE_ENABLED === 'true';
+  return envFlag('AGENT_EDITION_AUTO_MIGRATE_ENABLED');
 }
 
 // In-process guards. `failedDevices` stops a released claim from re-arming a
@@ -76,11 +83,20 @@ const failedDevices = new Set<string>();
 const warnedConditions = new Set<string>();
 let dispatchCaptured = false;
 
+// Upgrade targets only change on release registration / pin writes, but a
+// held-back stranded fleet would otherwise re-run the resolver's
+// agent_versions SELECT on every ~60s heartbeat forever. Same in-process
+// cache-with-invalidation idea as msiShaCache below, keyed by everything the
+// resolution depends on.
+const TARGET_CACHE_TTL_MS = 60_000;
+const targetCache = new Map<string, { target: string | null; expiresAt: number }>();
+
 export function __resetEditionAutoMigrateStateForTests(): void {
   failedDevices.clear();
   warnedConditions.clear();
   dispatchCaptured = false;
   msiShaCache = null;
+  targetCache.clear();
 }
 
 function warnOnce(key: string, message: string): void {
@@ -91,7 +107,10 @@ function warnOnce(key: string, message: string): void {
 
 // sha256 of the staged MSI, cached by (mtimeMs, size) so the hot path stats
 // instead of re-hashing ~30MB per stranded device. binaries-init replaces the
-// file on deploy, which changes the mtime and invalidates the cache.
+// file on deploy, which changes the mtime and invalidates the cache. The hash
+// itself streams (pipeline + chunked digest updates) rather than
+// readFileSync-ing the whole installer, so the cache-miss path never stalls
+// the event loop for the duration of a 30MB read+digest.
 let msiShaCache: { mtimeMs: number; size: number; sha256: string } | null = null;
 
 function stagedMsiPath(): string {
@@ -99,15 +118,17 @@ function stagedMsiPath(): string {
   return join(binaryDir, 'breeze-agent.msi');
 }
 
-function stagedMsiSha256(): string | null {
+async function stagedMsiSha256(): Promise<string | null> {
   try {
     const path = stagedMsiPath();
-    const stat = statSync(path);
-    if (msiShaCache && msiShaCache.mtimeMs === stat.mtimeMs && msiShaCache.size === stat.size) {
+    const fileStat = await stat(path);
+    if (msiShaCache && msiShaCache.mtimeMs === fileStat.mtimeMs && msiShaCache.size === fileStat.size) {
       return msiShaCache.sha256;
     }
-    const sha256 = createHash('sha256').update(readFileSync(path)).digest('hex');
-    msiShaCache = { mtimeMs: stat.mtimeMs, size: stat.size, sha256 };
+    const hash = createHash('sha256');
+    await pipeline(createReadStream(path), hash);
+    const sha256 = hash.digest('hex');
+    msiShaCache = { mtimeMs: fileStat.mtimeMs, size: fileStat.size, sha256 };
     return sha256;
   } catch (err) {
     warnOnce(
@@ -127,6 +148,8 @@ export async function maybeDispatchEditionMigration(args: {
   reportedAgentVersion: string | null | undefined;
   normalizedArch: string | null;
   updateGateAllows: boolean;
+  /** The org's effective agent version pin (null = track global latest) — part of the target-cache key. */
+  pin: string | null;
   /** Pin-honouring target resolution — the heartbeat passes the same resolver the offer path uses. */
   resolveTarget: () => Promise<string | null | undefined>;
 }): Promise<void> {
@@ -142,11 +165,23 @@ export async function maybeDispatchEditionMigration(args: {
     if (device.editionMigrationDispatchedAt) return;
     if (failedDevices.has(device.id)) return;
 
-    const target = (await args.resolveTarget()) ?? null;
+    const cacheKey = `${device.osType}:${args.normalizedArch}:${args.pin ?? 'latest'}`;
+    const now = Date.now();
+    let cached = targetCache.get(cacheKey);
+    if (!cached || cached.expiresAt <= now) {
+      cached = { target: (await args.resolveTarget()) ?? null, expiresAt: now + TARGET_CACHE_TTL_MS };
+      targetCache.set(cacheKey, cached);
+    }
+    const target = cached.target;
     if (!target) return;
     const reported = args.reportedAgentVersion?.trim();
     // Upgrade-only, mirroring the offer path: a pin at or below the installed
-    // version is a deliberate hold and must hold auto-migration too.
+    // version is a deliberate hold and must hold auto-migration too. Known
+    // gap, accepted: a stranded self-host device already AT the resolved
+    // hosted target's version (edition swap without a version bump) parks
+    // here until the next release moves the target past it — the alternative
+    // would strip operators of the pin-as-hold semantics this feature's
+    // rollout depends on.
     if (!reported || compareAgentVersions(target, reported) <= 0) return;
 
     // Preconditions that don't depend on this device — checked BEFORE the
@@ -160,7 +195,7 @@ export async function maybeDispatchEditionMigration(args: {
       );
       return;
     }
-    const msiSha256 = stagedMsiSha256();
+    const msiSha256 = await stagedMsiSha256();
     if (!msiSha256) return;
 
     const [script] = await db
@@ -223,7 +258,10 @@ export async function maybeDispatchEditionMigration(args: {
       return;
     }
 
-    console.warn(
+    // The dispatch reached the queue: the one-attempt claim must stand from
+    // here on, whatever the informational logging below does.
+    claimed = false;
+    console.log(
       `[edition-auto-migrate] dispatched "${EDITION_MIGRATION_SCRIPT_NAME}" to device ${device.id} ` +
         `(${device.hostname ?? 'unknown host'}, ${args.reportedAgentVersion} -> ${target}, ` +
         `command ${result.commandId}, delivered=${result.delivered}). ` +
@@ -231,11 +269,10 @@ export async function maybeDispatchEditionMigration(args: {
     );
     if (!dispatchCaptured) {
       dispatchCaptured = true;
-      captureException(
-        new Error(
-          `Auto edition migration dispatched for at least one stranded device (first: ${device.id}). ` +
-            'Informational — see per-device [edition-auto-migrate] logs.',
-        ),
+      captureMessage(
+        'Auto edition migration dispatched for at least one stranded device this process lifetime; ' +
+          'see per-device [edition-auto-migrate] logs.',
+        { eventCode: 'agent_edition_auto_migration_dispatched' },
       );
     }
   } catch (err) {

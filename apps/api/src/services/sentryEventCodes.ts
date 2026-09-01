@@ -112,6 +112,8 @@ export const SENTRY_EVENT_CODES = [
   'device_deletion_lock_timeout_unreadable',
   /** The device cascade ran without holding the parent `devices` row lock. */
   'device_deletion_parent_lock_missing',
+  /** Auto edition migration (#4072) dispatched its script to at least one stranded device this process lifetime. */
+  'agent_edition_auto_migration_dispatched',
 
   // --- mcp transport ----------------------------------------------------
   /** A principal presented an `Mcp-Session-Id` owned by someone else (MED-1). */

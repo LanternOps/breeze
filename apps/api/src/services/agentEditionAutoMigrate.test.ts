@@ -5,18 +5,21 @@ vi.mock('../db', () => ({
 }));
 vi.mock('./binaryEdition', () => ({ getBinaryEdition: vi.fn(() => 'hosted') }));
 vi.mock('./scriptDispatch', () => ({ dispatchScriptToDevice: vi.fn() }));
-vi.mock('./sentry', () => ({ captureException: vi.fn() }));
-vi.mock('node:fs', () => ({
-  statSync: vi.fn(() => ({ mtimeMs: 1000, size: 4 })),
-  readFileSync: vi.fn(() => Buffer.from('MSI!')),
+vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
+vi.mock('node:fs', () => ({ createReadStream: vi.fn(() => ({})) }));
+vi.mock('node:fs/promises', () => ({ stat: vi.fn(async () => ({ mtimeMs: 1000, size: 4 })) }));
+vi.mock('node:stream/promises', () => ({
+  pipeline: vi.fn(async (_src: unknown, hash: { update: (b: Buffer) => void }) => {
+    hash.update(Buffer.from('MSI!'));
+  }),
 }));
 
 import { createHash } from 'node:crypto';
 import { db } from '../db';
 import { getBinaryEdition } from './binaryEdition';
 import { dispatchScriptToDevice } from './scriptDispatch';
-import { captureException } from './sentry';
-import { statSync, readFileSync } from 'node:fs';
+import { captureException, captureMessage } from './sentry';
+import { stat } from 'node:fs/promises';
 import {
   maybeDispatchEditionMigration,
   EDITION_MIGRATION_SCRIPT_NAME,
@@ -73,6 +76,7 @@ function baseArgs(over: Record<string, unknown> = {}) {
     reportedAgentVersion: '0.105.1',
     normalizedArch: 'amd64' as const,
     updateGateAllows: true,
+    pin: null,
     resolveTarget: vi.fn().mockResolvedValue('0.108.0'),
     ...over,
   } as never;
@@ -101,8 +105,7 @@ describe('maybeDispatchEditionMigration', () => {
     process.env.AGENT_EDITION_AUTO_MIGRATE_ENABLED = 'true';
     process.env.PUBLIC_API_URL = 'https://eu.example.app';
     vi.mocked(getBinaryEdition).mockReturnValue('hosted' as never);
-    vi.mocked(statSync).mockReturnValue({ mtimeMs: 1000, size: 4 } as never);
-    vi.mocked(readFileSync).mockReturnValue(Buffer.from('MSI!') as never);
+    vi.mocked(stat).mockResolvedValue({ mtimeMs: 1000, size: 4 } as never);
   });
 
   afterEach(() => {
@@ -124,6 +127,13 @@ describe('maybeDispatchEditionMigration', () => {
     });
     expect(input.triggerType).toBe('policy');
     expect(input.device.id).toBe('device-1');
+    // Informational success signal goes through captureMessage (BREEZE-18),
+    // never a fabricated Error.
+    expect(captureMessage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'agent_edition_auto_migration_dispatched' }),
+    );
+    expect(captureException).not.toHaveBeenCalled();
   });
 
   it('claims the once-per-device marker atomically BEFORE dispatching (guarded on IS NULL)', async () => {
@@ -172,7 +182,7 @@ describe('maybeDispatchEditionMigration', () => {
 
   it('skips (before claiming) when the staged MSI is unreadable', async () => {
     primeHappyPath();
-    vi.mocked(statSync).mockImplementation(() => { throw new Error('ENOENT'); });
+    vi.mocked(stat).mockRejectedValue(new Error('ENOENT'));
     await maybeDispatchEditionMigration(baseArgs());
     expect(db.update).not.toHaveBeenCalled();
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();

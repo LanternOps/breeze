@@ -1234,23 +1234,36 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // never fail the heartbeat. The service resolves the pin-honouring target
     // with the SAME resolver as the offer path, so a holdback pin holds
     // auto-migration too.
-    maybeDispatchEditionMigration({
-      device,
-      reportedAgentVersion: data.agentVersion,
-      normalizedArch,
-      updateGateAllows,
-      resolveTarget: () =>
-        resolvePinnedUpgradeTarget({
-          component: 'agent',
-          platform: device.osType,
-          architecture: normalizedArch,
+    // runOutsideDbContext + system context is load-bearing, not defensive:
+    // this promise is detached, and the surrounding org-scoped
+    // withDbAccessContext TRANSACTION commits when the handler returns — a
+    // detached query on the ambient context would run against the dead tx
+    // handle (same reason as the manifest-trust keyset at the top of this
+    // handler, #1105). System context is safe: everything dispatched was
+    // validated in the org-scoped block, and dispatchScriptToDevice's
+    // org-equality invariant still applies.
+    runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        maybeDispatchEditionMigration({
+          device,
+          reportedAgentVersion: data.agentVersion,
+          normalizedArch,
+          updateGateAllows,
           pin: versionPins.agent,
-          agentId,
+          resolveTarget: () =>
+            resolvePinnedUpgradeTarget({
+              component: 'agent',
+              platform: device.osType,
+              architecture: normalizedArch,
+              pin: versionPins.agent,
+              agentId,
+            }),
         }),
+      ),
       // The service catches everything itself; this catch only exists so a
       // future regression there can never surface as an unhandled rejection
       // on the heartbeat hot path.
-    }).catch((err) => {
+    ).catch((err) => {
       console.error(`[agents] auto edition migration hook failed for ${agentId}:`, err);
     });
   } else if (acceptsServedEdition) {
