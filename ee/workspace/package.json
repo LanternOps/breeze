@@ -24,7 +24,7 @@
   "devDependencies": {
     "@breeze/extension-testkit": "workspace:*",
     "@types/mailparser": "^3.4.6",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "dotenv": "16.6.1",
     "happy-dom": "^20.11.0",
     "postgres": "3.4.9",
