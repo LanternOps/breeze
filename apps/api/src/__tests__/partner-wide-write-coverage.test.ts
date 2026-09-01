@@ -136,6 +136,13 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/softwareDownloadPolicy.ts': 'writes one org\'s encrypted settings by org id',
   'services/softwarePolicyService.ts': 'flagged table is append-only policy audit evidence, not config',
   'services/timeEntryService.ts': 'technician time/billing records, org/user-axis authority',
+  // W06 (#3900). time_suggestion_decisions carries partner_id purely so the
+  // Shape-3 RLS policy has an axis to check; the ROW is per-technician —
+  // every write is `user_id = actor.userId` and every read/delete is scoped to
+  // the caller's own decisions. Gating it on canManagePartnerWidePolicies would
+  // mean only a partner admin could dismiss their own suggestion, which is the
+  // opposite of the intent. Same class as timeEntryService.ts above.
+  'services/timeSuggestionService.ts': 'per-technician suggestion decisions keyed on user_id (partner_id is only the RLS axis); never partner-wide config',
 
   // --- caller-facing, gated at the route layer (verify the gate when editing
   //     these services or adding ANY new route caller) -----------------------

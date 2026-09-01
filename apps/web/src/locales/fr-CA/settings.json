@@ -2786,7 +2786,8 @@
     "export": "Exporter",
     "inboundEmail": "Courriel entrant",
     "cannedResponses": "Réponses préfabriquées",
-    "checkingAccess": "Vérification de votre accès..."
+    "checkingAccess": "Vérification de votre accès...",
+    "timeTracking": "Suivi du temps"
   },
   "ticketFormsCard": {
     "heading": "Formulaires d’admission",
@@ -3938,5 +3939,17 @@
     "confirmBody": "Cette action déconnecte {{name}} du complément technicien Outlook sur tous les appareils. La personne pourra se relier en se reconnectant.",
     "cancel": "Annuler",
     "confirmRevoke": "Révoquer la liaison"
+  },
+  "timeTrackingSettingsCard": {
+    "heading": "Entrées de temps suggérées",
+    "subheading": "Lorsqu’une session à distance se termine, elle est proposée dans l’application mobile Breeze comme entrée de temps en un seul geste. Rien n’est enregistré sans ce geste. La feuille de temps Web n’affiche aucune liste de suggestions.",
+    "enabledLabel": "Suggérer des entrées de temps à partir des sessions à distance",
+    "minSessionLabel": "Durée minimale de session (secondes)",
+    "mergeGapLabel": "Intervalle de fusion (minutes)",
+    "save": "Enregistrer",
+    "saved": "Paramètres de suivi du temps enregistrés",
+    "saveFailed": "Impossible d’enregistrer les paramètres de suivi du temps",
+    "minSessionRange": "La durée minimale de session doit être comprise entre {{min}} et {{max}} secondes",
+    "mergeGapRange": "L’intervalle de fusion doit être compris entre {{min}} et {{max}} minutes"
   }
 }

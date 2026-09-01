@@ -2738,7 +2738,8 @@
     "export": "Exportar",
     "inboundEmail": "Correo electrónico entrante",
     "cannedResponses": "Respuestas enlatadas",
-    "checkingAccess": "Verificando tu acceso..."
+    "checkingAccess": "Verificando tu acceso...",
+    "timeTracking": "Seguimiento de tiempo"
   },
   "ticketFormsCard": {
     "heading": "Formularios de admisión",
@@ -3938,5 +3939,17 @@
     "confirmBody": "Esto cierra la sesión de {{name}} en el complemento técnico de Outlook en todos los dispositivos. Puede volver a vincularse iniciando sesión de nuevo.",
     "cancel": "Cancelar",
     "confirmRevoke": "Revocar vinculación"
+  },
+  "timeTrackingSettingsCard": {
+    "heading": "Entradas de tiempo sugeridas",
+    "subheading": "Cuando termina una sesión remota, se ofrece en la app móvil de Breeze como una entrada de tiempo de un toque. Nada se registra sin ese toque. La hoja de horas web no muestra una lista de sugerencias.",
+    "enabledLabel": "Sugerir entradas de tiempo a partir de sesiones remotas",
+    "minSessionLabel": "Duración mínima de la sesión (segundos)",
+    "mergeGapLabel": "Intervalo de fusión (minutos)",
+    "save": "Guardar",
+    "saved": "Configuración de seguimiento de tiempo guardada",
+    "saveFailed": "No se pudo guardar la configuración de seguimiento de tiempo",
+    "minSessionRange": "La duración mínima de la sesión debe estar entre {{min}} y {{max}} segundos",
+    "mergeGapRange": "El intervalo de fusión debe estar entre {{min}} y {{max}} minutos"
   }
 }

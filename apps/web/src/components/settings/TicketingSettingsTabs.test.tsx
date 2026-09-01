@@ -44,6 +44,9 @@ vi.mock('./CannedResponsesCard', () => ({
 vi.mock('./TicketFormsCard', () => ({
   default: () => <div data-testid="stub-ticket-forms-card">FormsStub</div>
 }));
+vi.mock('./TimeTrackingSettingsCard', () => ({
+  default: () => <div data-testid="stub-time-tracking-card">TimeTrackingStub</div>
+}));
 
 import TicketingSettingsTabs from './TicketingSettingsTabs';
 import { applyLocale, i18n } from '@/lib/i18n';
@@ -133,5 +136,24 @@ describe('TicketingSettingsTabs', () => {
     });
 
     expect(screen.getByTestId('ticketing-tab-categories')).toHaveTextContent('Categorias');
+  });
+});
+
+// W06 (#3900): the Time Tracking tab is partner-only for the same reason the
+// other three are — the setting it edits is partner-wide, and PATCH
+// /orgs/partners/me requires partner scope server-side.
+describe('TicketingSettingsTabs — Time Tracking tab (W06 #3900)', () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en');
+    window.location.hash = '';
+    grantedActions.clear();
+  });
+
+  it('shows the Time Tracking tab for a partner user and mounts its card', () => {
+    render(<TicketingSettingsTabs />);
+    const tab = screen.getByTestId('ticketing-tab-timeTracking');
+    expect(tab).toBeTruthy();
+    fireEvent.click(tab);
+    expect(screen.getByTestId('stub-time-tracking-card')).toBeTruthy();
   });
 });

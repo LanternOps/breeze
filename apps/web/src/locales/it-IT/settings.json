@@ -2786,7 +2786,8 @@
     "export": "Esporta",
     "inboundEmail": "Email in ingresso",
     "cannedResponses": "Risposte predefinite",
-    "checkingAccess": "Verifica dell’accesso in corso..."
+    "checkingAccess": "Verifica dell’accesso in corso...",
+    "timeTracking": "Tracciamento tempo"
   },
   "ticketFormsCard": {
     "heading": "Moduli di raccolta",
@@ -3938,5 +3939,17 @@
     "confirmBody": "Questo disconnette {{name}} dal componente aggiuntivo tecnico di Outlook su ogni dispositivo. Potrà associarsi di nuovo effettuando l'accesso.",
     "cancel": "Annulla",
     "confirmRevoke": "Revoca associazione"
+  },
+  "timeTrackingSettingsCard": {
+    "heading": "Voci di tempo suggerite",
+    "subheading": "Quando una sessione remota termina, viene proposta nell’app mobile Breeze come voce di tempo con un solo tocco. Nulla viene registrato senza quel tocco. Il foglio ore web non mostra alcun elenco di suggerimenti.",
+    "enabledLabel": "Suggerisci voci di tempo dalle sessioni remote",
+    "minSessionLabel": "Durata minima della sessione (secondi)",
+    "mergeGapLabel": "Intervallo di unione (minuti)",
+    "save": "Salva",
+    "saved": "Impostazioni di tracciamento tempo salvate",
+    "saveFailed": "Impossibile salvare le impostazioni di tracciamento tempo",
+    "minSessionRange": "La durata minima della sessione deve essere compresa tra {{min}} e {{max}} secondi",
+    "mergeGapRange": "L’intervallo di unione deve essere compreso tra {{min}} e {{max}} minuti"
   }
 }

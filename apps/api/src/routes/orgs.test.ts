@@ -1360,6 +1360,82 @@ describe('org routes', () => {
     });
   });
 
+  describe('PATCH /orgs/partners/me — timeTracking.sessionSuggestions (W06 #3900)', () => {
+    // Local copies of the helpers above (plain functions, safe to duplicate —
+    // same pattern the ticketing.inbound describe uses).
+    function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings }])
+          })
+        })
+      } as any);
+    }
+
+    function mockUpdateCapture() {
+      let captured: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          captured = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+      return () => captured;
+    }
+
+    function patchMe(body: unknown) {
+      return app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('accepts settings.timeTracking.sessionSuggestions and deep-merges one level', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      // A sibling block from the location-suggestions spec must survive a save
+      // that only carries sessionSuggestions.
+      mockCurrentPartnerSelect({ timeTracking: { locationSuggestions: { enabled: true } } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { timeTracking: { sessionSuggestions: {
+        enabled: true, minSessionSeconds: 300, mergeGapMinutes: 5,
+      } } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.timeTracking).toEqual({
+        locationSuggestions: { enabled: true },
+        sessionSuggestions: { enabled: true, minSessionSeconds: 300, mergeGapMinutes: 5 },
+      });
+    });
+
+    it('rejects out-of-range suggestion thresholds with 400', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { timeTracking: { sessionSuggestions: {
+        enabled: true, minSessionSeconds: 5,
+      } } } });
+
+      expect(res.status).toBe(400);
+      expect(getCaptured()).toBeUndefined();
+    });
+
+    it('rejects an unknown key inside sessionSuggestions (400) so a typo is never silently stored', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const res = await patchMe({ settings: { timeTracking: { sessionSuggestions: { enabledd: true } } } });
+      expect(res.status).toBe(400);
+    });
+  });
+
   describe('PATCH /orgs/partners/me — emailSignature', () => {
     // Local copies of the :id-block helpers (plain functions, safe to
     // duplicate — same pattern as the ticketing.inbound describe above).

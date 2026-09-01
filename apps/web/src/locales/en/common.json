@@ -1628,6 +1628,12 @@
         "editEntry": "Edit entry {{id}}",
         "total": "Total: {{duration}}",
         "billableTotal": "Billable: {{duration}}"
+      },
+      "sourceBadge": {
+        "timer": "Timer",
+        "location": "From location",
+        "remote_session": "From remote session",
+        "support_session": "From Quick Support"
       }
     },
     "snmp": {

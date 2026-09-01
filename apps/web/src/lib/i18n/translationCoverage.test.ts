@@ -363,7 +363,10 @@ const namespaceDuplicateBaselines = {
     // in every catalog.
     // +2: nav.software + nav.sectionAdministration (left-nav reorg, #4202) —
     // "Software" and "Administration" are the German words too.
-    'common.json': 104,
+    // +1: longTail.time.sourceBadge.timer (#3900 W06) — "Timer" is the
+    // standard loanword in this locale, already used by the running-timer
+    // widget's own copy.
+    'common.json': 105,
     'devices.json': 146,
     'discovery.json': 26,
     'integrations.json': 43,
@@ -424,7 +427,10 @@ const namespaceDuplicateBaselines = {
     // (api-key, company-id, personal-access-token, …) and the example address
     // are input-shape hints, not wording, so they are intentionally identical
     // in every catalog.
-    'common.json': 105,
+    // +1: longTail.time.sourceBadge.timer (#3900 W06) — "Timer" is the
+    // standard loanword in this locale, already used by the running-timer
+    // widget's own copy.
+    'common.json': 106,
     'devices.json': 144,
     'discovery.json': 22,
     'integrations.json': 81,

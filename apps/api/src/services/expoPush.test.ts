@@ -42,10 +42,16 @@ import {
   buildApprovalPush,
   getUserPushTokens,
   dispatchApprovalPush,
+  buildTimeSuggestionPush,
+  timeSuggestionsDedupeKey,
+  APPROVAL_PUSH_TTL_SECONDS,
+  TIME_SUGGESTION_PUSH_TTL_SECONDS,
+  TIME_SUGGESTIONS_PUSH_EVENT_TYPE,
   buildTicketPush,
   dispatchPushToTokens,
   dispatchApprovalPushToTokens,
 } from './expoPush';
+import { readFileSync } from 'fs';
 import { db } from '../db';
 
 /** Wires db.select(...).from(...).where(...) to resolve to `rows`. */
@@ -398,6 +404,64 @@ describe('dispatchApprovalPush routing', () => {
   });
 });
 
+// ── W06 (#3900): payload builder only. W07 owns the scheduler, quiet hours,
+// the dedupe write and the mobile listener. ─────────────────────────────────
+describe('buildTimeSuggestionPush (W06 #3900, dispatched by W07)', () => {
+  it('pluralises the count and carries only the date in data', () => {
+    expect(buildTimeSuggestionPush({ count: 3, date: '2026-08-29' })).toEqual({
+      title: '3 unlogged sessions today',
+      body: 'Tap to review and log your remote sessions.',
+      data: { type: 'time_suggestions', date: '2026-08-29' },
+      sound: 'default',
+      priority: 'normal',
+      channelId: 'timesheet',
+      ttl: TIME_SUGGESTION_PUSH_TTL_SECONDS,
+    });
+    expect(buildTimeSuggestionPush({ count: 1, date: '2026-08-29' }).title).toBe('1 unlogged session today');
+  });
+
+  it('is lock-screen safe: no device hostname, org name, ticket number or customer string anywhere', () => {
+    const p = buildTimeSuggestionPush({ count: 2, date: '2026-08-29' });
+    const blob = JSON.stringify(p);
+    for (const leak of ['ACME', 'DC01', 'TKT-', 'hostname', 'orgId', 'ticketId', 'deviceId']) {
+      expect(blob).not.toContain(leak);
+    }
+    // The payload is a pure function of (count, date) — nothing else can enter it.
+    expect(Object.keys(p.data!)).toEqual(['type', 'date']);
+  });
+
+  it('does not disturb buildApprovalPush', () => {
+    expect(buildApprovalPush({ approvalId: 'a1', actionLabel: 'Restart', requestingClientLabel: 'Bob' }))
+      .toEqual({
+        title: 'Approval requested',
+        body: 'Bob: Restart',
+        data: { type: 'approval', approvalId: 'a1' },
+        sound: 'default',
+        priority: 'high',
+        channelId: 'approvals',
+        ttl: APPROVAL_PUSH_TTL_SECONDS,
+      });
+  });
+
+  it('reserves the event type and a per-user-per-day dedupe key', () => {
+    expect(TIME_SUGGESTIONS_PUSH_EVENT_TYPE).toBe('time_suggestions_daily');
+    expect(timeSuggestionsDedupeKey('u1', '2026-08-29')).toBe('time.unlogged:u1:2026-08-29');
+    // Same user, same day -> same key: W07's dedupe is a DB unique index, so
+    // the key must be stable across processes (F16).
+    expect(timeSuggestionsDedupeKey('u1', '2026-08-29')).toBe(timeSuggestionsDedupeKey('u1', '2026-08-29'));
+    expect(timeSuggestionsDedupeKey('u2', '2026-08-29')).not.toBe(timeSuggestionsDedupeKey('u1', '2026-08-29'));
+  });
+
+  it('a 12h TTL: a phone that was off all evening does not get yesterday’s nudge at breakfast', () => {
+    expect(TIME_SUGGESTION_PUSH_TTL_SECONDS).toBe(12 * 60 * 60);
+  });
+
+  it('W06 dispatches no time-suggestion push', () => {
+    // Guard against a well-meaning follow-up wiring dispatch in early.
+    const src = readFileSync(new URL('./expoPush.ts', import.meta.url), 'utf8');
+    expect(src).not.toMatch(/dispatchTimeSuggestionPush|sendExpoPush\([^)]*TimeSuggestion/);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // W07 (#3901): generalised push spec + ticket pushes
