@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { bootstrapFromCfAccessRedirect, bootstrapFromSsoCode, restoreAccessTokenFromCookieDetailed, settleSsoLoginGate, useAuthStore } from '../../stores/auth';
+import { bootstrapFromCfAccessRedirect, bootstrapFromSsoCode, restoreAccessTokenFromCookieDetailed, setThrottleMaskMounted, settleSsoLoginGate, useAuthStore } from '../../stores/auth';
 import { Loader2 } from 'lucide-react';
 import { navigateTo } from '../../lib/navigation';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
@@ -349,12 +349,25 @@ function redirectToLogin() {
  * racing the store's own retry-in-progress at the same deadline; the reload
  * usually won, wasting the store's retry. Never re-add an automatic action
  * here — the store is the single owner of recovery.
+ *
+ * Also tells the store (`setThrottleMaskMounted`) that a mask is actually on
+ * screen: the store's reload only fires while this is true, so a page that
+ * handles `AuthThrottledError` without ever mounting this mask (e.g.
+ * `ForcedMfaSetupPage`) never gets a reload it didn't ask for.
  */
 function AuthThrottledMask({ retryAt }: { retryAt: number }) {
   const { t } = useTranslation('auth');
   const [secondsLeft, setSecondsLeft] = useState(() =>
     Math.max(0, Math.ceil((retryAt - Date.now()) / 1000))
   );
+
+  // Tells the store a mask is actually on screen to explain a reload — see
+  // `throttleMaskMounted` in stores/auth.ts. Separate effect (no `retryAt`
+  // dependency) so it toggles once per mount/unmount, not once per deadline.
+  useEffect(() => {
+    setThrottleMaskMounted(true);
+    return () => setThrottleMaskMounted(false);
+  }, []);
 
   useEffect(() => {
     const tick = () => {

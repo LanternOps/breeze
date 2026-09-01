@@ -214,7 +214,12 @@ describe('rate-limit service', () => {
 
       // #3984: `remaining` used to be computed from the pre-refund `count`, so
       // a well-behaved client honouring Retry-After would read `remaining: 0`
-      // even though its own rejected attempt's slot was just refunded.
+      // even though its own rejected attempt's slot was just refunded. Uses
+      // cost=2 deliberately: at cost=1 (both current refundOnReject callers)
+      // a rejection always means `remaining` is 0 either way, since refunding
+      // only this call's own 1 entry can never bring the count below `limit`
+      // — see the NOTE in rate-limit.ts. This proves the general contract for
+      // any weighted-cost caller, present or future.
       it('reports remaining from the post-refund count, not the pre-refund count', async () => {
         mockRejectedExec(2); // count=6, limit=5, cost=2 -> post-refund count=4
 

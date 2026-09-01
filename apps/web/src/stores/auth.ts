@@ -452,6 +452,15 @@ const MAX_REFRESH_RETRY_AFTER_MS = 90_000;
 // wait and only the ceiling spreads out.
 const RETRY_JITTER_FACTOR = 0.25;
 
+// The pre-jitter ceiling parseRetryAfterMs clamps to, chosen so base +
+// up-to-25% jitter never exceeds MAX_REFRESH_RETRY_AFTER_MS. Clamping to
+// MAX_REFRESH_RETRY_AFTER_MS itself and jittering AFTER would let the result
+// exceed the documented ceiling, AND would collapse every value at/above the
+// ceiling to the exact same ceiling deadline pre-jitter — recreating the
+// lockstep problem for precisely the hostile/misconfigured Retry-After values
+// this ceiling exists to bound.
+const MAX_REFRESH_RETRY_BASE_MS = Math.floor(MAX_REFRESH_RETRY_AFTER_MS / (1 + RETRY_JITTER_FACTOR));
+
 function withRetryJitter(waitMs: number): number {
   return waitMs + Math.floor(Math.random() * waitMs * RETRY_JITTER_FACTOR);
 }
@@ -460,8 +469,10 @@ function withRetryJitter(waitMs: number): number {
  * Seconds-to-wait from a 429, preferring the standard `Retry-After` header and
  * falling back to the JSON `retryAfter` field the API also sends. Clamped into
  * a sane range so neither a `0` (retry immediately — the very hammering being
- * rejected) nor an absurd value can be honoured literally, then jittered so a
- * whole throttled fleet doesn't retry in lockstep.
+ * rejected) nor an absurd value can be honoured literally. Deliberately NOT
+ * jittered here — jitter is applied once, at the single call site below, so
+ * this stays a pure parse+clamp and the jitter itself can be tested/reasoned
+ * about independently (#3984).
  */
 function parseRetryAfterMs(response: Response, body: { retryAfter?: unknown } | null): number {
   // Optional chaining: `headers` is absent on partially-stubbed Response
@@ -485,11 +496,9 @@ function parseRetryAfterMs(response: Response, body: { retryAfter?: unknown } | 
       '[auth] /auth/refresh returned 429 with no usable Retry-After; ' +
         `falling back to ${DEFAULT_REFRESH_RETRY_AFTER_MS}ms`
     );
-    return withRetryJitter(DEFAULT_REFRESH_RETRY_AFTER_MS);
+    return Math.min(MAX_REFRESH_RETRY_BASE_MS, DEFAULT_REFRESH_RETRY_AFTER_MS);
   }
-  return withRetryJitter(
-    Math.min(MAX_REFRESH_RETRY_AFTER_MS, Math.max(1_000, Math.round(seconds * 1_000)))
-  );
+  return Math.min(MAX_REFRESH_RETRY_BASE_MS, Math.max(1_000, Math.round(seconds * 1_000)));
 }
 
 async function refreshFetchOnce(): Promise<RefreshFetchResult> {
@@ -559,7 +568,9 @@ async function refreshFetchOnce(): Promise<RefreshFetchResult> {
       tokens: null,
       raced: false,
       transient: false,
-      throttledForMs: parseRetryAfterMs(refreshResponse, body),
+      // Jitter applied once, here, so it covers every consumer of
+      // `throttledForMs`/`retryAfterMs` uniformly (#3984).
+      throttledForMs: withRetryJitter(parseRetryAfterMs(refreshResponse, body)),
     };
   }
 
@@ -718,17 +729,38 @@ const MAX_THROTTLE_WAITS = 1;
 // effect runs once per mount — a fresh document is what re-arms it.
 let throttleReloadTimer: ReturnType<typeof setTimeout> | null = null;
 
+// Gate: only reload on a page that actually renders AuthThrottledMask (i.e.
+// mounts AuthOverlay). Pages that handle `AuthThrottledError` with their own
+// non-destructive UI instead — `ForcedMfaSetupPage` on `AuthLayout`, which
+// mounts no AuthOverlay by design and shows a "still signed in, please wait"
+// message with no reload — must never have that work discarded by a reload
+// they never opted into. AuthThrottledMask toggles this on mount/unmount.
+let throttleMaskMounted = false;
+
+export function setThrottleMaskMounted(mounted: boolean): void {
+  throttleMaskMounted = mounted;
+}
+
 function scheduleThrottleReload(waitMs: number): void {
   if (typeof window === 'undefined') return;
   if (throttleReloadTimer) clearTimeout(throttleReloadTimer);
   throttleReloadTimer = setTimeout(() => {
     throttleReloadTimer = null;
-    // Only reload if the throttle is still actually blocking the page. A
-    // background keepalive refresh (AdminSessionManager) can get throttled
-    // while the access token is still valid and every data call is still
-    // succeeding — reloading there would discard unsaved work to "recover" a
-    // session that was never impaired.
-    if (!useAuthStore.getState().tokens?.accessToken) {
+    // A newer refresh cycle (a concurrent fetchWithAuth call, or
+    // AdminSessionManager's keepalive) may have started — and be in its OWN
+    // bounded in-memory wait — since this timer was armed. That cycle owns
+    // the next decision (it will call scheduleThrottleReload/
+    // cancelThrottleReload itself once it settles); reloading here would
+    // discard ITS in-progress retry, recreating the exact race this module
+    // exists to remove.
+    if (tokenRefreshInFlight) return;
+    // Only reload if a mask is actually visible to explain it, and the
+    // throttle is still actually blocking the page. A background keepalive
+    // refresh (AdminSessionManager) can get throttled while the access token
+    // is still valid and every data call is still succeeding — reloading
+    // there would discard unsaved work to "recover" a session that was never
+    // impaired.
+    if (throttleMaskMounted && !useAuthStore.getState().tokens?.accessToken) {
       window.location.reload();
     }
   }, waitMs);
@@ -1019,14 +1051,18 @@ export class AuthSessionExpiredError extends Error {
  *
  * SCOPE, precisely: on pages rendered by `DashboardLayout.astro` (and the
  * `/account/*` pages) `authThrottledUntil` also puts AuthOverlay's waiting mask
- * on top, so the throttle is impossible to miss. Pages built on the bare
- * `Layout.astro` / `AuthLayout.astro` shells mount no AuthOverlay — the
- * full-screen remote-access viewers (`pages/remote/**`) and the forced-MFA
- * enrollment page — so there the mask does NOT appear and the throttle is only
- * as visible as the caller's own error handling makes it. `ForcedMfaSetupPage`
- * handles this type explicitly; the remote viewers do not yet (tracked
- * separately — mounting a `fixed inset-0` mask over a live video/terminal
- * surface needs its own design pass).
+ * on top, so the throttle is impossible to miss. `pages/remote/**` (the
+ * full-screen remote-access viewers) now mount AuthOverlay too (#3984) — a
+ * throttle over a live video/terminal session forces a reload (see
+ * `scheduleThrottleReload`), which re-mints any single-use session ticket on
+ * reconnect, an accepted tradeoff for making the throttle visible/recoverable
+ * there at all. The forced-MFA enrollment page (`AuthLayout.astro`) is the
+ * one bare-shell exception: it mounts no AuthOverlay by design, so no mask
+ * and no automatic reload ever happen there (`throttleMaskMounted` gates the
+ * store's reload on a mask actually being on screen) — `ForcedMfaSetupPage`
+ * instead handles this type explicitly with its own non-destructive "still
+ * signed in, please wait" copy, so a throttle mid-enrollment can never
+ * silently discard a typed code.
  */
 export class AuthThrottledError extends Error {
   readonly retryAt: number;

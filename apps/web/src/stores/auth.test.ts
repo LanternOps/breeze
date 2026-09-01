@@ -24,6 +24,7 @@ import {
   resolveApiOrigin,
   restoreAccessTokenFromCookie,
   restoreAccessTokenFromCookieDetailed,
+  setThrottleMaskMounted,
   useAuthStore,
   waitForPendingRefresh,
   validateCfTerminalNavigationUrl,
@@ -455,6 +456,41 @@ describe('auth store fetchWithAuth', () => {
     }
   });
 
+  // #3984: jitter must never push the wait past the documented
+  // MAX_REFRESH_RETRY_AFTER_MS ceiling (90s) — that ceiling exists precisely
+  // to bound a hostile/misconfigured Retry-After, and jittering AFTER a
+  // clamp-to-90s would both violate the ceiling and collapse every
+  // over-ceiling value onto the exact same un-jittered 90s deadline, which
+  // would recreate the lockstep problem this whole fix removes.
+  it('never lets jitter push the wait past the 90s ceiling, even for a huge Retry-After', async () => {
+    vi.useFakeTimers();
+    const randomSpyMax = vi.spyOn(Math, 'random').mockReturnValue(0.999999);
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        makeResponseWithHeaders({ retryAfter: 3600 }, false, 429, { 'Retry-After': '3600' })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = restoreAccessTokenFromCookieDetailed();
+      await vi.advanceTimersByTimeAsync(0);
+      const waitMs = useAuthStore.getState().authThrottledUntil! - Date.now();
+
+      expect(waitMs).toBeLessThanOrEqual(90_000);
+      // Still meaningfully jittered even at the ceiling, not collapsed to a
+      // single fixed deadline every over-ceiling client would share.
+      expect(waitMs).toBeGreaterThan(72_000);
+
+      await vi.advanceTimersByTimeAsync(waitMs);
+      await pending;
+    } finally {
+      randomSpyMax.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   // #3984: a throttled fleet reading the same Retry-After would otherwise all
   // retry at the exact same instant, turning their own recovery into a second
   // synchronized burst. Jitter must only ever ADD time (retrying before the
@@ -516,6 +552,10 @@ describe('auth store fetchWithAuth', () => {
     vi.useFakeTimers();
     const { reload, restore } = mockLocation('/devices');
     const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0); // no jitter, deterministic
+    // The reload only fires while a mask is actually on screen to explain it
+    // — see the mask-mounted gate test below. Simulate AuthOverlay's mask
+    // being mounted, as it would be on any page that renders it.
+    setThrottleMaskMounted(true);
     try {
       useAuthStore.getState().login(baseUser, baseTokens);
       useAuthStore.getState().setTokens(null);
@@ -539,6 +579,94 @@ describe('auth store fetchWithAuth', () => {
       await vi.advanceTimersByTimeAsync(1_000);
       expect(reload).toHaveBeenCalledTimes(1);
     } finally {
+      setThrottleMaskMounted(false);
+      randomSpy.mockRestore();
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  // #3984: a page that handles AuthThrottledError WITHOUT ever mounting
+  // AuthOverlay (ForcedMfaSetupPage on AuthLayout is the real example) must
+  // never have its in-progress work discarded by a reload it never opted
+  // into — the store's reload is conditional on a mask actually being on
+  // screen to explain it.
+  it('never reloads automatically when no AuthThrottledMask is mounted', async () => {
+    vi.useFakeTimers();
+    const { reload, restore } = mockLocation('/auth/mfa/setup');
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+    // Deliberately NOT calling setThrottleMaskMounted(true) — the default
+    // (unmounted) state every page starts in until AuthOverlay's mask mounts.
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        makeResponseWithHeaders({ retryAfter: 1 }, false, 429, { 'Retry-After': '1' })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = restoreAccessTokenFromCookieDetailed();
+      await vi.advanceTimersByTimeAsync(1_000); // bounded wait, still throttled
+      expect(await pending).toBe('throttled');
+
+      await vi.advanceTimersByTimeAsync(1_000); // the deadline the mask-mounted case reloads at
+      expect(reload).not.toHaveBeenCalled();
+    } finally {
+      randomSpy.mockRestore();
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  // #3984: a newer refresh cycle (e.g. AdminSessionManager's keepalive, or
+  // another fetchWithAuth call) can start its OWN bounded in-memory wait
+  // after the first cycle's reload was already scheduled. The stale timer
+  // must defer to whichever cycle is actually in flight rather than
+  // reloading mid-way through its retry — otherwise the exact race this PR
+  // removed (the mask's reload preempting the store's own retry) just moves
+  // to "the store's own stale timer preempts the store's own newer retry".
+  it('defers the scheduled reload while a newer refresh cycle is in flight', async () => {
+    vi.useFakeTimers();
+    const { reload, restore } = mockLocation('/devices');
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+    setThrottleMaskMounted(true);
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        makeResponseWithHeaders({ retryAfter: 1 }, false, 429, { 'Retry-After': '1' })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      // First cycle: bounded wait exhausted, reload scheduled for t=2000ms.
+      const firstPending = restoreAccessTokenFromCookieDetailed();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await firstPending).toBe('throttled');
+
+      // A second, independent cycle starts (simulating a concurrent caller)
+      // just before the first cycle's scheduled reload would fire, and is
+      // still in its OWN bounded wait when that stale timer elapses.
+      await vi.advanceTimersByTimeAsync(900);
+      const secondPending = restoreAccessTokenFromCookieDetailed();
+
+      // t=2000ms: the FIRST cycle's stale reload timer fires here, but the
+      // second cycle is now in flight (started at t=1900, sleeping until
+      // t=2900) — it must be deferred, not fired.
+      await vi.advanceTimersByTimeAsync(100);
+      expect(reload).not.toHaveBeenCalled();
+
+      // Let the second cycle finish its own bounded wait and exhaust.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await secondPending).toBe('throttled');
+
+      // The second cycle scheduled its own reload on exhaustion; that one
+      // fires normally.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(reload).toHaveBeenCalledTimes(1);
+    } finally {
+      setThrottleMaskMounted(false);
       randomSpy.mockRestore();
       restore();
       vi.useRealTimers();
@@ -552,6 +680,7 @@ describe('auth store fetchWithAuth', () => {
     vi.useFakeTimers();
     const { reload, restore } = mockLocation('/devices');
     const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+    setThrottleMaskMounted(true);
     try {
       useAuthStore.getState().login(baseUser, baseTokens);
       useAuthStore.getState().setTokens(null);
@@ -573,6 +702,117 @@ describe('auth store fetchWithAuth', () => {
       await vi.advanceTimersByTimeAsync(1_000);
       expect(reload).not.toHaveBeenCalled();
     } finally {
+      setThrottleMaskMounted(false);
+      randomSpy.mockRestore();
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  // #3984: a fresh login/logout before the scheduled deadline must cancel it
+  // outright — not just leave the "no access token" check to save the day.
+  // Reloading a session that was just (re-)authenticated, or navigating away
+  // from a session that was just evicted (whose own redirect already owns
+  // navigation), would both be wrong for reasons beyond "is there a token".
+  it('cancels a pending scheduled reload on login()', async () => {
+    vi.useFakeTimers();
+    const { reload, restore } = mockLocation('/devices');
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+    setThrottleMaskMounted(true);
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        makeResponseWithHeaders({ retryAfter: 1 }, false, 429, { 'Retry-After': '1' })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = restoreAccessTokenFromCookieDetailed();
+      await vi.advanceTimersByTimeAsync(1_000); // exhausts the bounded wait, schedules the reload
+      expect(await pending).toBe('throttled');
+
+      // A fresh login (e.g. the user re-authenticated in another tab and
+      // this one picked it up) lands before the scheduled deadline.
+      useAuthStore.getState().login(baseUser, { accessToken: 'fresh-login-token', expiresInSeconds: 3600 });
+
+      await vi.advanceTimersByTimeAsync(1_000); // past the original deadline
+      expect(reload).not.toHaveBeenCalled();
+    } finally {
+      setThrottleMaskMounted(false);
+      randomSpy.mockRestore();
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a pending scheduled reload on logout()', async () => {
+    vi.useFakeTimers();
+    const { reload, replace, restore } = mockLocation('/devices');
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+    setThrottleMaskMounted(true);
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        makeResponseWithHeaders({ retryAfter: 1 }, false, 429, { 'Retry-After': '1' })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = restoreAccessTokenFromCookieDetailed();
+      await vi.advanceTimersByTimeAsync(1_000); // exhausts the bounded wait, schedules the reload
+      expect(await pending).toBe('throttled');
+
+      // The user explicitly signs out (the mask's escape hatch, #3696) before
+      // the scheduled deadline elapses.
+      useAuthStore.getState().logout();
+
+      await vi.advanceTimersByTimeAsync(1_000); // past the original deadline
+      expect(reload).not.toHaveBeenCalled();
+      // logout() itself doesn't navigate — confirms this is testing
+      // cancellation of the SCHEDULED reload, not incidentally passing
+      // because some other navigation already fired.
+      expect(replace).not.toHaveBeenCalled();
+    } finally {
+      setThrottleMaskMounted(false);
+      randomSpy.mockRestore();
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  // #3984: pages/remote/** viewers unmount AuthThrottledMask when the user
+  // navigates away from the throttled view (e.g. back to /remote). A reload
+  // timer armed while the mask WAS mounted must not fire once it no longer
+  // is — there's nothing on screen to have explained it, and the user may
+  // be looking at something else entirely by the time it would fire.
+  it('does not fire the scheduled reload if the mask unmounts before the deadline', async () => {
+    vi.useFakeTimers();
+    const { reload, restore } = mockLocation('/remote/vnc/tunnel-1');
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+    setThrottleMaskMounted(true);
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        makeResponseWithHeaders({ retryAfter: 1 }, false, 429, { 'Retry-After': '1' })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = restoreAccessTokenFromCookieDetailed();
+      await vi.advanceTimersByTimeAsync(1_000); // exhausts the bounded wait, schedules the reload
+      expect(await pending).toBe('throttled');
+
+      // The user navigates away from the throttled view; AuthOverlay/its mask
+      // unmounts before the scheduled reload's deadline elapses.
+      setThrottleMaskMounted(false);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(reload).not.toHaveBeenCalled();
+    } finally {
+      setThrottleMaskMounted(false);
       randomSpy.mockRestore();
       restore();
       vi.useRealTimers();
