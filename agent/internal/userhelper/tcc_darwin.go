@@ -154,12 +154,26 @@ func checkTCCPermissions(desktopContext string, allowPrompt bool, allowCapturePr
 	}
 }
 
-// RequestScreenRecording triggers the macOS system prompt for Screen Recording
-// permission. Only triggers the prompt once per process — subsequent calls just
-// check the current state. Should be called on first startup to ensure the user
-// sees the consent dialog.
+// RequestScreenRecording asks macOS for Screen Recording permission via
+// CGRequestScreenCaptureAccess(). This is a *prompting* API: whenever macOS
+// does not already attribute a grant to this binary it shows the system consent
+// dialog. Callers must gate it — see maybeRequestScreenRecording.
 func RequestScreenRecording() bool {
 	return bool(C.requestScreenRecording())
+}
+
+// Indirection seams for the two CoreGraphics entry points the consent policy
+// depends on, so the policy can be exercised in tests without real TCC state.
+var (
+	screenRecordingGrantedFn = func() bool { return bool(C.checkScreenRecording()) }
+	requestScreenRecordingFn = RequestScreenRecording
+)
+
+// maybeRequestScreenRecording decides whether to raise the macOS Screen
+// Recording consent dialog.
+func maybeRequestScreenRecording(markerPath string, now time.Time) {
+	granted := requestScreenRecordingFn()
+	log.Info("Screen Recording permission request", "alreadyGranted", granted)
 }
 
 // probeFullDiskAccess checks Full Disk Access by attempting to open the system
@@ -229,12 +243,7 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext stri
 		firstCheck = false
 	}
 
-	// On first run, trigger the Screen Recording system prompt via
-	// CGRequestScreenCaptureAccess(). This is idempotent — macOS only shows the
-	// dialog once per app. If the user has already granted the permission, this
-	// returns immediately with true.
-	granted := RequestScreenRecording()
-	log.Info("Screen Recording permission request", "alreadyGranted", granted)
+	maybeRequestScreenRecording(screenRecordingMarkerPath(), time.Now())
 
 	// Immediate first check (sends full TCC status to the service)
 	check()
@@ -375,19 +384,32 @@ func cloneBoolPtr(v *bool) *bool {
 // we've already shown the first-run TCC dialog to this user. Uses the user's
 // Application Support directory to prevent other processes from tampering.
 func tccPromptFilePath() string {
+	return tccMarkerFilePath("tcc-prompted")
+}
+
+// screenRecordingMarkerPath returns the path to the marker file recording when
+// we last raised the Screen Recording consent dialog for this user.
+func screenRecordingMarkerPath() string {
+	return tccMarkerFilePath("screen-recording-requested")
+}
+
+// tccMarkerFilePath returns the path to a per-user TCC marker file. Uses the
+// user's Application Support directory to prevent other processes from
+// tampering, falling back to the temp dir when that is unavailable.
+func tccMarkerFilePath(name string) string {
 	cu, err := user.Current()
 	if err != nil {
-		log.Warn("could not determine current user for TCC prompt marker, using shared path",
-			"error", err.Error())
-		return filepath.Join(os.TempDir(), "breeze-tcc-prompted")
+		log.Warn("could not determine current user for TCC marker, using shared path",
+			"marker", name, "error", err.Error())
+		return filepath.Join(os.TempDir(), "breeze-"+name)
 	}
 	dir := filepath.Join(cu.HomeDir, "Library", "Application Support", "Breeze")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		log.Warn("could not create Breeze app support dir, falling back to tmp",
 			"dir", dir, "error", err.Error())
-		return filepath.Join(os.TempDir(), fmt.Sprintf("breeze-tcc-prompted-%s", cu.Uid))
+		return filepath.Join(os.TempDir(), fmt.Sprintf("breeze-%s-%s", name, cu.Uid))
 	}
-	return filepath.Join(dir, "tcc-prompted")
+	return filepath.Join(dir, name)
 }
 
 // showTCCDialog shows an osascript dialog listing missing permissions with an
