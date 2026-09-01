@@ -56,6 +56,14 @@ jobs:
           bash scripts/check-guided-setup-placeholders.sh
           bash scripts/check-guided-setup-systemd-unit.sh
 
+      # docker/Caddyfile.prod is shared by hosted production and every
+      # self-hosted install, so the CADDY_LOCAL_CERTS opt-in must be a strict
+      # no-op when empty. That is a property of the Caddyfile ADAPTER, invisible
+      # to grep, so this adapts the real file with the variable empty, unset and
+      # set and diffs the results. Skips itself if Docker is unavailable.
+      - name: Guard Caddyfile internal-CA opt-in
+        run: bash scripts/check-caddyfile-local-certs.sh
+
       # The quickstart tells self-hosters to `cp .env.example .env` and bring the
       # stack up, so a BREEZE_VERSION whose images were never published breaks
       # every new install. The pin sat at 0.81.0 for ~25 releases (portal images
