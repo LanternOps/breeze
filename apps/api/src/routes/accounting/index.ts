@@ -128,6 +128,39 @@ function handleMappingError(c: { json: (b: unknown, s: number) => Response }, er
   throw err;
 }
 
+/**
+ * Curated response for a mapping row — mirrors PATCH /:provider/settings
+ * above, which explicitly `.returning({ ... })`s a safe subset rather than
+ * echoing the raw row. `saveMappingDecision`/`syncMappedEntity` return the
+ * full `accounting_entity_mappings` row (internal `id`, `integrationId`,
+ * `partnerId`, `remoteSyncToken`, `createdAt`, `updatedAt` included), so the
+ * route — not the service — is responsible for narrowing it before it goes
+ * over the wire. None of those omitted fields are secrets, but they are
+ * internal plumbing (tenancy/connection ids, QuickBooks' own optimistic-
+ * concurrency token) the client has no use for.
+ */
+function toMappingResponse(mapping: {
+  breezeEntityType: string;
+  breezeEntityId: string;
+  remoteEntityType: string;
+  remoteEntityId: string | null;
+  linkStatus: string;
+  syncStatus: string;
+  lastSyncedAt: Date | null;
+  lastError: string | null;
+}) {
+  return {
+    breezeEntityType: mapping.breezeEntityType,
+    breezeEntityId: mapping.breezeEntityId,
+    remoteEntityType: mapping.remoteEntityType,
+    remoteEntityId: mapping.remoteEntityId,
+    linkStatus: mapping.linkStatus,
+    syncStatus: mapping.syncStatus,
+    lastSyncedAt: mapping.lastSyncedAt,
+    lastError: mapping.lastError,
+  };
+}
+
 // Post-`zValidator('json', ...)` entity-aware write guard for the two mapping
 // mutation routes: ORGS_WRITE for an org decision, CATALOG_WRITE for a
 // catalog_item decision. System scope bypasses the role lookup, matching
@@ -593,7 +626,7 @@ accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requi
     },
   });
 
-  return c.json({ data: mapping });
+  return c.json({ data: toMappingResponse(mapping) });
 });
 
 // Push a confirmed/create_new mapping to QuickBooks. Write + MFA-gated, same
@@ -633,5 +666,5 @@ accountingRoutes.post('/:provider/mappings/sync', authMiddleware, partnerScopes,
     },
   });
 
-  return c.json({ data: mapping });
+  return c.json({ data: toMappingResponse(mapping) });
 });

@@ -28,6 +28,7 @@ const {
   const authState = {
     scope: 'partner' as 'partner' | 'system',
     permissions: new Set<string>(['organizations:write', 'catalog:write']),
+    mfa: true,
   };
   return {
     listMappingProposalsMock,
@@ -74,7 +75,10 @@ vi.mock('../../middleware/auth', () => ({
     await next();
   },
   requireScope: () => async (_c: any, next: any) => next(),
-  requireMfa: () => async (_c: any, next: any) => next(),
+  requireMfa: () => async (c: any, next: any) => {
+    if (!authState.mfa) return c.json({ error: 'MFA required' }, 403);
+    return next();
+  },
   requirePermission: (resource: string, action: string) => async (c: any, next: any) => {
     if (!authState.permissions.has(`${resource}:${action}`)) return c.json({ error: 'Permission denied' }, 403);
     return next();
@@ -102,10 +106,38 @@ const VALID_ORG_ID = '11111111-1111-4111-8111-111111111111';
 const VALID_ITEM_ID = '22222222-2222-4222-8222-222222222222';
 const OTHER_PARTNER_ID = '99999999-9999-4999-8999-999999999999';
 
+// The REAL shape saveMappingDecision/syncMappedEntity return — the full
+// accounting_entity_mappings row, including internal tenancy/connection ids
+// and QuickBooks' own optimistic-concurrency token. Route tests assert these
+// never reach the response body (index.ts's toMappingResponse curates them
+// out), so the fixture must not be a hand-picked subset that hides that.
+function fullMappingRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'm1',
+    integrationId: 'conn-1',
+    partnerId: 'p1',
+    breezeEntityType: 'org',
+    breezeEntityId: VALID_ORG_ID,
+    remoteEntityType: 'Customer',
+    remoteEntityId: 'qb-1',
+    remoteSyncToken: 'qb-sync-token-42',
+    linkStatus: 'confirmed',
+    syncStatus: 'pending',
+    lastSyncedAt: null,
+    lastError: null,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-02T00:00:00Z'),
+    ...overrides,
+  };
+}
+
+const INTERNAL_MAPPING_FIELDS = ['integrationId', 'partnerId', 'remoteSyncToken', 'createdAt', 'updatedAt'] as const;
+
 beforeEach(() => {
   vi.clearAllMocks();
   authState.scope = 'partner';
   authState.permissions = new Set(['organizations:write', 'catalog:write']);
+  authState.mfa = true;
 });
 
 describe('GET /accounting/:provider/mappings', () => {
@@ -237,16 +269,7 @@ describe('PUT /accounting/:provider/mappings', () => {
   }
 
   it('confirms an org mapping, requires ORGS_WRITE, and audits the decision', async () => {
-    saveMappingDecisionMock.mockResolvedValue({
-      id: 'm1',
-      breezeEntityType: 'org',
-      breezeEntityId: VALID_ORG_ID,
-      remoteEntityType: 'Customer',
-      remoteEntityId: 'qb-1',
-      linkStatus: 'confirmed',
-      syncStatus: 'pending',
-      lastError: null,
-    });
+    saveMappingDecisionMock.mockResolvedValue(fullMappingRow());
     const res = await putMapping({
       breezeEntityType: 'org',
       breezeEntityId: VALID_ORG_ID,
@@ -275,6 +298,53 @@ describe('PUT /accounting/:provider/mappings', () => {
         }),
       }),
     );
+
+    // Curated projection (index.ts's toMappingResponse): the full internal
+    // row (id, integrationId, partnerId, remoteSyncToken, createdAt,
+    // updatedAt) must never reach the wire.
+    const body = await res.json();
+    expect(body.data).toEqual({
+      breezeEntityType: 'org',
+      breezeEntityId: VALID_ORG_ID,
+      remoteEntityType: 'Customer',
+      remoteEntityId: 'qb-1',
+      linkStatus: 'confirmed',
+      syncStatus: 'pending',
+      lastSyncedAt: null,
+      lastError: null,
+    });
+    for (const field of INTERNAL_MAPPING_FIELDS) {
+      expect(body.data).not.toHaveProperty(field);
+    }
+  });
+
+  it('requires MFA (403) before calling the service, even with sufficient permissions', async () => {
+    authState.mfa = false;
+    const res = await putMapping({
+      breezeEntityType: 'org',
+      breezeEntityId: VALID_ORG_ID,
+      decision: 'create_new',
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: 'MFA required' });
+    expect(saveMappingDecisionMock).not.toHaveBeenCalled();
+  });
+
+  it('system scope requires an explicit partnerId (400) before calling the service', async () => {
+    authState.scope = 'system';
+    const res = await putMapping({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID, decision: 'create_new' });
+    expect(res.status).toBe(400);
+    expect(saveMappingDecisionMock).not.toHaveBeenCalled();
+  });
+
+  it('partner scope cannot request another partner (403) before calling the service', async () => {
+    const res = await app().request(`/accounting/quickbooks/mappings?partnerId=${OTHER_PARTNER_ID}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID, decision: 'create_new' }),
+    });
+    expect(res.status).toBe(403);
+    expect(saveMappingDecisionMock).not.toHaveBeenCalled();
   });
 
   it('denies an org decision without ORGS_WRITE (403) before calling the service', async () => {
@@ -302,10 +372,9 @@ describe('PUT /accounting/:provider/mappings', () => {
   it('allows a SYSTEM-scope caller that holds no per-partner role', async () => {
     authState.scope = 'system';
     authState.permissions = new Set();
-    saveMappingDecisionMock.mockResolvedValue({
-      id: 'm1', breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID,
-      remoteEntityType: 'Customer', remoteEntityId: null, linkStatus: 'create_new', syncStatus: 'pending', lastError: null,
-    });
+    saveMappingDecisionMock.mockResolvedValue(fullMappingRow({
+      partnerId: OTHER_PARTNER_ID, remoteEntityId: null, linkStatus: 'create_new',
+    }));
     const res = await app().request(`/accounting/quickbooks/mappings?partnerId=${OTHER_PARTNER_ID}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -334,10 +403,7 @@ describe('PUT /accounting/:provider/mappings', () => {
   });
 
   it('the partner-supplied body partnerId (if any) never reaches the service — only auth.partnerId does', async () => {
-    saveMappingDecisionMock.mockResolvedValue({
-      id: 'm1', breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID,
-      remoteEntityType: 'Customer', remoteEntityId: null, linkStatus: 'create_new', syncStatus: 'pending', lastError: null,
-    });
+    saveMappingDecisionMock.mockResolvedValue(fullMappingRow({ remoteEntityId: null, linkStatus: 'create_new' }));
     const res = await app().request('/accounting/quickbooks/mappings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -393,16 +459,7 @@ describe('POST /accounting/:provider/mappings/sync', () => {
   }
 
   it('syncs a confirmed org mapping, requires ORGS_WRITE, and audits the result', async () => {
-    syncMappedEntityMock.mockResolvedValue({
-      id: 'm1',
-      breezeEntityType: 'org',
-      breezeEntityId: VALID_ORG_ID,
-      remoteEntityType: 'Customer',
-      remoteEntityId: 'qb-1',
-      linkStatus: 'confirmed',
-      syncStatus: 'synced',
-      lastError: null,
-    });
+    syncMappedEntityMock.mockResolvedValue(fullMappingRow({ syncStatus: 'synced' }));
     const res = await postSync({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID });
     expect(res.status).toBe(200);
     expect(syncMappedEntityMock).toHaveBeenCalledWith({
@@ -416,6 +473,39 @@ describe('POST /accounting/:provider/mappings/sync', () => {
         details: expect.objectContaining({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID }),
       }),
     );
+
+    // Curated projection: the full internal row (id, integrationId,
+    // partnerId, remoteSyncToken, createdAt, updatedAt) must never reach the
+    // wire.
+    const body = await res.json();
+    expect(body.data).toEqual({
+      breezeEntityType: 'org',
+      breezeEntityId: VALID_ORG_ID,
+      remoteEntityType: 'Customer',
+      remoteEntityId: 'qb-1',
+      linkStatus: 'confirmed',
+      syncStatus: 'synced',
+      lastSyncedAt: null,
+      lastError: null,
+    });
+    for (const field of INTERNAL_MAPPING_FIELDS) {
+      expect(body.data).not.toHaveProperty(field);
+    }
+  });
+
+  it('requires MFA (403) before calling the service, even with sufficient permissions', async () => {
+    authState.mfa = false;
+    const res = await postSync({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: 'MFA required' });
+    expect(syncMappedEntityMock).not.toHaveBeenCalled();
+  });
+
+  it('denies an org sync without ORGS_WRITE (403) before calling the service', async () => {
+    authState.permissions = new Set(['catalog:write']);
+    const res = await postSync({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID });
+    expect(res.status).toBe(403);
+    expect(syncMappedEntityMock).not.toHaveBeenCalled();
   });
 
   it('denies a catalog_item sync without CATALOG_WRITE (403) before calling the service', async () => {
@@ -461,10 +551,7 @@ describe('POST /accounting/:provider/mappings/sync', () => {
   });
 
   it('the partner-supplied body partnerId (if any) never reaches the service — only auth.partnerId does', async () => {
-    syncMappedEntityMock.mockResolvedValue({
-      id: 'm1', breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID,
-      remoteEntityType: 'Customer', remoteEntityId: 'qb-1', linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
-    });
+    syncMappedEntityMock.mockResolvedValue(fullMappingRow({ syncStatus: 'synced' }));
     const res = await app().request('/accounting/quickbooks/mappings/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
