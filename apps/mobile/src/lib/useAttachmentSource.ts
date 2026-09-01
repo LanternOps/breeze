@@ -37,8 +37,16 @@ export function useAttachmentSource(
         // pair must not overwrite a newer one.
         if (active) setSource({ uri, headers });
       } catch {
-        // Leave the placeholder in place — a thumbnail that cannot resolve its
-        // URL is not worth a toast, and the tap path reports its own failures.
+        // Defensive only: neither `attachmentContentUrl` (which falls back to
+        // the bundled base URL) nor `getAuthImageHeaders` throws today, so this
+        // should be unreachable. It stays because both read from storage and a
+        // future change could make them throw — and leaving the placeholder up
+        // is the right answer either way.
+        //
+        // NOTE: this does NOT cover a failed byte fetch. Resolving the URL says
+        // nothing about whether the image loads; that failure surfaces through
+        // the `onError` prop on the consuming `<Image>`, which is where the
+        // retry affordance lives.
       }
     })();
     return () => {

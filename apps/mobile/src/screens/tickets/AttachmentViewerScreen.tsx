@@ -32,6 +32,8 @@ export function AttachmentViewerScreen() {
   const source = useAttachmentSource(ticketId, attachmentId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [imageFailed, setImageFailed] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   const openExternally = useCallback(async () => {
     if (busy) return;
@@ -52,12 +54,33 @@ export function AttachmentViewerScreen() {
   return (
     <View style={styles.screen}>
       {mode === 'image' ? (
-        source ? (
+        imageFailed ? (
+          // Without this branch a failed byte fetch leaves the spinner running
+          // forever: `source` is set (the URL resolved fine), but `expo-image`
+          // renders nothing and reports the failure only through `onError`.
+          <View style={styles.docPane}>
+            <Text style={styles.docHint}>Could not load this photo.</Text>
+            <Pressable
+              onPress={() => {
+                setImageFailed(false);
+                // Remount the Image so it refetches rather than serving the
+                // failure it already cached for this source.
+                setLoadAttempt((n) => n + 1);
+              }}
+              accessibilityRole="button"
+              style={styles.button}
+            >
+              <Text style={styles.buttonText}>Try again</Text>
+            </Pressable>
+          </View>
+        ) : source ? (
           <Image
+            key={loadAttempt}
             source={source}
             style={styles.image}
             contentFit="contain"
             cachePolicy="memory-disk"
+            onError={() => setImageFailed(true)}
             accessibilityLabel={filename}
             accessibilityIgnoresInvertColors
           />

@@ -237,13 +237,20 @@ export function TicketDetailScreen() {
 
   const handlePick = useCallback(
     async (pick: () => Promise<PickOutcome>) => {
+      // Total by contract — `runPicker` converts a native throw into a
+      // `failed` outcome, so this never rejects into the `void` at the tap site.
       const outcome = await pick();
       if (!outcome.ok) {
-        if (outcome.reason === 'permission-denied' && mounted.current) {
+        if (!mounted.current) return;
+        // A cancel is the user's own choice and gets no toast; the other two
+        // are failures they cannot otherwise see.
+        if (outcome.reason === 'permission-denied') {
           setToast({
             kind: 'error',
             text: 'Breeze needs permission to use that. Enable it in Settings.',
           });
+        } else if (outcome.reason === 'failed') {
+          setToast({ kind: 'error', text: outcome.message });
         }
         return;
       }
@@ -322,10 +329,17 @@ export function TicketDetailScreen() {
         setToast({ kind: 'success', text: 'Comment added' });
       }
     } catch (err: unknown) {
-      const apiError = err as { message?: string };
       reportInternalError(err, 'ticket-comment');
       if (mounted.current) {
-        setToast({ kind: 'error', text: apiError.message || 'Could not add comment.' });
+        // A failed claim (ATTACHMENT_NOT_CLAIMABLE) has its own copy; anything
+        // else falls back to the server's message. The chips are deliberately
+        // NOT cleared here — the pending rows are still claimable, so a retry
+        // can still post them.
+        const code = (err as { code?: unknown } | null)?.code;
+        const text = code === 'ATTACHMENT_NOT_CLAIMABLE'
+          ? toAttachmentError(err).message
+          : (err as { message?: string }).message || 'Could not add comment.';
+        setToast({ kind: 'error', text });
       }
     } finally {
       inFlight.current = false;

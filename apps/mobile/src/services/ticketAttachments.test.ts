@@ -163,6 +163,27 @@ describe('pickers', () => {
     });
   });
 
+  it.each([
+    ['camera', () => pickFromCamera(), launchCameraAsync],
+    ['library', () => pickFromLibrary(5), launchImageLibraryAsync],
+    ['document', () => pickDocument(), getDocumentAsync],
+  ])('reports a thrown native %s picker as a failure instead of rejecting', async (_name, run, native) => {
+    // A native picker can throw for reasons the outcome union does not model —
+    // a picker already open, an iCloud file that will not download, a module
+    // that failed to link. The call site fires these with `void`, so a
+    // rejection here is an unhandled promise: no toast, no Sentry, no chip,
+    // and a technician who tapped a button and saw absolutely nothing happen.
+    native.mockRejectedValue(new Error('native picker exploded'));
+
+    await expect(run()).resolves.toMatchObject({ ok: false, reason: 'failed' });
+  });
+
+  it('reports a thrown permission request as a failure, not a denial', async () => {
+    requestCameraPermissionsAsync.mockRejectedValue(new Error('boom'));
+
+    await expect(pickFromCamera()).resolves.toMatchObject({ ok: false, reason: 'failed' });
+  });
+
   it('asks the document picker for PDFs only, copied to the cache', async () => {
     getDocumentAsync.mockResolvedValue({ canceled: true, assets: null });
 
@@ -306,6 +327,32 @@ describe('uploadTicketAttachment', () => {
 
     expect((transient as AttachmentUploadError).retryable).toBe(true);
     expect((permanent as AttachmentUploadError).retryable).toBe(false);
+  });
+
+  it.each([
+    [413, 'ATTACHMENT_TOO_LARGE', false],
+    [415, 'UNSUPPORTED_ATTACHMENT_TYPE', false],
+    [429, 'TOO_MANY_PENDING', false],
+    [503, 'STORAGE_UNAVAILABLE', true],
+  ])('falls back to HTTP %i when the body carries no code', async (status, expected, retryable) => {
+    // A proxy or load balancer can reject the body before the API sees it — a
+    // 413 from Caddy has an HTML body, so `response.json()` yields {} and there
+    // is no `code` at all. Collapsing that to a retryable "check your
+    // connection" tells the technician to retry a file that can never succeed.
+    coreRequest.mockRejectedValue({ statusCode: status, message: 'Request Entity Too Large' });
+
+    const err = await uploadTicketAttachment('t-1', jpeg).catch((e: unknown) => e);
+
+    expect((err as AttachmentUploadError).code).toBe(expected);
+    expect((err as AttachmentUploadError).retryable).toBe(retryable);
+  });
+
+  it('prefers an explicit body code over the status code', async () => {
+    coreRequest.mockRejectedValue(apiError('STORAGE_UNAVAILABLE', 413));
+
+    const err = await uploadTicketAttachment('t-1', jpeg).catch((e: unknown) => e);
+
+    expect((err as AttachmentUploadError).code).toBe('STORAGE_UNAVAILABLE');
   });
 
   it('treats an unrecognised transport failure as retryable, not as success', async () => {

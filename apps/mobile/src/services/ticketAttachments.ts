@@ -63,19 +63,37 @@ function fromImageAsset(asset: ImagePicker.ImagePickerAsset): PickedAttachment {
   };
 }
 
-export async function pickFromCamera(): Promise<PickOutcome> {
-  const permission = await ImagePicker.requestCameraPermissionsAsync();
-  if (!permission.granted) return { ok: false, reason: 'permission-denied' };
+/**
+ * Run a native picker, converting a throw into a `failed` outcome.
+ *
+ * The pickers are TOTAL by contract — they resolve, never reject. Their call
+ * sites dispatch them with `void`, so a rejection would become an unhandled
+ * promise: no toast, no Sentry breadcrumb, no chip, and a technician who tapped
+ * Camera and saw nothing happen at all.
+ */
+async function runPicker(pick: () => Promise<PickOutcome>): Promise<PickOutcome> {
+  try {
+    return await pick();
+  } catch (err: unknown) {
+    return { ok: false, reason: 'failed', message: toAttachmentError(err).message };
+  }
+}
 
-  const result = await ImagePicker.launchCameraAsync({
-    mediaTypes: ['images'],
-    quality: 0.8,
-    // D15: EXIF — and therefore the GPS fix of a customer's premises — never
-    // leaves the phone. `prepareImage` re-encodes as a second line of defence.
-    exif: false,
+export async function pickFromCamera(): Promise<PickOutcome> {
+  return runPicker(async () => {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) return { ok: false, reason: 'permission-denied' };
+
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['images'],
+      quality: 0.8,
+      // D15: EXIF — and therefore the GPS fix of a customer's premises — never
+      // leaves the phone. `prepareImage` re-encodes as a second line of defence.
+      exif: false,
+    });
+    if (result.canceled || !result.assets?.length) return { ok: false, reason: 'cancelled' };
+    return { ok: true, files: result.assets.map(fromImageAsset) };
   });
-  if (result.canceled || !result.assets?.length) return { ok: false, reason: 'cancelled' };
-  return { ok: true, files: result.assets.map(fromImageAsset) };
 }
 
 /**
@@ -84,41 +102,45 @@ export async function pickFromCamera(): Promise<PickOutcome> {
  * photos and then be told two were dropped.
  */
 export async function pickFromLibrary(remainingSlots: number): Promise<PickOutcome> {
-  const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-  if (!permission.granted) return { ok: false, reason: 'permission-denied' };
+  return runPicker(async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) return { ok: false, reason: 'permission-denied' };
 
-  const result = await ImagePicker.launchImageLibraryAsync({
-    mediaTypes: ['images'],
-    quality: 0.8,
-    exif: false,
-    allowsMultipleSelection: true,
-    selectionLimit: Math.max(1, remainingSlots),
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 0.8,
+      exif: false,
+      allowsMultipleSelection: true,
+      selectionLimit: Math.max(1, remainingSlots),
+    });
+    if (result.canceled || !result.assets?.length) return { ok: false, reason: 'cancelled' };
+    return { ok: true, files: result.assets.map(fromImageAsset) };
   });
-  if (result.canceled || !result.assets?.length) return { ok: false, reason: 'cancelled' };
-  return { ok: true, files: result.assets.map(fromImageAsset) };
 }
 
 export async function pickDocument(): Promise<PickOutcome> {
-  const result = await DocumentPicker.getDocumentAsync({
-    type: 'application/pdf',
-    // Without this the URI can be a content:// handle that expires before the
-    // upload reads it.
-    copyToCacheDirectory: true,
-    multiple: false,
-  });
-  if (result.canceled || !result.assets?.length) return { ok: false, reason: 'cancelled' };
+  return runPicker(async () => {
+    const result = await DocumentPicker.getDocumentAsync({
+      type: 'application/pdf',
+      // Without this the URI can be a content:// handle that expires before the
+      // upload reads it.
+      copyToCacheDirectory: true,
+      multiple: false,
+    });
+    if (result.canceled || !result.assets?.length) return { ok: false, reason: 'cancelled' };
 
-  return {
-    ok: true,
-    files: result.assets.map((asset) => ({
-      uri: asset.uri,
-      name: asset.name || fallbackName(asset.uri, 'application/pdf'),
-      mimeType: asset.mimeType ?? 'application/pdf',
-      size: asset.size ?? null,
-      width: null,
-      height: null,
-    })),
-  };
+    return {
+      ok: true,
+      files: result.assets.map((asset) => ({
+        uri: asset.uri,
+        name: asset.name || fallbackName(asset.uri, 'application/pdf'),
+        mimeType: asset.mimeType ?? 'application/pdf',
+        size: asset.size ?? null,
+        width: null,
+        height: null,
+      })),
+    };
+  });
 }
 
 /**

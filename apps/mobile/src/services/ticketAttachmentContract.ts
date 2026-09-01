@@ -57,7 +57,15 @@ export interface PickedAttachment {
 
 export type PickOutcome =
   | { ok: true; files: PickedAttachment[] }
-  | { ok: false; reason: 'cancelled' | 'permission-denied' };
+  /**
+   * `failed` is distinct from `cancelled`: a native picker can throw for
+   * reasons this union does not otherwise model (a picker already open, an
+   * iCloud file that will not download, an unlinked module). Callers dispatch
+   * pickers with `void`, so a rejection would be an unhandled promise — the
+   * technician taps a button and nothing at all happens, in either direction.
+   */
+  | { ok: false; reason: 'cancelled' | 'permission-denied' }
+  | { ok: false; reason: 'failed'; message: string };
 
 export type AttachmentErrorCode =
   | 'ATTACHMENT_TOO_LARGE'
@@ -124,18 +132,43 @@ export function attachmentError(code: AttachmentErrorCode): AttachmentUploadErro
 }
 
 /**
+ * HTTP status → code, for responses that never reached our own error handler.
+ *
+ * A reverse proxy rejects an oversized body before the API sees it, and answers
+ * with its own HTML — `requestWithPrefix` parses no `code` from that, but it
+ * always records `statusCode`. Without this fallback a proxy-level 413 reads as
+ * a generic retryable "check your connection", so the technician retries a file
+ * that can never succeed and is pointed at the wrong cause.
+ */
+const STATUS_FALLBACK: Record<number, AttachmentErrorCode> = {
+  413: 'ATTACHMENT_TOO_LARGE',
+  415: 'UNSUPPORTED_ATTACHMENT_TYPE',
+  429: 'TOO_MANY_PENDING',
+  503: 'STORAGE_UNAVAILABLE',
+};
+
+/**
  * Translate whatever `coreRequest` threw into a typed, user-facing failure.
  *
- * An unrecognised code becomes `UPLOAD_FAILED` and stays RETRYABLE: we cannot
- * tell a new server-side rejection from a dropped connection, and offering a
- * retry that fails again is a much cheaper mistake than silently dropping a
- * photo the technician believes they attached.
+ * Precedence is deliberate: an explicit body `code` wins over the status,
+ * because the API is more specific than the transport (a 409 is either
+ * `TICKET_DELETED` or `ATTACHMENT_NOT_CLAIMABLE`, and only the body says
+ * which — which is why 409 is absent from `STATUS_FALLBACK`).
+ *
+ * Anything still unrecognised becomes `UPLOAD_FAILED` and stays RETRYABLE: we
+ * cannot tell a new server-side rejection from a dropped connection, and
+ * offering a retry that fails again is a much cheaper mistake than silently
+ * dropping a photo the technician believes they attached.
  */
 export function toAttachmentError(err: unknown): AttachmentUploadError {
   if (err instanceof AttachmentUploadError) return err;
   const code = (err as { code?: unknown } | null)?.code;
   if (typeof code === 'string' && code in ERROR_COPY) {
     return attachmentError(code as AttachmentErrorCode);
+  }
+  const statusCode = (err as { statusCode?: unknown } | null)?.statusCode;
+  if (typeof statusCode === 'number' && STATUS_FALLBACK[statusCode]) {
+    return attachmentError(STATUS_FALLBACK[statusCode]);
   }
   return attachmentError('UPLOAD_FAILED');
 }

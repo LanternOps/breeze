@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 
@@ -24,6 +25,7 @@ function Thumbnail({
   onPress: () => void;
 }) {
   const source = useAttachmentSource(ticketId, attachment.id);
+  const [failed, setFailed] = useState(false);
 
   return (
     <Pressable
@@ -32,7 +34,7 @@ function Thumbnail({
       accessibilityLabel={`Open ${attachment.originalFilename}`}
       style={styles.tile}
     >
-      {source ? (
+      {source && !failed ? (
         <Image
           source={source}
           style={styles.tileImage}
@@ -42,10 +44,16 @@ function Thumbnail({
           // round trip over cellular.
           cachePolicy="memory-disk"
           transition={120}
+          // Resolving the URL says nothing about whether the BYTES load — a
+          // stale token or a deleted attachment fails here, and without this
+          // the tile just stays blank forever with no way to tell why.
+          onError={() => setFailed(true)}
           accessibilityIgnoresInvertColors
         />
       ) : (
-        <View style={[styles.tileImage, styles.tilePlaceholder]} />
+        <View style={[styles.tileImage, styles.tilePlaceholder]}>
+          {failed ? <Text style={styles.tileFailed}>!</Text> : null}
+        </View>
       )}
     </Pressable>
   );
@@ -109,7 +117,13 @@ const styles = StyleSheet.create({
   // adapts to phone and tablet widths without measuring the container.
   tile: { flexBasis: '31%', aspectRatio: 1 },
   tileImage: { width: '100%', height: '100%', borderRadius: radii.sm, backgroundColor: palette.dark.bg0 },
-  tilePlaceholder: { borderWidth: 1, borderColor: palette.dark.border },
+  tilePlaceholder: {
+    borderWidth: 1,
+    borderColor: palette.dark.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tileFailed: { ...type.bodyMd, color: palette.dark.textLo },
   docRow: {
     flexDirection: 'row',
     alignItems: 'center',

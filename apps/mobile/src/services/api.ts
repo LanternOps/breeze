@@ -249,7 +249,11 @@ export async function getAuthImageHeaders(): Promise<Record<string, string>> {
     const installationId = await getOrCreateInstallationId();
     if (installationId) headers[MOBILE_DEVICE_ID_HEADER] = installationId;
   } catch {
-    // Same posture as the request path: the id is diagnostic, not authority.
+    // Deliberately silent, unlike the request path above, which reports the
+    // same failure to Sentry. This runs once per rendered thumbnail rather
+    // than once per request, so reporting here would send one event per tile
+    // per feed render and bury the signal the request path already carries.
+    // The header is diagnostic, not authority — dropping it costs nothing.
   }
   return headers;
 }
