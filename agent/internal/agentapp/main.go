@@ -1997,7 +1997,11 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 
 	res := sup.Run(done)
 	if res.Reason != userhelper.StopFatal {
-		log.Info("helper stopped", "name", name)
+		if res.Err != nil {
+			log.Info("helper stopped after error", "name", name, "error", res.Err.Error())
+		} else {
+			log.Info("helper stopped", "name", name)
+		}
 		return
 	}
 
@@ -2027,9 +2031,16 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 		logging.StopShipper() // flush before os.Exit tears down goroutines
 		os.Exit(2)
 	}
+	// Not a *PermanentRejectError. Identify what it actually is rather than
+	// assuming — IsFatalHelperError decides the fatal set, and hardcoding a
+	// code here mislabels every future addition to it as a SID failure.
+	code := "unknown"
+	if errors.Is(res.Err, userhelper.ErrSIDLookupFailed) {
+		code = "sid_lookup_failed"
+	}
 	log.Error("helper permanently rejected, exiting fatal",
 		"name", name,
-		"code", "sid_lookup_failed",
+		"code", code,
 		"reason", res.Err.Error(),
 	)
 	logging.StopShipper() // flush before os.Exit tears down goroutines

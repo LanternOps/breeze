@@ -1,8 +1,11 @@
 package userhelper
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -437,6 +440,9 @@ func TestReconnectPolicyNormalizeFillsSaneDefaults(t *testing.T) {
 	if got.WarnLimit <= 0 || got.WarnWindow <= 0 {
 		t.Errorf("normalize left warn limiter unusable: limit=%d window=%v", got.WarnLimit, got.WarnWindow)
 	}
+	if got.StuckThreshold <= 0 {
+		t.Error("normalize left StuckThreshold unusable; a zero threshold would escalate to ERROR on the first failed attempt")
+	}
 
 	// An explicit policy must be preserved untouched.
 	explicit := ReconnectPolicy{
@@ -445,6 +451,7 @@ func TestReconnectPolicyNormalizeFillsSaneDefaults(t *testing.T) {
 		StableThreshold: 11 * time.Second,
 		WarnLimit:       7,
 		WarnWindow:      time.Minute,
+		StuckThreshold:  3 * time.Minute,
 	}
 	if explicit.normalize() != explicit {
 		t.Errorf("normalize mutated an explicit policy: %+v -> %+v", explicit, explicit.normalize())
@@ -455,5 +462,151 @@ func TestReconnectPolicyNormalizeFillsSaneDefaults(t *testing.T) {
 	inverted := ReconnectPolicy{MinBackoff: 10 * time.Second, MaxBackoff: time.Second}.normalize()
 	if inverted.MaxBackoff < inverted.MinBackoff {
 		t.Errorf("normalize left MaxBackoff (%v) below MinBackoff (%v)", inverted.MaxBackoff, inverted.MinBackoff)
+	}
+}
+
+// capturingHandler records the levels and messages the supervisor logs.
+type capturingHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *capturingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+func (h *capturingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *capturingHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *capturingHandler) countAtLevel(level slog.Level, substr string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, r := range h.records {
+		if r.Level == level && strings.Contains(r.Message, substr) {
+			n++
+		}
+	}
+	return n
+}
+
+// newStuckHarness builds a supervisor whose clock advances by exactly the
+// backoff it was asked to sleep, so elapsed time is deterministic.
+func newStuckHarness(policy ReconnectPolicy, runErr error, maxAttempts int, authAt func(attempt int) time.Time) (*Supervisor, *capturingHandler, chan struct{}) {
+	done := make(chan struct{})
+	handler := &capturingHandler{}
+	now := time.Unix(1_700_000_000, 0).UTC()
+	attempt := 0
+
+	sup := &Supervisor{
+		Name:   "desktop helper",
+		Policy: policy,
+		Log:    slog.New(handler),
+		NewClient: func() SupervisedClient {
+			attempt++
+			if attempt > maxAttempts {
+				select {
+				case <-done:
+				default:
+					close(done)
+				}
+				return newFakeClient(nil, time.Time{})
+			}
+			var at time.Time
+			if authAt != nil {
+				at = authAt(attempt)
+			}
+			return newFakeClient(runErr, at)
+		},
+		now:    func() time.Time { return now },
+		jitter: func(int64) int64 { return 0 },
+	}
+	sup.sleep = func(d time.Duration, _ <-chan struct{}) bool {
+		now = now.Add(d)
+		return true
+	}
+	return sup, handler, done
+}
+
+// A helper that never once connects used to die on every attempt, which made
+// launchd/systemd report a crash-loop. Now that it stays resident, the ERROR
+// line is the only thing that says "wedged" rather than "transiently
+// reconnecting" — the warn limiter has demoted everything else to INFO by then.
+func TestSupervisorEscalatesWhenItHasNeverConnected(t *testing.T) {
+	policy := ReconnectPolicy{
+		MinBackoff:      1 * time.Minute,
+		MaxBackoff:      1 * time.Minute,
+		StableThreshold: time.Minute,
+		WarnLimit:       3,
+		WarnWindow:      5 * time.Minute,
+		StuckThreshold:  15 * time.Minute,
+	}
+	// 60 attempts x 1 minute of backoff = 60 simulated minutes.
+	sup, handler, done := newStuckHarness(policy, errors.New("connect: no such file or directory"), 60, nil)
+
+	if res := sup.Run(done); res.Reason != StopShutdown {
+		t.Fatalf("expected StopShutdown, got %v", res.Reason)
+	}
+
+	got := handler.countAtLevel(slog.LevelError, "wedged")
+	if got == 0 {
+		t.Fatal("a helper that never connected must escalate to ERROR; nothing was logged at that level")
+	}
+	// Rate-limited to one per stuckLogInterval (30m): after crossing the 15m
+	// threshold there are ~45 minutes left, so expect 2, never one-per-attempt.
+	if got > 3 {
+		t.Errorf("stuck ERROR logged %d times in 60 simulated minutes; it must be rate-limited, not per-attempt", got)
+	}
+}
+
+// The escalation must stay quiet for a helper that is genuinely just
+// reconnecting — otherwise it is noise and gets ignored.
+func TestSupervisorDoesNotEscalateWhenItHasConnectedBefore(t *testing.T) {
+	policy := ReconnectPolicy{
+		MinBackoff:      1 * time.Minute,
+		MaxBackoff:      1 * time.Minute,
+		StableThreshold: time.Minute,
+		WarnLimit:       3,
+		WarnWindow:      5 * time.Minute,
+		StuckThreshold:  15 * time.Minute,
+	}
+	base := time.Unix(1_700_000_000, 0).UTC()
+	// Every attempt authenticated successfully before dropping.
+	sup, handler, done := newStuckHarness(policy, errors.New("recv: EOF"), 60, func(int) time.Time {
+		return base
+	})
+
+	if res := sup.Run(done); res.Reason != StopShutdown {
+		t.Fatalf("expected StopShutdown, got %v", res.Reason)
+	}
+
+	if got := handler.countAtLevel(slog.LevelError, "wedged"); got != 0 {
+		t.Errorf("a helper that has connected before must not be reported as wedged; got %d ERROR lines", got)
+	}
+}
+
+// Below the threshold the helper is still plausibly waiting for the agent to
+// come up (boot, upgrade) — crying wolf there trains people to ignore it.
+func TestSupervisorDoesNotEscalateBeforeTheStuckThreshold(t *testing.T) {
+	policy := ReconnectPolicy{
+		MinBackoff:      1 * time.Minute,
+		MaxBackoff:      1 * time.Minute,
+		StableThreshold: time.Minute,
+		WarnLimit:       3,
+		WarnWindow:      5 * time.Minute,
+		StuckThreshold:  15 * time.Minute,
+	}
+	// 5 attempts x 1 minute = 5 simulated minutes, well under the threshold.
+	sup, handler, done := newStuckHarness(policy, errors.New("connect: no such file or directory"), 5, nil)
+
+	if res := sup.Run(done); res.Reason != StopShutdown {
+		t.Fatalf("expected StopShutdown, got %v", res.Reason)
+	}
+
+	if got := handler.countAtLevel(slog.LevelError, "wedged"); got != 0 {
+		t.Errorf("escalated after only 5 simulated minutes (threshold is 15); got %d ERROR lines", got)
 	}
 }

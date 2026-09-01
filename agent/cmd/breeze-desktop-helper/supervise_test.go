@@ -83,8 +83,18 @@ func TestRunSupervisedHelperExitCodes(t *testing.T) {
 				t.Errorf("supervisor ran %d times, want 1", sup.calls)
 			}
 			if tc.wantCooldwn {
-				if len(waiter.waited) != 1 || waiter.waited[0] != fatalCooldown {
-					t.Errorf("expected a single %v cooldown, got %v", fatalCooldown, waiter.waited)
+				// The cooldown is slept in slices so the helper can restate
+				// why it is idle, but the total hold must still be the full
+				// cooldown — that is what keeps launchd from respawning.
+				var total time.Duration
+				for _, w := range waiter.waited {
+					if w > cooldownLogInterval {
+						t.Errorf("cooldown slice %v exceeds the %v log interval", w, cooldownLogInterval)
+					}
+					total += w
+				}
+				if total != fatalCooldown {
+					t.Errorf("total cooldown = %v, want %v (slices: %v)", total, fatalCooldown, waiter.waited)
 				}
 			} else if len(waiter.waited) != 0 {
 				t.Errorf("expected no cooldown, got %v", waiter.waited)
@@ -108,8 +118,10 @@ func TestRunSupervisedHelperCooldownIsInterruptibleByShutdown(t *testing.T) {
 	if got != exitFatal {
 		t.Errorf("exit code = %d, want %d", got, exitFatal)
 	}
+	// Shutdown must abandon the hold on the FIRST slice, not grind through
+	// all of them — the helper has to get out of the way of an upgrade.
 	if len(waiter.waited) != 1 {
-		t.Errorf("expected the cooldown to be attempted once, got %v", waiter.waited)
+		t.Errorf("expected the cooldown to be abandoned after one slice, got %v", waiter.waited)
 	}
 }
 

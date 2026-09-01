@@ -184,8 +184,10 @@ func (c *Client) Stop() {
 		c.desktopMgr.stopAll()
 	}
 	if conn := c.currentConn(); conn != nil {
-		conn.SendTyped("disconnect", ipc.TypeDisconnect, nil)
-		conn.Close()
+		// Best-effort courtesy notice on the way out; the broker also notices
+		// the socket closing, so a failure here changes nothing.
+		_ = conn.SendTyped("disconnect", ipc.TypeDisconnect, nil)
+		_ = conn.Close()
 	}
 }
 

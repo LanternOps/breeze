@@ -36,6 +36,13 @@ const (
 // manual `launchctl kickstart`.
 const fatalCooldown = 10 * time.Minute
 
+// cooldownLogInterval is how often the helper restates why it is idle while
+// holding off. The helper's stdout/stderr go to /dev/null in the plist, so
+// these lines only reach an operator via the on-disk log and the shipper —
+// which is exactly why a single line at the start of a ten-minute hold is
+// not enough to diagnose from.
+const cooldownLogInterval = 2 * time.Minute
+
 // desktopHelperReconnectPolicy tunes the reconnect loop for macOS.
 //
 // This is deliberately far more eager than the Windows/Linux user-helper's
@@ -92,11 +99,24 @@ func runSupervisedHelper(sup supervisorRunner, done <-chan struct{}, cooldown ti
 	log.Error("desktop helper permanently rejected; holding off before exit so launchd does not respawn-loop",
 		"code", code, "reason", reason, "cooldown", cooldown.String())
 
+	// Sleep the cooldown in slices rather than one long wait, so the process
+	// keeps saying why it is idle. During the hold `launchctl print` reports
+	// a live PID and no exit code, which reads as healthy — these lines are
+	// the only thing distinguishing "wedged, waiting to exit" from "working".
 	// Interrupting the cooldown does not change the classification — the
 	// rejection really was fatal — it just stops us from ignoring a SIGTERM
 	// for ten minutes during an agent upgrade or uninstall.
-	if !wait(cooldown, done) {
-		log.Info("desktop helper fatal cooldown interrupted by shutdown")
+	for remaining := cooldown; remaining > 0; {
+		step := min(remaining, cooldownLogInterval)
+		if !wait(step, done) {
+			log.Info("desktop helper fatal cooldown interrupted by shutdown")
+			break
+		}
+		remaining -= step
+		if remaining > 0 {
+			log.Warn("desktop helper still holding off after a permanent rejection",
+				"code", code, "remaining", remaining.String())
+		}
 	}
 	return exitFatal
 }

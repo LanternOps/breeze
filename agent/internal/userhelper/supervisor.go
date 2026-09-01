@@ -69,6 +69,17 @@ type ReconnectPolicy struct {
 	// WarnLimit and WarnWindow rate-limit the repeated "disconnected" warning.
 	WarnLimit  int
 	WarnWindow time.Duration
+	// StuckThreshold is how long a supervised run may go without EVER
+	// completing auth before the supervisor escalates to ERROR.
+	//
+	// This exists because the reconnect loop trades away a signal. Before
+	// #4194 a permanently-broken helper — a socket path that will never
+	// exist, an account with no passwd entry, a broker that keeps
+	// non-permanently rejecting — died on every attempt, and the
+	// launchd/systemd crash-loop was itself the alarm. A resident process
+	// retrying quietly forever looks healthy to every service manager, so
+	// something has to say "this is wedged, not riding out a blip".
+	StuckThreshold time.Duration
 }
 
 const (
@@ -77,7 +88,16 @@ const (
 	defaultStableThreshold = 60 * time.Second
 	defaultWarnLimit       = 3
 	defaultWarnWindow      = 5 * time.Minute
+
+	// defaultStuckThreshold is deliberately generous. A helper can legitimately
+	// spend a while unable to connect at boot or during an agent upgrade, and
+	// crying wolf there would train people to ignore the line that matters.
+	defaultStuckThreshold = 15 * time.Minute
 )
+
+// stuckLogInterval rate-limits the "wedged" ERROR so a helper that stays
+// broken for days does not flood the shipped logs.
+const stuckLogInterval = 30 * time.Minute
 
 // normalize fills in zero fields with safe defaults and repairs an inverted
 // backoff range, so a partially-specified policy can never produce a backoff
@@ -100,6 +120,9 @@ func (p ReconnectPolicy) normalize() ReconnectPolicy {
 	}
 	if p.WarnWindow <= 0 {
 		p.WarnWindow = defaultWarnWindow
+	}
+	if p.StuckThreshold <= 0 {
+		p.StuckThreshold = defaultStuckThreshold
 	}
 	return p
 }
@@ -178,6 +201,11 @@ func (s *Supervisor) Run(done <-chan struct{}) SupervisorResult {
 	limiter := newWarnLimiter(policy.WarnLimit, policy.WarnWindow)
 	backoff := policy.MinBackoff
 
+	startedAt := s.nowFn()
+	everAuthenticated := false
+	var lastStuckLog time.Time
+	attempts := 0
+
 	for {
 		select {
 		case <-done:
@@ -186,6 +214,7 @@ func (s *Supervisor) Run(done <-chan struct{}) SupervisorResult {
 		}
 
 		client := s.NewClient()
+		attempts++
 
 		// Relay shutdown to the running client. clientDone lets this
 		// goroutine exit when Run returns on its own, so the loop does not
@@ -222,14 +251,37 @@ func (s *Supervisor) Run(done <-chan struct{}) SupervisorResult {
 			return SupervisorResult{Reason: StopFatal, Err: err}
 		}
 
-		if !authAt.IsZero() && s.nowFn().Sub(authAt) > policy.StableThreshold {
-			backoff = policy.MinBackoff
-			limiter.reset()
+		if !authAt.IsZero() {
+			everAuthenticated = true
+			if s.nowFn().Sub(authAt) > policy.StableThreshold {
+				backoff = policy.MinBackoff
+				limiter.reset()
+			}
 		}
 
 		wait := backoffWithJitter(backoff, s.jitterFn())
 
 		errMsg := err.Error()
+
+		// A helper that has never once connected is wedged, not riding out a
+		// blip, and the warn limiter has long since demoted the evidence to a
+		// periodic INFO. Say so at ERROR so it reaches the shipped
+		// diagnostics — nothing else will, now that the process no longer
+		// dies and shows up as a crash-loop to launchd/systemd (#4194).
+		if !everAuthenticated {
+			if elapsed := s.nowFn().Sub(startedAt); elapsed >= policy.StuckThreshold {
+				now := s.nowFn()
+				if lastStuckLog.IsZero() || now.Sub(lastStuckLog) >= stuckLogInterval {
+					lastStuckLog = now
+					lg.Error("helper has never connected since start; treating as wedged, not a transient blip",
+						"name", s.Name,
+						"error", errMsg,
+						"attempts", attempts,
+						"stuckFor", elapsed.Round(time.Second).String())
+				}
+			}
+		}
+
 		if emit, suppressed := limiter.shouldLog(errMsg, s.nowFn()); emit {
 			lg.Warn("helper disconnected, reconnecting",
 				"name", s.Name, "error", errMsg, "backoff", wait.String())
