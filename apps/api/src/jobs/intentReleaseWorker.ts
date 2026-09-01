@@ -14,6 +14,8 @@ import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent, type ActionIntentTransitionPatch } from '../services/actionIntents/intentService';
 import { canonicalPolicyKey } from '../services/actionIntents/canonicalPolicyKey';
 import { insertOpEvidence, intentEvidenceSourceId } from '../services/aiAgents/opEvidence';
+import { createIntentFixWatchRow } from '../services/aiAgents/fixWatch';
+import { enqueueFixWatchPhase1 } from './fixWatchWorker';
 import { attemptPolicyDecision, PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
 import { readAiKillState } from '../services/aiKillState';
@@ -253,6 +255,21 @@ function isAttemptedTerminal(patch: TerminalPatch): boolean {
 }
 
 /**
+ * What a written evidence row leaves behind for the verification lane: the
+ * effective agent, the triggering alert (if any) an intent-anchored fix watch
+ * would hang off, and the exact op key + source id the `verified` /
+ * `recurred` row must reuse. Loaded once, inside the terminal transaction —
+ * a second round trip for `alert_id` alone would be pure waste.
+ */
+interface IntentEvidenceAnchor {
+  agentId: string;
+  alertId: string | null;
+  opKey: string;
+  sourceId: string;
+  runId: string;
+}
+
+/**
  * Writes the ONE `ai_agent_op_evidence` row this terminal outcome earns
  * (P2-5, #4192), in a SAVEPOINT nested inside the terminal CAS's
  * transaction. `terminalizeIntent` is the only caller, and it is what opens
@@ -292,7 +309,12 @@ function isAttemptedTerminal(patch: TerminalPatch): boolean {
  *
  * `alert_id` rides along on the same read: the released-intent fix watch
  * (Task 5) is anchored to the triggering alert and must not pay for a second
- * round trip inside the same transaction.
+ * round trip inside the same transaction. That is what the RETURN value is —
+ * the anchor `watchReleasedIntent` needs. It is null whenever no ledger row
+ * was written (a human intent, an unreadable run, or a failed insert), which
+ * deliberately suppresses the watch too: a `verified` / `recurred` row whose
+ * `executed` counterpart never landed would read to `graduationService` as a
+ * verification of an operation that never happened.
  *
  * Leak rules: identifiers only — `op_key`, ids, timestamps. Never a tool
  * result, an error message, or any model-authored text.
@@ -300,34 +322,41 @@ function isAttemptedTerminal(patch: TerminalPatch): boolean {
 async function recordIntentTerminalEvidence(
   intent: ActionIntent,
   metric: 'executed' | 'failed',
-): Promise<void> {
+): Promise<IntentEvidenceAnchor | null> {
   const runId = intent.requestingAgentRunId;
-  if (!runId) return;
+  if (!runId) return null;
 
   try {
-    await db.transaction(async (tx) => {
+    return await db.transaction(async (tx) => {
       const [run] = await tx
         .select({ agentId: aiAgentRuns.agentId, alertId: aiAgentRuns.alertId })
         .from(aiAgentRuns)
         .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, intent.orgId)))
         .limit(1);
-      if (!run) return;
+      if (!run) return null;
+
+      const anchor: IntentEvidenceAnchor = {
+        agentId: run.agentId,
+        alertId: run.alertId,
+        // The SHARED resolver, never a second ad hoc parse of `arguments` —
+        // the graduation ledger and the policy-decide registry must agree on
+        // what "this operation" is called or a promoted key grades the wrong
+        // evidence (services/actionIntents/canonicalPolicyKey.ts).
+        opKey: canonicalPolicyKey(intent.actionName, intent.arguments),
+        sourceId: intentEvidenceSourceId(intent.id),
+        runId,
+      };
 
       await insertOpEvidence(
         [
           {
             orgId: intent.orgId,
-            agentId: run.agentId,
+            agentId: anchor.agentId,
             namespace: 'policy_key',
-            // The SHARED resolver, never a second ad hoc parse of
-            // `arguments` — the graduation ledger and the policy-decide
-            // registry must agree on what "this operation" is called or a
-            // promoted key grades the wrong evidence
-            // (services/actionIntents/canonicalPolicyKey.ts).
-            opKey: canonicalPolicyKey(intent.actionName, intent.arguments),
+            opKey: anchor.opKey,
             ruleId: null,
             sourceKind: 'intent',
-            sourceId: intentEvidenceSourceId(intent.id),
+            sourceId: anchor.sourceId,
             metric,
             runId,
             occurredAt: new Date(),
@@ -335,6 +364,7 @@ async function recordIntentTerminalEvidence(
         ],
         tx,
       );
+      return anchor;
     });
   } catch (error) {
     // Loud, but never at the cost of a terminal state that records a real
@@ -346,6 +376,82 @@ async function recordIntentTerminalEvidence(
         { cause: error },
       ),
     );
+    return null;
+  }
+}
+
+/**
+ * Opens the VERIFICATION episode for a successfully released intent (P2-5
+ * Task 5, #4192 — closes #4206), in its OWN SAVEPOINT nested inside the
+ * terminal CAS's transaction. Returns the watch id whose phase-1 job the
+ * caller must enqueue AFTER that transaction commits, or null when there is
+ * nothing to enqueue.
+ *
+ * A separate savepoint from the ledger write on purpose: the `executed` row
+ * is already earned, and a watch insert that trips a constraint must not roll
+ * it back — nor, per `recordIntentTerminalEvidence`'s own header, the
+ * terminal state of an action that already ran.
+ *
+ * Three outcomes, and the difference between them is the whole point:
+ *  - a watch row exists → return its id; the watch will grade this operation
+ *    `verified` or `recurred` (Task 6), so nothing is credited now;
+ *  - no watch is POSSIBLE (the run has no triggering alert, or that alert is
+ *    no longer readable in this org) → credit `verified` on the same source
+ *    id, in the same transaction. C4: an operation no watch will ever look at
+ *    must not sit un-gradeable forever;
+ *  - the attempt FAILED → credit nothing. An operation whose verification
+ *    lane was lost is not "verified", and the ledger is immutable.
+ */
+async function watchReleasedIntent(
+  intent: ActionIntent,
+  anchor: IntentEvidenceAnchor | null,
+): Promise<string | null> {
+  if (!anchor) return null;
+
+  try {
+    return await db.transaction(async (tx) => {
+      if (anchor.alertId) {
+        const watchId = await createIntentFixWatchRow(
+          {
+            intentId: intent.id,
+            orgId: intent.orgId,
+            runId: anchor.runId,
+            agentId: anchor.agentId,
+            alertId: anchor.alertId,
+            opKey: anchor.opKey,
+          },
+          tx,
+        );
+        if (watchId) return watchId;
+      }
+
+      await insertOpEvidence(
+        [
+          {
+            orgId: intent.orgId,
+            agentId: anchor.agentId,
+            namespace: 'policy_key',
+            opKey: anchor.opKey,
+            ruleId: null,
+            sourceKind: 'intent',
+            sourceId: anchor.sourceId,
+            metric: 'verified',
+            runId: anchor.runId,
+            occurredAt: new Date(),
+          },
+        ],
+        tx,
+      );
+      return null;
+    });
+  } catch (error) {
+    captureException(
+      new Error(
+        `fix watch for released intent ${intent.id} could not be opened; terminal state kept`,
+        { cause: error },
+      ),
+    );
+    return null;
   }
 }
 
@@ -373,23 +479,25 @@ async function recordIntentTerminalEvidence(
  * where they were: they are best-effort reporting, and a failing audit must
  * not undo a committed terminal state.
  *
- * `onWon` is the in-transaction extension hook (Task 5 hangs the released-
- * intent fix watch off it); it runs AFTER the evidence insert and only when
- * the CAS won.
+ * `onWon` is the in-transaction extension hook — Task 5's released-intent fix
+ * watch hangs off it. It runs AFTER the evidence insert and only when the CAS
+ * won, and receives whatever that insert resolved (the effective agent, the
+ * triggering alert, the op key) so it needs no second read of its own.
  */
 async function terminalizeIntent(
   intent: ActionIntent,
   to: 'completed' | 'failed',
   patch: TerminalPatch,
-  onWon?: () => Promise<void>,
+  onWon?: (anchor: IntentEvidenceAnchor | null) => Promise<void>,
 ): Promise<boolean> {
   return withSystemDbAccessContext(async () => {
     const won = await transitionIntent(intent.id, 'executing', to, patch);
     if (!won) return false;
+    let anchor: IntentEvidenceAnchor | null = null;
     if (isAttemptedTerminal(patch)) {
-      await recordIntentTerminalEvidence(intent, to === 'completed' ? 'executed' : 'failed');
+      anchor = await recordIntentTerminalEvidence(intent, to === 'completed' ? 'executed' : 'failed');
     }
-    if (onWon) await onWon();
+    if (onWon) await onWon(anchor);
     return true;
   });
 }
@@ -837,10 +945,15 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     await failOnPlaintextSecretGuard(intent, err);
     return;
   }
-  const completed = await terminalizeIntent(intent, 'completed', {
-    executedAt: new Date(),
-    result: finalResult,
-  });
+  let fixWatchId: string | null = null;
+  const completed = await terminalizeIntent(
+    intent,
+    'completed',
+    { executedAt: new Date(), result: finalResult },
+    async (anchor) => {
+      fixWatchId = await watchReleasedIntent(intent, anchor);
+    },
+  );
 
   if (!completed) {
     // Lost the executing -> completed CAS AFTER the tool already ran (via
@@ -857,6 +970,26 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     );
     captureException(new Error(`intent ${intent.id} executed but lost the completed CAS`));
     return;
+  }
+
+  // STRICTLY after the terminal transaction closed: `bullmqQueue.ts`'s #1105
+  // tripwire throws (in strict mode) on a `queue.add` inside a held DB
+  // context, and pinning a pooled connection across a Redis round trip is
+  // what that tripwire exists to prevent. Swallowed on failure for the same
+  // reason `scheduleFixWatch` swallows: the watch row is committed, and
+  // `recoverStrandedFixWatches` re-adds its job within PENDING_RECOVERY_MS —
+  // failing an action that already had its real-world effect would be far
+  // worse than a two-minute-late verification.
+  if (fixWatchId) {
+    try {
+      await enqueueFixWatchPhase1(fixWatchId);
+    } catch (err) {
+      console.error(
+        `[IntentReleaseWorker] Failed to enqueue the fix watch for intent ${intent.id} — the recovery sweep will re-add it:`,
+        err,
+      );
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
   }
 
   try {

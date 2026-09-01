@@ -16,6 +16,7 @@ const shared = vi.hoisted(() => ({
   createFixWatchRowMock: vi.fn(),
   checkFixWatchPhase1Mock: vi.fn(),
   checkFixWatchPhase2Mock: vi.fn(),
+  listStrandedPendingWatchIdsMock: vi.fn(),
   lastWorkerProcessor: undefined as ((job: unknown) => Promise<void>) | undefined,
 }));
 
@@ -40,6 +41,15 @@ vi.mock('bullmq', () => ({
       this.name = 'DelayedError';
     }
   },
+  // Thrown by `parseQueueJobData`/`assertQueueJobName` on a malformed job.
+  // Without it in the mock, every rejection test below passes on the vitest
+  // "no export defined" error instead of on the module's own refusal.
+  UnrecoverableError: class UnrecoverableError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'UnrecoverableError';
+    }
+  },
 }));
 
 vi.mock('../services/bullmqQueue', () => ({
@@ -61,16 +71,20 @@ vi.mock('../services/aiAgents/fixWatch', () => ({
   createFixWatchRow: (...args: unknown[]) => shared.createFixWatchRowMock(...args),
   checkFixWatchPhase1: (...args: unknown[]) => shared.checkFixWatchPhase1Mock(...args),
   checkFixWatchPhase2: (...args: unknown[]) => shared.checkFixWatchPhase2Mock(...args),
+  listStrandedPendingWatchIds: (...args: unknown[]) => shared.listStrandedPendingWatchIdsMock(...args),
   FIX_HOLD_MINUTES: 60,
 }));
 
 import {
+  enqueueFixWatchPhase1,
   FIX_WATCH_JOB_NAME,
   FIX_WATCH_QUEUE,
   getFixWatchPhase1JobId,
   getFixWatchPhase2JobId,
   initializeFixWatchWorker,
+  PENDING_RECOVERY_MS,
   processFixWatchJob,
+  recoverStrandedFixWatches,
   scheduleFixWatch,
   shutdownFixWatchWorker,
 } from './fixWatchWorker';
@@ -83,6 +97,9 @@ beforeEach(() => {
   shared.createFixWatchRowMock.mockReset();
   shared.checkFixWatchPhase1Mock.mockReset();
   shared.checkFixWatchPhase2Mock.mockReset();
+  shared.listStrandedPendingWatchIdsMock.mockReset();
+  shared.listStrandedPendingWatchIdsMock.mockResolvedValue([]);
+  shared.addMock.mockResolvedValue({ id: 'job-1' });
 });
 
 describe('jobId helpers — hyphen-only (#1101), one job per (watch, phase)', () => {
@@ -103,7 +120,7 @@ describe('scheduleFixWatch', () => {
   it('creates the watch row and enqueues phase 1 with a 5-minute delay and the stable jobId', async () => {
     shared.createFixWatchRowMock.mockResolvedValueOnce(WATCH_ID);
 
-    await scheduleFixWatch(RUN, OUTCOME);
+    await expect(scheduleFixWatch(RUN, OUTCOME)).resolves.toBe(WATCH_ID);
 
     expect(shared.createFixWatchRowMock).toHaveBeenCalledWith(RUN, OUTCOME);
     expect(shared.addMock).toHaveBeenCalledTimes(1);
@@ -121,7 +138,7 @@ describe('scheduleFixWatch', () => {
   it('does nothing when the run was ineligible / the row already existed (createFixWatchRow returns null)', async () => {
     shared.createFixWatchRowMock.mockResolvedValueOnce(null);
 
-    await scheduleFixWatch(RUN, OUTCOME);
+    await expect(scheduleFixWatch(RUN, OUTCOME)).resolves.toBeNull();
 
     expect(shared.addMock).not.toHaveBeenCalled();
   });
@@ -129,15 +146,71 @@ describe('scheduleFixWatch', () => {
   it('NEVER throws — a scheduling failure must not turn a finished run into a failed one', async () => {
     shared.createFixWatchRowMock.mockRejectedValueOnce(new Error('db unavailable'));
 
-    await expect(scheduleFixWatch(RUN, OUTCOME)).resolves.toBeUndefined();
+    // Null, because no watch row was ever committed: `finishRun` reads that
+    // as "nothing will ever verify this run" and grades the run's executions
+    // itself (Task 6). A row that DID commit must not report null — see the
+    // next case.
+    await expect(scheduleFixWatch(RUN, OUTCOME)).resolves.toBeNull();
   });
 
-  it('NEVER throws when the enqueue itself fails (row already committed)', async () => {
+  it('returns the watch id even when the ENQUEUE fails — the row is committed, so the recovery sweep still verifies it', async () => {
     shared.createFixWatchRowMock.mockResolvedValueOnce(WATCH_ID);
     shared.addMock.mockRejectedValueOnce(new Error('redis down'));
 
-    await expect(scheduleFixWatch(RUN, OUTCOME)).resolves.toBeUndefined();
+    // The load-bearing distinction: null means "no watch row exists". A
+    // committed row whose enqueue was lost is recovered by
+    // `recoverStrandedFixWatches`, so reporting null here would make
+    // `finishRun` write a premature `verified` evidence row for an operation
+    // a live watch may still grade `recurred` — and the ledger is immutable.
+    await expect(scheduleFixWatch(RUN, OUTCOME)).resolves.toBe(WATCH_ID);
     expect(shared.captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('enqueueFixWatchPhase1 — the post-commit enqueue intentReleaseWorker uses', () => {
+  it('adds the phase-1 job under the same stable jobId scheduleFixWatch uses', async () => {
+    await enqueueFixWatchPhase1(WATCH_ID);
+
+    expect(shared.addMock).toHaveBeenCalledTimes(1);
+    const [jobName, data, opts] = shared.addMock.mock.calls[0]!;
+    expect(jobName).toBe(FIX_WATCH_JOB_NAME);
+    expect(data).toEqual({ phase: 'phase1', watchId: WATCH_ID });
+    expect(opts).toMatchObject({ jobId: getFixWatchPhase1JobId(WATCH_ID), delay: 5 * 60_000 });
+  });
+
+  it('THROWS on failure — the caller decides (the release worker swallows, the sweep retries)', async () => {
+    shared.addMock.mockRejectedValueOnce(new Error('redis down'));
+
+    await expect(enqueueFixWatchPhase1(WATCH_ID)).rejects.toThrow('redis down');
+  });
+});
+
+describe('recoverStrandedFixWatches — the durable-enqueue safety net', () => {
+  it('re-enqueues phase 1 for every stranded pending watch, under the stable jobId', async () => {
+    shared.listStrandedPendingWatchIdsMock.mockResolvedValueOnce([WATCH_ID, 'watch-2']);
+
+    await expect(recoverStrandedFixWatches()).resolves.toBe(2);
+
+    expect(shared.listStrandedPendingWatchIdsMock).toHaveBeenCalledWith(PENDING_RECOVERY_MS);
+    expect(shared.addMock).toHaveBeenCalledTimes(2);
+    expect(shared.addMock.mock.calls.map((c) => (c[2] as { jobId: string }).jobId)).toEqual([
+      getFixWatchPhase1JobId(WATCH_ID),
+      getFixWatchPhase1JobId('watch-2'),
+    ]);
+    // A stable jobId is what makes a duplicate add a no-op: the watch whose
+    // original job is still delayed in Redis must not gain a second one.
+    expect(shared.addMock.mock.calls.every((c) => (c[1] as { phase: string }).phase === 'phase1')).toBe(true);
+  });
+
+  it('is a no-op when nothing is stranded', async () => {
+    shared.listStrandedPendingWatchIdsMock.mockResolvedValueOnce([]);
+
+    await expect(recoverStrandedFixWatches()).resolves.toBe(0);
+    expect(shared.addMock).not.toHaveBeenCalled();
+  });
+
+  it('two minutes — far below the coarse-schedule threshold, so it needs no scheduleRegistry slot', () => {
+    expect(PENDING_RECOVERY_MS).toBe(2 * 60 * 1000);
   });
 });
 
@@ -240,21 +313,44 @@ describe('processFixWatchJob — phase 2 dispatch', () => {
   });
 
   it('rejects a malformed payload (bad phase) without calling either check function', async () => {
-    await expect(processFixWatchJob(job({ data: { phase: 'phase3', watchId: WATCH_ID } }) as never)).rejects.toThrow();
+    await expect(processFixWatchJob(job({ data: { phase: 'phase3', watchId: WATCH_ID } }) as never))
+      .rejects.toThrow(/Malformed fix-watch job payload/);
     expect(shared.checkFixWatchPhase1Mock).not.toHaveBeenCalled();
     expect(shared.checkFixWatchPhase2Mock).not.toHaveBeenCalled();
   });
 });
 
+describe('processFixWatchJob — recover dispatch', () => {
+  it("the 'recover' variant rides the SAME queue and job name and runs the sweep", async () => {
+    shared.listStrandedPendingWatchIdsMock.mockResolvedValueOnce([WATCH_ID]);
+
+    await processFixWatchJob({ id: 'job-r', name: FIX_WATCH_JOB_NAME, data: { phase: 'recover' } } as never);
+
+    expect(shared.listStrandedPendingWatchIdsMock).toHaveBeenCalledTimes(1);
+    expect(shared.checkFixWatchPhase1Mock).not.toHaveBeenCalled();
+    expect(shared.checkFixWatchPhase2Mock).not.toHaveBeenCalled();
+    expect(shared.addMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a recover payload carrying a watchId — the union is strict, so a stale producer fails loudly', async () => {
+    await expect(processFixWatchJob({
+      id: 'job-r', name: FIX_WATCH_JOB_NAME, data: { phase: 'recover', watchId: WATCH_ID },
+    } as never)).rejects.toThrow(/Malformed fix-watch job payload/);
+    expect(shared.listStrandedPendingWatchIdsMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a phase-1 payload with no watchId', async () => {
+    await expect(processFixWatchJob({
+      id: 'job-1', name: FIX_WATCH_JOB_NAME, data: { phase: 'phase1' },
+    } as never)).rejects.toThrow(/Malformed fix-watch job payload/);
+    expect(shared.checkFixWatchPhase1Mock).not.toHaveBeenCalled();
+  });
+});
+
 describe('worker lifecycle', () => {
   it('initialize is idempotent and shutdown closes both the worker and the queue', async () => {
-    initializeFixWatchWorker();
-    initializeFixWatchWorker();
-
-    // Only an enqueue constructs the queue (lazily); build one to prove
-    // shutdown closes it.
-    shared.createFixWatchRowMock.mockResolvedValueOnce(WATCH_ID);
-    await scheduleFixWatch(RUN, OUTCOME);
+    await initializeFixWatchWorker();
+    await initializeFixWatchWorker();
 
     await shutdownFixWatchWorker();
 
@@ -262,8 +358,34 @@ describe('worker lifecycle', () => {
     expect(shared.closeQueueMock).toHaveBeenCalledTimes(1);
   });
 
+  it('registers the recovery sweep as a repeatable on the EXISTING queue and job name', async () => {
+    await initializeFixWatchWorker();
+
+    const recoverAdds = shared.addMock.mock.calls.filter(
+      (c) => (c[1] as { phase?: string }).phase === 'recover',
+    );
+    expect(recoverAdds).toHaveLength(1);
+    const [jobName, data, opts] = recoverAdds[0]!;
+    expect(jobName).toBe(FIX_WATCH_JOB_NAME);
+    expect(data).toEqual({ phase: 'recover' });
+    expect(opts).toMatchObject({ jobId: 'fix-watch-recover', repeat: { every: PENDING_RECOVERY_MS } });
+
+    await shutdownFixWatchWorker();
+  });
+
+  it('a failed repeatable registration never stops the worker from starting', async () => {
+    shared.addMock.mockRejectedValueOnce(new Error('redis down'));
+
+    await expect(initializeFixWatchWorker()).resolves.toBeUndefined();
+
+    expect(shared.captureExceptionMock).toHaveBeenCalled();
+    expect(shared.lastWorkerProcessor).toBeDefined();
+
+    await shutdownFixWatchWorker();
+  });
+
   it('the constructed worker processes jobs via processFixWatchJob', async () => {
-    initializeFixWatchWorker();
+    await initializeFixWatchWorker();
 
     expect(shared.lastWorkerProcessor).toBeDefined();
     shared.checkFixWatchPhase2Mock.mockResolvedValueOnce({ action: 'held_qualified' });

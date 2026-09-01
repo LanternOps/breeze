@@ -10,7 +10,7 @@ import type { AgentReleaseAuthority } from '../services/actionIntents/agentRelea
  *  THIS through to the evidence row rather than rebuilding a key itself. */
 const CANONICAL_OP_KEY = 'run_script:execute';
 
-const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock, opEvidenceMock, canonicalKeyMock } = vi.hoisted(() => {
+const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock, opEvidenceMock, canonicalKeyMock, fixWatchMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
@@ -104,10 +104,26 @@ const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStat
     // writer the right metric, for the right branches, only when it won the
     // terminal CAS.
     opEvidenceMock: {
-      insertOpEvidence: vi.fn(async (_rows: unknown[]) => 1),
+      // Second parameter mirrors the real writer's `database` executor — the
+      // savepoint threading is asserted, so it has to be in the signature.
+      insertOpEvidence: vi.fn(async (_rows: unknown[], _database?: unknown) => 1),
       intentEvidenceSourceId: vi.fn((intentId: string) => intentId),
     },
     canonicalKeyMock: { canonicalPolicyKey: vi.fn(() => CANONICAL_OP_KEY) },
+    // P2-5 (#4192) Task 5. Both mocked at the module boundary, same treatment
+    // as opEvidence above: `createIntentFixWatchRow`'s own denormalisation and
+    // partial-conflict contract are pinned in
+    // services/aiAgents/fixWatch.test.ts + fixWatch.sql.test.ts, and the
+    // enqueue's jobId/delay in jobs/fixWatchWorker.test.ts. What THIS file
+    // proves is the SEQUENCING: the watch row is written inside the terminal
+    // CAS's transaction, the BullMQ enqueue strictly after it commits (the
+    // #1105 held-context tripwire throws otherwise), and the `verified`
+    // fallback row is written when — and only when — no watch will ever
+    // verify the operation.
+    fixWatchMock: {
+      createIntentFixWatchRow: vi.fn(async () => 'watch-1' as string | null),
+      enqueueFixWatchPhase1: vi.fn(async () => undefined),
+    },
     // getToolTimeout is mocked (per-test override); withToolTimeout is kept
     // REAL (see vi.mock below) so the timeout test's timer actually fires.
     toolTimeoutsMock: { getToolTimeout: vi.fn() },
@@ -347,6 +363,12 @@ vi.mock('../services/aiAgents/opEvidence', () => ({
 }));
 vi.mock('../services/actionIntents/canonicalPolicyKey', () => ({
   canonicalPolicyKey: canonicalKeyMock.canonicalPolicyKey,
+}));
+vi.mock('../services/aiAgents/fixWatch', () => ({
+  createIntentFixWatchRow: fixWatchMock.createIntentFixWatchRow,
+}));
+vi.mock('./fixWatchWorker', () => ({
+  enqueueFixWatchPhase1: fixWatchMock.enqueueFixWatchPhase1,
 }));
 
 // bullmq is a real dependency we don't want to spin up — mock Worker/Job to
@@ -1650,6 +1672,10 @@ describe('releaseApprovedIntent', () => {
     const AGENT_RUN_ID = 'run-1';
     /** The EFFECTIVE (partner-baseline) agent id the run row records. */
     const AGENT_ID = 'agent-baseline-1';
+    /** The alert that triggered the run — what an intent-anchored fix watch
+     *  is anchored to (P2-5 Task 5). */
+    const RUN_ALERT_ID = 'alert-1';
+    const WATCH_ID = 'watch-1';
 
     const agentAuth = {
       principal: { kind: 'ai_agent' as const, agentId: AGENT_ID, runId: AGENT_RUN_ID },
@@ -1691,7 +1717,7 @@ describe('releaseApprovedIntent', () => {
       actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(agentAuth);
       tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
       toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
-      dbState.selectAgentRunsResults.push(opts.runRow ?? [{ agentId: AGENT_ID, alertId: null }]);
+      dbState.selectAgentRunsResults.push(opts.runRow ?? [{ agentId: AGENT_ID, alertId: RUN_ALERT_ID }]);
     }
 
     beforeEach(() => {
@@ -1710,6 +1736,10 @@ describe('releaseApprovedIntent', () => {
       opEvidenceMock.intentEvidenceSourceId.mockImplementation((intentId: string) => intentId);
       canonicalKeyMock.canonicalPolicyKey.mockReset();
       canonicalKeyMock.canonicalPolicyKey.mockReturnValue(CANONICAL_OP_KEY);
+      fixWatchMock.createIntentFixWatchRow.mockReset();
+      fixWatchMock.createIntentFixWatchRow.mockResolvedValue(WATCH_ID);
+      fixWatchMock.enqueueFixWatchPhase1.mockReset();
+      fixWatchMock.enqueueFixWatchPhase1.mockResolvedValue(undefined);
       dbMock.transaction.mockClear();
       (mockedWithSystemContext as unknown as Mock).mockImplementation(
         async (fn: () => Promise<unknown>) => fn(),
@@ -2037,12 +2067,15 @@ describe('releaseApprovedIntent', () => {
 
       await releaseApprovedIntent(intent.id);
 
-      // Exactly one savepoint per terminal outcome, and the CAS ran BEFORE it
-      // was opened — the whole point of the nesting. A savepoint that
-      // enclosed the CAS would put the terminal write back on the losing side.
-      expect(dbMock.transaction).toHaveBeenCalledTimes(1);
+      // Two savepoints on a successful agent release — one for the ledger
+      // row, one for the verification watch — and BOTH opened after the CAS,
+      // which is the whole point of the nesting. A savepoint that enclosed
+      // the CAS would put the terminal write back on the losing side; a
+      // SHARED savepoint would let a watch-insert failure roll the already-
+      // earned `executed` row back with it.
+      expect(dbMock.transaction).toHaveBeenCalledTimes(2);
       const casOrder = intentServiceMock.transitionIntent.mock.invocationCallOrder[1] ?? -1;
-      expect(dbMock.transaction.mock.invocationCallOrder[0]).toBeGreaterThan(casOrder);
+      expect(Math.min(...dbMock.transaction.mock.invocationCallOrder)).toBeGreaterThan(casOrder);
       expect(casOrder).toBeGreaterThan(0);
       expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledWith(expect.anything(), dbMock.executor);
     });
@@ -2182,6 +2215,219 @@ describe('releaseApprovedIntent', () => {
       expect(seen.cas).toBeGreaterThanOrEqual(1);
       expect(seen.evidence).toBe(seen.cas);
       expect(seen.audit).toBe(0);
+    });
+
+    // -----------------------------------------------------------------------
+    // P2-5 (#4192) Task 5 — the intent-anchored fix watch (closes #4206)
+    //
+    // A released intent is now its OWN verification episode: N intents from
+    // one run get N watches instead of sharing the run-unique one. The watch
+    // row commits with the terminal CAS; its BullMQ job is enqueued strictly
+    // after that commit (the #1105 held-context tripwire throws on an
+    // in-context `queue.add`), and a lost enqueue is recovered by
+    // `recoverStrandedFixWatches` rather than by rolling anything back.
+    // -----------------------------------------------------------------------
+    describe('intent-anchored fix watch', () => {
+      it('a successful release whose run has a triggering alert opens a watch and writes only `executed`', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createIntentFixWatchRow).toHaveBeenCalledTimes(1);
+        expect(fixWatchMock.createIntentFixWatchRow).toHaveBeenCalledWith(
+          {
+            intentId: intent.id,
+            orgId: intent.orgId,
+            runId: AGENT_RUN_ID,
+            agentId: AGENT_ID,
+            alertId: RUN_ALERT_ID,
+            opKey: CANONICAL_OP_KEY,
+          },
+          // Its own SAVEPOINT executor, never the ambient db.
+          dbMock.executor,
+        );
+        // A watch WILL verify this operation, so nothing is credited yet.
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[0]![0]).toEqual([
+          expect.objectContaining({ metric: 'executed' }),
+        ]);
+        expect(fixWatchMock.enqueueFixWatchPhase1).toHaveBeenCalledWith(WATCH_ID);
+      });
+
+      it('a run with NO triggering alert can never be watched, so the operation is credited `verified` on the same source id', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent, { runRow: [{ agentId: AGENT_ID, alertId: null }] });
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createIntentFixWatchRow).not.toHaveBeenCalled();
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(2);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[1]![0]).toEqual([
+          expect.objectContaining({
+            metric: 'verified',
+            sourceKind: 'intent',
+            sourceId: intent.id,
+            opKey: CANONICAL_OP_KEY,
+            agentId: AGENT_ID,
+            runId: AGENT_RUN_ID,
+          }),
+        ]);
+        // Its own SAVEPOINT executor, like every other write in this
+        // transaction — the ambient proxy would put a failed insert on the
+        // outer scope and abort the terminal CAS with it.
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[1]![1]).toBe(dbMock.executor);
+        // A savepoint for the ledger row, a second for the verification
+        // decision — never one shared with the `executed` row it must not be
+        // able to roll back.
+        expect(dbMock.transaction).toHaveBeenCalledTimes(2);
+        expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+
+      it('an alert no longer readable in the org yields no watch — same `verified` credit', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        fixWatchMock.createIntentFixWatchRow.mockResolvedValueOnce(null);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(2);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[1]![0]).toEqual([
+          expect.objectContaining({ metric: 'verified' }),
+        ]);
+        expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+
+      it('a watch-insert FAILURE credits nothing — an operation nobody can verify is never graded verified', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        fixWatchMock.createIntentFixWatchRow.mockRejectedValueOnce(
+          Object.assign(new Error('insert or update violates foreign key constraint'), { code: '23503' }),
+        );
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+        // The `executed` row stands (its own savepoint committed); no
+        // `verified` row is invented for an operation whose watch was lost.
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[0]![0]).toEqual([
+          expect.objectContaining({ metric: 'executed' }),
+        ]);
+        // ...and the completed terminal state — a real side effect — survives.
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'completed', expect.objectContaining({ executedAt: expect.any(Date) }),
+        );
+        expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+          expect.objectContaining({ intentId: intent.id, outcome: 'executed' }),
+        );
+        expect(sentryMock.captureException).toHaveBeenCalled();
+        expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+
+      it('enqueues the phase-1 job strictly AFTER the terminal transaction — an in-context `queue.add` trips #1105', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+
+        let depth = 0;
+        const seen = { cas: -1, watch: -1, enqueue: -1 };
+        const systemContext = mockedWithSystemContext as unknown as Mock;
+        systemContext.mockImplementation(async (fn: () => Promise<unknown>) => {
+          depth += 1;
+          try {
+            return await fn();
+          } finally {
+            depth -= 1;
+          }
+        });
+        intentServiceMock.transitionIntent.mockImplementationOnce(async () => {
+          seen.cas = depth;
+          return true;
+        });
+        fixWatchMock.createIntentFixWatchRow.mockImplementationOnce(async () => {
+          seen.watch = depth;
+          return WATCH_ID;
+        });
+        fixWatchMock.enqueueFixWatchPhase1.mockImplementationOnce(async () => {
+          seen.enqueue = depth;
+        });
+
+        try {
+          await releaseApprovedIntent(intent.id);
+        } finally {
+          systemContext.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+        }
+
+        expect(seen.cas).toBeGreaterThanOrEqual(1);
+        // The row shares the CAS's transaction...
+        expect(seen.watch).toBe(seen.cas);
+        // ...the enqueue does not.
+        expect(seen.enqueue).toBe(0);
+      });
+
+      it('a failed enqueue is swallowed — the row is committed and the recovery sweep re-enqueues it', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        fixWatchMock.enqueueFixWatchPhase1.mockRejectedValueOnce(new Error('redis down'));
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+        expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+          expect.objectContaining({ intentId: intent.id, outcome: 'executed' }),
+        );
+        expect(sentryMock.captureException).toHaveBeenCalled();
+      });
+
+      it('a LOST terminal CAS opens no watch — the outcome belongs to whoever won it', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createIntentFixWatchRow).not.toHaveBeenCalled();
+        expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+
+      it('an ATTEMPTED FAILURE opens no watch — there is no fix whose regression could be observed', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[0]![0]).toEqual([
+          expect.objectContaining({ metric: 'failed' }),
+        ]);
+        expect(fixWatchMock.createIntentFixWatchRow).not.toHaveBeenCalled();
+      });
+
+      it('a human/chat release opens no watch — there is no agent to grade', async () => {
+        const intent = baseIntent();
+        primeThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createIntentFixWatchRow).not.toHaveBeenCalled();
+        expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
     });
   });
 });

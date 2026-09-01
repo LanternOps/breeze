@@ -19,6 +19,16 @@
  * constructed lazily (no eager Redis connect at import time) and this module
  * does not import `runLoop.ts` back.
  *
+ * A THIRD job variant rides the same queue and job name (P2-5, #4192):
+ * `{ phase: 'recover' }`, a 2-minute repeatable that re-enqueues phase 1 for
+ * any watch stranded in `pending`. A watch row commits inside a DB
+ * transaction and its job is added only AFTER that transaction closes
+ * (`bullmqQueue.ts`'s #1105 tripwire forbids enqueueing inside a held
+ * context), so a crash in between leaves a durable row with no job over it —
+ * which used to be permanent, since nothing swept `pending`. Reusing this
+ * queue keeps it out of `workerRegistry.ts` entirely, and 2 minutes is far
+ * below `COARSE_REPEAT_INTERVAL_MS` so it needs no `scheduleRegistry` slot.
+ *
  * Two delayed phases per watch, `fix-watch-p1-<id>` / `fix-watch-p2-<id>`
  * jobIds (Global Constraints) — the `patchJobExecutor.ts` stable-jobId
  * idempotency pattern the plan calls out, so `scheduleFixWatch` (a fresh
@@ -51,6 +61,7 @@ import {
   checkFixWatchPhase2,
   createFixWatchRow,
   FIX_HOLD_MINUTES,
+  listStrandedPendingWatchIds,
   type FinishedRunForWatch,
   type FixWatchOutcomeInput,
 } from '../services/aiAgents/fixWatch';
@@ -61,6 +72,18 @@ export const FIX_WATCH_JOB_NAME = 'check-fix-watch';
 
 const PHASE1_RECHECK_DELAY_MS = 5 * 60_000;
 const PHASE2_DELAY_MS = FIX_HOLD_MINUTES * 60_000;
+
+/**
+ * How long a watch may sit `pending` before the recovery sweep assumes its
+ * phase-1 job was lost and re-adds it (P2-5, #4192). Comfortably longer than
+ * a commit-to-enqueue window and far shorter than the phase-1 recheck
+ * cadence, so a re-add is only ever a no-op or a genuine repair.
+ */
+export const PENDING_RECOVERY_MS = 2 * 60 * 1000;
+
+/** Stable, so re-registering the sweep on every boot replaces rather than
+ *  duplicates it. '-' separator only (#1101). */
+const FIX_WATCH_RECOVER_JOB_ID = 'fix-watch-recover';
 
 /** '-' separator only (repo rule, #1101) — never ':'. */
 export function getFixWatchPhase1JobId(watchId: string): string {
@@ -133,17 +156,77 @@ async function enqueueFixWatchCheck(
 export async function scheduleFixWatch(
   run: FinishedRunForWatch,
   outcome: FixWatchOutcomeInput,
-): Promise<void> {
+): Promise<string | null> {
+  let watchId: string | null = null;
   try {
-    const watchId = await createFixWatchRow(run, outcome);
-    if (!watchId) return;
-    await enqueueFixWatchCheck('phase1', watchId, PHASE1_RECHECK_DELAY_MS);
+    watchId = await createFixWatchRow(run, outcome);
   } catch (error) {
-    console.error('[fixWatchWorker] failed to schedule a fix-held watch (non-fatal)', {
+    console.error('[fixWatchWorker] failed to create a fix-held watch row (non-fatal)', {
       runId: run.id, error,
     });
     captureException(error instanceof Error ? error : new Error(String(error)));
+    return null;
   }
+  if (!watchId) return null;
+
+  try {
+    await enqueueFixWatchPhase1(watchId);
+  } catch (error) {
+    console.error('[fixWatchWorker] failed to enqueue phase 1 — the row is committed, the sweep will recover it', {
+      runId: run.id, watchId, error,
+    });
+    captureException(error instanceof Error ? error : new Error(String(error)));
+  }
+  // The id, NOT null, even when the enqueue above failed. The row is durably
+  // committed and `recoverStrandedFixWatches` re-adds its job within
+  // PENDING_RECOVERY_MS, so a watch WILL render a verdict on this run.
+  // `finishRun` (Task 6) reads null as "no watch will ever verify this run"
+  // and immediately credits every execution `verified` — an immutable ledger
+  // row that a later `recurred` from the recovered watch could not retract.
+  // Null therefore means exactly one thing here: no watch row exists.
+  return watchId;
+}
+
+/**
+ * The initial phase-1 schedule for a watch row someone else has already
+ * committed — `intentReleaseWorker.ts`, which writes its intent-anchored
+ * watch INSIDE the terminal CAS's transaction and so cannot enqueue until
+ * that transaction closes (`bullmqQueue.ts`'s #1105 held-context tripwire).
+ * Throws on failure, like `enqueueFixWatchCheck`: the release worker swallows
+ * it (the row is committed; the sweep recovers it) rather than failing an
+ * already-executed action.
+ */
+export async function enqueueFixWatchPhase1(watchId: string): Promise<void> {
+  await enqueueFixWatchCheck('phase1', watchId, PHASE1_RECHECK_DELAY_MS);
+}
+
+/**
+ * Re-enqueues phase 1 for every watch stranded in `pending` — committed, but
+ * with no job to move it, because the process died (or Redis blipped)
+ * between the row's COMMIT and its post-commit `queue.add`. Returns how many
+ * jobs were added.
+ *
+ * Safe to run on a timer against watches that are perfectly healthy: the
+ * jobId is the same stable `fix-watch-p1-<id>`, so BullMQ treats a re-add for
+ * a watch whose original job is still delayed as a no-op. A watch that
+ * legitimately stays `pending` for hours (phase 1 self-re-delays every 5
+ * minutes until the alert resolves) therefore costs one no-op add per tick,
+ * never a duplicate check.
+ *
+ * A failure PROPAGATES: this runs as a BullMQ job, so its own
+ * attempts/backoff (and the next 2-minute tick) are the retry lane — and the
+ * only realistic failure, Redis being unreachable, would fail every id in the
+ * batch identically.
+ */
+export async function recoverStrandedFixWatches(): Promise<number> {
+  const watchIds = await listStrandedPendingWatchIds(PENDING_RECOVERY_MS);
+  for (const watchId of watchIds) {
+    await enqueueFixWatchPhase1(watchId);
+  }
+  if (watchIds.length > 0) {
+    console.warn('[fixWatchWorker] recovered stranded fix watches', { count: watchIds.length });
+  }
+  return watchIds.length;
 }
 
 /**
@@ -156,6 +239,11 @@ export async function scheduleFixWatch(
 export async function processFixWatchJob(job: Job<FixWatchQueueJobData>, token?: string): Promise<void> {
   assertQueueJobName(FIX_WATCH_QUEUE, job, FIX_WATCH_JOB_NAME);
   const data = parseQueueJobData(FIX_WATCH_QUEUE, job, fixWatchQueueJobDataSchema);
+
+  if (data.phase === 'recover') {
+    await recoverStrandedFixWatches();
+    return;
+  }
 
   if (data.phase === 'phase1') {
     const result = await checkFixWatchPhase1(data.watchId);
@@ -193,7 +281,7 @@ export async function processFixWatchJob(job: Job<FixWatchQueueJobData>, token?:
 
 let fixWatchWorker: Worker<FixWatchQueueJobData> | null = null;
 
-export function initializeFixWatchWorker(): void {
+export async function initializeFixWatchWorker(): Promise<void> {
   if (fixWatchWorker) return;
 
   fixWatchWorker = new Worker<FixWatchQueueJobData>(
@@ -217,6 +305,27 @@ export function initializeFixWatchWorker(): void {
       error,
     });
   });
+
+  // The durable-enqueue safety net, on the SAME queue and job name (no new
+  // registry entry, no scheduleRegistry slot — 2 minutes is far below
+  // COARSE_REPEAT_INTERVAL_MS). Swallowed on failure: a worker that cannot
+  // register its sweep must still consume the watches it CAN see, and the
+  // next boot re-registers it.
+  try {
+    await getFixWatchQueue().add(
+      FIX_WATCH_JOB_NAME,
+      { phase: 'recover' } satisfies FixWatchQueueJobData,
+      {
+        jobId: FIX_WATCH_RECOVER_JOB_ID,
+        repeat: { every: PENDING_RECOVERY_MS },
+        removeOnComplete: { count: 50 },
+        removeOnFail: { count: 50 },
+      },
+    );
+  } catch (error) {
+    console.error('[fixWatchWorker] failed to register the stranded-watch recovery sweep', { error });
+    captureException(error instanceof Error ? error : new Error(String(error)));
+  }
 
   console.log('[fixWatchWorker] initialized');
 }

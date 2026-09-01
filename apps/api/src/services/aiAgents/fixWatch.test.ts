@@ -14,12 +14,21 @@ const RULE_ID = '00000000-0000-4000-8000-0000000000d7';
 const WATCH_ID = '00000000-0000-4000-8000-0000000000d8';
 const USER_ID = '00000000-0000-4000-8000-0000000000d9';
 const RECURRENCE_ALERT_ID = '00000000-0000-4000-8000-0000000000da';
+const INTENT_ID = '00000000-0000-4000-8000-0000000000db';
+/** A colon key — `canonicalPolicyKey`'s shape for a released intent, as
+ *  opposed to the dot keys an act manifest uses. */
+const OP_KEY = 'manage_services:restart';
 
 const state = vi.hoisted(() => ({
   selectQueue: [] as unknown[][],
   selectWheres: [] as unknown[],
   insertReturningQueue: [] as (unknown[] | undefined)[],
   insertValues: [] as Record<string, unknown>[],
+  // The `onConflictDoNothing({ target, where })` argument, captured so the
+  // partial-unique-index PREDICATE can be asserted (P2-5, #4192): Postgres
+  // cannot infer a partial unique index as the conflict arbiter without it,
+  // and both watch indexes became partial in this wave.
+  insertConflicts: [] as ({ target?: unknown; where?: unknown } | undefined)[],
   updateSets: [] as Record<string, unknown>[],
   updateWheres: [] as unknown[],
   // Consumed by `.returning()` on the update builder — a queued `[]` (or
@@ -38,6 +47,7 @@ function resetDbState(): void {
   state.selectWheres = [];
   state.insertReturningQueue = [];
   state.insertValues = [];
+  state.insertConflicts = [];
   state.updateSets = [];
   state.updateWheres = [];
   state.updateReturningQueue = [];
@@ -75,7 +85,10 @@ vi.mock('../../db', () => {
         state.insertValues.push(v);
         return builder;
       }),
-      onConflictDoNothing: vi.fn(() => builder),
+      onConflictDoNothing: vi.fn((clause?: { target?: unknown; where?: unknown }) => {
+        state.insertConflicts.push(clause);
+        return builder;
+      }),
       returning: vi.fn(() => ({
         then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
           Promise.resolve(state.insertReturningQueue.shift() ?? []).then(resolve, reject),
@@ -141,12 +154,16 @@ import {
   checkFixWatchPhase1,
   checkFixWatchPhase2,
   createFixWatchRow,
+  createIntentFixWatchRow,
   FIX_HOLD_MINUTES,
+  listStrandedPendingWatchIds,
   RECOVERY_TIMEOUT_HOURS,
   isFixWatchEligible,
   type FinishedRunForWatch,
   type FixWatchOutcomeInput,
+  type IntentForWatch,
 } from './fixWatch';
+import { db } from '../../db';
 
 const dialect = new PgDialect();
 
@@ -331,6 +348,229 @@ describe('createFixWatchRow', () => {
     state.insertReturningQueue.push([]); // conflict — nothing returned
     const id = await createFixWatchRow(finishedRun(), outcome());
     expect(id).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createFixWatchRow — P2-5 (#4192) additions: op-key snapshot + the partial
+// conflict target
+// ---------------------------------------------------------------------------
+describe('createFixWatchRow — P2-5 source_kind / op_keys / partial conflict target', () => {
+  function primeInsert(): void {
+    state.selectQueue.push(
+      [{ ruleId: RULE_ID, deviceId: DEVICE_ID, configItemName: 'disk_cleanup' }],
+      [{ partnerId: PARTNER_ID }],
+    );
+    state.insertReturningQueue.push([{ id: WATCH_ID }]);
+  }
+
+  it("stamps source_kind 'act_run' and snapshots the manifest op keys of the executed actions", async () => {
+    primeInsert();
+
+    await createFixWatchRow(finishedRun(), outcome({
+      executedActions: [
+        { verification: 'passed', execution: 'succeeded', actOpKey: 'manage_services.restart' },
+        { verification: 'passed', execution: 'succeeded', actOpKey: 'run_script.execute' },
+      ],
+    }));
+
+    expect(state.insertValues[0]).toMatchObject({
+      sourceKind: 'act_run',
+      opKeys: ['manage_services.restart', 'run_script.execute'],
+    });
+  });
+
+  it('drops actions with no op key and de-duplicates repeats (one evidence source id per key, Task 6)', async () => {
+    primeInsert();
+
+    await createFixWatchRow(finishedRun(), outcome({
+      executedActions: [
+        { verification: 'passed', execution: 'succeeded', actOpKey: 'manage_services.restart' },
+        { verification: 'skipped', execution: 'succeeded', actOpKey: 'manage_services.restart' },
+        { verification: 'skipped', execution: 'succeeded' },
+      ],
+    }));
+
+    expect(state.insertValues[0]).toMatchObject({ opKeys: ['manage_services.restart'] });
+  });
+
+  it('a pre-P2-5-shaped run (no act op keys at all) snapshots an empty array, never null', async () => {
+    primeInsert();
+
+    await createFixWatchRow(finishedRun(), outcome());
+
+    expect(state.insertValues[0]!.opKeys).toEqual([]);
+  });
+
+  it('names the partial index predicate on the conflict target — Postgres cannot infer a partial unique index without it', async () => {
+    primeInsert();
+
+    await createFixWatchRow(finishedRun(), outcome());
+
+    expect(state.insertConflicts).toHaveLength(1);
+    const clause = state.insertConflicts[0]!;
+    expect(sqlText(clause.where)).toContain("\"source_kind\" = 'act_run'");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createIntentFixWatchRow — the intent-anchored sibling (P2-5, #4192,
+// closes #4206)
+// ---------------------------------------------------------------------------
+describe('createIntentFixWatchRow', () => {
+  function intentForWatch(overrides: Partial<IntentForWatch> = {}): IntentForWatch {
+    return {
+      intentId: INTENT_ID,
+      orgId: ORG_ID,
+      runId: RUN_ID,
+      agentId: AGENT_ID,
+      alertId: ALERT_ID,
+      opKey: OP_KEY,
+      ...overrides,
+    };
+  }
+
+  it("denormalizes rule_id/device_id/config_item_name from the ALERT row and writes source_kind 'intent' with the released op key", async () => {
+    state.selectQueue.push(
+      [{ ruleId: RULE_ID, deviceId: DEVICE_ID, configItemName: 'disk_cleanup' }], // alert lookup
+      [{ partnerId: PARTNER_ID }], // org lookup
+    );
+    state.insertReturningQueue.push([{ id: WATCH_ID }]);
+
+    const id = await createIntentFixWatchRow(intentForWatch());
+
+    expect(id).toBe(WATCH_ID);
+    expect(state.insertValues).toHaveLength(1);
+    expect(state.insertValues[0]).toMatchObject({
+      orgId: ORG_ID,
+      partnerId: PARTNER_ID,
+      agentId: AGENT_ID,
+      runId: RUN_ID,
+      intentId: INTENT_ID,
+      alertId: ALERT_ID,
+      ruleId: RULE_ID,
+      deviceId: DEVICE_ID,
+      configItemName: 'disk_cleanup',
+      state: 'pending',
+      sourceKind: 'intent',
+      opKeys: [OP_KEY],
+    });
+  });
+
+  it('reads the triggering alert predicated by BOTH id and org_id — RLS passes unconditionally under the system context, so the org predicate IS the isolation', async () => {
+    state.selectQueue.push(
+      [{ ruleId: RULE_ID, deviceId: DEVICE_ID, configItemName: null }],
+      [{ partnerId: PARTNER_ID }],
+    );
+    state.insertReturningQueue.push([{ id: WATCH_ID }]);
+
+    await createIntentFixWatchRow(intentForWatch());
+
+    const alertWhere = sqlText(state.selectWheres[0]);
+    expect(alertWhere).toContain('"alerts"."id"');
+    expect(alertWhere).toContain('"alerts"."org_id"');
+  });
+
+  it('returns null when the triggering alert is not readable in this org (deleted, or another tenant)', async () => {
+    state.selectQueue.push([]); // alert lookup — nothing found
+
+    const id = await createIntentFixWatchRow(intentForWatch());
+
+    expect(id).toBeNull();
+    expect(state.insertCount).toBe(0);
+  });
+
+  it('returns null when the org has no resolvable partner', async () => {
+    state.selectQueue.push(
+      [{ ruleId: RULE_ID, deviceId: DEVICE_ID, configItemName: null }],
+      [], // org lookup — nothing found
+    );
+
+    const id = await createIntentFixWatchRow(intentForWatch());
+
+    expect(id).toBeNull();
+    expect(state.insertCount).toBe(0);
+  });
+
+  it('names the partial UNIQUE (intent_id) predicate on the conflict target', async () => {
+    state.selectQueue.push(
+      [{ ruleId: RULE_ID, deviceId: DEVICE_ID, configItemName: null }],
+      [{ partnerId: PARTNER_ID }],
+    );
+    state.insertReturningQueue.push([{ id: WATCH_ID }]);
+
+    await createIntentFixWatchRow(intentForWatch());
+
+    const clause = state.insertConflicts[0]!;
+    expect(sqlText(clause.where)).toContain('"intent_id" is not null');
+  });
+
+  it('a second call for the same intent inserts nothing and returns the EXISTING watch id — null must mean "no watch exists"', async () => {
+    state.selectQueue.push(
+      [{ ruleId: RULE_ID, deviceId: DEVICE_ID, configItemName: null }],
+      [{ partnerId: PARTNER_ID }],
+      [{ id: WATCH_ID }], // the row the partial UNIQUE already holds
+    );
+    state.insertReturningQueue.push([]); // ON CONFLICT DO NOTHING — no row back
+
+    const id = await createIntentFixWatchRow(intentForWatch());
+
+    expect(id).toBe(WATCH_ID);
+  });
+
+  it('issues every statement through the SAVEPOINT executor it was handed, never the ambient db', async () => {
+    state.selectQueue.push(
+      [{ ruleId: RULE_ID, deviceId: DEVICE_ID, configItemName: null }],
+      [{ partnerId: PARTNER_ID }],
+    );
+    state.insertReturningQueue.push([{ id: WATCH_ID }]);
+    // Delegates to the same builders, so behavior is unchanged and only the
+    // ENTRY POINT differs — which is the thing under test: a statement issued
+    // on the outer scope aborts the caller's whole transaction on any error,
+    // savepoint or not (postgres-js records the first failed query of a scope
+    // and rethrows it at scope end).
+    const executor = {
+      select: vi.fn((...args: unknown[]) => (db.select as (...a: unknown[]) => unknown)(...args)),
+      insert: vi.fn((...args: unknown[]) => (db.insert as (...a: unknown[]) => unknown)(...args)),
+    };
+
+    const id = await createIntentFixWatchRow(intentForWatch(), executor as never);
+
+    expect(id).toBe(WATCH_ID);
+    expect(executor.select).toHaveBeenCalledTimes(2);
+    expect(executor.insert).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listStrandedPendingWatchIds — the durable-enqueue recovery reader
+// ---------------------------------------------------------------------------
+describe('listStrandedPendingWatchIds', () => {
+  it('selects only pending watches created before `now - olderThanMs`', async () => {
+    state.selectQueue.push([{ id: WATCH_ID }, { id: 'watch-2' }]);
+    const before = Date.now();
+
+    const ids = await listStrandedPendingWatchIds(120_000);
+
+    expect(ids).toEqual([WATCH_ID, 'watch-2']);
+    const compiled = dialect.sqlToQuery(state.selectWheres[0] as SQL);
+    expect(compiled.sql).toContain('"state" =');
+    expect(compiled.sql).toContain('"created_at" <');
+    // The cutoff is `now - olderThanMs`, NOT `now` — a watch created seconds
+    // ago is still waiting on its own delayed job, not stranded. A dropped
+    // subtraction would re-enqueue every pending watch on every tick.
+    expect(compiled.params).toContain('pending');
+    // The timestamp param is mapped to the driver's string form by the
+    // dialect, so compare it back as a Date rather than by identity.
+    const cutoffParam = compiled.params.find((param) => param !== 'pending');
+    const cutoff = new Date(String(cutoffParam));
+    expect(Number.isNaN(cutoff.getTime())).toBe(false);
+    expect(cutoff.getTime()).toBeLessThanOrEqual(before - 120_000);
+  });
+
+  it('returns an empty list when nothing is stranded', async () => {
+    state.selectQueue.push([]);
+    await expect(listStrandedPendingWatchIds(120_000)).resolves.toEqual([]);
   });
 });
 
