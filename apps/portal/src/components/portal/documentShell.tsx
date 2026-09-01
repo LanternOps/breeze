@@ -7,6 +7,7 @@
 import { markChipClass, type MarkTone } from './ui';
 import type { ReactNode } from 'react';
 import { sellerLines } from '@/lib/sellerLines';
+import type { DocumentThemeId } from '@breeze/shared';
 
 export interface DocSeller {
   name: string | null;
@@ -25,7 +26,7 @@ export interface DocSeller {
  *  call site. */
 export function DocumentPaper({
   children, testId, docTheme,
-}: { primaryColor?: string | null; children: ReactNode; testId?: string; docTheme?: string | null }) {
+}: { primaryColor?: string | null; children: ReactNode; testId?: string; docTheme?: DocumentThemeId | null }) {
   return (
     <div
       data-testid={testId}
