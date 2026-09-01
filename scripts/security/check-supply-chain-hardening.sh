@@ -353,6 +353,30 @@ require_order 'id: push-executor-digest' 'name: Scan exact executor digest' "$ac
 require_order 'name: Scan exact executor digest' 'name: Promote scanned executor digest' "$actions_release_block" \
   "actions-executor release promotion must occur only after its exact digest passes scanning"
 
+# The ACTIONS executor's Dockerfile gets the same shape block as its read
+# sibling. It holds Microsoft Graph *mutation* credentials — the highest
+# blast radius of the three executors — so it must be at least as
+# constrained as the ones with lower privilege, not less (#4272, dup #4264).
+ACTIONS_EXECUTOR_DOCKERFILE=apps/m365-graph-actions-executor/Dockerfile
+[[ -f "$ACTIONS_EXECUTOR_DOCKERFILE" ]] || fail "$ACTIONS_EXECUTOR_DOCKERFILE must package the isolated Graph-actions executor"
+require_grep '^FROM[[:space:]]+node:24-alpine@sha256:[0-9a-f]{64}[[:space:]]+AS[[:space:]]+build' "$ACTIONS_EXECUTOR_DOCKERFILE" \
+  "actions-executor build stage must digest-pin Node while retaining the tag"
+require_grep '^FROM[[:space:]]+node:24-alpine@sha256:[0-9a-f]{64}[[:space:]]+AS[[:space:]]+runner' "$ACTIONS_EXECUTOR_DOCKERFILE" \
+  "actions-executor runtime stage must digest-pin Node while retaining the tag"
+require_grep '^USER[[:space:]]+node$' "$ACTIONS_EXECUTOR_DOCKERFILE" \
+  "actions-executor runtime must run as the non-root node user"
+require_grep '^HEALTHCHECK .*\/healthz' "$ACTIONS_EXECUTOR_DOCKERFILE" \
+  "actions-executor image must declare its bounded health endpoint"
+require_grep '^CMD[[:space:]]+\["node",[[:space:]]*"dist/index\.cjs"\]' "$ACTIONS_EXECUTOR_DOCKERFILE" \
+  "actions-executor image must start only its compiled bounded runtime"
+require_audited_openssl_upgrade "$ACTIONS_EXECUTOR_DOCKERFILE"
+reject_grep '^(COPY|ADD)[[:space:]].*(\.env|\.pem|\.key|secret)' "$ACTIONS_EXECUTOR_DOCKERFILE" \
+  "actions-executor image must not copy env, certificate, key, or secret files"
+reject_grep '^COPY[[:space:]]+\.[[:space:]]+\.' "$ACTIONS_EXECUTOR_DOCKERFILE" \
+  "actions-executor image must use an explicit deterministic build context allowlist"
+require_grep 'directory: "/apps/m365-graph-actions-executor"' .github/dependabot.yml \
+  "Dependabot must maintain the actions-executor Dockerfile's digest-pinned base image"
+
 # The COMMUNICATIONS executor's release image gets the same digest-first shape.
 comms_release_block="$GUARD_TMP_DIR/communications-executor-release.yml"
 extract_yaml_job build-docker-m365-communications-executor .github/workflows/release.yml "$comms_release_block"
@@ -388,8 +412,7 @@ require_grep 'directory: "/apps/m365-communications-executor"' .github/dependabo
   "Dependabot must maintain the communications-executor Dockerfile's digest-pinned base image"
 
 # The communications executor's Dockerfile gets the same shape block as the
-# read executor's. (The actions executor never got one — an acknowledged
-# inconsistency; the comms clone starts consistent.)
+# read and actions executors' (see ACTIONS_EXECUTOR_DOCKERFILE above).
 COMMS_EXECUTOR_DOCKERFILE=apps/m365-communications-executor/Dockerfile
 [[ -f "$COMMS_EXECUTOR_DOCKERFILE" ]] || fail "$COMMS_EXECUTOR_DOCKERFILE must package the isolated communications executor"
 require_grep '^FROM[[:space:]]+node:24-alpine@sha256:[0-9a-f]{64}[[:space:]]+AS[[:space:]]+build' "$COMMS_EXECUTOR_DOCKERFILE" \

@@ -114,8 +114,16 @@ const PINNED_NODE_ALPINE_RE = /^node:[^\s@]*-alpine@sha256:[0-9a-f]{64}$/;
 /** Customer-Graph credential-boundary images with the narrow CVE exception. */
 const CREDENTIAL_BOUNDARY_DOCKERFILES = [
   'apps/m365-graph-read-executor/Dockerfile',
+  'apps/m365-graph-actions-executor/Dockerfile',
   'apps/m365-communications-executor/Dockerfile',
 ] as const;
+
+/** Hardening-script shell variable each credential-boundary Dockerfile is checked through. */
+const CREDENTIAL_BOUNDARY_SCRIPT_VARIABLE: Record<(typeof CREDENTIAL_BOUNDARY_DOCKERFILES)[number], string> = {
+  'apps/m365-graph-read-executor/Dockerfile': 'EXECUTOR_DOCKERFILE',
+  'apps/m365-graph-actions-executor/Dockerfile': 'ACTIONS_EXECUTOR_DOCKERFILE',
+  'apps/m365-communications-executor/Dockerfile': 'COMMS_EXECUTOR_DOCKERFILE',
+};
 
 const HARDENING_SCRIPT = 'scripts/security/check-supply-chain-hardening.sh';
 
@@ -273,10 +281,7 @@ describe('Dockerfile OpenSSL upgrade coverage', () => {
     (dockerfile) => {
       const script = readFileSync(path.join(REPO_ROOT, HARDENING_SCRIPT), 'utf8');
       const source = SOURCES.get(dockerfile)!;
-      const variable =
-        dockerfile === 'apps/m365-graph-read-executor/Dockerfile'
-          ? 'EXECUTOR_DOCKERFILE'
-          : 'COMMS_EXECUTOR_DOCKERFILE';
+      const variable = CREDENTIAL_BOUNDARY_SCRIPT_VARIABLE[dockerfile];
       const apkMutationLines = source
         .split('\n')
         .map((line) => line.trim())
