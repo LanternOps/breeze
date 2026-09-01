@@ -342,6 +342,38 @@ export const ALERT_SUPPRESS_CAS_LOST_MESSAGE =
   'Alert is no longer suppressible — it already reached a terminal status (resolved or dismissed).';
 
 /**
+ * The statuses an alert can be dismissed FROM: every one except `dismissed` itself.
+ *
+ * The widest of the four sets, and deliberately the only one containing a TERMINAL
+ * status. Dismiss is the "make this go away for good" action and is documented as
+ * legal from any other status — clearing an already-`resolved` alert off the list is
+ * the workflow it exists for, so excluding `resolved` here would break a supported
+ * operation rather than close a race.
+ *
+ * `dismissed` is excluded for the opposite reason, and that exclusion is the entire
+ * guard: with it in the set the predicate would match an already-dismissed row, the
+ * losing caller's UPDATE would succeed, and `dismissedAt`/`dismissedBy` would be
+ * re-stamped over the winner's — a CAS present in the code and absent in effect.
+ */
+export const DISMISSIBLE_ALERT_STATUSES = [
+  'active',
+  'acknowledged',
+  'suppressed',
+  'resolved',
+] as const;
+
+/**
+ * What a dismiss path reports when it LOSES the compare-and-swap.
+ *
+ * Same discipline as the three above: state only what the code can verify. An empty
+ * `RETURNING` here means the row is no longer dismissible, which is also what an
+ * RLS-invisible or deleted row produces — so this does not claim "another request
+ * dismissed it", however likely that is.
+ */
+export const ALERT_DISMISS_CAS_LOST_MESSAGE =
+  'Alert is no longer dismissible — it has already been dismissed.';
+
+/**
  * The compare-and-swap predicate for acknowledging ONE alert by id (#4101).
  *
  * The acknowledge handlers had the identical check-then-act shape the resolve paths
@@ -374,10 +406,32 @@ export function buildSuppressAlertCas(alertId: string) {
 }
 
 /**
- * The one place the CAS SHAPE lives. The three builders above differ only in which
+ * The compare-and-swap predicate for dismissing ONE alert by id (#4293) — the last
+ * single-alert transition to get one.
+ *
+ * What a lost race costs here is narrower than #4101 and is NOT a reopened alert:
+ * because dismiss is legal from every other status, a dismiss landing on a
+ * just-resolved alert is the intended outcome. The casualty is PROVENANCE. Two techs
+ * dismiss the same alert; both id-only UPDATEs matched, so `dismissedAt`/`dismissedBy`
+ * described whichever write landed second while BOTH callers got a 200, an ML feedback
+ * emit and an audit row claiming the transition. For the terminal action, "who
+ * dismissed this and when" is the field most likely to be asked about later.
+ *
+ * The single-alert dismiss paths are this route only. The two multi-row paths compose
+ * their predicate directly because they need `inArray(alerts.id, ...)`: the bulk alert
+ * action pins each row to the exact status its snapshot saw, which is stricter than
+ * this set but correct there — bulk reports a `skipped` count rather than an error, so
+ * a concurrent change costs the caller a retry hint, not a refused operation.
+ */
+export function buildDismissAlertCas(alertId: string) {
+  return buildAlertStatusCas(alertId, DISMISSIBLE_ALERT_STATUSES);
+}
+
+/**
+ * The one place the CAS SHAPE lives. The four builders above differ only in which
  * statuses they admit; funnelling them through here means a change to the shape
  * (`and` → `or`, dropping the id equality) cannot land on one transition and miss
- * the other two — which is exactly how a predicate and its compiled-SQL test have
+ * the other three — which is exactly how a predicate and its compiled-SQL test have
  * drifted apart in this file before.
  */
 function buildAlertStatusCas(alertId: string, statuses: readonly AlertStatus[]) {

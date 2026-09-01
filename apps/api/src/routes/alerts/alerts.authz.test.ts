@@ -719,12 +719,17 @@ describe('alert dismiss', () => {
     expect(row.dismissedBy).toBe('u-1');
   });
 
-  it('400 when the alert is already dismissed', async () => {
+  it('409 when the alert is already dismissed', async () => {
     (getAlertWithOrgCheck as ReturnType<typeof vi.fn>).mockResolvedValue(
       state.alerts.find((a) => a.id === ALERT_DISMISSED)
     );
     const res = await makeApp().request(`/alerts/${ALERT_DISMISSED}/dismiss`, { method: 'POST' });
-    expect(res.status).toBe(400);
+    // 409, not the 400 this returned before #4293. Once the UPDATE became a
+    // compare-and-swap that answers 409 when it loses, keeping this branch at 400
+    // would have made the response code depend purely on whether the other dismissal
+    // landed before or after this request's pre-read — the split #4099 and #4288
+    // removed from resolve and acknowledge respectively.
+    expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Alert is already dismissed' });
   });
 
