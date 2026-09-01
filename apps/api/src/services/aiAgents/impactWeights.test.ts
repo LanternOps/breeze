@@ -22,12 +22,13 @@ const { getCurrentDbAccessContextMock, runOutsideDbContextMock, withSystemDbAcce
     const from = vi.fn(() => ({ where: selectWhere }));
     const select = vi.fn(() => ({ from }));
 
-    const updateWhere = vi.fn((_condition?: unknown) => Promise.resolve(undefined));
+    const updateReturning = vi.fn((_columns?: unknown) => Promise.resolve([{ id: 'unused' }]));
+    const updateWhere = vi.fn((_condition?: unknown) => ({ returning: updateReturning }));
     const set = vi.fn(() => ({ where: updateWhere }));
     const update = vi.fn(() => ({ set }));
 
     return {
-      dbMock: { select, from, selectWhere, limit, update, set, updateWhere },
+      dbMock: { select, from, selectWhere, limit, update, set, updateWhere, updateReturning },
       getCurrentDbAccessContextMock: vi.fn<
         () => { scope: string; accessiblePartnerIds?: string[] | null } | undefined
       >(() => undefined),
@@ -44,6 +45,7 @@ vi.mock('../../db', () => ({
 }));
 
 import {
+  ImpactPartnerNotFoundError,
   ImpactPartnerUnresolvedError,
   loadImpactWeights,
   resolveImpactPartnerId,
@@ -68,7 +70,8 @@ beforeEach(() => {
 
   dbMock.update.mockReturnValue({ set: dbMock.set });
   dbMock.set.mockReturnValue({ where: dbMock.updateWhere });
-  dbMock.updateWhere.mockResolvedValue(undefined);
+  dbMock.updateWhere.mockReturnValue({ returning: dbMock.updateReturning });
+  dbMock.updateReturning.mockResolvedValue([{ id: 'partner-row' }]);
 });
 
 describe('loadImpactWeights', () => {
@@ -216,5 +219,20 @@ describe('saveImpactWeights', () => {
 
     expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
     expect(runOutsideDbContextMock).not.toHaveBeenCalled();
+  });
+
+  it('throws ImpactPartnerNotFoundError when the UPDATE matches zero rows, without returning success', async () => {
+    dbMock.limit.mockResolvedValueOnce([{ aiImpactWeights: null }]);
+    dbMock.updateReturning.mockResolvedValueOnce([]);
+    const auth = { scope: 'partner', partnerOrgAccess: 'all' } as unknown as AuthContext;
+
+    await expect(saveImpactWeights(auth, PARTNER_ID, { fixExecuted: 1200 })).rejects.toBeInstanceOf(
+      ImpactPartnerNotFoundError
+    );
+    // The UPDATE was still issued (a caller who passed the gate but named a
+    // partnerId that isn't their own, or that doesn't exist, must not get a
+    // silent no-op success) — the rejection comes from the zero-row result,
+    // not from skipping the write.
+    expect(dbMock.update).toHaveBeenCalledTimes(1);
   });
 });

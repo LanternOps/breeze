@@ -43,6 +43,23 @@ export class ImpactPartnerUnresolvedError extends Error {
 }
 
 /**
+ * Thrown when the weights UPDATE affects zero rows: `partners` has forced
+ * RLS with a per-command UPDATE policy keyed on breeze_has_partner_access
+ * (migrations/2026-04-11-partners-rls.sql), so a `partnerId` that does not
+ * exist — or that RLS silently declines under the caller's own context —
+ * would otherwise let `saveImpactWeights` resolve as if the write landed.
+ * Callers that already passed `canManagePartnerWidePolicies` have direct RLS
+ * access to their own partner row, so this only fires on a partnerId that
+ * isn't a real, accessible partner — never on a legitimate write.
+ */
+export class ImpactPartnerNotFoundError extends Error {
+  constructor(message = 'Partner not found or not writable by this caller') {
+    super(message);
+    this.name = 'ImpactPartnerNotFoundError';
+  }
+}
+
+/**
  * The partner whose weights price this request. `auth.partnerId` for
  * organization and partner scope (an org token carries a partnerId even
  * though it can never pass breeze_has_partner_access); for system scope the
@@ -96,8 +113,9 @@ export async function loadImpactWeights(partnerId: string): Promise<ResolvedImpa
  * Writes under the CALLER's own context (partner scope passes
  * breeze_has_partner_access) — never the system escape. `overrides: null`
  * resets to defaults. Throws PartnerWideWriteDeniedError when
- * canManagePartnerWidePolicies(auth) is false. Returns before/after for the
- * route's audit row.
+ * canManagePartnerWidePolicies(auth) is false, and ImpactPartnerNotFoundError
+ * when the UPDATE affects zero rows (unknown or RLS-declined partnerId).
+ * Returns before/after for the route's audit row.
  */
 export async function saveImpactWeights(
   auth: AuthContext,
@@ -119,10 +137,17 @@ export async function saveImpactWeights(
     .limit(1);
   const before = normalizeImpactWeightOverrides(existing?.aiImpactWeights ?? null);
 
-  await db
+  // `.returning()` gives a typed row array (drizzle-orm/postgres-js), unlike
+  // a raw `db.execute()` result whose row-count shape needs the
+  // `db/rowCount.ts` reader — zero rows back means the UPDATE matched
+  // nothing, whether because partnerId doesn't exist or because RLS declined
+  // it, and must not be reported as a successful save (#2822 failure class).
+  const updated = await db
     .update(partners)
     .set({ aiImpactWeights: normalized })
-    .where(eq(partners.id, partnerId));
+    .where(eq(partners.id, partnerId))
+    .returning({ id: partners.id });
+  if (updated.length === 0) throw new ImpactPartnerNotFoundError();
 
   return {
     before,
