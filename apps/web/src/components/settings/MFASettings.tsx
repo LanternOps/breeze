@@ -339,6 +339,10 @@ export default function MFASettings({
       // `setShowCodes(true)` re-displayed the PREVIOUS set after a failed
       // regeneration, which reads as "here are your new codes".
       if ((await onGenerateRecoveryCodes?.(recoveryPassword)) !== false) {
+        // `displayCodes` prefers `smsRecoveryCodes`, and a regeneration only
+        // refreshes the `recoveryCodes` PROP. Leaving the SMS set in place
+        // would keep rendering the codes this call just invalidated.
+        setSmsRecoveryCodes(undefined);
         setShowCodes(true);
       }
     } catch {

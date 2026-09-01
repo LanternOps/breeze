@@ -103,6 +103,74 @@ describe('MFASettings — recovery codes are regenerate-only (#4414)', () => {
     expect(screen.queryByText('STALE-0001')).toBeNull();
   });
 
+  // The SMS enrollment road lands on this same view but renders from
+  // `smsRecoveryCodes`, and `displayCodes` prefers it (`smsRecoveryCodes ||
+  // recoveryCodes`). A regeneration only ever refreshes the `recoveryCodes`
+  // PROP, so without clearing the SMS set the panel keeps showing codes the
+  // regeneration just invalidated — the exact promise #4414 exists to make.
+  it('replaces SMS-enrollment codes with the regenerated set', async () => {
+    const onGenerateRecoveryCodes = vi.fn().mockResolvedValue(true);
+    render(
+      <MFASettings
+        enabled={false}
+        smsAllowed
+        phoneVerified
+        phoneLast4="1234"
+        recoveryCodes={['REGENERATED-0001']}
+        onEnableSmsMfa={vi.fn().mockResolvedValue({ success: true, recoveryCodes: ['SMS-0001'] })}
+        onGenerateRecoveryCodes={onGenerateRecoveryCodes}
+      />
+    );
+
+    // Two rows offer "Enable" while MFA is off; the SMS one is the second.
+    const enableButtons = await screen.findAllByRole('button', { name: /^Enable$/i });
+    fireEvent.click(enableButtons[enableButtons.length - 1]);
+    const smsPassword = document.getElementById('mfa-sms-password') as HTMLInputElement;
+    expect(smsPassword).not.toBeNull();
+    fireEvent.change(smsPassword, { target: { value: 'hunter2-pw' } });
+    fireEvent.click(screen.getByRole('button', { name: /Enable SMS MFA/i }));
+
+    expect(await screen.findByText('SMS-0001')).toBeTruthy();
+
+    fillPassword();
+    fireEvent.click(screen.getByTestId('mfa-recovery-regenerate'));
+    fireEvent.click(await screen.findByTestId('confirm-regenerate-recovery-codes'));
+
+    expect(await screen.findByText('REGENERATED-0001')).toBeTruthy();
+    expect(screen.queryByText('SMS-0001')).toBeNull();
+  });
+
+  it('keeps the disable panel open when the code is rejected', async () => {
+    const onDisable = vi.fn().mockResolvedValue(false);
+    render(
+      <MFASettings
+        enabled
+        mfaMethod="totp"
+        errorMessage="Invalid MFA code"
+        onDisable={onDisable}
+      />
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Disable$/i }));
+    await screen.findByRole('heading', { name: /Disable MFA/i });
+
+    const digits = document.querySelectorAll<HTMLInputElement>('input[inputmode="numeric"]');
+    digits.forEach((input, index) => {
+      fireEvent.change(input, { target: { value: String(index + 1) } });
+    });
+    const password = document.getElementById('mfa-disable-password') as HTMLInputElement;
+    fireEvent.change(password, { target: { value: 'hunter2-pw' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Disable MFA$/i }));
+
+    await waitFor(() => expect(onDisable).toHaveBeenCalledWith('123456', 'hunter2-pw'));
+    // A rejected disable used to collapse to a status card that still read
+    // "Enabled" — the user could not tell that anything had failed.
+    expect(await screen.findByText(/Invalid MFA code/i)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /Disable MFA/i })).toBeTruthy();
+    expect(screen.queryByTestId('mfa-recovery-regenerate-start')).toBeNull();
+  });
+
   it('shows the new codes once the regeneration succeeds', async () => {
     const onGenerateRecoveryCodes = vi.fn().mockResolvedValue(true);
     render(

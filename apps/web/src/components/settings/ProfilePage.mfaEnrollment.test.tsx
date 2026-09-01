@@ -151,6 +151,80 @@ describe('ProfilePage — MFA enrollment rejects a wrong TOTP (#4413)', () => {
     ).toBe(true);
   });
 
+  it('shows the retry hint on rejection, and clears it on the next enrollment', async () => {
+    render(<ProfilePage initialUser={BASE_USER} />);
+
+    await openEnrollmentPanel();
+    expect(screen.queryByTestId('mfa-code-rejected-hint')).toBeNull();
+
+    fillCode();
+    fireEvent.click(screen.getByRole('button', { name: /Verify and enable/i }));
+
+    // The bare server string does not say the enrollment survived; this does.
+    expect(await screen.findByTestId('mfa-code-rejected-hint')).toBeTruthy();
+
+    // Backing out and starting over must not carry the stale hint in.
+    fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+    await screen.findByTestId('mfa-setup-start');
+    await openEnrollmentPanel();
+    expect(screen.queryByTestId('mfa-code-rejected-hint')).toBeNull();
+  });
+
+  it('keeps the rejected 401 off the refresh-and-replay path for disable and recovery codes', async () => {
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
+      if (String(url) === '/auth/mfa/disable') {
+        return makeJsonResponse({ error: 'Invalid MFA code' }, false, 401);
+      }
+      if (String(url) === '/auth/mfa/recovery-codes') {
+        return makeJsonResponse({ recoveryCodes: ['NEW-0001'] });
+      }
+      return undefined as unknown as Response;
+    });
+
+    render(<ProfilePage initialUser={{ ...BASE_USER, mfaEnabled: true, mfaMethod: 'totp' }} />);
+
+    // Recovery codes: regenerate, behind its confirm.
+    fireEvent.click(await screen.findByTestId('mfa-recovery-regenerate-start'));
+    const recoveryPassword = document.getElementById('mfa-recovery-password') as HTMLInputElement;
+    fireEvent.change(recoveryPassword, { target: { value: 'hunter2-pw' } });
+    fireEvent.click(screen.getByTestId('mfa-recovery-regenerate'));
+    fireEvent.click(await screen.findByTestId('confirm-regenerate-recovery-codes'));
+
+    await waitFor(() => {
+      const call = fetchWithAuthMock.mock.calls.find(
+        ([url]) => String(url) === '/auth/mfa/recovery-codes'
+      );
+      expect(call).toBeDefined();
+      expect(
+        (call![1] as { skipUnauthorizedRetry?: boolean } | undefined)?.skipUnauthorizedRetry
+      ).toBe(true);
+    });
+    expect(await screen.findByText('NEW-0001')).toBeTruthy();
+
+    // Disable: a wrong code is a rejected proof, not a dead session.
+    fireEvent.click(screen.getByRole('button', { name: /^Back$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Disable$/i }));
+    const digits = document.querySelectorAll<HTMLInputElement>('input[inputmode="numeric"]');
+    digits.forEach((input, index) => {
+      fireEvent.change(input, { target: { value: String(index + 1) } });
+    });
+    const disablePassword = document.getElementById('mfa-disable-password') as HTMLInputElement;
+    fireEvent.change(disablePassword, { target: { value: 'hunter2-pw' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Disable MFA$/i }));
+
+    await waitFor(() => {
+      const call = fetchWithAuthMock.mock.calls.find(
+        ([url]) => String(url) === '/auth/mfa/disable'
+      );
+      expect(call).toBeDefined();
+      expect(
+        (call![1] as { skipUnauthorizedRetry?: boolean } | undefined)?.skipUnauthorizedRetry
+      ).toBe(true);
+    });
+    expect(await screen.findByText(/Invalid MFA code/i)).toBeTruthy();
+  });
+
   it('still completes enrollment on a correct code', async () => {
     fetchWithAuthMock.mockImplementation(async (url) => {
       if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
