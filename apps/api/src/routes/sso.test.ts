@@ -1820,8 +1820,10 @@ describe('sso routes', () => {
 
       const res = await app.request('/sso/callback?code=oidc-code&state=state', {
         method: 'GET'
-        // no cookie header — simulates the cross-site top-level navigation a
-        // SameSite=Lax cookie would not be attached to.
+        // no cookie header — the victim's browser never initiated this flow, so it
+        // holds no binding cookie for the attacker's `state` and the HMAC check
+        // fails closed. (Not a SameSite effect: a Lax cookie IS sent on a
+        // cross-site top-level GET, which is why the HMAC is the real control.)
       });
 
       expect(res.status).toBe(302);
