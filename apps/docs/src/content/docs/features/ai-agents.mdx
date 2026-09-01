@@ -5,12 +5,12 @@ description: Configure permission-scoped AI agents and review their recorded run
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-An AI agent is a named, permission-scoped worker you configure once. It wakes on a trigger, gathers the context available for that trigger, and writes up what it found. Every run is recorded, and anything the agent wants to *do* is proposed for a person to approve.
+An AI agent is a named, permission-scoped worker you configure once. It wakes on a trigger, gathers the context available for that trigger, and writes up what it found. Every run is recorded, and — unless the agent is in Act mode and the action is on its pre-approved list — anything it wants to *do* is proposed for a person to approve.
 
 Agents are off by default and must be enabled by your operator before they appear. See [Enabling agents](#enabling-agents).
 
-<Aside type="caution" title="Agents do not act on their own in this release">
-  The only modes accepted today are **Off** and **Shadow**. An agent in Shadow mode observes, reasons, and proposes — it never executes an action by itself. Autonomous execution is a later release; until then, every action an agent proposes waits for a human decision.
+<Aside type="caution" title="Act mode runs unattended — read this before enabling it">
+  An agent has three modes: **Off**, **Shadow**, and **Act**. Shadow observes, reasons, and proposes — it never executes an action by itself. Act mode is different: for a small, fixed set of low-risk, reversible operations it verifies and executes **without waiting for a person to approve**. Everything outside that set still proposes and waits, exactly as in Shadow. See [Act mode](#act-mode) before turning it on.
 </Aside>
 
 ## What an agent does
@@ -46,9 +46,25 @@ Admission checks happen before Breeze creates a run. If an agent policy filters 
 
 ## Approving what an agent proposes
 
-When an agent wants to take an action, it does not perform it. It records the proposal and the run moves to `awaiting_approval`. You are notified in the app, and the proposal appears in the **Approvals** inbox, where you approve or reject it.
+When an agent wants to take an action, it does not perform it by default. It records the proposal and the run moves to `awaiting_approval`. You are notified in the app, and the proposal appears in the **Approvals** inbox, where you approve or reject it.
 
-Nothing an agent proposes takes effect without a person deciding. Rejecting a proposal ends it; the agent does not retry the same action behind you.
+Nothing an agent proposes takes effect without a person deciding, with one exception: an agent in **Act mode** executes a small set of pre-approved operations itself, without a proposal step. See [Act mode](#act-mode). Everything else always proposes and waits. Rejecting a proposal ends it; the agent does not retry the same action behind you.
+
+## Act mode
+
+Act mode lets an agent execute a fixed, closed set of low-risk, reversible operations — restarting a service, running an already-authorized script, executing a disk-cleanup plan it already previewed, running a built-in playbook — without a person approving each one in the moment. Anything not on that list still becomes a proposal in the Approvals inbox, exactly as in Shadow mode. The set is not configurable per agent beyond allowlisting which of those operations it may reach; you cannot add arbitrary tools to Act mode's unattended list.
+
+Act mode is bounded by more than the operation list:
+
+- **Guardrails re-check every call.** Each tool call an agent makes is classified before it runs. A call outside the fixed set — or one that fails a live re-check just before execution (the target device doesn't match the run, the script's content has changed since it was authorized, a required preview no longer exists) — is denied outright or downgraded into an ordinary proposal, never silently executed.
+- **One device per run.** A run only ever acts on the single device it was triggered against.
+- **A per-run action cap.** A run stops taking unattended actions once it hits its configured limit, in addition to the run-level limits (concurrency, spend, wall-clock time) every agent already has.
+- **An organization-wide exposure ledger.** Every unattended action is recorded against the organization it ran in, and enabling this ledger's cap keeps unattended activity to a bounded percentage of your fleet across a rolling window, no matter how many agents or runs are involved.
+- **Verification, not certainty.** Act mode checks the result of what it did (a service is running again, disk usage improved) and reports if that check fails — but it does not roll anything back. If verification fails, a person resolves it, the same as they would resolve any other failed run.
+
+**Turning Act mode on.** In **Settings → AI Agents**, set the agent's mode to **Act**. The API refuses the change unless the agent already has both a recipient that resolves to a real person (Act mode still needs someone to notify) and at least one act-eligible operation allowlisted (for scripts, at least one authorized script). The form shows an explicit warning — unattended execution, no rollback, single-device scope, the action cap — and, the first time you switch an agent into Act mode, requires you to check an acknowledgement before it lets you save.
+
+**Turning it off.** Set the agent's mode back to **Off** or **Shadow**, or disable the agent — either stops unattended execution for that agent immediately. Disabling `BREEZE_AI_AGENTS_ENABLED` (see [Enabling agents](#enabling-agents)) is the platform-wide switch: it stops every agent, in every mode, for the whole deployment.
 
 ## Agent activity in the audit trail
 
@@ -63,7 +79,7 @@ Agents are gated on their own capabilities rather than on general organization p
 | `ai_agents:read` | View agents and their runs. |
 | `ai_agents:write` | Create, edit, disable, and trigger agents. |
 
-These are deliberately separate from `organizations:write`. Authoring an agent policy is what will eventually authorize autonomous action on customer machines, so it is not bundled into a permission every organization admin already holds. Partner Admin retains access through its full-access role.
+These are deliberately separate from `organizations:write`. Authoring an agent policy is what authorizes autonomous action on customer machines once an agent is switched to Act mode, so it is not bundled into a permission every organization admin already holds. Partner Admin retains access through its full-access role.
 
 Creating, editing, disabling, or manually triggering an agent additionally requires you to complete MFA.
 
