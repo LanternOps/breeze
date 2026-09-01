@@ -21,6 +21,35 @@
  *    first is still waiting/delayed/active — this is what makes the manual
  *    `POST /ai/agents/impact/rebuild` endpoint safe to call repeatedly.
  *
+ * Per-org error boundary (fix round 1, review finding): `processImpactScan`
+ * wraps each org's bootstrap-check + job-spec build in its own try/catch,
+ * exactly like `jobs/aiAgentSweepScheduler.ts:256-303`'s per-baseline
+ * boundary — "One partner must never be able to stop the scan for every
+ * other partner". A single `needsImpactBootstrap` rejection (a bad row, a
+ * transient DB blip) used to propagate out of the whole `for` loop before
+ * `addBulk` ever ran, losing the night's rollup fleet-wide. The scan is a
+ * once-a-day repeatable with no `attempts`/backoff (unlike the 5-minute
+ * sweeper), so a lost pass here is a lost DAY, not a lost 5 minutes — the
+ * boundary matters more here, not less.
+ *
+ * Manual-refresh dedup (fix round 1, review finding): `enqueueImpactRollupForOrgs`
+ * (the `POST /ai/agents/impact/rebuild` producer) uses `enqueueOrReplaceStale`
+ * (`services/bullmqUtils.ts`) instead of a bare `addBulk` with a fixed
+ * `jobId`. BullMQ's jobId dedup keys on "a record with this id exists in
+ * Redis", not "a job with this id is pending" — a completed job stays keyed
+ * under its `jobId` for as long as `removeOnComplete` retains it, so a
+ * second manual rebuild for the same (org, range) *after the first one
+ * finished* was also silently swallowed: `addBulk` returned the stale
+ * completed job, the route reported success, and nothing re-ran. This is
+ * the exact hazard `bullmqUtils.ts`'s own docstring describes and
+ * `jobs/tenantErasure.ts`/`jobs/orgMerge.ts` already fix the same way:
+ * reuse a job that is genuinely still waiting/active/delayed (so a rapid
+ * double-click on Refresh still coalesces into one run), remove-and-re-add
+ * one that has already completed or failed. The nightly scan fan-out
+ * in `processImpactScan` keeps the plain `addBulk` shape the task brief
+ * specifies unchanged — `through` shifts every day, so the same-range
+ * replay this hazard describes cannot happen there.
+ *
  * No worker-level system DB context, deliberately. `rebuildOrgImpactRange`,
  * `findImpactSourceOrgIds` and `needsImpactBootstrap` (`services/aiAgents/
  * impactRollup.ts`) each own one short-lived LABELLED system context per
@@ -52,6 +81,7 @@ import {
   shiftUtcDay,
   type UtcDay,
 } from '../services/aiAgents/impactRollup';
+import { enqueueOrReplaceStale } from '../services/bullmqUtils';
 import { getBullMQConnection } from '../services/redis';
 import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
@@ -127,9 +157,22 @@ export async function processImpactScan(now: Date = new Date()): Promise<{ scann
   const queuedAt = now.toISOString();
   const jobs: RebuildJobSpec[] = [];
   for (const orgId of orgIds) {
-    const bootstrap = await needsImpactBootstrap(orgId, through);
-    const from = bootstrap ? shiftUtcDay(through, -(AI_AGENT_IMPACT_REBUILD_DAYS - 1)) : nightlyFrom;
-    jobs.push(rebuildJobSpec(orgId, from, through, queuedAt));
+    // Per-org error boundary. One org's bad state must never stop the scan
+    // for every other org sharing this pass — same reasoning as the
+    // per-baseline boundary in `aiAgentSweepScheduler.ts:256-303`. This
+    // scan is a once-a-day repeatable with no `attempts`/backoff, so an
+    // uncaught rejection here would lose the whole night's rollup
+    // fleet-wide, not just this org's.
+    try {
+      const bootstrap = await needsImpactBootstrap(orgId, through);
+      const from = bootstrap ? shiftUtcDay(through, -(AI_AGENT_IMPACT_REBUILD_DAYS - 1)) : nightlyFrom;
+      jobs.push(rebuildJobSpec(orgId, from, through, queuedAt));
+    } catch (error) {
+      console.error('[AiAgentImpactRollupWorker] scan failed for one org — continuing the scan', {
+        orgId,
+        error,
+      });
+    }
   }
 
   // Enqueue OUTSIDE any DB context: a BullMQ add is a Redis round trip, and
@@ -138,15 +181,26 @@ export async function processImpactScan(now: Date = new Date()): Promise<{ scann
   // out. Nothing here holds one — `findImpactSourceOrgIds` and
   // `needsImpactBootstrap` each already close their own short-lived system
   // context before returning.
-  await getAiAgentImpactRollupQueue().addBulk(jobs);
+  if (jobs.length > 0) {
+    await getAiAgentImpactRollupQueue().addBulk(jobs);
+  }
 
   return { scanned: orgIds.length, enqueued: jobs.length };
 }
 
 /**
- * Used by `POST /ai/agents/impact/rebuild`. Returns how many jobs were
- * added. Same deterministic jobId as the nightly scan, so a manual rebuild
- * for a range the scan is already mid-flight on is a no-op, not a race.
+ * Used by `POST /ai/agents/impact/rebuild`. Returns how many orgs were
+ * enqueued-or-reused. Same deterministic jobId as the nightly scan, so a
+ * manual rebuild for a range the scan is already mid-flight on reuses that
+ * job rather than racing it.
+ *
+ * Deliberately NOT a bare `addBulk` with a fixed `jobId` (fix round 1,
+ * review finding) — see this module's header for why that made every
+ * manual Refresh AFTER the first one's completion a silent no-op.
+ * `enqueueOrReplaceStale` (`services/bullmqUtils.ts`) reuses a job that is
+ * still waiting/active/delayed and removes-then-re-adds one that has
+ * already completed or failed, so a genuine repeat Refresh actually
+ * rebuilds while a rapid double-click still coalesces into one run.
  */
 export async function enqueueImpactRollupForOrgs(
   orgIds: readonly string[],
@@ -155,11 +209,26 @@ export async function enqueueImpactRollupForOrgs(
 ): Promise<number> {
   if (orgIds.length === 0) return 0;
 
+  const queue = getAiAgentImpactRollupQueue();
   const queuedAt = new Date().toISOString();
-  const jobs = orgIds.map((orgId) => rebuildJobSpec(orgId, fromDay, toDay, queuedAt));
-  await getAiAgentImpactRollupQueue().addBulk(jobs);
 
-  return jobs.length;
+  await Promise.all(
+    orgIds.map((orgId) =>
+      enqueueOrReplaceStale(
+        queue,
+        'rebuild-org-range',
+        buildImpactRollupJobId(orgId, fromDay, toDay),
+        { type: 'rebuild-org-range' as const, orgId, fromDay, toDay, queuedAt },
+        {
+          removeOnComplete: { count: 100 },
+          removeOnFail: { count: 200 },
+        },
+        '[AiAgentImpactRollupWorker]',
+      ),
+    ),
+  );
+
+  return orgIds.length;
 }
 
 export function createAiAgentImpactRollupWorker(): Worker<ImpactRollupJobData> {

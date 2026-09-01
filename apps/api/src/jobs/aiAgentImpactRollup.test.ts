@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   addMock,
   addBulkMock,
+  getJobMock,
   getRepeatableJobsMock,
   removeRepeatableByKeyMock,
   queueCloseMock,
@@ -28,6 +29,7 @@ const {
 } = vi.hoisted(() => ({
   addMock: vi.fn(),
   addBulkMock: vi.fn(),
+  getJobMock: vi.fn(),
   getRepeatableJobsMock: vi.fn(),
   removeRepeatableByKeyMock: vi.fn(),
   queueCloseMock: vi.fn(),
@@ -44,6 +46,7 @@ vi.mock('bullmq', () => ({
   Queue: class {
     add = (...args: unknown[]) => addMock(...(args as []));
     addBulk = (...args: unknown[]) => addBulkMock(...(args as []));
+    getJob = (id: string) => getJobMock(id);
     getRepeatableJobs = () => getRepeatableJobsMock();
     removeRepeatableByKey = (key: string) => removeRepeatableByKeyMock(key);
     close = () => queueCloseMock();
@@ -112,6 +115,7 @@ describe('aiAgentImpactRollup', () => {
 
     addMock.mockReset();
     addBulkMock.mockReset();
+    getJobMock.mockReset();
     getRepeatableJobsMock.mockReset();
     removeRepeatableByKeyMock.mockReset();
     queueCloseMock.mockReset();
@@ -126,6 +130,7 @@ describe('aiAgentImpactRollup', () => {
 
     addMock.mockResolvedValue({ id: 'scan-job' });
     addBulkMock.mockResolvedValue([]);
+    getJobMock.mockResolvedValue(undefined);
     getRepeatableJobsMock.mockResolvedValue([]);
     findImpactSourceOrgIdsMock.mockResolvedValue([]);
     needsImpactBootstrapMock.mockResolvedValue(false);
@@ -211,27 +216,106 @@ describe('aiAgentImpactRollup', () => {
     });
   });
 
+  describe('processImpactScan — per-org error boundary (fix round 1)', () => {
+    beforeEach(() => {
+      process.env.BREEZE_AI_AGENTS_ENABLED = 'true';
+    });
+
+    it('one org\'s needsImpactBootstrap rejection does not stop the scan for the other org', async () => {
+      findImpactSourceOrgIdsMock.mockResolvedValue([ORG_A, ORG_B]);
+      needsImpactBootstrapMock.mockImplementation(async (orgId: string) => {
+        if (orgId === ORG_A) throw new Error('ECONNRESET');
+        return false;
+      });
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      errorSpy.mockClear();
+
+      const result = await processImpactScan();
+
+      // ORG_A's rejection is swallowed; ORG_B still gets scanned AND enqueued.
+      expect(result).toEqual({ scanned: 2, enqueued: 1 });
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('scan failed for one org'),
+        expect.objectContaining({ orgId: ORG_A }),
+      );
+
+      expect(addBulkMock).toHaveBeenCalledTimes(1);
+      const jobs = addBulkMock.mock.calls[0]![0] as Array<{ data: { orgId: string } }>;
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]?.data.orgId).toBe(ORG_B);
+    });
+
+    it('does not call addBulk at all when every org in the scan rejects', async () => {
+      findImpactSourceOrgIdsMock.mockResolvedValue([ORG_A, ORG_B]);
+      needsImpactBootstrapMock.mockRejectedValue(new Error('db unavailable'));
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      errorSpy.mockClear();
+
+      const result = await processImpactScan();
+
+      expect(result).toEqual({ scanned: 2, enqueued: 0 });
+      expect(addBulkMock).not.toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('enqueueImpactRollupForOrgs', () => {
-    it('adds one deterministic job per org id and returns the count', async () => {
+    it('adds one deterministic job per org id (no existing job) and returns the count', async () => {
+      getJobMock.mockResolvedValue(undefined);
+
       const count = await enqueueImpactRollupForOrgs([ORG_A, ORG_B], '2026-06-01', '2026-06-17');
 
       expect(count).toBe(2);
-      expect(addBulkMock).toHaveBeenCalledTimes(1);
-      const jobs = addBulkMock.mock.calls[0]![0] as Array<{ data: { orgId: string }; opts: { jobId: string } }>;
-      expect(jobs).toHaveLength(2);
-      expect(jobs.find((j) => j.data.orgId === ORG_A)?.opts.jobId).toBe(
-        buildImpactRollupJobId(ORG_A, '2026-06-01', '2026-06-17'),
-      );
-      expect(jobs.find((j) => j.data.orgId === ORG_B)?.opts.jobId).toBe(
-        buildImpactRollupJobId(ORG_B, '2026-06-01', '2026-06-17'),
-      );
+      expect(addMock).toHaveBeenCalledTimes(2);
+      expect(addBulkMock).not.toHaveBeenCalled();
+
+      const jobIds = addMock.mock.calls.map((call) => (call[2] as { jobId: string }).jobId);
+      expect(jobIds).toContain(buildImpactRollupJobId(ORG_A, '2026-06-01', '2026-06-17'));
+      expect(jobIds).toContain(buildImpactRollupJobId(ORG_B, '2026-06-01', '2026-06-17'));
     });
 
-    it('returns 0 and never calls addBulk for an empty org list', async () => {
+    it('returns 0 and never calls add/addBulk for an empty org list', async () => {
       const count = await enqueueImpactRollupForOrgs([], '2026-06-01', '2026-06-17');
 
       expect(count).toBe(0);
+      expect(addMock).not.toHaveBeenCalled();
       expect(addBulkMock).not.toHaveBeenCalled();
+    });
+
+    it('reuses a job that is still active/waiting instead of adding a duplicate (rapid double-click stays coalesced)', async () => {
+      const existingRemove = vi.fn();
+      getJobMock.mockResolvedValue({
+        id: buildImpactRollupJobId(ORG_A, '2026-06-01', '2026-06-17'),
+        getState: vi.fn().mockResolvedValue('active'),
+        remove: existingRemove,
+      });
+
+      const count = await enqueueImpactRollupForOrgs([ORG_A], '2026-06-01', '2026-06-17');
+
+      expect(count).toBe(1);
+      expect(existingRemove).not.toHaveBeenCalled();
+      expect(addMock).not.toHaveBeenCalled();
+    });
+
+    it('fix round 1: a SECOND manual rebuild for the same (org, range) after the first one COMPLETED actually re-runs, not a silent no-op', async () => {
+      const existingRemove = vi.fn().mockResolvedValue(undefined);
+      getJobMock.mockResolvedValue({
+        id: buildImpactRollupJobId(ORG_A, '2026-06-01', '2026-06-17'),
+        getState: vi.fn().mockResolvedValue('completed'),
+        remove: existingRemove,
+      });
+
+      const count = await enqueueImpactRollupForOrgs([ORG_A], '2026-06-01', '2026-06-17');
+
+      expect(count).toBe(1);
+      // The stale completed job is removed and a fresh one is added —
+      // BEFORE this fix, addBulk with the same fixed jobId would have
+      // silently returned the dead job and never called `add` again.
+      expect(existingRemove).toHaveBeenCalledTimes(1);
+      expect(addMock).toHaveBeenCalledTimes(1);
+      expect((addMock.mock.calls[0]![2] as { jobId: string }).jobId).toBe(
+        buildImpactRollupJobId(ORG_A, '2026-06-01', '2026-06-17'),
+      );
     });
   });
 
