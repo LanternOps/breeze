@@ -77,3 +77,15 @@ describe('publicApiPath (rendered into HTML)', () => {
     expect(publicApiPath('/api/portal/x')).toBe('/api/v1/portal/x');
   });
 });
+
+// ---------------------------------------------------------------------------
+// W08 #3902
+// ---------------------------------------------------------------------------
+describe('portalAttachmentContentPath', () => {
+  it('is a same-origin /api/v1 path — the SSR-internal host must never reach customer HTML', async () => {
+    const { portalAttachmentContentPath } = await import('./api');
+    const path = portalAttachmentContentPath('t-1', 'a-1');
+    expect(path).toBe('/api/v1/portal/tickets/t-1/attachments/a-1/content');
+    expect(path.startsWith('http')).toBe(false);
+  });
+});

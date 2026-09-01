@@ -135,6 +135,9 @@ export const JOB_SCHEDULES = {
   'warranty-batch-sync': '42 3,9,15,21 * * *',
   'cis-scan-scheduler': '47 * * * *',
   'cis-score-aggregator': '52 * * * *',
+  // W08 #3902 — hourly sweep of abandoned pending ticket-comment attachments.
+  // :32 is one of the two remaining free minutes in the ≡2 (mod 5) lane.
+  'ticket-attachment-pending-reaper': '32 * * * *',
   'user-risk-scan': '57 4,10,16,22 * * *',
 } as const;
 

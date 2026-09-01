@@ -825,3 +825,9 @@ export * from './officeAddin';
 // ============================================
 
 export * from './stripeAccount';
+
+// ============================================
+// Ticket comment attachments (W08 #3902)
+// ============================================
+
+export * from './tickets';

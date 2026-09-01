@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { serviceMocks, ticketTriageMocks, dbSelectMock, dbGroupByMock, authRef, lastWhereArgs, lastOrderByArgs, writeRouteAuditMock } = vi.hoisted(() => {
+const { serviceMocks, ticketTriageMocks, dbSelectMock, dbGroupByMock, authRef, lastWhereArgs, lastOrderByArgs, writeRouteAuditMock, lastSelectColumns } = vi.hoisted(() => {
+  const lastSelectColumns: unknown[] = [];
   const lastWhereArgs: { conditions: unknown[] }[] = [];
   const lastOrderByArgs: unknown[][] = [];
   return {
@@ -29,6 +30,7 @@ const { serviceMocks, ticketTriageMocks, dbSelectMock, dbGroupByMock, authRef, l
     writeRouteAuditMock: vi.fn(),
     lastWhereArgs,
     lastOrderByArgs,
+    lastSelectColumns,
     /** Mutable ref so individual tests can override the injected auth context. */
     authRef: {
       current: {
@@ -95,7 +97,10 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   db: {
-    select: vi.fn(() => ({
+    select: vi.fn((cols?: unknown) => ({
+      // Recorded so a test can prove the attachment feed query never selects
+      // the bytea `data` column (spec D10).
+      ...(lastSelectColumns.push(cols) ? {} : {}),
       from: vi.fn(() => ({
         leftJoin: vi.fn(() => ({
           leftJoin: vi.fn(() => ({
@@ -1948,5 +1953,101 @@ describe('DELETE /tickets/:id/comments/:commentId', () => {
       headers: jsonHeaders
     });
     expect(res.status).toBe(403);
+  });
+});
+
+describe('POST /tickets/:id/comments attachmentIds (W08 #3902)', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('accepts an empty body when attachmentIds are present and passes them to the service', async () => {
+    const attId = 'aaaaaaaa-1111-4222-8333-444455556666';
+    dbSelectMock.mockReturnValue([{ id: '3f2f1d8e-1111-4222-8333-444455556666', orgId: 'org-1', deviceId: null }]);
+    serviceMocks.addTicketComment.mockResolvedValue({ comment: { id: 'c-1' }, firstResponseStamped: false, attachments: [] });
+    const res = await makeApp().request('/tickets/3f2f1d8e-1111-4222-8333-444455556666/comments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '', attachmentIds: [attId] }),
+    });
+    expect(res.status).toBe(201);
+    expect(serviceMocks.addTicketComment).toHaveBeenCalledWith(
+      '3f2f1d8e-1111-4222-8333-444455556666',
+      expect.objectContaining({ attachmentIds: [attId] }),
+      expect.anything(),
+    );
+  });
+
+  it('still 400s an empty comment with no attachments', async () => {
+    dbSelectMock.mockReturnValue([{ id: '3f2f1d8e-1111-4222-8333-444455556666', orgId: 'org-1', deviceId: null }]);
+    const res = await makeApp().request('/tickets/3f2f1d8e-1111-4222-8333-444455556666/comments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '' }),
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /tickets/:id comment attachments (W08 #3902)', () => {
+  const T = '3f2f1d8e-1111-4222-8333-444455556666';
+  const meta = (over: Record<string, unknown> = {}) => ({
+    id: 'att-1', commentId: 'c-1', contentType: 'image/png',
+    byteSize: 12, originalFilename: 'a.png', createdAt: new Date('2026-08-30T00:00:00Z'), ...over,
+  });
+
+  function rigDetail(commentRows: unknown[], attachmentRows: unknown[]) {
+    dbSelectMock
+      .mockReturnValueOnce([{ id: T, orgId: 'org-1', deviceId: null, deletedAt: null }]) // scoped ticket
+      .mockReturnValueOnce([{ orgName: 'O', deviceHostname: null, assigneeName: null, statusName: null, statusColor: null }])
+      .mockReturnValueOnce(commentRows)
+      .mockReturnValueOnce(attachmentRows)
+      .mockReturnValueOnce([]); // alert links
+  }
+
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); lastSelectColumns.length = 0; });
+
+  it('groups attachments onto their parent comment', async () => {
+    rigDetail(
+      [{ id: 'c-1', ticketId: T, content: 'see photo', deletedAt: null, createdAt: new Date() },
+       { id: 'c-2', ticketId: T, content: 'no photo', deletedAt: null, createdAt: new Date() }],
+      [meta(), meta({ id: 'att-2' })],
+    );
+    const res = await makeApp().request(`/tickets/${T}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.comments[0].attachments).toHaveLength(2);
+    expect(body.data.comments[1].attachments).toEqual([]);
+  });
+
+  it('blanks attachments on a soft-deleted comment (or a deleted comment still leaks its photos)', async () => {
+    rigDetail(
+      [{ id: 'c-1', ticketId: T, content: 'secret', deletedAt: new Date(), createdAt: new Date() }],
+      [meta()],
+    );
+    const body = await (await makeApp().request(`/tickets/${T}`)).json();
+    expect(body.data.comments[0].deleted).toBe(true);
+    expect(body.data.comments[0].content).toBe('');
+    expect(body.data.comments[0].attachments).toEqual([]);
+  });
+
+  it('never surfaces a pending (comment_id NULL) row in the feed', async () => {
+    rigDetail(
+      [{ id: 'c-1', ticketId: T, content: 'hi', deletedAt: null, createdAt: new Date() }],
+      [meta({ id: 'pending-1', commentId: null })],
+    );
+    const body = await (await makeApp().request(`/tickets/${T}`)).json();
+    expect(body.data.comments[0].attachments).toEqual([]);
+  });
+
+  it('selects the META columns only — `data` must never reach a ticket-detail response (D10)', async () => {
+    rigDetail([{ id: 'c-1', ticketId: T, content: 'hi', deletedAt: null, createdAt: new Date() }], [meta()]);
+    await makeApp().request(`/tickets/${T}`);
+    const withCols = lastSelectColumns.filter((c): c is Record<string, unknown> => !!c && typeof c === 'object');
+    const attachmentSelect = withCols.find((c) => 'originalFilename' in c && 'byteSize' in c);
+    expect(attachmentSelect, 'the attachment feed query must pass an explicit column map').toBeDefined();
+    expect(Object.keys(attachmentSelect!).sort()).toEqual(
+      ['byteSize', 'commentId', 'contentType', 'createdAt', 'id', 'originalFilename'],
+    );
+    expect(Object.keys(attachmentSelect!)).not.toContain('data');
+    expect(Object.keys(attachmentSelect!)).not.toContain('storageKey');
   });
 });

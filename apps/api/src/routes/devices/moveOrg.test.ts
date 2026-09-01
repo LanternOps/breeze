@@ -459,6 +459,38 @@ describe('POST /devices/:id/move-org', () => {
       ]);
     });
 
+    it('rewrites ticket_attachments org_id via the tickets join inside the transaction (W08)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+
+      const rewrites = statements.filter((s) => s.startsWith('UPDATE ticket_attachments '));
+      expect(
+        rewrites,
+        `Expected exactly one ticket_attachments org_id rewrite.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        `UPDATE ticket_attachments SET org_id = ${TARGET_ORG}::uuid ` +
+          `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+      // Lock order: attachments must come AFTER ticket_parts in this path so
+      // the device-move and ticket-move paths agree (moveOrg.ts:~311).
+      const idx = (t: string) => statements.findIndex((s) => s.startsWith(`UPDATE ${t} `));
+      expect(idx('ticket_parts')).toBeLessThan(idx('ticket_attachments'));
+    });
+
     it('rewrites time_entries org_id via the ticket join inside the transaction', async () => {
       vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
       rigOrgAndSiteSelects({

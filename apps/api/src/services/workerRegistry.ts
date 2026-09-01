@@ -928,6 +928,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'ticketAttachmentReaper',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/ticketAttachmentReaper');
+      return { init: m.initializeTicketAttachmentReaper, shutdown: m.shutdownTicketAttachmentReaper };
+    },
+  },
+  {
     name: 'quoteExpiryReaper',
     placement: 'global',
     load: async () => {

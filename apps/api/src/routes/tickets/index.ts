@@ -5,6 +5,7 @@ import { ticketsBulkRoutes } from './bulk';
 import { ticketExportRoutes } from './export';
 import { ticketPartsRoutes } from './parts';
 import { ticketMoveOrgRoutes } from './moveOrg';
+import { ticketAttachmentRoutes } from './attachments';
 import { ticketAiDraftsRoutes } from './aiDrafts';
 
 export const ticketsRoutes = new Hono();
@@ -21,6 +22,10 @@ ticketsRoutes.route('/', ticketsBulkRoutes);   // /bulk before /:id
 // move-org BEFORE core /:id routes so POST /:id/move-org is not captured by
 // the generic /:id param matcher (mirrors devices/index.ts mount ordering).
 ticketsRoutes.route('/', ticketMoveOrgRoutes);
+// attachments BEFORE core /:id routes so /:id/attachments and
+// /:id/attachments/:attachmentId/content are not captured by the generic
+// /:id param matcher (W08 #3902).
+ticketsRoutes.route('/', ticketAttachmentRoutes);
 // ai-drafts BEFORE the generic /:id routes for the same reason — its own
 // segment count doesn't collide with bare /:id, but registration order stays
 // consistent with the rest of this file's mount ordering rule.

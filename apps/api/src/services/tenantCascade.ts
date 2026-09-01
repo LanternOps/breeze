@@ -47,6 +47,7 @@ import { createAuditLog } from './auditService';
 // reference, which bare in-module calls bypass).
 import * as self from './tenantCascade';
 import { pgErrorCode } from '../utils/pgErrors';
+import { deleteObjectKeys } from './ticketAttachmentStorage';
 
 /**
  * Authoritative list of `org_id`-scoped public tables that participate
@@ -388,6 +389,15 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // 'tenant_variables' < 'ticket_alert_links' by localeCompare).
   'tenant_variables',
   'ticket_alert_links',
+  // ticket_attachments (W08 #3902): comment photo/PDF attachments. Shape 1
+  // (direct org_id, denormalised from tickets.org_id). ticket_id / comment_id
+  // FKs are ON DELETE CASCADE; uploaded_by_user_id is ON DELETE SET NULL.
+  // Cascade leaf — nothing FK-references it. localeCompare:
+  // 'ticket_alert_links' < 'ticket_attachments' < 'ticket_email_links'
+  // ('al' < 'at' < 'em'), and it precedes its FK parent 'tickets'.
+  // S3 objects are cleared BEFORE this DELETE by the pre-step in
+  // cascadeDeleteOrg — the rows are the only index to the object keys.
+  'ticket_attachments',
   // ticket_drafts (P2-4, #4191): the reply/resolution-note an agent proposes
   // for a ticket. Composite FKs to tickets(id, org_id) (ON DELETE CASCADE —
   // this row dies with its ticket) and to ai_agent_runs/action_intents(id,
@@ -754,7 +764,46 @@ export async function cascadeDeleteOrg(
   // detected we throw and abort BEFORE deleting anything.
   const order = await topologicalCascadeOrder();
 
-  // 1. Clear system-scoped associated tables (e.g. device_commands, the
+  // 1a. Clear ticket-attachment OBJECTS before ANY row is deleted anywhere (W08 #3902,
+  //     spec D9). The rows are the ONLY index to the object keys — deleting
+  //     them first would leave customer bytes in the bucket with nothing left
+  //     to find them by, which is exactly the GDPR failure erasure exists to
+  //     prevent. A storage fault therefore ABORTS the erasure before anything
+  //     is removed, so the operator can re-run it once the bucket is back:
+  //     the same keys are re-read and the job finishes. Best-effort deletion
+  //     with a logged count is deliberately rejected.
+  //
+  //     db-backed rows carry their bytes in the row and need no pre-clear.
+  try {
+    const keys = await dbModule.withSystemDbAccessContext(async () => {
+      const result = await dbModule.db.execute(sql`
+        SELECT storage_key
+        FROM ticket_attachments
+        WHERE org_id = ${orgId}::uuid
+          AND storage_backend = 's3'
+          AND storage_key IS NOT NULL
+      `);
+      const rows = (result as unknown as { rows?: Array<{ storage_key: string }> }).rows
+        ?? (result as unknown as Array<{ storage_key: string }>);
+      return Array.isArray(rows) ? rows.map((r) => r.storage_key).filter(Boolean) : [];
+    });
+    if (keys.length > 0) {
+      await deleteObjectKeys(keys);
+    }
+  } catch (err) {
+    if (!isUndefinedTable(err)) {
+      await writeErasureFailedAudit(
+        orgId, performedBy, performedByEmail, 'ticket_attachments_objects', stats, err,
+      );
+      throw new Error(
+        `[tenantCascade] attachment object pre-clear failed for org=${orgId}; erasure aborted before any row was deleted and is rerunnable: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  // 1b. Clear system-scoped associated tables (e.g. device_commands, the
   //    SSO FK children) that hold FKs into the cascade set. One system
   //    context per table so the audit write in the catch below never runs
   //    inside an open DB context (nesting poisons the pool).

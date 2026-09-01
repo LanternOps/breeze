@@ -608,6 +608,11 @@ const REPOINT_TABLES: readonly string[] = [
   "storage_encryption_keys",
   "support_sessions",
   "ticket_alert_links",
+  // W08 #3902. Own org_id (shape 1), so plain repoint like its siblings — the
+  // only unique index is the pkey on `id`, which cannot collide across orgs,
+  // so no dedupe key is needed. Pending rows (comment_id NULL) repoint too:
+  // the claim predicate in addTicketComment matches on the ticket's org_id.
+  "ticket_attachments",
   "ticket_email_links",
   "ticket_forms",
   "ticket_outbox",

@@ -705,7 +705,10 @@ describe('portal routes', () => {
               createdAt: new Date()
             }
           ]) as any
-        );
+        )
+        // W08 #3902 — the detail handler now runs a 6th SELECT for the
+        // attachments hanging off the (already public/non-deleted) comment ids.
+        .mockReturnValueOnce(mockSelectWhere([]) as any);
 
       vi.mocked(db.update).mockReturnValueOnce({
         set: vi.fn().mockReturnValue({
@@ -723,6 +726,8 @@ describe('portal routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.ticket.comments).toHaveLength(1);
+      // Every comment carries an attachments array, empty here.
+      expect(body.ticket.comments[0].attachments).toEqual([]);
     });
 
     it('should return 404 when ticket is missing', async () => {

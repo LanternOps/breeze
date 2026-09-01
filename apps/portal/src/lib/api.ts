@@ -325,6 +325,20 @@ export interface TicketSummary {
   updatedAt: string;
 }
 
+/**
+ * Attachment metadata on a PUBLIC ticket comment (W08 #3902). Render-only in
+ * v1 — the portal cannot upload. Never carries the storage key, backend,
+ * digest or bytes; those are server-only.
+ */
+export interface TicketCommentAttachment {
+  id: string;
+  commentId: string | null;
+  contentType: string;
+  byteSize: number;
+  originalFilename: string;
+  createdAt: string;
+}
+
 export interface TicketComment {
   id: string;
   authorName: string;
@@ -332,6 +346,19 @@ export interface TicketComment {
   authorType: string | null;
   content: string;
   createdAt: string;
+  /** Absent on a reply the customer just posted locally. */
+  attachments?: TicketCommentAttachment[];
+}
+
+/**
+ * Browser-facing path for an attachment's bytes. Same-origin and relative so
+ * the reverse proxy routes it and the SSR-internal API host never reaches
+ * customer HTML (see `publicApiPath`). The portal session cookie authenticates
+ * the request; the API 404s anything not on a public comment of a ticket this
+ * session submitted.
+ */
+export function portalAttachmentContentPath(ticketId: string, attachmentId: string): PublicApiPath {
+  return publicApiPath(`/portal/tickets/${ticketId}/attachments/${attachmentId}/content`);
 }
 
 export interface TicketDetails extends TicketSummary {
