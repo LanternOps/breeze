@@ -87,7 +87,10 @@ describe('resolveUserDisplayNames (via withAlertActorNames)', () => {
       { id: 'alert-2', acknowledgedBy: ADMIN_ID, resolvedBy: ADMIN_ID },
     ]);
 
-    expect(enriched.every((row) => row.acknowledgedByName === 'Breeze Admin')).toBe(true);
+    expect(enriched.map((row) => row.acknowledgedByName)).toEqual([
+      'Breeze Admin',
+      'Breeze Admin',
+    ]);
 
     // Assert the compiled SQL, not just that `where` was called: a mock-only
     // assertion would pass on an empty or wrong-column predicate.
