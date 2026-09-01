@@ -22,6 +22,8 @@ const OP_KEY = 'manage_services:restart';
 const state = vi.hoisted(() => ({
   selectQueue: [] as unknown[][],
   selectWheres: [] as unknown[],
+  selectOrderBys: [] as unknown[][],
+  selectLimits: [] as number[],
   insertReturningQueue: [] as (unknown[] | undefined)[],
   insertValues: [] as Record<string, unknown>[],
   // The `onConflictDoNothing({ target, where })` argument, captured so the
@@ -45,6 +47,8 @@ const state = vi.hoisted(() => ({
 function resetDbState(): void {
   state.selectQueue = [];
   state.selectWheres = [];
+  state.selectOrderBys = [];
+  state.selectLimits = [];
   state.insertReturningQueue = [];
   state.insertValues = [];
   state.insertConflicts = [];
@@ -65,8 +69,14 @@ vi.mock('../../db', () => {
         state.selectWheres.push(w);
         return builder;
       }),
-      orderBy: vi.fn(() => builder),
-      limit: vi.fn(() => builder),
+      orderBy: vi.fn((...cols: unknown[]) => {
+        state.selectOrderBys.push(cols);
+        return builder;
+      }),
+      limit: vi.fn((n: number) => {
+        state.selectLimits.push(n);
+        return builder;
+      }),
       then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
         Promise.resolve()
           .then(() => {
@@ -156,13 +166,20 @@ import {
   createFixWatchRow,
   createIntentFixWatchRow,
   FIX_HOLD_MINUTES,
-  listStrandedPendingWatchIds,
+  listPendingWatchesForRecovery,
   RECOVERY_TIMEOUT_HOURS,
+  STRANDED_WATCH_SWEEP_PAGE,
   isFixWatchEligible,
   type FinishedRunForWatch,
   type FixWatchOutcomeInput,
   type IntentForWatch,
 } from './fixWatch';
+// Type-only (erased at runtime, so no module cycle and no runLoop mock): the
+// structural `actOpKey` field `FixWatchOutcomeInput` snapshots must keep
+// naming the property `runLoop.ts` actually populates. Renaming or dropping
+// it there would otherwise leave `op_keys` silently empty with no type error
+// anywhere, since every field of the structural input is optional.
+import type { OutcomeExecutedAction } from './runLoop';
 import { db } from '../../db';
 
 const dialect = new PgDialect();
@@ -543,16 +560,18 @@ describe('createIntentFixWatchRow', () => {
 });
 
 // ---------------------------------------------------------------------------
-// listStrandedPendingWatchIds — the durable-enqueue recovery reader
+// listPendingWatchesForRecovery — the durable-enqueue recovery reader
 // ---------------------------------------------------------------------------
-describe('listStrandedPendingWatchIds', () => {
+describe('listPendingWatchesForRecovery', () => {
+  const OLDER = new Date('2026-09-01T00:00:00.000Z');
+
   it('selects only pending watches created before `now - olderThanMs`', async () => {
-    state.selectQueue.push([{ id: WATCH_ID }, { id: 'watch-2' }]);
+    state.selectQueue.push([{ id: WATCH_ID, createdAt: OLDER }, { id: 'watch-2', createdAt: OLDER }]);
     const before = Date.now();
 
-    const ids = await listStrandedPendingWatchIds(120_000);
+    const rows = await listPendingWatchesForRecovery(120_000);
 
-    expect(ids).toEqual([WATCH_ID, 'watch-2']);
+    expect(rows.map((row) => row.id)).toEqual([WATCH_ID, 'watch-2']);
     const compiled = dialect.sqlToQuery(state.selectWheres[0] as SQL);
     expect(compiled.sql).toContain('"state" =');
     expect(compiled.sql).toContain('"created_at" <');
@@ -568,9 +587,62 @@ describe('listStrandedPendingWatchIds', () => {
     expect(cutoff.getTime()).toBeLessThanOrEqual(before - 120_000);
   });
 
-  it('returns an empty list when nothing is stranded', async () => {
+  it('reads one PAGE, ordered (created_at, id) — the tuple the cursor compares', async () => {
     state.selectQueue.push([]);
-    await expect(listStrandedPendingWatchIds(120_000)).resolves.toEqual([]);
+
+    await listPendingWatchesForRecovery(120_000);
+
+    expect(state.selectLimits).toEqual([STRANDED_WATCH_SWEEP_PAGE]);
+    // Two keys, not one: `created_at` alone is not unique, so a single-key
+    // ORDER BY would let the keyset cursor below skip or repeat rows that
+    // share a timestamp.
+    expect(state.selectOrderBys[0]).toHaveLength(2);
+  });
+
+  it('adds a keyset predicate when continuing from a cursor — never OFFSET', async () => {
+    state.selectQueue.push([]);
+
+    await listPendingWatchesForRecovery(120_000, { id: WATCH_ID, createdAt: OLDER });
+
+    const compiled = dialect.sqlToQuery(state.selectWheres[0] as SQL);
+    // The row-value form is what makes paging exact; a plain
+    // `created_at > cursor` would drop every same-timestamp sibling.
+    expect(compiled.sql).toContain('"created_at", "ai_agent_fix_watches"."id") > (');
+    expect(compiled.sql).toContain('::timestamptz');
+    expect(compiled.sql).toContain('::uuid');
+    expect(compiled.params).toContain(WATCH_ID);
+  });
+
+  it('omits the keyset predicate on the first page', async () => {
+    state.selectQueue.push([]);
+
+    await listPendingWatchesForRecovery(120_000);
+
+    const compiled = dialect.sqlToQuery(state.selectWheres[0] as SQL);
+    expect(compiled.sql).not.toContain('::uuid');
+  });
+
+  it('returns an empty page when nothing is left to scan', async () => {
+    state.selectQueue.push([]);
+    await expect(listPendingWatchesForRecovery(120_000)).resolves.toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Compile-time: the op-key field name this module snapshots must be the one
+// runLoop.ts populates. `OutcomeExecutedAction['actOpKey']` fails to compile
+// if that property is ever renamed or removed there — the one failure mode a
+// structural, all-optional input type cannot catch at the call site.
+// ---------------------------------------------------------------------------
+type ActOpKeyFieldIsAligned =
+  OutcomeExecutedAction['actOpKey'] extends FixWatchOutcomeInput['executedActions'][number]['actOpKey']
+    ? true
+    : never;
+const ACT_OP_KEY_FIELD_IS_ALIGNED: ActOpKeyFieldIsAligned = true;
+
+describe('FixWatchOutcomeInput <-> runLoop.OutcomeExecutedAction', () => {
+  it('names the same op-key property runLoop actually populates', () => {
+    expect(ACT_OP_KEY_FIELD_IS_ALIGNED).toBe(true);
   });
 });
 

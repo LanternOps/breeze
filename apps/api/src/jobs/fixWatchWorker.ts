@@ -21,13 +21,23 @@
  *
  * A THIRD job variant rides the same queue and job name (P2-5, #4192):
  * `{ phase: 'recover' }`, a 2-minute repeatable that re-enqueues phase 1 for
- * any watch stranded in `pending`. A watch row commits inside a DB
- * transaction and its job is added only AFTER that transaction closes
- * (`bullmqQueue.ts`'s #1105 tripwire forbids enqueueing inside a held
- * context), so a crash in between leaves a durable row with no job over it —
- * which used to be permanent, since nothing swept `pending`. Reusing this
- * queue keeps it out of `workerRegistry.ts` entirely, and 2 minutes is far
- * below `COARSE_REPEAT_INTERVAL_MS` so it needs no `scheduleRegistry` slot.
+ * any watch stranded in `pending`. Two things strand one, and the sweep
+ * covers both:
+ *   1. a LOST ENQUEUE — a watch row commits inside a DB transaction and its
+ *      job is added only AFTER that transaction closes (`bullmqQueue.ts`'s
+ *      #1105 tripwire forbids enqueueing inside a held context), so a crash
+ *      or a Redis blip in between leaves a durable row with no job over it;
+ *   2. a phase-1 job that EXHAUSTED its `attempts` (e.g. the DB was down for
+ *      the whole backoff window) and now sits terminally in the failed set.
+ * Only (1) is fixed by a plain re-`add()`. For (2) the job's Redis key still
+ * exists, and BullMQ's `addStandardJob` returns via `handleDuplicatedJob`
+ * whenever the jobId key EXISTS (verified in bullmq 5.81.2's
+ * `commands/addStandardJob-9.lua`), so a re-add would be a silent no-op that
+ * the sweep would nonetheless report as a repair — hence
+ * `reviveStrandedPhase1` removes a terminal job before re-adding, and counts
+ * only the ids that actually produced a new one. Reusing this queue keeps
+ * the sweep out of `workerRegistry.ts` entirely, and 2 minutes is far below
+ * `COARSE_REPEAT_INTERVAL_MS` so it needs no `scheduleRegistry` slot.
  *
  * Two delayed phases per watch, `fix-watch-p1-<id>` / `fix-watch-p2-<id>`
  * jobIds (Global Constraints) — the `patchJobExecutor.ts` stable-jobId
@@ -61,9 +71,11 @@ import {
   checkFixWatchPhase2,
   createFixWatchRow,
   FIX_HOLD_MINUTES,
-  listStrandedPendingWatchIds,
+  listPendingWatchesForRecovery,
+  STRANDED_WATCH_SWEEP_PAGE,
   type FinishedRunForWatch,
   type FixWatchOutcomeInput,
+  type PendingWatchCursor,
 } from '../services/aiAgents/fixWatch';
 import { fixWatchQueueJobDataSchema, type FixWatchQueueJobData } from './queueSchemas';
 
@@ -201,17 +213,70 @@ export async function enqueueFixWatchPhase1(watchId: string): Promise<void> {
 }
 
 /**
- * Re-enqueues phase 1 for every watch stranded in `pending` — committed, but
- * with no job to move it, because the process died (or Redis blipped)
- * between the row's COMMIT and its post-commit `queue.add`. Returns how many
- * jobs were added.
+ * Job states from which a phase-1 job will still run on its own. Everything
+ * else — `completed`, `failed`, or no job at all — means nothing is left to
+ * move the watch out of `pending`.
+ */
+const LIVE_PHASE1_JOB_STATES: ReadonlySet<string> = new Set([
+  'delayed', 'waiting', 'waiting-children', 'prioritized', 'active',
+]);
+
+/**
+ * Reconciles ONE candidate watch against Redis, and returns whether it
+ * actually needed (and got) a new phase-1 job.
  *
- * Safe to run on a timer against watches that are perfectly healthy: the
- * jobId is the same stable `fix-watch-p1-<id>`, so BullMQ treats a re-add for
- * a watch whose original job is still delayed as a no-op. A watch that
- * legitimately stays `pending` for hours (phase 1 self-re-delays every 5
- * minutes until the alert resolves) therefore costs one no-op add per tick,
- * never a duplicate check.
+ * The DB cannot tell a stranded `pending` watch from a healthy one — a
+ * healthy watch stays `pending` for up to `RECOVERY_TIMEOUT_HOURS` while
+ * phase 1 self-re-delays every 5 minutes — so this is where the sweep
+ * discriminates. One `getJobState` round trip settles the common case.
+ *
+ * A terminal (`failed`/`completed`) job is REMOVED before the re-add: its
+ * Redis key still exists, and `add()` under an existing jobId returns via
+ * BullMQ's `handleDuplicatedJob` without queueing anything, so re-adding
+ * over it would silently do nothing while looking like a repair. `remove()`
+ * is safe here precisely because a terminal job holds no lock — the one
+ * state that does, `active`, is in the live set above and returns early.
+ */
+async function reviveStrandedPhase1(watchId: string): Promise<boolean> {
+  const queue = getFixWatchQueue();
+  const jobId = getFixWatchPhase1JobId(watchId);
+
+  const state = await queue.getJobState(jobId);
+  if (LIVE_PHASE1_JOB_STATES.has(state)) return false;
+
+  // 'completed' / 'failed' (or an orphaned key BullMQ reports as 'unknown'):
+  // clear the key so the re-add below is a real enqueue rather than a no-op.
+  const existing = await queue.getJob(jobId);
+  if (existing) await existing.remove();
+
+  await enqueueFixWatchPhase1(watchId);
+  return true;
+}
+
+/** DB pages one sweep tick will read before deferring the rest to the next
+ *  tick. Bounds the tick's cost without EVER capping recovery at a fixed
+ *  oldest-N slice: `recoveryCursor` below resumes exactly where this stopped,
+ *  so a pending set larger than the budget is still walked end to end, just
+ *  across several ticks. */
+const STRANDED_WATCH_SWEEP_MAX_PAGES = 25;
+
+/**
+ * Where the previous tick stopped when it hit its page budget, so the next
+ * tick resumes there instead of re-probing the same oldest rows forever.
+ * Cleared the moment a pass reaches the end of the pending set (the common
+ * case by far) and on shutdown, so a fresh process always starts oldest-first.
+ * Per-process, deliberately: with several consumers on this queue a tick may
+ * land on a worker holding a different cursor, which costs a repeated page,
+ * never a missed one — every cursor still walks to the end and resets.
+ */
+let recoveryCursor: PendingWatchCursor | null = null;
+
+/**
+ * Re-enqueues phase 1 for every watch stranded in `pending` — see the module
+ * header for the two ways that happens. Returns how many watches actually
+ * got a NEW job, which is a repair count, not a candidate count: healthy
+ * watches (the overwhelming majority of any `pending` page) are skipped by
+ * `reviveStrandedPhase1`'s Redis probe and never counted or logged.
  *
  * A failure PROPAGATES: this runs as a BullMQ job, so its own
  * attempts/backoff (and the next 2-minute tick) are the retry lane — and the
@@ -219,14 +284,38 @@ export async function enqueueFixWatchPhase1(watchId: string): Promise<void> {
  * batch identically.
  */
 export async function recoverStrandedFixWatches(): Promise<number> {
-  const watchIds = await listStrandedPendingWatchIds(PENDING_RECOVERY_MS);
-  for (const watchId of watchIds) {
-    await enqueueFixWatchPhase1(watchId);
+  let cursor = recoveryCursor;
+  let pages = 0;
+  let scanned = 0;
+  let repaired = 0;
+
+  for (;;) {
+    const page = await listPendingWatchesForRecovery(PENDING_RECOVERY_MS, cursor);
+    for (const row of page) {
+      scanned += 1;
+      if (await reviveStrandedPhase1(row.id)) repaired += 1;
+    }
+    pages += 1;
+
+    if (page.length < STRANDED_WATCH_SWEEP_PAGE) {
+      // End of the pending set — start the next tick from the oldest again.
+      cursor = null;
+      break;
+    }
+    cursor = page[page.length - 1] ?? null;
+    if (pages >= STRANDED_WATCH_SWEEP_MAX_PAGES) {
+      console.warn('[fixWatchWorker] recovery sweep hit its page budget — resuming from the cursor next tick', {
+        scanned, repaired,
+      });
+      break;
+    }
   }
-  if (watchIds.length > 0) {
-    console.warn('[fixWatchWorker] recovered stranded fix watches', { count: watchIds.length });
+
+  recoveryCursor = cursor;
+  if (repaired > 0) {
+    console.warn('[fixWatchWorker] recovered stranded fix watches', { repaired, scanned });
   }
-  return watchIds.length;
+  return repaired;
 }
 
 /**
@@ -331,6 +420,7 @@ export async function initializeFixWatchWorker(): Promise<void> {
 }
 
 export async function shutdownFixWatchWorker(): Promise<void> {
+  recoveryCursor = null;
   if (fixWatchWorker) {
     await fixWatchWorker.close();
     fixWatchWorker = null;

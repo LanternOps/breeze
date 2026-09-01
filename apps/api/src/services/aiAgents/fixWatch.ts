@@ -348,36 +348,66 @@ export async function createIntentFixWatchRow(
   });
 }
 
-/** One sweep never enqueues more than this. At a 2-minute cadence a real
- *  backlog drains in minutes, while a pathological one (a Redis outage that
- *  stranded thousands) cannot flood the queue in a single tick. */
-export const STRANDED_WATCH_SWEEP_LIMIT = 200;
+/** DB page size for one recovery-sweep read. The page is a list of
+ *  CANDIDATES, not of proven strandings — nothing in this table records
+ *  whether a watch's phase-1 job was ever added, so the sweep's Redis probe
+ *  (`fixWatchWorker.ts`) is what actually discriminates. The reader therefore
+ *  pages instead of taking one capped slice: a fleet with more concurrently
+ *  `pending` watches than the cap would otherwise hand the sweep the same
+ *  oldest-N healthy rows every tick and never reach a newer stranded one
+ *  until those aged out (review finding, P2-5). */
+export const STRANDED_WATCH_SWEEP_PAGE = 200;
+
+/** Keyset position in the pending set, ordered `(created_at, id)`. */
+export interface PendingWatchCursor {
+  id: string;
+  createdAt: Date;
+}
 
 /**
- * Ids of `pending` watches created more than `olderThanMs` ago — the reader
- * behind `fixWatchWorker.ts`'s recovery sweep (P2-5, #4192).
+ * One page of `pending` watches created more than `olderThanMs` ago, oldest
+ * first — the reader behind `fixWatchWorker.ts`'s recovery sweep (P2-5,
+ * #4192). Pass the previous page's last row as `after` to continue.
  *
  * A watch row is committed inside a DB transaction and its BullMQ job is
  * added AFTER that transaction closes (`bullmqQueue.ts`'s #1105 tripwire
  * forbids enqueueing inside a held context), so a crash — or a Redis blip —
  * between the two strands the row: `pending` forever, with no job to move it.
- * The sweep re-adds phase 1 under its stable jobId, which makes a duplicate a
- * no-op for every watch whose original job is merely still delayed. Ordered
- * oldest-first and capped, matching `ai_agent_fix_watches_pending_recovery_idx`.
+ * A phase-1 job that exhausts its `attempts` strands it the same way.
+ *
+ * Neither mode is visible here: a healthy watch stays `pending` for up to
+ * `RECOVERY_TIMEOUT_HOURS` while phase 1 self-re-delays every 5 minutes, so
+ * every row this returns may be perfectly healthy. The caller probes Redis
+ * per id and acts only on the ones with no live job. Keyset paging (rather
+ * than OFFSET) keeps each page an index range scan on
+ * `ai_agent_fix_watches_pending_recovery_idx`.
  */
-export async function listStrandedPendingWatchIds(
+export async function listPendingWatchesForRecovery(
   olderThanMs: number,
-  limit = STRANDED_WATCH_SWEEP_LIMIT,
-): Promise<string[]> {
+  after: PendingWatchCursor | null = null,
+  limit = STRANDED_WATCH_SWEEP_PAGE,
+): Promise<PendingWatchCursor[]> {
   return inSystemDbContext(async () => {
     const cutoff = new Date(Date.now() - olderThanMs);
     const rows = await db
-      .select({ id: aiAgentFixWatches.id })
+      .select({ id: aiAgentFixWatches.id, createdAt: aiAgentFixWatches.createdAt })
       .from(aiAgentFixWatches)
-      .where(and(eq(aiAgentFixWatches.state, 'pending'), lt(aiAgentFixWatches.createdAt, cutoff)))
-      .orderBy(asc(aiAgentFixWatches.createdAt))
+      .where(
+        and(
+          eq(aiAgentFixWatches.state, 'pending'),
+          lt(aiAgentFixWatches.createdAt, cutoff),
+          // Row-value comparison, so the tuple order matches the ORDER BY
+          // exactly and no row is visited twice or skipped when several
+          // watches share a `created_at`. Casts are explicit because the
+          // driver sends parameters untyped.
+          after
+            ? sql`(${aiAgentFixWatches.createdAt}, ${aiAgentFixWatches.id}) > (${after.createdAt}::timestamptz, ${after.id}::uuid)`
+            : undefined,
+        ),
+      )
+      .orderBy(asc(aiAgentFixWatches.createdAt), asc(aiAgentFixWatches.id))
       .limit(limit);
-    return rows.map((row) => row.id);
+    return rows;
   });
 }
 

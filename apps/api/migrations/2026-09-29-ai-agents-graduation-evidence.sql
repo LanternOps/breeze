@@ -128,5 +128,10 @@ ALTER TABLE ai_agent_fix_watches DROP CONSTRAINT IF EXISTS ai_agent_fix_watches_
 DROP INDEX IF EXISTS ai_agent_fix_watches_run_id_uq;
 CREATE UNIQUE INDEX IF NOT EXISTS ai_agent_fix_watches_run_id_uq
   ON ai_agent_fix_watches (run_id) WHERE source_kind = 'act_run';
+-- (created_at, id), not created_at alone: the recovery sweep pages through the
+-- pending set with a keyset cursor on exactly that tuple
+-- (`listPendingWatchesForRecovery`), so the second column keeps every page a
+-- pure index range scan and keeps the order total when watches share a
+-- timestamp.
 CREATE INDEX IF NOT EXISTS ai_agent_fix_watches_pending_recovery_idx
-  ON ai_agent_fix_watches (created_at) WHERE state = 'pending';
+  ON ai_agent_fix_watches (created_at, id) WHERE state = 'pending';

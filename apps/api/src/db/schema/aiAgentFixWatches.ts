@@ -87,7 +87,7 @@ export const aiAgentFixWatches = pgTable('ai_agent_fix_watches', {
   uniqueIndex('ai_agent_fix_watches_intent_uq').on(t.intentId).where(sql`${t.intentId} IS NOT NULL`),
   index('ai_agent_fix_watches_org_created_idx').on(t.orgId, t.createdAt.desc()),
   index('ai_agent_fix_watches_state_due_idx').on(t.state, t.dueAt),
-  index('ai_agent_fix_watches_pending_recovery_idx').on(t.createdAt).where(sql`${t.state} = 'pending'`),
+  index('ai_agent_fix_watches_pending_recovery_idx').on(t.createdAt, t.id).where(sql`${t.state} = 'pending'`),
 ]);
 
 export type AiAgentFixWatch = typeof aiAgentFixWatches.$inferSelect;
