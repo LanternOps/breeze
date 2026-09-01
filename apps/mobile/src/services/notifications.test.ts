@@ -40,6 +40,8 @@ import {
   reconcileApprovalNotifications,
   reconcilePushRegistration,
   staleApprovalNotificationIds,
+  parseApprovalNotification,
+  parseTimeSuggestionsNotification,
 } from './notifications';
 import {
   notificationsRowCopy,
@@ -286,5 +288,46 @@ describe('reconcilePushRegistration (#3143)', () => {
     }
     expect(notif.getPermissionsAsync).not.toHaveBeenCalled();
     expect(api.registerPushToken).not.toHaveBeenCalled();
+  });
+});
+
+
+// ── W06 (#3900): the time-suggestions push parser ──────────────────────────
+// W06 ships ONLY the parser. W07 owns the listener wiring, quiet hours and the
+// preference category.
+function pushWith(data: Record<string, unknown>) {
+  return { request: { identifier: 'n1', content: { data } } } as never;
+}
+
+describe('parseTimeSuggestionsNotification (#3900)', () => {
+  it('accepts the W06 payload shape', () => {
+    expect(parseTimeSuggestionsNotification(pushWith({ type: 'time_suggestions', date: '2026-08-29' })))
+      .toEqual({ date: '2026-08-29' });
+  });
+
+  it('ignores approval and alert pushes', () => {
+    expect(parseTimeSuggestionsNotification(pushWith({ type: 'approval', approvalId: 'a1' }))).toBeNull();
+    expect(parseTimeSuggestionsNotification(pushWith({ alertId: 'x', eventType: 'alert.triggered' }))).toBeNull();
+    expect(parseTimeSuggestionsNotification(pushWith({ type: 'ticket', ticketId: 't1' }))).toBeNull();
+  });
+
+  it('ignores a payload without a date — routing to an undated screen is worse than not routing', () => {
+    expect(parseTimeSuggestionsNotification(pushWith({ type: 'time_suggestions' }))).toBeNull();
+    expect(parseTimeSuggestionsNotification(pushWith({ type: 'time_suggestions', date: 42 }))).toBeNull();
+  });
+
+  it('rejects a date that is not YYYY-MM-DD', () => {
+    // The screen puts this straight into `?date=`, which the server 400s on a
+    // bad shape — better to drop the tap than to open a screen that errors.
+    expect(parseTimeSuggestionsNotification(pushWith({ type: 'time_suggestions', date: '29/08/2026' }))).toBeNull();
+  });
+
+  it('tolerates a missing data bag', () => {
+    expect(parseTimeSuggestionsNotification({ request: { identifier: 'n1', content: {} } } as never)).toBeNull();
+  });
+
+  it('parseApprovalNotification still works on the approval payload (no regression)', () => {
+    expect(parseApprovalNotification(pushWith({ type: 'approval', approvalId: 'a1' }))).toEqual({ approvalId: 'a1' });
+    expect(parseApprovalNotification(pushWith({ type: 'time_suggestions', date: '2026-08-29' }))).toBeNull();
   });
 });

@@ -95,7 +95,9 @@ describe('the queue can only hold self-timestamped writes', () => {
   // stamping to an arbitrary later moment and silently rewrites the customer's
   // bill. Making the union runtime-inspectable is what lets a test pin it.
   it('QUEUED_KINDS contains neither start nor stop', () => {
-    expect([...QUEUED_KINDS].sort()).toEqual(['closeEntry', 'create']);
+    expect([...QUEUED_KINDS].sort()).toEqual([
+      'closeEntry', 'create', 'suggestion.confirm', 'suggestion.dismiss',
+    ]);
     expect(QUEUED_KINDS).not.toContain('start');
     expect(QUEUED_KINDS).not.toContain('stop');
   });
@@ -792,5 +794,69 @@ describe('timeEntryQueue', () => {
     });
     expect(result.remaining).toBe(0);
     await expect(readQueue()).resolves.toEqual([]);
+  });
+});
+
+
+// ── W06 (#3900): suggestion writes ─────────────────────────────────────────
+describe('suggestion writes', () => {
+  const SIG_A = { kind: 'remote_session', id: 'aaaa1111-0000-4000-8000-000000000001' };
+  const SIG_B = { kind: 'remote_session', id: 'bbbb2222-0000-4000-8000-000000000002' };
+  const confirmWrite = (dedupeKey: string) => ({
+    kind: 'suggestion.confirm' as const,
+    payload: { signals: [SIG_A], startedAt: '2026-08-29T10:00:00.000Z', endedAt: '2026-08-29T10:45:00.000Z' },
+    dedupeKey,
+  });
+
+  it('accepts the two new kinds through a cold-start reparse', async () => {
+    await enqueue(confirmWrite('suggestion.confirm:remote_session:a'));
+    await enqueue({ kind: 'suggestion.dismiss', payload: { signals: [SIG_B] }, dedupeKey: 'suggestion.dismiss:remote_session:b' });
+    const queue = await readQueue();
+    expect(queue.map((w) => w.kind)).toEqual(['suggestion.confirm', 'suggestion.dismiss']);
+  });
+
+  it('preserves dedupeKey across a cold start, or dedupe silently stops working', async () => {
+    await enqueue(confirmWrite('KEY-1'));
+    // Re-read from storage: this is the path a fresh app launch takes.
+    const queue = await readQueue();
+    expect(queue[0]!.dedupeKey).toBe('KEY-1');
+  });
+
+  it('the same suggestion key enqueued twice collapses to one queued write', async () => {
+    const first = await enqueue(confirmWrite('KEY-1'));
+    const second = await enqueue(confirmWrite('KEY-1'));
+    expect(await readQueue()).toHaveLength(1);
+    // The caller gets the row that is actually queued, not a phantom second id.
+    expect(second.id).toBe(first.id);
+  });
+
+  it('a different key still enqueues separately', async () => {
+    await enqueue(confirmWrite('KEY-1'));
+    await enqueue(confirmWrite('KEY-2'));
+    expect(await readQueue()).toHaveLength(2);
+  });
+
+  it('writes WITHOUT a dedupeKey never collapse — two identical manual entries are two entries', async () => {
+    const payload = { startedAt: '2026-08-29T10:00:00.000Z', endedAt: '2026-08-29T10:45:00.000Z' };
+    await enqueue({ kind: 'create', payload });
+    await enqueue({ kind: 'create', payload });
+    expect(await readQueue()).toHaveLength(2);
+  });
+
+  it('a suggestion write that already drained does not block re-enqueueing the same key later', async () => {
+    await enqueue(confirmWrite('KEY-1'));
+    await drain(async () => {});
+    expect(await readQueue()).toHaveLength(0);
+    await enqueue(confirmWrite('KEY-1'));
+    expect(await readQueue()).toHaveLength(1);
+  });
+
+  it('a queued confirm survives a cold start and drains on reconnect', async () => {
+    await enqueue(confirmWrite('KEY-1'));
+    const sent: QueuedWrite[] = [];
+    const result = await drain(async (write) => { sent.push(write); });
+    expect(sent.map((w) => w.kind)).toEqual(['suggestion.confirm']);
+    expect(result.sent).toBe(1);
+    expect(await readQueue()).toHaveLength(0);
   });
 });

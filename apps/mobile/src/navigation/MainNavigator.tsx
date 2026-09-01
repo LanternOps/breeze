@@ -14,6 +14,7 @@ import { SystemsScreen } from '../screens/systems/SystemsScreen';
 import { TicketsScreen } from '../screens/tickets/TicketsScreen';
 import { TicketDetailScreen } from '../screens/tickets/TicketDetailScreen';
 import { TimesheetScreen } from '../screens/time/TimesheetScreen';
+import { TimeSuggestionsScreen } from '../screens/time/TimeSuggestionsScreen';
 import { HomeIcon, SystemsIcon, TicketsIcon, TimeIcon } from '../components/TabIcons';
 import { TimerBar } from '../components/TimerBar';
 import { palette, fontFamily } from '../theme';
@@ -31,6 +32,17 @@ export type TicketsStackParamList = {
   TicketDetail: { ticketId: string };
 };
 
+/**
+ * W06 (#3900). W05 mounted TimesheetScreen straight onto the tab, so there was
+ * no stack to add a second Time screen to. A stack here (rather than hanging
+ * TimeSuggestions off TicketsStack) keeps the back gesture landing on the
+ * timesheet, which is where the banner that opens it lives.
+ */
+export type TimeStackParamList = {
+  Timesheet: undefined;
+  TimeSuggestions: { date?: string } | undefined;
+};
+
 export type MainTabParamList = {
   HomeTab: undefined;
   SystemsTab: undefined;
@@ -41,6 +53,7 @@ export type MainTabParamList = {
 const Tab = createBottomTabNavigator<MainTabParamList>();
 const SystemsStack = createNativeStackNavigator<SystemsStackParamList>();
 const TicketsStack = createNativeStackNavigator<TicketsStackParamList>();
+const TimeStack = createNativeStackNavigator<TimeStackParamList>();
 
 const stackScreenOptions = {
   headerStyle: { backgroundColor: palette.dark.bg0 },
@@ -68,6 +81,23 @@ function TicketsStackNavigator() {
         options={{ title: 'Ticket' }}
       />
     </TicketsStack.Navigator>
+  );
+}
+
+function TimeStackNavigator() {
+  return (
+    <TimeStack.Navigator screenOptions={stackScreenOptions}>
+      <TimeStack.Screen
+        name="Timesheet"
+        component={TimesheetScreen}
+        options={{ headerShown: false }}
+      />
+      <TimeStack.Screen
+        name="TimeSuggestions"
+        component={TimeSuggestionsScreen}
+        options={{ title: 'Unlogged sessions' }}
+      />
+    </TimeStack.Navigator>
   );
 }
 
@@ -179,7 +209,7 @@ export function MainNavigator() {
       />
       <Tab.Screen
         name="TimeTab"
-        component={TimesheetScreen}
+        component={TimeStackNavigator}
         options={{
           tabBarLabel: 'Time',
           tabBarIcon: ({ color, size }: { color: string; size: number }) => (

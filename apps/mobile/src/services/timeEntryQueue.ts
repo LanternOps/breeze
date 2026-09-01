@@ -48,7 +48,16 @@ export const QUEUE_NEEDS_ATTENTION_CORRUPT_KEY =
  * itself rather than one code path through it. `start`/`stop` never coming back
  * is the invariant this whole module exists to hold.
  */
-export const QUEUED_KINDS = ['create', 'closeEntry'] as const;
+export const QUEUED_KINDS = [
+  'create',
+  'closeEntry',
+  // W06 (#3900). Suggestion decisions carry their own startedAt/endedAt, so
+  // they obey the same rule as `create`/`closeEntry`: a queued write must never
+  // depend on the server stamping a time at drain, or a reconnect hours later
+  // bills the wrong window.
+  'suggestion.confirm',
+  'suggestion.dismiss',
+] as const;
 
 export type QueuedWriteKind = (typeof QUEUED_KINDS)[number];
 
@@ -66,6 +75,16 @@ export interface QueuedWrite {
    * shifting an already-shifted span a second time.
    */
   sentAt?: string;
+  /**
+   * W06 (#3900). Identity of the user's DECISION, distinct from `id` (identity
+   * of the queued row). `enqueue` collapses a second write carrying a key that
+   * is already queued, so a double tap on Confirm cannot become two billable
+   * entries when the queue later drains.
+   *
+   * Absent on `create`/`closeEntry`: two identical manual entries are two
+   * genuine entries and must never collapse.
+   */
+  dedupeKey?: string;
 }
 
 /** A write the server refused permanently, kept for the technician to re-enter. */
@@ -151,6 +170,10 @@ function asQueuedWrite(value: unknown): QueuedWrite | null {
     queuedAt: typeof candidate.queuedAt === 'string' ? candidate.queuedAt : new Date(0).toISOString(),
     attempts: typeof candidate.attempts === 'number' ? candidate.attempts : 0,
     ...(typeof candidate.sentAt === 'string' ? { sentAt: candidate.sentAt } : {}),
+    // Dropped here, dedupe would silently stop working after every app launch —
+    // the failure mode is a duplicate billable entry, with nothing in the UI
+    // to suggest anything went wrong.
+    ...(typeof candidate.dedupeKey === 'string' ? { dedupeKey: candidate.dedupeKey } : {}),
   };
 }
 
@@ -295,6 +318,17 @@ export async function enqueue(
     // Throws QueueStorageError on a storage read failure, which aborts before
     // the setItem below — the backlog is never overwritten with a stale view.
     const queue = await readQueue();
+
+    if (item.dedupeKey !== undefined) {
+      const existing = queue.find((queued) => queued.dedupeKey === item.dedupeKey);
+      // Return the row that is actually queued, never the phantom we just built:
+      // a caller that stores our id would otherwise hold an id the queue does
+      // not contain. Note this checks the LIVE queue only — a write that has
+      // already drained is gone from it, so the same decision can legitimately
+      // be re-made later.
+      if (existing) return existing;
+    }
+
     queue.push(item);
     await persistQueue(queue);
     return item;

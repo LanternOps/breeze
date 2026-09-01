@@ -1,5 +1,6 @@
 import type { CreateTimeEntryInput, TimeEntry, UpdateTimeEntryInput } from './timeEntries';
 import type { QueuedWrite } from './timeEntryQueue';
+import type { ConfirmSuggestionInput, SuggestionSignalRef } from './timeSuggestions';
 import { shiftIntoPast } from './timeSpan';
 
 /**
@@ -20,8 +21,24 @@ import { shiftIntoPast } from './timeSpan';
 export interface ReplaySenders {
   createTimeEntry: (input: CreateTimeEntryInput) => Promise<TimeEntry>;
   updateTimeEntry: (id: string, input: UpdateTimeEntryInput) => Promise<TimeEntry>;
+  /** W06 (#3900). Carries its own startedAt/endedAt, like every other sender here. */
+  confirmSuggestion: (input: ConfirmSuggestionInput) => Promise<unknown>;
+  dismissSuggestion: (signals: SuggestionSignalRef[]) => Promise<unknown>;
   /** The server's clock (services/serverClock.ts), in ms. */
   serverNow: () => number;
+}
+
+function signalRefs(payload: Record<string, unknown>): SuggestionSignalRef[] | undefined {
+  const value = payload.signals;
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const refs: SuggestionSignalRef[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) return undefined;
+    const { kind, id } = entry as Partial<SuggestionSignalRef>;
+    if (kind !== 'remote_session' || typeof id !== 'string' || id.length === 0) return undefined;
+    refs.push({ kind, id });
+  }
+  return refs;
 }
 
 /**
@@ -108,6 +125,38 @@ export function makeReplaySender(senders: ReplaySenders): (write: QueuedWrite) =
             isBillable: optionalBoolean(write.payload, 'isBillable'),
           })
         );
+        return;
+      }
+
+      case 'suggestion.confirm': {
+        const signals = signalRefs(write.payload);
+        const startedAt = optionalString(write.payload, 'startedAt');
+        if (signals === undefined || startedAt === undefined) {
+          throw new UnreplayableWriteError('Queued suggestion confirm is missing its signals or start time');
+        }
+        // Deliberately NOT shifted, unlike `create`. These bounds come from the
+        // remote_session rows the SERVER recorded, not from this phone's clock,
+        // and the server re-validates the range against those same signals — so
+        // a shift would move the window away from the session it describes and
+        // be rejected, or worse, bill a window that never happened.
+        await senders.confirmSuggestion(
+          compact({
+            signals,
+            startedAt,
+            endedAt: optionalString(write.payload, 'endedAt'),
+            ticketId: optionalString(write.payload, 'ticketId'),
+            description: optionalString(write.payload, 'description'),
+          }) as ConfirmSuggestionInput
+        );
+        return;
+      }
+
+      case 'suggestion.dismiss': {
+        const signals = signalRefs(write.payload);
+        if (signals === undefined) {
+          throw new UnreplayableWriteError('Queued suggestion dismiss is missing its signals');
+        }
+        await senders.dismissSuggestion(signals);
         return;
       }
 
