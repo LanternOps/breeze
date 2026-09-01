@@ -1,3 +1,13 @@
+/**
+ * Agent command-failure classification for **every** systemTools route.
+ *
+ * Named for the File Browser because that is where it was extracted from, but
+ * as of #4025 `processes`, `services`, `registry`, `eventLogs` and
+ * `scheduledTasks` all classify through it too. The name is kept so the merged
+ * `fileBrowserHelpers.test.ts` — which owns the Cloudflare property test over
+ * every classifier outcome — keeps its co-located pairing; treat this module as
+ * the shared one it now is, not as file-browser-private.
+ */
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import {
   DEVICE_UNREACHABLE_ERROR,
@@ -254,6 +264,40 @@ export function buildSingleItemUploadBody(
     code: failure.code,
     status: failure.status,
     ...(failure.unverified ? { unverified: true as const } : {}),
+  };
+}
+
+/**
+ * The whole error response for a route that must stop on an agent failure:
+ * the JSON body and the status to send it with.
+ *
+ * Every systemTools route needs the identical three-part shape (`error`,
+ * `code`, and `unverified` only when set), and hand-rolling it at each of the
+ * ~25 call sites is how the `unverified` flag gets dropped from one of them —
+ * exactly the class of copy-paste divergence that produced issue #4025. Pass
+ * `mutating: true` from any route that changes device state so a timeout is
+ * reported as unverified rather than as a plain retryable error.
+ *
+ * Returns body and status separately rather than one flat object because
+ * several routes already bind a local `status` (e.g. the service-list query
+ * filter), which a destructured `{ status, ...payload }` would collide with.
+ */
+export function buildCommandFailureResponse(
+  result: CommandResult,
+  fallback: string,
+  opts: { mutating?: boolean } = {},
+): {
+  body: { error: string; code: CommandFailureKind; unverified?: true };
+  status: ContentfulStatusCode;
+} {
+  const failure = mapCommandFailure(result, fallback, opts);
+  return {
+    body: {
+      error: failure.message,
+      code: failure.code,
+      ...(failure.unverified ? { unverified: true as const } : {}),
+    },
+    status: failure.status,
   };
 }
 

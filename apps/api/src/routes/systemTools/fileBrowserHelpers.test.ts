@@ -6,6 +6,7 @@ import {
   buildBulkItemFailure,
   auditErrorMessage,
   buildSingleItemUploadBody,
+  buildCommandFailureResponse,
   CLOUDFLARE_SWALLOWED_STATUSES,
 } from './fileBrowserHelpers';
 import { DEVICE_UNREACHABLE_ERROR, type CommandResult } from '../../services/commandQueue';
@@ -387,5 +388,68 @@ describe('buildSingleItemUploadBody', () => {
     const body = buildSingleItemUploadBody(result, 'Upload failed.');
     expect(body.unverified).toBeUndefined();
     expect(body.status).toBe(503);
+  });
+});
+
+// The shared response builder the non-file-browser systemTools routes adopted
+// in #4025. Those routes previously hand-rolled `{ error }` + a status at ~25
+// call sites; centralising the shape is what stops one of them from quietly
+// dropping the `unverified` flag on a state-changing timeout.
+describe('buildCommandFailureResponse', () => {
+  it('marks a mutating timeout unverified so the caller warns before a retry', () => {
+    const { body, status } = buildCommandFailureResponse(
+      { status: 'timeout', error: 'Command timed out after 15000ms' },
+      'Failed to kill process',
+      { mutating: true },
+    );
+
+    expect(status).toBe(503);
+    expect(body.code).toBe('agent_timeout');
+    expect(body.unverified).toBe(true);
+    expect(body.error).toContain('may have completed');
+  });
+
+  it('omits unverified entirely on a read-only timeout', () => {
+    const { body, status } = buildCommandFailureResponse(
+      { status: 'timeout', error: 'Command timed out after 60000ms' },
+      'Failed to get processes',
+    );
+
+    expect(status).toBe(503);
+    expect(body.code).toBe('agent_timeout');
+    // Absent, not `false` — the routes spread this straight into c.json and a
+    // literal `unverified: false` would read as a deliberate "we checked".
+    expect('unverified' in body).toBe(false);
+    expect(body.error).toContain('Please try again');
+  });
+
+  it('reproduces the 404 the routes used to derive from a "not found" substring', () => {
+    // Verbatim from agent/internal/remote/tools/services_windows.go:89 and
+    // tasks_windows.go:276 — the substring test these routes dropped.
+    for (const error of ['service not found: WinRM', 'task not found: \\Backup\\Daily']) {
+      const { body, status } = buildCommandFailureResponse({ status: 'failed', error }, 'fallback');
+      expect(status).toBe(404);
+      expect(body.code).toBe('path_not_found');
+      expect(body.error).toBe(error);
+    }
+  });
+
+  it('applies the fallback when the agent gave us nothing to show', () => {
+    const { body } = buildCommandFailureResponse({ status: 'failed' }, 'Failed to list tasks');
+    expect(body.error).toBe('Failed to list tasks');
+  });
+
+  it('never answers with a Cloudflare-swallowed status for any real agent error', () => {
+    for (const error of REAL_AGENT_ERRORS) {
+      for (const mutating of [false, true]) {
+        for (const status of ['failed', 'timeout'] as const) {
+          const response = buildCommandFailureResponse({ status, error }, 'fallback', { mutating });
+          expect(
+            CLOUDFLARE_SWALLOWED_STATUSES,
+            `${status}/${error || '<empty>'} (mutating=${mutating}) answered ${response.status}`,
+          ).not.toContain(response.status);
+        }
+      }
+    }
   });
 });

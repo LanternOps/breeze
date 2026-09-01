@@ -12,6 +12,11 @@ import {
   taskHistoryQuerySchema,
   paginationQuerySchema
 } from './schemas';
+import {
+  isCommandFailure,
+  buildCommandFailureResponse,
+  auditErrorMessage,
+} from './fileBrowserHelpers';
 import type { ScheduledTaskInfo, TaskHistoryEntry } from './types';
 
 const taskListQuerySchema = z.object({
@@ -171,8 +176,9 @@ scheduledTasksRoutes.get(
       limit
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to list tasks' }, 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to list tasks');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -222,9 +228,9 @@ scheduledTasksRoutes.get(
       path
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to get task';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to get task');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -273,9 +279,9 @@ scheduledTasksRoutes.get(
       limit
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to get task history';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to get task history');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -334,12 +340,12 @@ scheduledTasksRoutes.post(
       details: { path },
       ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to run task';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to run task', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({
@@ -382,12 +388,12 @@ scheduledTasksRoutes.post(
       details: { path },
       ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to enable task';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to enable task', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({
@@ -430,12 +436,12 @@ scheduledTasksRoutes.post(
       details: { path },
       ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to disable task';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to disable task', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({

@@ -9,6 +9,7 @@ import {
   eventLogQuerySchema,
   eventRecordParamSchema
 } from './schemas';
+import { isCommandFailure, buildCommandFailureResponse } from './fileBrowserHelpers';
 import type { EventLogInfo, EventLogEntry } from './types';
 
 function normalizeEventLevel(value?: string): EventLogEntry['level'] {
@@ -93,8 +94,9 @@ eventLogsRoutes.get(
       timeoutMs: 30000
     });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to list event logs' }, 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to list event logs');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -135,8 +137,9 @@ eventLogsRoutes.get(
       timeoutMs: 30000
     });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to get event log info' }, 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to get event log info');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -191,8 +194,9 @@ eventLogsRoutes.get(
       limit
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to query event logs' }, 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to query event logs');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -242,9 +246,9 @@ eventLogsRoutes.get(
       recordId
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to get event';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to get event');
+      return c.json(failure.body, failure.status);
     }
 
     try {

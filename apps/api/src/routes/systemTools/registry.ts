@@ -13,6 +13,11 @@ import {
   registryKeyBodySchema,
   registryKeyQuerySchema
 } from './schemas';
+import {
+  isCommandFailure,
+  buildCommandFailureResponse,
+  auditErrorMessage,
+} from './fileBrowserHelpers';
 import type { RegistryKey, RegistryValue } from './types';
 
 function parseNumericLike(value: string): number | null {
@@ -200,8 +205,9 @@ registryRoutes.get(
       path
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to load registry keys' }, 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to load registry keys');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -244,8 +250,9 @@ registryRoutes.get(
       path
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to load registry values' }, 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to load registry values');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -289,9 +296,9 @@ registryRoutes.get(
       name: normalizeRegistryValueName(name)
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to get registry value';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to get registry value');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -369,12 +376,12 @@ registryRoutes.put(
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to set registry value';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to set registry value', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({
@@ -433,12 +440,12 @@ registryRoutes.delete(
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to delete registry value';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to delete registry value', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({
@@ -492,12 +499,12 @@ registryRoutes.post(
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to create registry key';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to create registry key', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({
@@ -551,12 +558,12 @@ registryRoutes.delete(
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to delete registry key';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to delete registry key', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({

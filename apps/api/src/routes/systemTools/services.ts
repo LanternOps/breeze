@@ -7,6 +7,11 @@ import { createAuditLog } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED, getPagination, asRecord, asString } from './helpers';
 import { deviceIdParamSchema, serviceNameParamSchema, paginationQuerySchema } from './schemas';
+import {
+  isCommandFailure,
+  buildCommandFailureResponse,
+  auditErrorMessage,
+} from './fileBrowserHelpers';
 import type { ServiceInfo } from './types';
 
 const serviceListQuerySchema = z.object({
@@ -113,8 +118,9 @@ servicesRoutes.get(
       status
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to get services' }, 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to get services');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -162,9 +168,9 @@ servicesRoutes.get(
       name
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to get service';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to get service');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -218,12 +224,12 @@ servicesRoutes.post(
       details: { name },
       ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to start service';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to start service', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({
@@ -266,12 +272,12 @@ servicesRoutes.post(
       details: { name },
       ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to stop service';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to stop service', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({
@@ -314,12 +320,12 @@ servicesRoutes.post(
       details: { name },
       ipAddress: getTrustedClientIpOrUndefined(c),
       result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to restart service';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to restart service', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({
