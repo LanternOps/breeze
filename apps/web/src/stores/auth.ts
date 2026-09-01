@@ -92,6 +92,12 @@ export interface Tokens {
   expiresInSeconds: number;
 }
 
+/**
+ * Why the app bounced the user to /login. Rendered as `?reason=<code>` by
+ * handleSessionExpired() and turned into copy by LoginPage.
+ */
+export type SessionExpiredReason = 'session-expired' | 'idle' | 'origin-rejected';
+
 interface AuthState {
   user: User | null;
   tokens: Tokens | null;
@@ -103,7 +109,12 @@ interface AuthState {
   // overlay, login-page notice) can render a reason in the same tick the nav
   // collapses. NOT persisted — see partialize below — a stale reason must
   // never survive a reload.
-  sessionExpiredReason: 'session-expired' | 'idle' | null;
+  //
+  // 'origin-rejected' is NOT an expiry at all: the API refused the request's
+  // Origin (403 "Invalid request origin"), so no session could be minted from
+  // this address in the first place. It shares this field because the eviction
+  // and redirect are identical — only the copy the user needs differs.
+  sessionExpiredReason: SessionExpiredReason | null;
   // Epoch ms until which POST /auth/refresh is rate-limited for this user
   // (issue #3696). Non-null means "the session is FINE, the server is just
   // throttling us" — the opposite of sessionExpiredReason. AuthOverlay renders
@@ -382,7 +393,10 @@ export function resolveApiOrigin(): string {
 // that only care about restored-or-not.
 type RefreshOutcome =
   | { kind: 'restored'; tokens: Tokens }
-  | { kind: 'auth-failed' }
+  // `originRejected` marks the sub-case where the refresh was refused because
+  // of WHERE the browser is, not because of the cookie it sent — see the 403
+  // branch in refreshFetchOnce. Still an eviction; only the reason differs.
+  | { kind: 'auth-failed'; originRejected?: boolean }
   | { kind: 'transient' }
   // The server rate-limited POST /auth/refresh (429). Like 'transient' this is
   // NOT a verdict on the refresh cookie — but unlike a gateway blip it comes
@@ -420,6 +434,9 @@ async function fetchAuthIssuerWithBindingRetry(
 //                of ms to wait. Split out from `transient` in #3696 because the
 //                two need OPPOSITE handling: a blip should be retried right
 //                away, a throttle must NOT be (see requestTokenRefresh).
+//   - originRejected: a hard failure too, but caused by the browser's Origin
+//                not being allowed (403 "Invalid request origin"), not by the
+//                refresh cookie. Same eviction, different explanation.
 //   - neither:   a hard failure (expired/reused refresh cookie, real 401/403) —
 //                the session is unrecoverable and the caller must evict.
 type RefreshFetchResult = {
@@ -427,7 +444,15 @@ type RefreshFetchResult = {
   raced: boolean;
   transient: boolean;
   throttledForMs?: number;
+  originRejected?: boolean;
 };
+
+// The exact body the API's cookie-CSRF guard answers with when the request's
+// Origin isn't in CORS_ALLOWED_ORIGINS (apps/api/src/routes/auth/helpers.ts,
+// validateCookieCsrfRequest). Matched on the BODY, not the bare 403: other
+// 403s on this endpoint are genuine auth failures and must keep the generic
+// expiry copy.
+const ORIGIN_REJECTED_ERROR = 'Invalid request origin';
 
 // Fallback wait when a 429 arrives without a usable Retry-After/retryAfter —
 // matches the server's default 60s window (apps/api/src/services/rate-limit.ts,
@@ -542,6 +567,22 @@ async function refreshFetchOnce(): Promise<RefreshFetchResult> {
     };
   }
 
+  // A 403 "Invalid request origin" is a CONFIGURATION verdict, not a session
+  // verdict: the request was rejected on its Origin header before the refresh
+  // cookie was evaluated, so retrying (from this address) can only fail again.
+  // It still evicts — no access token can be minted here — but the user needs
+  // to be told about CORS_ALLOWED_ORIGINS / PUBLIC_APP_URL, not about their
+  // password. Self-hosters hit this on every login when they reach the
+  // dashboard at an address the API was never told about (an SSH tunnel's
+  // https://localhost:8443 against a CORS_ALLOWED_ORIGINS of https://localhost).
+  if (refreshResponse.status === 403) {
+    const body = await refreshResponse.json().catch(() => null) as { error?: string } | null;
+    if (body?.error === ORIGIN_REJECTED_ERROR) {
+      return { tokens: null, raced: false, transient: false, originRejected: true };
+    }
+    return { tokens: null, raced: false, transient: false };
+  }
+
   // 5xx (typically a 502/503/504 from the gateway) means the request never
   // reached a verdict on the refresh cookie — retryable, not an auth failure.
   if (refreshResponse.status >= 500) {
@@ -609,11 +650,13 @@ async function requestTokenRefresh(): Promise<RefreshOutcome> {
         // was the same org-switch logout, just rarer. Deliberately reuses the
         // existing bounded ladder rather than adding a second counter — the
         // whole loop stays capped at MAX_TRANSIENT_REFRESH_RETRIES passes.
-        if (!retry.transient && !retry.raced) return { kind: 'auth-failed' };
+        if (!retry.transient && !retry.raced) {
+          return { kind: 'auth-failed', originRejected: retry.originRejected };
+        }
       } else if (!result.transient) {
         // Hard failure (expired/reused refresh cookie, real 401/403): the
         // session is unrecoverable — evict.
-        return { kind: 'auth-failed' };
+        return { kind: 'auth-failed', originRejected: result.originRejected };
       }
 
       // Transient gateway/network failure. Retry with bounded exponential
@@ -777,12 +820,16 @@ export async function waitForPendingRefresh(): Promise<void> {
  * this; callers that only care about restored-or-not keep using the boolean
  * wrapper below.
  */
-export async function restoreAccessTokenFromCookieDetailed(): Promise<'restored' | 'auth-failed' | 'transient' | 'throttled'> {
+export async function restoreAccessTokenFromCookieDetailed(): Promise<'restored' | 'auth-failed' | 'origin-rejected' | 'transient' | 'throttled'> {
   try {
     const outcome = await requestTokenRefreshShared();
     if (outcome.kind === 'restored') {
       useAuthStore.getState().setTokens(outcome.tokens);
     }
+    // Reported separately from 'auth-failed' so callers that evict can pass the
+    // reason on to handleSessionExpired. Callers that only branch on 'restored'
+    // or 'throttled' are unaffected: this is still a dead end.
+    if (outcome.kind === 'auth-failed' && outcome.originRejected) return 'origin-rejected';
     return outcome.kind;
   } catch (err) {
     // Unexpected throw, not a verdict from the server — treat as transient so
@@ -977,6 +1024,17 @@ export class AuthThrottledError extends Error {
 }
 
 /**
+ * Reason code for an eviction caused by a failed refresh. Everything except an
+ * origin rejection is reported as a plain expiry — including 'transient', where
+ * the bounded retries were exhausted without a verdict.
+ */
+function expiryReasonFor(outcome: RefreshOutcome): SessionExpiredReason {
+  return outcome.kind === 'auth-failed' && outcome.originRejected
+    ? 'origin-rejected'
+    : 'session-expired';
+}
+
+/**
  * Single entry point for "the session is unrecoverable, evict and redirect."
  * Both fetchWithAuth expiry paths (dead refresh cookie on bootstrap, and a
  * 401 that survives a refresh-and-retry) funnel through here so idle-timeout
@@ -986,7 +1044,7 @@ export class AuthThrottledError extends Error {
  * The in-flight flag resets on login() so a later re-login (or the next test)
  * can trigger it again.
  */
-export function handleSessionExpired(reason: 'session-expired' | 'idle' = 'session-expired'): void {
+export function handleSessionExpired(reason: SessionExpiredReason = 'session-expired'): void {
   if (sessionExpiryInFlight) return;
   sessionExpiryInFlight = true;
 
@@ -1079,7 +1137,7 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
       // This evicts on 'transient' too (bounded retries exhausted), unlike the
       // background heartbeat which can wait forever: a foreground fetch needs a
       // verdict now — bounded retries, then evict.
-      handleSessionExpired('session-expired');
+      handleSessionExpired(expiryReasonFor(outcome));
       throw new AuthSessionExpiredError();
     }
   }
@@ -1164,7 +1222,7 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
             useAuthStore.getState().authThrottledUntil ?? Date.now() + outcome.retryAfterMs
           );
         }
-        handleSessionExpired('session-expired');
+        handleSessionExpired(expiryReasonFor(outcome));
       }
     }
   }
