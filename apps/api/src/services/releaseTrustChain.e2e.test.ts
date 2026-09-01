@@ -17,7 +17,21 @@ const dbMocks = vi.hoisted(() => {
     transaction: vi.fn(async (fn: (tx: unknown) => Promise<void>) => fn(tx)),
   };
 });
-vi.mock('../db', () => ({ db: { transaction: dbMocks.transaction } }));
+vi.mock('../db', () => ({
+  db: { transaction: dbMocks.transaction },
+  // Required by urlSafety's safeFetch (#1105 tripwire) now that binarySync
+  // routes its downloads through it.
+  assertOutsideHeldDbContext: vi.fn(),
+}));
+// binarySync's fetches go through the SSRF-guarded helper (#4262), which dials
+// http/https directly and never touches global `fetch`. Bridge it back to the
+// stubbed global or the `vi.stubGlobal('fetch', …)` below stops intercepting
+// and this suite makes real network calls.
+vi.mock('./urlSafety', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./urlSafety')>()),
+  safeFetchFollowingRedirects: (url: string, init?: RequestInit) =>
+    globalThis.fetch(url, init),
+}));
 vi.mock('./s3Storage', () => ({ isS3Configured: () => false, syncDirectory: vi.fn() }));
 
 // Deployment key = the FIXTURE key: signManifest signs with the fixture seed so

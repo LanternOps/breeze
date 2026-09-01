@@ -30,6 +30,25 @@ import {
   isOfficialReleaseSource,
 } from "./releaseSource";
 import { captureException } from "./sentry";
+import { safeFetchFollowingRedirects } from "./urlSafety";
+
+// Byte ceilings for every outbound response this module buffers (#4262).
+//
+// The bare `fetch` these replaced had NO ceiling at all: whatever the remote
+// sent was buffered whole. `safeFetch`'s `maxBytes` is a STREAMING ceiling —
+// the socket is destroyed on overrun and ResponseTooLargeError is thrown, so a
+// truncated body is never handed onward to signature verification.
+//
+// Sized to be unreachable by any legitimate response rather than tight: this
+// runs on the boot path, and a ceiling that a real release could trip would
+// turn a security control into an availability bug.
+
+/** Matches MAX_MANIFEST_BYTES in releaseArtifactManifest.ts — same two files. */
+const MAX_RELEASE_MANIFEST_BYTES = 1024 * 1024;
+/** checksums.txt is one ~100-byte line per asset. */
+const MAX_CHECKSUMS_BYTES = 1024 * 1024;
+/** A GitHub release JSON: asset list + release notes (GitHub caps body ~125KB). */
+const MAX_RELEASE_API_JSON_BYTES = 8 * 1024 * 1024;
 
 const GH_PLATFORM_MAP: Record<string, string> = {
   linux: "linux",
@@ -156,8 +175,19 @@ async function fetchReleaseAssetBuffer(
   asset: GitHubReleaseAsset,
   label: string,
 ): Promise<Buffer> {
-  const resp = await fetch(asset.browser_download_url, {
+  // `browser_download_url` comes from the GitHub API response, not from local
+  // config, and github.com 302s release assets to objects.githubusercontent.com
+  // — so following redirects is mandatory here, and following them NAIVELY is
+  // the SSRF bypass #3649 was filed about. The guarded helper re-resolves,
+  // filters and IP-pins every hop before it is dialed, so a redirect into
+  // loopback / 169.254.169.254 / RFC1918 is refused rather than followed.
+  //
+  // This function fetches only release-artifact-manifest.json and its .ed25519
+  // signature — the inputs to release artifact verification — so the ceiling is
+  // the manifest one.
+  const resp = await safeFetchFollowingRedirects(asset.browser_download_url, {
     headers: { "User-Agent": "breeze-api" },
+    maxBytes: MAX_RELEASE_MANIFEST_BYTES,
   });
   if (!resp.ok) {
     throw new Error(`Failed to download ${label}`);
@@ -221,9 +251,16 @@ async function parseChecksumsFallback(
     throw new Error("No checksums.txt found in release assets");
   }
 
-  const checksumResp = await fetch(checksumAsset.browser_download_url, {
-    headers: { "User-Agent": "breeze-api" },
-  });
+  // Same asset-URL redirect chain as fetchReleaseAssetBuffer, and this is the
+  // integrity fallback when no signed manifest is present — so it is the LAST
+  // thing that should be reachable by an unvalidated redirect.
+  const checksumResp = await safeFetchFollowingRedirects(
+    checksumAsset.browser_download_url,
+    {
+      headers: { "User-Agent": "breeze-api" },
+      maxBytes: MAX_CHECKSUMS_BYTES,
+    },
+  );
   if (!checksumResp.ok) {
     throw new Error("Failed to download checksums.txt");
   }
@@ -1087,7 +1124,14 @@ export async function syncFromGitHub(
     ghHeaders.Authorization = `Bearer ${ghToken}`;
   }
 
-  const ghResp = await fetch(ghUrl, { headers: ghHeaders });
+  // ghHeaders may carry `Authorization: Bearer <GITHUB_TOKEN>`. The guarded
+  // helper drops credential headers on a cross-origin hop, so a redirect can no
+  // longer walk the operator's token to another host — something bare
+  // `fetch` (which replays headers across redirects) would happily do.
+  const ghResp = await safeFetchFollowingRedirects(ghUrl, {
+    headers: ghHeaders,
+    maxBytes: MAX_RELEASE_API_JSON_BYTES,
+  });
   if (!ghResp.ok) {
     throw new Error(`GitHub API error: ${ghResp.status}`);
   }
@@ -1423,7 +1467,14 @@ async function backfillBackupRowsForVersion(
     ghHeaders.Authorization = `Bearer ${ghToken}`;
   }
 
-  const ghResp = await fetch(ghUrl, { headers: ghHeaders });
+  // ghHeaders may carry `Authorization: Bearer <GITHUB_TOKEN>`. The guarded
+  // helper drops credential headers on a cross-origin hop, so a redirect can no
+  // longer walk the operator's token to another host — something bare
+  // `fetch` (which replays headers across redirects) would happily do.
+  const ghResp = await safeFetchFollowingRedirects(ghUrl, {
+    headers: ghHeaders,
+    maxBytes: MAX_RELEASE_API_JSON_BYTES,
+  });
   if (!ghResp.ok) {
     throw new Error(`GitHub API error: ${ghResp.status}`);
   }
