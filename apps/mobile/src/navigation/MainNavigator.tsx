@@ -1,4 +1,5 @@
 import { View } from 'react-native';
+import type { NavigatorScreenParams } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import {
   BottomTabBar,
@@ -43,10 +44,16 @@ export type TimeStackParamList = {
   TimeSuggestions: { date?: string } | undefined;
 };
 
+/**
+ * `TicketsTab` carries nested params so push taps can address a screen inside
+ * the tickets stack directly (`navigateToTicket`, #4336). Declared rather than
+ * cast: a cast here would let a rename inside TicketsStackParamList compile
+ * fine and fail only on a real device.
+ */
 export type MainTabParamList = {
   HomeTab: undefined;
   SystemsTab: undefined;
-  TicketsTab: undefined;
+  TicketsTab: NavigatorScreenParams<TicketsStackParamList> | undefined;
   TimeTab: undefined;
 };
 
