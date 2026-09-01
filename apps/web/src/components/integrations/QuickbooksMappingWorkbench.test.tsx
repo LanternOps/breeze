@@ -66,6 +66,24 @@ const itemProposal = {
   lastError: null,
 };
 
+// An item row already decided as "create new" but not yet successfully
+// synced (no remoteEntityId yet) — this is the shape the API's
+// income_account_required guard actually applies to (isCreate && no default
+// income account).
+const itemProposalCreateNew = {
+  ...itemProposal,
+  linkStatus: "create_new",
+};
+
+// An item row already confirmed against a real QuickBooks item — syncing
+// this is an UPDATE, which never needs an income account.
+const itemProposalConfirmed = {
+  ...itemProposal,
+  proposedRemoteId: "qb-item-9",
+  proposedRemoteName: "Support Plan (QBO)",
+  linkStatus: "confirmed",
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   window.location.hash = "";
@@ -93,7 +111,7 @@ describe("QuickbooksMappingWorkbench", () => {
     expect(fetchWithAuthMock.mock.calls[0]![0]).toContain("entityType=org");
   });
 
-  it("confirms a proposal through runAction and reloads the list", async () => {
+  it("confirms a proposal pre-filled with the suggested candidate, updating the row in place from the PUT response", async () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(jsonResponse({ data: [suggestedOrgProposal] }))
       .mockResolvedValueOnce(
@@ -120,9 +138,11 @@ describe("QuickbooksMappingWorkbench", () => {
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
     await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
 
-    fireEvent.change(screen.getByTestId(`quickbooks-mapping-remote-${ORG_ID}`), {
-      target: { value: "qb-12" },
-    });
+    // The select is already showing the proposal's suggested candidate
+    // ("qb-12") without the operator touching it — Confirm must work from
+    // that pre-filled value, not require a redundant re-selection.
+    expect(screen.getByTestId(`quickbooks-mapping-remote-${ORG_ID}`)).toHaveValue("qb-12");
+    expect(screen.getByTestId(`quickbooks-mapping-confirm-${ORG_ID}`)).not.toBeDisabled();
     fireEvent.click(screen.getByTestId(`quickbooks-mapping-confirm-${ORG_ID}`));
 
     await waitFor(() =>
@@ -139,6 +159,13 @@ describe("QuickbooksMappingWorkbench", () => {
       decision: "confirmed",
       remoteEntityId: "qb-12",
     });
+    // Updated in place from the PUT response — no second GET was issued.
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
+    await waitFor(() =>
+      expect(
+        screen.getByTestId(`quickbooks-mapping-linkstatus-${ORG_ID}`),
+      ).toHaveTextContent(/confirmed/i),
+    );
   });
 
   it("does not flip the row status before the confirm request resolves (no optimistic UI)", async () => {
@@ -156,9 +183,6 @@ describe("QuickbooksMappingWorkbench", () => {
     fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
     await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
 
-    fireEvent.change(screen.getByTestId(`quickbooks-mapping-remote-${ORG_ID}`), {
-      target: { value: "qb-12" },
-    });
     fireEvent.click(screen.getByTestId(`quickbooks-mapping-confirm-${ORG_ID}`));
 
     // Still "pending" — the PUT hasn't resolved yet.
@@ -230,7 +254,10 @@ describe("QuickbooksMappingWorkbench", () => {
   it("disables item creation until an income account is saved", async () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(jsonResponse({ data: [] })) // income accounts (bundled with items load)
-      .mockResolvedValueOnce(jsonResponse({ data: [itemProposal] }));
+      // A "create new" row (no remoteEntityId yet) is exactly what the API's
+      // income_account_required guard applies to (isCreate && no default
+      // income account) — see syncMappedEntity in accountingMappingService.ts.
+      .mockResolvedValueOnce(jsonResponse({ data: [itemProposalCreateNew] }));
 
     render(
       <QuickbooksMappingWorkbench
@@ -249,6 +276,61 @@ describe("QuickbooksMappingWorkbench", () => {
     expect(
       screen.getByTestId("quickbooks-income-account-required"),
     ).toBeInTheDocument();
+  });
+
+  it("does not gate sync for an already-confirmed item row even without a saved income account", async () => {
+    fetchWithAuthMock
+      .mockResolvedValueOnce(jsonResponse({ data: [] })) // income accounts (bundled with items load)
+      .mockResolvedValueOnce(jsonResponse({ data: [itemProposalConfirmed] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            breezeEntityType: "catalog_item",
+            breezeEntityId: ITEM_ID,
+            remoteEntityType: "Item",
+            remoteEntityId: "qb-item-9",
+            linkStatus: "confirmed",
+            syncStatus: "synced",
+            lastSyncedAt: "2026-09-01T00:00:00Z",
+            lastError: null,
+          },
+        }),
+      );
+
+    render(
+      <QuickbooksMappingWorkbench
+        onUnauthorized={vi.fn()}
+        defaultIncomeAccountRef={null}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-tab-items"));
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ITEM_ID}`);
+
+    // The banner still shows (no income account saved), and create is still
+    // gated — but this confirmed row's sync is an UPDATE, not a create, so it
+    // must stay enabled.
+    expect(
+      screen.getByTestId("quickbooks-income-account-required"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId(`quickbooks-mapping-create-${ITEM_ID}`)).toBeDisabled();
+    expect(screen.getByTestId(`quickbooks-mapping-sync-${ITEM_ID}`)).not.toBeDisabled();
+
+    fireEvent.click(screen.getByTestId(`quickbooks-mapping-sync-${ITEM_ID}`));
+
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "success" }),
+      ),
+    );
+    const postCall = fetchWithAuthMock.mock.calls[2]!;
+    expect(postCall[0]).toBe("/accounting/quickbooks/mappings/sync");
+    expect((postCall[1] as RequestInit).method).toBe("POST");
+    await waitFor(() =>
+      expect(
+        screen.getByTestId(`quickbooks-mapping-status-${ITEM_ID}`),
+      ).toHaveTextContent(/synced/i),
+    );
   });
 
   it("creates a new remote item through runAction once an income account is set", async () => {

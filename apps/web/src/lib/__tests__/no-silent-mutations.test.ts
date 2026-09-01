@@ -110,6 +110,11 @@ const TARGET_GLOBS = [
   'src/components/billing/quotes/QuoteEditor.tsx',
   'src/components/alerts/CorrelatedAlertGroups.tsx',
   'src/components/integrations/SecurityIntegration.tsx',
+  // QuickBooks entity mapping workbench: confirm/create/unlink/sync decisions
+  // and the income-account save all mutate a partner's accounting linkage —
+  // a bare fetchWithAuth here would silently fail a mapping the operator
+  // believes was saved.
+  'src/components/integrations/QuickbooksMappingWorkbench.tsx',
   'src/components/devices/DeviceVulnerabilitiesTab.tsx',
   'src/components/vulnerabilities/VulnerabilityFleetPage.tsx',
   'src/components/vulnerabilities/SoftwareGroupDrawer.tsx',
@@ -385,12 +390,13 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    // 103: 99 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
+    // 104: 99 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
     // (org-lifecycle Wave 3), plus ArchiveOrgModal.tsx (org-lifecycle Wave 5),
     // plus SsoProvidersPage.tsx and ReportBuilder.tsx (2026-08-28 pre-release sweep),
     // plus AlertVerdictBadge.tsx (P2-1 Task 15), plus
-    // AiAgentSchedulesSection.tsx (P2-2 Task 13, #4189).
-    expect(absoluteFiles.length).toBe(103);
+    // AiAgentSchedulesSection.tsx (P2-2 Task 13, #4189), plus
+    // QuickbooksMappingWorkbench.tsx (QuickBooks entity mapping, Task 6).
+    expect(absoluteFiles.length).toBe(104);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

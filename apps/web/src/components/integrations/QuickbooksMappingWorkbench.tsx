@@ -94,10 +94,16 @@ export default function QuickbooksMappingWorkbench({
     setRowError({});
   }
 
-  function remoteIdFor(id: string): string {
+  // Falls back to the proposal's own pre-filled suggested candidate the same
+  // way the select's displayed value does (see `remoteValue` below) — a row
+  // whose select is showing a suggested match without the operator touching
+  // it must still be confirmable, not stuck disabled until they redundantly
+  // re-pick the value already on screen.
+  function remoteIdFor(id: string, p: MappingProposal): string {
     const selected = remoteSelection[id];
     if (selected === MANUAL_REMOTE_OPTION) return (manualRemoteId[id] ?? "").trim();
-    return selected ?? "";
+    if (selected !== undefined) return selected;
+    return p.proposedRemoteId ?? "";
   }
 
   async function load() {
@@ -230,7 +236,18 @@ export default function QuickbooksMappingWorkbench({
     }
   }
 
-  const itemActionsGated = entityType === "catalog_item" && !savedIncomeAccountRef;
+  // Only a CREATE against QuickBooks requires a default income account (the
+  // API's income_account_required guard is `isCreate && !defaultIncomeAccountRef`,
+  // where isCreate means the mapping has no remoteEntityId yet — see
+  // syncMappedEntity in accountingMappingService.ts). The "Create new" button
+  // always issues a create decision, so it's gated for every item row.
+  // "Sync now" on an already-confirmed/linked row pushes an UPDATE, which
+  // never touches the income account, so only a `create_new` row's sync
+  // (which may still be an unpersisted create) is gated.
+  const createGated = entityType === "catalog_item" && !savedIncomeAccountRef;
+  function syncGatedFor(p: MappingProposal): boolean {
+    return entityType === "catalog_item" && p.linkStatus === "create_new" && !savedIncomeAccountRef;
+  }
 
   return (
     <div data-testid="quickbooks-mapping-workbench" className="space-y-4 rounded-lg border bg-card p-5">
@@ -284,6 +301,15 @@ export default function QuickbooksMappingWorkbench({
               className="rounded-md border px-2 py-1"
             >
               <option value="">—</option>
+              {/* Transient-orphan guard: the saved/selected ref can be set
+                  before `incomeAccounts` has loaded (e.g. on mount from
+                  `defaultIncomeAccountRef`), which would otherwise leave the
+                  controlled `value` pointing at an <option> that doesn't
+                  exist yet. Render a placeholder carrying that id until the
+                  real list loads and (usually) supersedes it. */}
+              {incomeAccountRef && !(incomeAccounts ?? []).some((a) => a.id === incomeAccountRef) && (
+                <option value={incomeAccountRef}>{incomeAccountRef}</option>
+              )}
               {(incomeAccounts ?? []).map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.displayName}
@@ -345,7 +371,7 @@ export default function QuickbooksMappingWorkbench({
                     : t("quickbooksMapping.pending");
               const remoteValue = remoteSelection[id] ?? (p.proposedRemoteId ? p.proposedRemoteId : "");
               const isManual = remoteValue === MANUAL_REMOTE_OPTION;
-              const gated = itemActionsGated;
+              const syncGated = syncGatedFor(p);
               const error = rowError[id];
 
               return (
@@ -406,8 +432,8 @@ export default function QuickbooksMappingWorkbench({
                     <button
                       type="button"
                       data-testid={`quickbooks-mapping-confirm-${id}`}
-                      disabled={busy || !remoteIdFor(id)}
-                      onClick={() => void decide(p, "confirmed", remoteIdFor(id))}
+                      disabled={busy || !remoteIdFor(id, p)}
+                      onClick={() => void decide(p, "confirmed", remoteIdFor(id, p))}
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
                       {t("quickbooksMapping.confirmMatch")}
@@ -415,7 +441,7 @@ export default function QuickbooksMappingWorkbench({
                     <button
                       type="button"
                       data-testid={`quickbooks-mapping-create-${id}`}
-                      disabled={busy || gated}
+                      disabled={busy || createGated}
                       onClick={() => void decide(p, "create_new")}
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
@@ -433,7 +459,7 @@ export default function QuickbooksMappingWorkbench({
                     <button
                       type="button"
                       data-testid={`quickbooks-mapping-sync-${id}`}
-                      disabled={busy || gated}
+                      disabled={busy || syncGated}
                       onClick={() => void sync(p)}
                       className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
                     >
