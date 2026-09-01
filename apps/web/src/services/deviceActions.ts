@@ -450,7 +450,9 @@ export async function restoreDevice(deviceId: string): Promise<{ success: boolea
   return data.data ?? data;
 }
 
-export async function permanentDeleteDevice(deviceId: string): Promise<{ success: boolean }> {
+export async function permanentDeleteDevice(
+  deviceId: string
+): Promise<{ success: boolean; agentUninstallSent?: boolean; warning?: string }> {
   const response = await fetchWithAuth(`/devices/${deviceId}/permanent`, {
     method: 'DELETE'
   });
