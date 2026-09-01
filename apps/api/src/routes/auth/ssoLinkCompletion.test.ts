@@ -102,6 +102,7 @@ vi.mock('../../services/auditEvents', () => ({
 
 vi.mock('../../services/ssoPendingLink', () => ({
   consumeSsoPendingLink: vi.fn(),
+  restoreConsumedSsoPendingLink: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('./helpers', () => ({
@@ -111,7 +112,7 @@ vi.mock('./helpers', () => ({
 import { finalizeSsoPendingLink } from './ssoLinkCompletion';
 import { db } from '../../db';
 import { users, ssoProviders, organizationUsers, userSsoIdentities } from '../../db/schema';
-import { consumeSsoPendingLink } from '../../services/ssoPendingLink';
+import { consumeSsoPendingLink, restoreConsumedSsoPendingLink } from '../../services/ssoPendingLink';
 import { getUserEpochs } from '../../services';
 import { issueUserSession } from '../../services/userSession';
 import { beginAuthIssuanceForStoredTransition, cancelAuthIssuance, finishAuthIssuance } from '../../services/authBrowserTransition';
@@ -261,9 +262,18 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
     });
 
     expect(outcome).toEqual({ ok: false, error: 'invalid_mfa_code' });
+    expect(restoreConsumedSsoPendingLink).toHaveBeenCalledWith('hash-1', RECORD);
     expect(consumeRecoveryCode).toHaveBeenCalledWith(expect.anything(), USER_ID, 'ABCD-2345');
     expect(issueUserSession).not.toHaveBeenCalled();
     expect(cancelAuthIssuance).toHaveBeenCalledOnce();
+
+    wire();
+    const retry = await finalizeSsoPendingLink(c, 'hash-1', {
+      breezeMfaVerified: true,
+      expectedUserId: USER_ID,
+      recoveryCode: 'CORRECT-1',
+    });
+    expect(retry.ok).toBe(true);
   });
 
   it('returns link_expired when the record is gone (expired / already consumed / store down)', async () => {

@@ -25,8 +25,10 @@ vi.mock('./csrfToken', () => ({
 }));
 
 import {
+  login,
   NATIVE_AUTH_BINDING_KEY,
   NATIVE_AUTH_BINDING_HEADER,
+  parseMfaChallengePayload,
   verifyMfa,
 } from './api';
 
@@ -62,7 +64,7 @@ describe('native MFA transition transport', () => {
         tokens: { accessToken: 'access-1' },
       }));
 
-    await expect(verifyMfa('123456', 'temp-1')).resolves.toMatchObject({ token: 'access-1' });
+    await expect(verifyMfa('123456', 'temp-1', 'totp')).resolves.toMatchObject({ token: 'access-1' });
 
     expect(fetchWithTimeout).toHaveBeenCalledTimes(2);
     expect(requestHeaders(0)).toMatchObject({
@@ -81,7 +83,7 @@ describe('native MFA transition transport', () => {
       tokens: { accessToken: 'access-2' },
     }));
 
-    await verifyMfa('123456', 'temp-2');
+    await verifyMfa('123456', 'temp-2', 'totp');
 
     expect(fetchWithTimeout).toHaveBeenCalledTimes(1);
     expect(requestHeaders(0)).toMatchObject({
@@ -100,9 +102,79 @@ describe('native MFA transition transport', () => {
         [NATIVE_AUTH_BINDING_HEADER]: 'c'.repeat(64),
       }));
 
-    await expect(verifyMfa('123456', 'temp-3')).rejects.toMatchObject({ statusCode: 428 });
+    await expect(verifyMfa('123456', 'temp-3', 'totp')).rejects.toMatchObject({ statusCode: 428 });
 
     expect(fetchWithTimeout).toHaveBeenCalledTimes(2);
     expect(secureValues.get(NATIVE_AUTH_BINDING_KEY)).toBe(replacement);
+  });
+});
+
+describe('mobile MFA response contracts', () => {
+  it('normalizes the strict challenge contract including passkey and recovery', () => {
+    expect(parseMfaChallengePayload({
+      mfaRequired: true,
+      tempToken: 'temp-1',
+      mfaMethod: 'passkey',
+      allowedMethods: { totp: true, sms: false, passkey: true },
+      recoveryAvailable: true,
+      passkeyAvailable: true,
+    })).toEqual({
+      tempToken: 'temp-1',
+      mfaMethod: 'passkey',
+      methods: ['totp', 'passkey', 'recovery'],
+      allowedMethods: { totp: true, sms: false, passkey: true },
+      recoveryAvailable: true,
+      phoneLast4: null,
+    });
+  });
+
+  it('fails closed when strict challenge aliases disagree', () => {
+    expect(parseMfaChallengePayload({
+      tempToken: 'temp-1',
+      mfaMethod: 'totp',
+      methods: ['totp'],
+      allowedMethods: ['sms'],
+      recoveryAvailable: false,
+    })).toBeNull();
+  });
+
+  it('keeps legacy challenges compatible only when both method lists are absent', () => {
+    expect(parseMfaChallengePayload({ mfaRequired: true, tempToken: 'temp-1', mfaMethod: 'sms' })).toEqual({
+      tempToken: 'temp-1',
+      mfaMethod: 'sms',
+      methods: ['sms'],
+      allowedMethods: { totp: false, sms: true, passkey: false },
+      recoveryAvailable: false,
+      phoneLast4: null,
+    });
+  });
+
+  it('treats enrollment-required as unauthenticated even if tokens are present', async () => {
+    fetchWithTimeout.mockResolvedValueOnce(response(200, {
+      mfaEnrollmentRequired: true,
+      enrollUrl: '/auth/mfa/setup',
+      user,
+      tokens: { accessToken: 'must-not-be-used' },
+    }));
+
+    await expect(login('tech@example.test', 'pw')).resolves.toEqual({
+      kind: 'mfaEnrollmentRequired',
+      handoff: { reason: 'mfa_enrollment_required', enrollUrl: '/auth/mfa/setup' },
+    });
+  });
+
+  it('sends the selected method and preserves recovery-code separators', async () => {
+    fetchWithTimeout.mockResolvedValueOnce(response(200, {
+      user,
+      tokens: { accessToken: 'access-recovery' },
+    }));
+
+    await verifyMfa('ABCD EFGH-IJKL', 'temp-recovery', 'recovery');
+
+    expect(JSON.parse(String(fetchWithTimeout.mock.calls[0]![1].body))).toEqual({
+      code: 'ABCD EFGH-IJKL',
+      tempToken: 'temp-recovery',
+      method: 'recovery',
+    });
   });
 });

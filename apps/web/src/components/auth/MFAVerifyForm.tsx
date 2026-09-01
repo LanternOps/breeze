@@ -12,6 +12,8 @@ type MFAVerifyFormProps = {
   submitLabel?: string;
   loading?: boolean;
   mfaMethod?: MfaMethod;
+  methods?: MfaMethod[];
+  onMethodChange?: (method: MfaMethod) => void;
   /**
    * #2153: true when the account has a passkey registered as an ALTERNATE
    * second factor while the primary method is totp/sms. Surfaces a "use a
@@ -19,7 +21,7 @@ type MFAVerifyFormProps = {
    */
   passkeyAvailable?: boolean;
   phoneLast4?: string;
-  onSendSmsCode?: () => Promise<void>;
+  onSendSmsCode?: () => Promise<boolean | void>;
   smsSending?: boolean;
   smsSent?: boolean;
 };
@@ -31,6 +33,8 @@ export default function MFAVerifyForm({
   submitLabel,
   loading,
   mfaMethod = 'totp',
+  methods = [mfaMethod],
+  onMethodChange,
   passkeyAvailable = false,
   phoneLast4,
   onSendSmsCode,
@@ -39,14 +43,17 @@ export default function MFAVerifyForm({
 }: MFAVerifyFormProps) {
   const { t } = useTranslation('auth');
   const [digits, setDigits] = useState<string[]>(Array(DIGIT_COUNT).fill(''));
+  const [recoveryCode, setRecoveryCode] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
   const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
+  const smsAutoSent = useRef(false);
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
   const code = digits.join('');
   const isSms = mfaMethod === 'sms';
   const isPasskey = mfaMethod === 'passkey';
+  const isRecovery = mfaMethod === 'recovery';
   // #2153: offer the passkey as an alternate factor when the primary method is
   // the code-based totp/sms flow but the account also has a passkey.
   const showPasskeyAlternate = !isPasskey && passkeyAvailable && Boolean(onPasskeyVerify);
@@ -57,6 +64,19 @@ export default function MFAVerifyForm({
     const timer = setTimeout(() => setResendCooldown(resendCooldown - 1), 1000);
     return () => clearTimeout(timer);
   }, [resendCooldown]);
+
+  useEffect(() => {
+    if (!isSms) {
+      smsAutoSent.current = false;
+      return;
+    }
+    if (smsSent || smsSending || smsAutoSent.current || !onSendSmsCode) return;
+    smsAutoSent.current = true;
+    void onSendSmsCode().then((sent) => {
+      if (sent !== false) setResendCooldown(60);
+      else smsAutoSent.current = false;
+    });
+  }, [isSms, onSendSmsCode, smsSending, smsSent]);
 
   const focusIndex = (index: number) => {
     inputRefs.current[index]?.focus();
@@ -100,12 +120,13 @@ export default function MFAVerifyForm({
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (isLoading || code.length !== DIGIT_COUNT) {
+    const submittedCode = isRecovery ? recoveryCode.trim() : code;
+    if (isLoading || (isRecovery ? submittedCode.length === 0 : submittedCode.length !== DIGIT_COUNT)) {
       return;
     }
     try {
       setIsSubmitting(true);
-      await onSubmit?.(code);
+      await onSubmit?.(submittedCode);
     } finally {
       setIsSubmitting(false);
     }
@@ -113,8 +134,8 @@ export default function MFAVerifyForm({
 
   const handleSendSms = async () => {
     if (smsSending || resendCooldown > 0) return;
-    await onSendSmsCode?.();
-    setResendCooldown(60);
+    const sent = await onSendSmsCode?.();
+    if (sent !== false) setResendCooldown(60);
   };
 
   const handlePasskeyVerify = async () => {
@@ -127,9 +148,29 @@ export default function MFAVerifyForm({
     }
   };
 
+  const methodSelector = methods.length > 1 ? (
+    <label className="block space-y-2 text-sm font-medium">
+      <span>{t('mfaVerify.method.label', { defaultValue: 'Verification method' })}</span>
+      <select
+        data-testid="mfa-method-select"
+        value={mfaMethod}
+        onChange={(event) => onMethodChange?.(event.target.value as MfaMethod)}
+        disabled={isLoading}
+        className="h-11 w-full rounded-md border bg-background px-3"
+      >
+        {methods.map((method) => (
+          <option key={method} value={method}>
+            {{ totp: 'Authenticator app', sms: 'Text message', passkey: 'Passkey', recovery: 'Recovery code' }[method]}
+          </option>
+        ))}
+      </select>
+    </label>
+  ) : null;
+
   if (isPasskey) {
     return (
       <div className="space-y-6">
+        {methodSelector}
         <div className="space-y-2">
           <h2 className="text-lg font-semibold">{t('mfaVerify.passkey.title', { defaultValue: 'Use your passkey' })}</h2>
           <p className="text-sm text-muted-foreground">
@@ -161,10 +202,13 @@ export default function MFAVerifyForm({
       onSubmit={handleSubmit}
       className="space-y-6"
     >
+      {methodSelector}
       <div className="space-y-2">
         <h2 className="text-lg font-semibold">{t('mfaVerify.code.title', { defaultValue: 'Enter your verification code' })}</h2>
         <p className="text-sm text-muted-foreground">
-          {isSms
+          {isRecovery
+            ? t('mfaVerify.recovery.description', { defaultValue: 'Enter one of your recovery codes.' })
+            : isSms
             ? smsSent
               ? t('mfaVerify.sms.sentDescription', {
                   defaultValue: `Enter the 6-digit code sent to your phone ending in ${phoneLast4 || '****'}.`,
@@ -191,7 +235,25 @@ export default function MFAVerifyForm({
         </button>
       )}
 
-      {(!isSms || smsSent) && (
+      {isRecovery && (
+        <div className="space-y-2">
+          <label htmlFor="mfa-recovery-code" className="text-sm font-medium">
+            {t('mfaVerify.recovery.label', { defaultValue: 'Recovery code' })}
+          </label>
+          <input
+            id="mfa-recovery-code"
+            data-testid="mfa-recovery-code"
+            type="text"
+            autoComplete="one-time-code"
+            value={recoveryCode}
+            onChange={(event) => setRecoveryCode(event.target.value)}
+            disabled={isLoading}
+            className="h-11 w-full rounded-md border bg-background px-3 font-mono uppercase"
+          />
+        </div>
+      )}
+
+      {!isRecovery && (!isSms || smsSent) && (
         <>
           <div className="space-y-2">
             <label className="text-sm font-medium">{t('fields.verificationCode', { defaultValue: 'Verification code' })}</label>
@@ -253,11 +315,11 @@ export default function MFAVerifyForm({
         </div>
       )}
 
-      {(!isSms || smsSent) && (
+      {(isRecovery || !isSms || smsSent) && (
         <button
           type="submit"
           data-testid="mfa-submit"
-          disabled={isLoading || code.length !== DIGIT_COUNT}
+          disabled={isLoading || (isRecovery ? recoveryCode.trim().length === 0 : code.length !== DIGIT_COUNT)}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {isLoading ? t('common.verifying', { defaultValue: 'Verifying...' }) : submitLabel ?? t('mfaVerify.submit', { defaultValue: 'Verify' })}

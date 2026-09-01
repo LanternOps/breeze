@@ -6,6 +6,7 @@ import {
   userRequiresSetup,
   parsePendingMfa,
   evaluatePendingMfa,
+  evaluatePendingMfaMethod,
   getClientRateLimitKey,
   isRequestConnectionSecure,
   buildRefreshTokenCookie,
@@ -239,6 +240,7 @@ describe('parsePendingMfa (SR2-06 strict parse)', () => {
     userId: 'user-1',
     mfaMethod: 'totp',
     passkeyAvailable: false,
+    recoveryAvailable: true,
     authEpoch: 3,
     mfaEpoch: 5,
     transitionId: '11111111-1111-4111-8111-111111111111',
@@ -286,9 +288,43 @@ describe('parsePendingMfa (SR2-06 strict parse)', () => {
     expect(parsePendingMfa('{not json')).toBeNull();
   });
 
-  it('defaults a missing per-method allowedMethods flag to true (only explicit false disables)', () => {
-    const parsed = parsePendingMfa(JSON.stringify({ ...fullRecord, allowedMethods: {} }));
-    expect(parsed?.allowedMethods).toEqual({ totp: true, sms: true, passkey: true });
+  it.each([
+    ['totp', { sms: false, passkey: true }],
+    ['sms', { totp: true, passkey: true }],
+    ['passkey', { totp: true, sms: false }],
+  ])('returns null when allowedMethods.%s is missing', (_name, allowedMethods) => {
+    expect(parsePendingMfa(JSON.stringify({ ...fullRecord, allowedMethods }))).toBeNull();
+  });
+
+  it.each([
+    ['totp', 'true'],
+    ['sms', 1],
+    ['passkey', null],
+  ])('returns null when allowedMethods.%s is not boolean', (name, value) => {
+    expect(parsePendingMfa(JSON.stringify({
+      ...fullRecord,
+      allowedMethods: { ...fullRecord.allowedMethods, [name]: value },
+    }))).toBeNull();
+  });
+
+  it.each([
+    ['passkeyAvailable', undefined],
+    ['passkeyAvailable', 'false'],
+    ['recoveryAvailable', undefined],
+    ['recoveryAvailable', 0],
+  ])('returns null when %s is missing or not boolean', (field, value) => {
+    const record = { ...fullRecord, [field]: value };
+    if (value === undefined) delete record[field as keyof typeof record];
+    expect(parsePendingMfa(JSON.stringify(record))).toBeNull();
+  });
+
+  it.each([
+    ['authEpoch', -1],
+    ['mfaEpoch', 1.5],
+    ['browserGeneration', Number.NaN],
+    ['expiresAt', Date.now() - 1],
+  ])('returns null for invalid or expired %s', (field, value) => {
+    expect(parsePendingMfa(JSON.stringify({ ...fullRecord, [field]: value }))).toBeNull();
   });
 });
 
@@ -297,6 +333,7 @@ describe('evaluatePendingMfa (SR2-06)', () => {
     userId: 'user-1',
     mfaMethod: 'totp',
     passkeyAvailable: false,
+    recoveryAvailable: true,
     authEpoch: 3,
     mfaEpoch: 5,
     transitionId: '11111111-1111-4111-8111-111111111111',
@@ -347,6 +384,71 @@ describe('evaluatePendingMfa (SR2-06)', () => {
       ok: false,
       reason: 'expired',
     });
+  });
+});
+
+describe('evaluatePendingMfaMethod (#3853)', () => {
+  const pending: PendingMfaRecord = {
+    userId: 'user-1',
+    mfaMethod: 'totp',
+    passkeyAvailable: false,
+    recoveryAvailable: true,
+    authEpoch: 3,
+    mfaEpoch: 5,
+    transitionId: '11111111-1111-4111-8111-111111111111',
+    browserGeneration: 3,
+    statusExpectation: 'active',
+    allowedMethods: { totp: true, sms: true, passkey: false },
+    expiresAt: Date.now() + 300_000,
+  };
+  const enrolled = {
+    mfaSecret: 'encrypted-secret',
+    mfaMethod: 'sms' as const,
+    phoneNumber: '+15550000001',
+  };
+  const liveAllowed = { totp: true, sms: true, passkey: true };
+
+  it.each(['totp', 'sms', 'recovery'] as const)('authorizes an allowed and enrolled %s switch', (method) => {
+    expect(evaluatePendingMfaMethod(pending, method, enrolled, liveAllowed)).toEqual({ ok: true });
+  });
+
+  it('rejects a method the pending challenge never authorized without making the challenge terminal', () => {
+    expect(evaluatePendingMfaMethod(
+      { ...pending, allowedMethods: { ...pending.allowedMethods, sms: false } },
+      'sms',
+      enrolled,
+      liveAllowed,
+    )).toEqual({ ok: false, reason: 'pending_method_not_allowed', terminal: false });
+  });
+
+  it.each([
+    ['totp', { ...enrolled, mfaSecret: null }],
+    ['sms', { ...enrolled, mfaMethod: 'totp' as const }],
+    ['sms', { ...enrolled, phoneNumber: null }],
+  ] as const)('rejects %s when the live account is not enrolled in that factor', (method, user) => {
+    expect(evaluatePendingMfaMethod(pending, method, user, liveAllowed)).toEqual({
+      ok: false,
+      reason: 'factor_not_enrolled',
+      terminal: false,
+    });
+  });
+
+  it('rejects recovery when the pending record had no recovery code', () => {
+    expect(evaluatePendingMfaMethod(
+      { ...pending, recoveryAvailable: false },
+      'recovery',
+      enrolled,
+      liveAllowed,
+    )).toEqual({ ok: false, reason: 'recovery_not_available', terminal: false });
+  });
+
+  it('marks live policy drift terminal so the caller consumes the pending challenge', () => {
+    expect(evaluatePendingMfaMethod(
+      pending,
+      'totp',
+      enrolled,
+      { ...liveAllowed, totp: false },
+    )).toEqual({ ok: false, reason: 'live_policy_disallowed', terminal: true });
   });
 });
 

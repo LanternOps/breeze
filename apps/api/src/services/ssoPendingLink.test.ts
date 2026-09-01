@@ -17,6 +17,7 @@ import {
   createSsoPendingLink,
   peekSsoPendingLink,
   consumeSsoPendingLink,
+  restoreConsumedSsoPendingLink,
   deleteSsoPendingLink,
   hashSsoPendingLinkToken,
   SSO_PENDING_LINK_TTL_SECONDS,
@@ -134,6 +135,25 @@ describe('consumeSsoPendingLink', () => {
     expect(winner?.userId).toBe('user-1');
     expect(loser).toBeNull();
     expect(redisMock.getdel).toHaveBeenCalledWith('sso:pendinglink:h');
+  });
+});
+
+describe('restoreConsumedSsoPendingLink', () => {
+  it('restores a retryable record only for the unexpired remainder of its window', async () => {
+    const record = { ...RECORD, createdAt: Date.now() - 60_000 };
+    await expect(restoreConsumedSsoPendingLink('h', record)).resolves.toBe(true);
+    expect(redisMock.setex).toHaveBeenCalledWith(
+      'sso:pendinglink:h',
+      expect.any(Number),
+      JSON.stringify(record),
+    );
+    expect(redisMock.setex.mock.calls.at(-1)?.[1]).toBeLessThanOrEqual(240);
+  });
+
+  it('does not revive an expired record', async () => {
+    const record = { ...RECORD, createdAt: Date.now() - 301_000 };
+    await expect(restoreConsumedSsoPendingLink('h', record)).resolves.toBe(false);
+    expect(redisMock.setex).not.toHaveBeenCalled();
   });
 });
 

@@ -10,7 +10,7 @@ import {
   apiSendSmsMfaCode,
   fetchAndApplyPreferences
 } from '../../stores/auth';
-import type { MfaMethod } from '../../stores/auth';
+import type { MfaChallenge, MfaMethod } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 // Initializes the shared i18next singleton (this page's layout has no Sidebar).
 import '../../lib/i18n';
@@ -40,10 +40,8 @@ export default function ConnectSsoLoginPage() {
   const [loading, setLoading] = useState(false);
 
   const [mfaRequired, setMfaRequired] = useState(false);
-  const [tempToken, setTempToken] = useState<string>();
+  const [mfaChallenge, setMfaChallenge] = useState<MfaChallenge>();
   const [mfaMethod, setMfaMethod] = useState<MfaMethod>('totp');
-  const [passkeyAvailable, setPasskeyAvailable] = useState(false);
-  const [phoneLast4, setPhoneLast4] = useState<string>();
   const [smsSending, setSmsSending] = useState(false);
   const [smsSent, setSmsSent] = useState(false);
 
@@ -114,10 +112,8 @@ export default function ConnectSsoLoginPage() {
         return;
       case 'mfa':
         setMfaRequired(true);
-        setTempToken(result.tempToken);
-        setMfaMethod(result.mfaMethod);
-        setPasskeyAvailable(result.passkeyAvailable);
-        setPhoneLast4(result.phoneLast4 ?? undefined);
+        setMfaChallenge(result.challenge);
+        setMfaMethod(result.challenge.primary);
         setSmsSent(false);
         setLoading(false);
         return;
@@ -129,11 +125,11 @@ export default function ConnectSsoLoginPage() {
   };
 
   const handleMfaVerify = async (code: string) => {
-    if (!tempToken) return;
+    if (!mfaChallenge || mfaMethod === 'passkey') return;
     setLoading(true);
     setError(undefined);
 
-    const result = await apiVerifyMFA(code, tempToken, mfaMethod);
+    const result = await apiVerifyMFA(code, mfaChallenge.tempToken, mfaMethod);
     if (!result.success) {
       if (result.error === 'sso_link_expired') {
         // The factor was fine — the ceremony died underneath it. Retrying the
@@ -154,11 +150,11 @@ export default function ConnectSsoLoginPage() {
   };
 
   const handlePasskeyMfaVerify = async () => {
-    if (!tempToken) return;
+    if (!mfaChallenge) return;
     setLoading(true);
     setError(undefined);
 
-    const result = await apiVerifyPasskeyMFA(tempToken);
+    const result = await apiVerifyPasskeyMFA(mfaChallenge.tempToken);
     if (!result.success) {
       if (result.error === 'sso_link_expired') {
         setExpired(true);
@@ -177,16 +173,19 @@ export default function ConnectSsoLoginPage() {
   };
 
   const handleSendSmsCode = async () => {
-    if (!tempToken) return;
+    if (!mfaChallenge) return false;
     setSmsSending(true);
     setError(undefined);
-    const result = await apiSendSmsMfaCode(tempToken);
+    const result = await apiSendSmsMfaCode(mfaChallenge.tempToken);
     if (!result.success) {
       setError(result.error);
+      setSmsSending(false);
+      return false;
     } else {
       setSmsSent(true);
     }
     setSmsSending(false);
+    return true;
   };
 
   if (checking) {
@@ -255,8 +254,10 @@ export default function ConnectSsoLoginPage() {
           errorMessage={error}
           loading={loading}
           mfaMethod={mfaMethod}
-          passkeyAvailable={passkeyAvailable}
-          phoneLast4={phoneLast4}
+          methods={mfaChallenge?.methods}
+          onMethodChange={setMfaMethod}
+          passkeyAvailable={mfaChallenge?.allowedMethods.passkey}
+          phoneLast4={mfaChallenge?.phoneLast4 ?? undefined}
           onSendSmsCode={handleSendSmsCode}
           smsSending={smsSending}
           smsSent={smsSent}

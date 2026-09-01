@@ -137,6 +137,30 @@ describe('interactive sign-in stamps the app lock as unlocked', () => {
     expect(appLock.markAppLockUnlocked).not.toHaveBeenCalled();
   });
 
+  it('loginAsync stores enrollment handoff without credentials or an unlock stamp', async () => {
+    api.login.mockResolvedValue({
+      kind: 'mfaEnrollmentRequired',
+      handoff: { reason: 'mfa_enrollment_required', enrollUrl: '/auth/mfa/setup' },
+    });
+    const store = makeStore();
+
+    const result = await store.dispatch(loginAsync({ email: fakeUser.email, password: 'pw' }));
+
+    expect(result.type).toBe('auth/login/fulfilled');
+    expect(store.getState().auth).toMatchObject({
+      token: null,
+      user: null,
+      mfaChallenge: null,
+      mfaEnrollmentRequired: {
+        reason: 'mfa_enrollment_required',
+        enrollUrl: '/auth/mfa/setup',
+      },
+    });
+    expect(auth.storeToken).not.toHaveBeenCalled();
+    expect(auth.storeUser).not.toHaveBeenCalled();
+    expect(appLock.markAppLockUnlocked).not.toHaveBeenCalled();
+  });
+
   it('loginAsync does NOT mark unlocked when the API rejects', async () => {
     api.login.mockRejectedValue({ message: 'bad credentials' });
     const store = makeStore();
@@ -150,9 +174,10 @@ describe('interactive sign-in stamps the app lock as unlocked', () => {
     api.verifyMfa.mockResolvedValue({ token: 'tok-2', user: fakeUser });
     const store = makeStore();
 
-    const result = await store.dispatch(verifyMfaAsync({ code: '123456', tempToken: 'tmp' }));
+    const result = await store.dispatch(verifyMfaAsync({ code: '123456', tempToken: 'tmp', method: 'totp' }));
 
     expect(result.type).toBe('auth/verifyMfa/fulfilled');
+    expect(api.verifyMfa).toHaveBeenCalledWith('123456', 'tmp', 'totp');
     expect(appLock.markAppLockUnlocked).toHaveBeenCalledTimes(1);
     expect(auth.storeToken).toHaveBeenCalledWith('tok-2');
   });
@@ -161,7 +186,7 @@ describe('interactive sign-in stamps the app lock as unlocked', () => {
     api.verifyMfa.mockRejectedValue({ message: 'invalid code' });
     const store = makeStore();
 
-    await store.dispatch(verifyMfaAsync({ code: '000000', tempToken: 'tmp' }));
+    await store.dispatch(verifyMfaAsync({ code: '000000', tempToken: 'tmp', method: 'totp' }));
 
     expect(appLock.markAppLockUnlocked).not.toHaveBeenCalled();
   });
@@ -255,7 +280,7 @@ describe('logoutAsync', () => {
     let releaseMfa!: (value: unknown) => void;
     api.verifyMfa.mockImplementation(() => new Promise((resolve) => { releaseMfa = resolve; }));
     const store = makeStore();
-    const staleMfa = store.dispatch(verifyMfaAsync({ code: '123456', tempToken: 'temp-old' }));
+    const staleMfa = store.dispatch(verifyMfaAsync({ code: '123456', tempToken: 'temp-old', method: 'totp' }));
     await vi.waitFor(() => expect(api.verifyMfa).toHaveBeenCalledTimes(1));
 
     await store.dispatch(logoutAsync());
@@ -265,6 +290,25 @@ describe('logoutAsync', () => {
     expect(auth.storeToken).not.toHaveBeenCalled();
     expect(auth.storeUser).not.toHaveBeenCalled();
     expect(store.getState().auth.token).toBeNull();
+  });
+
+  it('fences a delayed enrollment handoff after logout', async () => {
+    let releaseLogin!: (value: unknown) => void;
+    api.login.mockImplementation(() => new Promise((resolve) => { releaseLogin = resolve; }));
+    const store = makeStore();
+    const staleLogin = store.dispatch(loginAsync({ email: fakeUser.email, password: 'pw' }));
+    await vi.waitFor(() => expect(api.login).toHaveBeenCalledTimes(1));
+
+    await store.dispatch(logoutAsync());
+    releaseLogin({
+      kind: 'mfaEnrollmentRequired',
+      handoff: { reason: 'mfa_enrollment_required', enrollUrl: '/auth/mfa/setup' },
+    });
+    await staleLogin;
+
+    expect(store.getState().auth.mfaEnrollmentRequired).toBeNull();
+    expect(store.getState().auth.token).toBeNull();
+    expect(store.getState().auth.user).toBeNull();
   });
 
   it('API ok + wipe ok → fulfilled, wipe runs exactly once', async () => {
@@ -395,7 +439,7 @@ describe('authenticatorRegisterGrantId (#2707)', () => {
 
   it('verifyMfaAsync.fulfilled stores the grant; logout clears it', () => {
     let state = authReducer(undefined, verifyMfaAsync.fulfilled(
-      { token: 't', user: fakeUser, registerGrant: 'grant-2' } as any, '', { code: '123456', tempToken: 'tmp' }
+      { token: 't', user: fakeUser, registerGrant: 'grant-2' } as any, '', { code: '123456', tempToken: 'tmp', method: 'totp' }
     ));
     expect(state.authenticatorRegisterGrantId).toBe('grant-2');
     state = authReducer(state, logout());

@@ -13,6 +13,12 @@ import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 import { resetApproximateTotalCache } from '@/lib/approximateTotalCache';
 import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
 import {
+  parseMfaChallengeResponse,
+  type MfaChallenge,
+  type MfaMethod,
+} from '@/lib/mfaChallenge';
+export type { MfaAllowedMethods, MfaChallenge, MfaMethod } from '@/lib/mfaChallenge';
+import {
   applyAppearancePreferences,
   applyResolvedLocalePreferences,
   type Density,
@@ -105,6 +111,7 @@ interface AuthState {
   // never paint as an empty-but-loaded page. NOT persisted: a stale throttle
   // must never survive a reload.
   authThrottledUntil: number | null;
+  sessionGeneration: number;
 
   // Actions
   setUser: (user: User | null) => void;
@@ -114,6 +121,7 @@ interface AuthState {
   login: (user: User, tokens: Tokens) => void;
   logout: () => void;
   updateUser: (user: Partial<User>) => void;
+  commitMfaEnrollmentIfCurrent: (generation: number, tokens: Tokens) => boolean;
   setAuthThrottledUntil: (until: number | null) => void;
 }
 
@@ -135,8 +143,15 @@ export const useAuthStore = create<AuthState>()(
       mfaTempToken: null,
       sessionExpiredReason: null,
       authThrottledUntil: null,
+      sessionGeneration: 0,
 
-      setUser: (user) => set({ user, isAuthenticated: !!user }),
+      setUser: (user) => set((state) => ({
+        user,
+        isAuthenticated: !!user,
+        sessionGeneration: state.user?.id === user?.id
+          ? state.sessionGeneration
+          : state.sessionGeneration + 1,
+      })),
 
       setAuthThrottledUntil: (until) => set({ authThrottledUntil: until }),
 
@@ -153,7 +168,7 @@ export const useAuthStore = create<AuthState>()(
         // Re-login clears any stale expiry state and re-arms
         // handleSessionExpired for the new session.
         sessionExpiryInFlight = false;
-        set({
+        set((state) => ({
           user,
           tokens,
           isAuthenticated: true,
@@ -161,8 +176,9 @@ export const useAuthStore = create<AuthState>()(
           mfaPending: false,
           mfaTempToken: null,
           sessionExpiredReason: null,
-          authThrottledUntil: null
-        });
+          authThrottledUntil: null,
+          sessionGeneration: state.sessionGeneration + 1,
+        }));
       },
 
       // Deliberately does NOT clear `sessionExpiredReason`: handleSessionExpired
@@ -177,7 +193,7 @@ export const useAuthStore = create<AuthState>()(
         // currency (lib/useApproximateTotal), so they must not outlive the
         // session either.
         resetApproximateTotalCache();
-        set({
+        set((state) => ({
           user: null,
           tokens: null,
           isAuthenticated: false,
@@ -185,13 +201,31 @@ export const useAuthStore = create<AuthState>()(
           mfaTempToken: null,
           // An evicted session is not "waiting out a throttle" — drop the mask
           // so the expiry overlay/redirect is what the user sees (#3696).
-          authThrottledUntil: null
-        });
+          authThrottledUntil: null,
+          sessionGeneration: state.sessionGeneration + 1,
+        }));
       },
 
       updateUser: (updates) => set((state) => ({
         user: state.user ? { ...state.user, ...updates } : null
-      }))
+      })),
+
+      commitMfaEnrollmentIfCurrent: (generation, tokens) => {
+        let committed = false;
+        set((state) => {
+          if (
+            state.sessionGeneration !== generation
+            || !state.isAuthenticated
+            || !state.user
+          ) return state;
+          committed = true;
+          return {
+            tokens,
+            user: { ...state.user, mfaEnabled: true },
+          };
+        });
+        return committed;
+      },
     }),
     {
       name: 'breeze-auth',
@@ -1174,8 +1208,6 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   return response;
 }
 
-export type MfaMethod = 'totp' | 'sms' | 'passkey';
-
 type ApiAuthSuccess = {
   success: boolean;
   user?: User;
@@ -1207,10 +1239,11 @@ export async function getPasskeyCredential(
 export async function apiLogin(email: string, password: string): Promise<{
   success: boolean;
   mfaRequired?: boolean;
+  challenge?: MfaChallenge;
   tempToken?: string;
   mfaMethod?: MfaMethod;
   passkeyAvailable?: boolean;
-  phoneLast4?: string;
+  phoneLast4?: string | null;
   user?: User;
   tokens?: Tokens;
   requiresSetup?: boolean;
@@ -1231,15 +1264,20 @@ export async function apiLogin(email: string, password: string): Promise<{
     }
 
     if (data.mfaRequired) {
+      const challenge = parseMfaChallengeResponse(data);
+      if (!challenge) {
+        return { success: false, error: 'Invalid MFA challenge response' };
+      }
       return {
         success: true,
         mfaRequired: true,
-        tempToken: data.tempToken,
-        mfaMethod: data.mfaMethod || 'totp',
+        challenge,
+        tempToken: challenge.tempToken,
+        mfaMethod: challenge.primary,
         // #2153: whether a passkey can be used as an alternate factor for this
         // login even when the primary method is totp/sms.
-        passkeyAvailable: data.passkeyAvailable === true,
-        phoneLast4: data.phoneLast4
+        passkeyAvailable: challenge.allowedMethods.passkey,
+        phoneLast4: challenge.phoneLast4
       };
     }
 
@@ -1257,7 +1295,11 @@ export async function apiLogin(email: string, password: string): Promise<{
   }
 }
 
-export async function apiVerifyMFA(code: string, tempToken: string, method?: MfaMethod): Promise<ApiAuthSuccess> {
+export async function apiVerifyMFA(
+  code: string,
+  tempToken: string,
+  method?: Exclude<MfaMethod, 'passkey'>,
+): Promise<ApiAuthSuccess> {
   try {
     const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/mfa/verify'), {
       method: 'POST',
@@ -1363,7 +1405,7 @@ export async function apiSsoLinkPending(): Promise<
 }
 
 export type SsoLinkConfirmResult =
-  | { state: 'mfa'; tempToken: string; mfaMethod: MfaMethod; passkeyAvailable: boolean; phoneLast4: string | null }
+  | { state: 'mfa'; challenge: MfaChallenge }
   | { state: 'complete'; user: User; tokens: Tokens; requiresSetup: boolean; redirectPath?: string }
   | { state: 'failed'; reason: 'expired' | 'identity_in_use' | 'completion_failed' | 'other'; error?: string };
 
@@ -1385,16 +1427,11 @@ export async function apiSsoLinkConfirm(password: string): Promise<SsoLinkConfir
     }
 
     if (data.mfaRequired) {
-      if (typeof data.tempToken !== 'string' || data.tempToken.length === 0) {
+      const challenge = parseMfaChallengeResponse(data);
+      if (!challenge) {
         return { state: 'failed', reason: 'other', error: 'Confirmation failed' };
       }
-      return {
-        state: 'mfa',
-        tempToken: data.tempToken,
-        mfaMethod: (data.mfaMethod as MfaMethod) || 'totp',
-        passkeyAvailable: data.passkeyAvailable === true,
-        phoneLast4: typeof data.phoneLast4 === 'string' ? data.phoneLast4 : null
-      };
+      return { state: 'mfa', challenge };
     }
 
     if (data.user && data.tokens) {
@@ -1804,6 +1841,92 @@ export async function apiSendSmsMfaCode(tempToken: string): Promise<{
   }
 }
 
+export interface MfaEnrollmentOptions {
+  allowedMethods: { totp: boolean; sms: boolean; passkey: boolean };
+  phoneConfigured: boolean;
+}
+
+export type MfaEnrollmentCompletion =
+  | { success: true; recoveryCodes: string[]; tokens: Tokens }
+  | { success: false; error: string };
+
+function parseMfaEnrollmentCompletion(data: unknown): MfaEnrollmentCompletion | null {
+  if (!data || typeof data !== 'object') return null;
+  const value = data as Record<string, unknown>;
+  const tokens = value.tokens as Record<string, unknown> | undefined;
+  if (
+    !Array.isArray(value.recoveryCodes)
+    || value.recoveryCodes.some((code) => typeof code !== 'string')
+    || !tokens
+    || typeof tokens.accessToken !== 'string'
+    || typeof tokens.expiresInSeconds !== 'number'
+  ) return null;
+  return { success: true, recoveryCodes: value.recoveryCodes, tokens: tokens as unknown as Tokens };
+}
+
+export async function apiGetMfaEnrollmentOptions(): Promise<
+  | { success: true; options: MfaEnrollmentOptions }
+  | { success: false; error: string }
+> {
+  try {
+    const response = await fetchWithAuth('/auth/mfa/enrollment-options');
+    const data = await response.json().catch(() => null);
+    if (!response.ok) return { success: false, error: extractApiError(data, 'Could not load MFA options') };
+    if (
+      !data
+      || typeof data.allowedMethods?.totp !== 'boolean'
+      || typeof data.allowedMethods?.sms !== 'boolean'
+      || typeof data.allowedMethods?.passkey !== 'boolean'
+      || typeof data.phoneConfigured !== 'boolean'
+    ) return { success: false, error: 'Invalid MFA enrollment options' };
+    return { success: true, options: data as MfaEnrollmentOptions };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function apiEnableTotpMfa(code: string, currentPassword: string): Promise<MfaEnrollmentCompletion> {
+  try {
+    const response = await fetchWithAuth('/auth/mfa/enable', {
+      method: 'POST',
+      body: JSON.stringify({ code, currentPassword }),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) return { success: false, error: extractApiError(data, 'Failed to enable MFA') };
+    return parseMfaEnrollmentCompletion(data) ?? { success: false, error: 'Invalid MFA enrollment response' };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function apiEnrollPasskey(currentPassword: string): Promise<MfaEnrollmentCompletion> {
+  try {
+    const optionsResponse = await fetchWithAuth('/auth/passkeys/register/options', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword }),
+    });
+    const optionsData = await optionsResponse.json().catch(() => null);
+    if (!optionsResponse.ok) {
+      return { success: false, error: extractApiError(optionsData, 'Failed to start passkey enrollment') };
+    }
+    const credential = await createPasskeyCredential(optionsData.options ?? optionsData.optionsJSON);
+    const verifyResponse = await fetchWithAuth('/auth/passkeys/register/verify', {
+      method: 'POST',
+      body: JSON.stringify({ credential }),
+    });
+    const verifyData = await verifyResponse.json().catch(() => null);
+    if (!verifyResponse.ok) {
+      return { success: false, error: extractApiError(verifyData, 'Failed to enroll passkey') };
+    }
+    return parseMfaEnrollmentCompletion(verifyData) ?? { success: false, error: 'Invalid MFA enrollment response' };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'NotAllowedError') {
+      return { success: false, error: 'Passkey enrollment was canceled or timed out' };
+    }
+    return { success: false, error: 'Network error' };
+  }
+}
+
 export async function apiVerifyPhone(phoneNumber: string, currentPassword: string): Promise<{
   success: boolean;
   error?: string;
@@ -1848,11 +1971,7 @@ export async function apiConfirmPhone(phoneNumber: string, code: string, current
   }
 }
 
-export async function apiEnableSmsMfa(currentPassword: string): Promise<{
-  success: boolean;
-  recoveryCodes?: string[];
-  error?: string;
-}> {
+export async function apiEnableSmsMfa(currentPassword: string): Promise<MfaEnrollmentCompletion> {
   try {
     const response = await fetchWithAuth('/auth/mfa/sms/enable', {
       method: 'POST',
@@ -1865,7 +1984,7 @@ export async function apiEnableSmsMfa(currentPassword: string): Promise<{
       return { success: false, error: extractApiError(data, 'Failed to enable SMS MFA') };
     }
 
-    return { success: true, recoveryCodes: data.recoveryCodes };
+    return parseMfaEnrollmentCompletion(data) ?? { success: false, error: 'Invalid MFA enrollment response' };
   } catch {
     return { success: false, error: 'Network error' };
   }

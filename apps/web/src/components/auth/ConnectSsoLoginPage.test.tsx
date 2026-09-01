@@ -79,10 +79,14 @@ describe('ConnectSsoLoginPage (#4067)', () => {
   it('hands off to the MFA step when confirm returns mfaRequired, then completes via mfa verify', async () => {
     vi.mocked(apiSsoLinkConfirm).mockResolvedValue({
       state: 'mfa',
-      tempToken: 'temp-1',
-      mfaMethod: 'totp',
-      passkeyAvailable: false,
-      phoneLast4: null,
+      challenge: {
+        tempToken: 'temp-1',
+        primary: 'totp',
+        methods: ['totp'],
+        allowedMethods: { totp: true, sms: false, passkey: false },
+        recoveryAvailable: false,
+        phoneLast4: null,
+      },
     });
     vi.mocked(apiVerifyMFA).mockResolvedValue({
       success: true,

@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
@@ -7,12 +7,23 @@ import {
   generateRecoveryCodes,
   rateLimiter,
   getRedis,
+  getUserEpochs,
   smsPhoneVerifyLimiter,
   smsPhoneVerifyUserLimiter,
   smsLoginSendLimiter,
   smsLoginGlobalLimiter,
-  phoneConfirmLimiter
+  phoneConfirmLimiter,
+  beginAuthIssuance,
+  cancelAuthIssuance,
+  bindIssuedUserSession,
+  completeInitialMfaEnrollment,
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceConflictError,
+  AuthIssuanceCapabilityError,
+  type AuthIssuanceCapability,
 } from '../../services';
+import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { getTwilioService } from '../../services/twilio';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
@@ -25,12 +36,35 @@ import {
   resolveUserAuditOrgId,
   writeAuthAudit,
   requireCurrentPasswordStepUp,
-  enforceExistingFactorStepUp
+  enforceExistingFactorStepUp,
+  parsePendingMfa,
+  evaluatePendingMfa,
+  evaluatePendingMfaMethod,
+  resolveCurrentUserTokenContext,
+  auditUserLoginFailure,
+  installAuthorizedUserSessionCookies,
+  toPublicTokens,
 } from './helpers';
+import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
 export const phoneRoutes = new Hono();
+
+function authIssuanceAdmissionError(c: Context, error: unknown): Response | null {
+  if (error instanceof AuthBindingRotationRequiredError) {
+    installAuthBindingReplacement(c, error.replacement);
+    return c.json({ error: error.message, reason: 'auth_binding_rotation_required' }, 428);
+  }
+  if (
+    error instanceof AuthBindingUnavailableError
+    || error instanceof AuthIssuanceConflictError
+    || error instanceof AuthIssuanceCapabilityError
+  ) {
+    return c.json({ error: 'Authentication issuance unavailable' }, 409);
+  }
+  return null;
+}
 
 // Phone verification - send code (authenticated)
 phoneRoutes.post('/phone/verify', authMiddleware, zValidator('json', phoneVerifySchema), async (c) => {
@@ -288,22 +322,60 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
   const stepUpConsumeError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, { consume: true });
   if (stepUpConsumeError) return stepUpConsumeError;
 
-  // Generate recovery codes
   const recoveryCodes = generateRecoveryCodes();
-
-  // Enable SMS MFA
-  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'sms-mfa-enable', async (tx) => {
-    await tx
-      .update(users)
-      .set({
-        mfaEnabled: true,
-        mfaMethod: 'sms',
-        mfaSecret: null,
-        mfaRecoveryCodes: hashRecoveryCodes(recoveryCodes),
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, auth.user.id));
-  });
+  const recoveryCodeHashes = hashRecoveryCodes(recoveryCodes);
+  let capability: AuthIssuanceCapability;
+  try {
+    capability = await beginAuthIssuance(requestAuthBinding(c));
+  } catch (error) {
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+  let result;
+  try {
+    result = await completeInitialMfaEnrollment({
+      userId: auth.user.id,
+      identity: {
+        userId: auth.user.id,
+        email: auth.user.email,
+        roleId: auth.token?.roleId ?? null,
+        orgId: auth.orgId ?? null,
+        partnerId: auth.partnerId ?? null,
+        scope: auth.scope,
+        mfa: true,
+        mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+      },
+      capability,
+      expectedAuthEpoch: auth.token?.aep as number,
+      expectedMfaEpoch: auth.token?.mep as number,
+      revokeReason: 'sms-mfa-enable',
+      recoveryCodes,
+      recoveryCodeHashes,
+      persistFactor: async (tx, hashes) => {
+        const rows = await tx
+          .update(users)
+          .set({
+            mfaEnabled: true,
+            mfaMethod: 'sms',
+            mfaSecret: null,
+            mfaRecoveryCodes: [...hashes],
+            updatedAt: new Date()
+          })
+          .where(eq(users.id, auth.user.id))
+          .returning({ id: users.id });
+        if (rows.length !== 1) throw new Error('MFA enrollment user disappeared');
+        return undefined;
+      },
+    });
+  } catch (error) {
+    await cancelAuthIssuance(capability).catch(() => undefined);
+    const response = authIssuanceAdmissionError(c, error);
+    if (!response) throw error;
+    return response;
+  }
+  await bindIssuedUserSession(result.issued);
+  installAuthorizedUserSessionCookies(c, result.issued);
 
   const orgId = await resolveUserAuditOrgId(auth.user.id);
   writeAuthAudit(c, {
@@ -312,10 +384,15 @@ phoneRoutes.post('/mfa/sms/enable', authMiddleware, zValidator('json', smsMfaEna
     result: 'success',
     userId: auth.user.id,
     email: auth.user.email,
-    details: { method: 'sms', mfaEpoch: result.mfaEpoch, teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED }
+    details: { method: 'sms', mfaEpoch: result.mfaEpoch, teardownFailed: result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED }
   });
 
-  return c.json({ success: true, recoveryCodes, message: 'SMS MFA enabled successfully' });
+  return c.json({
+    success: true,
+    recoveryCodes: result.recoveryCodes,
+    message: 'SMS MFA enabled successfully',
+    tokens: toPublicTokens(result.issued),
+  });
 });
 
 // SMS MFA send code during login (unauthenticated, requires tempToken)
@@ -331,39 +408,79 @@ phoneRoutes.post('/mfa/sms/send', zValidator('json', smsSendSchema), async (c) =
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 
-  const twilio = getTwilioService();
-  if (!twilio) {
-    return c.json({ error: 'SMS service not configured' }, 501);
-  }
-
   const pendingRaw = await redis.get(`mfa:pending:${tempToken}`);
   if (!pendingRaw) {
     return c.json({ error: 'Invalid or expired MFA session' }, 401);
   }
 
-  let userId: string;
-  try {
-    const parsed = JSON.parse(pendingRaw);
-    userId = parsed.userId;
-  } catch {
-    return c.json({ error: 'Invalid MFA session data' }, 400);
+  const pending = parsePendingMfa(pendingRaw);
+  if (!pending) {
+    return c.json({ error: 'Invalid or expired MFA session' }, 401);
   }
+  const userId = pending.userId;
 
-  // Look up phone number from DB (never store PII in Redis).
+  // Look up live factor/account state from DB (never store PII in Redis).
   // Pre-auth lookup — wrap in system scope so the `users` RLS policy
   // doesn't deny the read before the real request scope is applied.
   const [smsUser] = await withSystemDbAccessContext(async () =>
     db
-      .select({ phoneNumber: users.phoneNumber })
+      .select({
+        id: users.id,
+        email: users.email,
+        name: users.name,
+        status: users.status,
+        mfaEnabled: users.mfaEnabled,
+        mfaMethod: users.mfaMethod,
+        mfaSecret: users.mfaSecret,
+        phoneNumber: users.phoneNumber,
+      })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1)
   );
 
-  const phoneNumber = smsUser?.phoneNumber;
-  if (!phoneNumber) {
-    return c.json({ error: 'No phone number configured for SMS MFA' }, 400);
+  if (!smsUser) {
+    return c.json({ error: 'Invalid or expired MFA session' }, 401);
   }
+
+  const liveEpochs = await getUserEpochs(userId);
+  const pendingVerdict = liveEpochs
+    ? evaluatePendingMfa(pending, {
+        status: smsUser.status,
+        authEpoch: liveEpochs.authEpoch,
+        mfaEpoch: liveEpochs.mfaEpoch,
+      })
+    : ({ ok: false, reason: 'epoch_mismatch' } as const);
+  if (!pendingVerdict.ok) {
+    await redis.del(`mfa:pending:${tempToken}`);
+    return c.json({ error: 'Invalid or expired MFA session' }, 401);
+  }
+
+  const context = await resolveCurrentUserTokenContext(userId);
+  const livePolicy = await getEffectiveMfaPolicy({
+    scope: context.scope,
+    userId,
+    orgId: context.orgId,
+    partnerId: context.partnerId,
+  });
+  const methodVerdict = evaluatePendingMfaMethod(
+    pending,
+    'sms',
+    smsUser,
+    livePolicy.allowedMethods,
+  );
+  if (!methodVerdict.ok) {
+    if (methodVerdict.terminal) await redis.del(`mfa:pending:${tempToken}`);
+    void auditUserLoginFailure(c, {
+      userId,
+      email: smsUser.email,
+      name: smsUser.name,
+      reason: 'mfa_method_not_allowed',
+      details: { method: 'sms', phase: methodVerdict.reason, continuation: 'send' },
+    });
+    return c.json({ error: 'Invalid MFA code' }, 401);
+  }
+  const phoneNumber = smsUser.phoneNumber!;
 
   // Rate limit per tempToken
   const tokenRate = await rateLimiter(
@@ -385,6 +502,11 @@ phoneRoutes.post('/mfa/sms/send', zValidator('json', smsSendSchema), async (c) =
   );
   if (!phoneRate.allowed) {
     return c.json({ error: 'Too many SMS requests. Try again later.' }, 429);
+  }
+
+  const twilio = getTwilioService();
+  if (!twilio) {
+    return c.json({ error: 'SMS service not configured' }, 501);
   }
 
   const result = await twilio.sendVerificationCode(phoneNumber);

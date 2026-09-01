@@ -3,6 +3,10 @@ import type { Tokens, User } from './auth';
 import { applyResolvedLocalePreferences } from '@/lib/appearance';
 import {
   apiAcceptInvite,
+  apiEnableSmsMfa,
+  apiEnableTotpMfa,
+  apiEnrollPasskey,
+  apiGetMfaEnrollmentOptions,
   apiLogin,
   apiLogout,
   apiPrepareCfTerminalLogout,
@@ -904,7 +908,7 @@ describe('auth API helpers', () => {
 
     const result = await apiLogin('user@example.com', 'password');
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       success: true,
       mfaRequired: true,
       tempToken: 'temp-1',
@@ -1859,5 +1863,94 @@ describe('apiRegisterPartner recovery action', () => {
     const result = await apiRegisterPartner('Acme', 'jane@acme.test', 'pw', 'Jane');
 
     expect(result).toEqual({ success: false, error: 'Registration failed', action: undefined });
+  });
+});
+
+describe('MFA enrollment API bindings', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAuthStore.getState().login(baseUser, baseTokens);
+  });
+
+  it('accepts only a fully typed enrollment-options response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      allowedMethods: { totp: true, sms: false, passkey: true },
+      phoneConfigured: false,
+    })));
+
+    await expect(apiGetMfaEnrollmentOptions()).resolves.toEqual({
+      success: true,
+      options: {
+        allowedMethods: { totp: true, sms: false, passkey: true },
+        phoneConfigured: false,
+      },
+    });
+  });
+
+  it('rejects terminal enrollment responses without replacement access metadata', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      success: true,
+      recoveryCodes: ['RC-ONE'],
+    })));
+
+    await expect(apiEnableTotpMfa('123456', 'password')).resolves.toEqual({
+      success: false,
+      error: 'Invalid MFA enrollment response',
+    });
+  });
+
+  it.each([
+    ['totp', () => apiEnableTotpMfa('123456', 'password')],
+    ['sms', () => apiEnableSmsMfa('password')],
+  ] as const)('returns recovery codes and replacement metadata for %s', async (_method, invoke) => {
+    const payload = {
+      success: true,
+      recoveryCodes: ['RC-ONE', 'RC-TWO'],
+      tokens: { accessToken: 'replacement', expiresInSeconds: 900 },
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse(payload)));
+
+    await expect(invoke()).resolves.toEqual(payload);
+  });
+
+  it('completes passkey registration through the terminal replacement response', async () => {
+    const payload = {
+      success: true,
+      recoveryCodes: ['RC-PASSKEY'],
+      tokens: { accessToken: 'replacement-passkey', expiresInSeconds: 900 },
+    };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(makeResponse({ options: { challenge: 'challenge' } }))
+      .mockResolvedValueOnce(makeResponse(payload)));
+
+    await expect(apiEnrollPasskey('password')).resolves.toEqual(payload);
+  });
+});
+
+describe('MFA enrollment session adoption', () => {
+  it('refuses a terminal response after logout', () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    useAuthStore.getState().logout();
+
+    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, {
+      accessToken: 'stale',
+      expiresInSeconds: 900,
+    })).toBe(false);
+    expect(useAuthStore.getState()).toMatchObject({ user: null, tokens: null, isAuthenticated: false });
+  });
+
+  it('refuses a terminal response after a newer login, even for the same user', () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const newerTokens = { accessToken: 'newer', expiresInSeconds: 900 };
+    useAuthStore.getState().login(baseUser, newerTokens);
+
+    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, {
+      accessToken: 'stale',
+      expiresInSeconds: 900,
+    })).toBe(false);
+    expect(useAuthStore.getState().tokens).toEqual(newerTokens);
+    expect(useAuthStore.getState().user?.mfaEnabled).toBe(false);
   });
 });
