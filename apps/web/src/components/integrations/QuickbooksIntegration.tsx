@@ -14,6 +14,7 @@ import { loginPathWithNext, getJwtClaims } from "../../lib/authScope";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { showToast } from "../shared/Toast";
 import QuickbooksCustomerImport from "./QuickbooksCustomerImport";
+import QuickbooksMappingWorkbench from "./QuickbooksMappingWorkbench";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 
@@ -399,6 +400,18 @@ export default function QuickbooksIntegration() {
             </button>
           </div>
         </div>
+      )}
+
+      {isConnected && status && (
+        <QuickbooksMappingWorkbench
+          onUnauthorized={onUnauthorized}
+          defaultIncomeAccountRef={status.defaultIncomeAccountRef ?? null}
+          onSettingsChanged={(settings) =>
+            setStatus((prev) =>
+              prev ? { ...prev, defaultIncomeAccountRef: settings.defaultIncomeAccountRef } : prev,
+            )
+          }
+        />
       )}
 
       {isConnected && (
