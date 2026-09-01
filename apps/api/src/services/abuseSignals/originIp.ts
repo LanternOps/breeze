@@ -215,15 +215,21 @@ export function computeOriginIpSignals(
   const out: ComputedSignal[] = [];
   for (const partner of aggregates) {
     const matchedIps: string[] = [];
+    const seenMatchKeys = new Set<string>();
     const suspendedPartners: string[] = [];
     const seenSuspended = new Set<string>();
 
     for (const ip of partner.originIps) {
       const key = canonical(ip);
-      if (!key) continue;
+      if (!key || seenMatchKeys.has(key)) continue;
       const names = suspendedByCanonical.get(key);
       if (!names) continue;
-      matchedIps.push(ip.trim());
+      // Dedup on the canonical key and cite the bare client address: two
+      // surface forms of one address (compressed vs expanded IPv6, or two XFF
+      // chains) are one match, and the evidence line must be a clean IP an
+      // on-call analyst can grep infra records for.
+      seenMatchKeys.add(key);
+      matchedIps.push(clientIp(ip));
       for (const name of names) {
         if (seenSuspended.has(name)) continue;
         seenSuspended.add(name);
@@ -321,15 +327,21 @@ export async function loadOriginIpAggregates(): Promise<OriginIpResult> {
       -- 'pending' is in scope for the same reason billingIdentity includes it:
       -- a pre-positioned account never activates, so an active-only detector
       -- is blind to the entire shape this one exists to catch.
+      --
+      -- Deliberately NO age gate on this population, unlike heuristics.ts's
+      -- scoped CTE. There the 90-day cutoff mirrors the scorer's own age decay
+      -- (youngWeight() reaches zero at young_zero_weight_days), so excluding
+      -- old partners from the query matches what the scorer would do anyway.
+      -- THIS scorer has no age decay at all — a 120-day-old account that
+      -- starts working the console from a newly-suspended operator's address
+      -- must be scannable the first time that correlation exists, and an age
+      -- gate here would exclude exactly that partner (it cannot yet have an
+      -- open row from this detector to re-admit it). The cost of the wider
+      -- population is bounded elsewhere: the audit arm of scoped_ips is
+      -- timestamp-bounded to 90 days, so a dormant partner contributes only
+      -- its signup_ip row. Per the header rule, re-time against the larger
+      -- region before narrowing this again.
       WHERE p.deleted_at IS NULL AND p.status IN ('active', 'pending')
-        AND (
-          p.created_at > now() - interval '90 days'
-          OR EXISTS (
-            SELECT 1 FROM partner_abuse_signals pas
-            WHERE pas.partner_id = p.id AND pas.resolved_at IS NULL
-              AND pas.signal_key IN (${SUSPENDED_CONSOLE_IP_KEY}, ${DEAD_ACCOUNT_PROBE_KEY})
-          )
-        )
     ),
     -- No bound on how long ago the partner was SUSPENDED, on purpose: an
     -- operator who returns four months later is exactly who this is for. The
@@ -409,7 +421,12 @@ export async function loadOriginIpAggregates(): Promise<OriginIpResult> {
         };
         byPartner.set(row.partner_id, agg);
       }
-      if (!agg.originIps.includes(row.ip)) agg.originIps.push(row.ip);
+      // Normalize before dedup: the same client logged through two different
+      // legacy XFF second hops ("1.2.3.4, 10.0.0.1" vs "1.2.3.4, 10.0.0.5")
+      // must collapse to one origin, or the per_extra_ip bonus counts one real
+      // address twice and the evidence body shows garbled chain strings.
+      const ip = clientIp(row.ip);
+      if (ip && !agg.originIps.includes(ip)) agg.originIps.push(ip);
     } else if (row.kind === 'suspended') {
       const names = suspendedIps.get(row.ip);
       if (names) {

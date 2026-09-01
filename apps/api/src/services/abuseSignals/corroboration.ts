@@ -41,7 +41,9 @@ import type { ComputedSignal } from './types';
  * safe default for a NEW detector (it can corroborate immediately), but it
  * means adding a detector that restates an existing observation REQUIRES adding
  * it here — otherwise it double-counts. `corroboration.test.ts` asserts every
- * key this sweep can emit is mapped.
+ * key in its hand-maintained EMITTED_KEYS list is mapped or explicitly
+ * ineligible — when you add a detector, add its key THERE as well as here, or
+ * the assertion cannot see it.
  */
 export const SIGNAL_AXIS: Record<string, string> = {
   // `session_intensity` is "fast enroll-to-remote" and `enrollment_velocity` is
@@ -63,6 +65,13 @@ export const SIGNAL_AXIS: Record<string, string> = {
   // manufacture an alert, the same trap the ip_scatter pair is grouped for.
   'fraud.suspended_console_ip': 'origin_ip',
   'fraud.dead_account_probe_origin': 'origin_ip',
+  // Deliberately its OWN axis, distinct from origin_ip: the recidivist
+  // detector reads endpoint identity (ScreenConnect client GUID, hostname,
+  // device egress IP), the origin-IP detector reads console/network origin.
+  // A ring re-establishing trips both from independent evidence sources, and
+  // that pair corroborating (hostname-only watch at 60 + probe watch at 55)
+  // is the desired outcome, not double-counting.
+  'rmm.recidivist_endpoint': 'endpoint_identity',
   'billing.cardholder_name_mismatch': 'billing_identity',
   'billing.card_testing': 'billing_identity',
   'billing.shared_card_fingerprint': 'billing_identity',

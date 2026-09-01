@@ -345,6 +345,7 @@ describe('SIGNAL_AXIS coverage', () => {
     'billing.card_testing',
     'fraud.suspended_console_ip',
     'fraud.dead_account_probe_origin',
+    'rmm.recidivist_endpoint',
     'fraud.failed_login_cluster',
     'resource.enrollment_denied',
     'resource.volume_outlier',
