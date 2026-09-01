@@ -55,6 +55,7 @@ import { registerM365GraphReadActionPrometheusCounter } from '../services/m365Co
 import { registerM365GraphActionsPrometheusCounter } from '../services/m365ControlPlane/writeActionMetrics';
 import { registerActionIntentPrometheusCounter } from '../services/actionIntents/metrics';
 import { registerAgentCertificateBindingPrometheusCounter } from '../services/agentCertificateBinding';
+import { registerRetentionPrometheusMetrics } from '../services/retentionMetrics';
 import { setExtensionMetricsRecorder } from '../extensions/metrics';
 import { envFloat } from '../utils/envFloat';
 
@@ -117,6 +118,7 @@ registerM365GraphReadActionPrometheusCounter(register);
 registerM365GraphActionsPrometheusCounter(register);
 registerActionIntentPrometheusCounter(register);
 registerAgentCertificateBindingPrometheusCounter(register);
+registerRetentionPrometheusMetrics(register);
 
 /**
  * Route label for a request that never reached a registered handler — a 404, or

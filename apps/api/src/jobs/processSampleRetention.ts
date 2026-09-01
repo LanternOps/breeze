@@ -11,6 +11,7 @@ import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
 
@@ -65,6 +66,7 @@ export function createProcessSampleRetentionWorker(): Worker<RetentionJobData> {
 
         const durationMs = Date.now() - startedAt;
         console.log(`[ProcessSampleRetention] Pruned ${deleted} process samples older than ${retentionDays} days in ${durationMs}ms`);
+        recordRetentionRun('process_sample_retention', { rowsDeleted: deleted });
         return { retentionDays, deleted, durationMs };
       });
     },

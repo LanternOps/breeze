@@ -11,6 +11,7 @@ import * as dbModule from '../db';
 import { playbookExecutions } from '../db/schema';
 import { and, eq, lt, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
 
@@ -98,6 +99,10 @@ export function createPlaybookRetentionWorker(): Worker<RetentionJobData> {
         const durationMs = Date.now() - startTime;
         console.log(`[PlaybookRetention] Completed in ${durationMs}ms`);
 
+        // Both operations discard their row counts; last-run stamp only. Reached
+        // only when at least one of the two halves succeeded (the both-failed
+        // case throws above), which is what "this job ran" means here.
+        recordRetentionRun('playbook_retention');
         return { durationMs };
       });
     },
