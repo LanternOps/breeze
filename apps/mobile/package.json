@@ -35,7 +35,7 @@
     "expo-status-bar": "~57.0.1",
     "posthog-react-native": "4.61.2",
     "react": "19.2.3",
-    "react-native": "0.87.0",
+    "react-native": "0.87.1",
     "react-native-biometrics": "^3.0.1",
     "react-native-gesture-handler": "~2.32.0",
     "react-native-markdown-display": "^7.0.2",
