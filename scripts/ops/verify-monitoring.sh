@@ -4,7 +4,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-COMPOSE_FILE="${REPO_ROOT}/docker/docker-compose.prod.yml"
+# Grafana/Prometheus/Loki are defined in the monitoring overlay, not the core
+# prod compose file — mirror the two-file `-f` pattern scripts/prod/deploy.sh
+# uses so `compose exec` can find those services.
+COMPOSE_FILE="${REPO_ROOT}/deploy/docker-compose.prod.yml"
+MONITORING_COMPOSE_FILE="${REPO_ROOT}/docker-compose.monitoring.yml"
 ENV_FILE="${BREEZE_ENV_FILE:-${REPO_ROOT}/.env.prod}"
 
 if [[ $# -ge 1 ]]; then
@@ -20,7 +24,7 @@ fi
 set -a; source "${ENV_FILE}"; set +a
 
 compose() {
-  docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" "$@"
+  docker compose -f "${COMPOSE_FILE}" -f "${MONITORING_COMPOSE_FILE}" --env-file "${ENV_FILE}" "$@"
 }
 
 echo "[verify] Checking local monitoring endpoints"

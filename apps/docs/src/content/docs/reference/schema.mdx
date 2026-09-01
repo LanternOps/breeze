@@ -124,7 +124,7 @@ pnpm db:studio
 
 ```bash
 # Connect to the database
-docker compose -f docker/docker-compose.prod.yml exec postgres \
+docker compose -f deploy/docker-compose.prod.yml exec postgres \
   psql -U breeze -d breeze
 
 # List tables
