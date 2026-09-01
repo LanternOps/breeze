@@ -1677,8 +1677,10 @@ jobs:
             /etc/apt/sources.list.d/*.list \
             /etc/apt/sources.list.d/*.sources 2>/dev/null || true
           install_deps() {
-            sudo timeout --kill-after=30s 2m apt-get update && \
+            sudo timeout --kill-after=30s 2m apt-get update \
+              -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 && \
             sudo timeout --kill-after=30s 5m apt-get install -y --no-install-recommends \
+              -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 \
               libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
           }
           attempts=3
