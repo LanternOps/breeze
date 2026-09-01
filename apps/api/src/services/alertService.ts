@@ -369,9 +369,15 @@ export const DISMISSIBLE_ALERT_STATUSES = [
  * `RETURNING` here means the row is no longer dismissible, which is also what an
  * RLS-invisible or deleted row produces — so this does not claim "another request
  * dismissed it", however likely that is.
+ *
+ * Phrased "already reached the dismissed status" rather than "has already been
+ * dismissed" for exactly that reason: the first states the eligibility fact the CAS
+ * establishes, in the same shape `ALERT_CAS_LOST_MESSAGE` uses, while the second
+ * reads as a claim about an actor and would quietly foreclose the RLS/deleted-row
+ * hypothesis — the one worth chasing when the cause is not benign.
  */
 export const ALERT_DISMISS_CAS_LOST_MESSAGE =
-  'Alert is no longer dismissible — it has already been dismissed.';
+  'Alert is no longer dismissible — it already reached the dismissed status.';
 
 /**
  * The compare-and-swap predicate for acknowledging ONE alert by id (#4101).
@@ -417,11 +423,13 @@ export function buildSuppressAlertCas(alertId: string) {
  * emit and an audit row claiming the transition. For the terminal action, "who
  * dismissed this and when" is the field most likely to be asked about later.
  *
- * The single-alert dismiss paths are this route only. The two multi-row paths compose
- * their predicate directly because they need `inArray(alerts.id, ...)`: the bulk alert
- * action pins each row to the exact status its snapshot saw, which is stricter than
- * this set but correct there — bulk reports a `skipped` count rather than an error, so
- * a concurrent change costs the caller a retry hint, not a refused operation.
+ * Unlike the other three transitions, dismiss has exactly ONE other write path, not
+ * two: the bulk alert action. There is no correlation-group dismiss — `mutateAlerts`
+ * in `routes/alerts/correlations.ts` takes only `'acknowledge' | 'resolve'`. Bulk
+ * composes its predicate directly because it needs `inArray(alerts.id, ...)`, and it
+ * pins each row to the exact status its snapshot saw, which is stricter than this set
+ * but correct there — bulk reports a `skipped` count rather than an error, so a
+ * concurrent change costs the caller a retry hint, not a refused operation.
  */
 export function buildDismissAlertCas(alertId: string) {
   return buildAlertStatusCas(alertId, DISMISSIBLE_ALERT_STATUSES);
