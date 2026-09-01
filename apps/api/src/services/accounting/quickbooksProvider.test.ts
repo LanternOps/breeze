@@ -40,6 +40,7 @@ describe('mapQboCustomer', () => {
   it('maps display name, company, email, phone, contact name, addresses, active', () => {
     const c = mapQboCustomer({
       Id: '42', DisplayName: 'Acme Co', CompanyName: 'Acme Inc',
+      SyncToken: '3',
       PrimaryEmailAddr: { Address: 'ap@acme.test' },
       PrimaryPhone: { FreeFormNumber: '555-1212' },
       GivenName: 'Jane', FamilyName: 'Doe', Active: true,
@@ -48,6 +49,7 @@ describe('mapQboCustomer', () => {
     });
     expect(c).toMatchObject({
       id: '42', displayName: 'Acme Co', companyName: 'Acme Inc',
+      syncToken: '3',
       email: 'ap@acme.test', phone: '555-1212', contactName: 'Jane Doe',
       active: true,
       billAddr: { line1: '1 Bill St', city: 'Austin' },
@@ -61,6 +63,129 @@ describe('mapQboCustomer', () => {
     expect(c.displayName).toBe('Solo LLC');
     expect(c.email).toBeUndefined();
     expect(c.billAddr).toBeUndefined();
+  });
+});
+
+describe('listRemoteItems', () => {
+  it('pages Items and maps the fields needed for reconciliation', async () => {
+    const page1 = { QueryResponse: { Item: Array.from({ length: 1000 }, (_, i) => ({
+      Id: String(i), Name: `Item ${i}`, Sku: `SKU-${i}`, Type: 'Service',
+      UnitPrice: 25, Active: true, SyncToken: '0',
+    })) } };
+    const page2 = { QueryResponse: { Item: [{
+      Id: '1000', Name: 'Last Item', Type: 'NonInventory', UnitPrice: 50,
+      Active: true, SyncToken: '4',
+    }] } };
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify(page1), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(page2), { status: 200 }));
+
+    const result = await quickbooksProvider.listRemoteItems(conn());
+
+    expect(result).toHaveLength(1001);
+    expect(result[0]).toEqual({
+      id: '0', displayName: 'Item 0', sku: 'SKU-0', description: undefined,
+      type: 'Service', unitPrice: 25, active: true, syncToken: '0',
+    });
+    expect(result[1000]).toMatchObject({ id: '1000', type: 'NonInventory', syncToken: '4' });
+    expect(String(fetchMock.mock.calls[1]![0])).toContain('STARTPOSITION%201001');
+  });
+});
+
+describe('listRemoteIncomeAccounts', () => {
+  it('returns active QBO income accounts with stable IDs', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
+      QueryResponse: { Account: [{
+        Id: '79', Name: 'Services Income', AccountType: 'Income',
+        AccountSubType: 'ServiceFeeIncome', Active: true,
+      }] },
+    }), { status: 200 }));
+
+    await expect(quickbooksProvider.listRemoteIncomeAccounts(conn())).resolves.toEqual([{
+      id: '79', displayName: 'Services Income', accountType: 'Income',
+      accountSubType: 'ServiceFeeIncome',
+    }]);
+  });
+});
+
+describe('upsertCustomer', () => {
+  it('creates a Customer without sparse-update fields', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
+      Customer: { Id: '12', SyncToken: '0' },
+    }), { status: 200 }));
+
+    const ref = await quickbooksProvider.upsertCustomer(conn(), {
+      organizationId: 'org-1', displayName: 'Acme', companyName: 'Acme LLC',
+      billingEmail: 'ap@acme.test', phone: '555-1212', taxId: 'TAX-1',
+      billAddr: { line1: '1 Main', city: 'Austin', region: 'TX', postalCode: '78701', country: 'US' },
+      currencyCode: 'USD',
+    }, null);
+
+    expect(ref).toEqual({ id: '12', syncToken: '0' });
+    const request = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(request.method).toBe('POST');
+    expect(JSON.parse(String(request.body))).toEqual({
+      DisplayName: 'Acme',
+      CompanyName: 'Acme LLC',
+      PrimaryEmailAddr: { Address: 'ap@acme.test' },
+      PrimaryPhone: { FreeFormNumber: '555-1212' },
+      PrimaryTaxIdentifier: 'TAX-1',
+      BillAddr: {
+        Line1: '1 Main', City: 'Austin', CountrySubDivisionCode: 'TX',
+        PostalCode: '78701', Country: 'US',
+      },
+    });
+  });
+
+  it('sparse-updates a Customer with its current Id and SyncToken', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
+      Customer: { Id: '12', SyncToken: '8' },
+    }), { status: 200 }));
+
+    await quickbooksProvider.upsertCustomer(conn(), {
+      organizationId: 'org-1', displayName: 'Acme LLC',
+      billingEmail: null, taxId: null, currencyCode: 'USD',
+    }, { remoteEntityId: '12', remoteSyncToken: '7' });
+
+    expect(JSON.parse(String((fetchMock.mock.calls[0]![1] as RequestInit).body))).toEqual({
+      sparse: true, Id: '12', SyncToken: '7', DisplayName: 'Acme LLC',
+    });
+  });
+});
+
+describe('upsertItem', () => {
+  const input = {
+    catalogItemId: 'ci-1', name: 'Managed Service', sku: 'MS-1',
+    description: 'Monthly management', type: 'Service' as const,
+    unitPrice: '125.50', currencyCode: 'USD', taxable: true,
+    incomeAccountRef: '79', active: true,
+  };
+
+  it('creates an Item with the configured income account, converting the decimal-string price', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
+      Item: { Id: '9', SyncToken: '0' },
+    }), { status: 200 }));
+
+    await expect(quickbooksProvider.upsertItem(conn(), input, null)).resolves.toEqual({ id: '9', syncToken: '0' });
+    expect(JSON.parse(String((fetchMock.mock.calls[0]![1] as RequestInit).body))).toEqual({
+      Name: 'Managed Service', Sku: 'MS-1', Description: 'Monthly management',
+      Type: 'Service', UnitPrice: 125.5, Taxable: true, Active: true,
+      IncomeAccountRef: { value: '79' },
+    });
+  });
+
+  it('refuses an update that is missing the current SyncToken', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    await expect(quickbooksProvider.upsertItem(conn(), input, { remoteEntityId: '9', remoteSyncToken: null }))
+      .rejects.toThrow(/SyncToken/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses creation without an income account before any HTTP call', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    await expect(quickbooksProvider.upsertItem(conn(), { ...input, incomeAccountRef: undefined }, null))
+      .rejects.toThrow(/income account/i);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
