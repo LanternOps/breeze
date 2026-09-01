@@ -28,6 +28,11 @@ import { ticketRef } from '../tickets/ticketCopy';
 
 import { dayLabel, daysOfWeek, shiftWeek, weekRangeLabel, weekStartFor } from './timesheetWeek';
 import { entryLock } from './entryLock';
+import { bannerLabel, entryPointVisible } from './timeSuggestionCopy';
+import { getSuggestions } from '../../services/timeSuggestions';
+import { suggestionsLoaded } from '../../store/timeSuggestionsSlice';
+import { selectSuggestionsEnabled, selectUnloggedCount } from '../../store/timeSuggestionsSlice';
+import { track } from '../../lib/analytics';
 import { buildLocalWeek, neighbourWeekOffsets } from './timesheetLocalDays';
 import { entriesForWeek, timesheetPhase, type LoadedWeek } from './timesheetLoadState';
 
@@ -43,8 +48,45 @@ function startTimeLabel(startedAt: string): string {
   return `${hours < 10 ? `0${hours}` : hours}:${minutes < 10 ? `0${minutes}` : minutes}`;
 }
 
-export function TimesheetScreen() {
+interface TimesheetProps {
+  navigation?: { navigate: (screen: string, params?: Record<string, unknown>) => void };
+}
+
+export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
   const dispatch = useAppDispatch();
+  const suggestionsEnabled = useAppSelector(selectSuggestionsEnabled);
+  const unloggedCount = useAppSelector(selectUnloggedCount);
+  // W06 (#3900). `entryPointVisible` is the single rule for whether any
+  // suggestion surface shows at all — a disabled partner or an empty day must
+  // not advertise a screen whose actions the API refuses.
+  const suggestionsBannerVisible = entryPointVisible({
+    enabled: suggestionsEnabled,
+    count: unloggedCount,
+  });
+
+  // Cheap: one call per mount, only to decide whether the banner shows. A
+  // failure is deliberately silent — the banner is an affordance, and a red
+  // error on the timesheet because an optional count did not load would be
+  // worse than simply not offering the shortcut.
+  useEffect(() => {
+    let cancelled = false;
+    const timeZone = (() => {
+      try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+      } catch {
+        return 'UTC';
+      }
+    })();
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone }).format(new Date());
+    void getSuggestions(today, timeZone)
+      .then((result) => {
+        if (!cancelled) dispatch(suggestionsLoaded(result));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [dispatch]);
   const tickets = useAppSelector((state) => state.tickets.tickets);
   // Set once by whichever time surface hit the wall first; a denied account
   // should never see an empty timesheet that looks like "no work logged".
@@ -309,6 +351,19 @@ export function TimesheetScreen() {
       style={styles.screen}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
+      {suggestionsBannerVisible ? (
+        <Pressable
+          style={styles.suggestionBanner}
+          accessibilityRole="button"
+          onPress={() => {
+            track('time_suggestion_entry_point', { surface: 'timesheet' });
+            navigation?.navigate('TimeSuggestions');
+          }}
+        >
+          <Text style={styles.suggestionBannerText}>{bannerLabel(unloggedCount)}</Text>
+          <Text style={styles.suggestionBannerCta}>Review</Text>
+        </Pressable>
+      ) : null}
       <View style={styles.weekBar}>
         <Pressable
           onPress={() => setWeekStart((current) => shiftWeek(current, -1))}
@@ -403,6 +458,18 @@ const styles = StyleSheet.create({
     padding: spacing['6'],
   },
   content: { padding: spacing['4'], paddingBottom: spacing['8'] },
+  suggestionBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: palette.brand.deep,
+    borderBottomWidth: 1,
+    borderBottomColor: palette.brand.base,
+    paddingHorizontal: spacing['4'],
+    paddingVertical: spacing['3'],
+  },
+  suggestionBannerText: { ...type.meta, color: palette.dark.textHi },
+  suggestionBannerCta: { ...type.metaCaps, color: palette.dark.textHi },
   weekBar: {
     flexDirection: 'row',
     alignItems: 'center',

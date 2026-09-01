@@ -287,6 +287,29 @@ export function parseApprovalNotification(
   return null;
 }
 
+/** The server sends a date-only `YYYY-MM-DD`; the screen puts it straight into `?date=`. */
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * W06 (#3900). The daily "N unlogged sessions" push.
+ *
+ * W06 ships only this parser: the listener wiring, quiet hours and the
+ * notification category belong to W07.
+ *
+ * A payload with no usable date returns null rather than defaulting to today —
+ * routing to a screen for the wrong day silently shows the technician the wrong
+ * sessions to bill, which is worse than a tap that does nothing.
+ */
+export function parseTimeSuggestionsNotification(
+  notification: Notifications.Notification | Notifications.NotificationResponse['notification']
+): { date: string } | null {
+  const data = notification.request.content.data;
+  if (!data || data.type !== 'time_suggestions') return null;
+  const date = data.date;
+  if (typeof date !== 'string' || !ISO_DATE.test(date)) return null;
+  return { date };
+}
+
 /**
  * Minimal shape of a delivered notification needed to decide whether to
  * dismiss it. Structural so the pure selector below can be tested without an
