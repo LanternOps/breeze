@@ -472,9 +472,14 @@ export function getOrgCascadeDeleteOrder(): readonly string[] {
 export const ORG_CASCADE_DELETE_ORDER = CORE_ORG_CASCADE_DELETE_ORDER;
 
 /**
- * Tables that hold FK references INTO the cascade set but are themselves
- * system-scoped (no org_id) — they need targeted pre-clearing so cascade
- * deletes don't violate FK constraints.
+ * Tables outside the org-cascade set that must still be cleared for one org,
+ * either because they hold FK references INTO the set (most entries — without
+ * a pre-clear the cascade's DELETEs violate an FK) or because they carry the
+ * org's identity in a POLYMORPHIC column the cascade can never discover
+ * (`accounting_entity_mappings`, below). Both shapes are invisible to
+ * `information_schema.columns WHERE column_name = 'org_id'`, which is what the
+ * cascade contract test enumerates — so neither is caught by CI, and both are
+ * GDPR erasure gaps if omitted.
  *
  * `device_commands.device_id → devices.id`: agent WS path; system-scoped
  * by design. We clear by joining through devices.
@@ -598,6 +603,35 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
     clearSql: (orgId) => sql`
       DELETE FROM report_runs
       WHERE report_id IN (SELECT id FROM reports WHERE org_id = ${orgId})
+    `,
+  },
+  // accounting_entity_mappings (QuickBooks Phase B): the ONE entry here that is
+  // not about an FK. Its tenancy axis is `partner_id`, and the Breeze side of a
+  // mapping is a POLYMORPHIC (breeze_entity_type, breeze_entity_id) pair with
+  // no FK and no org_id column — so the table is correctly absent from
+  // CORE_ORG_CASCADE_DELETE_ORDER, no FK breaks without this, and nothing in CI
+  // could ever have flagged it. What it strands is exactly what erasure exists
+  // to remove: the erased org's UUID paired with the QuickBooks Customer id it
+  // was billed under, retained indefinitely under the partner.
+  //
+  // It also poisons the live integration. `listMappingProposals` builds
+  // `claimedRemoteIds` from every mapping row for the connection, so an orphan
+  // row keeps a real QuickBooks Customer permanently filtered out of the
+  // candidate pool for every surviving org, and a manual confirm of that
+  // customer 409s forever on `accounting_entity_mappings_remote_uniq` — with
+  // no UI anywhere that can show or clear the offending row, because its org
+  // no longer exists.
+  //
+  // Only the 'org' rows are keyed by an organization id. 'catalog_item' rows
+  // are partner-scoped and must survive. Phase C's 'invoice'/'payment' rows WILL
+  // need their own arms here (join through invoices/invoice_payments to the
+  // org) — this is the file to add them to, and the same trap applies: nothing
+  // in CI will notice their absence.
+  {
+    table: 'accounting_entity_mappings',
+    clearSql: (orgId) => sql`
+      DELETE FROM accounting_entity_mappings
+      WHERE breeze_entity_type = 'org' AND breeze_entity_id = ${orgId}::uuid
     `,
   },
 ];

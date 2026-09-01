@@ -1,4 +1,4 @@
-import { Hono, type MiddlewareHandler } from 'hono';
+import { Hono, type Env, type MiddlewareHandler } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
@@ -22,6 +22,15 @@ import {
   listQuickbooksCustomersAnnotated,
   QbImportError,
 } from '../../services/accounting/quickbooksCustomerImport';
+import {
+  AccountingMappingError,
+  listMappingProposals,
+  listRemoteIncomeAccountsForPartner,
+  saveMappingDecision,
+  syncMappedEntity,
+  type MappingDecision,
+  type MappingEntityType,
+} from '../../services/accounting/accountingMappingService';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getAccountingProvider } from '../../services/accounting/providerRegistry';
 import { captureException, captureMessage } from '../../services/sentry';
@@ -84,11 +93,100 @@ const importCustomersSchema = z.object({
   customerIds: z.array(z.string().min(1)).min(1).max(500),
 });
 
+const mappingEntityQuerySchema = partnerQuerySchema.extend({
+  entityType: z.enum(['org', 'catalog_item']),
+});
+const mappingDecisionSchema = z.object({
+  breezeEntityType: z.enum(['org', 'catalog_item']),
+  breezeEntityId: z.string().guid(),
+  decision: z.enum(['confirmed', 'create_new', 'unlinked']),
+  remoteEntityId: z.string().min(1).max(255).optional(),
+}).superRefine((value, ctx) => {
+  if (value.decision === 'confirmed' && !value.remoteEntityId) {
+    ctx.addIssue({ code: 'custom', path: ['remoteEntityId'], message: 'remoteEntityId is required when confirming a match' });
+  }
+  if (value.decision !== 'confirmed' && value.remoteEntityId) {
+    ctx.addIssue({ code: 'custom', path: ['remoteEntityId'], message: 'remoteEntityId is only valid for confirmed matches' });
+  }
+});
+const mappingSyncSchema = z.object({
+  breezeEntityType: z.enum(['org', 'catalog_item']),
+  breezeEntityId: z.string().guid(),
+});
+
 function handleImportError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   // QbImportError.status is a narrowed literal union (400|404|409|502), so no cast.
   if (err instanceof QbImportError) return c.json({ error: err.message, code: err.code }, err.status);
   throw err;
 }
+
+function handleMappingError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+  // AccountingMappingError.status is a narrowed literal union (404|409|502), so
+  // no cast, and every current/future code (including item_price_required)
+  // flows through generically — the route never re-enumerates codes.
+  if (err instanceof AccountingMappingError) return c.json({ error: err.message, code: err.code }, err.status);
+  throw err;
+}
+
+/**
+ * Curated response for a mapping row — mirrors PATCH /:provider/settings
+ * above, which explicitly `.returning({ ... })`s a safe subset rather than
+ * echoing the raw row. `saveMappingDecision`/`syncMappedEntity` return the
+ * full `accounting_entity_mappings` row (internal `id`, `integrationId`,
+ * `partnerId`, `remoteSyncToken`, `createdAt`, `updatedAt` included), so the
+ * route — not the service — is responsible for narrowing it before it goes
+ * over the wire. None of those omitted fields are secrets, but they are
+ * internal plumbing (tenancy/connection ids, QuickBooks' own optimistic-
+ * concurrency token) the client has no use for.
+ */
+function toMappingResponse(mapping: {
+  breezeEntityType: string;
+  breezeEntityId: string;
+  remoteEntityType: string;
+  remoteEntityId: string | null;
+  linkStatus: string;
+  syncStatus: string;
+  lastSyncedAt: Date | null;
+  lastError: string | null;
+}) {
+  return {
+    breezeEntityType: mapping.breezeEntityType,
+    breezeEntityId: mapping.breezeEntityId,
+    remoteEntityType: mapping.remoteEntityType,
+    remoteEntityId: mapping.remoteEntityId,
+    linkStatus: mapping.linkStatus,
+    syncStatus: mapping.syncStatus,
+    lastSyncedAt: mapping.lastSyncedAt,
+    lastError: mapping.lastError,
+  };
+}
+
+// Post-`zValidator('json', ...)` entity-aware write guard for the two mapping
+// mutation routes: ORGS_WRITE for an org decision, CATALOG_WRITE for a
+// catalog_item decision. System scope bypasses the role lookup, matching
+// `partnerScopedPermission` above (requirePermission resolves a role from
+// auth.partnerId/orgId, which a system-scope token never carries).
+const requireCustomerMappingWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
+const requireItemMappingWrite = requirePermission(PERMISSIONS.CATALOG_WRITE.resource, PERMISSIONS.CATALOG_WRITE.action);
+
+// Typed against the validated `json` env — matching `optionalJsonValidator`'s
+// idiom (lib/validation.ts) for a standalone middleware that reads
+// `c.req.valid('json')` — rather than a bare `MiddlewareHandler` (which
+// erases the `zValidator('json', ...)` typing upstream and makes
+// `c.req.valid('json')` resolve to `never`). Shared by both mutation routes
+// (`mappingDecisionSchema` and `mappingSyncSchema`), so it is typed against
+// only the field both schemas' outputs share.
+type MappingWriteJsonInput = { breezeEntityType: MappingEntityType };
+const requireMappingWrite: MiddlewareHandler<
+  Env,
+  string,
+  { in: { json: MappingWriteJsonInput }; out: { json: MappingWriteJsonInput } }
+> = async (c, next) => {
+  if (c.get('auth')?.scope === 'system') return next();
+  const body = c.req.valid('json');
+  const guard = body.breezeEntityType === 'org' ? requireCustomerMappingWrite : requireItemMappingWrite;
+  return guard(c, next);
+};
 
 // CSRF binding cookie: the OAuth callback must complete in the SAME browser
 // that initiated /connect. Without it, an attacker who captures a victim into
@@ -461,4 +559,124 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
 
   if (!updated) return c.json({ error: 'Accounting connection not found' }, 404);
   return c.json(updated);
+});
+
+// Mapping proposals (reconciliation) — read-only, so partner/system scope is
+// the whole gate, same as GET /:provider/customers above. The service performs
+// QuickBooks HTTP inside, so this route is registered in
+// SELF_MANAGED_DB_CONTEXT_ROUTES (middleware/selfManagedDbContextRoutes.ts).
+accountingRoutes.get('/:provider/mappings', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', mappingEntityQuerySchema), async (c) => {
+  const { provider } = c.req.valid('param');
+  const configError = validateProviderConfig(provider);
+  if (configError) return c.json({ error: configError }, 400);
+  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const { entityType } = c.req.valid('query');
+
+  try {
+    const data = await listMappingProposals({ partnerId: partner.partnerId, provider, entityType });
+    return c.json({ data });
+  } catch (err) {
+    return handleMappingError(c, err);
+  }
+});
+
+// Remote income account selector for item mapping — read-only. Also QBO-HTTP
+// backed, so it carries the same SELF_MANAGED_DB_CONTEXT_ROUTES registration.
+accountingRoutes.get('/:provider/income-accounts', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+  const { provider } = c.req.valid('param');
+  const configError = validateProviderConfig(provider);
+  if (configError) return c.json({ error: configError }, 400);
+  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+
+  try {
+    const data = await listRemoteIncomeAccountsForPartner({ partnerId: partner.partnerId, provider });
+    return c.json({ data });
+  } catch (err) {
+    return handleMappingError(c, err);
+  }
+});
+
+// Confirm/create/unlink a single mapping. Write + MFA-gated, entity-aware
+// permission (ORGS_WRITE for org, CATALOG_WRITE for catalog_item) — the
+// `confirmed` path calls the provider list to verify the remote entity, so
+// this route also carries the SELF_MANAGED_DB_CONTEXT_ROUTES registration.
+accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingDecisionSchema), requireMappingWrite, async (c) => {
+  const { provider } = c.req.valid('param');
+  const configError = validateProviderConfig(provider);
+  if (configError) return c.json({ error: configError }, 400);
+  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const body = c.req.valid('json');
+
+  let mapping;
+  try {
+    mapping = await saveMappingDecision({
+      partnerId: partner.partnerId,
+      provider,
+      breezeEntityType: body.breezeEntityType,
+      breezeEntityId: body.breezeEntityId,
+      decision: body.decision as MappingDecision,
+      remoteEntityId: body.remoteEntityId,
+    });
+  } catch (err) {
+    return handleMappingError(c, err);
+  }
+
+  writeRouteAudit(c, {
+    orgId: body.breezeEntityType === 'org' ? body.breezeEntityId : null,
+    action: 'accounting.mapping.update',
+    resourceType: 'accounting_mapping',
+    resourceId: mapping.id,
+    details: {
+      breezeEntityType: body.breezeEntityType,
+      breezeEntityId: body.breezeEntityId,
+      decision: body.decision,
+      remoteEntityType: mapping.remoteEntityType,
+      resultStatus: mapping.syncStatus,
+    },
+  });
+
+  return c.json({ data: toMappingResponse(mapping) });
+});
+
+// Push a confirmed/create_new mapping to QuickBooks. Write + MFA-gated, same
+// entity-aware permission guard as PUT above, and the same
+// SELF_MANAGED_DB_CONTEXT_ROUTES registration (the provider upsert call is
+// real QuickBooks HTTP).
+accountingRoutes.post('/:provider/mappings/sync', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingSyncSchema), requireMappingWrite, async (c) => {
+  const { provider } = c.req.valid('param');
+  const configError = validateProviderConfig(provider);
+  if (configError) return c.json({ error: configError }, 400);
+  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const body = c.req.valid('json');
+
+  let mapping;
+  try {
+    mapping = await syncMappedEntity({
+      partnerId: partner.partnerId,
+      provider,
+      breezeEntityType: body.breezeEntityType,
+      breezeEntityId: body.breezeEntityId,
+    });
+  } catch (err) {
+    return handleMappingError(c, err);
+  }
+
+  writeRouteAudit(c, {
+    orgId: body.breezeEntityType === 'org' ? body.breezeEntityId : null,
+    action: 'accounting.entity.sync',
+    resourceType: 'accounting_mapping',
+    resourceId: mapping.id,
+    details: {
+      breezeEntityType: body.breezeEntityType,
+      breezeEntityId: body.breezeEntityId,
+      remoteEntityType: mapping.remoteEntityType,
+      resultStatus: mapping.syncStatus,
+    },
+  });
+
+  return c.json({ data: toMappingResponse(mapping) });
 });

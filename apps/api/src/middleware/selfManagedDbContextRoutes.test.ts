@@ -31,6 +31,17 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/accounting/quickbooks/customers/'],
     ['POST', '/api/v1/accounting/quickbooks/customers/import'],
     ['POST', '/api/v1/accounting/quickbooks/customers/import/'],
+    // Task 5 entity-mapping routes — all four call QuickBooks HTTP inside the
+    // handler (list proposals, list income accounts, verify-on-confirm, sync).
+    ['GET', '/api/v1/accounting/quickbooks/mappings'],
+    ['GET', '/api/v1/accounting/quickbooks/mappings/'],
+    ['GET', '/api/v1/accounting/quickbooks/income-accounts'],
+    ['GET', '/api/v1/accounting/quickbooks/income-accounts/'],
+    ['PUT', '/api/v1/accounting/quickbooks/mappings'],
+    ['PUT', '/api/v1/accounting/quickbooks/mappings/'],
+    ['POST', '/api/v1/accounting/quickbooks/mappings/sync'],
+    ['POST', '/api/v1/accounting/quickbooks/mappings/sync/'],
+    ['put', '/api/v1/accounting/quickbooks/mappings'], // method is case-insensitive
     // #2190 — distributor catalog imports run a best-effort AI enrichment call
     // inside the handler.
     ['POST', '/api/v1/catalog/distributors/td-synnex/import'],
@@ -123,6 +134,16 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/accounting/quickbooks/customers', 'POST to the list route (only GET + /customers/import opt out)'],
     ['GET', '/api/v1/accounting/quickbooks/customers/import', 'import is POST-only'],
     ['POST', '/api/v1/accounting/quickbooks/customers/import/extra', 'extra segment must not match'],
+    // Task 5 — every OTHER accounting route (connect/callback/disconnect/status/
+    // settings) does only DB work and MUST keep the ambient RLS transaction.
+    ['POST', '/api/v1/accounting/quickbooks/mappings', 'POST to the mappings route (only GET/PUT opt out)'],
+    ['DELETE', '/api/v1/accounting/quickbooks/mappings', 'DELETE to the mappings route is not a route at all'],
+    ['GET', '/api/v1/accounting/quickbooks/mappings/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/accounting/quickbooks/income-accounts/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/accounting/quickbooks/income-accounts', 'income-accounts is GET-only'],
+    ['GET', '/api/v1/accounting/quickbooks/mappings/sync', 'sync is POST-only'],
+    ['PUT', '/api/v1/accounting/quickbooks/mappings/sync', 'sync is POST-only, not PUT'],
+    ['POST', '/api/v1/accounting/quickbooks/mappings/sync/extra', 'extra segment must not match'],
     // #2190 — the other distributor routes (status/config/test/search/lookup/pricing)
     // do only DB work — keep the ambient tx.
     ['GET', '/api/v1/catalog/distributors/td-synnex/status', 'status route is DB-only'],

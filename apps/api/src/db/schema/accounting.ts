@@ -1,4 +1,16 @@
-import { pgTable, uuid, varchar, text, timestamp, char, uniqueIndex } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import {
+  pgTable,
+  uuid,
+  varchar,
+  text,
+  timestamp,
+  char,
+  uniqueIndex,
+  index,
+  foreignKey,
+  check,
+} from 'drizzle-orm/pg-core';
 import { partners } from './orgs';
 import { users } from './users';
 
@@ -29,3 +41,55 @@ export const accountingConnections = pgTable('accounting_connections', {
     .on(table.partnerId, table.provider),
   idPartnerIdx: uniqueIndex('accounting_connections_id_partner_idx').on(table.id, table.partnerId),
 }));
+
+export const accountingEntityMappings = pgTable('accounting_entity_mappings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  integrationId: uuid('integration_id').notNull(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  breezeEntityType: varchar('breeze_entity_type', { length: 20 }).notNull(),
+  breezeEntityId: uuid('breeze_entity_id').notNull(),
+  remoteEntityType: varchar('remote_entity_type', { length: 20 }).notNull(),
+  remoteEntityId: text('remote_entity_id'),
+  remoteSyncToken: varchar('remote_sync_token', { length: 64 }),
+  linkStatus: varchar('link_status', { length: 20 }).notNull().default('suggested'),
+  syncStatus: varchar('sync_status', { length: 30 }).notNull().default('pending'),
+  lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  connectionPartnerFk: foreignKey({
+    columns: [table.integrationId, table.partnerId],
+    foreignColumns: [accountingConnections.id, accountingConnections.partnerId],
+    name: 'accounting_entity_mappings_connection_partner_fk',
+  }).onDelete('cascade'),
+  entityTypeCheck: check(
+    'accounting_entity_mappings_entity_type_chk',
+    sql`${table.breezeEntityType} IN ('org', 'catalog_item', 'invoice', 'payment')`,
+  ),
+  entityPairCheck: check(
+    'accounting_entity_mappings_entity_pair_chk',
+    sql`(${table.breezeEntityType} = 'org' AND ${table.remoteEntityType} = 'Customer') OR
+        (${table.breezeEntityType} = 'catalog_item' AND ${table.remoteEntityType} = 'Item') OR
+        (${table.breezeEntityType} = 'invoice' AND ${table.remoteEntityType} = 'Invoice') OR
+        (${table.breezeEntityType} = 'payment' AND ${table.remoteEntityType} = 'Payment')`,
+  ),
+  linkStatusCheck: check(
+    'accounting_entity_mappings_link_status_chk',
+    sql`${table.linkStatus} IN ('suggested', 'confirmed', 'unlinked', 'create_new')`,
+  ),
+  syncStatusCheck: check(
+    'accounting_entity_mappings_sync_status_chk',
+    sql`${table.syncStatus} IN ('pending', 'synced', 'error', 'synced_with_tax_variance')`,
+  ),
+  breezeEntityUniq: uniqueIndex('accounting_entity_mappings_breeze_uniq')
+    .on(table.integrationId, table.breezeEntityType, table.breezeEntityId),
+  remoteEntityUniq: uniqueIndex('accounting_entity_mappings_remote_uniq')
+    .on(table.integrationId, table.remoteEntityType, table.remoteEntityId)
+    .where(sql`${table.remoteEntityId} IS NOT NULL`),
+  partnerStatusIdx: index('accounting_entity_mappings_partner_status_idx')
+    .on(table.partnerId, table.syncStatus),
+}));
+
+export type AccountingEntityMapping = typeof accountingEntityMappings.$inferSelect;
+export type NewAccountingEntityMapping = typeof accountingEntityMappings.$inferInsert;

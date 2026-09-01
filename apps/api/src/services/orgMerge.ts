@@ -819,9 +819,34 @@ export async function runPostPassFixups(
      WHERE level = 'organization'
        AND target_id = ${uuid(loserOrgId)}`);
 
+  // accounting_entity_mappings (QuickBooks Phase B) is polymorphic the same way
+  // config_policy_assignments is — (breeze_entity_type, breeze_entity_id), no
+  // org_id column, no FK — so the registry never classifies it and the walk
+  // (which iterates topologicalCascadeOrder(), i.e. org_id tables only) never
+  // reaches it. Here is the only place an org merge can act on it.
+  //
+  // DELETED, not repointed. A repoint would collide with
+  // `accounting_entity_mappings_breeze_uniq` whenever the survivor already has
+  // its own mapping, and — worse — a surviving loser row keeps its claim on a
+  // real QuickBooks Customer: `listMappingProposals` filters every claimed
+  // remote id out of the candidate pool, the survivor's backfill INSERT is
+  // swallowed by `onConflictDoNothing` against
+  // `accounting_entity_mappings_remote_uniq`, and a manual confirm 409s
+  // forever, with the offending row invisible in the UI because its org is
+  // gone. Dropping it lets the survivor reconcile fresh against QuickBooks on
+  // the next proposal load, which is the recoverable state.
+  //
+  // Only 'org' rows are keyed by an organization id ('catalog_item' rows are
+  // partner-scoped and must survive). Phase C's 'invoice'/'payment' rows will
+  // need their own handling here.
+  const accountingMappingsDropped = await exec(sql`
+    DELETE FROM accounting_entity_mappings
+     WHERE breeze_entity_type = 'org'
+       AND breeze_entity_id = ${uuid(loserOrgId)}`);
+
   return {
     moved: partnerUsersFixed + assignmentsMoved,
-    dropped: assignmentsDropped,
+    dropped: assignmentsDropped + accountingMappingsDropped,
   };
 }
 
