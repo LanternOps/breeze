@@ -165,13 +165,21 @@ describe('client-ai admin — tenant mapping', () => {
     );
   });
 
-  it('PUT maps a tenant-uniqueness violation to 409 tenant_already_mapped', async () => {
+  it('PUT maps a DrizzleQueryError-wrapped tenant-uniqueness violation to 409 tenant_already_mapped', async () => {
+    // DrizzleQueryError shape: generic outer error, real PostgresError (with
+    // code + constraint_name) on .cause — mirrors what postgres.js + Drizzle
+    // actually produce, not a flattened one-level stub.
+    const pgErr = Object.assign(new Error('duplicate key value violates unique constraint'), {
+      code: '23505',
+      constraint_name: 'client_ai_tenant_mappings_tenant_uniq',
+    });
+    const drizzleErr = Object.assign(new Error('Failed query: insert into "client_ai_tenant_mappings" ...'), {
+      cause: pgErr,
+    });
     dbInsertMock.mockImplementation(() => ({
       values: vi.fn(() => ({
         onConflictDoUpdate: vi.fn(() => ({
-          returning: vi.fn(() =>
-            Promise.reject(Object.assign(new Error('duplicate'), { cause: { code: '23505' } }))
-          ),
+          returning: vi.fn(() => Promise.reject(drizzleErr)),
         })),
       })),
     }));
@@ -182,6 +190,30 @@ describe('client-ai admin — tenant mapping', () => {
     });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'tenant_already_mapped' });
+  });
+
+  it('PUT does NOT map a 23505 on a different constraint to 409 — it propagates', async () => {
+    const pgErr = Object.assign(new Error('duplicate key value violates unique constraint'), {
+      code: '23505',
+      constraint_name: 'client_ai_tenant_mappings_pkey',
+    });
+    const drizzleErr = Object.assign(new Error('Failed query: insert into "client_ai_tenant_mappings" ...'), {
+      cause: pgErr,
+    });
+    dbInsertMock.mockImplementation(() => ({
+      values: vi.fn(() => ({
+        onConflictDoUpdate: vi.fn(() => ({
+          returning: vi.fn(() => Promise.reject(drizzleErr)),
+        })),
+      })),
+    }));
+    const res = await buildApp().request(`/client-ai/admin/orgs/${ORG_ID}/tenant-mapping`, {
+      method: 'PUT',
+      headers: AUTHED,
+      body: JSON.stringify({ entraTenantId: TID }),
+    });
+    // Not the deliberately-opaque 409 mapping; the raw error surfaces instead.
+    expect(res.status).toBe(500);
   });
 
   it('DELETE removes the mapping and audits', async () => {
