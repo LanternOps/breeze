@@ -1,4 +1,4 @@
-import { Hono, type MiddlewareHandler } from 'hono';
+import { Hono, type Env, type MiddlewareHandler } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
@@ -169,9 +169,21 @@ function toMappingResponse(mapping: {
 const requireCustomerMappingWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 const requireItemMappingWrite = requirePermission(PERMISSIONS.CATALOG_WRITE.resource, PERMISSIONS.CATALOG_WRITE.action);
 
-const requireMappingWrite: MiddlewareHandler = async (c, next) => {
+// Typed against the validated `json` env — matching `optionalJsonValidator`'s
+// idiom (lib/validation.ts) for a standalone middleware that reads
+// `c.req.valid('json')` — rather than a bare `MiddlewareHandler` (which
+// erases the `zValidator('json', ...)` typing upstream and makes
+// `c.req.valid('json')` resolve to `never`). Shared by both mutation routes
+// (`mappingDecisionSchema` and `mappingSyncSchema`), so it is typed against
+// only the field both schemas' outputs share.
+type MappingWriteJsonInput = { breezeEntityType: MappingEntityType };
+const requireMappingWrite: MiddlewareHandler<
+  Env,
+  string,
+  { in: { json: MappingWriteJsonInput }; out: { json: MappingWriteJsonInput } }
+> = async (c, next) => {
   if (c.get('auth')?.scope === 'system') return next();
-  const body = c.req.valid('json') as { breezeEntityType: MappingEntityType };
+  const body = c.req.valid('json');
   const guard = body.breezeEntityType === 'org' ? requireCustomerMappingWrite : requireItemMappingWrite;
   return guard(c, next);
 };
