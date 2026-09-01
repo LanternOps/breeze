@@ -50,7 +50,18 @@ async function insertMetric(options: {
   deviceId: string;
   timestamp: Date;
   cpuPercent: number;
+  /** #4341: leave every nullable column NULL, as an agent that reports no disk/network/process counters does. */
+  nullableColumnsNull?: boolean;
 }): Promise<void> {
+  const nullable = options.nullableColumnsNull
+    ? {
+      diskReadBps: null, diskWriteBps: null,
+      bandwidthInBps: null, bandwidthOutBps: null, processCount: null,
+    }
+    : {
+      diskReadBps: 100, diskWriteBps: 200,
+      bandwidthInBps: 300, bandwidthOutBps: 400, processCount: 50,
+    };
   await (getTestDb() as any).insert(deviceMetrics).values({
     orgId: options.orgId,
     deviceId: options.deviceId,
@@ -60,11 +71,7 @@ async function insertMetric(options: {
     ramUsedMb: 2048,
     diskPercent: 40,
     diskUsedGb: 120,
-    diskReadBps: 100,
-    diskWriteBps: 200,
-    bandwidthInBps: 300,
-    bandwidthOutBps: 400,
-    processCount: 50,
+    ...nullable,
   });
 }
 
@@ -371,6 +378,87 @@ describe('metric rollups integration', () => {
       gapSeconds: 240,
     }));
     expect((updatedGapBucket.metadata as Record<string, unknown>).isGap).toBe(false);
+  });
+
+  // #4341 — the raw passes went from one statement per metric (10 over
+  // device_metrics, 7 over device_process_samples) to one statement per source
+  // table. These two pin the properties that a single shared bucket grid could
+  // most plausibly break: that every series is still emitted, and that a series
+  // whose column is NULL for the whole window is still emitted for NO buckets
+  // rather than a window's worth of `isGap` rows.
+  describe('#4341 single-pass raw rollups', () => {
+    it('emits every device_metrics and process-sample series from one pass per source table', async () => {
+      const device = await insertDevice({ orgId: orgA, siteId: siteA, hostname: 'all-series-device' });
+      await insertMetric({ orgId: orgA, deviceId: device, timestamp: new Date('2026-06-18T12:00:00.000Z'), cpuPercent: 10 });
+      await insertMetric({ orgId: orgA, deviceId: device, timestamp: new Date('2026-06-18T12:01:00.000Z'), cpuPercent: 30 });
+      await insertProcessSample({
+        orgId: orgA, deviceId: device, timestamp: new Date('2026-06-18T12:00:00.000Z'),
+        cpu: 12, ramMb: 512, diskBps: 1000, netBps: 2000,
+      });
+
+      await runRollup(orgA, new Date('2026-06-18T12:00:00.000Z'), new Date('2026-06-18T12:05:00.000Z'));
+
+      const rows = await getTestDb()
+        .select()
+        .from(metricRollups)
+        .where(and(
+          eq(metricRollups.orgId, orgA),
+          eq(metricRollups.deviceId, device),
+          eq(metricRollups.bucketSeconds, 300)
+        ));
+
+      const byName = new Map(rows.map((row) => [row.metricName, row]));
+      expect([...byName.keys()].sort()).toEqual([
+        'bandwidth_in_bps', 'bandwidth_out_bps', 'cpu_percent', 'disk_percent',
+        'disk_read_bps', 'disk_used_gb', 'disk_write_bps', 'process_count',
+        'ram_percent', 'ram_used_mb',
+        'top_process_count', 'top_process_cpu_percent_max', 'top_process_cpu_percent_sum',
+        'top_process_disk_bps_sum', 'top_process_net_bps_sum',
+        'top_process_ram_mb_max', 'top_process_ram_mb_sum',
+      ]);
+
+      // metric_type still travels with its own series, not the first one's.
+      expect(byName.get('cpu_percent')?.metricType).toBe('cpu');
+      expect(byName.get('ram_used_mb')?.metricType).toBe('memory');
+      expect(byName.get('bandwidth_in_bps')?.metricType).toBe('network');
+      expect(byName.get('process_count')?.metricType).toBe('process');
+      expect(byName.get('top_process_ram_mb_sum')?.sourceTable).toBe('device_process_samples');
+
+      // Each series aggregates its OWN column, so the values must differ.
+      expect(byName.get('cpu_percent')?.avgValue).toBe(20);
+      expect(byName.get('ram_used_mb')?.avgValue).toBe(2048);
+      expect(byName.get('cpu_percent')?.sampleCount).toBe(2);
+      expect(byName.get('top_process_ram_mb_sum')?.avgValue).toBe(512);
+      expect(byName.get('top_process_net_bps_sum')?.avgValue).toBe(2000);
+    });
+
+    it('emits no rollups for a device_metrics column that is NULL across the whole window', async () => {
+      const device = await insertDevice({ orgId: orgA, siteId: siteA, hostname: 'null-columns-device' });
+      await insertMetric({
+        orgId: orgA, deviceId: device, timestamp: new Date('2026-06-18T12:00:00.000Z'),
+        cpuPercent: 10, nullableColumnsNull: true,
+      });
+
+      await runRollup(orgA, new Date('2026-06-18T12:00:00.000Z'), new Date('2026-06-18T12:10:00.000Z'));
+
+      const names = (await getTestDb()
+        .select()
+        .from(metricRollups)
+        .where(and(
+          eq(metricRollups.orgId, orgA),
+          eq(metricRollups.deviceId, device),
+          eq(metricRollups.sourceTable, 'device_metrics'),
+          eq(metricRollups.bucketSeconds, 300)
+        )))
+        .map((row) => row.metricName);
+
+      // The NOT NULL columns still roll up (two 300s buckets each, one of them a gap).
+      expect(names.filter((name) => name === 'cpu_percent')).toHaveLength(2);
+      // The nullable ones must produce nothing at all — not gap rows.
+      for (const name of ['disk_read_bps', 'disk_write_bps', 'bandwidth_in_bps', 'bandwidth_out_bps', 'process_count']) {
+        expect(names).not.toContain(name);
+      }
+    });
   });
 
   it('materializes linked SNMP metric buckets and ignores unlinked or non-numeric SNMP series', async () => {
