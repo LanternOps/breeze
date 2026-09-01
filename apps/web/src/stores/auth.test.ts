@@ -1887,6 +1887,25 @@ describe('MFA enrollment API bindings', () => {
     });
   });
 
+  // #4413: /auth/mfa/enable answers 401 for "that TOTP is wrong", which is not
+  // an expired bearer. Letting fetchWithAuth's generic 401 path have it either
+  // replays the code or — on the forced-enrollment page, where the user has
+  // nowhere else to go — signs them out for a typo.
+  it('treats a wrong-code 401 as a rejection, not an expired session', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(makeResponse({ error: 'Invalid MFA code' }, false, 401));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(apiEnableTotpMfa('123456', 'password')).resolves.toEqual({
+      success: false,
+      error: 'Invalid MFA code',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1); // no refresh, no replay
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+  });
+
   it('rejects terminal enrollment responses without replacement access metadata', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
       success: true,

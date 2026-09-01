@@ -1889,6 +1889,11 @@ export async function apiEnableTotpMfa(code: string, currentPassword: string): P
   try {
     const response = await fetchWithAuth('/auth/mfa/enable', {
       method: 'POST',
+      // #4413: a rejected TOTP comes back as 401, same status the bearer guard
+      // uses. Without this the generic 401 path replays the code, or evicts the
+      // session outright — on the forced-enrollment page that strands the user
+      // with no way back in. The caller already renders the raw error.
+      skipUnauthorizedRetry: true,
       body: JSON.stringify({ code, currentPassword }),
     });
     const data = await response.json().catch(() => null);
