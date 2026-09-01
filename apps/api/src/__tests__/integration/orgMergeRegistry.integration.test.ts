@@ -232,6 +232,11 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // fields remain byte-for-byte unchanged.
   'agent_rollback_events.agent_rollback_events_block_update': 'org_id-only device-owner restamp',
   'peripheral_policy_delivery_events.peripheral_policy_delivery_events_block_update': 'org_id-only device-owner restamp',
+  // Track B durable evidence: both immutability guards deliberately omit
+  // org_id from their compared set so the device move / merge repoint
+  // contract can restamp tenancy; every evidence field stays immutable.
+  'agent_health_observations.agent_health_observations_immutable_trg': 'org_id-only device-owner restamp',
+  'software_inventory_observations.software_inventory_observations_immutable_trg': 'org_id-only device-owner restamp',
   // Plain updated_at bumps.
   'elevation_requests.trg_elevation_requests_updated_at': 'updated_at bump',
   'incidents.trg_incidents_updated_at': 'updated_at bump',
