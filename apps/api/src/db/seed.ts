@@ -101,9 +101,10 @@ export function resolveBootstrapAdminConfig(
 // asserts every resource:action referenced by SYSTEM_ROLES below exists here.
 // This is intentionally a subset of PERMISSION_GRANTS (the shared registry):
 // the registry may define permissions no system role grants yet (e.g.
-// time_entries:*, automations:*) without those needing a seeded row — only
-// permissions a system role actually references must be seeded, or seedRoles
-// silently drops the grant.
+// automations:*) without those needing a seeded row — only permissions a
+// system role actually references must be seeded, or seedRoles silently drops
+// the grant. time_entries:* moved INTO this list with #4251, when the
+// technician roles started granting them.
 export const DEFAULT_PERMISSIONS = [
   // Backup / recovery
   { resource: 'backup', action: 'read', description: 'View backup and recovery resources' },
@@ -141,6 +142,12 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'tickets', action: 'read', description: 'View tickets, comments, and categories' },
   { resource: 'tickets', action: 'write', description: 'Create and update tickets, comments, and categories' },
   { resource: 'tickets', action: 'manage', description: 'Edit or delete any comment and reassign ticket organization' },
+
+  // Time entries (#4251). Seeded because Partner Technician grants them: the
+  // mobile start/stop timer (#3206 W05) calls routes gated on
+  // time_entries:write, and an unseeded grant is dropped silently by seedRoles.
+  { resource: 'time_entries', action: 'read', description: 'View time entries and timesheets' },
+  { resource: 'time_entries', action: 'write', description: 'Log and edit time entries' },
 
   // Microsoft 365 partner-global ticket mailbox administration
   { resource: 'ticket_mailbox', action: 'read', description: 'View Microsoft 365 ticket mailbox connection status' },
@@ -239,7 +246,11 @@ export const SYSTEM_ROLES = [
       'devices:read', 'devices:execute',
       'scripts:read', 'scripts:execute',
       'alerts:read', 'alerts:acknowledge',
-      'tickets:read',
+      // #4251: a technician works tickets — comments, status, assignment — and
+      // logs time against them from the mobile timer (#3206 W05). tickets:manage
+      // (reassign org, edit any author's comment) stays an admin action.
+      'tickets:read', 'tickets:write',
+      'time_entries:read', 'time_entries:write',
       'ticket_mailbox:read',
       'reports:read', 'reports:write',
       'sites:read',
