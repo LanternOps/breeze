@@ -285,10 +285,22 @@ async function handleMetricsRequest(req: IncomingMessage, res: ServerResponse): 
   } catch (error) {
     // A render fault must not take the process down, and must not be silent:
     // Prometheus sees a 500 (so `up` stays 1 while the scrape fails, which is
-    // the distinguishable state) and the fault is reported.
+    // the distinguishable state) and the fault is reported. The detail stays in
+    // the log and Sentry — the response body is a fixed string, because this
+    // endpoint answers before authentication has told us anything about who is
+    // asking on the 503 path and there is no reason to narrate internals to a
+    // scraper on any path.
     console.error('[worker][metrics] Failed to render metrics:', error);
     captureException(error instanceof Error ? error : new Error(String(error)));
-    writeJson(res, 500, { error: 'Failed to render metrics' });
+    // Guarded: if the throw came from `res.end()` the 200 header is already on
+    // the wire, and calling writeHead again raises ERR_HTTP_HEADERS_SENT from
+    // inside this catch — which would reject the promise and report a
+    // secondary, misleading error INSTEAD of the real one above.
+    if (!res.headersSent) {
+      writeJson(res, 500, { error: 'Failed to render metrics' });
+    } else {
+      res.end();
+    }
   }
 }
 
