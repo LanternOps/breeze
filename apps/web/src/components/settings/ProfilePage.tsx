@@ -625,7 +625,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
   };
 
-  const handleMfaEnable = async (code: string, currentPassword: string) => {
+  /**
+   * #4413: returns FALSE when the write was rejected. MFASettings keeps the QR
+   * view (and the password behind it) open on `false`, so a mistyped code costs
+   * one retry instead of a whole re-enrollment against a fresh secret.
+   */
+  const handleMfaEnable = async (code: string, currentPassword: string): Promise<boolean> => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
     try {
@@ -637,7 +642,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // is the belt-and-braces half of the same rule.
       if (!currentPassword && !ssoReauthGrantId && isPasswordless) {
         setMfaError(t('profilePage.ssoReauthProofExpired'));
-        return;
+        return false;
       }
       const proof = currentPassword
         ? { currentPassword }
@@ -646,6 +651,13 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           : {};
       const response = await fetchWithAuth('/auth/mfa/enable', {
         method: 'POST',
+        // #4413: this endpoint answers 401 for "that TOTP is wrong", not for
+        // "your bearer expired". Handing that to fetchWithAuth's generic 401
+        // path either replays a single-use code or — when the refresh does not
+        // restore — signs the user out mid-enrollment (auth.ts handleSessionExpired).
+        // Take the raw 401 and render it ourselves. The durable fix is on the
+        // API side (400/422 + a stable code for a rejected factor proof).
+        skipUnauthorizedRetry: true,
         body: JSON.stringify({ code, ...proof })
       });
 
@@ -666,20 +678,24 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // already spent.
       setSsoReauthGrantId(null);
       setSsoSetupReady(false);
+      return true;
     } catch (error) {
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToEnableMFA'));
+      return false;
     } finally {
       setMfaLoading(false);
     }
   };
 
-  const handleMfaDisable = async (code: string, currentPassword: string) => {
+  const handleMfaDisable = async (code: string, currentPassword: string): Promise<boolean> => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
     try {
       setMfaLoading(true);
       const response = await fetchWithAuth('/auth/mfa/disable', {
         method: 'POST',
+        // Same overloaded 401 as /mfa/enable above — see the comment there.
+        skipUnauthorizedRetry: true,
         body: JSON.stringify({ code, currentPassword })
       });
 
@@ -693,33 +709,48 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setUser(prev => (prev ? { ...prev, mfaEnabled: false } : null));
       setRecoveryCodes(undefined);
       setMfaSuccess(t('profilePage.multiFactorAuthenticationDisabled'));
+      return true;
     } catch (error) {
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToDisableMFA'));
+      return false;
     } finally {
       setMfaLoading(false);
     }
   };
 
-  const handleGenerateRecoveryCodes = async (currentPassword: string) => {
+  /**
+   * #4414: this endpoint REGENERATES — it invalidates every code the user
+   * already holds. MFASettings gates it behind an explicit confirm and only
+   * reveals codes when this resolves `true`, so a failed call can never
+   * re-display the previous set as though it were the new one.
+   */
+  const handleGenerateRecoveryCodes = async (currentPassword: string): Promise<boolean> => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
     try {
       setMfaLoading(true);
       const response = await fetchWithAuth('/auth/mfa/recovery-codes', {
         method: 'POST',
+        // Same overloaded 401 as /mfa/enable above — a wrong password here is a
+        // rejected proof, not an expired session.
+        skipUnauthorizedRetry: true,
         body: JSON.stringify({ currentPassword })
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message ?? t('profilePage.failedToGenerateRecoveryCodes'));
+        throw new Error(
+          errorData.error ?? errorData.message ?? t('profilePage.failedToGenerateRecoveryCodes')
+        );
       }
 
       const data = await response.json();
       setRecoveryCodes(data.recoveryCodes);
       setMfaSuccess(t('profilePage.newRecoveryCodesGenerated'));
+      return true;
     } catch (error) {
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToGenerateRecoveryCodes'));
+      return false;
     } finally {
       setMfaLoading(false);
     }
