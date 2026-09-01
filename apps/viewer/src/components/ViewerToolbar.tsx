@@ -401,7 +401,14 @@ export default function ViewerToolbar({
                     return (
                       <button
                         key={opt}
-                        disabled={isActive || isUnavailable}
+                        // Deliberately NOT `disabled` when unavailable: browsers
+                        // suppress pointer events on disabled controls, so the
+                        // `title` explaining WHY would never appear and the row
+                        // would be an unfocusable grey blank. aria-disabled +
+                        // the no-op click below gives the same semantics while
+                        // keeping the tooltip and screen-reader text.
+                        disabled={isActive}
+                        aria-disabled={isUnavailable || undefined}
                         onClick={() => {
                           if (!isActive && !isUnavailable) {
                             onSwitchTransport?.(opt);

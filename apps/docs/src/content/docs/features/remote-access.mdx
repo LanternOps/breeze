@@ -528,12 +528,12 @@ The Linux viewer renders in webkit2gtk, the system WebView, rather than bundling
 
 When that is the case the viewer detects it before connecting, skips WebRTC, and runs the session on the WebSocket (JPEG) transport instead. A notice in the session window explains the switch, and the toolbar badge reads **WS** rather than **WebRTC**. The session still works; you lose the WebRTC-only features:
 
-| Available on WebSocket | WebRTC only |
+| Available on WebSocket | Not available on WebSocket |
 |---|---|
 | Screen view, keyboard, mouse | Remote audio |
 | Paste as keystrokes | Clipboard sync |
-| Reconnect, session end | Multi-monitor switching |
-| | Bitrate and quality controls |
+| Quality, scale and FPS limit | Multi-monitor switching |
+| Reconnect, session end | Bitrate control |
 | | Secure attention sequence (Ctrl+Alt+Del) |
 | | Switching between user sessions |
 | | Low-latency cursor streaming |

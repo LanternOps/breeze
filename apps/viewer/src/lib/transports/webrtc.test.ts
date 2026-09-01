@@ -40,6 +40,7 @@ function makeDeps(): WebRTCDeps {
     onClipboardChannel: vi.fn(),
     onCursorChannelOpen: vi.fn(),
     onCursorChannelClose: vi.fn(),
+    onWebRTCUnsupported: vi.fn(),
   };
 }
 
@@ -71,6 +72,47 @@ describe('connectWebRTC — WebView without WebRTC (issue #3410)', () => {
     // capability gap in this WebView.
     expect(logged).not.toMatch(/WebRTC connection failed/);
     expect(logged).toMatch(/websocket/i);
+  });
+
+  it('tells the caller WebRTC is unusable, so the UI can latch it', async () => {
+    removeRTCPeerConnection();
+    vi.stubGlobal('fetch', vi.fn());
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const deps = makeDeps();
+
+    await connectWebRTC(auth, deps);
+
+    // Without this the discovery dies here: connectWebRTC returns null for both
+    // "unsupported" and "attempt failed", so the component could never gate its
+    // notice or its toolbar affordances on it.
+    expect(deps.onWebRTCUnsupported).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT report unusable when WebRTC merely fails to connect', async () => {
+    // A reachable WebRTC stack whose signalling fails must stay retryable —
+    // latching it as unsupported would wrongly disable WebRTC for the session.
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      class {
+        iceGatheringState = 'complete';
+        localDescription = { sdp: 'v=0', type: 'offer' };
+        addTransceiver() {}
+        createDataChannel() {
+          return { close() {}, bufferedAmountLowThreshold: 0 };
+        }
+        async createOffer() {
+          return { sdp: 'v=0', type: 'offer' };
+        }
+        async setLocalDescription() {}
+        close() {}
+      },
+    );
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500, headers: new Headers(), text: async () => 'boom', json: async () => ({}) })));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const deps = makeDeps();
+
+    await expect(connectWebRTC(auth, deps)).resolves.toBeNull();
+    expect(deps.onWebRTCUnsupported).not.toHaveBeenCalled();
   });
 });
 

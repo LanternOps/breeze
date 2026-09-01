@@ -26,6 +26,15 @@ export interface WebRTCDeps {
   onClipboardChannel: (channel: RTCDataChannel) => void;
   onCursorChannelOpen: () => void;
   onCursorChannelClose: () => void;
+  /**
+   * This WebView cannot do WebRTC at all, so every future attempt is wasted.
+   *
+   * Needed because `connectWebRTC` returns `null` for BOTH "unsupported" and
+   * "attempt failed" — without this signal the discovery dies here and the
+   * component can never gate its notice or its toolbar affordances on it
+   * (issue #3410). Fires only for a permanent gap, never for a failed attempt.
+   */
+  onWebRTCUnsupported?: () => void;
 }
 
 export interface WebRTCSessionWrapper extends TransportSession {
@@ -202,11 +211,11 @@ export async function connectWebRTC(
     // plainly instead of logging it as a connection failure that a retry might
     // clear. Returning null routes the caller to the WebSocket transport.
     if (err instanceof WebRTCUnsupportedError) {
-      console.warn(
-        'WebRTC is unavailable in this WebView (no RTCPeerConnection global) — ' +
-          'using the WebSocket transport instead. On Linux this usually means the ' +
-          'webkit2gtk build is missing its GStreamer WebRTC plugins.',
-      );
+      // Carry the error's own message rather than restating a cause: it may be
+      // a missing RTCPeerConnection global OR a constructor that exists and
+      // throws, and those point at different things to go fix.
+      console.warn(`WebRTC is unavailable in this WebView — using the WebSocket transport instead. ${err.message}`);
+      deps.onWebRTCUnsupported?.();
       return null;
     }
     console.warn('WebRTC connection failed:', err);

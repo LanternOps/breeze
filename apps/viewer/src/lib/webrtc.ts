@@ -126,6 +126,13 @@ export interface WebRTCSession {
 const ICE_GATHER_TIMEOUT_MS = 3000;
 
 /**
+ * Fallback ICE configuration. Used both when the ICE-servers endpoint is
+ * unreachable and as the known-good config `createPeerConnection` retries with
+ * before concluding a WebView cannot do WebRTC at all.
+ */
+const DEFAULT_ICE_SERVERS: readonly RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
+
+/**
  * Answer-poll pacing. The poll starts tight so a healthy agent (which answers
  * within a few hundred ms) is still picked up almost immediately, then backs
  * off geometrically so a slow or dead session doesn't turn the 15s window into
@@ -146,20 +153,10 @@ export function nextAnswerPollInterval(currentMs: number): number {
 }
 
 /**
- * Build the peer connection and its two data channels, treating any failure as
- * a permanent capability gap rather than a failed attempt.
- *
- * `isWebRTCSupported()` catches the WebViews where `RTCPeerConnection` is not a
- * global at all, but that is only the blunter half of the problem: a webkit2gtk
- * build missing its GStreamer WebRTC plugins commonly *exposes* the constructor
- * and then throws when you actually use it. Left unguarded, that resurfaced as
- * a generic "WebRTC connection failed" — retryable-looking, and it suppressed
- * the notice that tells the operator why quality dropped (issue #3410).
- *
- * Also closes a leak: `close()` is not defined until after the channels exist,
- * so a throw from `createDataChannel` used to strand an open peer connection.
+ * One attempt at a peer connection plus its two data channels, propagating any
+ * failure as-is. Callers classify; this only guarantees it leaves nothing open.
  */
-function createPeerConnection(iceServers: RTCIceServer[]): {
+function buildPeerConnection(iceServers: RTCIceServer[]): {
   pc: RTCPeerConnection;
   inputChannel: RTCDataChannel;
   controlChannel: RTCDataChannel;
@@ -179,12 +176,51 @@ function createPeerConnection(iceServers: RTCIceServer[]): {
     const controlChannel = pc.createDataChannel('control', { ordered: true });
     return { pc, inputChannel, controlChannel };
   } catch (err) {
+    // Don't strand a half-built connection: `close()` below is not defined until
+    // after the channels exist, so an throw from addTransceiver/createDataChannel
+    // used to leak an open pc.
     try { pc?.close(); } catch { /* already failing — nothing to salvage */ }
-    const cause = err instanceof Error ? err.message : String(err);
-    throw new WebRTCUnsupportedError(
-      `This WebView could not create a WebRTC peer connection: ${cause}. On Linux ` +
-        'this usually means the webkit2gtk build is missing its GStreamer WebRTC plugins.',
-    );
+    throw err;
+  }
+}
+
+/**
+ * Build the peer connection, classifying a failure this WebView can never
+ * recover from as {@link WebRTCUnsupportedError}.
+ *
+ * `isWebRTCSupported()` catches the WebViews where `RTCPeerConnection` is not a
+ * global at all, but that is only the blunter half of the problem: a webkit2gtk
+ * build missing its GStreamer WebRTC plugins commonly *exposes* the constructor
+ * and then throws when you actually use it. Left unclassified, that resurfaced
+ * as a generic "WebRTC connection failed" — retryable-looking, and it suppressed
+ * the notice that tells the operator why quality dropped (issue #3410).
+ */
+function createPeerConnection(iceServers: RTCIceServer[]): {
+  pc: RTCPeerConnection;
+  inputChannel: RTCDataChannel;
+  controlChannel: RTCDataChannel;
+} {
+  try {
+    return buildPeerConnection(iceServers);
+  } catch (firstErr) {
+    // The ICE list comes from the API and is only checked for being a non-empty
+    // array — a malformed `urls` or a TURN entry without credentials makes the
+    // constructor throw per spec. That is a server-config fault, not a missing
+    // WebRTC implementation, and calling it the latter would send an admin
+    // chasing GStreamer over a TURN typo (and, once the UI latches the
+    // capability, permanently disable WebRTC over one bad row).
+    //
+    // So prove it against a config we know is well-formed before blaming the
+    // WebView. If STUN-only also fails, the implementation really is absent.
+    try {
+      return buildPeerConnection([...DEFAULT_ICE_SERVERS]);
+    } catch (retryErr) {
+      const cause = retryErr instanceof Error ? retryErr.message : String(retryErr);
+      throw new WebRTCUnsupportedError(
+        `This WebView could not create a WebRTC peer connection: ${cause}. On Linux ` +
+          'this usually means the webkit2gtk build is missing its GStreamer WebRTC plugins.',
+      );
+    }
   }
 }
 
@@ -214,7 +250,7 @@ export async function createWebRTCSession(
   }
 
   // Fetch ICE servers (includes TURN credentials if configured)
-  let iceServers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
+  let iceServers: RTCIceServer[] = [...DEFAULT_ICE_SERVERS];
   try {
     const iceResp = await apiFetch(
       params.apiUrl,

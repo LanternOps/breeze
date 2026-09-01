@@ -174,6 +174,52 @@ describe('createWebRTCSession — RTCPeerConnection present but unusable', () =>
     expect(String(err.message)).toContain('WebRTC is not supported in this build');
   });
 
+  it('retries STUN-only before blaming the WebView, so a bad TURN config is not misdiagnosed', async () => {
+    // iceServers come from the API unvalidated. A malformed `urls` or a TURN
+    // entry missing credentials makes the constructor throw — which must not be
+    // reported as "this WebView has no WebRTC", or one bad server row would
+    // permanently disable WebRTC for every viewer.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => ({ iceServers: [{ urls: 'not-a-valid-url' }] }),
+        text: async () => '{}',
+      })),
+    );
+    const configs: RTCConfiguration[] = [];
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      class {
+        iceGatheringState = 'complete';
+        localDescription = null;
+        constructor(config: RTCConfiguration) {
+          configs.push(config);
+          if (configs.length === 1) throw new SyntaxError('Invalid ICE server URL');
+        }
+        addTransceiver() {}
+        createDataChannel() {
+          return { close() {}, bufferedAmountLowThreshold: 0 };
+        }
+        async createOffer() {
+          return { sdp: 'v=0', type: 'offer' };
+        }
+        async setLocalDescription() {}
+        close() {}
+      },
+    );
+
+    const err = await createWebRTCSession(params, document.createElement('video')).catch((e) => e);
+
+    expect(configs).toHaveLength(2);
+    // Second attempt drops the server-supplied list for the built-in STUN default.
+    expect(configs[1].iceServers).toEqual([{ urls: 'stun:stun.l.google.com:19302' }]);
+    // It got past construction, so it must NOT be classed as an unusable WebView.
+    expect(err).not.toBeInstanceOf(WebRTCUnsupportedError);
+  });
+
   it('maps a throwing createDataChannel to WebRTCUnsupportedError and closes the connection', async () => {
     stubIceFetch();
     const close = vi.fn();

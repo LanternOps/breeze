@@ -193,12 +193,26 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [capabilities, setCapabilities] = useState<TransportCapabilities | null>(null);
   const [desktopState, setDesktopState] = useState<{ state: 'loginwindow' | 'user_session' | null; username: string | null }>({ state: null, username: null });
   const [webRTCAvailable, setWebRTCAvailable] = useState(false);
-  // Whether THIS WebView can construct an RTCPeerConnection at all (issue
-  // #3410). Deliberately distinct from `webRTCAvailable` above, which tracks
-  // whether the REMOTE macOS device is in a state where WebRTC capture works.
-  // A WebView either has WebRTC or it does not, and that never changes while
-  // the app is running, so it is read once via a lazy initializer.
+  // Whether THIS WebView can do WebRTC at all (issue #3410). Deliberately
+  // distinct from `webRTCAvailable` above, which tracks whether the REMOTE
+  // macOS device is in a state where WebRTC capture works.
+  //
+  // Two parts, because the capability is discovered in two stages. The cheap
+  // `typeof` probe runs once up front; but a webkit2gtk build missing its
+  // GStreamer plugins exposes the constructor and only throws on use, so the
+  // rest is learned from the first real attempt.
   const [webrtcSupported] = useState(isWebRTCSupported);
+  const [webrtcRuntimeUnusable, setWebrtcRuntimeUnusable] = useState(false);
+  const webrtcUsable = webrtcSupported && !webrtcRuntimeUnusable;
+  // The ref is what the connect/reconnect/switch paths read. They must NOT take
+  // `webrtcUsable` as a dependency: it is in the connect effect's closure, and
+  // flipping it would re-run that effect — a full teardown plus a second
+  // connect-code exchange — at the exact moment WebRTC just failed.
+  const webrtcUsableRef = useRef(webrtcSupported);
+  const markWebRTCUnusable = useCallback(() => {
+    webrtcUsableRef.current = false;
+    setWebrtcRuntimeUnusable(true);
+  }, []);
   const [webrtcNoticeDismissed, setWebrtcNoticeDismissed] = useState(false);
   const [remoteUserName, setRemoteUserName] = useState<string | null>(null);
   const [credentialsPrompt, setCredentialsPrompt] = useState<{ requiresUsername: boolean; submit: (creds: { username?: string; password: string }) => void } | null>(null);
@@ -370,7 +384,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // macOS auto-handoff is gated the same way, so reaching this means one of
     // those gates has drifted — hence error, not warn. A silent return here
     // would be a dead click with no feedback at all.
-    if (target === 'webrtc' && !webrtcSupported) {
+    if (target === 'webrtc' && !webrtcUsableRef.current) {
       console.error('Ignoring switch to WebRTC: this WebView has no RTCPeerConnection. A UI gate should have prevented this.');
       return;
     }
@@ -492,7 +506,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       switchingToRef.current = null;
       setSwitchingTo(null);
     }
-  }, [connectVncTransport, setTransportState, webrtcSupported]);
+  }, [connectVncTransport, setTransportState]);
 
   // ── WebRTC connection ──────────────────────────────────────────────
 
@@ -579,6 +593,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       },
       onCursorChannelOpen: () => setCursorStreamActive(true),
       onCursorChannelClose: () => setCursorStreamActive(false),
+      onWebRTCUnsupported: markWebRTCUnusable,
     });
 
     if (!sessionWrapper) return false;
@@ -601,7 +616,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // Hostname is already set from the exchange response before connectWebRTC is called.
     // Connection state will flip to 'connected' via onConnected callback.
     return true;
-  }, [defaultTargetSessionId]);
+  }, [defaultTargetSessionId, markWebRTCUnusable]);
 
   // Keep the forward ref in sync so switchTransport can call the latest version.
   connectWebRTCRef.current = connectWebRTC;
@@ -755,7 +770,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // to WebRTC, except on a WebView that has none: there WebSocket is the only
     // transport that can ever come back, and retrying WebRTC would burn the
     // entire 30s reconnect window on attempts that cannot succeed (issue #3410).
-    const originalTransport: Transport = recordedTransport ?? (webrtcSupported ? 'webrtc' : 'websocket');
+    const originalTransport: Transport = recordedTransport ?? (webrtcUsableRef.current ? 'webrtc' : 'websocket');
     if (!recordedTransport) {
       console.warn(`Reconnect: transport ref was null, defaulting to ${originalTransport}`);
     }
@@ -838,7 +853,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     } finally {
       reconnectInFlightRef.current = false;
     }
-  }, [connectWebRTC, connectWebSocket, connectVncTransport, stopReconnect, remoteOs, webrtcSupported]);
+  }, [connectWebRTC, connectWebSocket, connectVncTransport, stopReconnect, remoteOs]);
 
   const startReconnect = useCallback(() => {
     if (!authRef.current || userDisconnectRef.current) return;
@@ -978,7 +993,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         // Try WebRTC first — unless this WebView has no WebRTC at all, in which
         // case skip straight to WebSocket rather than paying a doomed signalling
         // round trip on every connect and reconnect (issue #3410).
-        const webrtcOk = webrtcSupported ? await connectWebRTC(authParams) : false;
+        const webrtcOk = webrtcUsableRef.current ? await connectWebRTC(authParams) : false;
         if (cancelled) {
           webrtcRef.current?.close();
           webrtcRef.current = null;
@@ -1076,7 +1091,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	        });
 	      }
 	    };
-	  }, [connectWebRTC, connectWebSocket, connectVncTransport, onError, params, stopReconnect, webrtcSupported]);
+	  }, [connectWebRTC, connectWebSocket, connectVncTransport, onError, params, stopReconnect]);
 
   // Mark a window as "session active" only when fully connected.
   // Pass session_id so Rust can detect duplicate deep links for the same session.
@@ -1342,10 +1357,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       setWebRTCAvailable(mode === 'user_session');
       setRemoteUserName(result.poll.username);
 
-      // `webrtcSupported` first: this poll runs every 2s, so without it a
-      // WebRTC-less WebView would re-attempt the handoff (and trip the
-      // switchTransport backstop) on every tick (issue #3410).
-      if (webrtcSupported && shouldAutoHandoffToWebRTC({
+      // Capability first, so a WebRTC-less WebView never proposes the handoff
+      // at all. `shouldAutoHandoffToWebRTC` already latches on previousMode, so
+      // this saves a stray backstop log per login transition rather than one
+      // per 2s tick — but it keeps the decision where the other gates live
+      // instead of relying on the backstop to clean up (issue #3410).
+      if (webrtcUsableRef.current && shouldAutoHandoffToWebRTC({
         remoteOs,
         deviceId,
         currentTransport: transportRef.current,
@@ -1364,7 +1381,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       cancelled = true;
       clearInterval(interval);
     };
-  }, [transport, remoteOs, status, webrtcSupported]);
+  }, [transport, remoteOs, status]);
 
   // ── Frame rendering (WebSocket JPEG path) ──────────────────────────
 
@@ -1998,7 +2015,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onCancelPaste={handleCancelPaste}
         reconnectSecondsLeft={reconnectSecondsLeft}
         webRTCAvailable={webRTCAvailable}
-        webrtcSupported={webrtcSupported}
+        webrtcSupported={webrtcUsable}
         remoteUserName={remoteUserName}
         desktopState={desktopState}
         onSwitchTransport={(target) => switchTransport(target, 'user')}
@@ -2076,7 +2093,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             VNC deep links, which never attempt WebRTC at all) and made it vanish
             mid-session on the macOS websocket→VNC auto-handoff. Suppressed only
             while the fatal error overlay owns the screen. */}
-        {!webrtcSupported && status !== 'error' && !webrtcNoticeDismissed && (
+        {!webrtcUsable && status !== 'error' && status !== 'disconnected' && !webrtcNoticeDismissed && (
           <div
             role="status"
             aria-live="polite"
