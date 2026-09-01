@@ -174,6 +174,11 @@ export const devices = pgTable('devices', {
   // every heartbeat (self-healing), so a resolved condition clears next beat.
   agentEdition: varchar('agent_edition', { length: 20 }),
   migrationRequired: boolean('migration_required').notNull().default(false),
+  // #4072 auto edition migration: once-per-device dispatch claim. Stamped
+  // atomically (WHERE ... IS NULL) before the migration script is dispatched;
+  // never cleared on a dispatched-but-failed dance so a broken device is
+  // handled by an operator, not an uninstall/reinstall retry loop.
+  editionMigrationDispatchedAt: timestamp('edition_migration_dispatched_at', { withTimezone: true }),
   // Enrollment idempotency (#2764): uninstall intent stamped by the agent's
   // graceful-uninstall notify path (Task 5/6); reaper decommissions once past
   // grace with no re-enrollment heartbeat. possibleReplacementOfDeviceId links
