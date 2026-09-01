@@ -837,16 +837,42 @@ export async function runPostPassFixups(
   // the next proposal load, which is the recoverable state.
   //
   // Only 'org' rows are keyed by an organization id ('catalog_item' rows are
-  // partner-scoped and must survive). Phase C's 'invoice'/'payment' rows will
-  // need their own handling here.
+  // partner-scoped and must survive).
   const accountingMappingsDropped = await exec(sql`
     DELETE FROM accounting_entity_mappings
      WHERE breeze_entity_type = 'org'
        AND breeze_entity_id = ${uuid(loserOrgId)}`);
 
+  // Phase C's 'invoice'/'payment' rows need NO org-keyed drop here: invoices
+  // and invoice_payments are both plain entries in REPOINT_TABLES
+  // (orgMergeRegistry.ts), so the registry walk (which runs BEFORE this
+  // post-pass fixup — see executeOrgMerge) already repointed the loser's
+  // invoices/payments onto the survivor's org_id in place, same row id. The
+  // mapping's (breeze_entity_type, breeze_entity_id) pair is keyed on that
+  // unchanged id, so it stays valid without any action here.
+  //
+  // What this DOES need to guard is a mapping row that has gone orphaned —
+  // its invoice or payment deleted through some other path (not by this
+  // merge; nothing in the merge engine deletes invoices). A stale orphan
+  // would sit invisible in the UI forever, so sweep both entity types the
+  // same defensive way, scoped to nothing in particular since an orphan
+  // belongs to no org anymore either way.
+  const orphanInvoiceMappingsDropped = await exec(sql`
+    DELETE FROM accounting_entity_mappings m
+     WHERE m.breeze_entity_type = 'invoice'
+       AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.id = m.breeze_entity_id)`);
+  const orphanPaymentMappingsDropped = await exec(sql`
+    DELETE FROM accounting_entity_mappings m
+     WHERE m.breeze_entity_type = 'payment'
+       AND NOT EXISTS (SELECT 1 FROM invoice_payments p WHERE p.id = m.breeze_entity_id)`);
+
   return {
     moved: partnerUsersFixed + assignmentsMoved,
-    dropped: assignmentsDropped + accountingMappingsDropped,
+    dropped:
+      assignmentsDropped +
+      accountingMappingsDropped +
+      orphanInvoiceMappingsDropped +
+      orphanPaymentMappingsDropped,
   };
 }
 
