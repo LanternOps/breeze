@@ -41,6 +41,13 @@
  * Idempotent: re-running the same day matches zero rows because the
  * previous run already deleted everything older than the cutoff.
  *
+ * Scale (issue #4239): the prefix bound is an ordered early-stop
+ * (`ORDER BY chain_seq LIMIT 1`) rather than a `MIN()` over a full join,
+ * and the deletes run in bounded `LIMIT` batches (AUDIT_RETENTION_BATCH_SIZE
+ * / AUDIT_RETENTION_MAX_BATCHES), matching the sibling retention jobs. At
+ * 22M rows the previous shape planned as a per-policy Seq Scan of
+ * `audit_logs`, so each policy cost the same regardless of org size.
+ *
  * Schedule: daily at 03:30 UTC, half-hour offset from oauthCleanup
  * (03:00 UTC) so the two crons don't pile onto the same minute.
  *
@@ -68,6 +75,26 @@ const REPEAT_JOB_ID = 'audit-log-retention';
 // Daily at 03:30 UTC — off-peak and offset from oauthCleanup's 03:00.
 const DAILY_CRON = jobSchedule('audit-retention');
 
+function parsePositiveIntEnv(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (!raw) return defaultValue;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.warn(`[AuditRetention] Invalid ${name}="${raw}", using default ${defaultValue}`);
+    return defaultValue;
+  }
+  return parsed;
+}
+
+// Batched deletes (issue #4239). Same LIMIT-loop shape as the sibling retention
+// jobs (mlOutputRetention, deviceMetricsRetention, eventDispatchWorker): delete a
+// bounded slice, stop as soon as a batch comes back short of the limit.
+const BATCH_SIZE = parsePositiveIntEnv('AUDIT_RETENTION_BATCH_SIZE', 5000);
+// Per-org ceiling so one org with a large backlog cannot monopolise the nightly
+// pass. Stopping early is safe: the cap leaves a shorter chain PREFIX deleted
+// (see the ORDER BY note in deleteChainPrefix), and the next run advances it.
+const MAX_BATCHES = parsePositiveIntEnv('AUDIT_RETENTION_MAX_BATCHES', 200);
+
 function isRetentionEnabled(): boolean {
   const raw = process.env.AUDIT_RETENTION_ENABLED;
   if (raw === undefined || raw === '') return true; // default ON
@@ -87,15 +114,51 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 export interface RetentionStats {
   policies: number;
   orgsPruned: number;
+  /** Rows removed by the chain-prefix cut. */
   rowsDeleted: number;
+  /**
+   * Rows removed by the unsealed-row sweep. Reported separately rather than
+   * folded into `rowsDeleted` so the prefix-cut number keeps its existing
+   * meaning, while sweep deletions stop being invisible in the job result.
+   */
+  unsealedRowsDeleted: number;
+  /** DELETE statements issued across all policies (prefix cut + sweep). */
+  batches: number;
+  /** Orgs that hit the per-org batch ceiling and still have expired rows. */
+  orgsWithBacklog: number;
   errors: number;
   durationMs: number;
+}
+
+/** Per-run batch tuning; falsy/absent fields fall back to the env-configured defaults. */
+export interface RetentionJobData {
+  batchSize?: number;
+  maxBatches?: number;
 }
 
 interface PolicyRow {
   id: string;
   org_id: string;
   retention_days: number;
+}
+
+interface BatchLimits {
+  batchSize: number;
+  maxBatches: number;
+}
+
+interface BatchedDeleteResult {
+  rowsDeleted: number;
+  batches: number;
+  /** True when the ceiling stopped a loop that was still deleting full batches. */
+  hasMore: boolean;
+}
+
+interface PrunePolicyResult {
+  rowsDeleted: number;
+  unsealedRowsDeleted: number;
+  batches: number;
+  hasMore: boolean;
 }
 
 // Minimal shape of the postgres-js / drizzle handle we need. Both the
@@ -106,12 +169,48 @@ interface SqlExecutor {
 }
 
 /**
+ * Run one DELETE repeatedly until a batch comes back short of `batchSize` or the
+ * `maxBatches` ceiling is reached. Mirrors the sibling retention jobs' loop
+ * (`mlOutputRetention.pruneMetricAnomalies`, `deviceMetricsRetention`).
+ *
+ * `buildStatement` is a thunk because each iteration needs a fresh `sql`
+ * fragment — drizzle's tagged template objects are not safely re-executable.
+ */
+async function runBatchedDelete(
+  exec: SqlExecutor,
+  limits: BatchLimits,
+  buildStatement: () => ReturnType<typeof sql>,
+): Promise<BatchedDeleteResult> {
+  let rowsDeleted = 0;
+  let batches = 0;
+  let lastBatchDeleted = 0;
+
+  while (batches < limits.maxBatches) {
+    const result = await exec.execute(buildStatement());
+    lastBatchDeleted = extractRowCount(result);
+    rowsDeleted += lastBatchDeleted;
+    batches += 1;
+    if (lastBatchDeleted < limits.batchSize) break;
+  }
+
+  return {
+    rowsDeleted,
+    batches,
+    hasMore: batches >= limits.maxBatches && lastBatchDeleted >= limits.batchSize,
+  };
+}
+
+/**
  * The retention DELETE for a single org, parameterized over the executor so
  * it can run on either pool. Assumes the caller has already armed the
  * trigger-bypass GUC (`breeze.allow_audit_retention = '1'`) on the same
  * transaction/connection.
  */
-async function deleteChainPrefix(exec: SqlExecutor, policy: PolicyRow): Promise<number> {
+async function deleteChainPrefix(
+  exec: SqlExecutor,
+  policy: PolicyRow,
+  limits: BatchLimits,
+): Promise<PrunePolicyResult> {
   // Prefix-cut delete (issue #1002 redesign): chain_seq order is COMMIT order,
   // which can disagree with timestamp order around long transactions, so a raw
   // `timestamp < cutoff` delete could remove a mid-chain entry and leave a
@@ -126,41 +225,93 @@ async function deleteChainPrefix(exec: SqlExecutor, policy: PolicyRow): Promise<
   // audit_logs — at all. The FK ON DELETE CASCADE removes the pruned rows'
   // chain entries; their BEFORE DELETE trigger passes because both call paths
   // set breeze.allow_audit_retention='1' SET LOCAL before calling this.
-  const result = await exec.execute(sql`
-    DELETE FROM audit_logs
-    WHERE id IN (
-      SELECT c.audit_id
-      FROM audit_log_chain c
-      WHERE c.org_id = ${policy.org_id}
-        AND c.chain_seq < COALESCE(
-          (
-            SELECT MIN(c2.chain_seq)
-            FROM audit_log_chain c2
-            JOIN audit_logs a2 ON a2.id = c2.audit_id
-            WHERE c2.org_id = ${policy.org_id}
-              AND a2.timestamp >= (now() - (${policy.retention_days}::int * interval '1 day'))
-          ),
-          (
-            SELECT MAX(c3.chain_seq) + 1
-            FROM audit_log_chain c3
-            WHERE c3.org_id = ${policy.org_id}
-          )
+
+  // Step 1 — the prefix bound, hoisted out of the DELETE and rewritten as an
+  // ordered early-stop (issue #4239). The old form was
+  // `MIN(c2.chain_seq)` over the same filtered join. MIN has to consume the
+  // WHOLE join before it can answer, and because the arm never constrains
+  // `a2.org_id`, `audit_logs_org_timestamp_idx (org_id, timestamp DESC)` is
+  // unusable — at 22M rows the planner chose a Seq Scan of audit_logs hash
+  // joined to a Seq Scan of audit_log_chain, ~3.3 min and ~14.8 GiB of block
+  // reads for ONE org, repeated per policy.
+  //
+  // `ORDER BY c2.chain_seq LIMIT 1` returns the identical value (the smallest
+  // chain_seq in the same filtered set, or NULL) — it is a pure plan change,
+  // not a semantic one, and it does not depend on timestamps being monotonic in
+  // chain order. But it lets the planner walk audit_log_chain in ascending
+  // chain_seq order and PK-probe audit_logs per candidate, stopping at the FIRST
+  // young row: ~(deletable prefix + 1) rows instead of the whole table. Which
+  // index carries that walk is the planner's choice — measured at 270k rows it
+  // took audit_log_chain_pkey with an org_id filter; with many orgs a backward
+  // scan of audit_log_chain_org_seq_idx (org_id, chain_seq DESC) is the more
+  // selective option. Either way the shape is an ordered early stop, not a scan.
+  //
+  // chain_seq is bigserial (int8); round-trip it as text so neither the driver's
+  // int8 handling nor JS number precision can round a large sequence value.
+  const cutoffRows = (await exec.execute(sql`
+    SELECT COALESCE(
+      (
+        SELECT c2.chain_seq
+        FROM audit_log_chain c2
+        JOIN audit_logs a2 ON a2.id = c2.audit_id
+        WHERE c2.org_id = ${policy.org_id}
+          AND a2.timestamp >= (now() - (${policy.retention_days}::int * interval '1 day'))
+        ORDER BY c2.chain_seq
+        LIMIT 1
+      ),
+      (
+        SELECT MAX(c3.chain_seq) + 1
+        FROM audit_log_chain c3
+        WHERE c3.org_id = ${policy.org_id}
+      )
+    )::text AS cutoff_seq
+  `)) as unknown as Array<{ cutoff_seq: string | null }>;
+  // NULL only when the org has no chain entries at all — nothing to prefix-cut.
+  const cutoffSeq = cutoffRows[0]?.cutoff_seq ?? null;
+
+  // Step 2 — delete that prefix in bounded batches instead of one unbounded
+  // statement (issue #4239). `ORDER BY c.chain_seq` is load-bearing, not
+  // cosmetic: each batch must take the LOWEST remaining chain_seq values so
+  // that whatever has been deleted is always a contiguous prefix. Without it
+  // `LIMIT` would pick an arbitrary subset, and stopping at `maxBatches` would
+  // leave holes in the middle of the chain — exactly the permanent linkage
+  // break the prefix-cut design exists to prevent.
+  const prefix = cutoffSeq === null
+    ? { rowsDeleted: 0, batches: 0, hasMore: false }
+    : await runBatchedDelete(exec, limits, () => sql`
+        DELETE FROM audit_logs
+        WHERE id IN (
+          SELECT c.audit_id
+          FROM audit_log_chain c
+          WHERE c.org_id = ${policy.org_id}
+            AND c.chain_seq < ${cutoffSeq}::bigint
+          ORDER BY c.chain_seq
+          LIMIT ${limits.batchSize}
         )
+      `);
+
+  // Step 3 — sweep any UNSEALED old rows too (shouldn't exist post-backfill;
+  // keeps retention complete if one ever appears). The chain has no entry for
+  // them, so deleting them can't affect linkage and needs no ordering. Batched
+  // for the same reason as the prefix cut: this is the same 22M-row table.
+  const sweep = await runBatchedDelete(exec, limits, () => sql`
+    DELETE FROM audit_logs
+    WHERE ctid IN (
+      SELECT a.ctid
+      FROM audit_logs a
+      WHERE a.org_id = ${policy.org_id}
+        AND a.timestamp < (now() - (${policy.retention_days}::int * interval '1 day'))
+        AND NOT EXISTS (SELECT 1 FROM audit_log_chain c WHERE c.audit_id = a.id)
+      LIMIT ${limits.batchSize}
     )
   `);
-  const count = extractRowCount(result);
 
-  // Sweep any UNSEALED old rows too (shouldn't exist post-backfill; keeps
-  // retention complete if one ever appears). The chain has no entry for them,
-  // so deleting them can't affect linkage.
-  await exec.execute(sql`
-    DELETE FROM audit_logs a
-    WHERE a.org_id = ${policy.org_id}
-      AND a.timestamp < (now() - (${policy.retention_days}::int * interval '1 day'))
-      AND NOT EXISTS (SELECT 1 FROM audit_log_chain c WHERE c.audit_id = a.id)
-  `);
-
-  return count;
+  return {
+    rowsDeleted: prefix.rowsDeleted,
+    unsealedRowsDeleted: sweep.rowsDeleted,
+    batches: prefix.batches + sweep.batches,
+    hasMore: prefix.hasMore || sweep.hasMore,
+  };
 }
 
 /**
@@ -172,7 +323,7 @@ async function deleteChainPrefix(exec: SqlExecutor, policy: PolicyRow): Promise<
  *  - LEGACY path: run on the breeze_app pool via withSystemDbAccessContext,
  *    arming BOTH the SET LOCAL ROLE and the bypass GUC (pre-#915 behavior).
  */
-async function pruneOrg(policy: PolicyRow): Promise<number> {
+async function pruneOrg(policy: PolicyRow, limits: BatchLimits): Promise<PrunePolicyResult> {
   if (hasDedicatedAuditAdminPool()) {
     const adminDb = getAuditAdminDb();
     // Run inside a transaction so SET LOCAL is scoped to this prune. The
@@ -193,7 +344,7 @@ async function pruneOrg(policy: PolicyRow): Promise<number> {
       // Trigger bypass; the connection logs in AS breeze_audit_admin, which
       // already holds the DELETE privilege (no SET ROLE needed).
       await tx.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
-      return deleteChainPrefix(tx as unknown as SqlExecutor, policy);
+      return deleteChainPrefix(tx as unknown as SqlExecutor, policy, limits);
     });
   }
 
@@ -203,7 +354,7 @@ async function pruneOrg(policy: PolicyRow): Promise<number> {
     // transaction and revert on commit/rollback automatically.
     await dbModule.db.execute(sql`SET LOCAL ROLE breeze_audit_admin`);
     await dbModule.db.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
-    return deleteChainPrefix(dbModule.db as unknown as SqlExecutor, policy);
+    return deleteChainPrefix(dbModule.db as unknown as SqlExecutor, policy, limits);
   });
 }
 
@@ -214,12 +365,21 @@ async function pruneOrg(policy: PolicyRow): Promise<number> {
  * The worker processor below calls this and surfaces the stats in the
  * job return value.
  */
-export async function pruneExpiredAuditLogs(): Promise<RetentionStats> {
+export async function pruneExpiredAuditLogs(
+  options: RetentionJobData = {},
+): Promise<RetentionStats> {
   const startedAt = Date.now();
+  const limits: BatchLimits = {
+    batchSize: Math.max(1, options.batchSize ?? BATCH_SIZE),
+    maxBatches: Math.max(1, options.maxBatches ?? MAX_BATCHES),
+  };
   const stats: RetentionStats = {
     policies: 0,
     orgsPruned: 0,
     rowsDeleted: 0,
+    unsealedRowsDeleted: 0,
+    batches: 0,
+    orgsWithBacklog: 0,
     errors: 0,
     durationMs: 0,
   };
@@ -238,9 +398,12 @@ export async function pruneExpiredAuditLogs(): Promise<RetentionStats> {
 
   for (const policy of policies) {
     try {
-      const rowsDeleted = await pruneOrg(policy);
+      const pruned = await pruneOrg(policy, limits);
 
-      stats.rowsDeleted += rowsDeleted;
+      stats.rowsDeleted += pruned.rowsDeleted;
+      stats.unsealedRowsDeleted += pruned.unsealedRowsDeleted;
+      stats.batches += pruned.batches;
+      if (pruned.hasMore) stats.orgsWithBacklog += 1;
       stats.orgsPruned += 1;
 
       // Record last_cleanup_at in its own transaction (the DELETE tx
@@ -266,8 +429,16 @@ export async function pruneExpiredAuditLogs(): Promise<RetentionStats> {
 
   stats.durationMs = Date.now() - startedAt;
   console.log(
-    `[AuditRetention] Pruned ${stats.rowsDeleted} row(s) across ${stats.orgsPruned}/${stats.policies} polic(ies) in ${stats.durationMs}ms (errors=${stats.errors})`,
+    `[AuditRetention] Pruned ${stats.rowsDeleted} row(s) (+${stats.unsealedRowsDeleted} unsealed) across ${stats.orgsPruned}/${stats.policies} polic(ies) in ${stats.batches} batch(es) of ${limits.batchSize} in ${stats.durationMs}ms (errors=${stats.errors}, backlogged=${stats.orgsWithBacklog})`,
   );
+  if (stats.orgsWithBacklog > 0) {
+    // Not an error: the ceiling did its job. Say so loudly anyway, because the
+    // only other signal that a backlog is draining across nights is watching
+    // rowsDeleted stay pinned at maxBatches * batchSize.
+    console.warn(
+      `[AuditRetention] ${stats.orgsWithBacklog} org(s) hit the ${limits.maxBatches}-batch ceiling and still have expired rows; the next run continues the prefix.`,
+    );
+  }
   return stats;
 }
 
@@ -283,15 +454,20 @@ export function getAuditRetentionQueue(): Queue {
   return retentionQueue;
 }
 
-export function createAuditRetentionWorker(): Worker {
-  return new Worker(
+export function createAuditRetentionWorker(): Worker<RetentionJobData> {
+  return new Worker<RetentionJobData>(
     QUEUE_NAME,
-    async (job: Job) => {
+    async (job: Job<RetentionJobData>) => {
       if (job.name !== JOB_NAME) {
         console.warn(`[AuditRetention] Ignoring unknown job name: ${job.name}`);
         return { skipped: true, rowsDeleted: 0 };
       }
-      return pruneExpiredAuditLogs();
+      // Batch overrides come off the job payload so an operator draining a
+      // backlog by hand can widen the ceiling for one run without a redeploy.
+      return pruneExpiredAuditLogs({
+        batchSize: job.data?.batchSize,
+        maxBatches: job.data?.maxBatches,
+      });
     },
     {
       connection: getBullMQConnection(),
@@ -383,5 +559,8 @@ export const __testOnly = {
   JOB_NAME,
   REPEAT_JOB_ID,
   DAILY_CRON,
+  BATCH_SIZE,
+  MAX_BATCHES,
   isRetentionEnabled,
+  parsePositiveIntEnv,
 };
