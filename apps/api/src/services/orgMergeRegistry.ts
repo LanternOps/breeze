@@ -240,6 +240,20 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   partner_export_device_material_state: { kind: 'derived', note: 'org_id moves via the (device_id, org_id) -> devices(id, org_id) ON UPDATE CASCADE FK, not trigger regeneration' },
   partner_export_site_material_state: { kind: 'derived', note: 'org_id moves via the (site_id, org_id) -> sites(id, org_id) ON UPDATE CASCADE FK, not trigger regeneration' },
 
+  // Track B durable evidence (fix round 1 of Task 3, S0 Track B port,
+  // 2026-08-31): the same physical shape as partner_export_device_material_state
+  // above — org_id moves via the (device_id, org_id) -> devices(id, org_id)
+  // ON UPDATE CASCADE FK, not a direct UPDATE. Originally misclassified
+  // `repoint`: the contract test connects as the schema owner, so it never
+  // caught that `breeze_app` has UPDATE (and TRUNCATE) REVOKEd on both
+  // tables in their own append-only-evidence migrations
+  // (2026-09-28-100000-agent-health-observations.sql,
+  // 2026-09-28-100002-software-inventory-observations.sql) — `repoint`'s
+  // unconditional `UPDATE ... SET org_id` as breeze_app would have raised
+  // 42501 mid-merge, after the loser org was already fenced.
+  agent_health_observations: { kind: 'derived', note: 'org_id moves via the (device_id, org_id) -> devices(id, org_id) ON UPDATE CASCADE FK; UPDATE is revoked from breeze_app (append-only evidence)' },
+  software_inventory_observations: { kind: 'derived', note: 'org_id moves via the (device_id, org_id) -> devices(id, org_id) ON UPDATE CASCADE FK; UPDATE is revoked from breeze_app (append-only evidence)' },
+
   // No org_id column — tenancy via parent rows, which we re-point:
   ...buildFollowsParentEntries(),
 
@@ -390,7 +404,6 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
 const REPOINT_TABLES: readonly string[] = [
   "access_reviews",
   "account_deletion_requests",
-  "agent_health_observations",
   "agent_logs",
   "agent_rollback_directives",
   "agent_rollback_events",
@@ -603,7 +616,6 @@ const REPOINT_TABLES: readonly string[] = [
   "software_catalog",
   "software_deployments", // has its own org_id; see the note in SPECIAL for why this isn't follows-parent
   "software_inventory",
-  "software_inventory_observations",
   "software_policies",
   "software_policy_audit",
   "software_remediation_requests",

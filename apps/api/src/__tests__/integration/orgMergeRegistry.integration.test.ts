@@ -550,6 +550,49 @@ describe('Org merge policy registry contract', () => {
     ).toEqual([]);
   });
 
+  /**
+   * A `repoint`/`repoint-dedupe` policy issues a direct
+   * `UPDATE <table> SET org_id = survivor WHERE org_id = loser` as
+   * `breeze_app` (buildRepoint / buildRepointDedupe, orgMergeExecutors.ts).
+   * If `breeze_app` doesn't hold UPDATE on that table, the statement raises
+   * 42501 the instant it runs — even against zero matching rows — aborting
+   * the merge after the loser org has already been fenced off. Nothing else
+   * in this suite catches that: this file connects as the schema owner (not
+   * `breeze_app`), and the repoint-dedupe smoke test below runs inside a
+   * rolled-back transaction against throwaway, non-existent org ids, so a
+   * REVOKEd UPDATE never actually fires there either — it would only raise
+   * against a table the loser org actually owns rows in, in a real merge.
+   *
+   * `agent_health_observations` and `software_inventory_observations` both
+   * had `UPDATE, TRUNCATE` REVOKEd from `breeze_app` in their own append-
+   * only-evidence migrations (2026-09-28-100000, 2026-09-28-100002) while
+   * their org_id still moves — via the
+   * `(device_id, org_id) -> devices(id, org_id) ON UPDATE CASCADE` FK. That
+   * is the exact mechanism `partner_export_device_material_state` uses,
+   * which is why THAT table is `derived` rather than `repoint`. This
+   * assertion is what would have caught the same misclassification here
+   * before commit.
+   */
+  it('every repoint / repoint-dedupe table grants breeze_app UPDATE', async () => {
+    const mutating = [...policies]
+      .filter(([, p]) => p.kind === 'repoint' || p.kind === 'repoint-dedupe')
+      .map(([table]) => table);
+    expect(mutating.length).toBeGreaterThan(0);
+
+    const revoked: string[] = [];
+    for (const table of mutating) {
+      const [row] = (await db.execute(sql`
+        SELECT has_table_privilege('breeze_app', ${table}, 'UPDATE') AS can_update
+      `)) as unknown as Array<{ can_update: boolean }>;
+      if (!row?.can_update) revoked.push(table);
+    }
+
+    expect(
+      revoked,
+      `these tables are classified 'repoint'/'repoint-dedupe' (a direct UPDATE ... SET org_id as breeze_app) but breeze_app has UPDATE revoked on them — the statement raises 42501 mid-merge, after the loser org is already fenced. Reclassify 'derived' if org_id instead moves via an ON UPDATE CASCADE FK from a repointed parent (see partner_export_device_material_state), or 'leave-for-erasure' if it never moves at all: ${revoked.join(', ')}`,
+    ).toEqual([]);
+  });
+
   it('every conditionally-blocking trigger is discharged by a live blocks-merge policy', () => {
     for (const [key, cfg] of Object.entries(ORG_ID_CONDITIONALLY_BLOCKING_TRIGGERS)) {
       expect(policies.get(cfg.dischargedBy)?.kind, `${key} dischargedBy ${cfg.dischargedBy}`).toBe(cfg.requiredPolicyKind);
