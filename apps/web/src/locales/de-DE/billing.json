@@ -695,7 +695,8 @@
         "updateSection": "Der Abschnitt konnte nicht aktualisiert werden.",
         "uploadImage": "Das Bild konnte nicht hochgeladen werden.",
         "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position.",
-        "sectionAddedListStale": "Abschnitt hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um ihn zu sehen."
+        "sectionAddedListStale": "Abschnitt hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um ihn zu sehen.",
+        "lineAddedListStale": "Position hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um sie zu sehen."
       },
       "image": {
         "alt": "Angebotsbild",

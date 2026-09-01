@@ -695,7 +695,8 @@
         "updateSection": "No se pudo actualizar la sección.",
         "uploadImage": "No se pudo cargar la imagen.",
         "noPriceForCurrency": "Este elemento no tiene precio en {{currency}}. Agregue uno en el catálogo o ingrese una línea manual.",
-        "sectionAddedListStale": "Se agregó la sección, pero no se pudo actualizar la lista. Vuelve a cargar la página para verla."
+        "sectionAddedListStale": "Se agregó la sección, pero no se pudo actualizar la lista. Vuelve a cargar la página para verla.",
+        "lineAddedListStale": "Se agregó la línea, pero no se pudo actualizar la lista. Vuelve a cargar la página para verla."
       },
       "image": {
         "alt": "Imagen de cotización",

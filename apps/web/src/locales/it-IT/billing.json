@@ -675,7 +675,8 @@
         "updateSection": "Impossibile aggiornare la sezione.",
         "uploadImage": "Impossibile caricare l'immagine.",
         "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o inserisci una riga manuale.",
-        "sectionAddedListStale": "Sezione aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla."
+        "sectionAddedListStale": "Sezione aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla.",
+        "lineAddedListStale": "Riga aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla."
       },
       "image": {
         "alt": "Immagine del preventivo",
