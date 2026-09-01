@@ -40,6 +40,7 @@ import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 // websocket path accepted roughly 3x the intended budget for CJK-heavy output
 // while the REST path rejected at 1 MB. The byte-accurate one wins.
 import { commandResultSchema } from '../routes/agents/schemas';
+import { applyAutomationActionTerminal } from './automationActionResults';
 import { handlePeripheralPolicyResultV2 } from './peripheralPolicyState';
 import {
   pamAgentResultV2Schema,
@@ -387,6 +388,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
           id: scriptExecutions.id,
           scriptId: scriptExecutions.scriptId,
         });
+      let effectiveExecution = updatedExecutions[0] ?? null;
 
       // #3607 — second chance for an execution a server-side sweep already
       // stamped terminal.
@@ -436,6 +438,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
           });
 
         if (recovered.length > 0) {
+          effectiveExecution = recovered[0] ?? null;
           console.warn(
             `[AgentWs] #3607 recovered late script result onto swept execution ${executionId} (command ${command.id})`
           );
@@ -484,6 +487,17 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             });
           }
         }
+      }
+
+      if (effectiveExecution) {
+        await applyAutomationActionTerminal({
+          source: 'script_execution',
+          scriptExecutionId: effectiveExecution.id,
+          terminalStatus: scriptStatus === 'completed' ? 'succeeded' : 'failed',
+          output: executionValues.stdout,
+          error: executionValues.errorMessage ?? executionValues.stderr,
+          completedAt: executionValues.completedAt,
+        });
       }
 
       // Update batch counters if this is part of a batch. `updatedExecutions`

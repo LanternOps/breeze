@@ -10,6 +10,8 @@ import HelpTooltip from '../shared/HelpTooltip';
 import type { AlertSeverity } from './AlertList';
 import type { DeploymentTargetConfig } from '@breeze/shared';
 import { DeviceTargetSelector } from '../filters/DeviceTargetSelector';
+import { useDeviceOptions } from '../../hooks/useDeviceOptions';
+import { DeviceOptionPicker } from '../filters/DeviceOptionPicker';
 
 const METRIC_OPTION_VALUES: readonly string[] = ['cpu', 'ram', 'disk', 'network'];
 const OPERATOR_OPTION_VALUES: readonly string[] = ['gt', 'lt', 'gte', 'lte', 'eq', 'neq'];
@@ -134,6 +136,7 @@ type AlertRuleFormProps = {
   sites?: Site[];
   groups?: Group[];
   devices?: Device[];
+  deviceOrgId?: string;
   notificationChannels?: NotificationChannel[];
 };
 
@@ -166,7 +169,7 @@ export default function AlertRuleForm({
   loading,
   sites = [],
   groups = [],
-  devices = [],
+  deviceOrgId,
   notificationChannels = []
 }: AlertRuleFormProps) {
   const { t } = useTranslation('alerts');
@@ -201,8 +204,17 @@ export default function AlertRuleForm({
   const watchTargetType = watch('targetType');
   const watchConditions = watch('conditions');
   const watchChannelIds = watch('notificationChannelIds');
+  const watchTargetIds = watch('targetIds') ?? [];
   const [targetViewMode, setTargetViewMode] = useState<'simple' | 'advanced'>('simple');
   const [advancedTargetConfig, setAdvancedTargetConfig] = useState<DeploymentTargetConfig>({ type: 'all' });
+  const [deviceSearch, setDeviceSearch] = useState('');
+  const [advancedTargetsCanSubmit, setAdvancedTargetsCanSubmit] = useState(true);
+  const deviceOptions = useDeviceOptions({
+    search: deviceSearch,
+    orgId: deviceOrgId,
+    includeIds: watchTargetIds,
+    enabled: targetViewMode === 'simple' && watchTargetType === 'device',
+  });
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
 
@@ -212,12 +224,10 @@ export default function AlertRuleForm({
         return sites;
       case 'group':
         return groups;
-      case 'device':
-        return devices;
       default:
         return [];
     }
-  }, [watchTargetType, sites, groups, devices]);
+  }, [watchTargetType, sites, groups]);
 
   const handleTargetToggle = (id: string) => {
     const current = watch('targetIds') || [];
@@ -365,7 +375,17 @@ export default function AlertRuleForm({
               </select>
             </div>
 
-            {watchTargetType !== 'all' && targetOptions.length > 0 && (
+            {watchTargetType === 'device' && (
+              <DeviceOptionPicker
+                result={deviceOptions}
+                selectedIds={watchTargetIds}
+                onSelectedIdsChange={(ids) => setValue('targetIds', ids)}
+                search={deviceSearch}
+                onSearchChange={setDeviceSearch}
+              />
+            )}
+
+            {watchTargetType !== 'all' && watchTargetType !== 'device' && targetOptions.length > 0 && (
               <div className="space-y-2">
                 <label className="text-sm font-medium">
                   {t('alertRuleForm.selectTargetType', { target: t(/* i18n-dynamic */ `alertRuleForm.targetPlural.${watchTargetType}`) })}
@@ -389,7 +409,7 @@ export default function AlertRuleForm({
               </div>
             )}
 
-            {watchTargetType !== 'all' && targetOptions.length === 0 && (
+            {watchTargetType !== 'all' && watchTargetType !== 'device' && targetOptions.length === 0 && (
               <p className="text-sm text-muted-foreground">
                 {t('alertRuleForm.noTargetsAvailable', { target: t(/* i18n-dynamic */ `alertRuleForm.targetPluralLower.${watchTargetType}`) })}
               </p>
@@ -415,8 +435,9 @@ export default function AlertRuleForm({
             modes={['all', 'manual', 'groups', 'filter']}
             sites={sites}
             groups={groups.map(g => ({ ...g, deviceCount: undefined }))}
-            devices={devices.map(d => ({ id: d.id, hostname: d.name }))}
             showPreview={true}
+            orgId={deviceOrgId}
+            onCanSubmitChange={setAdvancedTargetsCanSubmit}
           />
         )}
       </div>
@@ -724,7 +745,7 @@ export default function AlertRuleForm({
         </button>
         <button
           type="submit"
-          disabled={isLoading}
+          disabled={isLoading || (targetViewMode === 'simple' && watchTargetType === 'device' && !deviceOptions.canSubmit) || (targetViewMode === 'advanced' && !advancedTargetsCanSubmit)}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
         >
           {isLoading ? t('common:states.saving') : (submitLabel ?? t('alertRuleForm.saveRule'))}

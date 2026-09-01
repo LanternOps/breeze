@@ -99,7 +99,7 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
       if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
       }
-      if (url === '/devices' && method === 'GET') {
+      if (url.startsWith('/devices/options?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
       if (url === `/alerts/${ALERT_ID}/acknowledge` && method === 'POST') {
@@ -144,7 +144,7 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
       if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
       }
-      if (url === '/devices' && method === 'GET') {
+      if (url.startsWith('/devices/options?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
       if (url === `/alerts/${ALERT_ID}` && method === 'GET') {
@@ -193,7 +193,7 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
       if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
       }
-      if (url === '/devices' && method === 'GET') {
+      if (url.startsWith('/devices/options?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
       if (url === `/alerts/${ALERT_ID}` && method === 'GET') {
@@ -239,7 +239,7 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
       if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
       }
-      if (url === '/devices' && method === 'GET') {
+      if (url.startsWith('/devices/options?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
       if (url === `/alerts/${ALERT_ID}/acknowledge` && method === 'POST') {
@@ -277,7 +277,7 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
           }]
         }));
       }
-      if (url === '/devices' && method === 'GET') {
+      if (url.startsWith('/devices/options?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
       return Promise.resolve(makeJsonResponse({ error: 'unexpected' }, false, 404));
@@ -309,7 +309,7 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
           }]
         }));
       }
-      if (url === '/devices' && method === 'GET') {
+      if (url.startsWith('/devices/options?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
@@ -345,7 +345,7 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
           }]
         }));
       }
-      if (url === '/devices' && method === 'GET') {
+      if (url.startsWith('/devices/options?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
       if (url === `/alerts/${ALERT_ID}` && method === 'GET') {
@@ -392,8 +392,8 @@ describe('AlertsPage — empty state distinguishes no-devices from a healthy fle
       if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
-      if (url === '/devices' && method === 'GET') {
-        return Promise.resolve(makeJsonResponse({ data: devices }));
+      if (url.startsWith('/devices/options?') && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: devices, page: { nextCursor: null, returned: devices.length, total: devices.length, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' } }));
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
     });
@@ -426,7 +426,7 @@ describe('AlertsPage — empty state distinguishes no-devices from a healthy fle
       if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
-      if (url === '/devices' && method === 'GET') {
+      if (url.startsWith('/devices/options?') && method === 'GET') {
         return devicesDeferred.promise; // stays pending
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
@@ -443,7 +443,7 @@ describe('AlertsPage — empty state distinguishes no-devices from a healthy fle
     expect(screen.queryByText('No active alerts. Your fleet is healthy.')).not.toBeInTheDocument();
 
     // Devices come back empty -> now the enrollment prompt is correct.
-    devicesDeferred.resolve(makeJsonResponse({ data: [] }));
+    devicesDeferred.resolve(makeJsonResponse({ data: [], page: { nextCursor: null, returned: 0, total: 0, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' } }));
     expect(await screen.findByText('No devices reporting yet')).toBeInTheDocument();
   });
 
@@ -454,7 +454,7 @@ describe('AlertsPage — empty state distinguishes no-devices from a healthy fle
       if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
-      if (url === '/devices' && method === 'GET') {
+      if (url.startsWith('/devices/options?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ error: 'boom' }, false, 500));
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
@@ -482,11 +482,11 @@ describe('AlertsPage — empty state distinguishes no-devices from a healthy fle
       if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
-      if (url === '/devices' && method === 'GET') {
+      if (url.startsWith('/devices/options?') && method === 'GET') {
         devicesCall += 1;
         if (devicesCall === 1) return staleA1.promise;                              // A1: slow, resolves last
-        if (devicesCall === 2) return Promise.resolve(makeJsonResponse({ data: [] })); // B: empty
-        return Promise.resolve(makeJsonResponse({ data: [{ id: 'a-1', hostname: 'A-SRV' }] })); // A2: has a device
+        if (devicesCall === 2) return Promise.resolve(makeJsonResponse({ data: [], page: { nextCursor: null, returned: 0, total: 0, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' } })); // B: empty
+        return Promise.resolve(makeJsonResponse({ data: [{ id: 'a-1', hostname: 'A-SRV', displayName: null, osType: 'windows', status: 'online', siteId: null, siteName: null }], page: { nextCursor: null, returned: 1, total: 1, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' } })); // A2: has a device
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
     });
@@ -529,7 +529,7 @@ describe('AlertsPage — suppress duration picker', () => {
       if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
       }
-      if (url === '/devices' && method === 'GET') {
+      if (url.startsWith('/devices/options?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
       if (url === `/alerts/${ALERT_ID}/suppress` && method === 'POST') {
@@ -623,7 +623,7 @@ describe('AlertsPage — suppress duration picker', () => {
       if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [resolvedAlert] }));
       }
-      if (url === '/devices' && method === 'GET') {
+      if (url.startsWith('/devices/options?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
       return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
@@ -650,7 +650,7 @@ describe('AlertsPage — bulk suppress', () => {
       if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
       }
-      if (url === '/devices' && method === 'GET') {
+      if (url.startsWith('/devices/options?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
       if (url === '/alerts/bulk' && method === 'POST') {
@@ -732,7 +732,7 @@ describe('AlertsPage — bulk suppress', () => {
       if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
       }
-      if (url === '/devices' && method === 'GET') {
+      if (url.startsWith('/devices/options?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
       if (url === '/alerts/bulk' && method === 'POST') {
@@ -773,7 +773,7 @@ describe('AlertsPage — dismiss', () => {
       if (url.startsWith('/alerts?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: rows }));
       }
-      if (url === '/devices' && method === 'GET') {
+      if (url.startsWith('/devices/options?') && method === 'GET') {
         return Promise.resolve(makeJsonResponse({ data: [] }));
       }
       if (url === '/alerts/bulk' && method === 'POST') {

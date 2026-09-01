@@ -240,6 +240,20 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   partner_export_device_material_state: { kind: 'derived', note: 'org_id moves via the (device_id, org_id) -> devices(id, org_id) ON UPDATE CASCADE FK, not trigger regeneration' },
   partner_export_site_material_state: { kind: 'derived', note: 'org_id moves via the (site_id, org_id) -> sites(id, org_id) ON UPDATE CASCADE FK, not trigger regeneration' },
 
+  // Track B durable evidence (fix round 1 of Task 3, S0 Track B port,
+  // 2026-08-31): the same physical shape as partner_export_device_material_state
+  // above — org_id moves via the (device_id, org_id) -> devices(id, org_id)
+  // ON UPDATE CASCADE FK, not a direct UPDATE. Originally misclassified
+  // `repoint`: the contract test connects as the schema owner, so it never
+  // caught that `breeze_app` has UPDATE (and TRUNCATE) REVOKEd on both
+  // tables in their own append-only-evidence migrations
+  // (2026-09-28-100000-agent-health-observations.sql,
+  // 2026-09-28-100002-software-inventory-observations.sql) — `repoint`'s
+  // unconditional `UPDATE ... SET org_id` as breeze_app would have raised
+  // 42501 mid-merge, after the loser org was already fenced.
+  agent_health_observations: { kind: 'derived', note: 'org_id moves via the (device_id, org_id) -> devices(id, org_id) ON UPDATE CASCADE FK; UPDATE is revoked from breeze_app (append-only evidence)' },
+  software_inventory_observations: { kind: 'derived', note: 'org_id moves via the (device_id, org_id) -> devices(id, org_id) ON UPDATE CASCADE FK; UPDATE is revoked from breeze_app (append-only evidence)' },
+
   // No org_id column — tenancy via parent rows, which we re-point:
   ...buildFollowsParentEntries(),
 
@@ -406,6 +420,7 @@ const REPOINT_TABLES: readonly string[] = [
   "audit_baseline_results",
   "audit_policy_states",
   "audit_retention_policies",
+  "automation_action_results",
   "automation_policies",
   "automation_run_device_results",
   "automations",
@@ -447,6 +462,7 @@ const REPOINT_TABLES: readonly string[] = [
   "customer_email_domains",
   "deployment_invites",
   "deployments",
+  "device_agent_health_latest",
   "device_boot_metrics",
   "device_change_log",
   "device_config_state",
@@ -470,6 +486,7 @@ const REPOINT_TABLES: readonly string[] = [
   "device_reliability",
   "device_reliability_history",
   "device_sessions",
+  "device_software_inventory_state",
   "device_vulnerabilities",
   "device_warranty",
   "devices",

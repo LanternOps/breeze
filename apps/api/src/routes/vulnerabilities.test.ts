@@ -177,6 +177,39 @@ describe('vulnerability accept-risk / reopen RBAC', () => {
     expect(res.status).toBe(404);
   });
 
+  it('clears resolving observation lineage when reopening a finding', async () => {
+    granted.add('vulnerabilities:accept_risk');
+    const set = vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }));
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn(() => Promise.resolve([{
+              id: ID,
+              orgId: 'org-1',
+              deviceId: 'device-1',
+              status: 'patched',
+            }])),
+          })),
+        })),
+      } as never)
+      .mockReturnValueOnce({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([{ siteId: 'site-1' }])) })),
+        })),
+      } as never);
+    vi.mocked(db.update).mockReturnValueOnce({ set } as never);
+
+    const res = await post(`/${ID}/reopen`, {});
+
+    expect(res.status).toBe(200);
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'open',
+      resolvedAt: null,
+      resolvedObservationId: null,
+    }));
+  });
+
   it('keeps mitigate on devices:write (passes the gate, 404 on empty db)', async () => {
     granted.add('devices:write');
     const res = await post(`/${ID}/mitigate`, { note: 'compensating control' });

@@ -157,6 +157,8 @@ vi.mock('../db/schema', () => ({
   sites: { id: 'id', orgId: 'orgId' },
   organizations: { id: 'id' },
   enrollmentKeys: { id: 'id', key: 'key', orgId: 'orgId' },
+  deviceStatusEnum: { enumValues: ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating', 'pending'] },
+  osTypeEnum: { enumValues: ['windows', 'macos', 'linux'] },
   discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] },
   patchPolicies: {},
   alertRules: {},

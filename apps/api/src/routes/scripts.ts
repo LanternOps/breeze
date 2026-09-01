@@ -44,6 +44,7 @@ import {
 import { scriptBundleRoutes } from './scriptBundle';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
+import { applyAutomationActionTerminal } from '../services/automationActionResults';
 export const scriptRoutes = new Hono();
 
 // Helper functions
@@ -998,74 +999,33 @@ scriptRoutes.post(
     });
 
     if (!result.ok) {
-      return c.json({
-        error: result.error,
-        maintenanceSuppressedDeviceIds: result.maintenanceSuppressedDeviceIds,
-      }, result.status);
+      return c.json({ error: result.error }, result.status);
     }
 
-    // Every target device failed to dispatch (#3409 PR2's per-device failure
-    // channel — e.g. an unresolved or secret {{var.*}} token). The service
-    // still reports ok:true because the request itself was valid, but nothing
-    // was queued, so returning 201 {status:'queued', executions:[]} would show
-    // the caller a success toast for a run that dispatched to no one. Returned
-    // before the audit, matching the maintenance-suppressed path above: an
-    // error return does not write a `script.execute` success record.
-    if (result.executions.length === 0 && result.failures.length > 0) {
-      return c.json({
-        error: `Script could not be dispatched to any target device: ${result.failures[0]!.error}`,
-        failures: result.failures,
-      }, 422);
+    if (result.admission.targets.some((target) => target.admission === 'admitted')) {
+      const batchIds = [...new Set(
+        result.admission.targets.flatMap((target) => target.batchId ? [target.batchId] : []),
+      )];
+      writeRouteAudit(c, {
+        orgId: result.auditOrgId,
+        action: 'script.execute',
+        resourceType: 'script',
+        resourceId: result.script.id,
+        resourceName: result.script.name,
+        details: {
+          requestId: result.admission.requestId,
+          admissionStatus: result.admission.status,
+          targets: result.admission.targets,
+          batchIds,
+          triggerType: result.triggerType,
+          runAs: result.runAs,
+          // Keys only. Caller-supplied values must never enter the audit row.
+          ignoredParameterKeys: result.ignoredParameters,
+        }
+      });
     }
 
-    writeRouteAudit(c, {
-      orgId: result.auditOrgId,
-      action: 'script.execute',
-      resourceType: 'script',
-      resourceId: result.script.id,
-      resourceName: result.script.name,
-      details: {
-        batchId: result.batchId,
-        batchIds: result.batchIds,
-        devicesTargeted: result.devicesTargeted,
-        maintenanceSuppressedDeviceIds: result.maintenanceSuppressedDeviceIds,
-        triggerType: result.triggerType,
-        runAs: result.runAs,
-        // #3409 PR3 §2.2 — bound parameters the caller supplied a value for.
-        // The binding won and the supplied value was dropped, so the audit
-        // trail must record that the run did NOT use what the caller sent.
-        // KEYS ONLY, never values: a caller can send anything under a bound
-        // key (including the secret they thought they were overriding), and
-        // audit details are long-lived and widely readable.
-        //
-        // A distinct, self-describing field rather than folding these into an
-        // existing one: audit `details` is an untyped jsonb bag shared across
-        // every action in this repo, and overloading a generic key there has
-        // already produced one cross-meaning collision (`deviceId`).
-        ignoredParameterKeys: result.ignoredParameters,
-      }
-    });
-
-    return c.json({
-      batchId: result.batchId,
-      batchIds: result.batchIds,
-      scriptId,
-      devicesTargeted: result.devicesTargeted,
-      maintenanceSuppressedDeviceIds: result.maintenanceSuppressedDeviceIds.length > 0
-        ? result.maintenanceSuppressedDeviceIds
-        : undefined,
-      executions: result.executions,
-      // Partial failure: some devices dispatched, others didn't (the
-      // all-failed case returned 422 above). Omitted when empty so the
-      // common clean-run response shape is unchanged.
-      failures: result.failures.length > 0 ? result.failures : undefined,
-      // Bound parameter keys whose caller-supplied value was ignored (#3409
-      // PR3 §2.2) — the binding is authoritative. Omitted when empty, exactly
-      // like `failures` above, so the common clean-run response shape is
-      // unchanged and a client can treat presence alone as "warn the user".
-      ignoredParameters: result.ignoredParameters.length > 0 ? result.ignoredParameters : undefined,
-      status: result.status,
-    }, 201);
+    return c.json(result.admission, 201);
   }
 );
 
@@ -1267,12 +1227,23 @@ scriptRoutes.post(
         completedAt: new Date(),
         errorMessage: `Cancelled by user ${auth.user.email}`
       })
-      .where(eq(scriptExecutions.id, executionId))
+      .where(and(
+        eq(scriptExecutions.id, executionId),
+        inArray(scriptExecutions.status, ['pending', 'queued', 'running']),
+      ))
       .returning();
 
     if (!updated) {
-      return c.json({ error: 'Failed to cancel execution' }, 500);
+      return c.json({ error: 'Execution is no longer cancellable' }, 409);
     }
+
+    await applyAutomationActionTerminal({
+      source: 'cancellation',
+      scriptExecutionId: updated.id,
+      terminalStatus: 'cancelled',
+      error: updated.errorMessage ?? null,
+      completedAt: updated.completedAt ?? new Date(),
+    });
 
     // Also cancel any pending device commands for this execution
     await db

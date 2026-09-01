@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
+import { softwareInventoryReportSchema } from '@breeze/shared';
 
 // ============================================
 // Enrollment
@@ -116,6 +117,36 @@ const ipEntrySchema = z.object({
 // and negatives fail .min(0), so bad input is caught either way.
 const uint64Counter = z.number().min(0).refine(Number.isInteger, 'expected integer');
 
+const agentHealthStateSchema = z.enum(['healthy', 'warning', 'error', 'unknown']);
+const agentHealthComponentSchema = z.object({
+  state: agentHealthStateSchema,
+  reason: z.string().max(512).optional(),
+}).strict();
+const agentHealthComponentsSchema = z.record(
+  z.string().min(1).max(100),
+  agentHealthComponentSchema,
+).superRefine((components, ctx) => {
+  if (Object.keys(components).length > 100) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.too_big,
+      maximum: 100,
+      inclusive: true,
+      origin: 'object',
+      message: 'Too many health components',
+    });
+  }
+});
+
+const agentHealthObservationWireV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  deviceId: z.string().uuid().optional(),
+  agentVersion: z.string().min(1).max(64),
+  overall: agentHealthStateSchema,
+  metricsAvailable: z.boolean().nullable(),
+  components: agentHealthComponentsSchema,
+  observedAt: z.string().datetime({ offset: true }),
+}).strict();
+
 export const heartbeatSchema = z.object({
   metrics: z.object({
     cpuPercent: z.number(),
@@ -149,6 +180,10 @@ export const heartbeatSchema = z.object({
     processCount: z.number().int().optional().catch(undefined)
   }).optional(),
   metricsAvailable: z.boolean().optional().catch(undefined),
+  // Self-health is independent from reachability. Old maps, malformed values,
+  // and future schema versions are dropped locally so they can never reject
+  // an otherwise valid heartbeat.
+  healthStatus: agentHealthObservationWireV1Schema.optional().catch(undefined),
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
   helperVersion: z.string().max(20).optional().catch(undefined),
@@ -614,18 +649,7 @@ export const updateHardwareSchema = z.object({
   gpuModel: z.string().optional()
 });
 
-export const updateSoftwareSchema = z.object({
-  software: z.array(z.object({
-    name: z.string().min(1),
-    version: z.string().optional(),
-    vendor: z.string().optional(),
-    installDate: z.string().optional(),
-    installLocation: z.string().optional(),
-    uninstallString: z.string().optional(),
-    fileHash: z.string().max(128).optional(),
-    hashAlgorithm: z.string().max(10).optional(),
-  })).max(10000)
-});
+export const updateSoftwareSchema = softwareInventoryReportSchema;
 
 export const updateDisksSchema = z.object({
   disks: z.array(z.object({

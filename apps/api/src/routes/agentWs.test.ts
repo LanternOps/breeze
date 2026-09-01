@@ -9,6 +9,9 @@ process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: 'current-key-mate
 import { and, eq, notInArray } from 'drizzle-orm';
 
 const updateRestoreJobFromResultMock = vi.fn().mockResolvedValue(true);
+const applyCommandAutomationTerminalMock = vi.fn().mockResolvedValue(true);
+const applyAutomationActionTerminalMock = vi.fn().mockResolvedValue(true);
+
 const { recordPamActuationResultMock } = vi.hoisted(() => ({
   recordPamActuationResultMock: vi.fn(),
 }));
@@ -234,6 +237,16 @@ vi.mock('./backup/verificationService', () => ({
 vi.mock('../services/restoreResultPersistence', () => ({
   updateRestoreJobByCommandId: vi.fn(),
   updateRestoreJobFromResult: vi.fn((...args: unknown[]) => updateRestoreJobFromResultMock(...(args as []))),
+}));
+
+vi.mock('../services/automationTerminalEvidence', () => ({
+  applyCommandAutomationTerminal: (...args: unknown[]) =>
+    applyCommandAutomationTerminalMock(...(args as [])),
+}));
+
+vi.mock('../services/automationActionResults', () => ({
+  applyAutomationActionTerminal: (...args: unknown[]) =>
+    applyAutomationActionTerminalMock(...(args as [])),
 }));
 
 // sw-install orphan branch: keep the real SW_INSTALL_COMMAND_ID_REGEX (shared
@@ -1476,6 +1489,10 @@ describe('agent websocket command results', () => {
     expect(commandId).toBe('66666666-6666-4666-8666-666666666666');
     expect(handed.status).toBe('failed');
     expect(handed.error).toContain('Rejected malformed backup_verify result');
+    expect(applyCommandAutomationTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      commandId: '66666666-6666-4666-8666-666666666666',
+      result: expect.objectContaining({ status: 'failed' }),
+    }));
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
@@ -2467,6 +2484,11 @@ describe('Findings #8 / #5 — WS command-result audit + secret redaction', () =
       result: 'success',
       details: { commandType: 'run_script', status: 'completed', exitCode: 0 },
     });
+    expect(applyCommandAutomationTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      commandId: '88888888-8888-4888-8888-888888888888',
+      result: expect.objectContaining({ status: 'completed', exitCode: 0 }),
+      output: 'done',
+    }));
   });
 
   it('does NOT audit when the compare-and-set no-ops (duplicate/late result)', async () => {
@@ -2489,6 +2511,7 @@ describe('Findings #8 / #5 — WS command-result audit + secret redaction', () =
     } as any, ws as any);
 
     expect(writeAuditEvent).not.toHaveBeenCalled();
+    expect(applyCommandAutomationTerminalMock).not.toHaveBeenCalled();
   });
 
   it('redacts a PEM private key from stdout, stderr, AND error before persistence (#2419)', async () => {
@@ -3189,6 +3212,12 @@ describe('#3021: command_result opens no message-level org context', () => {
     const scriptOps = observed.filter((o) => o.table === scriptExecutions);
     expect(scriptOps.map((o) => o.op)).toEqual(['update']);
     expect(scriptOps[0]!.stack).toEqual(['org:agentWs.commandResult.handler']);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'script_execution',
+      scriptExecutionId: 'row-1',
+      terminalStatus: 'succeeded',
+      output: 'ok',
+    }));
 
     // The short wrap carries the authenticated agent's org, and no context
     // anywhere in the message used the removed message-level label.
@@ -3891,7 +3920,7 @@ describe('sw-install WS orphan-result branch', () => {
 
   beforeEach(() => {
     vi.mocked(applySoftwareInstallResult).mockReset();
-    vi.mocked(applySoftwareInstallResult).mockResolvedValue(undefined);
+    vi.mocked(applySoftwareInstallResult).mockResolvedValue(null);
   });
 
   function swResult(overrides: Record<string, unknown> = {}) {

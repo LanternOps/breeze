@@ -18,9 +18,8 @@ import { runAction, ActionError } from '../../lib/runAction';
 import { normalizeMetricAnomalyContext } from './alertMlContext';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import { asList } from '@/lib/asList';
+import { useDeviceOptions } from '../../hooks/useDeviceOptions';
 import { useHashState } from '@/lib/useHashState';
-
-type Device = { id: string; name: string };
 
 // Past-tense verbs for bulk-action success toasts. Without this, `${action}d`
 // produces "suppressd".
@@ -62,14 +61,12 @@ export default function AlertsPage() {
   const { t } = useTranslation('alerts');
   const mlFlags = useMlFeatureFlags();
   const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [devices, setDevices] = useState<Device[]>([]);
   // Tracked separately from `loading` (which only follows the alerts fetch):
   // fetchDevices runs in parallel, so the empty state must not make ANY health
   // claim until the device list resolves. 'success' with zero devices is the
   // only state that shows the enrollment prompt; while 'loading' we show a
   // neutral spinner (no false "healthy" flash), and 'error' falls through to
   // the neutral all-clear rather than fabricating a zero-device claim.
-  const [deviceStatus, setDeviceStatus] = useState<'loading' | 'success' | 'error'>('loading');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [detailOpen, setDetailOpen] = useState(false);
@@ -98,6 +95,13 @@ export default function AlertsPage() {
   // the previous scope.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const allOrgs = useOrgStore((s) => s.allOrgs);
+  const fleetDeviceOptions = useDeviceOptions({ orgId: currentOrgId ?? undefined });
+  const deviceStatus = fleetDeviceOptions.state === 'error'
+    ? 'error'
+    : fleetDeviceOptions.state === 'loading' || fleetDeviceOptions.state === 'stale'
+      ? 'loading'
+      : 'success';
+  const deviceCount = fleetDeviceOptions.page?.total ?? fleetDeviceOptions.options.length;
   // Fleet (All-organizations) view — the list shows an Organization column so
   // cross-org rows stay legible (mirrors the Devices list).
   const isFleetView = !currentOrgId && allOrgs;
@@ -111,7 +115,6 @@ export default function AlertsPage() {
   // newer state (which would leak a previous org's device names into this scope
   // and mis-drive the empty state).
   const alertsFetchId = useRef(0);
-  const devicesFetchId = useRef(0);
 
   const fetchAlerts = useCallback(async () => {
     const fetchId = ++alertsFetchId.current;
@@ -153,36 +156,6 @@ export default function AlertsPage() {
     }
   }, [currentOrgId, hideAiNoise, t]);
 
-  const fetchDevices = useCallback(async () => {
-    const fetchId = ++devicesFetchId.current;
-    // Reset on every (re)fetch — e.g. an org switch — so a stale device list
-    // from the previous scope can't drive the empty-state classification.
-    setDeviceStatus('loading');
-    try {
-      const response = await fetchWithAuth('/devices');
-      if (fetchId !== devicesFetchId.current) return; // superseded by a newer fetch; drop
-      if (response.ok) {
-        const data = await response.json();
-        if (fetchId !== devicesFetchId.current) return;
-        const raw: Record<string, unknown>[] = asList(data, 'devices');
-        setDevices(
-          raw.map((d) => ({
-            id: String(d.id ?? ''),
-            name: String(d.displayName ?? d.hostname ?? d.name ?? t('alertsPage.unknownDevice')),
-          }))
-        );
-        setDeviceStatus('success');
-      } else {
-        // A non-OK devices response must NOT let us claim "no devices".
-        setDeviceStatus('error');
-      }
-    } catch (err) {
-      if (fetchId !== devicesFetchId.current) return;
-      console.error('Failed to fetch devices:', err);
-      setDeviceStatus('error');
-    }
-  }, [currentOrgId, t]);
-
   const fetchAlertDetails = useCallback(async (alertId: string) => {
     try {
       const response = await fetchWithAuth(`/alerts/${alertId}`);
@@ -197,12 +170,11 @@ export default function AlertsPage() {
   }, []);
 
   useEffect(() => {
-    // fetchAlerts/fetchDevices change identity when currentOrgId changes, so
+    // fetchAlerts changes identity when currentOrgId changes, so
     // this re-runs on org switch; each fetch's monotonic token drops any
     // superseded in-flight response.
     fetchAlerts();
-    fetchDevices();
-  }, [fetchAlerts, fetchDevices]);
+  }, [fetchAlerts]);
 
   useEffect(() => {
     if (!deviceFilter || deviceFilter.conditions.length === 0) {
@@ -587,7 +559,7 @@ export default function AlertsPage() {
         </div>
       )}
 
-      {alerts.length === 0 && deviceStatus === 'success' && devices.length === 0 ? (
+      {alerts.length === 0 && deviceStatus === 'success' && deviceCount === 0 ? (
         // No devices are enrolled yet, so "all clear" would be a false health
         // signal. Point the user at enrolling their first device instead.
         <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -645,7 +617,6 @@ export default function AlertsPage() {
       ) : (
         <AlertList
           alerts={filteredAlerts}
-          devices={devices}
           onSelect={handleSelect}
           onAcknowledge={handleAcknowledge}
           onResolve={alert => {

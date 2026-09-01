@@ -55,6 +55,7 @@ import {
   editionWithheldDetail,
   type EditionWithheldContext as SharedEditionWithheldContext,
 } from '../../services/agentEditionCompat';
+import { recordAgentHealthObservation } from '../../services/agentHealthObservations';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -1533,6 +1534,38 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // 404 / 401 / watchdog branches returned a Response directly from the scoped
   // block — pass it through.
   if (scoped instanceof Response) return scoped;
+
+  // Self-health is independent from reachability and is persisted only after
+  // the request's org-scoped transaction has released. A failed observation
+  // must never turn a valid heartbeat into an outage or roll back the device's
+  // online/last-seen update.
+  if (data.healthStatus) {
+    if (
+      data.healthStatus.deviceId !== undefined
+      && data.healthStatus.deviceId !== scoped.deviceId
+    ) {
+      const error = new Error('Agent health observation device identity mismatch');
+      console.error(
+        `[heartbeat] failed to persist health observation for agentId=${agentId}:`,
+        error,
+      );
+      captureException(error);
+    } else {
+      try {
+        await recordAgentHealthObservation({
+          device: { id: scoped.deviceId, orgId: scoped.deviceOrgId },
+          observation: data.healthStatus,
+          receivedAt: new Date(),
+        });
+      } catch (err) {
+        console.error(
+          `[heartbeat] failed to persist health observation for agentId=${agentId}:`,
+          err,
+        );
+        captureException(err);
+      }
+    }
+  }
 
   // The device heartbeat above has committed before rollback truth is
   // evaluated. This second short org context lets terminal `healthy` rely on

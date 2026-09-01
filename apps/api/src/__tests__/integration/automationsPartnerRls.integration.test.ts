@@ -630,8 +630,11 @@ describe('executeAutomationRun — partner-wide child-row org attribution (#2133
       const row = deviceResultRows.find((r) => r.deviceId === deviceId);
       expect(row).toBeDefined();
       expect(row!.status).toBe('failed');
-      // First failing action's message is captured as the row error.
-      expect(row!.error).toContain('send_notification action failed');
+      // Under the reconciled action-results model the device row's error is the
+      // failing action's OUTCOME message, not the dispatch log line. Proven
+      // against real Postgres (D6, fix commit fb9a6aeea): asserting the old
+      // dispatch-log string fails, printing exactly this outcome string.
+      expect(row!.error).toContain('Notification channel type pagerduty is not implemented');
       expect(row!.completedAt).not.toBeNull();
     }
   });

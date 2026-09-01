@@ -445,7 +445,7 @@ describe('endSupportSession', () => {
     expect(before?.agentTokenHash).toBeTruthy();
     expect(before?.watchdogTokenHash).toBeTruthy();
     expect(before?.helperTokenHash).toBeTruthy();
-    expect(before?.status).toBe('online');
+    expect(before?.status).toBe('pending');
 
     const result = await endSupportSession(session.id, 'tech');
     expect(result.ended).toBe(true);

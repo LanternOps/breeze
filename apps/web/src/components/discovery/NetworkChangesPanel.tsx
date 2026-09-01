@@ -8,10 +8,10 @@ import {
   eventTypeConfig,
   formatDateTime,
   mapNetworkChangeEvent,
-  type DeviceOption,
   type NetworkChangeEvent,
   type NetworkEventType
 } from './networkTypes';
+import { useDeviceOptions } from '../../hooks/useDeviceOptions';
 
 type SiteOption = {
   id: string;
@@ -65,25 +65,6 @@ async function extractError(response: Response, fallback: string): Promise<strin
   return `${fallback} (HTTP ${response.status})`;
 }
 
-function normalizeDevices(raw: unknown): DeviceOption[] {
-  if (!Array.isArray(raw)) return [];
-
-  return raw
-    .map((entry): DeviceOption | null => {
-      if (!entry || typeof entry !== 'object') return null;
-      const row = entry as Record<string, unknown>;
-      const id = typeof row.id === 'string' ? row.id : null;
-      if (!id) return null;
-
-      const hostname = typeof row.hostname === 'string' ? row.hostname : null;
-      const displayName = typeof row.displayName === 'string' ? row.displayName : null;
-      const label = (displayName || hostname || id).trim();
-
-      return { id, label };
-    })
-    .filter((device): device is DeviceOption => device !== null);
-}
-
 export default function NetworkChangesPanel({
   currentOrgId,
   siteOptions,
@@ -94,7 +75,6 @@ export default function NetworkChangesPanel({
   const [profiles, setProfiles] = useState<ProfileOption[]>([]);
   const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [profilesError, setProfilesError] = useState(false);
-  const [devices, setDevices] = useState<DeviceOption[]>([]);
   const [filters, setFilters] = useState<FilterState>(() => createDefaultFilters());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -105,6 +85,15 @@ export default function NetworkChangesPanel({
   const [canAcknowledge, setCanAcknowledge] = useState(true);
   const [canLinkDevice, setCanLinkDevice] = useState(true);
   const [detailEventId, setDetailEventId] = useState<string | null>(null);
+  const linkedDeviceIds = useMemo(
+    () => [...new Set(changes.map((change) => change.linkedDeviceId).filter((id): id is string => !!id))],
+    [changes]
+  );
+  const linkedDeviceOptions = useDeviceOptions({
+    orgId: currentOrgId ?? undefined,
+    includeIds: linkedDeviceIds,
+    enabled: linkedDeviceIds.length > 0,
+  });
 
   const fetchProfiles = useCallback(async () => {
     setProfilesLoaded(false);
@@ -159,29 +148,6 @@ export default function NetworkChangesPanel({
     }
   }, [currentOrgId, t]);
 
-  const fetchDevices = useCallback(async () => {
-    const params = new URLSearchParams();
-    params.set('page', '1');
-    params.set('limit', '200');
-    if (currentOrgId) params.set('orgId', currentOrgId);
-
-    const response = await fetchWithAuth(`/devices?${params.toString()}`);
-    if (!response.ok) {
-      throw new Error(await extractError(response, t('networkChangesPanel.errors.loadDevices')));
-    }
-
-    const payload = await response.json();
-    const rows = Array.isArray(payload?.data)
-      ? payload.data
-      : Array.isArray(payload?.devices)
-        ? payload.devices
-        : Array.isArray(payload)
-          ? payload
-          : [];
-
-    setDevices(normalizeDevices(rows));
-  }, [currentOrgId, t]);
-
   const fetchChanges = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -230,10 +196,10 @@ export default function NetworkChangesPanel({
   }, [currentOrgId, filters, t]);
 
   useEffect(() => {
-    Promise.all([fetchProfiles(), fetchDevices()]).catch((fetchError) => {
+    fetchProfiles().catch((fetchError) => {
       setError(fetchError instanceof Error ? fetchError.message : t('networkChangesPanel.errors.loadMetadata'));
     });
-  }, [fetchProfiles, fetchDevices]);
+  }, [fetchProfiles]);
 
   useEffect(() => {
     fetchChanges();
@@ -276,8 +242,11 @@ export default function NetworkChangesPanel({
   }, [profiles, profileById, filters.profileId, filters.siteId]);
 
   const deviceById = useMemo(
-    () => new Map(devices.map((device) => [device.id, device])),
-    [devices]
+    () => new Map(linkedDeviceOptions.options.map((device) => [device.id, {
+      id: device.id,
+      label: device.displayName ?? device.hostname,
+    }])),
+    [linkedDeviceOptions.options]
   );
 
   const detailEvent = useMemo(
@@ -777,7 +746,7 @@ export default function NetworkChangesPanel({
         open={detailEvent !== null}
         event={detailEvent}
         timezone={timezone}
-        devices={devices}
+        currentOrgId={currentOrgId}
         canAcknowledge={canAcknowledge}
         canLinkDevice={canLinkDevice}
         onClose={() => setDetailEventId(null)}

@@ -329,6 +329,67 @@ describe('heartbeatSchema — Layer A tolerance', () => {
   });
 });
 
+describe('heartbeatSchema — versioned agent health tolerance', () => {
+  const minimal = {
+    status: 'ok' as const,
+    agentVersion: '0.65.15',
+  };
+  const validHealth = {
+    schemaVersion: 1 as const,
+    deviceId: '11111111-1111-4111-8111-111111111111',
+    agentVersion: '0.65.15',
+    overall: 'warning' as const,
+    metricsAvailable: true,
+    components: {
+      metrics: { state: 'warning' as const, reason: 'collector delayed' },
+      commandLoop: { state: 'healthy' as const },
+    },
+    observedAt: '2026-08-24T12:34:56.789Z',
+  };
+
+  it('accepts omission and strips the current unversioned health map', () => {
+    const omitted = heartbeatSchema.parse(minimal);
+    const legacy = heartbeatSchema.parse({
+      ...minimal,
+      healthStatus: { status: 'healthy', components: { metrics: 'healthy' } },
+    });
+
+    expect(omitted.healthStatus).toBeUndefined();
+    expect(legacy.healthStatus).toBeUndefined();
+  });
+
+  it('retains every bounded v1 field including an optional wire device id', () => {
+    const parsed = heartbeatSchema.parse({ ...minimal, healthStatus: validHealth });
+    expect(parsed.healthStatus).toEqual(validHealth);
+  });
+
+  it.each([
+    ['unknown schema', { ...validHealth, schemaVersion: 2 }],
+    ['non-object components', { ...validHealth, components: [] }],
+    ['invalid component state', { ...validHealth, components: { metrics: { state: 'degraded' } } }],
+    ['bad observedAt', { ...validHealth, observedAt: 'yesterday' }],
+    ['oversized component name', { ...validHealth, components: { ['x'.repeat(101)]: { state: 'error' } } }],
+    ['oversized reason', { ...validHealth, components: { metrics: { state: 'error', reason: 'x'.repeat(513) } } }],
+    ['too many components', {
+      ...validHealth,
+      components: Object.fromEntries(Array.from({ length: 101 }, (_, index) => [
+        `component-${index}`,
+        { state: 'healthy' },
+      ])),
+    }],
+    ['unsupported top-level member', { ...validHealth, userHelpers: { status: 'healthy' } }],
+  ])('drops %s without rejecting reachability', (_label, healthStatus) => {
+    const parsed = heartbeatSchema.safeParse({ ...minimal, healthStatus });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.healthStatus).toBeUndefined();
+  });
+
+  it('keeps unrelated heartbeat fields strict', () => {
+    expect(heartbeatSchema.safeParse({ agentVersion: '0.65.15', healthStatus: validHealth }).success).toBe(false);
+  });
+});
+
 // signedInUpns degrades at FIELD level (.catch([])): a violating UPN list must
 // cost only the UPNs, never the whole onedriveDeviceState block — the block
 // carries mounted/drift/KFM state whose silent loss leaves stale rows that

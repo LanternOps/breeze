@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Play } from 'lucide-react';
 import ExecutionHistory, { type ScriptExecution } from './ExecutionHistory';
 import ExecutionDetails from './ExecutionDetails';
-import ScriptExecutionModal, { type Device, type Site } from './ScriptExecutionModal';
+import ScriptExecutionModal, { type Site } from './ScriptExecutionModal';
 import type { Script } from './ScriptList';
 import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
@@ -11,6 +11,7 @@ import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { asList } from '@/lib/asList';
+import type { ScriptAdmissionResult } from '@breeze/shared';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -29,7 +30,6 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
   const { t } = useTranslation('scripts');
   const [script, setScript] = useState<ScriptWithDetails | null>(null);
   const [executions, setExecutions] = useState<ScriptExecution[]>([]);
-  const [devices, setDevices] = useState<Device[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -74,18 +74,6 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
     }
   }, [scriptId, t]);
 
-  const fetchDevices = useCallback(async () => {
-    try {
-      const response = await fetchWithAuth('/devices');
-      if (response.ok) {
-        const data = await response.json();
-        setDevices(asList(data, 'devices'));
-      }
-    } catch {
-      // Silently fail
-    }
-  }, []);
-
   const fetchSites = useCallback(async () => {
     try {
       const response = await fetchWithAuth('/orgs/sites');
@@ -101,9 +89,8 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
   useEffect(() => {
     fetchScript();
     fetchExecutions();
-    fetchDevices();
     fetchSites();
-  }, [fetchScript, fetchExecutions, fetchDevices, fetchSites]);
+  }, [fetchScript, fetchExecutions, fetchSites]);
 
   const handleViewDetails = (execution: ScriptExecution) => {
     // Open immediately with the list row, then upgrade with the full record —
@@ -144,14 +131,17 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
     if (!response.ok) {
       if (response.status === 401) {
         void navigateTo('/login', { replace: true });
-        return;
+        throw new Error(t('scriptExecutionsPage.errors.execute'));
       }
       const data = await response.json();
       throw new Error(extractApiError(data, t('scriptExecutionsPage.errors.execute')));
     }
 
-    // Refresh executions list
-    await fetchExecutions();
+    const admission = await response.json() as ScriptAdmissionResult;
+    if (admission.targets.some(target => target.admission === 'admitted')) {
+      await fetchExecutions();
+    }
+    return admission;
   };
 
   if (loading && !script) {
@@ -276,7 +266,6 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
       {showExecuteModal && script && (
         <ScriptExecutionModal
           script={script}
-          devices={devices}
           sites={sites}
           isOpen={true}
           onClose={() => setShowExecuteModal(false)}

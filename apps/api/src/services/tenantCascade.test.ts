@@ -128,6 +128,17 @@ describe('getOrgCascadeDeleteOrder()', () => {
     expect(__testOnly.AUDIT_ADMIN_REQUIRED_TABLES.has('peripheral_policy_delivery_events')).toBe(true);
   });
 
+  it('registers health evidence and latest projection for ordinary tenant erasure', () => {
+    expect(cascadeOrder).toContain('agent_health_observations');
+    expect(cascadeOrder).toContain('automation_action_results');
+    expect(cascadeOrder).toContain('device_agent_health_latest');
+    expect(__testOnly.AUDIT_ADMIN_REQUIRED_TABLES.has('agent_health_observations')).toBe(false);
+    expect(__testOnly.AUDIT_ADMIN_REQUIRED_TABLES.has('device_agent_health_latest')).toBe(false);
+    expect(cascadeOrder).toContain('software_inventory_observations');
+    expect(cascadeOrder).toContain('device_software_inventory_state');
+    expect(__testOnly.AUDIT_ADMIN_REQUIRED_TABLES.has('software_inventory_observations')).toBe(false);
+  });
+
   it('includes the canonical tenant tables', () => {
     const set = new Set(cascadeOrder);
     for (const required of [

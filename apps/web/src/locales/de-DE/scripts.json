@@ -812,6 +812,8 @@
       "advancedFilters": "Erweiterte Filter",
       "executing": "Ausführen...",
       "started": "Begonnen!",
+      "queued": "In Warteschlange",
+      "reviewResult": "Ergebnis prüfen",
       "confirmExecute": "Bestätigen Sie Ausführen",
       "execute": "Ausführen"
     },
@@ -833,7 +835,15 @@
     "orSeparator": "oder",
     "progress": {
       "submitting": "Übermittlung an {{count}} Geräte...",
-      "submitted": "An {{count}} Geräte übermittelt"
+      "submitted": "An {{count}} Geräte übermittelt",
+      "admitted": "{{admitted}} von {{count}} Geräten zur Warteschlange zugelassen",
+      "submittingTarget": "Wird übermittelt"
+    },
+    "admission": {
+      "allAdmitted": "Alle ausgewählten Geräte wurden zugelassen und in die Warteschlange gestellt.",
+      "partiallyAdmitted": "Einige Geräte wurden zugelassen und in die Warteschlange gestellt. Prüfen Sie die übrigen Ziele.",
+      "rejected": "Keine Geräte wurden zugelassen. Prüfen Sie die Gründe unten.",
+      "queued": "In Warteschlange"
     },
     "confirm": {
       "title": "Bestätigen Sie die Ausführung",

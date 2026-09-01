@@ -24,6 +24,7 @@ const withSystemDbAccessContextMock = vi.fn(async (fn: () => any) => {
 });
 const updateRestoreJobByCommandIdMock = vi.fn().mockResolvedValue(true);
 const claimPendingCommandsForDeviceMock = vi.fn();
+const applyCommandAutomationTerminalMock = vi.fn().mockResolvedValue(true);
 const consumePamReconciliationRateLimitMock = vi.fn().mockResolvedValue({
   allowed: true,
   remaining: 119,
@@ -111,6 +112,15 @@ vi.mock('../../services/scriptSecretDelivery', () => ({
 
 vi.mock('../../services/vaultSyncPersistence', () => ({
   applyVaultSyncCommandResult: vi.fn(),
+}));
+
+vi.mock('../../services/automationTerminalEvidence', () => ({
+  applyCommandAutomationTerminal: (...args: unknown[]) =>
+    applyCommandAutomationTerminalMock(...(args as [])),
+}));
+
+vi.mock('../../services/automationActionResults', () => ({
+  applyAutomationActionTerminal: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('./helpers', () => ({
@@ -275,6 +285,11 @@ describe('agent commands routes', () => {
       resolvedDeviceId: 'device-1',
       stdout: 'hello from the script',
     });
+    expect(applyCommandAutomationTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      commandId,
+      result: expect.objectContaining({ status: 'completed', exitCode: 0 }),
+      output: 'hello from the script',
+    }));
   });
 
   it('dispatches a peripheral v2 result to the shared handler over the HTTP path', async () => {

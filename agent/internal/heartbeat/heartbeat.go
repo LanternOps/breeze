@@ -95,14 +95,14 @@ type HeartbeatPayload struct {
 	// pointer so an old-agent omission (nil) is distinguishable from a
 	// genuine "physical" report (false) — the server only overwrites the
 	// stored value when the agent actually sends one.
-	IsVirtual                 *bool             `json:"isVirtual,omitempty"`
-	VirtualizationPlatform    string            `json:"virtualizationPlatform,omitempty"`
-	HealthStatus              map[string]any    `json:"healthStatus,omitempty"`
-	DroppedLogs               int64             `json:"droppedLogs,omitempty"`
-	HelperVersion             string            `json:"helperVersion,omitempty"`
-	WatchdogVersion           string            `json:"watchdogVersion,omitempty"`
-	BackupVersion             string            `json:"backupVersion,omitempty"`
-	RollbackComponentVersions map[string]string `json:"rollbackComponentVersions,omitempty"`
+	IsVirtual                 *bool                          `json:"isVirtual,omitempty"`
+	VirtualizationPlatform    string                         `json:"virtualizationPlatform,omitempty"`
+	HealthStatus              *health.AgentHealthObservation `json:"healthStatus,omitempty"`
+	DroppedLogs               int64                          `json:"droppedLogs,omitempty"`
+	HelperVersion             string                         `json:"helperVersion,omitempty"`
+	WatchdogVersion           string                         `json:"watchdogVersion,omitempty"`
+	BackupVersion             string                         `json:"backupVersion,omitempty"`
+	RollbackComponentVersions map[string]string              `json:"rollbackComponentVersions,omitempty"`
 	// ServerURL is the control-plane base URL this heartbeat is POSTed to
 	// (#2288). Set per-attempt in postHeartbeat, so a backup probe reports
 	// the backup URL and the device row shows real fleet position.
@@ -304,36 +304,37 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
-	config             *config.Config
-	secureToken        *secmem.SecureString
-	client             *http.Client
-	clientMu           sync.RWMutex
-	stopChan           chan struct{}
-	metricsCol         *collectors.MetricsCollector
-	hardwareCol        *collectors.HardwareCollector
-	softwareCol        *collectors.SoftwareCollector
-	inventoryCol       *collectors.InventoryCollector
-	vpnCol             *collectors.VPNCollector
-	changeTrackerCol   *collectors.ChangeTrackerCollector
-	sessionCol         *collectors.SessionCollector
-	policyStateCol     *collectors.PolicyStateCollector
-	patchCol           *collectors.PatchCollector
-	patchMgr           *patching.PatchManager
-	connectionsCol     *collectors.ConnectionsCollector
-	eventLogCol        *collectors.EventLogCollector
-	bootCol            *collectors.BootPerformanceCollector
-	reliabilityCol     *collectors.ReliabilityCollector
-	agentVersion       string
-	desktopMgr         *desktop.SessionManager
-	wsDesktopMgr       *desktop.WsSessionManager
-	terminalMgr        *terminal.Manager
-	tunnelMgr          *tunnel.Manager
-	executor           *executor.Executor
-	backupBinaryPath   string
-	rollbackController rollbackController
-	rebootMgr          *patching.RebootManager
-	securityScanner    *security.SecurityScanner
-	wsClient           *websocket.Client
+	config                *config.Config
+	secureToken           *secmem.SecureString
+	client                *http.Client
+	clientMu              sync.RWMutex
+	stopChan              chan struct{}
+	metricsCol            *collectors.MetricsCollector
+	hardwareCol           *collectors.HardwareCollector
+	softwareCol           *collectors.SoftwareCollector
+	softwareObservationFn func() (collectors.SoftwareInventoryObservationV2, error)
+	inventoryCol          *collectors.InventoryCollector
+	vpnCol                *collectors.VPNCollector
+	changeTrackerCol      *collectors.ChangeTrackerCollector
+	sessionCol            *collectors.SessionCollector
+	policyStateCol        *collectors.PolicyStateCollector
+	patchCol              *collectors.PatchCollector
+	patchMgr              *patching.PatchManager
+	connectionsCol        *collectors.ConnectionsCollector
+	eventLogCol           *collectors.EventLogCollector
+	bootCol               *collectors.BootPerformanceCollector
+	reliabilityCol        *collectors.ReliabilityCollector
+	agentVersion          string
+	desktopMgr            *desktop.SessionManager
+	wsDesktopMgr          *desktop.WsSessionManager
+	terminalMgr           *terminal.Manager
+	tunnelMgr             *tunnel.Manager
+	executor              *executor.Executor
+	backupBinaryPath      string
+	rollbackController    rollbackController
+	rebootMgr             *patching.RebootManager
+	securityScanner       *security.SecurityScanner
+	wsClient              *websocket.Client
 	// backupOutbox persists terminal backup results that failed to send over
 	// the WS connection, so a transient blip doesn't orphan the job
 	// server-side. Flushed on WS reconnect (see SetWebSocketClient). Never
@@ -819,7 +820,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		stopChan:     make(chan struct{}),
 		metricsCol:   collectors.NewMetricsCollector(),
 		hardwareCol:  collectors.NewHardwareCollector(),
-		softwareCol:  collectors.NewSoftwareCollector(),
+		softwareCol:  collectors.NewSoftwareCollectorWithVersion(version),
 		inventoryCol: collectors.NewInventoryCollector(),
 		vpnCol:       collectors.NewVPNCollector(),
 		changeTrackerCol: collectors.NewChangeTrackerCollector(
@@ -2199,25 +2200,16 @@ func (h *Heartbeat) sendAppleWarrantyInfo() {
 }
 
 func (h *Heartbeat) sendSoftwareInventory() {
-	software, err := collectors.Guard("software", h.softwareCol.Collect)
+	collect := h.softwareObservationFn
+	if collect == nil {
+		collect = h.softwareCol.CollectObservation
+	}
+	observation, err := collectors.Guard("software", collect)
 	if err != nil {
 		log.Error("failed to collect software inventory", "error", err.Error())
 		return
 	}
-
-	items := make([]map[string]any, len(software))
-	for i, item := range software {
-		items[i] = map[string]any{
-			"name":            item.Name,
-			"version":         item.Version,
-			"vendor":          item.Vendor,
-			"installDate":     item.InstallDate,
-			"installLocation": item.InstallLocation,
-			"uninstallString": item.UninstallString,
-		}
-	}
-
-	h.sendInventoryData("software", map[string]any{"software": items}, fmt.Sprintf("software (%d items)", len(software)))
+	_ = h.sendInventoryData("software", observation, fmt.Sprintf("software observation (%s, %d items)", observation.Completeness, observation.ItemCount))
 }
 
 func (h *Heartbeat) sendDiskInventory() {
@@ -4011,13 +4003,19 @@ func (h *Heartbeat) sendHeartbeat() {
 	virtComputed := h.cachedVirtComputed
 	h.mu.Unlock()
 
+	healthSnapshot := h.healthMon.Snapshot(health.SnapshotMetadata{
+		DeviceID:         h.config.DeviceID,
+		AgentVersion:     h.agentVersion,
+		MetricsAvailable: &metricsAvailable,
+		ObservedAt:       time.Now().UTC(),
+	})
 	payload := HeartbeatPayload{
 		Status:          status,
 		AgentVersion:    h.agentVersion,
 		HelperVersion:   h.helperMgr.InstalledVersion(),
 		WatchdogVersion: h.installedWatchdogVersion(),
 		BackupVersion:   h.installedBackupVersion(),
-		HealthStatus:    h.healthMon.Summary(),
+		HealthStatus:    &healthSnapshot,
 		DeviceRole:      deviceRole,
 		IsHeadless:      h.currentHeadless(),
 		// Wave 6 Task 4 — this build enforces internal/netpolicy (Tasks 1-3),
@@ -4138,33 +4136,6 @@ func (h *Heartbeat) sendHeartbeat() {
 		payload.DesktopAccess = h.computeDesktopAccess(sysInfo)
 	} else if runtime.GOOS == "linux" {
 		payload.DesktopAccess = h.computeDesktopAccess(sysInfo)
-	}
-
-	// Include user helper session info in heartbeat
-	if h.sessionBroker != nil {
-		sessions := h.sessionBroker.AllSessions()
-		if len(sessions) > 0 {
-			helpers := make([]map[string]any, len(sessions))
-			for i, s := range sessions {
-				helpers[i] = map[string]any{
-					"uid":         s.UID,
-					"username":    s.Username,
-					"display":     s.DisplayEnv,
-					"connectedAt": s.ConnectedAt,
-					"lastSeen":    s.LastSeen,
-				}
-				if s.Capabilities != nil {
-					helpers[i]["capabilities"] = s.Capabilities
-				}
-				if s.BinaryKind != "" {
-					helpers[i]["binaryKind"] = s.BinaryKind
-				}
-				if s.DesktopContext != "" {
-					helpers[i]["desktopContext"] = s.DesktopContext
-				}
-			}
-			payload.HealthStatus["userHelpers"] = helpers
-		}
 	}
 
 	if h.postHeartbeat(h.serverURL(), &payload) {

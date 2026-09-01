@@ -148,6 +148,23 @@ export async function ensureAppRole(): Promise<boolean> {
             GRANT USAGE ON SEQUENCE audit_chain_anchors_anchor_seq_seq TO breeze_app;
           END IF;
         END IF;
+        -- Agent health evidence is append-only except for trusted tenant
+        -- restamping during a device move. The migration trigger protects the
+        -- evidence fields; this override keeps ordinary app-role UPDATE and
+        -- TRUNCATE unavailable after the blanket grants above run at boot.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='agent_health_observations') THEN
+          REVOKE UPDATE, TRUNCATE ON TABLE agent_health_observations FROM breeze_app;
+          REVOKE TRUNCATE ON TABLE agent_health_observations FROM PUBLIC;
+        END IF;
+        -- Software inventory observations are retained evidence. The migration
+        -- grants the app role only read/append/delete capabilities, but the
+        -- blanket grant above runs at every boot, so re-revoke direct UPDATE
+        -- and TRUNCATE here. The structural UPDATE RLS policy and immutable
+        -- trigger remain in place for trusted tenant restamping.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='software_inventory_observations') THEN
+          REVOKE UPDATE, TRUNCATE ON TABLE software_inventory_observations FROM breeze_app;
+          REVOKE TRUNCATE ON TABLE software_inventory_observations FROM PUBLIC;
+        END IF;
         -- Reconstruction material clocks are maintained only by trusted
         -- SECURITY DEFINER triggers. The API may read them for incremental
         -- exports, but direct writes could suppress or forge change signals.

@@ -1245,17 +1245,17 @@ mobileRoutes.post(
         return c.json({ error: result.error }, result.status);
       }
 
-      // A dispatch can now fail per device WITHOUT failing the request
-      // (#3409 PR2's per-device failure channel) — e.g. an unresolved or
-      // secret {{var.*}} token. For this single-device endpoint that means
-      // `executions` is empty and `failures` carries the reason; indexing
-      // [0] here used to throw and turn a user-fixable problem into a 500.
-      const execution = result.executions[0];
-      if (!execution) {
-        const failure = result.failures[0];
+      const admission = result.admission.targets.find(
+        (target) => target.requestedDeviceId === device.id,
+      );
+      if (!admission || admission.admission !== 'admitted' || !admission.executionId || !admission.commandId) {
+        const status = admission?.reasonCode === 'maintenance_suppressed' ? 409 : 422;
         return c.json(
-          { error: failure?.error ?? 'Script could not be dispatched to this device' },
-          422
+          {
+            admission: admission?.admission ?? 'denied',
+            reasonCode: admission?.reasonCode ?? 'not_found_or_inaccessible',
+          },
+          status,
         );
       }
       writeRouteAudit(c, {
@@ -1266,9 +1266,10 @@ mobileRoutes.post(
         resourceName: device.hostname,
         details: {
           action: data.action,
-          scriptId: result.scriptId,
-          executionId: execution.executionId,
-          commandId: execution.commandId,
+          requestId: result.admission.requestId,
+          scriptId: result.script.id,
+          executionId: admission.executionId,
+          commandId: admission.commandId,
           // #3409 PR3 §2.2 — bound parameter keys whose caller-supplied value
           // was dropped in favour of the binding. KEYS ONLY, never values.
           // Named distinctly rather than folded into an existing key: audit
@@ -1280,8 +1281,8 @@ mobileRoutes.post(
 
       return c.json({
         action: data.action,
-        executionId: execution.executionId,
-        commandId: execution.commandId,
+        executionId: admission.executionId,
+        commandId: admission.commandId,
         // This endpoint accepts `parameters`, so the mobile client is just as
         // able to supply a value for a bound key as the web one — the warning
         // is surfaced here for the same reason and in the same shape as
