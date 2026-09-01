@@ -116,6 +116,7 @@ import { enqueueAgentNotifyRetry } from '../../jobs/agentNotifyRetryWorker';
 // (jobs/, not services/): the fix-watch Queue is constructed lazily and this
 // module does not import runLoop.ts back — see fixWatchWorker.ts's header.
 import { scheduleFixWatch } from '../../jobs/fixWatchWorker';
+import { actEvidenceSourceId, insertOpEvidence, type OpEvidenceInsert } from './opEvidence';
 import {
   buildAgentRunSystemPrompt,
   buildAgentRunTaskPrompt,
@@ -2469,6 +2470,93 @@ async function isRunStillRunning(runId: string, orgId: string): Promise<boolean>
   });
 }
 
+/**
+ * Act-execution op evidence (Task 6, P2-5, #4192) — one `executed`/`failed`
+ * row per executed action carrying an `actOpKey`, keyed by the action's
+ * INDEX in `executedActions` (`actEvidenceSourceId`, Deviation #4:
+ * `executionId` falls back to the literal `'(inline)'` when the execution-
+ * ledger write itself failed, so it is not unique within a run — the index
+ * is). The ONLY caller is `finishRun`, after its terminal CAS already won,
+ * so this runs at most once per winning executor. Unconditional on `status`/
+ * `watches` on purpose: an action can genuinely execute before a run later
+ * fails for an unrelated reason, and that execution still earns evidence.
+ *
+ * `watchId === null` means no watch will EVER verify this run — either
+ * `scheduleFixWatch` was never even attempted (`watches` false, or `status`
+ * not `'completed'`: exactly the runs the extensive comments above document
+ * as executing nothing, so this is a no-op for them in practice) or it WAS
+ * attempted and came back null (an ineligible run, or a genuinely failed
+ * `createFixWatchRow` — see `scheduleFixWatch`'s own header for why null
+ * means exactly that and nothing else after Task 5). Either way, every
+ * `executed` action is credited an immediate `verified` row on the SAME
+ * source id, since no later watch verdict will ever supply one. A non-null
+ * `watchId` means a watch row exists and `checkFixWatchPhase2` (fixWatch.ts)
+ * will supply `verified`/`recurred` later — this function credits nothing
+ * extra in that case.
+ *
+ * Best-effort and non-fatal, like every other post-CAS side effect in this
+ * function (`deliverRunFinishedNotifications` above): a ledger write
+ * failure must never retroactively change how this run's terminal outcome
+ * is reported.
+ */
+async function recordActExecutionEvidence(
+  run: RunRow,
+  executedActions: OutcomeExecutedAction[],
+  watchId: string | null,
+): Promise<void> {
+  const rows: OpEvidenceInsert[] = [];
+  const occurredAt = new Date();
+  for (const [index, action] of executedActions.entries()) {
+    if (!action.actOpKey) continue;
+    // `failed` checked FIRST: a verification failure on an action whose
+    // dispatch itself `execution === 'succeeded'` (the disk-cleanup shape —
+    // the command ran but disk usage didn't improve) must grade `failed`,
+    // not `executed` — the two conditions are not mutually exclusive, and
+    // `failed` is the one that matters for graduation.
+    let metric: 'executed' | 'failed' | null = null;
+    if (action.execution === 'failed' || action.verification === 'failed') metric = 'failed';
+    else if (action.execution === 'succeeded') metric = 'executed';
+    if (!metric) continue;
+
+    const sourceId = actEvidenceSourceId(run.id, index);
+    rows.push({
+      orgId: run.orgId,
+      agentId: run.agentId,
+      namespace: 'act_op',
+      opKey: action.actOpKey,
+      ruleId: null,
+      sourceKind: 'act_execution',
+      sourceId,
+      metric,
+      runId: run.id,
+      occurredAt,
+    });
+    if (metric === 'executed' && watchId === null) {
+      rows.push({
+        orgId: run.orgId,
+        agentId: run.agentId,
+        namespace: 'act_op',
+        opKey: action.actOpKey,
+        ruleId: null,
+        sourceKind: 'act_execution',
+        sourceId,
+        metric: 'verified',
+        runId: run.id,
+        occurredAt,
+      });
+    }
+  }
+  if (rows.length === 0) return;
+
+  try {
+    await inSystemDbContext(() => insertOpEvidence(rows));
+  } catch (error) {
+    console.error('[aiAgentRunLoop] failed to write act-execution op evidence (non-fatal)', {
+      runId: run.id, error,
+    });
+  }
+}
+
 async function finishRun(
   ctx: RunContext,
   status: keyof typeof TERMINAL_EVENT,
@@ -2566,12 +2654,18 @@ async function finishRun(
   // are — `isFixWatchEligible` would reject them anyway via `modeAtStart`/
   // `verification`, but gating on `status` here avoids the query entirely on
   // the common non-completed paths).
+  let watchId: string | null = null;
   if (watches && status === 'completed') {
-    await scheduleFixWatch(
+    watchId = await scheduleFixWatch(
       { id: ctx.run.id, orgId: ctx.run.orgId, agentId: ctx.run.agentId, alertId: ctx.run.alertId, modeAtStart: ctx.run.modeAtStart },
       result.outcome,
     );
   }
+
+  // Act-execution op evidence (Task 6, P2-5, #4192) — see
+  // `recordActExecutionEvidence`'s own header for why this is unconditional
+  // on `watches`/`status` rather than nested inside the block above.
+  await recordActExecutionEvidence(ctx.run, result.outcome.executedActions, watchId);
 }
 
 /**

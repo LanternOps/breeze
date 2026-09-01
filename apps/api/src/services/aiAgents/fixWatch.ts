@@ -44,6 +44,7 @@ import { aiAgents, aiAgentRuns } from '../../db/schema/aiAgents';
 import { organizations } from '../../db/schema/orgs';
 import { createNotification } from '../userNotifications';
 import { resolveRecipientUserIds } from './recipients';
+import { insertOpEvidence, watchEvidenceSourceId } from './opEvidence';
 
 /** Same skip-if-already-system shape duplicated across this module family. */
 function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
@@ -511,6 +512,46 @@ interface RecurrenceDetected {
 }
 
 /**
+ * Watch-verdict op evidence (Task 6, P2-5, #4192) — one row per entry of
+ * `watch.opKeys`, written INSIDE the caller's winning CAS transaction,
+ * before it returns. A pre-P2-5 watch (or one whose `snapshotActOpKeys`
+ * snapshotted nothing) carries `op_keys: []` and writes nothing — there is
+ * no key to grade.
+ *
+ * `namespace` follows `source_kind`: an intent-anchored watch grades a
+ * released intent's canonical `tool:action` key (`policy_key`); an
+ * act-run-anchored watch grades a manifest op key (`act_op`) — same mapping
+ * `createIntentFixWatchRow`/`createFixWatchRow` use to pick `source_kind` in
+ * the first place.
+ *
+ * No try/catch here on purpose: an insert failure propagates and rolls back
+ * the SAME transaction as the CAS that just won, undoing both together. That
+ * is safe (unlike `intentReleaseWorker.ts`'s SAVEPOINT-isolated evidence
+ * write) because nothing externally visible has happened yet at this point —
+ * `sendRecurrenceNotifications` runs strictly AFTER this function returns,
+ * in ITS OWN `inSystemDbContext` call — so a rollback here just means the
+ * next redelivery of this phase-2 job re-evaluates from `watching` again.
+ */
+async function recordWatchVerdictEvidence(watch: AiAgentFixWatch, metric: 'recurred' | 'verified'): Promise<void> {
+  if (watch.opKeys.length === 0) return;
+  const occurredAt = new Date();
+  await insertOpEvidence(
+    watch.opKeys.map((opKey) => ({
+      orgId: watch.orgId,
+      agentId: watch.agentId,
+      namespace: watch.sourceKind === 'intent' ? ('policy_key' as const) : ('act_op' as const),
+      opKey,
+      ruleId: watch.ruleId,
+      sourceKind: 'watch' as const,
+      sourceId: watchEvidenceSourceId(watch.id, opKey),
+      metric,
+      runId: watch.runId,
+      occurredAt,
+    })),
+  );
+}
+
+/**
  * Sends the recurrence notification + rule-less attention alert. Deliberately
  * a SEPARATE `inSystemDbContext` call from `checkFixWatchPhase2`'s own
  * detection/write transaction (same pattern as `agentCircuit.ts`'s
@@ -651,6 +692,7 @@ export async function checkFixWatchPhase2(watchId: string): Promise<FixWatchPhas
       // dedupe key), so stand down entirely rather than returning 'recurred'
       // a second time.
       if (!moved) return null;
+      await recordWatchVerdictEvidence(watch, 'recurred');
       return { watch, recurrenceAlertId: recurrence.id };
     }
 
@@ -660,6 +702,7 @@ export async function checkFixWatchPhase2(watchId: string): Promise<FixWatchPhas
       .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'watching')))
       .returning({ id: aiAgentFixWatches.id });
     if (!moved) return null;
+    await recordWatchVerdictEvidence(watch, 'verified');
     return 'held_qualified';
   });
 

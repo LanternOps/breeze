@@ -224,6 +224,12 @@ function watchRow(overrides: Record<string, unknown> = {}) {
     recurrenceAlertId: null,
     notifiedAt: null,
     createdAt: new Date(),
+    // P2-5 (#4192) — a pre-P2-5 watch (or the default fixture here) carries
+    // no op keys, which `recordWatchVerdictEvidence` reads as "nothing to
+    // grade" and writes zero evidence rows for, keeping every existing
+    // `insertCount`-based assertion below unchanged.
+    sourceKind: 'act_run',
+    opKeys: [] as string[],
     ...overrides,
   };
 }
@@ -916,6 +922,120 @@ describe('checkFixWatchPhase2', () => {
 
     expect(result).toEqual({ action: 'recurred' });
     expect(createNotificationMock).not.toHaveBeenCalled();
+    expect(state.insertCount).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkFixWatchPhase2 — P2-5 watch-verdict op evidence (#4192, Task 6)
+// ---------------------------------------------------------------------------
+describe('checkFixWatchPhase2 — P2-5 watch-verdict op evidence', () => {
+  const recoveredAt = new Date('2026-08-28T00:00:00Z');
+
+  it('recurred verdict with two op_keys inserts two "recurred" rows, one per key, source ids "<watchId>:<opKey>"', async () => {
+    state.selectQueue.push(
+      [watchRow({ state: 'watching', recoveryObservedAt: recoveredAt, sourceKind: 'act_run', opKeys: ['a:b', 'c:d'] })],
+      [{ id: RECURRENCE_ALERT_ID }],
+      [{ name: 'Disk Cleaner', orgId: null, partnerId: PARTNER_ID }],
+      [{ policySnapshot: { effective: { recipients: { userIds: [USER_ID] } } } }],
+    );
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'recurred' });
+    // The evidence insert is `state.insertValues[0]` — it lands INSIDE the
+    // winning CAS's transaction, before `sendRecurrenceNotifications`'s own
+    // (separate) alert insert, which is `state.insertValues[1]`.
+    expect(state.insertValues[0]).toEqual([
+      expect.objectContaining({
+        orgId: ORG_ID, agentId: AGENT_ID, namespace: 'act_op', opKey: 'a:b', ruleId: RULE_ID,
+        sourceKind: 'watch', sourceId: `${WATCH_ID}:a:b`, metric: 'recurred', runId: RUN_ID,
+      }),
+      expect.objectContaining({
+        namespace: 'act_op', opKey: 'c:d', sourceKind: 'watch', sourceId: `${WATCH_ID}:c:d`, metric: 'recurred',
+      }),
+    ]);
+    expect(state.insertValues[1]).toMatchObject({ configItemName: 'ai_agent_fix_watch' });
+    // Notification still fires — the evidence write did not short-circuit it.
+    expect(createNotificationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a LOST CAS on the recurred write inserts no evidence, even with non-empty op_keys', async () => {
+    state.selectQueue.push(
+      [watchRow({ state: 'watching', recoveryObservedAt: recoveredAt, opKeys: ['a:b'] })],
+      [{ id: RECURRENCE_ALERT_ID }],
+    );
+    state.updateReturningQueue.push([]); // lost the CAS
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'not_found' });
+    expect(state.insertCount).toBe(0);
+  });
+
+  it('held_qualified inserts a "verified" row per op_key', async () => {
+    state.selectQueue.push(
+      [watchRow({ state: 'watching', recoveryObservedAt: recoveredAt, opKeys: ['x:y'] })],
+      [], // no recurrence row
+    );
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'held_qualified' });
+    expect(state.insertValues[0]).toEqual([
+      expect.objectContaining({
+        opKey: 'x:y', metric: 'verified', sourceKind: 'watch', sourceId: `${WATCH_ID}:x:y`, runId: RUN_ID,
+      }),
+    ]);
+  });
+
+  it('a LOST CAS on the held_qualified write inserts no evidence, even with non-empty op_keys', async () => {
+    state.selectQueue.push(
+      [watchRow({ state: 'watching', recoveryObservedAt: recoveredAt, opKeys: ['x:y'] })],
+      [],
+    );
+    state.updateReturningQueue.push([]); // lost the CAS
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'not_found' });
+    expect(state.insertCount).toBe(0);
+  });
+
+  it('an intent-anchored watch (source_kind "intent") writes namespace "policy_key"', async () => {
+    state.selectQueue.push(
+      [watchRow({ state: 'watching', recoveryObservedAt: recoveredAt, sourceKind: 'intent', opKeys: [OP_KEY] })],
+      [], // no recurrence -> held_qualified
+    );
+
+    await checkFixWatchPhase2(WATCH_ID);
+
+    expect(state.insertValues[0]).toEqual([
+      expect.objectContaining({ namespace: 'policy_key', opKey: OP_KEY }),
+    ]);
+  });
+
+  it('an act-run watch (source_kind "act_run") writes namespace "act_op"', async () => {
+    state.selectQueue.push(
+      [watchRow({ state: 'watching', recoveryObservedAt: recoveredAt, sourceKind: 'act_run', opKeys: ['manage_services.restart'] })],
+      [],
+    );
+
+    await checkFixWatchPhase2(WATCH_ID);
+
+    expect(state.insertValues[0]).toEqual([
+      expect.objectContaining({ namespace: 'act_op', opKey: 'manage_services.restart' }),
+    ]);
+  });
+
+  it('a watch with empty op_keys (pre-P2-5 row) writes no evidence on either verdict', async () => {
+    state.selectQueue.push(
+      [watchRow({ state: 'watching', recoveryObservedAt: recoveredAt, opKeys: [] })],
+      [],
+    );
+
+    await checkFixWatchPhase2(WATCH_ID);
+
     expect(state.insertCount).toBe(0);
   });
 });
