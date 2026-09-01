@@ -205,9 +205,26 @@ async function proposeOrgMappings(
   conn: AccountingConnection,
   liveConn: AccountingConnection,
 ): Promise<MappingProposal[]> {
-  const remoteCustomers = await callProviderOrThrow(
-    () => getAccountingProvider(conn.provider).listRemoteCustomers(liveConn),
-    'QuickBooks returned an error while listing customers',
+  // runOutsideDbContext here is self-documentation/parity with the
+  // quickbooksCustomerImport.ts precedent, NOT a standalone fix: per the
+  // comment on SELF_MANAGED_DB_CONTEXT_ROUTES
+  // (middleware/selfManagedDbContextRoutes.ts), it only swaps which `db` the
+  // AsyncLocalStorage proxy resolves to — it does NOT close an outer
+  // transaction the auth middleware already opened for the request. Unlike
+  // quickbooksCustomerImport's routes, this service's DB reads deliberately
+  // stay in the CALLER'S ambient partner context (ruling in the task brief),
+  // so the ONLY thing that actually keeps this multi-second QBO page fetch
+  // from pinning a pooled connection idle-in-transaction (#1105) is the
+  // caller opting out of the auto request-transaction. Task 5's mapping
+  // routes MUST be added to SELF_MANAGED_DB_CONTEXT_ROUTES — the same
+  // treatment already given `/accounting/:provider/customers` — or every
+  // proposal/income-account request holds a connection across the QBO round
+  // trip.
+  const remoteCustomers = await runOutsideDbContext(() =>
+    callProviderOrThrow(
+      () => getAccountingProvider(conn.provider).listRemoteCustomers(liveConn),
+      'QuickBooks returned an error while listing customers',
+    ),
   );
   const remoteNameById = new Map(remoteCustomers.map((c) => [c.id, c.displayName]));
 
@@ -315,9 +332,12 @@ async function proposeItemMappings(
   conn: AccountingConnection,
   liveConn: AccountingConnection,
 ): Promise<MappingProposal[]> {
-  const remoteItems = await callProviderOrThrow(
-    () => getAccountingProvider(conn.provider).listRemoteItems(liveConn),
-    'QuickBooks returned an error while listing items',
+  // See the comment in proposeOrgMappings above — same SELF_MANAGED_DB_CONTEXT_ROUTES obligation.
+  const remoteItems = await runOutsideDbContext(() =>
+    callProviderOrThrow(
+      () => getAccountingProvider(conn.provider).listRemoteItems(liveConn),
+      'QuickBooks returned an error while listing items',
+    ),
   );
   const remoteNameById = new Map(remoteItems.map((i) => [i.id, i.displayName]));
 
@@ -405,8 +425,12 @@ export async function listRemoteIncomeAccountsForPartner(input: {
   provider: 'quickbooks';
 }): Promise<RemoteIncomeAccount[]> {
   const { conn, liveConn } = await resolveConnectionAndToken(input.partnerId, input.provider);
-  return callProviderOrThrow(
-    () => getAccountingProvider(conn.provider).listRemoteIncomeAccounts(liveConn),
-    'QuickBooks returned an error while listing income accounts',
+  // Same SELF_MANAGED_DB_CONTEXT_ROUTES obligation as proposeOrgMappings above —
+  // Task 5's `GET /:provider/income-accounts` route must be registered there too.
+  return runOutsideDbContext(() =>
+    callProviderOrThrow(
+      () => getAccountingProvider(conn.provider).listRemoteIncomeAccounts(liveConn),
+      'QuickBooks returned an error while listing income accounts',
+    ),
   );
 }
