@@ -12,7 +12,7 @@ ENV_FILE="${BREEZE_ENV_FILE:-${REPO_ROOT}/.env.prod}"
 # project — the monitoring overlay's postgres-exporter service depends on a
 # `postgres` service that only exists in the root docker-compose.yml (dev),
 # not in the managed-Postgres prod stack. See #4278.
-GRAFANA_CONTAINER="breeze-grafana"
+GRAFANA_CONTAINER="${GRAFANA_CONTAINER:-breeze-grafana}"
 
 if [[ $# -ge 1 ]]; then
   ENV_FILE="$1"

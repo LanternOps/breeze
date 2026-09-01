@@ -124,7 +124,7 @@ pnpm db:studio
 
 ```bash
 # Connect to the database (prod uses a managed Postgres instance, not a
-# local container — connect with the DATABASE_URL from .env.prod)
+# local container; run with .env.prod sourced: set -a; source .env.prod; set +a)
 psql "$DATABASE_URL"
 
 # List tables
