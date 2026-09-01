@@ -13,16 +13,20 @@
  * in system DB context, so the worker supplies `runOutsideDbContext(() =>
  * withSystemDbAccessContext(...))` itself around every job).
  *
- * Retry taxonomy (keys on `AccountingInvoicePushError.code`):
+ * Retry taxonomy (keys on `AccountingInvoicePushError.code` — a fixed
+ * `TERMINAL_CODES` allowlist below, NOT the HTTP `.status`: `invoice_not_pushable`
+ * alone carries both 404 (unknown invoice) and 409 (draft/void), so "terminal
+ * = 404/409" would be inaccurate shorthand for how the match actually works):
  *   - TERMINAL (logged, no rethrow — BullMQ marks the job complete): every
- *     404/409 code (`invoice_not_pushable`, `customer_not_mapped`,
+ *     code in `TERMINAL_CODES` — `invoice_not_pushable`, `customer_not_mapped`,
  *     `home_currency_unknown`, `currency_mismatch`,
  *     `customer_currency_mismatch`, `dependency_not_ready`, `not_connected`,
- *     `reauth_required`) PLUS `record_failed` (502 — the remote QuickBooks
- *     write already landed; only the local persist failed, so retrying would
- *     create a duplicate invoice in QuickBooks, not fix anything). Retrying
- *     any of these can never succeed: the mapping row already carries the
- *     error for an operator/route to see and act on.
+ *     `reauth_required` (each a 404 or 409 — see the codes' own status in
+ *     `accountingInvoicePush.ts`) PLUS `record_failed` (502 — the remote
+ *     QuickBooks write already landed; only the local persist failed, so
+ *     retrying would create a duplicate invoice in QuickBooks, not fix
+ *     anything). Retrying any of these can never succeed: the mapping row
+ *     already carries the error for an operator/route to see and act on.
  *   - RETRYABLE (rethrown so BullMQ's attempts/backoff fires): `quickbooks_error`
  *     (502 — a genuine QuickBooks/network failure) and any error that is not
  *     a typed `AccountingInvoicePushError` at all. The provider sends a
@@ -57,8 +61,10 @@ interface VoidInvoiceJobData {
 }
 export type AccountingSyncJobData = PushInvoiceJobData | VoidInvoiceJobData;
 
-// Every 404/409 code is terminal (retrying cannot fix a permanent mapping/
-// currency problem), plus `record_failed` — a 502 that is NEVER retry-safe
+// Matched by CODE, not `.status` — every code below is terminal because
+// retrying cannot fix a permanent mapping/currency problem (most carry status
+// 404 or 409; `invoice_not_pushable` alone can be either, depending which
+// precondition failed), plus `record_failed` — a 502 that is NEVER retry-safe
 // because the QuickBooks write already succeeded. `quickbooks_error` is the
 // one 502 code deliberately absent from this set: it is the only retryable
 // typed outcome.

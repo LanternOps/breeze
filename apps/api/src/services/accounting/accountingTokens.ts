@@ -2,7 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { runOutsideDbContext } from '../../db';
 import { accountingConnections } from '../../db/schema';
 import { decryptSecret } from '../secretCrypto';
-import type { AccountingConnection, DbTransactor } from './accountingConnectionService';
+import type { AccountingConnection, DbExecutor, DbTransactor } from './accountingConnectionService';
 import { markStatus, updateTokens } from './accountingConnectionService';
 import { getAccountingProvider } from './providerRegistry';
 
@@ -29,6 +29,110 @@ function isInvalidGrant(err: unknown): boolean {
     || (e.status === 400 && /invalid_grant/i.test(e.message ?? ''));
 }
 
+// A minimal shape of the raw `accounting_connections` row this module reads
+// under lock — narrower than the full Drizzle-inferred row, which is fine
+// since `DbExecutor`'s chain methods are all loosely `any`-typed anyway.
+interface LockedConnectionRow {
+  accessTokenEncrypted: string | null;
+  accessTokenExpiresAt: Date | null;
+  refreshTokenEncrypted: string | null;
+  refreshTokenExpiresAt: Date | null;
+  updatedAt: Date | null;
+}
+
+/** `SELECT ... FOR UPDATE` the connection row inside an already-open
+ *  transaction. Throws (loud, not a silent no-op) when nothing matches —
+ *  deleted underneath the capture, or the DB context is wrong — same
+ *  rationale as `updateTokens`/`markStatus`/`updateHomeCurrency`'s
+ *  zero-row-throws elsewhere in this module family. */
+async function lockConnectionRow(
+  tx: DbExecutor,
+  connection: Pick<AccountingConnection, 'id' | 'partnerId'>,
+): Promise<LockedConnectionRow> {
+  const [row] = await tx
+    .select()
+    .from(accountingConnections)
+    .where(and(eq(accountingConnections.id, connection.id), eq(accountingConnections.partnerId, connection.partnerId)))
+    .limit(1)
+    .for('update');
+  if (!row) {
+    throw new Error(`getValidAccessToken matched no accounting_connections row (id=${connection.id}) under lock; it was deleted underneath the capture or the DB context is wrong`);
+  }
+  return row as LockedConnectionRow;
+}
+
+/** The row's access token, decrypted, ONLY when it is outside the refresh
+ *  buffer — null otherwise (missing, or itself needs refreshing). Used at
+ *  every re-read point below to answer "does this row already have a usable
+ *  token right now" without duplicating the buffer-math three times. */
+function freshAccessTokenFromRow(row: LockedConnectionRow, now: number): string | null {
+  const accessExpiresAt = row.accessTokenExpiresAt?.getTime() ?? 0;
+  if (!row.accessTokenEncrypted || accessExpiresAt <= now + ACCESS_TOKEN_REFRESH_BUFFER_MS) return null;
+  return decryptSecret(row.accessTokenEncrypted);
+}
+
+function generationChanged(current: Date | null, captured: Date | null): boolean {
+  return (current?.getTime() ?? null) !== (captured?.getTime() ?? null);
+}
+
+type RefreshTokens = Awaited<ReturnType<ReturnType<typeof getAccountingProvider>['refresh']>>;
+
+/**
+ * `provider.refresh()` failed. `invalid_grant` normally means the refresh
+ * token was permanently revoked — but it can ALSO mean we lost a concurrent
+ * refresh race: a peer rotated the connection's refresh token between our
+ * Transaction A capture and this failed fetch, and QuickBooks is correctly
+ * rejecting the now-stale token we tried. Re-check under the lock before
+ * concluding it's permanent: only mark `reauth_required` when the row STILL
+ * holds the exact refresh token we attempted.
+ */
+async function handleRefreshFailure(
+  db: DbTransactor,
+  connection: AccountingConnection,
+  attemptedRefreshToken: string,
+  err: unknown,
+  now: number,
+): Promise<string> {
+  if (err instanceof ReauthRequiredError) throw err;
+  if (!isInvalidGrant(err)) {
+    // Transient/unknown failure — propagate so it's retried and surfaced by
+    // the global error handler, NOT misclassified as permanent reauth.
+    throw err;
+  }
+
+  return db.transaction(async (tx) => {
+    const row = await lockConnectionRow(tx, connection);
+    const currentRefreshToken = row.refreshTokenEncrypted ? decryptSecret(row.refreshTokenEncrypted) : null;
+
+    if (currentRefreshToken !== attemptedRefreshToken) {
+      // A peer already rotated past the token we tried — this invalid_grant
+      // was us losing the race, not a real revocation. Leave status
+      // untouched; hand back the peer's fresh token if it left one.
+      const peerToken = freshAccessTokenFromRow(row, now);
+      if (peerToken) return peerToken;
+      // The refresh token changed but the row carries no fresh access token
+      // (a peer's rotation still mid-flight, or a state this function did
+      // not cause and cannot safely resolve). Propagate the ORIGINAL error
+      // rather than manufacturing a reauth_required this branch has no basis
+      // for — the safe default is "retry", matching the transient-failure
+      // path above.
+      throw err;
+    }
+
+    // The row still holds the exact token we tried — a genuine revocation.
+    // Preserve the underlying Intuit error for forensics before flattening it
+    // into the canned reauth status (without it, "why did this flip to
+    // reauth_required" is undebuggable).
+    console.error('[accounting] QuickBooks refresh returned invalid_grant', {
+      connectionId: connection.id,
+      partnerId: connection.partnerId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    await markStatus(tx, connection.id, connection.partnerId, 'reauth_required', 'QuickBooks refresh token is invalid or expired');
+    throw new ReauthRequiredError();
+  });
+}
+
 export async function getValidAccessToken(db: DbTransactor, connection: AccountingConnection): Promise<string> {
   const now = Date.now();
   const refreshExpiresAt = connection.refreshTokenExpiresAt?.getTime() ?? 0;
@@ -42,46 +146,37 @@ export async function getValidAccessToken(db: DbTransactor, connection: Accounti
     return connection.accessToken;
   }
 
-  // Per-connection lock (Phase C, Task 4): a refresh is needed, and this
-  // connection can now be refreshed concurrently — an on-demand request AND a
-  // background accounting-sync worker job can race here. Without a lock, both
+  // Per-connection refresh lock (Phase C, Task 4; fixed in review round 1 —
+  // #1105 connection-hold class). A refresh is needed, and this connection
+  // can now be refreshed concurrently: an on-demand request AND a background
+  // accounting-sync worker job can race here. Without SOME coordination, both
   // would refresh; QBO ROTATES the refresh token on every call, so the SECOND
-  // refresh silently invalidates the first caller's already-rotated token, and
-  // whichever persist wins leaves the loser holding a dead refresh token.
+  // refresh silently invalidates the first caller's already-rotated token,
+  // and whichever persist wins leaves the loser holding a dead refresh token.
   //
-  // `db.transaction` + `SELECT ... FOR UPDATE` serializes refreshers on this
-  // row (mirrors accountingConnectionService.updateHomeCurrency's row-lock
-  // shape). The double-checked re-read after acquiring the lock returns the
-  // WINNER's fresh token to the loser instead of refreshing a second time.
-  return db.transaction(async (tx) => {
-    const [row] = await tx
-      .select()
-      .from(accountingConnections)
-      .where(and(eq(accountingConnections.id, connection.id), eq(accountingConnections.partnerId, connection.partnerId)))
-      .limit(1)
-      .for('update');
+  // The lock is deliberately NEVER held across `provider.refresh()` (network
+  // I/O) — an earlier version of this function did `db.transaction(... FOR
+  // UPDATE ... await provider.refresh() ...)`, pinning a pooled Postgres
+  // connection AND the row lock for the entire QBO round trip. That is
+  // exactly the #1105 connection-hold class this repo has had pool-storm
+  // incidents from; `runOutsideDbContext` only escapes the RLS/ALS context,
+  // it does not release a transaction whose `tx` handle we still hold
+  // directly. Instead, two SHORT transactions bracket the fetch:
+  //
+  //   A. Lock the row, re-check under the lock (double-checked: a peer may
+  //      already have refreshed while we waited for the lock). If still
+  //      stale, capture the refresh token + a generation marker (`updatedAt`)
+  //      and COMMIT — no transaction stays open while we call QuickBooks.
+  //   (fetch — no transaction open)
+  //   B. Lock the row again. If its generation moved since A, a peer won the
+  //      race while we were mid-fetch — DISCARD our rotation (never overwrite
+  //      a newer one) and return the peer's fresh token. Otherwise persist
+  //      ours, same zero-row-throw `updateTokens` as before.
+  const captured = await db.transaction(async (tx) => {
+    const row = await lockConnectionRow(tx, connection);
 
-    if (!row) {
-      // Deleted underneath the capture (disconnected) or hidden by RLS —
-      // both are "nothing to refresh"; loud rather than a silent hang, same
-      // rationale as updateTokens/markStatus/updateHomeCurrency's 0-row-throw.
-      throw new Error(`getValidAccessToken matched no accounting_connections row (id=${connection.id}) under lock; it was deleted underneath the capture or the DB context is wrong`);
-    }
-
-    // Double-checked: another caller may have already refreshed while we
-    // waited for the row lock. Re-derive expiry from the LOCKED row, not the
-    // pre-lock `connection` snapshot passed in.
-    const lockedAccessExpiresAt = row.accessTokenExpiresAt?.getTime() ?? 0;
-    if (row.accessTokenEncrypted && lockedAccessExpiresAt > now + ACCESS_TOKEN_REFRESH_BUFFER_MS) {
-      const winnerAccessToken = decryptSecret(row.accessTokenEncrypted);
-      // decryptSecret only returns null for a falsy input, which the truthy
-      // check above already ruled out — this is a type-narrowing guard, not a
-      // realistically reachable branch.
-      if (!winnerAccessToken) {
-        throw new Error(`getValidAccessToken: locked row's accessTokenEncrypted decrypted to empty (id=${connection.id})`);
-      }
-      return winnerAccessToken;
-    }
+    const winnerToken = freshAccessTokenFromRow(row, now);
+    if (winnerToken) return { needsRefresh: false as const, accessToken: winnerToken };
 
     const lockedRefreshToken = row.refreshTokenEncrypted ? decryptSecret(row.refreshTokenEncrypted) : null;
     const lockedRefreshExpiresAt = row.refreshTokenExpiresAt?.getTime() ?? 0;
@@ -90,36 +185,43 @@ export async function getValidAccessToken(db: DbTransactor, connection: Accounti
       throw new ReauthRequiredError();
     }
 
-    try {
-      const provider = getAccountingProvider(connection.provider);
-      // QBO ROTATES the refresh token on every refresh — updateTokens persists the
-      // returned refresh_token, not the old one. Dropping that write permanently
-      // breaks the connection.
-      const tokens = await runOutsideDbContext(() => provider.refresh(lockedRefreshToken));
-      await updateTokens(tx, connection.id, connection.partnerId, {
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
-        accessTokenExpiresAt: tokens.accessTokenExpiresAt,
-        refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
-      });
-      return tokens.accessToken;
-    } catch (err) {
-      if (err instanceof ReauthRequiredError) throw err;
-      if (isInvalidGrant(err)) {
-        // Preserve the underlying Intuit error for forensics before we flatten it
-        // into the canned reauth status (without it, "why did this flip to
-        // reauth_required" is undebuggable).
-        console.error('[accounting] QuickBooks refresh returned invalid_grant', {
-          connectionId: connection.id,
-          partnerId: connection.partnerId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        await markStatus(tx, connection.id, connection.partnerId, 'reauth_required', 'QuickBooks refresh token is invalid or expired');
-        throw new ReauthRequiredError();
-      }
-      // Transient/unknown failure — propagate so it's retried and surfaced by the
-      // global error handler, NOT misclassified as permanent reauth.
-      throw err;
+    return { needsRefresh: true as const, refreshToken: lockedRefreshToken, generation: row.updatedAt };
+  });
+
+  if (!captured.needsRefresh) return captured.accessToken;
+
+  let tokens: RefreshTokens;
+  try {
+    const provider = getAccountingProvider(connection.provider);
+    // QBO ROTATES the refresh token on every refresh — the persist below
+    // writes the returned refresh_token, not the old one. Dropping that write
+    // permanently breaks the connection. No transaction is open here.
+    tokens = await runOutsideDbContext(() => provider.refresh(captured.refreshToken));
+  } catch (err) {
+    return handleRefreshFailure(db, connection, captured.refreshToken, err, now);
+  }
+
+  return db.transaction(async (tx) => {
+    const row = await lockConnectionRow(tx, connection);
+
+    if (generationChanged(row.updatedAt, captured.generation)) {
+      // A peer already committed a rotation while we were fetching — never
+      // overwrite a newer one with our now-stale result. Prefer the peer's
+      // fresh token when it left one.
+      const peerToken = freshAccessTokenFromRow(row, now);
+      if (peerToken) return peerToken;
+      // The generation moved but the row carries no fresh token yet (an
+      // in-flight peer write we raced past, or an unrelated write to this
+      // row) — our own freshly-fetched, still-valid rotation is the best
+      // available result, so fall through and persist it.
     }
+
+    await updateTokens(tx, connection.id, connection.partnerId, {
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      accessTokenExpiresAt: tokens.accessTokenExpiresAt,
+      refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+    });
+    return tokens.accessToken;
   });
 }
