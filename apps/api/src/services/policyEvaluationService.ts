@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   automationPolicies,
@@ -128,6 +128,99 @@ type DeviceRuleEvaluation = {
 };
 
 type VersionOperator = 'any' | 'exact' | 'minimum' | 'maximum';
+
+// ─── Compliance-row upserts (#4122) ─────────────────────────────────────────
+//
+// Both compliance shapes used to be written with a non-atomic select-then-
+// insert against a table that had no uniqueness at all, so two concurrent
+// evaluations of the same policy each saw "no row" and each inserted. The
+// duplicates then fed `policyAlertBridge`'s reconcile guard and the next
+// evaluation's own read, which picked an arbitrary one of them.
+//
+// Migration 2026-09-29-100000 adds the two PARTIAL unique indexes these
+// builders arbitrate on. Postgres only infers a partial index as an ON CONFLICT
+// arbiter when the statement's inference predicate implies the index predicate,
+// so each `targetWhere` below must stay byte-for-byte equivalent to its index's
+// `WHERE`. Getting it wrong is loud, not silent: `42P10 there is no unique or
+// exclusion constraint matching the ON CONFLICT specification`.
+//
+// `remediationAttempts` is deliberately absent from every SET list — it is a
+// counter owned by the remediation path and a re-evaluation must not reset it.
+// This matches the UPDATE these upserts replace.
+//
+// Both builders are exported so `policyEvaluationService.upsertSql.test.ts` can
+// assert the COMPILED SQL. A call-shape assertion against a mocked `db` would
+// stay green with the wrong conflict target, which is the whole bug class here.
+
+type ComplianceUpsertDetails = Record<string, unknown>;
+
+export function buildPolicyComplianceUpsert(input: {
+  policyId: string;
+  deviceId: string;
+  status: EvaluationStatus;
+  details: ComplianceUpsertDetails;
+  checkedAt: Date;
+}) {
+  const mutable = {
+    status: input.status,
+    details: input.details,
+    lastCheckedAt: input.checkedAt,
+    updatedAt: input.checkedAt,
+  };
+  return db
+    .insert(automationPolicyCompliance)
+    .values({
+      policyId: input.policyId,
+      deviceId: input.deviceId,
+      ...mutable,
+    })
+    .onConflictDoUpdate({
+      // Mirrors `apc_policy_device_uq`.
+      target: [automationPolicyCompliance.policyId, automationPolicyCompliance.deviceId],
+      targetWhere: isNotNull(automationPolicyCompliance.policyId),
+      set: mutable,
+    });
+}
+
+export function buildConfigPolicyComplianceUpsert(input: {
+  configPolicyId: string;
+  configItemName: string;
+  deviceId: string;
+  status: 'compliant' | 'non_compliant' | 'error';
+  details: ComplianceUpsertDetails;
+  checkedAt: Date;
+}) {
+  const mutable = {
+    status: input.status,
+    details: input.details,
+    lastCheckedAt: input.checkedAt,
+    updatedAt: input.checkedAt,
+  };
+  return db
+    .insert(automationPolicyCompliance)
+    .values({
+      // Explicitly NULL: this row lives on the config-policy axis, and a
+      // non-null policy_id here would also land it in `apc_policy_device_uq`.
+      policyId: null,
+      configPolicyId: input.configPolicyId,
+      configItemName: input.configItemName,
+      deviceId: input.deviceId,
+      ...mutable,
+    })
+    .onConflictDoUpdate({
+      // Mirrors `apc_config_policy_item_device_uq`.
+      target: [
+        automationPolicyCompliance.configPolicyId,
+        automationPolicyCompliance.configItemName,
+        automationPolicyCompliance.deviceId,
+      ],
+      targetWhere: and(
+        isNotNull(automationPolicyCompliance.configPolicyId),
+        isNotNull(automationPolicyCompliance.configItemName),
+      ),
+      set: mutable,
+    });
+}
 
 export type RuleEvaluationDebugInput = {
   device: {
@@ -1379,36 +1472,27 @@ export async function evaluatePolicy(
       registryState: registryStateByDevice.get(device.id) ?? [],
       configState: configStateByDevice.get(device.id) ?? [],
     });
+    const checkedAt = new Date();
     const status: EvaluationStatus = evaluation.passed ? 'compliant' : 'non_compliant';
     const details = {
-      evaluatedAt: new Date().toISOString(),
+      evaluatedAt: checkedAt.toISOString(),
       rules: ruleKeys,
       passed: evaluation.passed,
       ruleResults: evaluation.details,
       source,
     };
 
-    if (existing) {
-      await db
-        .update(automationPolicyCompliance)
-        .set({
-          status,
-          details,
-          lastCheckedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(automationPolicyCompliance.id, existing.id));
-    } else {
-      await db
-        .insert(automationPolicyCompliance)
-        .values({
-          policyId: policy.id,
-          deviceId: device.id,
-          status,
-          details,
-          lastCheckedAt: new Date(),
-        });
-    }
+    // The `existing` read above still supplies `previousStatus` for the event
+    // payloads below, but it no longer decides insert-vs-update: a concurrent
+    // evaluation may have inserted the row between that SELECT and here, and
+    // only the ON CONFLICT arbiter closes that window (#4122).
+    await buildPolicyComplianceUpsert({
+      policyId: policy.id,
+      deviceId: device.id,
+      status,
+      details,
+      checkedAt,
+    });
 
     const remediationRunId = requestRemediation
       ? await triggerRemediationAutomation(policy, device, status, await remediationAutomationIdForOrg(device.orgId))
@@ -1652,8 +1736,9 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
 
     const ruleKeys = parsePolicyRules(complianceRule.rules).rules.map((rule) => rule.type);
 
+    const checkedAt = new Date();
     const evaluationDetails = {
-      evaluatedAt: new Date().toISOString(),
+      evaluatedAt: checkedAt.toISOString(),
       rules: ruleKeys,
       passed: status === 'compliant',
       ruleResults: ruleDetails,
@@ -1661,42 +1746,17 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
       enforcementLevel: complianceRule.enforcementLevel,
     };
 
-    // Upsert compliance row keyed by (configPolicyId=featureLinkId, configItemName, deviceId)
-    const [existing] = await db
-      .select()
-      .from(automationPolicyCompliance)
-      .where(
-        and(
-          eq(automationPolicyCompliance.configPolicyId, complianceRule.featureLinkId),
-          eq(automationPolicyCompliance.configItemName, complianceRule.name),
-          eq(automationPolicyCompliance.deviceId, deviceId)
-        )
-      )
-      .limit(1);
-
-    if (existing) {
-      await db
-        .update(automationPolicyCompliance)
-        .set({
-          status,
-          details: evaluationDetails,
-          lastCheckedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(automationPolicyCompliance.id, existing.id));
-    } else {
-      await db
-        .insert(automationPolicyCompliance)
-        .values({
-          policyId: null,
-          configPolicyId: complianceRule.featureLinkId,
-          configItemName: complianceRule.name,
-          deviceId,
-          status,
-          details: evaluationDetails,
-          lastCheckedAt: new Date(),
-        });
-    }
+    // Atomic upsert keyed by (configPolicyId=featureLinkId, configItemName,
+    // deviceId). This replaced a select-then-insert whose read/write gap let
+    // two concurrent evaluations both insert for the same key (#4122).
+    await buildConfigPolicyComplianceUpsert({
+      configPolicyId: complianceRule.featureLinkId,
+      configItemName: complianceRule.name,
+      deviceId,
+      status,
+      details: evaluationDetails,
+      checkedAt,
+    });
 
     // Trigger remediation if enforcement is 'enforce'
     let remediationTriggered = false;
