@@ -28,7 +28,7 @@ const { authState, mocks } = vi.hoisted(() => ({
     upsertConnection: vi.fn(),
     deleteConnection: vi.fn(),
     exchangeCode: vi.fn(),
-    fetchHomeCurrency: vi.fn(),
+    fetchRealmSettings: vi.fn(),
     updateHomeCurrency: vi.fn(),
     captureException: vi.fn(),
     captureMessage: vi.fn(),
@@ -104,7 +104,7 @@ vi.mock('../../services/accounting/providerRegistry', () => ({
     provider: 'quickbooks',
     buildAuthUrl: mocks.buildAuthUrl,
     exchangeCode: mocks.exchangeCode,
-    fetchHomeCurrency: mocks.fetchHomeCurrency,
+    fetchRealmSettings: mocks.fetchRealmSettings,
   })),
 }));
 
@@ -151,7 +151,7 @@ describe('accounting routes', () => {
       updatedAt: PERSISTED_AT,
       homeCurrency: null,
     });
-    mocks.fetchHomeCurrency.mockResolvedValue('CAD');
+    mocks.fetchRealmSettings.mockResolvedValue({ homeCurrency: 'CAD', multiCurrencyEnabled: null });
   });
 
   it('connect returns an authUrl containing the QuickBooks accounting scope', async () => {
@@ -298,7 +298,7 @@ describe('accounting routes', () => {
 
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('connected=1');
-    expect(mocks.fetchHomeCurrency).toHaveBeenCalledWith(expect.objectContaining({ id: CONNECTION_ID, realmId: 'realm-A' }));
+    expect(mocks.fetchRealmSettings).toHaveBeenCalledWith(expect.objectContaining({ id: CONNECTION_ID, realmId: 'realm-A' }));
     expect(mocks.updateHomeCurrency).toHaveBeenCalledWith(
       expect.anything(),
       CONNECTION_ID,
@@ -316,7 +316,7 @@ describe('accounting routes', () => {
     // Intuit failure would strand the connection at NULL forever.
     mocks.getConnection.mockResolvedValueOnce({ id: CONNECTION_ID, realmId: 'realm-A', homeCurrency: 'CAD' });
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
-    mocks.fetchHomeCurrency.mockRejectedValueOnce(new Error('qbo 503'));
+    mocks.fetchRealmSettings.mockRejectedValueOnce(new Error('qbo 503'));
 
     const res = await runCallback(app, 'realm-A');
 
@@ -353,7 +353,7 @@ describe('accounting routes', () => {
 
   it('callback still connects when the QBO Preferences fetch fails (non-fatal capture)', async () => {
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
-    mocks.fetchHomeCurrency.mockRejectedValueOnce(new Error('qbo 403'));
+    mocks.fetchRealmSettings.mockRejectedValueOnce(new Error('qbo 403'));
 
     const res = await runCallback(app);
 
@@ -367,9 +367,9 @@ describe('accounting routes', () => {
     // abort budget; a hung Intuit must surface as a plain connected redirect,
     // never as a stalled /callback or a connect error.
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
-    mocks.fetchHomeCurrency.mockRejectedValueOnce(Object.assign(
+    mocks.fetchRealmSettings.mockRejectedValueOnce(Object.assign(
       new Error('QuickBooks preferences request timed out'),
-      { operation: 'fetchHomeCurrency' },
+      { operation: 'fetchRealmSettings' },
     ));
 
     const res = await runCallback(app);
@@ -381,7 +381,7 @@ describe('accounting routes', () => {
 
   it('callback still connects when the realm reports no home currency', async () => {
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
-    mocks.fetchHomeCurrency.mockResolvedValueOnce(null);
+    mocks.fetchRealmSettings.mockResolvedValueOnce({ homeCurrency: null, multiCurrencyEnabled: null });
 
     const res = await runCallback(app);
 
@@ -414,7 +414,7 @@ describe('accounting routes', () => {
 
   it('a realm that reports NO currency is a warning, never an exception', async () => {
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
-    mocks.fetchHomeCurrency.mockResolvedValueOnce(null);
+    mocks.fetchRealmSettings.mockResolvedValueOnce({ homeCurrency: null, multiCurrencyEnabled: null });
 
     const res = await runCallback(app);
 
@@ -461,15 +461,15 @@ describe('accounting routes', () => {
 
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('error=persist_failed');
-    expect(mocks.fetchHomeCurrency).not.toHaveBeenCalled();
+    expect(mocks.fetchRealmSettings).not.toHaveBeenCalled();
     expect(mocks.updateHomeCurrency).not.toHaveBeenCalled();
   });
 
   it('captured home-currency telemetry carries no QBO body, realm id, token or auth code', async () => {
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
-    mocks.fetchHomeCurrency.mockRejectedValueOnce(Object.assign(
+    mocks.fetchRealmSettings.mockRejectedValueOnce(Object.assign(
       new Error('QuickBooks preferences request failed with 403'),
-      { status: 403, operation: 'fetchHomeCurrency' },
+      { status: 403, operation: 'fetchRealmSettings' },
     ));
 
     const res = await runCallback(app, 'realm-A');

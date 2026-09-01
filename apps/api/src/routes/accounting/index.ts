@@ -392,7 +392,9 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
   // The QBO call runs with no ambient DB context; the write is a short
   // compare-and-set on the row we just persisted.
   try {
-    const homeCurrency = await runOutsideDbContext(() => providerClient.fetchHomeCurrency(connection));
+    // Persisting multiCurrencyEnabled is Task 2's job — only homeCurrency is
+    // threaded through here for now.
+    const { homeCurrency } = await runOutsideDbContext(() => providerClient.fetchRealmSettings(connection));
     if (homeCurrency && connection.updatedAt) {
       // The generation this capture belongs to: the row as we just wrote it
       // (updatedAt) AND the realm we just exchanged for. A reconnect to another

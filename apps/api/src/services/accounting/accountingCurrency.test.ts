@@ -23,6 +23,7 @@ function invoicePayload(currencyCode: string): PushInvoiceArgs[1] {
     taxTotal: '0.00',
     total: '100.00',
     lines: [],
+    mapping: null,
   };
 }
 
