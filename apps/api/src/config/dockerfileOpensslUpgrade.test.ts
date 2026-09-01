@@ -142,6 +142,27 @@ function checkApkPolicy(source: string) {
   }
 }
 
+/**
+ * Unlike checkApkPolicy (--check-apk, which only calls reject_unaudited_apk
+ * and therefore never reaches the require_grep "upgrade must be present" half
+ * of require_audited_openssl_upgrade), this invokes --require-openssl-upgrade
+ * so both halves of the credential-boundary rule run. See issue #4271.
+ */
+function checkOpensslUpgradePolicy(source: string) {
+  const directory = mkdtempSync(path.join(tmpdir(), 'breeze-openssl-upgrade-policy-'));
+  const dockerfile = path.join(directory, 'Dockerfile');
+  writeFileSync(dockerfile, source);
+  try {
+    return spawnSync(
+      'bash',
+      [path.join(REPO_ROOT, HARDENING_SCRIPT), '--require-openssl-upgrade', dockerfile],
+      { encoding: 'utf8' },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 interface Stage {
   /** Lowercased `AS` alias, or undefined for an unnamed stage. */
   alias?: string;
@@ -322,8 +343,63 @@ describe('Dockerfile OpenSSL upgrade coverage', () => {
     }
     for (const source of rejected) {
       const result = checkApkPolicy(source);
-      expect(result.status, `unexpectedly accepted: ${source}`).not.toBe(0);
+      // A bare `.not.toBe(0)` is satisfied by any non-zero exit — including
+      // status null (spawnSync failure) or 127 (missing script) — which would
+      // stay green even if the script started failing rejected inputs for an
+      // unrelated reason (a `set -u` trip, an arg-handling regression, a
+      // bash-version difference in CI). Pin the exact exit code and the
+      // specific rejection reason so only the intended policy failure passes.
+      expect(result.error, `harness failed to run the policy: ${source}`).toBeUndefined();
+      expect(result.status, `unexpectedly accepted: ${source}`).toBe(1);
+      expect(result.stderr, `wrong rejection reason: ${source}`).toMatch(
+        /contains an unaudited apk invocation/,
+      );
     }
+  });
+
+  it('exercises the "upgrade must be present" half via --require-openssl-upgrade', () => {
+    // --check-apk (used by checkApkPolicy above) calls reject_unaudited_apk
+    // directly and never reaches the require_grep call inside
+    // require_audited_openssl_upgrade. Deleting that require_grep call left
+    // the whole suite green until this test was added (issue #4271) — a
+    // read-executor Dockerfile that silently lost its OpenSSL upgrade would
+    // pass the full hardening script undetected.
+    const good = [
+      'FROM node:24-alpine@sha256:' + 'a'.repeat(64) + ' AS runner',
+      'RUN apk upgrade --no-cache libcrypto3 libssl3 && \\',
+      '    rm -rf /tmp',
+    ].join('\n');
+    const result = checkOpensslUpgradePolicy(good);
+    expect(result.error, 'harness failed to run the policy').toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+
+    const missing = [
+      'FROM node:24-alpine@sha256:' + 'a'.repeat(64) + ' AS runner',
+      'CMD ["node", "index.js"]',
+    ].join('\n');
+    const missingResult = checkOpensslUpgradePolicy(missing);
+    expect(missingResult.error, 'harness failed to run the policy').toBeUndefined();
+    expect(missingResult.status, 'no upgrade line: unexpectedly accepted').toBe(1);
+    expect(missingResult.stderr).toMatch(/must contain exactly: apk upgrade --no-cache libcrypto3 libssl3/);
+
+    const commentedOut = [
+      'FROM node:24-alpine@sha256:' + 'a'.repeat(64) + ' AS runner',
+      '# RUN apk upgrade --no-cache libcrypto3 libssl3',
+      'CMD ["node", "index.js"]',
+    ].join('\n');
+    const commentedResult = checkOpensslUpgradePolicy(commentedOut);
+    expect(commentedResult.error, 'harness failed to run the policy').toBeUndefined();
+    expect(commentedResult.status, 'commented-out upgrade: unexpectedly accepted').toBe(1);
+    expect(commentedResult.stderr).toMatch(/must contain exactly: apk upgrade --no-cache libcrypto3 libssl3/);
+
+    const halfPresent = [
+      'FROM node:24-alpine@sha256:' + 'a'.repeat(64) + ' AS runner',
+      'RUN apk upgrade --no-cache libcrypto3',
+    ].join('\n');
+    const halfResult = checkOpensslUpgradePolicy(halfPresent);
+    expect(halfResult.error, 'harness failed to run the policy').toBeUndefined();
+    expect(halfResult.status, 'half-present upgrade: unexpectedly accepted').toBe(1);
+    expect(halfResult.stderr).toMatch(/contains an unaudited apk invocation/);
   });
 
   it('accepts the two packages in either order, and rejects a non-upgrade mention', () => {

@@ -76,6 +76,16 @@ if [[ "${1:-}" == "--check-apk" ]]; then
   exit 0
 fi
 
+# Unlike --check-apk (which only exercises the "no unaudited apk invocation"
+# half via reject_unaudited_apk), this exercises the full credential-boundary
+# rule including the "the audited upgrade line is actually present" half
+# (require_grep inside require_audited_openssl_upgrade) — see issue #4271.
+if [[ "${1:-}" == "--require-openssl-upgrade" ]]; then
+  [[ -n "${2:-}" && -f "${2:-}" && -r "${2:-}" ]] || fail "--require-openssl-upgrade needs a readable Dockerfile"
+  require_audited_openssl_upgrade "$2"
+  exit 0
+fi
+
 extract_yaml_job() {
   local job="$1"
   local workflow="$2"
