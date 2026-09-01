@@ -1647,32 +1647,41 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
         onUnauthorized: UNAUTHORIZED,
       });
       // Optionally persist the manual line to the product catalog for reuse.
-      if (form.saveToCatalog) {
-        await runAction({
-          request: () => createCatalogItem({
-            itemType: 'service',
-            name: form.name.trim() || form.description.trim(),
-            description: form.description.trim() || null,
-            billingType: form.recurrence === 'one_time' ? 'one_time' : 'recurring',
-            billingFrequency: form.recurrence === 'monthly'
-              ? 'monthly'
-              : form.recurrence === 'annual'
-                ? 'annual'
-                : null,
-            // Price-book row in the quote's currency (the legacy unitPrice would be
-            // stored as the PARTNER currency — wrong for a foreign-currency quote).
-            prices: [{ currencyCode: quote.currencyCode, unitPrice: priceNum }],
-            taxable: form.taxable,
-          }),
-          errorFallback: t('quotes.editor.errors.lineAddedCatalogSaveFailed'),
-          successMessage: t('quotes.editor.success.savedToCatalog'),
-          onUnauthorized: UNAUTHORIZED,
-        });
-        void loadCatalog();
+      // This sits in a `finally` around `finishLineCreate()`: the manual LINE
+      // already exists server-side by this point (the addManualLine call above
+      // succeeded), so a failed catalog-save must not skip the resync — that
+      // would reopen #4286 for this one branch, stranding the line with no
+      // list refresh and no stale-list warning even though runAction's own
+      // "saving it to the catalog failed" toast already fired.
+      try {
+        if (form.saveToCatalog) {
+          await runAction({
+            request: () => createCatalogItem({
+              itemType: 'service',
+              name: form.name.trim() || form.description.trim(),
+              description: form.description.trim() || null,
+              billingType: form.recurrence === 'one_time' ? 'one_time' : 'recurring',
+              billingFrequency: form.recurrence === 'monthly'
+                ? 'monthly'
+                : form.recurrence === 'annual'
+                  ? 'annual'
+                  : null,
+              // Price-book row in the quote's currency (the legacy unitPrice would be
+              // stored as the PARTNER currency — wrong for a foreign-currency quote).
+              prices: [{ currencyCode: quote.currencyCode, unitPrice: priceNum }],
+              taxable: form.taxable,
+            }),
+            errorFallback: t('quotes.editor.errors.lineAddedCatalogSaveFailed'),
+            successMessage: t('quotes.editor.success.savedToCatalog'),
+            onUnauthorized: UNAUTHORIZED,
+          });
+          void loadCatalog();
+        }
+      } finally {
+        await finishLineCreate();
       }
-      await finishLineCreate();
     }, t('quotes.editor.errors.addLine'));
-  }, [quote.id, finishLineCreate, loadCatalog, runScoped, t]);
+  }, [quote.id, quote.currencyCode, finishLineCreate, loadCatalog, runScoped, t]);
 
   // Deferred-flush executor for a line delete (see startLineDelete). No
   // success toast — the undo toast at delete time already told the user.

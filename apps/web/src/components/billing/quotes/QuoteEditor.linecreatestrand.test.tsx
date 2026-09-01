@@ -24,6 +24,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import QuoteEditor from './QuoteEditor';
 import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
 import { addCatalogLine, addManualLine } from '../../../lib/api/quotes';
+import { createCatalogItem } from '../../../lib/api/catalog';
 
 vi.mock('../../../stores/auth', () => ({
   registerOrgIdProvider: vi.fn(),
@@ -101,6 +102,7 @@ const detail: QuoteDetailData = {
 
 const addCatalogLineMock = vi.mocked(addCatalogLine);
 const addManualLineMock = vi.mocked(addManualLine);
+const createCatalogItemMock = vi.mocked(createCatalogItem);
 
 const toastMessages = () =>
   showToast.mock.calls.map((c) => (c[0] as { message: string }).message);
@@ -137,10 +139,14 @@ describe('QuoteEditor — a catalog/manual line created server-side is never sil
     await submitCatalogLine();
 
     await waitFor(() => expect(addCatalogLineMock).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(showToast).toHaveBeenCalled());
-    expect(toastMessages().join(' | ')).toMatch(/added/i);
-    // Must not be the copy that invites a re-submit.
-    expect(toastMessages().join(' | ')).not.toMatch(/could not add/i);
+    // Assert the exact resolved copy, not just /added/i — the block-strand
+    // fix's `sectionAddedListStale` string also matches that loose regex, and
+    // a copy-paste that toasted the wrong locale key would still pass a loose
+    // "contains added" check (verified: swapping in `sectionAddedListStale`
+    // here left the loose assertion green).
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Line added, but the list could not refresh. Reload the page to see it.', type: 'warning' }),
+    ));
   });
 
   it('catalog add: still reports the stale-list warning (not a generic add failure) when the resync throws outright', async () => {
@@ -151,10 +157,9 @@ describe('QuoteEditor — a catalog/manual line created server-side is never sil
     await submitCatalogLine();
 
     await waitFor(() => expect(addCatalogLineMock).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(showToast).toHaveBeenCalled());
-    const joined = toastMessages().join(' | ');
-    expect(joined).toMatch(/added/i);
-    expect(joined).not.toMatch(/could not add the catalog item/i);
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Line added, but the list could not refresh. Reload the page to see it.', type: 'warning' }),
+    ));
   });
 
   it('catalog add: a genuine create failure still reports the real error, not "added"', async () => {
@@ -191,9 +196,9 @@ describe('QuoteEditor — a catalog/manual line created server-side is never sil
     await submitManualLine();
 
     await waitFor(() => expect(addManualLineMock).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(showToast).toHaveBeenCalled());
-    expect(toastMessages().join(' | ')).toMatch(/added/i);
-    expect(toastMessages().join(' | ')).not.toMatch(/could not add/i);
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Line added, but the list could not refresh. Reload the page to see it.', type: 'warning' }),
+    ));
   });
 
   it('manual add: a genuine create failure still reports the real error, not "added"', async () => {
@@ -218,5 +223,53 @@ describe('QuoteEditor — a catalog/manual line created server-side is never sil
 
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('manual add: still reports the stale-list warning (not a generic add failure) when the resync throws outright', async () => {
+    addManualLineMock.mockResolvedValue(okRes({ id: 'line-new' }));
+    const onChanged = vi.fn().mockRejectedValue(new Error('network gone'));
+
+    await mountEditor(onChanged);
+    await submitManualLine();
+
+    await waitFor(() => expect(addManualLineMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Line added, but the list could not refresh. Reload the page to see it.', type: 'warning' }),
+    ));
+  });
+
+  it('manual add: a failed catalog-save still resyncs the canvas rather than skipping it (the line already exists)', async () => {
+    // The line POST succeeds — the line EXISTS server-side — but the optional
+    // "save to catalog" follow-up fails. Before the fix, that failing
+    // `runAction` threw past the (then-unconditional) `finishLineCreate()`
+    // call entirely, so the canvas was left un-resynced with no stale-list
+    // warning on top of runAction's own "saving to catalog failed" toast —
+    // strictly worse than the plain fire-and-forget `refresh()` this PR
+    // replaces. The fix wraps the optional catalog-save in a `finally` so the
+    // resync always runs once the line itself is known to exist.
+    addManualLineMock.mockResolvedValue(okRes({ id: 'line-new' }));
+    createCatalogItemMock.mockResolvedValue(errRes());
+    const onChanged = vi.fn().mockResolvedValue(true);
+
+    await mountEditor(onChanged);
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
+    fireEvent.click(screen.getByTestId('quote-line-mode-blk-1-manual'));
+    fireEvent.change(screen.getByTestId('quote-manual-name-blk-1'), { target: { value: 'On-site setup' } });
+    fireEvent.click(screen.getByTestId('quote-manual-save-catalog-blk-1'));
+    fireEvent.click(screen.getByTestId('quote-manual-add-blk-1'));
+
+    await waitFor(() => expect(addManualLineMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(createCatalogItemMock).toHaveBeenCalledTimes(1));
+    // The resync ran despite the catalog-save failure — this is the assertion
+    // that would fail without the `finally` wrapper.
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    // errRes()'s body carries a literal `error` string, which extractApiError
+    // surfaces verbatim over the `lineAddedCatalogSaveFailed` fallback — same
+    // contract the catalog-add "genuine create failure" test above relies on.
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'upstream exploded', type: 'error' }),
+    ));
+    // No contradictory "could not add the line" — the line itself succeeded.
+    expect(toastMessages().join(' | ')).not.toMatch(/could not add the line/i);
   });
 });
