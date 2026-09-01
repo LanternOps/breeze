@@ -4,6 +4,7 @@ vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
 }));
 vi.mock('./binaryEdition', () => ({ getBinaryEdition: vi.fn(() => 'hosted') }));
+vi.mock('./binarySource', () => ({ getGithubReleaseVersion: vi.fn(() => '0.108.0') }));
 vi.mock('./scriptDispatch', () => ({ dispatchScriptToDevice: vi.fn() }));
 vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('node:fs', () => ({ createReadStream: vi.fn(() => ({})) }));
@@ -17,6 +18,7 @@ vi.mock('node:stream/promises', () => ({
 import { createHash } from 'node:crypto';
 import { db } from '../db';
 import { getBinaryEdition } from './binaryEdition';
+import { getGithubReleaseVersion } from './binarySource';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import { captureException, captureMessage } from './sentry';
 import { stat } from 'node:fs/promises';
@@ -105,6 +107,7 @@ describe('maybeDispatchEditionMigration', () => {
     process.env.AGENT_EDITION_AUTO_MIGRATE_ENABLED = 'true';
     process.env.PUBLIC_API_URL = 'https://eu.example.app';
     vi.mocked(getBinaryEdition).mockReturnValue('hosted' as never);
+    vi.mocked(getGithubReleaseVersion).mockReturnValue('0.108.0');
     vi.mocked(stat).mockResolvedValue({ mtimeMs: 1000, size: 4 } as never);
   });
 
@@ -180,6 +183,23 @@ describe('maybeDispatchEditionMigration', () => {
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
   });
 
+  it('withholds when the resolved target does not match the staged release (pin/promotion respected)', async () => {
+    primeHappyPath();
+    // Org pinned to 0.107.0 but the deployment's staged installer is 0.108.0:
+    // dispatching would install a version the tenant did not select.
+    await maybeDispatchEditionMigration(baseArgs({ resolveTarget: vi.fn().mockResolvedValue('0.107.0') }));
+    expect(db.update).not.toHaveBeenCalled();
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+  });
+
+  it('withholds when the deployment release is unknown (BREEZE_VERSION unset)', async () => {
+    primeHappyPath();
+    vi.mocked(getGithubReleaseVersion).mockReturnValue('latest');
+    await maybeDispatchEditionMigration(baseArgs());
+    expect(db.update).not.toHaveBeenCalled();
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+  });
+
   it('skips (before claiming) when the staged MSI is unreadable', async () => {
     primeHappyPath();
     vi.mocked(stat).mockRejectedValue(new Error('ENOENT'));
@@ -229,11 +249,14 @@ describe('maybeDispatchEditionMigration', () => {
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
   });
 
-  it('never throws into the caller — a dispatch crash is captured, claim released', async () => {
+  it('never throws into the caller — a dispatch CRASH keeps the claim (queue state indeterminate)', async () => {
     const claim = primeHappyPath();
     vi.mocked(dispatchScriptToDevice).mockRejectedValue(new Error('boom'));
     await expect(maybeDispatchEditionMigration(baseArgs())).resolves.toBeUndefined();
     expect(captureException).toHaveBeenCalled();
-    expect(claim.set).toHaveBeenCalledWith({ editionMigrationDispatchedAt: null });
+    // A THROW from dispatchScriptToDevice may be post-insert: the command may
+    // already exist, so the once-per-device claim must stand — only a typed
+    // ok:false refusal (provably nothing queued) releases it.
+    expect(claim.set).not.toHaveBeenCalledWith({ editionMigrationDispatchedAt: null });
   });
 });

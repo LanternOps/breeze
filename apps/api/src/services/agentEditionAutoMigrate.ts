@@ -59,12 +59,13 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { join, resolve } from 'node:path';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, ne } from 'drizzle-orm';
 import { db } from '../db';
 import { envFlag } from '../config/env';
 import { devices } from '../db/schema/devices';
 import { scripts } from '../db/schema/scripts';
 import { getBinaryEdition } from './binaryEdition';
+import { getGithubReleaseVersion } from './binarySource';
 import { compareAgentVersions } from './agentEditionCompat';
 import { dispatchScriptToDevice, type DispatchScriptInput } from './scriptDispatch';
 import { captureException, captureMessage } from './sentry';
@@ -112,6 +113,9 @@ function warnOnce(key: string, message: string): void {
 // readFileSync-ing the whole installer, so the cache-miss path never stalls
 // the event loop for the duration of a 30MB read+digest.
 let msiShaCache: { mtimeMs: number; size: number; sha256: string } | null = null;
+// Cold-cache singleflight: a reconnect burst of stranded devices must stream
+// the 30MB installer once, not once per concurrent heartbeat.
+let msiShaInFlight: Promise<string | null> | null = null;
 
 function stagedMsiPath(): string {
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
@@ -119,6 +123,14 @@ function stagedMsiPath(): string {
 }
 
 async function stagedMsiSha256(): Promise<string | null> {
+  if (msiShaInFlight) return msiShaInFlight;
+  msiShaInFlight = computeStagedMsiSha256().finally(() => {
+    msiShaInFlight = null;
+  });
+  return msiShaInFlight;
+}
+
+async function computeStagedMsiSha256(): Promise<string | null> {
   try {
     const path = stagedMsiPath();
     const fileStat = await stat(path);
@@ -143,6 +155,29 @@ async function stagedMsiSha256(): Promise<string | null> {
 type AutoMigrateDevice = DispatchScriptInput['device'] &
   Pick<typeof devices.$inferSelect, 'editionMigrationDispatchedAt'>;
 
+/**
+ * The cheap, non-DB gate — exported so the heartbeat can decide whether to
+ * launch the (system-context-opening) dispatch at all. A flag-off deployment
+ * or a non-candidate device must cost the heartbeat exactly these comparisons:
+ * no AsyncLocalStorage exit, no system context, no second transaction.
+ */
+export function shouldConsiderEditionMigration(args: {
+  device: AutoMigrateDevice;
+  normalizedArch: string | null;
+  updateGateAllows: boolean;
+}): boolean {
+  const { device } = args;
+  if (!editionAutoMigrateEnabled()) return false;
+  // One-way by design: hosted builds hard-refuse self-host artifacts, so a
+  // self-host-serving deployment never auto-migrates anything.
+  if (getBinaryEdition() !== 'hosted') return false;
+  if (device.osType !== 'windows' || args.normalizedArch !== 'amd64') return false;
+  if (!args.updateGateAllows) return false;
+  if (device.editionMigrationDispatchedAt) return false;
+  if (failedDevices.has(device.id)) return false;
+  return true;
+}
+
 export async function maybeDispatchEditionMigration(args: {
   device: AutoMigrateDevice;
   reportedAgentVersion: string | null | undefined;
@@ -155,15 +190,11 @@ export async function maybeDispatchEditionMigration(args: {
 }): Promise<void> {
   const { device } = args;
   let claimed = false;
+  let dispatchAttempted = false;
   try {
-    if (!editionAutoMigrateEnabled()) return;
-    // One-way by design: hosted builds hard-refuse self-host artifacts, so a
-    // self-host-serving deployment never auto-migrates anything.
-    if (getBinaryEdition() !== 'hosted') return;
-    if (device.osType !== 'windows' || args.normalizedArch !== 'amd64') return;
-    if (!args.updateGateAllows) return;
-    if (device.editionMigrationDispatchedAt) return;
-    if (failedDevices.has(device.id)) return;
+    // Idempotent re-check (the heartbeat already gates on it before opening
+    // the system context): a direct caller must get the same rails.
+    if (!shouldConsiderEditionMigration(args)) return;
 
     const cacheKey = `${device.osType}:${args.normalizedArch}:${args.pin ?? 'latest'}`;
     const now = Date.now();
@@ -174,6 +205,23 @@ export async function maybeDispatchEditionMigration(args: {
     }
     const target = cached.target;
     if (!target) return;
+    // The raw MSI route serves THE deployment's single staged installer —
+    // whatever binaries-init staged for the release this server is pinned to.
+    // The resolved target (pin, or controlled-promotion isLatest) must be
+    // exactly that version, or dispatching would install something the tenant
+    // did not select: an org pinned to 0.106 must never receive the staged
+    // 0.108, and a staged release newer than the promoted isLatest must not
+    // leak to the fleet ahead of promotion. Fail closed (skip, no claim
+    // burned) on any mismatch or when the deployment's release is unknown.
+    const stagedVersion = getGithubReleaseVersion();
+    if (stagedVersion === 'latest' || compareAgentVersions(target, stagedVersion) !== 0) {
+      warnOnce(
+        `staged-version-mismatch:${target}:${stagedVersion}`,
+        `[edition-auto-migrate] resolved target ${target} does not match this deployment's staged release ` +
+          `${stagedVersion}; withholding automatic migration (the raw MSI route serves the staged installer only).`,
+      );
+      return;
+    }
     const reported = args.reportedAgentVersion?.trim();
     // Upgrade-only, mirroring the offer path: a pin at or below the installed
     // version is a deliberate hold and must hold auto-migration too. Known
@@ -220,14 +268,26 @@ export async function maybeDispatchEditionMigration(args: {
 
     // Atomic once-per-device claim: whichever concurrent heartbeat wins this
     // UPDATE dispatches; everyone else sees zero rows and stands down.
+    // Bound to the org and liveness the decision was made under: a device
+    // moved to another org (whose policy/pins were never consulted) or
+    // decommissioned between the heartbeat and this detached claim must not
+    // be migrated on stale grounds.
     const claimRows = await db
       .update(devices)
       .set({ editionMigrationDispatchedAt: new Date() })
-      .where(and(eq(devices.id, device.id), isNull(devices.editionMigrationDispatchedAt)))
+      .where(
+        and(
+          eq(devices.id, device.id),
+          eq(devices.orgId, device.orgId),
+          ne(devices.status, 'decommissioned'),
+          isNull(devices.editionMigrationDispatchedAt),
+        ),
+      )
       .returning({ id: devices.id });
     if (claimRows.length === 0) return;
     claimed = true;
 
+    dispatchAttempted = true;
     const result = await dispatchScriptToDevice({
       device,
       source: { kind: 'saved', script },
@@ -277,7 +337,12 @@ export async function maybeDispatchEditionMigration(args: {
     }
   } catch (err) {
     failedDevices.add(device.id);
-    if (claimed) {
+    // Release ONLY when we know nothing reached the queue. A THROW from
+    // dispatchScriptToDevice is indeterminate — it does post-insert work, so
+    // the command may already exist; releasing there could let a later
+    // process dispatch a second reinstall to a device that is mid-dance.
+    // Fail toward the one-attempt invariant and leave the claim standing.
+    if (claimed && !dispatchAttempted) {
       await releaseClaim(device.id);
     }
     console.error(`[edition-auto-migrate] failed for device ${device.id}:`, err);
