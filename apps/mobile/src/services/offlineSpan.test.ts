@@ -83,7 +83,13 @@ async function replay(serverNowMs: number, server: RunningTimer | null = null) {
     ? planReconciliation({ localTimer, queue, server })
     : { adopt: null, substitute: null };
   const send = makeReconciledSender({
-    base: makeReplaySender({ createTimeEntry, updateTimeEntry, serverNow: () => serverNowMs }),
+    base: makeReplaySender({
+      createTimeEntry,
+      updateTimeEntry,
+      confirmSuggestion: vi.fn().mockResolvedValue({ entry: { id: 'e1' }, replay: false }),
+      dismissSuggestion: vi.fn().mockResolvedValue(undefined),
+      serverNow: () => serverNowMs,
+    }),
     plan,
     updateTimeEntry,
     lookupWeekEntries: async () => null,

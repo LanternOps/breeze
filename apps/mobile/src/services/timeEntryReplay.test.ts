@@ -26,6 +26,8 @@ function senders() {
   return {
     createTimeEntry: vi.fn().mockResolvedValue({ id: 'e1' }),
     updateTimeEntry: vi.fn().mockResolvedValue({ id: 'e1' }),
+    confirmSuggestion: vi.fn().mockResolvedValue({ entry: { id: 'e1' }, replay: false }),
+    dismissSuggestion: vi.fn().mockResolvedValue(undefined),
     serverNow: () => SERVER_NOW,
   };
 }
@@ -51,6 +53,8 @@ describe('the replay can never call a server-stamped timer verb', () => {
     const backing: Record<string, unknown> = {
       createTimeEntry: vi.fn().mockResolvedValue({ id: 'e1' }),
       updateTimeEntry: vi.fn().mockResolvedValue({ id: 'e1' }),
+      confirmSuggestion: vi.fn().mockResolvedValue({ entry: { id: 'e1' }, replay: false }),
+      dismissSuggestion: vi.fn().mockResolvedValue(undefined),
       serverNow: () => SERVER_NOW,
       startTimer,
       stopTimer,
@@ -72,6 +76,8 @@ describe('the replay can never call a server-stamped timer verb', () => {
             id: 'E',
             startedAt: '2026-08-30T09:00:00.000Z',
             endedAt: '2026-08-30T09:40:00.000Z',
+            // W06 kinds need signals; the other kinds ignore the key.
+            signals: [{ kind: 'remote_session', id: 'aaaa1111-0000-4000-8000-000000000001' }],
           },
         })
       );
@@ -79,7 +85,9 @@ describe('the replay can never call a server-stamped timer verb', () => {
 
     expect(startTimer).toHaveBeenCalledTimes(0);
     expect(stopTimer).toHaveBeenCalledTimes(0);
-    expect([...touched].sort()).toEqual(['createTimeEntry', 'serverNow', 'updateTimeEntry']);
+    expect([...touched].sort()).toEqual([
+      'confirmSuggestion', 'createTimeEntry', 'dismissSuggestion', 'serverNow', 'updateTimeEntry',
+    ]);
   });
 });
 
@@ -182,5 +190,80 @@ describe('makeReplaySender', () => {
         write({ kind: 'closeEntry', payload: { endedAt: '2026-08-30T15:00:00.000Z' } })
       )
     ).rejects.toBeInstanceOf(UnreplayableWriteError);
+  });
+});
+
+
+// ── W06 (#3900): suggestion replay ─────────────────────────────────────────
+describe('makeReplaySender — suggestion writes', () => {
+  const SIG = { kind: 'remote_session', id: 'aaaa1111-0000-4000-8000-000000000001' };
+
+  function suggestionSenders() {
+    return {
+      createTimeEntry: vi.fn().mockResolvedValue({ id: 'e1' }),
+      updateTimeEntry: vi.fn().mockResolvedValue({ id: 'e1' }),
+      confirmSuggestion: vi.fn().mockResolvedValue({ entry: { id: 'e1' }, replay: false }),
+      dismissSuggestion: vi.fn().mockResolvedValue(undefined),
+      serverNow: () => SERVER_NOW,
+    };
+  }
+
+  it('replays a confirm with the SERVER session bounds, never shifted', async () => {
+    // The decisive case: `create` shifts a future-dated span into the past to
+    // survive the server's notFarFuture refine. A confirm must NOT — these
+    // bounds describe remote_session rows the server itself recorded, so
+    // shifting them would bill a window that never happened.
+    const deps = suggestionSenders();
+    const future = new Date(SERVER_NOW + 60 * 60 * 1000).toISOString();
+    const futureEnd = new Date(SERVER_NOW + 90 * 60 * 1000).toISOString();
+    await makeReplaySender(deps)(
+      write({ kind: 'suggestion.confirm', payload: { signals: [SIG], startedAt: future, endedAt: futureEnd, ticketId: 'k1' } })
+    );
+    expect(deps.confirmSuggestion).toHaveBeenCalledWith({
+      signals: [SIG], startedAt: future, endedAt: futureEnd, ticketId: 'k1',
+    });
+  });
+
+  it('drops undefined optional keys rather than sending them as null', async () => {
+    const deps = suggestionSenders();
+    await makeReplaySender(deps)(
+      write({ kind: 'suggestion.confirm', payload: { signals: [SIG], startedAt: '2026-08-30T09:00:00.000Z' } })
+    );
+    const [input] = deps.confirmSuggestion.mock.calls[0]!;
+    expect(input).toEqual({ signals: [SIG], startedAt: '2026-08-30T09:00:00.000Z' });
+  });
+
+  it('replays a dismiss with only its signals', async () => {
+    const deps = suggestionSenders();
+    await makeReplaySender(deps)(write({ kind: 'suggestion.dismiss', payload: { signals: [SIG] } }));
+    expect(deps.dismissSuggestion).toHaveBeenCalledWith([SIG]);
+  });
+
+  it('parks a confirm with no signals rather than retrying it forever', async () => {
+    const deps = suggestionSenders();
+    await expect(
+      makeReplaySender(deps)(write({ kind: 'suggestion.confirm', payload: { startedAt: '2026-08-30T09:00:00.000Z' } }))
+    ).rejects.toMatchObject({ name: 'UnreplayableWriteError', status: 400 });
+  });
+
+  it('parks a confirm whose signals survived storage in a malformed shape', async () => {
+    const deps = suggestionSenders();
+    for (const signals of [[], [{ kind: 'support_session', id: 'x' }], [{ kind: 'remote_session' }], ['nope']]) {
+      await expect(
+        makeReplaySender(deps)(write({ kind: 'suggestion.confirm', payload: { signals, startedAt: '2026-08-30T09:00:00.000Z' } }))
+      ).rejects.toMatchObject({ status: 400 });
+    }
+    expect(deps.confirmSuggestion).not.toHaveBeenCalled();
+  });
+
+  it('strips extra signal fields — the server schema is .strict()', async () => {
+    const deps = suggestionSenders();
+    await makeReplaySender(deps)(
+      write({
+        kind: 'suggestion.dismiss',
+        payload: { signals: [{ ...SIG, type: 'terminal', precision: 'exact', startedAt: 'x' }] },
+      })
+    );
+    expect(deps.dismissSuggestion).toHaveBeenCalledWith([SIG]);
   });
 });

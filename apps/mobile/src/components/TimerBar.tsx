@@ -28,6 +28,7 @@ import {
   type QueuedWrite,
 } from '../services/timeEntryQueue';
 import { makeReplaySender } from '../services/timeEntryReplay';
+import { confirmSuggestion, dismissSuggestion } from '../services/timeSuggestions';
 import { serverNowMs } from '../services/serverClock';
 import {
   clearLocalTimer,
@@ -194,6 +195,10 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
     const base = makeReplaySender({
       createTimeEntry,
       updateTimeEntry,
+      // W06 (#3900). Both carry their own timestamps, so they satisfy the same
+      // rule as the two above: nothing here defers a time stamp to drain.
+      confirmSuggestion,
+      dismissSuggestion,
       serverNow: () => serverNowMs().ms,
     });
     const send = makeReconciledSender({
