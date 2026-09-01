@@ -50,6 +50,7 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
+  captureMessage: vi.fn(),
 }));
 
 import {

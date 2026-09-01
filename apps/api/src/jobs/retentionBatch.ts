@@ -9,32 +9,37 @@
  * multi-minute statement on a table the agent write path is concurrently
  * inserting into. `jobs/scheduleRegistry.ts` documents that exact failure mode.
  *
- * The fix is the pattern the well-built siblings already use
- * (`deviceMetricsRetention`, `processSampleRetention`, `mlOutputRetention`,
- * `reliabilityRetention`, `userRiskRetention`): delete in bounded batches,
- * each its own short statement, capped so one run can never spin forever.
+ * ONE TRANSACTION PER BATCH — THE POINT OF THE WHOLE EXERCISE
+ * -----------------------------------------------------------
+ * Batching alone does NOT fix that. `withDbAccessContext` opens a real Postgres
+ * transaction (`db/index.ts`), and it early-returns when a context store is
+ * already open — so a loop wrapped in one outer `withSystemDbAccessContext`
+ * runs every batch inside a single transaction, holding every lock until the
+ * last one commits. That is strictly worse than the unbounded DELETE it
+ * replaced: same lock duration, more round trips, xmin pinned longer.
  *
- * `ctid IN (SELECT ctid ... LIMIT n)` is used rather than a PK `IN (...)` list
- * because it is a single round trip per batch and the physical row pointer
- * needs no index lookup to resolve.
+ * So `pruneInCtidBatches` escapes any ambient context and opens a FRESH system
+ * context per batch. Each batch commits on its own, releasing its locks and its
+ * pooled connection before the next begins. Callers must NOT wrap the loop in a
+ * context of their own. This mirrors `softwareRemediationRequestCleanup`, which
+ * documents the same LOCK DURATION reasoning.
  *
  * CUTOFFS ARE ISO STRINGS, NOT `Date`
  * -----------------------------------
  * postgres-js does not coerce a JS `Date` in template-literal params — callers
- * pass `date.toISOString()`. That is semantically identical to what Drizzle's
- * own encoder emits for both column flavours in use here: for
- * `timestamp without time zone` Postgres parses the ISO text and drops the `Z`,
- * yielding the same naive-UTC value Drizzle writes; for `timestamptz` the `Z`
- * is honoured. Callers against a `timestamptz` column should still cast
- * explicitly (`${cutoff}::timestamptz`) to keep the intent readable.
+ * pass `date.toISOString()`. That is byte-identical to what Drizzle's own
+ * encoder emits: `PgTimestamp.mapToDriverValue` is `value.toISOString()` for
+ * both column flavours in use here. Postgres discards the offset coercing to
+ * `timestamp without time zone` and honours it for `timestamptz`. Callers
+ * against a `timestamptz` column still cast explicitly (`${cutoff}::timestamptz`)
+ * to keep the intent readable.
  */
 
 import { SQL, sql } from 'drizzle-orm';
 
-import * as dbModule from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { extractRowCount } from '../db/rowCount';
-
-const { db } = dbModule;
+import { captureMessage } from '../services/sentry';
 
 /**
  * A table name cannot be a bound parameter, so it is the one value that reaches
@@ -51,7 +56,9 @@ export interface BatchedPruneResult {
   /**
    * The batch cap stopped the sweep while the final batch was still full, so
    * rows almost certainly remain. A point-in-time inference, not a guarantee:
-   * the last batch could have exactly drained the table.
+   * the last batch could have exactly drained the table, which is why the
+   * second conjunct exists — a cap reached on a SHORT batch is a clean drain,
+   * not a backlog, and must not raise a nightly false alarm.
    */
   hasMore: boolean;
 }
@@ -85,11 +92,17 @@ export function parsePositiveIntEnv(logPrefix: string, name: string, fallback: n
  *  - `0` and negatives read as "no retention"/misconfiguration. Clamping those
  *    to the 1-day floor would silently prune almost the entire table on the
  *    next run, so they must fall back instead.
+ *
+ * A value ABOVE `maxDays` is capped rather than rejected, but says so: a
+ * self-hosted deployment asking for 1095 days of change log and silently
+ * getting 365 loses two years of history on the first run after upgrade, and
+ * the only way anyone finds out is this line.
  */
 export function resolveRetentionDays(
   raw: string | number | undefined,
   fallback: number,
   maxDays: number,
+  logPrefix?: string,
 ): number {
   // Accepts both flavours on purpose: the env knob arrives as a string and the
   // BullMQ job payload as a number, and both need the identical guard. Routing
@@ -97,27 +110,50 @@ export function resolveRetentionDays(
   // be the kind of seam where one path quietly loses the NaN check.
   const parsed = typeof raw === 'number' ? Math.trunc(raw) : Number.parseInt(raw || '', 10);
   const chosen = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  if (logPrefix && chosen > maxDays) {
+    console.warn(
+      `${logPrefix} Configured retention of ${chosen} days exceeds the ${maxDays}-day cap; using ${maxDays}. ` +
+      'Data older than the cap WILL be deleted.',
+    );
+  }
   return Math.min(maxDays, Math.max(1, chosen));
 }
 
 /**
- * Delete rows matching `where` from `table` in bounded `ctid` batches.
+ * Run `fn` in a FRESH system DB access context, escaping any ambient one.
+ *
+ * The escape is not optional: `withDbAccessContext` early-returns when a
+ * context store already exists, so nesting would silently reuse the caller's
+ * transaction and defeat per-batch commits.
+ */
+function inFreshSystemContext<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
+}
+
+/**
+ * Delete rows matching `where` from `table` in bounded `ctid` batches, each in
+ * its own transaction.
  *
  * Stops on the first short batch (nothing eligible left at select time) or when
  * `maxBatches` statements have run, whichever comes first. Rows inserted
  * concurrently are deliberately left for the next scheduled run rather than
  * chased inside one sweep.
  *
+ * Do NOT call this inside a `withSystemDbAccessContext` — it opens its own, per
+ * batch. See the module header.
+ *
  * @param table Bare, hardcoded table identifier — never user input.
  * @param where Predicate over that table, e.g. ``sql`"timestamp" < ${cutoff}` ``.
+ * @param label Context label, surfaced on held-connection warnings.
  */
 export async function pruneInCtidBatches(options: {
   table: string;
   where: SQL;
   batchSize: number;
   maxBatches: number;
+  label: string;
 }): Promise<BatchedPruneResult> {
-  const { table, where, batchSize, maxBatches } = options;
+  const { table, where, batchSize, maxBatches, label } = options;
 
   if (!BARE_IDENTIFIER.test(table)) {
     throw new Error(`[retentionBatch] Refusing to prune "${table}": table must be a bare SQL identifier`);
@@ -135,7 +171,8 @@ export async function pruneInCtidBatches(options: {
   let lastBatchDeleted = 0;
 
   while (batches < maxBatches) {
-    const result = await db.execute(sql`
+    // One transaction per batch — see the LOCK DURATION note in the header.
+    const result = await inFreshSystemContext(label, () => db.execute(sql`
       DELETE FROM ${target}
       WHERE ctid IN (
         SELECT ctid
@@ -143,10 +180,11 @@ export async function pruneInCtidBatches(options: {
         WHERE ${where}
         LIMIT ${batchSize}
       )
-    `);
-    // extractRowCount is deliberately not null-safe: a broken driver or mock
-    // must throw rather than read as "0 rows", which would end the loop early
-    // and silently leave old rows behind.
+    `));
+    // extractRowCount throws on a null/undefined driver result rather than
+    // reading it as "0 rows", which would end the loop early and silently leave
+    // old rows behind. (An object carrying neither `count` nor `rowCount` still
+    // yields 0 — the guard covers a broken driver, not every broken mock.)
     lastBatchDeleted = extractRowCount(result);
     deleted += lastBatchDeleted;
     batches += 1;
@@ -161,14 +199,18 @@ export async function pruneInCtidBatches(options: {
 }
 
 /**
- * Announce a retention backlog on the one channel someone will actually see.
+ * Announce a retention backlog on channels someone will actually see.
  *
  * A capped sweep that reports `hasMore` and says nothing is how a table grows
- * unbounded while its retention job reports success every night. This does NOT
- * re-enqueue: the remainder is left for the next scheduled run (the same
- * contract `softwareRemediationRequestCleanup` uses), so a genuinely oversized
- * table drains over several runs instead of one job monopolising a connection.
- * If the warning persists, raise that job's batch size or max-batches knob.
+ * unbounded while its retention job reports success every night — so this goes
+ * to Sentry as well as stdout, following the `db_context_held_too_long`
+ * precedent in `db/index.ts`.
+ *
+ * This does NOT re-enqueue: the remainder is left for the next scheduled run
+ * (the same contract `softwareRemediationRequestCleanup` uses), so a genuinely
+ * oversized table drains over several runs instead of one job monopolising a
+ * connection. If the warning persists, raise that job's batch-size or
+ * max-batches knob.
  */
 export function warnOnRetentionBacklog(
   logPrefix: string,
@@ -176,9 +218,19 @@ export function warnOnRetentionBacklog(
   result: BatchedPruneResult,
 ): void {
   if (!result.hasMore) return;
-  console.warn(
+  const message =
     `${logPrefix} Hit the ${result.batches}-batch cap on ${label} with rows still eligible ` +
     `(deleted ${result.deleted} this run); the remainder is left for the next scheduled run. ` +
-    'If this repeats, raise the batch-size / max-batches limits for this job.',
-  );
+    'If this repeats, raise the batch-size / max-batches limits for this job.';
+  console.warn(message);
+  try {
+    captureMessage(message, {
+      eventCode: 'retention_backlog_remaining',
+      level: 'warning',
+      tags: { retentionTarget: label, batches: String(result.batches) },
+    });
+  } catch (err) {
+    // Never let the reporter take down the sweep that just succeeded.
+    console.warn(`${logPrefix} Failed to report retention backlog to Sentry:`, err);
+  }
 }

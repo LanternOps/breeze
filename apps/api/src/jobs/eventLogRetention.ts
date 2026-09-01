@@ -19,7 +19,7 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import { sql } from 'drizzle-orm';
-import * as dbModule from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { getOrgEventLogRetentionDays } from '../routes/agents/helpers';
@@ -32,12 +32,17 @@ import {
   warnOnRetentionBacklog,
 } from './retentionBatch';
 
-const { db } = dbModule;
 const LOG_PREFIX = '[EventLogRetention]';
-const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
-};
+
+/**
+ * Short-lived system context for one read.
+ *
+ * Deliberately NOT wrapped around the whole sweep: `withDbAccessContext` opens
+ * a transaction, so one outer context would hold a connection across every org
+ * and every batch — the failure this job is being fixed for.
+ */
+const inSystemContext = <T>(label: string, fn: () => Promise<T>): Promise<T> =>
+  runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
 
 const QUEUE_NAME = 'event-log-retention';
 const MAX_RETENTION_DAYS = 365;
@@ -45,7 +50,7 @@ const MAX_RETENTION_DAYS = 365;
 // fallback inside getOrgEventLogRetentionDays.
 const FALLBACK_RETENTION_DAYS = 30;
 const BATCH_SIZE = parsePositiveIntEnv(LOG_PREFIX, 'EVENT_LOG_RETENTION_BATCH_SIZE', 10000);
-const MAX_BATCHES = parsePositiveIntEnv(LOG_PREFIX, 'EVENT_LOG_RETENTION_MAX_BATCHES', 50);
+const MAX_BATCHES = parsePositiveIntEnv(LOG_PREFIX, 'EVENT_LOG_RETENTION_MAX_BATCHES', 200);
 
 let retentionQueue: Queue | null = null;
 
@@ -67,15 +72,18 @@ interface RetentionJobData {
 export function createEventLogRetentionWorker(): Worker<RetentionJobData> {
   return new Worker<RetentionJobData>(
     QUEUE_NAME,
+    // Each read and each delete batch opens its OWN short context — never one
+    // spanning the whole sweep. See `inSystemContext` above.
     async (job: Job<RetentionJobData>) => {
-      return runWithSystemDbAccess(async () => {
+      {
         const startTime = Date.now();
         const batchSize = Math.max(1, job.data.batchSize ?? BATCH_SIZE);
         const maxBatches = Math.max(1, job.data.maxBatches ?? MAX_BATCHES);
 
         // The org list comes from `organizations`, not a DISTINCT scan over
         // device_event_logs — see the module header.
-        const orgRows = await db.select({ orgId: organizations.id }).from(organizations);
+        const orgRows = await inSystemContext('eventLogRetention.orgList', () =>
+          db.select({ orgId: organizations.id }).from(organizations));
 
         let deletedTotal = 0;
         let orgsPruned = 0;
@@ -86,7 +94,8 @@ export function createEventLogRetentionWorker(): Worker<RetentionJobData> {
         for (const { orgId } of orgRows) {
           let retentionDays: number;
           try {
-            retentionDays = await getOrgEventLogRetentionDays(orgId);
+            retentionDays = await inSystemContext('eventLogRetention.resolvePolicy', () =>
+              getOrgEventLogRetentionDays(orgId));
           } catch (err) {
             console.error(`${LOG_PREFIX} Failed to resolve retention for org ${orgId}, SKIPPING org to avoid premature data deletion:`, err);
             orgsSkipped += 1;
@@ -107,6 +116,7 @@ export function createEventLogRetentionWorker(): Worker<RetentionJobData> {
               where: sql`org_id = ${orgId}::uuid AND "timestamp" < ${cutoff}::timestamptz`,
               batchSize,
               maxBatches,
+              label: 'eventLogRetention.prune',
             });
             deletedTotal += result.deleted;
             orgsPruned += 1;
@@ -133,9 +143,11 @@ export function createEventLogRetentionWorker(): Worker<RetentionJobData> {
           orgsSkipped,
           orgsFailed,
           deleted: deletedTotal,
-          hasMore: orgsWithBacklog.length > 0,
+          // A failed org's rows certainly remain, so it counts as a backlog too
+          // — otherwise a run that threw mid-sweep reports a clean drain.
+          hasMore: orgsWithBacklog.length > 0 || orgsFailed > 0,
         };
-      });
+      }
     },
     {
       connection: getBullMQConnection(),

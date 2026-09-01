@@ -18,7 +18,7 @@ const {
   removeRepeatableByKeyMock: vi.fn(),
   queueCloseMock: vi.fn(),
   workerCloseMock: vi.fn(),
-  withSystemDbAccessContextMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContextMock: vi.fn(async (fn: () => Promise<unknown>, _label?: string) => fn()),
   dbExecuteMock: vi.fn(),
   dbSelectMock: vi.fn(),
   getOrgEventLogRetentionDaysMock: vi.fn(),
@@ -48,7 +48,14 @@ vi.mock('../db', () => ({
     execute: (...args: unknown[]) => dbExecuteMock(...(args as [])),
     select: (...args: unknown[]) => dbSelectMock(...(args as [])),
   },
-  withSystemDbAccessContext: (fn: () => Promise<unknown>) => withSystemDbAccessContextMock(fn),
+  withSystemDbAccessContext: (fn: () => Promise<unknown>, label?: string) =>
+    withSystemDbAccessContextMock(fn, label),
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+}));
+
+vi.mock('../services/sentry', () => ({
+  captureMessage: vi.fn(),
+  captureException: vi.fn(),
 }));
 
 vi.mock('../services/redis', () => ({
@@ -134,7 +141,18 @@ describe('event log retention worker', () => {
       data: { batchSize: 10, maxBatches: 20 },
     });
 
-    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
+    // One SHORT context per read and per delete batch — never one spanning the
+    // whole sweep, which would hold every lock until the last batch committed.
+    // org list (1) + policy resolve (1) + 3 delete batches = 5.
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(5);
+    const labels = withSystemDbAccessContextMock.mock.calls.map((call) => call[1]);
+    expect(labels).toEqual([
+      'eventLogRetention.orgList',
+      'eventLogRetention.resolvePolicy',
+      'eventLogRetention.prune',
+      'eventLogRetention.prune',
+      'eventLogRetention.prune',
+    ]);
     expect(dbExecuteMock).toHaveBeenCalledTimes(3);
     const rendered = renderedSql();
     expect(rendered).toContain('DELETE FROM ');

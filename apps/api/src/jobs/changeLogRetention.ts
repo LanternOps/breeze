@@ -12,7 +12,6 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import { sql } from 'drizzle-orm';
-import * as dbModule from '../db';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
 import { jobSchedule } from './scheduleRegistry';
@@ -24,18 +23,11 @@ import {
 } from './retentionBatch';
 
 const LOG_PREFIX = '[ChangeLogRetention]';
-const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  if (typeof dbModule.withSystemDbAccessContext !== 'function') {
-    throw new Error(`${LOG_PREFIX} withSystemDbAccessContext is not available — DB module may not have loaded correctly`);
-  }
-  return dbModule.withSystemDbAccessContext(fn);
-};
-
 const QUEUE_NAME = 'change-log-retention';
 const MAX_RETENTION_DAYS = 365;
-const DEFAULT_RETENTION_DAYS = resolveRetentionDays(process.env.CHANGE_LOG_RETENTION_DAYS, 90, MAX_RETENTION_DAYS);
+const DEFAULT_RETENTION_DAYS = resolveRetentionDays(process.env.CHANGE_LOG_RETENTION_DAYS, 90, MAX_RETENTION_DAYS, LOG_PREFIX);
 const BATCH_SIZE = parsePositiveIntEnv(LOG_PREFIX, 'CHANGE_LOG_RETENTION_BATCH_SIZE', 10000);
-const MAX_BATCHES = parsePositiveIntEnv(LOG_PREFIX, 'CHANGE_LOG_RETENTION_MAX_BATCHES', 50);
+const MAX_BATCHES = parsePositiveIntEnv(LOG_PREFIX, 'CHANGE_LOG_RETENTION_MAX_BATCHES', 200);
 
 let retentionQueue: Queue | null = null;
 
@@ -57,31 +49,32 @@ interface RetentionJobData {
 export function createChangeLogRetentionWorker(): Worker<RetentionJobData> {
   return new Worker<RetentionJobData>(
     QUEUE_NAME,
+    // No context wrapper here: pruneInCtidBatches opens one per batch, so that
+    // each batch commits and releases its locks (see retentionBatch.ts).
     async (job: Job<RetentionJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        const startTime = Date.now();
-        const retentionDays = resolveRetentionDays(job.data.retentionDays, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS);
-        const batchSize = Math.max(1, job.data.batchSize ?? BATCH_SIZE);
-        const maxBatches = Math.max(1, job.data.maxBatches ?? MAX_BATCHES);
-        // postgres-js does not coerce JS Date in template-literal params; pass an ISO string.
-        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+      const startTime = Date.now();
+      const retentionDays = resolveRetentionDays(job.data.retentionDays, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS);
+      const batchSize = Math.max(1, job.data.batchSize ?? BATCH_SIZE);
+      const maxBatches = Math.max(1, job.data.maxBatches ?? MAX_BATCHES);
+      // postgres-js does not coerce JS Date in template-literal params; pass an ISO string.
+      const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
 
-        // Prunes on created_at (ingest time), matching the pre-batching
-        // behaviour — NOT the `timestamp` column, which is the observed change
-        // time and can predate ingest.
-        const { deleted: deletedCount, batches, hasMore } = await pruneInCtidBatches({
-          table: 'device_change_log',
-          where: sql`created_at < ${cutoff}`,
-          batchSize,
-          maxBatches,
-        });
-
-        const durationMs = Date.now() - startTime;
-        console.log(`${LOG_PREFIX} Pruned ${deletedCount} rows older than ${retentionDays} days (batches=${batches}) in ${durationMs}ms`);
-        warnOnRetentionBacklog(LOG_PREFIX, 'device_change_log', { deleted: deletedCount, batches, hasMore });
-
-        return { durationMs, deletedCount, retentionDays, batches, hasMore };
+      // Prunes on created_at (ingest time), matching the pre-batching
+      // behaviour — NOT the `timestamp` column, which is the observed change
+      // time and can predate ingest.
+      const { deleted: deletedCount, batches, hasMore } = await pruneInCtidBatches({
+        table: 'device_change_log',
+        where: sql`created_at < ${cutoff}`,
+        batchSize,
+        maxBatches,
+        label: 'changeLogRetention.prune',
       });
+
+      const durationMs = Date.now() - startTime;
+      console.log(`${LOG_PREFIX} Pruned ${deletedCount} rows older than ${retentionDays} days (batches=${batches}) in ${durationMs}ms`);
+      warnOnRetentionBacklog(LOG_PREFIX, 'device_change_log', { deleted: deletedCount, batches, hasMore });
+
+      return { durationMs, deletedCount, retentionDays, batches, hasMore };
     },
     {
       connection: getBullMQConnection(),

@@ -1,15 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { dbExecuteMock } = vi.hoisted(() => ({
+const { dbExecuteMock, withSystemDbAccessContextMock, runOutsideDbContextMock, captureMessageMock } = vi.hoisted(() => ({
   dbExecuteMock: vi.fn(),
+  withSystemDbAccessContextMock: vi.fn(async (fn: () => Promise<unknown>, _label?: string) => fn()),
+  runOutsideDbContextMock: vi.fn((fn: () => unknown) => fn()),
+  captureMessageMock: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
   db: { execute: (...args: unknown[]) => dbExecuteMock(...(args as [])) },
-  withSystemDbAccessContext: (fn: () => Promise<unknown>) => fn(),
+  withSystemDbAccessContext: (fn: () => Promise<unknown>, label?: string) =>
+    withSystemDbAccessContextMock(fn, label),
+  runOutsideDbContext: (fn: () => unknown) => runOutsideDbContextMock(fn),
 }));
 
-import { sql } from 'drizzle-orm';
+vi.mock('../services/sentry', () => ({
+  captureMessage: (...args: unknown[]) => captureMessageMock(...(args as [])),
+}));
+
+import { SQL, sql } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 import {
   parsePositiveIntEnv,
@@ -18,7 +28,32 @@ import {
   warnOnRetentionBacklog,
 } from './retentionBatch';
 
-const renderedSql = () => JSON.stringify(dbExecuteMock.mock.calls);
+const CUTOFF = '2026-08-01T00:00:00.000Z';
+const dialect = new PgDialect();
+
+/**
+ * Compile a captured `db.execute` argument into the REAL statement + params.
+ *
+ * `JSON.stringify(mock.calls)` is not good enough: it dumps Drizzle's
+ * queryChunks tree, in which a bound `$1` and an inlined `'literal'` render as
+ * the same substring — so an assertion on it cannot tell a parameterised query
+ * from a string-concatenated one, nor prove the LIMIT tracks batchSize.
+ */
+function compiled(callIndex = 0): { sql: string; params: unknown[] } {
+  const arg = dbExecuteMock.mock.calls[callIndex]?.[0] as SQL;
+  const query = dialect.sqlToQuery(arg);
+  return { sql: query.sql, params: query.params as unknown[] };
+}
+
+const basePrune = (overrides: Partial<Parameters<typeof pruneInCtidBatches>[0]> = {}) =>
+  pruneInCtidBatches({
+    table: 'agent_logs',
+    where: sql`"timestamp" < ${CUTOFF}`,
+    batchSize: 100,
+    maxBatches: 50,
+    label: 'test.prune',
+    ...overrides,
+  });
 
 describe('resolveRetentionDays', () => {
   it('uses the configured value when it parses inside the allowed range', () => {
@@ -59,6 +94,27 @@ describe('resolveRetentionDays', () => {
     expect(resolveRetentionDays(Number.NaN, 30, 365)).toBe(30);
     expect(resolveRetentionDays(undefined, 30, 365)).toBe(30);
   });
+
+  // Silently shortening a self-hosted deployment's configured 1095-day window
+  // to 365 deletes two years of history on the first run after upgrade.
+  it('warns when it reduces a configured value below what was asked for', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(resolveRetentionDays('1095', 90, 365, '[ChangeLogRetention]')).toBe(365);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = String(warn.mock.calls[0]?.[0]);
+    expect(message).toContain('1095');
+    expect(message).toContain('365');
+    warn.mockRestore();
+  });
+
+  it('stays quiet when the configured value is honoured as-is', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(resolveRetentionDays('90', 90, 365, '[ChangeLogRetention]')).toBe(90);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
 });
 
 describe('parsePositiveIntEnv', () => {
@@ -92,27 +148,55 @@ describe('pruneInCtidBatches', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     dbExecuteMock.mockResolvedValue({ rowCount: 0 });
+    withSystemDbAccessContextMock.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+    runOutsideDbContextMock.mockImplementation((fn: () => unknown) => fn());
   });
 
-  it('emits a bounded ctid DELETE carrying the caller predicate and LIMIT', async () => {
-    dbExecuteMock.mockResolvedValueOnce({ rowCount: 0 });
+  it('emits a bounded ctid DELETE against the requested table', async () => {
+    await basePrune();
 
-    await pruneInCtidBatches({
-      table: 'agent_logs',
-      where: sql`"timestamp" < ${'2026-08-01T00:00:00.000Z'}`,
-      batchSize: 500,
-      maxBatches: 50,
-    });
+    const { sql: text } = compiled();
+    expect(text).toContain('DELETE FROM agent_logs');
+    expect(text).toContain('SELECT ctid');
+    expect(text).toContain('FROM agent_logs');
+    expect(text).toContain('"timestamp" <');
+    expect(text).toContain('LIMIT');
+  });
 
-    const rendered = renderedSql();
-    expect(rendered).toContain('DELETE FROM ');
-    expect(rendered).toContain('agent_logs');
-    expect(rendered).toContain('SELECT ctid');
-    // JSON.stringify escapes the quotes around the quoted column identifier.
-    expect(rendered).toContain('\\"timestamp\\" <');
-    expect(rendered).toContain('LIMIT');
-    // The batch bound and the cutoff must be BOUND PARAMETERS, never inlined.
-    expect(rendered).toContain('2026-08-01T00:00:00.000Z');
+  // Asserting the LIMIT *keyword* survives is worthless — the bug that matters
+  // is a LIMIT decoupled from batchSize, which restores the unbounded delete
+  // this whole module exists to prevent. So assert the compiled placeholders
+  // and the actual bound values.
+  it('binds the cutoff and the batch size as parameters, never inlined literals', async () => {
+    await basePrune({ batchSize: 250 });
+
+    const { sql: text, params } = compiled();
+    expect(text).toMatch(/"timestamp" < \$\d+/);
+    expect(text).toMatch(/LIMIT \$\d+/);
+    expect(params).toContain(CUTOFF);
+    expect(params).toContain(250);
+    // No literal made it into the statement text.
+    expect(text).not.toContain(CUTOFF);
+    expect(text).not.toContain('250');
+  });
+
+  // THE point of batching. `withDbAccessContext` opens a transaction and
+  // early-returns inside an existing context, so one outer context would hold
+  // every lock until the last batch commits — strictly worse than the single
+  // unbounded DELETE this replaced.
+  it('opens a fresh escaped system context per batch, so each batch commits alone', async () => {
+    dbExecuteMock
+      .mockResolvedValueOnce({ rowCount: 100 })
+      .mockResolvedValueOnce({ rowCount: 100 })
+      .mockResolvedValueOnce({ rowCount: 4 });
+
+    await basePrune({ batchSize: 100 });
+
+    expect(dbExecuteMock).toHaveBeenCalledTimes(3);
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(3);
+    // Escaping first is what makes the nested context actually open a new one.
+    expect(runOutsideDbContextMock).toHaveBeenCalledTimes(3);
+    expect(withSystemDbAccessContextMock.mock.calls[0]?.[1]).toBe('test.prune');
   });
 
   it('keeps looping while batches come back full and stops on the first short batch', async () => {
@@ -121,12 +205,7 @@ describe('pruneInCtidBatches', () => {
       .mockResolvedValueOnce({ rowCount: 100 })
       .mockResolvedValueOnce({ rowCount: 7 });
 
-    const result = await pruneInCtidBatches({
-      table: 'agent_logs',
-      where: sql`"timestamp" < ${'2026-08-01T00:00:00.000Z'}`,
-      batchSize: 100,
-      maxBatches: 50,
-    });
+    const result = await basePrune({ batchSize: 100 });
 
     expect(dbExecuteMock).toHaveBeenCalledTimes(3);
     expect(result).toEqual({ deleted: 207, batches: 3, hasMore: false });
@@ -135,73 +214,90 @@ describe('pruneInCtidBatches', () => {
   it('issues exactly one statement and reports no backlog when the table is already clean', async () => {
     dbExecuteMock.mockResolvedValueOnce({ rowCount: 0 });
 
-    const result = await pruneInCtidBatches({
-      table: 'snmp_metrics',
-      where: sql`"timestamp" < ${'2026-08-01T00:00:00.000Z'}`,
-      batchSize: 100,
-      maxBatches: 50,
-    });
+    const result = await basePrune({ table: 'snmp_metrics', batchSize: 100 });
 
     expect(dbExecuteMock).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ deleted: 0, batches: 1, hasMore: false });
   });
 
-  // The whole point of the cap: never hold a pooled connection for an unbounded
-  // delete. Hitting it must STOP and report a backlog, not keep going.
   it('stops at maxBatches and reports hasMore when every allowed batch was full', async () => {
     dbExecuteMock.mockResolvedValue({ rowCount: 100 });
 
-    const result = await pruneInCtidBatches({
-      table: 'device_change_log',
-      where: sql`created_at < ${'2026-08-01T00:00:00.000Z'}`,
-      batchSize: 100,
-      maxBatches: 3,
-    });
+    const result = await basePrune({ table: 'device_change_log', batchSize: 100, maxBatches: 3 });
 
     expect(dbExecuteMock).toHaveBeenCalledTimes(3);
     expect(result).toEqual({ deleted: 300, batches: 3, hasMore: true });
   });
 
-  // extractRowCount is deliberately not null-safe; a broken driver/mock must not
+  // The second conjunct of `hasMore`. A sweep that reaches the cap on a SHORT
+  // final batch drained the table exactly — reporting a backlog there produces
+  // a nightly false alarm, which trains operators to ignore the real one.
+  it('reports NO backlog when the last allowed batch came back short', async () => {
+    dbExecuteMock
+      .mockResolvedValueOnce({ rowCount: 100 })
+      .mockResolvedValueOnce({ rowCount: 100 })
+      .mockResolvedValueOnce({ rowCount: 7 });
+
+    const result = await basePrune({ batchSize: 100, maxBatches: 3 });
+
+    expect(dbExecuteMock).toHaveBeenCalledTimes(3);
+    expect(result).toEqual({ deleted: 207, batches: 3, hasMore: false });
+  });
+
+  // Production's postgres-js Result carries `.count`, NOT node-postgres'
+  // `.rowCount` — and extractRowCount checks `.rowCount` first. Every other
+  // test here uses the `.rowCount` shape, so without this one the loop is never
+  // exercised against the shape it actually meets in production.
+  it('counts rows from a postgres-js Result carrying .count', async () => {
+    const pgResult = (count: number) => Object.assign([], { count });
+    dbExecuteMock
+      .mockResolvedValueOnce(pgResult(100))
+      .mockResolvedValueOnce(pgResult(3));
+
+    const result = await basePrune({ batchSize: 100 });
+
+    expect(dbExecuteMock).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ deleted: 103, batches: 2, hasMore: false });
+  });
+
+  // extractRowCount is deliberately not null-safe; a broken driver must not
   // read as "0 rows deleted", which would silently end the loop.
   it('propagates a broken driver result instead of treating it as an empty batch', async () => {
     dbExecuteMock.mockResolvedValueOnce(null);
 
-    await expect(pruneInCtidBatches({
-      table: 'agent_logs',
-      where: sql`"timestamp" < ${'2026-08-01T00:00:00.000Z'}`,
-      batchSize: 100,
-      maxBatches: 5,
-    })).rejects.toThrow();
+    await expect(basePrune()).rejects.toThrow();
   });
 
   // The table name is the ONE piece that cannot be a bound parameter, so the
   // helper must refuse anything that is not a bare identifier.
   it('rejects a table name that is not a bare SQL identifier', async () => {
     for (const table of ['agent_logs; DROP TABLE devices', 'public.agent_logs', 'agent logs', '"agent_logs"', '']) {
-      await expect(pruneInCtidBatches({
-        table,
-        where: sql`1 = 1`,
-        batchSize: 10,
-        maxBatches: 1,
-      })).rejects.toThrow(/identifier/i);
+      await expect(basePrune({ table })).rejects.toThrow(/identifier/i);
     }
     expect(dbExecuteMock).not.toHaveBeenCalled();
   });
 
   it('rejects a non-positive batch size rather than looping forever on an empty LIMIT', async () => {
-    await expect(pruneInCtidBatches({
-      table: 'agent_logs',
-      where: sql`1 = 1`,
-      batchSize: 0,
-      maxBatches: 5,
-    })).rejects.toThrow(/batchSize/i);
+    await expect(basePrune({ batchSize: 0 })).rejects.toThrow(/batchSize/i);
+    await expect(basePrune({ batchSize: 1.5 })).rejects.toThrow(/batchSize/i);
+    expect(dbExecuteMock).not.toHaveBeenCalled();
+  });
+
+  // `while (batches < 0)` never runs, so the job would report a clean sweep
+  // forever while deleting nothing.
+  it('rejects a non-positive maxBatches rather than silently deleting nothing', async () => {
+    await expect(basePrune({ maxBatches: 0 })).rejects.toThrow(/maxBatches/i);
+    await expect(basePrune({ maxBatches: Number.NaN })).rejects.toThrow(/maxBatches/i);
     expect(dbExecuteMock).not.toHaveBeenCalled();
   });
 });
 
 describe('warnOnRetentionBacklog', () => {
-  it('warns loudly when the cap stopped a sweep with rows still eligible', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('warns on stdout AND reports to Sentry when the cap left rows behind', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     warnOnRetentionBacklog('[AgentLogRetention]', 'agent_logs', { deleted: 5000, batches: 50, hasMore: true });
@@ -211,15 +307,37 @@ describe('warnOnRetentionBacklog', () => {
     expect(message).toContain('[AgentLogRetention]');
     expect(message).toContain('agent_logs');
     expect(message).toContain('50');
+
+    // A stdout line alone is not an alert — this is the only detector for a
+    // table growing faster than its sweeper.
+    expect(captureMessageMock).toHaveBeenCalledTimes(1);
+    expect(captureMessageMock.mock.calls[0]?.[1]).toMatchObject({
+      eventCode: 'retention_backlog_remaining',
+      level: 'warning',
+    });
     warn.mockRestore();
   });
 
-  it('stays silent when the sweep drained the backlog', () => {
+  it('stays silent on both channels when the sweep drained the backlog', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     warnOnRetentionBacklog('[AgentLogRetention]', 'agent_logs', { deleted: 12, batches: 1, hasMore: false });
 
     expect(warn).not.toHaveBeenCalled();
+    expect(captureMessageMock).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  // The sweep already succeeded; a broken reporter must not turn that into a
+  // job failure.
+  it('survives a throwing Sentry reporter', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    captureMessageMock.mockImplementation(() => { throw new Error('sentry down'); });
+
+    expect(() =>
+      warnOnRetentionBacklog('[AgentLogRetention]', 'agent_logs', { deleted: 1, batches: 50, hasMore: true })
+    ).not.toThrow();
+
     warn.mockRestore();
   });
 });
