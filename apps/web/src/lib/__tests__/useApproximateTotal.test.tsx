@@ -86,10 +86,34 @@ describe('useApproximateTotal — request shape', () => {
     expect(screen.getByTestId('state').dataset.failed).toBe('false');
   });
 
-  it('does not fetch when every entry is malformed (nothing to ask about)', async () => {
+  // An empty book and an UNUSABLE one both skip the request, but they are not
+  // the same answer: one has nothing to say, the other has something it failed
+  // to say. Collapsing them is what let a credit note pushing a currency
+  // negative silently erase the line (#4415), so the split is asserted here at
+  // the hook layer, not just at the component that renders it.
+  it('reports FAILED — not idle — when the book cannot be encoded at all', async () => {
     render(<Probe book={[{ code: 'USD', amount: 'not-a-number' }, { code: '', amount: '1.00' }]} />);
     await waitFor(() => expect(screen.getByTestId('state').dataset.loading).toBe('false'));
     expect(fetchWithAuth).not.toHaveBeenCalled();
+    expect(screen.getByTestId('state').dataset.failed).toBe('true');
+    expect(screen.getByTestId('state').textContent).toBe('null');
+  });
+
+  it('reports FAILED for a single negative leg — a credit note must not erase the line', async () => {
+    render(<Probe book={[{ code: 'USD', amount: '100.00' }, { code: 'EUR', amount: -5 }]} />);
+    await waitFor(() => expect(screen.getByTestId('state').dataset.loading).toBe('false'));
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+    expect(screen.getByTestId('state').dataset.failed).toBe('true');
+  });
+
+  it('goes back to a real request once an unusable book becomes usable again', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: AVAILABLE }));
+    const { rerender } = render(<Probe book={[{ code: 'USD', amount: -1 }]} />);
+    await waitFor(() => expect(screen.getByTestId('state').dataset.failed).toBe('true'));
+
+    rerender(<Probe book={BOOK} date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('state').dataset.failed).toBe('false'));
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
   });
 
   it('never sends a currency the caller did not provide, and never substitutes USD', async () => {

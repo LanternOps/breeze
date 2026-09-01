@@ -167,6 +167,27 @@ describe('ApproximateMoneyLine', () => {
     expect(fetchWithAuth).not.toHaveBeenCalled();
   });
 
+  // Both of these bodies PASS `useApproximateTotal.validate` — an empty array is
+  // still an array, a whitespace code is still a non-empty string — so they
+  // reach the component for real. The line must fall back to what it can prove
+  // rather than rendering "no  exchange rate for " (or nothing at all).
+  it('falls back to the generic failure when the server names NO codes', async () => {
+    fetchWithAuth.mockResolvedValue(jsonRes(unavailableBody([], [])));
+    render(<ApproximateMoneyLine byCurrency={BOOK} date="2026-08-21" />);
+    const line = await screen.findByTestId('approximate-money-line');
+    expect(line.textContent).toBe('≈ total unavailable — could not load exchange rates');
+    expect(line.dataset.approxState).toBe('unavailable');
+  });
+
+  it('falls back to the generic failure when the target currency is unusable', async () => {
+    const body = unavailableBody([{ currencyCode: 'NGN', reason: 'missing' }], ['NGN']);
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: { ...body.data, targetCurrencyCode: '   ' } }));
+    render(<ApproximateMoneyLine byCurrency={BOOK} date="2026-08-21" />);
+    const line = await screen.findByTestId('approximate-money-line');
+    // Never "no  exchange rate for NGN": half a pair is not a fact.
+    expect(line.textContent).toBe('≈ total unavailable — could not load exchange rates');
+  });
+
   it('still shows NO figure in the unavailable state — no partial total, no 1:1', async () => {
     fetchWithAuth.mockResolvedValue(jsonRes(unavailableBody([{ currencyCode: 'EUR', reason: 'missing' }], ['EUR'])));
     const { container } = render(<ApproximateMoneyLine byCurrency={BOOK} date="2026-08-21" />);
