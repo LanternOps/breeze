@@ -335,6 +335,37 @@ describe('pushInvoice', () => {
     expect(result.docNumber).toBe('INV-9001');
   });
 
+  // Review finding 4 (Phase C Task 3 fix round): a network-level retry of a
+  // create that actually landed must not mint a second QuickBooks invoice.
+  it('stamps a CREATE request with a &requestid derived from the Breeze invoice id, stable across the DocNumber retry', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ Fault: { Error: [{ Message: 'Duplicate Document Number Error' }] } }), { status: 400 }))
+      .mockResolvedValueOnce(jsonResponse({ Invoice: { Id: '311', SyncToken: '0', DocNumber: 'INV-9001' } }));
+
+    await quickbooksProvider.pushInvoice(taxConn, invoicePayload({ invoiceId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', docNumber: 'INV-2026-0042' }), [
+      { invoiceLineId: 'l1', remoteItemRef: { id: '77' } },
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstUrl = String(fetchMock.mock.calls[0]![0]);
+    const secondUrl = String(fetchMock.mock.calls[1]![0]);
+    expect(firstUrl).toContain('requestid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    // Same key on the DocNumber-stripped retry — it's the same logical create.
+    expect(secondUrl).toContain('requestid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+  });
+
+  it('omits requestid entirely on a sparse UPDATE (an existing Id + SyncToken is already idempotent)', async () => {
+    const fetchMock = mockFetchJsonOnce({ Invoice: { Id: '310', SyncToken: '4' } });
+
+    await quickbooksProvider.pushInvoice(taxConn, invoicePayload({
+      invoiceId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      mapping: { remoteEntityId: '310', remoteSyncToken: '3' },
+    }), [{ invoiceLineId: 'l1', remoteItemRef: { id: '77' } }]);
+
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).not.toContain('requestid');
+  });
+
   it('throws with attached status/body (sliced) on non-ok, and never sends CurrencyRef', async () => {
     const fetchMock = mockFetchJsonOnce({ Fault: { Error: [{ Message: 'Business Validation Error' }] } }, 500);
 

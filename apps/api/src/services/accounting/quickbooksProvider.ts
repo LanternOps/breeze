@@ -493,11 +493,28 @@ export class QuickbooksProvider implements AccountingProvider {
       } : {}),
     });
 
+    // Idempotency key for CREATE only (review finding, Phase C Task 3 fix
+    // round). A network-level retry of a create request that actually landed
+    // — the response was lost, not the write — must not mint a second
+    // QuickBooks invoice: QBO recognizes the same `requestid` for a rolling
+    // 24h window and returns the ORIGINAL response instead of creating again.
+    // A sparse UPDATE doesn't need this: it targets an existing Id +
+    // SyncToken, and a stale SyncToken (the only way a retried update could
+    // double-apply) is rejected outright by QBO. Deterministic per Breeze
+    // invoice — every retry of the SAME invoice's create (including the
+    // DocNumber-stripped retry below, still logically the same create) reuses
+    // the identical key — and well under QBO's 50-char cap (a uuid is 36).
+    const createRequestId = invoice.invoiceId;
+    const invoicePath = (includeRequestId: boolean) => {
+      const base = `invoice?minorversion=${QBO_API_MINOR_VERSION}`;
+      return includeRequestId ? `${base}&requestid=${encodeURIComponent(createRequestId)}` : base;
+    };
+
     let parsed: { Invoice?: QboRawInvoice };
     try {
       parsed = await this.qboRequest<{ Invoice?: QboRawInvoice }>(
         conn,
-        `invoice?minorversion=${QBO_API_MINOR_VERSION}`,
+        invoicePath(!mapping),
         'QuickBooks invoice push',
         { method: 'POST', body: JSON.stringify(buildBody(true)) },
       );
@@ -510,7 +527,7 @@ export class QuickbooksProvider implements AccountingProvider {
       if (e.status === 400 && invoice.docNumber && typeof e.body === 'string' && /Duplicate Document Number/i.test(e.body)) {
         parsed = await this.qboRequest<{ Invoice?: QboRawInvoice }>(
           conn,
-          `invoice?minorversion=${QBO_API_MINOR_VERSION}`,
+          invoicePath(!mapping),
           'QuickBooks invoice push',
           { method: 'POST', body: JSON.stringify(buildBody(false)) },
         );

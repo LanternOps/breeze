@@ -97,6 +97,7 @@ interface InvRow {
 interface LineRow {
   id: string; invoiceId: string; catalogItemId: string | null; name: string | null; description: string | null;
   quantity: string; unitPrice: string; lineTotal: string; taxable: boolean; sortOrder: number;
+  customerVisible: boolean;
 }
 interface MappingRow {
   id: string; integrationId: string; partnerId: string; breezeEntityType: string; breezeEntityId: string;
@@ -144,14 +145,53 @@ function defaultLines(overrides: Partial<LineRow>[] = []): LineRow[] {
     return [{
       id: 'line-1', invoiceId: INVOICE, catalogItemId: null, name: 'Widget', description: null,
       quantity: '1', unitPrice: '100.00', lineTotal: '100.00', taxable: true, sortOrder: 0,
+      customerVisible: true,
     }];
   }
   return overrides.map((o, i) => ({
     id: `line-${i + 1}`, invoiceId: INVOICE, catalogItemId: null, name: `Line ${i + 1}`, description: null,
     quantity: '1', unitPrice: '100.00', lineTotal: '100.00', taxable: true, sortOrder: i,
+    customerVisible: true,
     ...o,
   }));
 }
+
+/**
+ * Walks a REAL (unmocked) drizzle-orm compiled SQL tree — invoices/
+ * invoiceLines/accountingEntityMappings are real schema imports here, not
+ * mocked, so `eq(...)`/`and(...)` produce genuine SQL objects with a
+ * `queryChunks` tree. Mirrors the `flattenSql` technique in
+ * ticketService.test.ts (memory/vacuous_drizzle_where_clause_assertions):
+ * walking the COMPILED SQL proves a real `eq(column, value)` call happened
+ * against a real Column, rather than trusting a mock that ignores its `where`/
+ * `orderBy` arguments entirely (the vacuity a mutation-test caught here —
+ * adding a stray `customerVisible` filter or swapping `orderBy(sortOrder)`
+ * for `orderBy(id)` left every assertion green because nothing inspected the
+ * compiled condition).
+ */
+function sqlColumnsAndValues(node: unknown): { columns: string[]; values: unknown[] } {
+  const columns: string[] = [];
+  const values: unknown[] = [];
+  const walk = (n: unknown): void => {
+    if (!n || typeof n !== 'object') return;
+    const rec = n as Record<string, unknown>;
+    if (Array.isArray(rec.queryChunks)) {
+      for (const c of rec.queryChunks as unknown[]) walk(c);
+      return;
+    }
+    if (Array.isArray(rec.value)) return; // StringChunk punctuation (" = ", " and ", …) — not data
+    if (typeof rec.name === 'string' && 'columnType' in rec) { columns.push(rec.name); return; } // Column ref
+    if ('value' in rec && 'encoder' in rec) { values.push(rec.value); return; } // bound Param
+  };
+  walk(node);
+  return { columns, values };
+}
+
+// Captured verbatim from the mocked `where`/`orderBy` calls issued against
+// `invoiceLines` specifically, so tests can prove (not assume) what the
+// coordinator actually queried for — reset on every setup().
+let lastLinesWhereCond: unknown = null;
+let lastLinesOrderByArg: unknown = null;
 
 function orgMappingRow(overrides: Partial<MappingRow> = {}): MappingRow {
   return {
@@ -170,6 +210,8 @@ function setup(opts: {
   currentInvoices = [defaultInvoice(opts.invoice)];
   currentLines = defaultLines(opts.lines);
   currentMappings = (opts.mappings ?? [orgMappingRow()]).map((m) => ({ ...m }));
+  lastLinesWhereCond = null;
+  lastLinesOrderByArg = null;
 
   selectMock.mockImplementation(() => ({
     from: (table: unknown) => ({
@@ -183,11 +225,14 @@ function setup(opts: {
         }
         let rows: unknown[];
         if (table === invoices) rows = currentInvoices;
-        else if (table === invoiceLines) rows = currentLines;
+        else if (table === invoiceLines) { lastLinesWhereCond = cond; rows = currentLines; }
         else if (table === accountingEntityMappings) rows = currentMappings;
         else rows = [];
         return {
-          orderBy: () => Promise.resolve(rows),
+          orderBy: (arg: unknown) => {
+            if (table === invoiceLines) lastLinesOrderByArg = arg;
+            return Promise.resolve(rows);
+          },
           limit: () => Promise.resolve(rows),
           then: (resolve: (v: unknown[]) => unknown) => Promise.resolve(rows).then(resolve),
         };
@@ -396,6 +441,17 @@ describe('pushInvoiceToAccounting', () => {
     expect(syncMappedEntityMock).toHaveBeenCalledWith(expect.objectContaining({ breezeEntityType: 'org', breezeEntityId: ORG }));
     expect(syncMappedEntityMock).toHaveBeenCalledWith(expect.objectContaining({ breezeEntityType: 'catalog_item', breezeEntityId: 'item-1' }));
     expect(syncMappedEntityMock).not.toHaveBeenCalledWith(expect.objectContaining({ breezeEntityId: 'item-2' }));
+    // Step 3 order (brief): the org sync must land BEFORE the line-item sync,
+    // not just "both happened" — a bundle-child sync racing ahead of the
+    // customer that owns it would build lineMappings for a customer QuickBooks
+    // doesn't know about yet.
+    const orgCallOrder = syncMappedEntityMock.mock.invocationCallOrder[
+      syncMappedEntityMock.mock.calls.findIndex((c) => (c[0] as { breezeEntityType: string }).breezeEntityType === 'org')
+    ];
+    const itemCallOrder = syncMappedEntityMock.mock.invocationCallOrder[
+      syncMappedEntityMock.mock.calls.findIndex((c) => (c[0] as { breezeEntityType: string }).breezeEntityType === 'catalog_item')
+    ];
+    expect(orgCallOrder).toBeLessThan(itemCallOrder!);
 
     const [, , lineMappings] = pushInvoiceMock.mock.calls[0]!;
     expect(lineMappings).toContainEqual({ invoiceLineId: 'line-1', remoteItemRef: { id: 'qb-synced', syncToken: '0' } });
@@ -406,13 +462,12 @@ describe('pushInvoiceToAccounting', () => {
     setup({
       lines: [
         { id: 'line-1', name: 'Bundle parent', lineTotal: '100.00' },
-        { id: 'line-2', name: 'Hidden child', lineTotal: '0.00', unitPrice: '0.00' },
+        // customerVisible: false is the actual "hidden" signal (matches the
+        // real invoice_lines.customer_visible column) — the assertions below
+        // prove the coordinator's WHERE clause carries no predicate on it.
+        { id: 'line-2', name: 'Hidden child', lineTotal: '0.00', unitPrice: '0.00', customerVisible: false },
       ],
     });
-    // The hidden child row also needs customerVisible carried through, but the
-    // coordinator loads ALL columns via `select()`, so a plain object with the
-    // extra field is enough for this mock — the assertion below just proves
-    // BOTH lines reached the payload regardless of price/visibility.
 
     const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER);
 
@@ -423,6 +478,19 @@ describe('pushInvoiceToAccounting', () => {
     expect(payload.txnDate).toBe('2026-09-01');
     expect(payload.dueDate).toBe('2026-10-01');
     expect(payload.mapping).toBeNull(); // no prior invoice mapping row -> create path
+
+    // Prove "all lines including hidden" isn't vacuous: walk the REAL compiled
+    // SQL the coordinator issued for invoiceLines and assert it filters by
+    // invoice_id ONLY — no customer_visible predicate exists to have excluded
+    // the hidden line (a mutation-proof: adding one here made this fail before
+    // this assertion existed, while the mock silently kept returning both rows).
+    const { columns, values } = sqlColumnsAndValues(lastLinesWhereCond);
+    expect(columns).toEqual(['invoice_id']);
+    expect(values).toEqual([INVOICE]);
+    // Prove "ORDER BY sortOrder": the actual invoiceLines.sortOrder Column
+    // object was passed to .orderBy(), by reference — not a different column
+    // (e.g. `id`) that would happen to produce the same order in this fixture.
+    expect(lastLinesOrderByArg).toBe(invoiceLines.sortOrder);
 
     expect(insertedValues).toContainEqual(expect.objectContaining({
       breezeEntityType: 'invoice', breezeEntityId: INVOICE, linkStatus: 'create_new', syncStatus: 'pending',
@@ -515,6 +583,16 @@ describe('pushInvoiceToAccounting', () => {
     expect(caught?.status).toBe(502);
     expect(caught?.message).toContain('qb-inv-1');
     expect(caught?.message).toMatch(/do not retry/i);
+
+    // Review finding 3: the row must NOT be left at sync_status='pending' with
+    // no remote id — a stale-pending reaper would re-push and duplicate the
+    // QuickBooks invoice. It should be marked 'error' with the record_failed
+    // text (best-effort — the update above is separate from the one that just
+    // failed, so it can succeed even though that one didn't).
+    const invoiceMapping = currentMappings.find((m) => m.breezeEntityType === 'invoice');
+    expect(invoiceMapping?.syncStatus).toBe('error');
+    expect(invoiceMapping?.lastError).toContain('qb-inv-1');
+    expect(invoiceMapping?.lastError).toMatch(/do not retry/i);
   });
 
   it('re-pushes an already-synced invoice mapping via the sparse update path (no duplicate insert)', async () => {
@@ -543,6 +621,86 @@ describe('pushInvoiceToAccounting', () => {
 
     await expect(pushInvoiceToAccounting(INVOICE, PARTNER)).rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
     expect(pushInvoiceMock).not.toHaveBeenCalled();
+  });
+
+  describe('nested dependency-sync failures (syncMappedEntity)', () => {
+    it('maps a permanent pre-flight 409 from the ORG sync (e.g. a create-time currency_mismatch) to dependency_not_ready, never quickbooks_error', async () => {
+      setup({
+        mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null, syncStatus: 'pending' })],
+      });
+      syncMappedEntityMock.mockRejectedValueOnce(
+        new AccountingMappingError('currency_mismatch', 409, 'This organization is priced in EUR, but the connected QuickBooks company\'s home currency is USD.'),
+      );
+
+      let caught: AccountingInvoicePushError | undefined;
+      try {
+        await pushInvoiceToAccounting(INVOICE, PARTNER);
+      } catch (err) {
+        caught = err as AccountingInvoicePushError;
+      }
+
+      expect(caught?.code).toBe('dependency_not_ready');
+      expect(caught?.status).toBe(409);
+      expect(caught?.message).toContain('home currency is USD');
+      expect(pushInvoiceMock).not.toHaveBeenCalled();
+    });
+
+    it('maps a permanent pre-flight 409 from a CATALOG-ITEM sync (e.g. income_account_required) to dependency_not_ready', async () => {
+      setup({
+        mappings: [
+          orgMappingRow(), // already synced — only the item sync should fire
+          {
+            id: 'map-item-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'catalog_item',
+            breezeEntityId: 'item-1', remoteEntityType: 'Item', remoteEntityId: null, remoteSyncToken: null,
+            remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'confirmed', syncStatus: 'pending', lastError: null,
+          },
+        ],
+        lines: [{ id: 'line-1', catalogItemId: 'item-1' }],
+      });
+      syncMappedEntityMock.mockRejectedValueOnce(
+        new AccountingMappingError('income_account_required', 409, 'Select a default QuickBooks income account before creating catalog items in QuickBooks'),
+      );
+
+      let caught: AccountingInvoicePushError | undefined;
+      try {
+        await pushInvoiceToAccounting(INVOICE, PARTNER);
+      } catch (err) {
+        caught = err as AccountingInvoicePushError;
+      }
+
+      expect(caught?.code).toBe('dependency_not_ready');
+      expect(caught?.status).toBe(409);
+      expect(pushInvoiceMock).not.toHaveBeenCalled();
+    });
+
+    it('preserves a genuine quickbooks_error/502 from a nested sync as quickbooks_error — not conflated with dependency_not_ready', async () => {
+      setup({
+        mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null, syncStatus: 'pending' })],
+      });
+      syncMappedEntityMock.mockRejectedValueOnce(
+        new AccountingMappingError('quickbooks_error', 502, 'QuickBooks rejected the customer sync (HTTP 500)'),
+      );
+
+      let caught: AccountingInvoicePushError | undefined;
+      try {
+        await pushInvoiceToAccounting(INVOICE, PARTNER);
+      } catch (err) {
+        caught = err as AccountingInvoicePushError;
+      }
+
+      expect(caught?.code).toBe('quickbooks_error');
+      expect(caught?.status).toBe(502);
+      expect(pushInvoiceMock).not.toHaveBeenCalled();
+    });
+
+    it('re-types reauth_required/not_connected from a nested sync to their exact counterparts', async () => {
+      setup({
+        mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null, syncStatus: 'pending' })],
+      });
+      syncMappedEntityMock.mockRejectedValueOnce(new AccountingMappingError('reauth_required', 409, 'QuickBooks needs to be reconnected'));
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER)).rejects.toMatchObject({ code: 'reauth_required', status: 409 });
+    });
   });
 });
 

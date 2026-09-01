@@ -49,6 +49,16 @@ export type AccountingInvoicePushErrorCode =
   | 'customer_not_mapped' // org mapping absent / not confirmed|create_new
   | 'home_currency_unknown' | 'currency_mismatch' // realm-level (from assert)
   | 'customer_currency_mismatch' // mapping.remoteCurrencyCode ≠ invoice.currencyCode
+  // A nested org/catalog-item sync (syncMappedEntity) hit a permanent
+  // pre-flight 409 on the DEPENDENCY entity — no income account selected, no
+  // item price in the partner currency, a create-time currency mismatch on
+  // the org/item itself, or a mapping-conflict race. None of these are a
+  // QuickBooks/network failure (nothing was even sent to QuickBooks), so they
+  // must NOT be reported as `quickbooks_error`: that code is paired with 502
+  // and read by callers as "safe to retry the QuickBooks call" — retrying a
+  // call that never ran, against a mapping that is still broken, would just
+  // loop. Fix the dependency's mapping, then retry the invoice push.
+  | 'dependency_not_ready'
   | 'quickbooks_error' | 'record_failed'; // 502s; record_failed = remote ok, local persist failed (never retry)
 
 export class AccountingInvoicePushError extends Error {
@@ -177,16 +187,25 @@ function translateCurrencyError(err: unknown, conn: AccountingConnection): never
 
 /**
  * `syncMappedEntity` can raise `AccountingMappingError` for reasons this
- * coordinator did not itself pre-check (income_account_required,
- * item_price_required, a create-time currency_mismatch on the org/item
- * itself, a mapping_conflict race, …). None of those map cleanly onto
- * `AccountingInvoicePushErrorCode`'s closed set, so they are surfaced as
- * `quickbooks_error` at the SAME status the mapping service chose (its
- * messages are already sanitized/user-safe — never a raw provider body).
+ * coordinator did not itself pre-check: `not_connected`/`reauth_required`
+ * (the token expired between the outer resolve and this nested call),
+ * `quickbooks_error` (a genuine QuickBooks/network failure, retryable), or one
+ * of several PERMANENT pre-flight 409s (`income_account_required`,
+ * `item_price_required`, a create-time `currency_mismatch` on the org/item
+ * itself, `mapping_conflict`, `mapping_not_ready`, `entity_not_found`) —
+ * config problems on the dependency mapping that no amount of retrying the
+ * QuickBooks call will fix. The first two are re-typed to their exact
+ * counterparts (mirrors `translateMappingError`); `quickbooks_error` passes
+ * through unchanged; everything else collapses to `dependency_not_ready` so
+ * it is never mistaken for a retryable `quickbooks_error`/502. Every message
+ * here is already sanitized/user-safe — never a raw provider body.
  */
 function translateNestedSyncError(err: unknown): never {
   if (err instanceof AccountingMappingError) {
-    throw new AccountingInvoicePushError('quickbooks_error', err.status, err.message);
+    if (err.code === 'not_connected') throw new AccountingInvoicePushError('not_connected', 404, err.message);
+    if (err.code === 'reauth_required') throw new AccountingInvoicePushError('reauth_required', 409, err.message);
+    if (err.code === 'quickbooks_error') throw new AccountingInvoicePushError('quickbooks_error', 502, err.message);
+    throw new AccountingInvoicePushError('dependency_not_ready', err.status === 404 ? 404 : 409, err.message);
   }
   throw err;
 }
@@ -453,6 +472,11 @@ export async function pushInvoiceToAccounting(invoiceId: string, partnerId: stri
       itemMapping = await syncMappedEntity({
         partnerId, provider: 'quickbooks', breezeEntityType: 'catalog_item', breezeEntityId: line.catalogItemId,
       }).catch(translateNestedSyncError);
+      // Two lines can reference the same catalog item (e.g. a bundle sold
+      // twice on one invoice) — write the synced result back so a LATER line
+      // for the same item reuses it instead of re-syncing (and re-hitting
+      // QuickBooks) against the same still-stale map entry.
+      itemMappingByItemId.set(line.catalogItemId, itemMapping);
     }
 
     lineMappings.push({
@@ -504,11 +528,15 @@ export async function pushInvoiceToAccounting(invoiceId: string, partnerId: stri
     captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
       service: 'accountingInvoicePush', mappingId: mappingRow.id, remoteEntityId: result.id,
     });
-    throw new AccountingInvoicePushError(
-      'record_failed',
-      502,
-      `QuickBooks accepted the invoice sync (remote id ${result.id}) but Breeze failed to record it — do not retry; contact support to reconcile`,
-    );
+    const message = `QuickBooks accepted the invoice sync (remote id ${result.id}) but Breeze failed to record it — do not retry; contact support to reconcile`;
+    // Best-effort: the row is currently stuck at sync_status='pending' with no
+    // remote id, which a stale-pending reaper would re-push and duplicate the
+    // QuickBooks invoice. markInvoiceMappingError is a separate UPDATE (the
+    // one above already failed/returned zero rows) — if THIS one also fails,
+    // it no-ops silently and the Sentry capture above is the only backstop,
+    // same as every other best-effort mark-error call in this file.
+    await markInvoiceMappingError(mappingRow.id, partnerId, message);
+    throw new AccountingInvoicePushError('record_failed', 502, message);
   }
 
   return {
