@@ -21,7 +21,7 @@ import {
 // This list is duplicated here deliberately — the whole point of the test is
 // to catch drift between the plan's documented contract and the actual
 // registry, so it must not import the list from the module under test.
-const EXPECTED_114_NAMES = [
+const EXPECTED_NAMES = [
   'alertWorkers', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
   'metricAnomaliesWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
@@ -56,7 +56,7 @@ const EXPECTED_114_NAMES = [
 
 describe('workerRegistry: losslessness', () => {
   it('contains exactly the 118 known names, in order', () => {
-    expect(WORKER_REGISTRY.map((e) => e.name)).toEqual(EXPECTED_114_NAMES);
+    expect(WORKER_REGISTRY.map((e) => e.name)).toEqual(EXPECTED_NAMES);
   });
 
   it('has exactly 118 entries', () => {

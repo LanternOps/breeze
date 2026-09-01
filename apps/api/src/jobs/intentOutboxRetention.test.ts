@@ -130,6 +130,9 @@ describe('Intent outbox retention worker', () => {
   });
 
   it('deletes intent_outbox in bounded ctid batches, inside system DB context', async () => {
+    // Delivered branch: 3 batches (4, 4, 2). The stuck branch then runs as a
+    // separate pass (see the two-query split below) and finds nothing —
+    // falls through to the persistent { rowCount: 0 } default from beforeEach.
     dbExecuteMock
       .mockResolvedValueOnce({ rowCount: 4 })
       .mockResolvedValueOnce({ rowCount: 4 })
@@ -142,11 +145,14 @@ describe('Intent outbox retention worker', () => {
 
     // ONE short context per batch, not one spanning the whole sweep — same
     // lock-duration reasoning as agentLogRetention.ts / retentionBatch.ts.
-    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(3);
-    expect(withSystemDbAccessContextMock.mock.calls.map((c) => c[1])).toEqual(
-      Array(3).fill('intentOutboxRetention.prune'),
-    );
-    expect(dbExecuteMock).toHaveBeenCalledTimes(3);
+    // 3 delivered-branch batches + 1 stuck-branch batch (finds nothing, stops
+    // after its first short batch) = 4 contexts total.
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(4);
+    expect(withSystemDbAccessContextMock.mock.calls.map((c) => c[1])).toEqual([
+      ...Array(3).fill('intentOutboxRetention.prune.delivered'),
+      'intentOutboxRetention.prune.stuck',
+    ]);
+    expect(dbExecuteMock).toHaveBeenCalledTimes(4);
     const { sql: sqlDump } = renderCalls(dbExecuteMock.mock.calls as unknown[][]);
     expect(sqlDump).toContain('DELETE FROM');
     expect(sqlDump).toContain('intent_outbox');
@@ -157,30 +163,58 @@ describe('Intent outbox retention worker', () => {
     expect(sqlDump).toContain('LIMIT');
     expect(result).toMatchObject({
       deletedCount: 10,
-      batches: 3,
+      batches: 4,
       hasMore: false,
       retentionDays: 14,
     });
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('renders both the delivered and stuck-row terminal-state branches, bounded by MAX_PUBLISH_ATTEMPTS', async () => {
-    dbExecuteMock.mockResolvedValueOnce({ rowCount: 0 });
+  // The two branches are now separate DELETE passes (not one OR'd predicate)
+  // so a stuck-row purge is visible on its own — see pruneIntentOutbox's doc
+  // comment. This asserts the split rather than one combined query.
+  it('issues the delivered and stuck-row predicates as separate queries, the stuck one bounded by MAX_PUBLISH_ATTEMPTS', async () => {
+    dbExecuteMock.mockResolvedValue({ rowCount: 0 });
     createIntentOutboxRetentionWorker();
 
     await capturedWorkerProcessor.current!({ data: { retentionDays: 14, batchSize: 4, maxBatches: 5 } });
 
-    const { sql: renderedSql, params } = new PgDialect().sqlToQuery(dbExecuteMock.mock.calls[0]![0] as SQL);
-    // Delivered branch: published_at IS NOT NULL AND published_at < cutoff.
-    expect(renderedSql).toMatch(/"published_at" is not null/i);
+    expect(dbExecuteMock).toHaveBeenCalledTimes(2);
+    const delivered = new PgDialect().sqlToQuery(dbExecuteMock.mock.calls[0]![0] as SQL);
+    const stuck = new PgDialect().sqlToQuery(dbExecuteMock.mock.calls[1]![0] as SQL);
+
+    // Delivered branch: published_at IS NOT NULL AND published_at < cutoff —
+    // no publish_attempts/created_at involvement at all.
+    expect(delivered.sql).toMatch(/"published_at" is not null/i);
+    expect(delivered.sql).not.toMatch(/publish_attempts/i);
+
     // Stuck branch: unpublished, attempts exhausted, aged off created_at.
-    expect(renderedSql).toMatch(/"published_at" is null/i);
-    expect(renderedSql).toMatch(/"publish_attempts" >/i);
-    expect(renderedSql).toMatch(/"created_at" </i);
-    expect(params).toContain(MAX_PUBLISH_ATTEMPTS);
+    expect(stuck.sql).toMatch(/"published_at" is null/i);
+    expect(stuck.sql).toMatch(/"publish_attempts" >/i);
+    expect(stuck.sql).toMatch(/"created_at" </i);
+    expect(stuck.params).toContain(MAX_PUBLISH_ATTEMPTS);
+  });
+
+  it('warns specifically about a stuck-row purge, distinct from the generic backlog warning', async () => {
+    // Delivered branch: nothing. Stuck branch: 1 permanently-failed row.
+    dbExecuteMock
+      .mockResolvedValueOnce({ rowCount: 0 })
+      .mockResolvedValueOnce({ rowCount: 1 });
+    createIntentOutboxRetentionWorker();
+
+    const result = await capturedWorkerProcessor.current!({
+      data: { retentionDays: 14, batchSize: 4, maxBatches: 5 },
+    });
+
+    expect(result).toMatchObject({ deletedCount: 1, hasMore: false });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('permanently-failed');
+    expect(warnSpy.mock.calls[0][0]).toContain('1');
   });
 
   it('stops at maxBatches, reports hasMore, and warns about the backlog', async () => {
+    // Delivered branch hits the 2-batch cap with a full final batch (hasMore).
+    // Stuck branch then finds nothing and stops after its own short batch.
     dbExecuteMock
       .mockResolvedValueOnce({ rowCount: 4 })
       .mockResolvedValueOnce({ rowCount: 4 });
@@ -190,10 +224,10 @@ describe('Intent outbox retention worker', () => {
       data: { retentionDays: 14, batchSize: 4, maxBatches: 2 },
     });
 
-    expect(dbExecuteMock).toHaveBeenCalledTimes(2);
+    expect(dbExecuteMock).toHaveBeenCalledTimes(3);
     expect(result).toMatchObject({
       deletedCount: 8,
-      batches: 2,
+      batches: 3,
       hasMore: true,
     });
     expect(warnSpy).toHaveBeenCalledTimes(1);

@@ -74,40 +74,86 @@ interface RetentionJobData {
   maxBatches?: number;
 }
 
+export interface PruneMetricAnomalyIncidentsResult {
+  durationMs: number;
+  deletedCount: number;
+  retentionDays: number;
+  batches: number;
+  hasMore: boolean;
+}
+
+/**
+ * The core sweep, factored out of the BullMQ processor so integration tests
+ * can invoke it directly against a real DB without going through Redis/BullMQ
+ * (same shape as `mlOutputRetention.ts`'s `pruneMlOutputs` — see
+ * `apps/api/src/__tests__/integration/outboxRetention.integration.test.ts`).
+ *
+ * Two SEPARATE `pruneInCtidBatches` passes, not one OR'd predicate: a
+ * permanently-failed (stuck) row is the only surviving evidence that an
+ * anomaly incident never reached a subscriber —
+ * `metricAnomalyIncidentPublisher.ts`'s own alarm scan reads exactly this
+ * set. Folding both branches into one DELETE would report a single
+ * aggregate count with no way to tell "N drained rows" from "N incidents
+ * that never dispatched" (the same forensic-trail concern CLAUDE.md
+ * codifies for migration cleanup DELETEs). Splitting costs one extra
+ * (usually zero-row) DELETE per run — cheap at this table's volume — and
+ * buys a `console.warn` the moment stuck rows are ever non-zero.
+ *
+ * No context wrapper here: pruneInCtidBatches opens one per batch, so that
+ * each batch commits and releases its locks (see retentionBatch.ts).
+ */
+export async function pruneMetricAnomalyIncidents(data: RetentionJobData = {}): Promise<PruneMetricAnomalyIncidentsResult> {
+  const startTime = Date.now();
+  const retentionDays = resolveRetentionDays(data.retentionDays, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS);
+  const batchSize = Math.max(1, data.batchSize ?? BATCH_SIZE);
+  const maxBatches = Math.max(1, data.maxBatches ?? MAX_BATCHES);
+  // postgres-js does not coerce JS Date in template-literal params; pass an ISO string.
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+  const dispatched = await pruneInCtidBatches({
+    table: 'metric_anomaly_incidents',
+    where: sql`${metricAnomalyIncidents.dispatchedAt} IS NOT NULL AND ${metricAnomalyIncidents.dispatchedAt} < ${cutoff}::timestamptz`,
+    batchSize,
+    maxBatches,
+    label: 'metricAnomalyIncidentRetention.prune.dispatched',
+  });
+  const stuck = await pruneInCtidBatches({
+    table: 'metric_anomaly_incidents',
+    where: sql`
+      ${metricAnomalyIncidents.dispatchedAt} IS NULL
+      AND ${metricAnomalyIncidents.dispatchAttempts} > ${MAX_PUBLISH_ATTEMPTS}
+      AND ${metricAnomalyIncidents.createdAt} < ${cutoff}::timestamptz
+    `,
+    batchSize,
+    maxBatches,
+    label: 'metricAnomalyIncidentRetention.prune.stuck',
+  });
+
+  const deletedCount = dispatched.deleted + stuck.deleted;
+  const batches = dispatched.batches + stuck.batches;
+  const hasMore = dispatched.hasMore || stuck.hasMore;
+
+  const durationMs = Date.now() - startTime;
+  console.log(
+    `${LOG_PREFIX} Pruned ${deletedCount} metric_anomaly_incidents rows older than ${retentionDays} days `
+    + `(dispatched=${dispatched.deleted} stuck=${stuck.deleted}, batches=${batches}) in ${durationMs}ms`,
+  );
+  if (stuck.deleted > 0) {
+    console.warn(
+      `${LOG_PREFIX} Purged ${stuck.deleted} permanently-failed metric_anomaly_incidents row(s) that never `
+      + 'reached a subscriber (dispatch_attempts exhausted) — this is the only record that those dispatches failed.',
+    );
+  }
+  warnOnRetentionBacklog(LOG_PREFIX, 'metric_anomaly_incidents', { deleted: deletedCount, batches, hasMore });
+  recordRetentionRun('metric_anomaly_incident_retention', { rowsDeleted: deletedCount, incomplete: hasMore });
+
+  return { durationMs, deletedCount, retentionDays, batches, hasMore };
+}
+
 export function createMetricAnomalyIncidentRetentionWorker(): Worker<RetentionJobData> {
   return new Worker<RetentionJobData>(
     QUEUE_NAME,
-    // No context wrapper here: pruneInCtidBatches opens one per batch, so that
-    // each batch commits and releases its locks (see retentionBatch.ts).
-    async (job: Job<RetentionJobData>) => {
-      const startTime = Date.now();
-      const retentionDays = resolveRetentionDays(job.data.retentionDays, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS);
-      const batchSize = Math.max(1, job.data.batchSize ?? BATCH_SIZE);
-      const maxBatches = Math.max(1, job.data.maxBatches ?? MAX_BATCHES);
-      // postgres-js does not coerce JS Date in template-literal params; pass an ISO string.
-      const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
-
-      const { deleted: deletedCount, batches, hasMore } = await pruneInCtidBatches({
-        table: 'metric_anomaly_incidents',
-        where: sql`(
-          ${metricAnomalyIncidents.dispatchedAt} IS NOT NULL AND ${metricAnomalyIncidents.dispatchedAt} < ${cutoff}::timestamptz
-        ) OR (
-          ${metricAnomalyIncidents.dispatchedAt} IS NULL
-          AND ${metricAnomalyIncidents.dispatchAttempts} > ${MAX_PUBLISH_ATTEMPTS}
-          AND ${metricAnomalyIncidents.createdAt} < ${cutoff}::timestamptz
-        )`,
-        batchSize,
-        maxBatches,
-        label: 'metricAnomalyIncidentRetention.prune',
-      });
-
-      const durationMs = Date.now() - startTime;
-      console.log(`${LOG_PREFIX} Pruned ${deletedCount} metric_anomaly_incidents rows older than ${retentionDays} days (batches=${batches}) in ${durationMs}ms`);
-      warnOnRetentionBacklog(LOG_PREFIX, 'metric_anomaly_incidents', { deleted: deletedCount, batches, hasMore });
-      recordRetentionRun('metric_anomaly_incident_retention', { rowsDeleted: deletedCount, incomplete: hasMore });
-
-      return { durationMs, deletedCount, retentionDays, batches, hasMore };
-    },
+    async (job: Job<RetentionJobData>) => pruneMetricAnomalyIncidents(job.data),
     {
       connection: getBullMQConnection(),
       concurrency: 1

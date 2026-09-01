@@ -68,40 +68,86 @@ interface RetentionJobData {
   maxBatches?: number;
 }
 
+export interface PruneTicketOutboxResult {
+  durationMs: number;
+  deletedCount: number;
+  retentionDays: number;
+  batches: number;
+  hasMore: boolean;
+}
+
+/**
+ * The core sweep, factored out of the BullMQ processor so integration tests
+ * can invoke it directly against a real DB without going through Redis/BullMQ
+ * (same shape as `mlOutputRetention.ts`'s `pruneMlOutputs` — see
+ * `apps/api/src/__tests__/integration/outboxRetention.integration.test.ts`).
+ *
+ * Two SEPARATE `pruneInCtidBatches` passes, not one OR'd predicate: a
+ * permanently-failed (stuck) row is the only surviving evidence that a ticket
+ * lifecycle event never reached a subscriber — `ticketOutboxPublisher.ts`'s
+ * own alarm scan reads exactly this set. Folding both branches into one
+ * DELETE would report a single aggregate count with no way to tell "6,000
+ * drained rows" from "6,000 events that never delivered" (the same
+ * forensic-trail concern CLAUDE.md codifies for migration cleanup DELETEs).
+ * Splitting costs one extra (usually zero-row) DELETE per run — cheap at
+ * this table's volume — and buys a `console.warn` the moment stuck rows are
+ * ever non-zero.
+ *
+ * No context wrapper here: pruneInCtidBatches opens one per batch, so that
+ * each batch commits and releases its locks (see retentionBatch.ts).
+ */
+export async function pruneTicketOutbox(data: RetentionJobData = {}): Promise<PruneTicketOutboxResult> {
+  const startTime = Date.now();
+  const retentionDays = resolveRetentionDays(data.retentionDays, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS);
+  const batchSize = Math.max(1, data.batchSize ?? BATCH_SIZE);
+  const maxBatches = Math.max(1, data.maxBatches ?? MAX_BATCHES);
+  // postgres-js does not coerce JS Date in template-literal params; pass an ISO string.
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+  const delivered = await pruneInCtidBatches({
+    table: 'ticket_outbox',
+    where: sql`${ticketOutbox.publishedAt} IS NOT NULL AND ${ticketOutbox.publishedAt} < ${cutoff}::timestamptz`,
+    batchSize,
+    maxBatches,
+    label: 'ticketOutboxRetention.prune.delivered',
+  });
+  const stuck = await pruneInCtidBatches({
+    table: 'ticket_outbox',
+    where: sql`
+      ${ticketOutbox.publishedAt} IS NULL
+      AND ${ticketOutbox.publishAttempts} > ${MAX_PUBLISH_ATTEMPTS}
+      AND ${ticketOutbox.createdAt} < ${cutoff}::timestamptz
+    `,
+    batchSize,
+    maxBatches,
+    label: 'ticketOutboxRetention.prune.stuck',
+  });
+
+  const deletedCount = delivered.deleted + stuck.deleted;
+  const batches = delivered.batches + stuck.batches;
+  const hasMore = delivered.hasMore || stuck.hasMore;
+
+  const durationMs = Date.now() - startTime;
+  console.log(
+    `${LOG_PREFIX} Pruned ${deletedCount} ticket_outbox rows older than ${retentionDays} days `
+    + `(delivered=${delivered.deleted} stuck=${stuck.deleted}, batches=${batches}) in ${durationMs}ms`,
+  );
+  if (stuck.deleted > 0) {
+    console.warn(
+      `${LOG_PREFIX} Purged ${stuck.deleted} permanently-failed ticket_outbox row(s) that never reached `
+      + 'a subscriber (publish_attempts exhausted) — this is the only record that those deliveries failed.',
+    );
+  }
+  warnOnRetentionBacklog(LOG_PREFIX, 'ticket_outbox', { deleted: deletedCount, batches, hasMore });
+  recordRetentionRun('ticket_outbox_retention', { rowsDeleted: deletedCount, incomplete: hasMore });
+
+  return { durationMs, deletedCount, retentionDays, batches, hasMore };
+}
+
 export function createTicketOutboxRetentionWorker(): Worker<RetentionJobData> {
   return new Worker<RetentionJobData>(
     QUEUE_NAME,
-    // No context wrapper here: pruneInCtidBatches opens one per batch, so that
-    // each batch commits and releases its locks (see retentionBatch.ts).
-    async (job: Job<RetentionJobData>) => {
-      const startTime = Date.now();
-      const retentionDays = resolveRetentionDays(job.data.retentionDays, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS);
-      const batchSize = Math.max(1, job.data.batchSize ?? BATCH_SIZE);
-      const maxBatches = Math.max(1, job.data.maxBatches ?? MAX_BATCHES);
-      // postgres-js does not coerce JS Date in template-literal params; pass an ISO string.
-      const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
-
-      const { deleted: deletedCount, batches, hasMore } = await pruneInCtidBatches({
-        table: 'ticket_outbox',
-        where: sql`(
-          ${ticketOutbox.publishedAt} IS NOT NULL AND ${ticketOutbox.publishedAt} < ${cutoff}::timestamptz
-        ) OR (
-          ${ticketOutbox.publishedAt} IS NULL
-          AND ${ticketOutbox.publishAttempts} > ${MAX_PUBLISH_ATTEMPTS}
-          AND ${ticketOutbox.createdAt} < ${cutoff}::timestamptz
-        )`,
-        batchSize,
-        maxBatches,
-        label: 'ticketOutboxRetention.prune',
-      });
-
-      const durationMs = Date.now() - startTime;
-      console.log(`${LOG_PREFIX} Pruned ${deletedCount} ticket_outbox rows older than ${retentionDays} days (batches=${batches}) in ${durationMs}ms`);
-      warnOnRetentionBacklog(LOG_PREFIX, 'ticket_outbox', { deleted: deletedCount, batches, hasMore });
-      recordRetentionRun('ticket_outbox_retention', { rowsDeleted: deletedCount, incomplete: hasMore });
-
-      return { durationMs, deletedCount, retentionDays, batches, hasMore };
-    },
+    async (job: Job<RetentionJobData>) => pruneTicketOutbox(job.data),
     {
       connection: getBullMQConnection(),
       concurrency: 1
