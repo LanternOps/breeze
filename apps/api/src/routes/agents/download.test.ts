@@ -1087,3 +1087,44 @@ describe('install.sh functional pre-flight behavior', () => {
     }
   });
 });
+
+// #4072 auto edition migration — the raw MSI route must serve the staged file
+// VERBATIM (stable sha256; the migration script pins it) and must not leak the
+// binary directory in its public 404.
+describe('raw agent MSI download', () => {
+  const originalAgentDir = process.env.AGENT_BINARY_DIR;
+
+  afterEach(() => {
+    if (originalAgentDir === undefined) delete process.env.AGENT_BINARY_DIR;
+    else process.env.AGENT_BINARY_DIR = originalAgentDir;
+    vi.restoreAllMocks();
+  });
+
+  it('serves the staged MSI bytes verbatim', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'breeze-msi-test-'));
+    try {
+      const content = Buffer.from('fake-msi-bytes-for-sha-stability');
+      writeFileSync(join(dir, 'breeze-agent.msi'), content);
+      process.env.AGENT_BINARY_DIR = dir;
+
+      const res = await downloadRoutes.request('/download/windows/amd64/msi');
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-disposition')).toBe('attachment; filename="breeze-agent.msi"');
+      expect(Buffer.from(await res.arrayBuffer()).equals(content)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('404s without disclosing AGENT_BINARY_DIR when the MSI is not staged', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    process.env.AGENT_BINARY_DIR = '/tmp/breeze-secret-agent-binaries';
+
+    const res = await downloadRoutes.request('/download/windows/amd64/msi');
+    const body = await res.text();
+
+    expect(res.status).toBe(404);
+    expect(body).not.toContain('/tmp/breeze-secret-agent-binaries');
+    expect(body).not.toContain('AGENT_BINARY_DIR');
+  });
+});

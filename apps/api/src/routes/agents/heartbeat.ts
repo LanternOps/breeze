@@ -4,6 +4,10 @@ import { zValidator } from '../../lib/validation';
 import { and, eq, notInArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
+  maybeDispatchEditionMigration,
+  shouldConsiderEditionMigration,
+} from '../../services/agentEditionAutoMigrate';
+import {
   devices,
   deviceMetrics,
   agentLogs,
@@ -1227,6 +1231,53 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       reportedEdition: data.agentEdition,
       agentVersion: data.agentVersion,
     });
+    // #4072 follow-up — automatic recovery for the stranded device behind the
+    // withhold above (default-off env flag; every precondition and the
+    // once-per-device claim live in the service). Fire-and-forget: the beat's
+    // response must not wait on script dispatch, and a dispatch failure must
+    // never fail the heartbeat. The service resolves the pin-honouring target
+    // with the SAME resolver as the offer path, so a holdback pin holds
+    // auto-migration too.
+    // The cheap non-DB gate runs FIRST so a flag-off deployment (or a
+    // non-candidate device) costs this hot path nothing beyond a few
+    // comparisons — no ALS exit, no system context, no second transaction.
+    if (
+      shouldConsiderEditionMigration({ device, normalizedArch, updateGateAllows })
+    ) {
+      // runOutsideDbContext + system context is load-bearing, not defensive:
+      // this promise is detached, and the surrounding org-scoped
+      // withDbAccessContext TRANSACTION commits when the handler returns — a
+      // detached query on the ambient context would run against the dead tx
+      // handle (same reason as the manifest-trust keyset at the top of this
+      // handler, #1105). System context is safe: everything dispatched was
+      // validated in the org-scoped block, the claim re-binds to the device's
+      // org and liveness, and dispatchScriptToDevice's org-equality invariant
+      // still applies.
+      runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          maybeDispatchEditionMigration({
+            device,
+            reportedAgentVersion: data.agentVersion,
+            normalizedArch,
+            updateGateAllows,
+            pin: versionPins.agent,
+            resolveTarget: () =>
+              resolvePinnedUpgradeTarget({
+                component: 'agent',
+                platform: device.osType,
+                architecture: normalizedArch,
+                pin: versionPins.agent,
+                agentId,
+              }),
+          }),
+        ),
+        // The service catches everything itself; this catch only exists so a
+        // future regression there can never surface as an unhandled rejection
+        // on the heartbeat hot path.
+      ).catch((err) => {
+        console.error(`[agents] auto edition migration hook failed for ${agentId}:`, err);
+      });
+    }
   } else if (acceptsServedEdition) {
     // Re-arm THIS branch's withhold warn: if the device later regresses to an
     // incompatible build (same process), that is a fresh episode and must log
