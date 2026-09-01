@@ -18,8 +18,26 @@ import {
 // Both 'failed' and 'timeout' must be treated as failures: previously the
 // route code only checked 'failed', which let timeouts silently fall through
 // to the JSON.parse path and surface a generic 500.
+//
+// Written as an exhaustive switch rather than `status === 'failed' || status
+// === 'timeout'` so that adding a fourth CommandResult status is a COMPILE
+// ERROR here instead of a silent new fall-through. That is exactly how #4025
+// happened: a status the success path had never considered ('timeout') was
+// treated as success by every route that enumerated failures positively.
 export function isCommandFailure(result: CommandResult): boolean {
-  return result.status === 'failed' || result.status === 'timeout';
+  switch (result.status) {
+    case 'failed':
+    case 'timeout':
+      return true;
+    case 'completed':
+      return false;
+    default: {
+      // If this stops compiling, a new status was added to CommandResult.
+      // Decide deliberately whether it is a failure — do not let it default.
+      const exhaustive: never = result.status;
+      return exhaustive;
+    }
+  }
 }
 
 /**
@@ -170,9 +188,32 @@ export function classifyCommandFailure(
   }
 
   if (/cannot execute command|is offline|is unknown/i.test(raw)) {
+    // The queue refuses ANY non-online device with the same sentence:
+    // `Device is ${device.status}, cannot execute command` (commandQueue.ts:832,
+    // 1013). `device_status` has seven values, so answering a flat "The device
+    // is offline." is wrong for five of the six non-online ones — and not in a
+    // cosmetic way:
+    //
+    //   - `updating` is set on every agent self-update (agentWs.ts:2156), so a
+    //     technician who restarts a service mid-upgrade is told the device is
+    //     offline and goes hunting a network fault that isn't there.
+    //   - `quarantined` is a security-containment state. Reporting it as
+    //     "offline" hides the containment from the person investigating.
+    //
+    // Keep the clean copy for the genuinely-offline case (the raw string's
+    // ", cannot execute command" tail is internal noise), and name the real
+    // state otherwise. `code` stays `device_offline` either way: it is the
+    // machine-readable "device would not take the command" discriminant, and
+    // callers branch on it, not on the prose.
+    const deviceState = /^Device is (\w+), cannot execute command$/i.exec(raw)?.[1]?.toLowerCase();
     return {
       kind: 'device_offline',
-      message: 'The device is offline.',
+      message:
+        deviceState && deviceState !== 'offline'
+          ? `The device is ${deviceState} and cannot run commands.`
+          : deviceState === 'offline'
+            ? 'The device is offline.'
+            : raw || 'The device is offline.',
       status: 503,
       code: 'device_offline',
     };

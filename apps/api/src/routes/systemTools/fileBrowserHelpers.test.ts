@@ -227,6 +227,35 @@ describe('mapCommandFailure', () => {
     expect(mapCommandFailure(result, 'fallback').status).toBe(503);
   });
 
+  // The queue refuses every non-online device with one sentence,
+  // `Device is ${device.status}, cannot execute command` (commandQueue.ts:832,
+  // 1013), and `device_status` has seven values. Collapsing all of them to
+  // "The device is offline." is wrong five times out of six.
+  it.each([
+    ['maintenance', 'The device is maintenance and cannot run commands.'],
+    ['decommissioned', 'The device is decommissioned and cannot run commands.'],
+    ['quarantined', 'The device is quarantined and cannot run commands.'],
+    ['updating', 'The device is updating and cannot run commands.'],
+    ['pending', 'The device is pending and cannot run commands.'],
+  ])('names a %s device rather than calling it offline', (deviceState, expected) => {
+    const result: CommandResult = {
+      status: 'failed',
+      error: `Device is ${deviceState}, cannot execute command`,
+    };
+    const failure = mapCommandFailure(result, 'fallback');
+
+    expect(failure.code).toBe('device_offline');
+    expect(failure.status).toBe(503);
+    expect(failure.message).toBe(expected);
+  });
+
+  it('keeps the raw text when the refusal is not the queue-shaped sentence', () => {
+    // Anything else matching the offline heuristics keeps its own words rather
+    // than being overwritten with a message that may not be true.
+    const result: CommandResult = { status: 'failed', error: 'Relay says the host is unknown' };
+    expect(mapCommandFailure(result, 'fallback').message).toBe('Relay says the host is unknown');
+  });
+
   it('falls through to 500 with the raw error for unclassified failures', () => {
     const result: CommandResult = { status: 'failed', error: 'Permission denied' };
     expect(mapCommandFailure(result, 'fallback')).toEqual({

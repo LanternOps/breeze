@@ -155,7 +155,7 @@ processesRoutes.post(
         result: result.status
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
+      result: isCommandFailure(result) ? 'failure' : 'success',
       errorMessage: auditErrorMessage(result)
     });
 
@@ -170,7 +170,15 @@ processesRoutes.post(
         success: true,
         message: `Process ${pid} (${data.name || 'unknown'}) terminated successfully`
       });
-    } catch {
+    } catch (parseError) {
+      // The kill itself is confirmed — `isCommandFailure` above already ruled
+      // out failed/timeout, so `status` is 'completed' and the agent acked the
+      // termination. Only the metadata used to prettify the message failed to
+      // parse, so reporting success is correct here. Logged rather than
+      // swallowed: a bare catch in THIS handler is what let #4025 read as
+      // routine, and an unparseable payload from a completed kill still says
+      // something is wrong with the agent's response shape.
+      console.error('Failed to parse agent response for process kill:', parseError);
       return c.json({
         success: true,
         message: `Process ${pid} terminated successfully`

@@ -339,7 +339,7 @@ scheduledTasksRoutes.post(
       resourceName: device.hostname ?? device.id,
       details: { path },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
+      result: isCommandFailure(result) ? 'failure' : 'success',
       errorMessage: auditErrorMessage(result)
     });
 
@@ -387,7 +387,7 @@ scheduledTasksRoutes.post(
       resourceName: device.hostname ?? device.id,
       details: { path },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
+      result: isCommandFailure(result) ? 'failure' : 'success',
       errorMessage: auditErrorMessage(result)
     });
 
@@ -435,7 +435,7 @@ scheduledTasksRoutes.post(
       resourceName: device.hostname ?? device.id,
       details: { path },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
+      result: isCommandFailure(result) ? 'failure' : 'success',
       errorMessage: auditErrorMessage(result)
     });
 

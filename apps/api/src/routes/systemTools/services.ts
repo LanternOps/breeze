@@ -223,7 +223,7 @@ servicesRoutes.post(
       resourceName: device.hostname ?? device.id,
       details: { name },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
+      result: isCommandFailure(result) ? 'failure' : 'success',
       errorMessage: auditErrorMessage(result)
     });
 
@@ -271,7 +271,7 @@ servicesRoutes.post(
       resourceName: device.hostname ?? device.id,
       details: { name },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
+      result: isCommandFailure(result) ? 'failure' : 'success',
       errorMessage: auditErrorMessage(result)
     });
 
@@ -319,7 +319,7 @@ servicesRoutes.post(
       resourceName: device.hostname ?? device.id,
       details: { name },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
+      result: isCommandFailure(result) ? 'failure' : 'success',
       errorMessage: auditErrorMessage(result)
     });
 

@@ -375,7 +375,7 @@ registryRoutes.put(
         data: commandData.substring(0, 200)
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
+      result: isCommandFailure(result) ? 'failure' : 'success',
       errorMessage: auditErrorMessage(result)
     });
 
@@ -439,7 +439,7 @@ registryRoutes.delete(
         name: normalizedName
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
+      result: isCommandFailure(result) ? 'failure' : 'success',
       errorMessage: auditErrorMessage(result)
     });
 
@@ -498,7 +498,7 @@ registryRoutes.post(
         path: normalizedPath
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
+      result: isCommandFailure(result) ? 'failure' : 'success',
       errorMessage: auditErrorMessage(result)
     });
 
@@ -557,7 +557,7 @@ registryRoutes.delete(
         path: normalizedPath
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
+      result: isCommandFailure(result) ? 'failure' : 'success',
       errorMessage: auditErrorMessage(result)
     });
 

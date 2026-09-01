@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Hono } from 'hono';
 import { systemToolsRoutes } from './systemTools';
 
@@ -1167,19 +1169,21 @@ describe('system tools routes', () => {
       init?: RequestInit;
       /** Route changes device state → response must warn the result is unverified. */
       mutating: boolean;
+      /** `action` on the audit row a mutating route writes. */
+      audit?: string;
     };
 
     const routes: RouteCase[] = [
       // processes.ts
       { label: 'processes:list', path: '/processes', mutating: false },
       { label: 'processes:get', path: '/processes/2048', mutating: false },
-      { label: 'processes:kill', path: '/processes/3456/kill?force=true', init: { method: 'POST' }, mutating: true },
+      { label: 'processes:kill', path: '/processes/3456/kill?force=true', init: { method: 'POST' }, mutating: true, audit: 'kill_process' },
       // services.ts
       { label: 'services:list', path: '/services', mutating: false },
       { label: 'services:get', path: '/services/WinRM', mutating: false },
-      { label: 'services:start', path: '/services/WinRM/start', init: { method: 'POST' }, mutating: true },
-      { label: 'services:stop', path: '/services/WinRM/stop', init: { method: 'POST' }, mutating: true },
-      { label: 'services:restart', path: '/services/WinRM/restart', init: { method: 'POST' }, mutating: true },
+      { label: 'services:start', path: '/services/WinRM/start', init: { method: 'POST' }, mutating: true, audit: 'start_service' },
+      { label: 'services:stop', path: '/services/WinRM/stop', init: { method: 'POST' }, mutating: true, audit: 'stop_service' },
+      { label: 'services:restart', path: '/services/WinRM/restart', init: { method: 'POST' }, mutating: true, audit: 'restart_service' },
       // registry.ts
       { label: 'registry:keys', path: `/registry/keys?${registryQs}`, mutating: false },
       { label: 'registry:values', path: `/registry/values?${registryQs}`, mutating: false },
@@ -1193,10 +1197,11 @@ describe('system tools routes', () => {
           body: JSON.stringify({ hive: 'HKEY_LOCAL_MACHINE', path: 'SOFTWARE', name: 'TestValue', type: 'REG_SZ', data: 'Hello' }),
         },
         mutating: true,
+        audit: 'set_registry_value',
       },
-      { label: 'registry:value:delete', path: `/registry/value?${registryQs}&name=TestValue`, init: { method: 'DELETE' }, mutating: true },
-      { label: 'registry:key:create', path: '/registry/key', init: jsonPost({ hive: 'HKEY_LOCAL_MACHINE', path: 'SOFTWARE\\Breeze' }), mutating: true },
-      { label: 'registry:key:delete', path: `/registry/key?${registryQs}\\Breeze`, init: { method: 'DELETE' }, mutating: true },
+      { label: 'registry:value:delete', path: `/registry/value?${registryQs}&name=TestValue`, init: { method: 'DELETE' }, mutating: true, audit: 'delete_registry_value' },
+      { label: 'registry:key:create', path: '/registry/key', init: jsonPost({ hive: 'HKEY_LOCAL_MACHINE', path: 'SOFTWARE\\Breeze' }), mutating: true, audit: 'create_registry_key' },
+      { label: 'registry:key:delete', path: `/registry/key?${registryQs}\\Breeze`, init: { method: 'DELETE' }, mutating: true, audit: 'delete_registry_key' },
       // eventLogs.ts
       { label: 'eventLogs:list', path: '/eventlogs', mutating: false },
       { label: 'eventLogs:info', path: '/eventlogs/System', mutating: false },
@@ -1206,15 +1211,43 @@ describe('system tools routes', () => {
       { label: 'tasks:list', path: '/tasks', mutating: false },
       { label: 'tasks:get', path: `/tasks/${taskPath}`, mutating: false },
       { label: 'tasks:history', path: `/tasks/${taskPath}/history?limit=10`, mutating: false },
-      { label: 'tasks:run', path: `/tasks/${taskPath}/run`, init: { method: 'POST' }, mutating: true },
-      { label: 'tasks:enable', path: `/tasks/${taskPath}/enable`, init: { method: 'POST' }, mutating: true },
-      { label: 'tasks:disable', path: `/tasks/${taskPath}/disable`, init: { method: 'POST' }, mutating: true },
+      { label: 'tasks:run', path: `/tasks/${taskPath}/run`, init: { method: 'POST' }, mutating: true, audit: 'run_scheduled_task' },
+      { label: 'tasks:enable', path: `/tasks/${taskPath}/enable`, init: { method: 'POST' }, mutating: true, audit: 'enable_scheduled_task' },
+      { label: 'tasks:disable', path: `/tasks/${taskPath}/disable`, init: { method: 'POST' }, mutating: true, audit: 'disable_scheduled_task' },
     ];
 
-    // The table must stay exhaustive: 25 call sites were converted, and a new
-    // route added without a row here would be untested.
-    it('covers every converted call site', () => {
-      expect(routes).toHaveLength(25);
+    // Cross-reference the table against the SOURCE, not against itself.
+    //
+    // `expect(routes).toHaveLength(25)` was the first version of this and it
+    // was a lie: the array literal is declared 40 lines up, so the assertion
+    // only fails if someone deletes a row — never if someone adds a route to
+    // one of the five files without a row here, which is the case the guard
+    // exists for. Proven by adding a 26th real call site and watching the
+    // suite stay green.
+    //
+    // Reading the files is what makes it a guard. Every `executeCommand` in
+    // these five modules must be followed by an `isCommandFailure` gate, and
+    // the table must have one row per gate.
+    it('has one row per agent command in the five converted route files', () => {
+      const files = ['processes', 'services', 'registry', 'eventLogs', 'scheduledTasks'];
+      const counts = files.map((name) => {
+        const src = readFileSync(join(__dirname, 'systemTools', `${name}.ts`), 'utf8');
+        return {
+          name,
+          dispatches: (src.match(/await executeCommand\(/g) ?? []).length,
+          gates: (src.match(/if \(isCommandFailure\(result\)\) \{/g) ?? []).length,
+        };
+      });
+
+      // Any dispatch without a gate is a route that can still report an agent
+      // timeout as success — the #4025 bug, reintroduced.
+      for (const { name, dispatches, gates } of counts) {
+        expect(gates, `${name}.ts has ${dispatches} agent command(s) but ${gates} failure gate(s)`).toBe(dispatches);
+      }
+
+      const totalGates = counts.reduce((sum, file) => sum + file.gates, 0);
+      expect(routes, `source has ${totalGates} gated call sites; the table has ${routes.length} rows`)
+        .toHaveLength(totalGates);
     });
 
     it.each(routes)('$label answers 503 agent_timeout, never a success', async ({ path, init, mutating }) => {
@@ -1227,11 +1260,15 @@ describe('system tools routes', () => {
 
       // 503, not 502/504: Cloudflare replaces an origin 502/504 body with its
       // own branded page, which would blank this message on hosted.
+      // These two lines are what actually pin #4025: pre-fix the route
+      // answered 200 with a success body, so `status` and `code` are the
+      // assertions that go red. The shape checks below them document the
+      // contract but can never be the ones that catch the bug — vitest stops
+      // at the first failure, so they are never reached in a red run.
       expect(res.status).toBe(503);
       const body = await res.json();
       expect(body.code).toBe('agent_timeout');
       expect(body.error).toContain("didn't respond in time");
-      // The regression being pinned: no success shape, and no empty listing.
       expect(body.success).toBeUndefined();
       expect(body.data).toBeUndefined();
       expect(body.message).toBeUndefined();
@@ -1240,8 +1277,8 @@ describe('system tools routes', () => {
     });
 
     it.each(routes.filter((route) => route.mutating))(
-      '$label warns the operation may have completed before a retry',
-      async ({ path, init }) => {
+      '$label warns the operation may have completed, and tags its audit row',
+      async ({ path, init, audit }) => {
         mockDeviceSelect();
         mockExecuteCommand.mockResolvedValue({ status: 'timeout', error: 'Command timed out' });
 
@@ -1253,6 +1290,20 @@ describe('system tools routes', () => {
         // the user to verify rather than "please try again".
         expect(body.error).toContain('may have completed');
         expect(body.error).not.toContain('Please try again');
+
+        // The audit trail must agree with the response that the device's final
+        // state was never confirmed. Asserted for all 11 mutating routes, not
+        // just kill_process: the `[unverified]` marker on a timed-out registry
+        // key delete or service stop is exactly the breadcrumb an admin needs
+        // to answer "did this actually happen on the device?", and it could
+        // previously be dropped from ten of them with a green suite.
+        expect(createAuditLog).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: audit,
+            result: 'failure',
+            errorMessage: expect.stringContaining('[unverified]'),
+          }),
+        );
       },
     );
 
@@ -1324,16 +1375,50 @@ describe('system tools routes', () => {
       expect(body.code).toBe('path_not_found');
     });
 
+    // Verbatim from commandQueue.ts:832,1013 — `Device is ${device.status},
+    // cannot execute command`. Using the real producer string rather than a
+    // paraphrase is the whole point: the paraphrase 'Device is offline' passed
+    // while the five OTHER non-online states were being mislabelled.
     it('reports an offline device as 503 device_offline, not a timeout', async () => {
       mockDeviceSelect();
-      mockExecuteCommand.mockResolvedValue({ status: 'failed', error: 'Device is offline' });
+      mockExecuteCommand.mockResolvedValue({
+        status: 'failed',
+        error: 'Device is offline, cannot execute command',
+      });
 
       const res = await app.request(`/system-tools/devices/${deviceId}/tasks`);
 
       expect(res.status).toBe(503);
       const body = await res.json();
       expect(body.code).toBe('device_offline');
+      expect(body.error).toBe('The device is offline.');
       expect(body.unverified).toBeUndefined();
     });
+
+    // `device_status` has seven values and the queue refuses all six non-online
+    // ones with the same sentence. Reporting every one of them as "offline"
+    // sends a technician to chase a network fault — `updating` is set on every
+    // agent self-update (agentWs.ts:2156), and `quarantined` is a security
+    // containment state that must not read as a connectivity problem.
+    it.each(['maintenance', 'decommissioned', 'quarantined', 'updating', 'pending'])(
+      'names the real device state for a %s device instead of calling it offline',
+      async (deviceState) => {
+        mockDeviceSelect();
+        mockExecuteCommand.mockResolvedValue({
+          status: 'failed',
+          error: `Device is ${deviceState}, cannot execute command`,
+        });
+
+        const res = await app.request(`/system-tools/devices/${deviceId}/services/WinRM/restart`, {
+          method: 'POST',
+        });
+
+        expect(res.status).toBe(503);
+        const body = await res.json();
+        expect(body.code).toBe('device_offline');
+        expect(body.error).toBe(`The device is ${deviceState} and cannot run commands.`);
+        expect(body.error).not.toContain('offline');
+      },
+    );
   });
 });
