@@ -177,6 +177,25 @@ describe('createPartner', () => {
     expect(userCall.values.passwordHash).toBe('hashed');
   });
 
+  // Issue #3608: new partners must opt IN to inbound email-to-ticket rather
+  // than inheriting the readers' absent-flag-means-true fallback (which
+  // exists solely as the pre-#3606 upgrade path for existing partners).
+  it('writes an explicit settings.ticketing.inbound.enabled=false for new partners', async () => {
+    await createPartner({
+      orgName: 'Acme',
+      adminEmail: 'alex@acme.com',
+      adminName: 'Alex',
+      passwordHash: 'hashed',
+      origin: { mcp: false },
+      status: 'active',
+    });
+
+    const partnerCall = insertCalls.find((c) => (c.table as any).__t === 'partners')!;
+    expect(partnerCall.values.settings).toMatchObject({
+      ticketing: { inbound: { enabled: false } },
+    });
+  });
+
   it('inserts six system ticket_statuses rows inside the transaction', async () => {
     await createPartner({
       orgName: 'Acme',
