@@ -57,7 +57,6 @@ vi.mock('./workerObservability', () => ({
 import {
   __testOnly,
   createMlOutputRetentionWorker,
-  extractMlOutputRetentionRowCount,
   initializeMlOutputRetention,
   shutdownMlOutputRetention,
 } from './mlOutputRetention';
@@ -77,13 +76,6 @@ describe('ML output retention worker', () => {
 
   afterEach(async () => {
     await shutdownMlOutputRetention();
-  });
-
-  it('extracts row counts from supported driver result shapes', () => {
-    expect(extractMlOutputRetentionRowCount({ rowCount: 4, count: 2 })).toBe(4);
-    expect(extractMlOutputRetentionRowCount({ count: 3 })).toBe(3);
-    expect(extractMlOutputRetentionRowCount([{}, {}])).toBe(2);
-    expect(extractMlOutputRetentionRowCount({})).toBe(0);
   });
 
   it('registers a repeatable pruning job with a stable jobId', async () => {

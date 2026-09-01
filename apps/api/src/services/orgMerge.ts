@@ -34,6 +34,7 @@
  */
 import { sql, inArray, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
+import { extractRowCount } from '../db/rowCount';
 import { organizations, orgMergeEvents } from '../db/schema';
 import { createAuditLog } from './auditService';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup, type Tx } from './authLifecycle';
@@ -49,7 +50,6 @@ import {
   CUSTOM_RESOLVE_EXECUTORS,
   CUSTOM_WOULD_DROP_COUNTS,
   CUSTOM_WOULD_REVOKE_COUNTS,
-  extractRowCount,
   type MergeTableOutcome,
 } from './orgMergeCustomExecutors';
 import { getOrgMergePolicies, type OrgMergePolicy } from './orgMergeRegistry';

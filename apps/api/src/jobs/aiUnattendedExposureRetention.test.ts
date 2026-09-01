@@ -57,7 +57,6 @@ vi.mock('./workerObservability', () => ({
 import {
   RETENTION_HOURS,
   createAiUnattendedExposureRetentionWorker,
-  extractRowCount,
   initializeAiUnattendedExposureRetention,
   pruneAiUnattendedExposure,
   shutdownAiUnattendedExposureRetention,
@@ -78,13 +77,6 @@ describe('AI unattended-exposure ledger retention worker (#3827 Task 4)', () => 
 
   afterEach(async () => {
     await shutdownAiUnattendedExposureRetention();
-  });
-
-  it('extracts row counts from supported driver result shapes', () => {
-    expect(extractRowCount({ rowCount: 4, count: 2 })).toBe(4);
-    expect(extractRowCount({ count: 3 })).toBe(3);
-    expect(extractRowCount([{}, {}])).toBe(2);
-    expect(extractRowCount({})).toBe(0);
   });
 
   it('the retention window is a fixed 48h', () => {

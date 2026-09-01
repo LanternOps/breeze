@@ -57,6 +57,7 @@ import {
   hasDedicatedAuditAdminPool,
   logAuditAdminPoolMode,
 } from '../db/auditAdminPool';
+import { extractRowCount } from '../db/rowCount';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
 import { jobSchedule } from './scheduleRegistry';
@@ -102,13 +103,6 @@ interface PolicyRow {
 // `.execute(sql)`, so the prune routine is agnostic to which one it runs on.
 interface SqlExecutor {
   execute: (query: ReturnType<typeof sql>) => Promise<unknown>;
-}
-
-function extractRowCount(result: unknown): number {
-  const raw = result as { rowCount?: number; count?: number };
-  if (typeof raw.rowCount === 'number') return raw.rowCount;
-  if (typeof raw.count === 'number') return raw.count;
-  return Array.isArray(result) ? (result as unknown[]).length : 0;
 }
 
 /**

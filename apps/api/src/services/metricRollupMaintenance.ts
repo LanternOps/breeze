@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 
 import { db } from '../db';
+import { extractRowCount } from '../db/rowCount';
 
 export const METRIC_ROLLUP_BUCKET_RETENTION_DAYS = {
   fiveMinute: Math.max(30, parsePositiveIntEnv('METRIC_ROLLUP_5M_RETENTION_DAYS', 90)),
@@ -122,13 +123,6 @@ export function parseMetricRollupPartitionMonth(partitionName: string): Date | n
   const month = Number.parseInt(monthRaw, 10);
   if (month < 1 || month > 12) return null;
   return new Date(Date.UTC(year, month - 1, 1));
-}
-
-export function extractRowCount(result: unknown): number {
-  const raw = result as { rowCount?: number; count?: number };
-  if (typeof raw.rowCount === 'number') return raw.rowCount;
-  if (typeof raw.count === 'number') return raw.count;
-  return Array.isArray(result) ? result.length : 0;
 }
 
 async function tryAcquireMaintenanceLock(): Promise<boolean> {

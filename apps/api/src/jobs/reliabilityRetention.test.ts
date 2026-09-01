@@ -55,7 +55,6 @@ vi.mock('../services/sentry', () => ({
 import {
   __testOnly,
   createReliabilityRetentionWorker,
-  extractReliabilityRetentionRowCount,
   initializeReliabilityRetention,
   shutdownReliabilityRetention,
 } from './reliabilityRetention';
@@ -75,13 +74,6 @@ describe('reliability retention worker', () => {
 
   afterEach(async () => {
     await shutdownReliabilityRetention();
-  });
-
-  it('extracts row counts from supported driver result shapes', () => {
-    expect(extractReliabilityRetentionRowCount({ rowCount: 4, count: 2 })).toBe(4);
-    expect(extractReliabilityRetentionRowCount({ count: 3 })).toBe(3);
-    expect(extractReliabilityRetentionRowCount([{}, {}])).toBe(2);
-    expect(extractReliabilityRetentionRowCount({})).toBe(0);
   });
 
   it('registers a repeatable pruning job with a stable jobId', async () => {

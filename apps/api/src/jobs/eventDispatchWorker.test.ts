@@ -176,8 +176,7 @@ import {
   processRouteEvent,
   shutdownEventDispatchWorker,
   runReceiptRetentionSweep,
-  runShadowComparisonSweep,
-  extractAffectedCount
+  runShadowComparisonSweep
 } from './eventDispatchWorker';
 import type { BreezeEvent, EventType } from '../services/eventBus';
 import type { RouteEventJobData, DeliverEventJobData } from '../services/eventDispatchQueue';
@@ -723,24 +722,6 @@ describe('initializeEventDispatchWorker / shutdownEventDispatchWorker', () => {
 
   it('shutdown is a no-op when no worker was ever started', async () => {
     await expect(shutdownEventDispatchWorker()).resolves.toBeUndefined();
-  });
-});
-
-describe('extractAffectedCount (batched-delete loop termination depends on this)', () => {
-  it('prefers rowCount over count', () => {
-    expect(extractAffectedCount({ rowCount: 7, count: 3 })).toBe(7);
-  });
-
-  it('falls back to count (postgres-js DELETE result)', () => {
-    expect(extractAffectedCount({ count: 5 })).toBe(5);
-  });
-
-  it('falls back to array length', () => {
-    expect(extractAffectedCount([{}, {}])).toBe(2);
-  });
-
-  it('returns 0 for an unrecognized shape rather than falsely ending the loop early', () => {
-    expect(extractAffectedCount({})).toBe(0);
   });
 });
 

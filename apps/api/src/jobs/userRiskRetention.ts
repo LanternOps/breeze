@@ -9,6 +9,7 @@ import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 
 import * as dbModule from '../db';
+import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
 import { cronFromEnv } from './scheduleRegistry';
@@ -54,13 +55,6 @@ type RetentionJobData = {
 let retentionQueue: Queue<RetentionJobData> | null = null;
 let retentionWorker: Worker<RetentionJobData> | null = null;
 
-export function extractUserRiskRetentionRowCount(result: unknown): number {
-  const raw = result as { rowCount?: number; count?: number };
-  if (typeof raw.rowCount === 'number') return raw.rowCount;
-  if (typeof raw.count === 'number') return raw.count;
-  return Array.isArray(result) ? result.length : 0;
-}
-
 export async function compactUserRiskSnapshots(options: {
   retentionDays: number;
   batchSize?: number;
@@ -97,7 +91,7 @@ export async function compactUserRiskSnapshots(options: {
       DELETE FROM user_risk_scores
       WHERE ctid IN (SELECT ctid FROM victims)
     `);
-    lastBatchDeleted = extractUserRiskRetentionRowCount(result);
+    lastBatchDeleted = extractRowCount(result);
     deleted += lastBatchDeleted;
     batches += 1;
     if (lastBatchDeleted < batchSize) break;

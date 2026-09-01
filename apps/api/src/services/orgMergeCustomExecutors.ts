@@ -56,6 +56,7 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
+import { extractRowCount } from '../db/rowCount';
 import { buildRepoint, keyExpr } from './orgMergeExecutors';
 
 export interface MergeTableOutcome {
@@ -65,20 +66,6 @@ export interface MergeTableOutcome {
 }
 
 export type CustomMergeExecutor = (loserOrgId: string, survivorOrgId: string) => Promise<MergeTableOutcome>;
-
-/**
- * postgres-js returns an array-like Result whose `.length` is 0 for a
- * DML statement without RETURNING; the affected-row count lives on a
- * non-enumerable `.count`. Reading `.length` here would make every
- * assertion vacuously zero (verified empirically in Task 2).
- */
-export function extractRowCount(result: unknown): number {
-  const raw = result as { rowCount?: number; count?: number };
-  if (typeof raw?.rowCount === 'number') return raw.rowCount;
-  if (typeof raw?.count === 'number') return raw.count;
-  if (Array.isArray(result)) return result.length;
-  return 0;
-}
 
 async function run(statement: SQL): Promise<number> {
   return extractRowCount(await dbModule.db.execute(statement));
