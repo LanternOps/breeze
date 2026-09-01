@@ -42,6 +42,7 @@ async function seedPartnerFixture(label: string) {
       name: `${label} Organization`,
       slug: `${label.toLowerCase()}-${partner.id.slice(0, 8)}`,
       type: 'customer',
+      currencyCode: 'USD',
     }).returning({ id: organizations.id });
     const [item] = await db.insert(catalogItems).values({
       partnerId: partner.id,
@@ -49,6 +50,7 @@ async function seedPartnerFixture(label: string) {
       name: `${label} Service`,
       billingType: 'one_time',
       unitPrice: '100.00',
+      costCurrency: 'USD',
     }).returning({ id: catalogItems.id });
     if (!connection || !org || !item) throw new Error('failed to seed accounting mapping fixture');
     return { partner, connection, org, item };
@@ -108,6 +110,7 @@ describe('accounting_entity_mappings RLS and integrity', () => {
       name: 'Second Service',
       billingType: 'one_time',
       unitPrice: '50.00',
+      costCurrency: 'USD',
     }).returning({ id: catalogItems.id }));
     if (!secondItem) throw new Error('failed to seed second catalog item');
 
