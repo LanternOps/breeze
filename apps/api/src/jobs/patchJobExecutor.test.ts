@@ -1716,11 +1716,14 @@ describe('per-patch patch_job_results status is not collapsed to the batch statu
     const insertedRows: any[] = [];
 
     await runDeviceExecution({
-      // Single patch, fully successful — if the lookup silently fails (because
-      // it keys off a `patchId` field the agent never sends), `perPatchResult`
-      // is undefined and this falls back to `overallSuccess`, which happens to
-      // also be true here — so exercise a case where the fallback would be
-      // WRONG: a failed batch whose lone patch actually installed.
+      // Single patch, fully successful, but `success: false` / exitCode 1 on
+      // the command overall (a batch where something else — not modeled here
+      // — failed at the command level) so `overallSuccess` is false. If the
+      // lookup silently failed (because it keys off a `patchId` field the
+      // agent never sends) and fell back to `externalId`, which also
+      // deliberately does NOT match here, `perPatchResult` would be undefined
+      // and the row would incorrectly fall back to `overallSuccess` → 'failed'.
+      // Only a real `id` match can make this row 'completed'.
       approvedPatches: [{ patchId: 'patch-1', externalId: 'KB5000001', requiresReboot: false }],
       command: agentCommandRow({
         success: false,
@@ -1736,9 +1739,8 @@ describe('per-patch patch_job_results status is not collapsed to the batch statu
 
     expect(insertedRows).toHaveLength(1);
     // externalId doesn't match, so only the `id` branch can have found this
-    // entry. If it had fallen back to `overallSuccess`, this would be
-    // 'completed' too by coincidence — assert the row content that only the
-    // real per-patch match can produce.
+    // entry. A lookup that still keyed off `patchId` (which the agent never
+    // sends) would find nothing and fall back to `overallSuccess` → 'failed'.
     expect(insertedRows[0].status).toBe('completed');
     expect(insertedRows[0].rebootRequired).toBe(false);
   });
@@ -1762,5 +1764,116 @@ describe('per-patch patch_job_results status is not collapsed to the batch statu
     expect(insertedRows).toHaveLength(1);
     expect(insertedRows[0].status).toBe('completed');
     expect(insertedRows[0].rebootRequired).toBe(true);
+  });
+
+  it('records a rolled_back per-patch entry as completed', async () => {
+    const insertedRows: any[] = [];
+
+    await runDeviceExecution({
+      approvedPatches: [{ patchId: 'patch-1', externalId: 'KB5000001', requiresReboot: false }],
+      command: agentCommandRow({
+        success: false,
+        installedCount: 0,
+        failedCount: 0,
+        rebootRequired: false,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'rolled_back' },
+        ],
+      }),
+      insertedRows,
+    });
+
+    expect(insertedRows).toHaveLength(1);
+    expect(insertedRows[0].status).toBe('completed');
+    expect(insertedRows[0].errorMessage).toBeNull();
+  });
+
+  it('falls back to the batch status when a matched per-patch entry carries neither success nor status', async () => {
+    const insertedRows: any[] = [];
+
+    await runDeviceExecution({
+      // A malformed/legacy entry: it matches on `id` but reports nothing
+      // about its own outcome, so `isPatchResultSuccessful` has nothing to
+      // read and must defer to the batch's overall status.
+      approvedPatches: [{ patchId: 'patch-1', externalId: 'KB5000001', requiresReboot: false }],
+      command: agentCommandRow({
+        success: true,
+        installedCount: 1,
+        failedCount: 0,
+        rebootRequired: false,
+        results: [{ id: 'patch-1', externalId: 'KB5000001' } as any],
+      }),
+      insertedRows,
+    });
+
+    expect(insertedRows).toHaveLength(1);
+    // overallSuccess is true here (completed command, exit 0, success: true),
+    // so the fallback lands on 'completed' — flip `command.success` to false
+    // in a variant of this scenario and it would land on 'failed' instead,
+    // proving the row really is following the fallback and not some other path.
+    expect(insertedRows[0].status).toBe('completed');
+  });
+
+  it('records the per-patch error and falls back to the command-level error when the entry has none', async () => {
+    const insertedRows: any[] = [];
+
+    await runDeviceExecution({
+      approvedPatches: [
+        { patchId: 'patch-1', externalId: 'KB5000001', requiresReboot: false },
+        { patchId: 'patch-2', externalId: 'KB5000002', requiresReboot: false },
+      ],
+      command: agentCommandRow({
+        success: false,
+        installedCount: 0,
+        failedCount: 2,
+        rebootRequired: false,
+        results: [
+          // Carries its own error — must win over the command-level one.
+          { id: 'patch-1', externalId: 'KB5000001', status: 'failed', error: 'per-patch error detail' },
+          // No per-patch `error` — falls back to the command's own error/stderr.
+          { id: 'patch-2', externalId: 'KB5000002', status: 'failed' },
+        ],
+      }),
+      insertedRows,
+    });
+
+    expect(insertedRows).toHaveLength(2);
+    const byPatchId = Object.fromEntries(insertedRows.map((r: any) => [r.patchId, r]));
+    expect(byPatchId['patch-1'].status).toBe('failed');
+    expect(byPatchId['patch-1'].output).toBe('per-patch error detail');
+    expect(byPatchId['patch-1'].errorMessage).toBe('per-patch error detail');
+
+    expect(byPatchId['patch-2'].status).toBe('failed');
+    // agentCommandRow sets the command-level `error` to "<failedCount> patch
+    // operations failed" whenever failedCount > 0.
+    expect(byPatchId['patch-2'].errorMessage).toBe('2 patch operations failed');
+  });
+
+  it('records multiple failures in the same batch independently', async () => {
+    const insertedRows: any[] = [];
+
+    await runDeviceExecution({
+      approvedPatches: THREE_PATCHES,
+      command: agentCommandRow({
+        success: false,
+        installedCount: 1,
+        failedCount: 2,
+        rebootRequired: true,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'installed', rebootRequired: true },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'failed', error: 'error-2' },
+          { id: 'patch-3', externalId: 'KB5000003', status: 'failed', error: 'error-3' },
+        ],
+      }),
+      insertedRows,
+    });
+
+    expect(insertedRows).toHaveLength(3);
+    const byPatchId = Object.fromEntries(insertedRows.map((r: any) => [r.patchId, r]));
+    expect(byPatchId['patch-1'].status).toBe('completed');
+    expect(byPatchId['patch-2'].status).toBe('failed');
+    expect(byPatchId['patch-2'].errorMessage).toBe('error-2');
+    expect(byPatchId['patch-3'].status).toBe('failed');
+    expect(byPatchId['patch-3'].errorMessage).toBe('error-3');
   });
 });
