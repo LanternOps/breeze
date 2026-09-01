@@ -2140,6 +2140,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Saisissez à nouveau votre mot de passe de compte pour confirmer ce changement.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Enregistrez ces codes dans un endroit sûr. Vous pouvez les utiliser pour accéder à votre compte si vous perdez votre appareil authentificateur.",
     "copyCodes": "Copier les codes",
+    "copiedCodes": "Copié",
+    "copyCodesFailed": "Impossible de copier dans le presse-papiers. Sélectionnez les codes ci-dessus et copiez-les manuellement.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Chaque code ne peut être utilisé qu’une seule fois. Générer de nouveaux codes invalidera tout code déjà généré.",
     "back": "Retour",
     "smsSentToPhone": "Des codes SMS envoyés au téléphone se terminant par {{last4}}.",

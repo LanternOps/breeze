@@ -2145,6 +2145,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Bu değişikliği onaylamak için hesap şifrenizi yeniden girin.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Bu kodları güvenli bir yere kaydedin. Kimlik doğrulayıcı cihazınızı kaybederseniz hesabınıza erişmek için bunları kullanabilirsiniz.",
     "copyCodes": "Kodları kopyala",
+    "copiedCodes": "Kopyalandı",
+    "copyCodesFailed": "Panoya kopyalanamadı. Yukarıdaki kodları seçip elle kopyalayın.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Her kod yalnızca bir kez kullanılabilir. Yeni kodların oluşturulması önceden oluşturulmuş kodları geçersiz kılacaktır.",
     "back": "Geri",
     "smsSentToPhone": "{{last4}} ile biten telefona SMS kodları gönderildi.",

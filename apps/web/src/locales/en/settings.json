@@ -2145,6 +2145,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Re-enter your account password to confirm this change.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Save these codes in a safe place. You can use them to access your account if you lose your authenticator device.",
     "copyCodes": "Copy codes",
+    "copiedCodes": "Copied",
+    "copyCodesFailed": "Couldn't copy to the clipboard. Select the codes above and copy them by hand.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Each code can only be used once. Generating new codes will invalidate any previously generated codes.",
     "back": "Back",
     "smsSentToPhone": "SMS codes sent to phone ending in {{last4}}.",

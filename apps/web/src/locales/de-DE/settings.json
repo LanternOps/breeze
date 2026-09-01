@@ -2145,6 +2145,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Geben Sie Ihr Kontopasswort erneut ein, um diese Änderung zu bestätigen.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Bewahren Sie diese Codes an einem sicheren Ort auf. Sie können damit auf Ihr Konto zugreifen, wenn Sie Ihr Authentifizierungsgerät verlieren.",
     "copyCodes": "Codes kopieren",
+    "copiedCodes": "Kopiert",
+    "copyCodesFailed": "Kopieren in die Zwischenablage nicht möglich. Markieren Sie die Codes oben und kopieren Sie sie manuell.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Jeder Code kann nur einmal verwendet werden. Durch die Generierung neuer Codes werden alle zuvor generierten Codes ungültig.",
     "back": "Zurück",
     "smsSentToPhone": "An das Telefon gesendete SMS-Codes mit der Endung {{last4}}.",

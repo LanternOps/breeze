@@ -104,6 +104,8 @@ export default function MFASettings({
   const [digits, setDigits] = useState<string[]>(Array(DIGIT_COUNT).fill(''));
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showCodes, setShowCodes] = useState(false);
+  // #4471: the codes are shown exactly once, so a copy has to say whether it worked.
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   // #4414: the regeneration is destructive and irreversible, so it is gated on
   // an explicit confirm that states the invalidation BEFORE the request goes
   // out — not on a warning the user reads after their saved codes are dead.
@@ -356,10 +358,20 @@ export default function MFASettings({
     }
   };
 
-  const handleCopyRecoveryCodes = () => {
+  const handleCopyRecoveryCodes = async () => {
     const codes = smsRecoveryCodes || recoveryCodes;
-    if (codes?.length) {
-      navigator.clipboard.writeText(codes.join('\n'));
+    if (!codes?.length) return;
+    // #4471: writeText rejects in insecure contexts, under a permissions
+    // policy, or outside a user gesture on some browsers — and this is the
+    // only screen that will ever show these codes, so a silent miss here
+    // costs the user their recovery path.
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(codes.join('\n'));
+      setCopyState('copied');
+      window.setTimeout(() => setCopyState((s) => (s === 'copied' ? 'idle' : s)), 2000);
+    } catch {
+      setCopyState('failed');
     }
   };
 
@@ -1032,6 +1044,7 @@ export default function MFASettings({
             </div>
             <button
               type="button"
+              data-testid="mfa-copy-recovery-codes"
               onClick={handleCopyRecoveryCodes}
               className="flex h-9 w-full items-center justify-center gap-2 rounded-md border text-sm font-medium text-muted-foreground transition hover:text-foreground"
             >
@@ -1044,7 +1057,16 @@ export default function MFASettings({
                 <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
                 <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
               </svg>
-              {t('mFASettings.copyCodes')}</button>
+              {copyState === 'copied' ? t('mFASettings.copiedCodes') : t('mFASettings.copyCodes')}</button>
+            {copyState === 'failed' && (
+              <p
+                data-testid="mfa-copy-recovery-codes-error"
+                role="alert"
+                className="text-sm text-destructive"
+              >
+                {t('mFASettings.copyCodesFailed')}
+              </p>
+            )}
           </div>
         ) : (
           <div
