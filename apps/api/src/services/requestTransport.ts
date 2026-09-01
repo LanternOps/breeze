@@ -135,3 +135,95 @@ export function canonicalHttpsRedirect(c: Context, publicApiUrl: URL): URL | nul
   location.search = requestUrl.search;
   return location;
 }
+
+/**
+ * Parse a browser `Origin` header value into its normalized origin
+ * (`scheme://host[:port]`, lowercase host, default port dropped). Returns null
+ * for anything that is not a plain HTTP(S) origin: the literal `null` origin
+ * (sandboxed iframes, redirects across origins), malformed values, other
+ * schemes, or a value smuggling a path/query/credentials.
+ */
+export function parseHttpOrigin(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed.toLowerCase() === 'null') return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+  if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+    return null;
+  }
+  return parsed.origin;
+}
+
+/**
+ * The origin this request was addressed to, as the browser saw it: the
+ * effective scheme (`effectiveRequestScheme`, i.e. a trusted
+ * `X-Forwarded-Proto` or the direct socket scheme) plus the host the browser
+ * put in the URL. Behind a trusted proxy that host is `X-Forwarded-Host`; a
+ * proxy that passes `Host` through unchanged (Caddy's default) needs no
+ * forwarded-host header at all. Untrusted peers cannot influence either
+ * component — `trustsForwardedHeadersFrom` gates both.
+ *
+ * Fails closed (null) on a missing/unparsable host, or on a trusted
+ * `X-Forwarded-Host` that is empty or multi-valued (several proxy hops with
+ * no way to tell which one the browser addressed).
+ */
+export function effectiveRequestOrigin(c: Context): string | null {
+  const scheme = effectiveRequestScheme(c);
+
+  let host: string | undefined;
+  if (trustsForwardedHeadersFrom(c)) {
+    const forwardedHost = c.req.header('x-forwarded-host');
+    if (forwardedHost !== undefined) {
+      const trimmed = forwardedHost.trim();
+      if (!trimmed || trimmed.includes(',')) return null;
+      host = trimmed;
+    }
+  }
+  if (host === undefined) host = c.req.header('host')?.trim();
+  if (!host) return null;
+
+  return parseHttpOrigin(`${scheme}://${host}`);
+}
+
+/**
+ * Whether a cookie-authenticated request provably comes from the page's OWN
+ * origin, independent of the CORS_ALLOWED_ORIGINS allowlist.
+ *
+ * Why this exists: self-hosters reach the bundled Caddy through an SSH tunnel
+ * or a LAN name that differs from the configured public URL (the quickstart's
+ * own recipe is `ssh -L 8443:127.0.0.1:443` → https://localhost:8443 while
+ * the generated allowlist is https://localhost). Every request in that
+ * topology is same-origin — browser and API share one origin behind Caddy —
+ * yet the allowlist rejected it on /auth/refresh, cleared the refresh cookie,
+ * and produced an endless "session expired" loop that looked like a wrong
+ * password. A same-origin request is by definition not cross-site request
+ * forgery, so it is safe to admit regardless of the allowlist.
+ *
+ * Proof is one of:
+ *  1. `Sec-Fetch-Site: same-origin` — set by the browser, never by script, and
+ *     only when the initiator's origin equals the request URL's origin.
+ *  2. The `Origin` header equals `effectiveRequestOrigin(c)`. A cross-site
+ *     page's browser sends ITS origin, which can never equal our own host;
+ *     DNS rebinding cannot carry our host-only cookies to another host.
+ *
+ * Always fails closed on a `null`/malformed `Origin`. `same-site` is NOT
+ * accepted (sibling subdomains and subdomain takeovers are same-site). Callers
+ * must keep their double-submit token check in front of this, and their
+ * `Sec-Fetch-Site: cross-site` veto after it.
+ */
+export function isSameOriginRequest(c: Context, origin: string | undefined): boolean {
+  const requestOrigin = parseHttpOrigin(origin);
+  if (!requestOrigin) return false;
+
+  if (c.req.header('sec-fetch-site')?.trim().toLowerCase() === 'same-origin') {
+    return true;
+  }
+
+  const effective = effectiveRequestOrigin(c);
+  return effective !== null && effective === requestOrigin;
+}

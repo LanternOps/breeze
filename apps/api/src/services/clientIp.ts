@@ -200,6 +200,10 @@ export function hasTrustGatedForwardedHeaders(c: RequestLike): boolean {
   return (
     hasForwardedIpHeaders(c)
     || Boolean(c.req.header('x-forwarded-proto') ?? c.req.header('X-Forwarded-Proto'))
+    // Consumed by effectiveRequestOrigin (same-origin CSRF proof) only from a
+    // trusted peer, so an untrusted peer sending it is the same
+    // misconfiguration signal as the headers above.
+    || Boolean(c.req.header('x-forwarded-host') ?? c.req.header('X-Forwarded-Host'))
   );
 }
 
