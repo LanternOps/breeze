@@ -82,9 +82,21 @@ export function endAck(state: PendingAckState, ids: readonly string[]): PendingA
  * moment.
  *
  * This does NOT release anything. It only sets the bar a later fetch has to
- * clear. `refresh()` resolving is not evidence of freshness (it swallows its
- * own failures and can coalesce into an unrelated in-flight request); a
- * STRICTLY NEWER activeAlerts generation is. See #3782.
+ * clear. `refresh()` resolving is not proof of freshness by itself — it can
+ * coalesce into a fetch that was already in flight before this confirmation,
+ * whose response may predate it. What the bar actually guarantees is weaker
+ * but sufficient in practice: AT LEAST ONE activeAlerts fetch has completed
+ * since confirmation, so a fetch issued (not merely landed) before this call
+ * cannot be the one satisfying it forever — a following one will, and further
+ * fetches keep arriving from push/WS/focus/pull. A residual one-fetch window
+ * where an in-flight response still predates the ack is possible; that is a
+ * BRIEFLY stale visible row, which #3782 treats as acceptable — permanent
+ * concealment is the outcome this guards against, not a perfect proof.
+ *
+ * `Math.max` merges overlapping confirmations on the same id (see
+ * `beginAck`) to the LATER, stricter requirement — release only fires once
+ * proof exists for the most recent operation, which is also sufficient proof
+ * for any earlier one on the same id.
  */
 export function markAckConfirmed(
   state: PendingAckState,
@@ -115,6 +127,12 @@ export function markAckConfirmed(
  * bump the generation, and release happens against that one instead of
  * requiring the specific call that issued the ack to be the one that
  * resolved freshly.
+ *
+ * Releases the WHOLE entry once its bar is passed, not one reference-count
+ * unit per call. `markAckConfirmed` already merged every overlapping
+ * operation on the id down to a single (the strictest) bar, so passing it is
+ * proof for all of them at once — draining the count one generation-tick at a
+ * time would just add stalls with no extra safety.
  */
 export function releaseStaleAcks(state: PendingAckState, generation: number): PendingAckState {
   let next: Map<string, PendingEntry> | undefined;
@@ -122,8 +140,7 @@ export function releaseStaleAcks(state: PendingAckState, generation: number): Pe
     if (entry.releaseAfterGeneration === null) continue;
     if (generation <= entry.releaseAfterGeneration) continue;
     if (next === undefined) next = new Map(state.pending);
-    if (entry.count <= 1) next.delete(id);
-    else next.set(id, { ...entry, count: entry.count - 1 });
+    next.delete(id);
   }
   return next === undefined ? state : { pending: next };
 }

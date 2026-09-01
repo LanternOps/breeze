@@ -92,10 +92,11 @@ describe('reference counting', () => {
 });
 
 describe('generation-gated release (#3782)', () => {
-  it('does NOT un-hide when the only fetch that landed resolved before (or at) the ack was confirmed', () => {
-    // Generation was 3 when acknowledgeAlerts() resolved. A fetch that was
-    // already in flight at that moment (or the confirmation itself) can
-    // resolve at generation 3 too — it proves nothing new.
+  it('does NOT un-hide while the observed generation has not advanced past the ack-confirmation bar', () => {
+    // Generation was 3 when acknowledgeAlerts() resolved and markAckConfirmed
+    // recorded it. No NEW activeAlerts fetch has completed since — the
+    // caller is passing the SAME generation value it already had — so there
+    // is no fresh evidence yet and the row must stay hidden.
     let state = beginAck(emptyPendingAcks, ['a']);
     state = markAckConfirmed(state, ['a'], 3);
     const afterStaleFetch = releaseStaleAcks(state, 3);
@@ -120,26 +121,21 @@ describe('generation-gated release (#3782)', () => {
     expect(isPending(afterFetch, 'a')).toBe(true);
   });
 
-  it('overlapping acks on the same id: the merged bar is the LATER confirmation, never released early', () => {
+  it('overlapping acks on the same id: the merged bar is the LATER confirmation, releasing both at once', () => {
     // Second ack starts and confirms after the first, at a higher generation.
     // Merging via the max keeps release conservative — it never fires before
-    // the stricter (later) requirement is met, even though a single shared
-    // bar means full release can take one extra generation tick to drain the
-    // reference count. Erring toward "stays hidden a bit longer" is the safe
-    // direction; erring the other way is the bug #3782 exists to fix.
+    // the stricter (later) requirement is met. Once it does, the WHOLE entry
+    // releases together (proof for the later operation is proof for the
+    // earlier one too), not one reference-count unit per generation tick.
     let state = beginAck(emptyPendingAcks, ['a']);
     state = markAckConfirmed(state, ['a'], 2);
     state = beginAck(state, ['a']); // overlapping second ack, count -> 2
     state = markAckConfirmed(state, ['a'], 5);
     // Newer than the first confirmation but not the second: still hidden.
     expect(isPending(releaseStaleAcks(state, 3), 'a')).toBe(true);
-    // Newer than both: draining begins, but reference count is 2.
-    const firstRelease = releaseStaleAcks(state, 6);
-    expect(isPending(firstRelease, 'a')).toBe(true);
-    // The bar stays at 5 for the surviving reference, so it keeps draining on
-    // the next generation observation until the count reaches zero.
-    const secondRelease = releaseStaleAcks(firstRelease, 6);
-    expect(isPending(secondRelease, 'a')).toBe(false);
+    // Newer than both: releases in one call, despite the count of 2.
+    const released = releaseStaleAcks(state, 6);
+    expect(isPending(released, 'a')).toBe(false);
   });
 
   it('markAckConfirmed and releaseStaleAcks are no-ops for ids that are not pending', () => {

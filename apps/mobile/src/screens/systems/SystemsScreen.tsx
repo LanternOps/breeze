@@ -66,6 +66,17 @@ type Nav = NativeStackNavigationProp<SystemsStackParamList, 'Systems'>;
  */
 const UNDO_WINDOW_MS = 5000;
 
+/**
+ * Bounded retry schedule for the post-ack refresh that satisfies the
+ * fetch-generation release condition (#3782). A single `refresh()` call can
+ * itself fail to land a fresh `activeAlerts` snapshot (transient rejection,
+ * or coalescing into an in-flight fetch that also rejects) — this retries a
+ * few times before giving up and deferring to the ambient triggers
+ * (push/WS/focus/pull), rather than leaving a confirmed-acknowledged row
+ * hidden with no time bound.
+ */
+const ACK_REFRESH_RETRY_DELAYS_MS = [0, 2000, 5000];
+
 // Inline magnifying glass — see SearchSheet for the input-decorating sibling.
 // 16px sizing here matches the right-edge of the Hero copy block.
 function HeaderSearchIcon({ color, size = 16 }: { color: string; size?: number }) {
@@ -286,12 +297,28 @@ export function SystemsScreen() {
         setPendingAcks((p) =>
           markAckConfirmed(p, [...acknowledged, ...unknown], generationAtConfirm)
         );
-        // Kick a refresh so the release condition above gets satisfied
-        // promptly. Its return value is deliberately unused for un-hiding —
-        // that happens automatically via the generation-watching effect,
-        // whichever fetch actually lands the fresh snapshot, coalesced or
-        // not, this one included.
-        void refresh();
+        // Kick a refresh so the release condition above gets satisfied.
+        // Un-hiding itself happens automatically via the generation-watching
+        // effect, off whichever fetch actually lands the fresh snapshot,
+        // coalesced or not — this call's return value is never used for
+        // that. But THIS specific fetch can itself fail to advance the
+        // generation (a transient rejection on `activeAlerts`, or coalescing
+        // into an in-flight fetch that also rejects it), and nothing else is
+        // guaranteed to retry soon: WS/push only fire on unrelated activity,
+        // and focus-refresh is behind a 60s debounce. Left unbounded, that
+        // is a permanently concealed active alert — the exact outcome #3782
+        // exists to prevent, just moved one step later. So retry with a
+        // short bounded backoff until the generation clears the bar just
+        // recorded, then give up and defer to those ambient triggers.
+        void (async () => {
+          for (const delayMs of ACK_REFRESH_RETRY_DELAYS_MS) {
+            if (delayMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
+            }
+            await refresh();
+            if (getActiveAlertsGeneration() > generationAtConfirm) return;
+          }
+        })();
         return;
       } catch (err) {
         reportInternalError(err, 'bulk-acknowledge');
@@ -394,8 +421,9 @@ export function SystemsScreen() {
   // that `cancelUndo` could no longer retract, and nothing released
   // `pendingAcks`, so a failed alert stayed hidden with no error shown.
   // `dispatchAcknowledge` already does that reconciliation — surfaces errors,
-  // restores the failed ids, and releases the successful ones after a refresh —
-  // so the fix is to route through it rather than re-implement it here.
+  // restores the failed ids, and releases the successful ones once a fresh
+  // activeAlerts fetch proves it (#3782) — so the fix is to route through it
+  // rather than re-implement it here.
   const flushHeldAcknowledgesMounted = useCallback(() => {
     const { state, ids } = flushAllUndo(undoRef.current);
     undoRef.current = state;
