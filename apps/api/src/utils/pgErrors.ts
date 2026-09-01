@@ -76,11 +76,17 @@ export function pgErrorCode(err: unknown): string | undefined {
  * victim (40P01/40001) or gives up at a `lock_timeout` bound (55P03) and the
  * winner finishes immediately after, so the retry almost always succeeds.
  *
- * 55P03 is a no-op for every EXISTING caller of this function: Postgres can
- * only raise it where a `lock_timeout` is actually set, and until #3925 none
- * of this codebase's transactions set one, so no caller could have observed
- * it before. Adding it here only starts mattering once a caller starts
- * bounding its own lock waits (see `tightenLockTimeout` in `../db/lockTimeout`).
+ * 55P03 is a no-op for every EXISTING caller of `retryOnTransientLockError`
+ * below (see its call sites): Postgres can only raise it where a
+ * `lock_timeout` is actually set, and until #3925 none of THOSE callers' own
+ * transactions set one, so none of them could have observed it before. (Other
+ * transactions in this codebase already set `lock_timeout` via
+ * `tightenLockTimeout` — e.g. deviceDeletion.ts, catalogService.ts — but
+ * those don't route through `retryOnTransientLockError`, so this change is
+ * still a no-op for them.) Adding 55P03 here starts mattering only once a
+ * `retryOnTransientLockError` caller bounds its own lock waits, which #3925
+ * is the first to do (see `tightenLockTimeout` in `../db/lockTimeout`,
+ * used by `ingestSoftwareInventoryReport` in `../services/softwareInventoryObservations`).
  */
 export function isTransientLockError(err: unknown): boolean {
   const code = pgErrorCode(err);

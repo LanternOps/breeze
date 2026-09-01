@@ -24,19 +24,30 @@ import { retryOnTransientLockError } from '../utils/pgErrors';
  * (`sendInventoryData` in agent/internal/heartbeat/heartbeat.go), the report
  * was dropped SILENTLY: no SQLSTATE, so no Sentry event and no retry log.
  *
- * 5s leaves room for `retryOnTransientLockError`'s 3 attempts (worst case
- * 3 x 5s = 15s of waiting) plus the transaction's own work inside that 30s
- * budget. A timed-out acquisition now raises 55P03 (`lock_not_available`),
- * which `isTransientLockError` classifies as transient, so the wait becomes
- * bounded and, when exceeded, LOUD instead of silent.
+ * `lock_timeout` bounds each lock ACQUISITION separately, not the statement as
+ * a whole (see the caveat and measured PG16 repro on `tightenLockTimeout` in
+ * `../db/lockTimeout`) — `replaceSoftwareInventoryProjection`'s
+ * `deviceVulnerabilities` `FOR UPDATE` locks every finding row linked to this
+ * device in one statement, so a run of staggered blockers could in principle
+ * stack past 5s. `retryOnTransientLockError`'s 3 attempts at 5s each is
+ * therefore a floor on how quickly a persistently-contended report gives up
+ * LOUDLY, not a hard ceiling on total wait time. What this bound does
+ * guarantee unconditionally: no single lock acquisition can wait forever, so
+ * the wait that used to be silently unbounded is now always eventually
+ * bounded and, when exceeded, LOUD (retry log + Sentry via the caller's error
+ * handler) instead of silent. Pairing this with `tightenStatementTimeout` to
+ * cap the whole multi-row statement is a reasonable follow-up, deliberately
+ * left out of #3925's scope (see the issue).
  *
  * Not restored on success: this transaction is the entire scope of one
- * ingest attempt — `runOutsideDbContext`/`withSystemDbAccessContext` open a
- * fresh system-scoped outer transaction just for this call, which commits
- * immediately after `db.transaction` returns, so there is no later statement
- * in the same outer transaction that the tighter bound could wrongly govern.
+ * ingest attempt. `runOutsideDbContext`/`withSystemDbAccessContext` open a
+ * fresh system-scoped outer transaction for the WHOLE `retryOnTransientLockError`
+ * call (spanning all retry attempts, each its own SAVEPOINT via this
+ * `db.transaction`), and that outer transaction commits as soon as this
+ * function returns — so there is no later statement in the same outer
+ * transaction that the tighter bound could wrongly govern.
  */
-const INVENTORY_LOCK_TIMEOUT_MS = 5000;
+export const INVENTORY_LOCK_TIMEOUT_MS = 5000;
 
 export type SoftwareInventoryDecisionReason =
   | 'accepted_legacy'
