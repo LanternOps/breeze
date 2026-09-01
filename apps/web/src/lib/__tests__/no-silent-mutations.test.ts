@@ -17,8 +17,8 @@
  * re-exports, instead of relying on a hand-maintained wrapper-name list.
  */
 import { describe, it, expect } from 'vitest';
-import { statSync } from 'node:fs';
-import { resolve, dirname, sep } from 'node:path';
+import { readFileSync, statSync } from 'node:fs';
+import { resolve, dirname, sep, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { RUN_ACTION_ALLOWLIST, RUN_ACTION_MIGRATION_BACKLOG } from '../runActionAllowlist';
@@ -486,7 +486,13 @@ describe('no silent mutations in targeted set', () => {
     throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, '\n'));
   }
   const parsedConfig = ts.parseJsonConfigFileContent(config.config, ts.sys, dirname(configPath));
-  const program = ts.createProgram({ rootNames: absoluteFiles, options: parsedConfig.options });
+  // .astro files aren't a script kind the TS compiler recognizes, so it never
+  // includes them in the program — only feed it files TS can natively parse
+  // (.ts/.tsx). Anything else (e.g. .astro) falls back to the legacy
+  // no-program, no-wrapper-resolution scan below.
+  const TS_NATIVE_EXTENSIONS = new Set(['.ts', '.tsx']);
+  const programFiles = absoluteFiles.filter((f) => TS_NATIVE_EXTENSIONS.has(extname(f)));
+  const program = ts.createProgram({ rootNames: programFiles, options: parsedConfig.options });
   const checker = program.getTypeChecker();
 
   it('finds files to scan', () => {
@@ -508,13 +514,12 @@ describe('no silent mutations in targeted set', () => {
 
     it(`${webRelLabel}: every mutating fetchWithAuth is wrapped by runAction or explicitly exempt`, () => {
       const sourceFile = program.getSourceFile(absPath);
-      expect(sourceFile).toBeDefined();
-      const src = sourceFile!.text;
-      const violations = findViolations(src, webRelLabel, {
-        sourceFile: sourceFile!,
-        checker,
-        apiRoot: API_ROOT,
-      });
+      // Files the TS compiler doesn't natively parse (e.g. .astro) are never
+      // in the program — fall back to the legacy standalone-parse scan
+      // (direct fetchWithAuth calls only, no lib/api wrapper resolution).
+      const violations = sourceFile
+        ? findViolations(sourceFile.text, webRelLabel, { sourceFile, checker, apiRoot: API_ROOT })
+        : findViolations(readFileSync(absPath, 'utf8'), webRelLabel);
       expect(
         violations,
         violations.length
