@@ -211,6 +211,8 @@ describe('createWebRTCSession — RTCPeerConnection present but unusable', () =>
       },
     );
 
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
     const err = await createWebRTCSession(params, document.createElement('video')).catch((e) => e);
 
     expect(configs).toHaveLength(2);
@@ -218,6 +220,13 @@ describe('createWebRTCSession — RTCPeerConnection present but unusable', () =>
     expect(configs[1].iceServers).toEqual([{ urls: 'stun:stun.l.google.com:19302' }]);
     // It got past construction, so it must NOT be classed as an unusable WebView.
     expect(err).not.toBeInstanceOf(WebRTCUnsupportedError);
+    // The retry must not be silent: it drops the configured TURN relay, so a
+    // session that later fails at ICE would otherwise surface as a generic
+    // "WebRTC connection failed" with the real cause never named.
+    const logged = warn.mock.calls.map((a) => a.map(String).join(' ')).join('\n');
+    expect(logged).toMatch(/ice/i);
+    expect(logged).toMatch(/turn/i);
+    expect(logged).toContain('Invalid ICE server URL');
   });
 
   it('maps a throwing createDataChannel to WebRTCUnsupportedError and closes the connection', async () => {

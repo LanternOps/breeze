@@ -25,7 +25,11 @@ export const WEBRTC_LOGIN_WINDOW_HINT = 'WebRTC unavailable: device is at login 
  * always carries its reason rather than being inertly greyed out.
  */
 export function webrtcSwitchUnavailableReason(params: {
-  /** Whether THIS WebView can construct an RTCPeerConnection. */
+  /**
+   * Whether THIS WebView can actually do WebRTC — the up-front `typeof` probe
+   * AND the runtime discovery, since a build can expose RTCPeerConnection and
+   * still throw on use. Callers pass the combined value.
+   */
   webrtcSupported: boolean;
   /** Remote macOS session state, when known. */
   desktopState: string | null | undefined;
@@ -48,7 +52,7 @@ export function shouldShowWebRTCSwitchPill(params: {
   remoteOs: string | null;
   /** Remote device is in a state where WebRTC capture works. */
   webRTCAvailable: boolean;
-  /** This WebView can construct an RTCPeerConnection. */
+  /** This WebView can actually do WebRTC (probe AND runtime discovery). */
   webrtcSupported: boolean;
   pillDismissed: boolean;
 }): boolean {

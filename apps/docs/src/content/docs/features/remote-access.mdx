@@ -524,9 +524,9 @@ Extract-and-run unpacks the whole bundle on every launch, so sessions start noti
 
 ### WebRTC needs webkit2gtk built with the GStreamer plugins
 
-The Linux viewer renders in webkit2gtk, the system WebView, rather than bundling its own browser engine. Whether WebRTC is available therefore depends on how your distribution compiled webkit2gtk and which GStreamer plugins are installed — on a number of builds `RTCPeerConnection` is not exposed at all.
+The Linux viewer renders in webkit2gtk, the system WebView, rather than bundling its own browser engine. Whether WebRTC is available therefore depends on how your distribution compiled webkit2gtk and which GStreamer plugins are installed. This shows up two ways: on some builds `RTCPeerConnection` is not exposed at all, and on others it exists but fails the moment a connection is actually created.
 
-When that is the case the viewer detects it before connecting, skips WebRTC, and runs the session on the WebSocket (JPEG) transport instead. A notice in the session window explains the switch, and the toolbar badge reads **WS** rather than **WebRTC**. The session still works; you lose the WebRTC-only features:
+The viewer handles both. The first is detected before connecting, so WebRTC is skipped outright; the second is discovered on the first attempt, after which the viewer stops retrying WebRTC for the rest of the session. Either way it falls back to the WebSocket (JPEG) transport, a notice in the session window explains the switch, and the toolbar badge reads **WS** rather than **WebRTC**. The session still works; you lose the WebRTC-only features:
 
 | Available on WebSocket | Not available on WebSocket |
 |---|---|

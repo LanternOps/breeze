@@ -176,9 +176,9 @@ function buildPeerConnection(iceServers: RTCIceServer[]): {
     const controlChannel = pc.createDataChannel('control', { ordered: true });
     return { pc, inputChannel, controlChannel };
   } catch (err) {
-    // Don't strand a half-built connection: `close()` below is not defined until
-    // after the channels exist, so an throw from addTransceiver/createDataChannel
-    // used to leak an open pc.
+    // Don't strand a half-built connection. createWebRTCSession's `close()` is
+    // not defined until after the channels exist, so a throw from
+    // addTransceiver/createDataChannel used to leak an open pc.
     try { pc?.close(); } catch { /* already failing — nothing to salvage */ }
     throw err;
   }
@@ -212,6 +212,17 @@ function createPeerConnection(iceServers: RTCIceServer[]): {
     //
     // So prove it against a config we know is well-formed before blaming the
     // WebView. If STUN-only also fails, the implementation really is absent.
+    //
+    // Log first, and unconditionally: when the retry SUCCEEDS this is the only
+    // trace that the operator's ICE config was rejected. The session then runs
+    // without the configured TURN relay, so on a symmetric-NAT or restrictive
+    // network it will still fail at ICE — and without this line that surfaces
+    // as a generic "WebRTC connection failed" with the real cause never named.
+    console.warn(
+      'ICE servers from the API were rejected by RTCPeerConnection; retrying STUN-only. ' +
+        'TURN relay is disabled for this session — check the ice-servers response:',
+      firstErr,
+    );
     try {
       return buildPeerConnection([...DEFAULT_ICE_SERVERS]);
     } catch (retryErr) {

@@ -2091,8 +2091,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             Gated on the capability, NOT on the resulting transport. Keying it to
             `transport === 'websocket'` hid it from every VNC session (including
             VNC deep links, which never attempt WebRTC at all) and made it vanish
-            mid-session on the macOS websocket→VNC auto-handoff. Suppressed only
-            while the fatal error overlay owns the screen. */}
+            mid-session on the macOS websocket→VNC auto-handoff. Suppressed while
+            a full-screen overlay owns the view — the fatal error card and the
+            "Session Ended" card. */}
         {!webrtcUsable && status !== 'error' && status !== 'disconnected' && !webrtcNoticeDismissed && (
           <div
             role="status"
