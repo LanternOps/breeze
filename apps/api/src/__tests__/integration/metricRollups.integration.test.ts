@@ -424,12 +424,44 @@ describe('metric rollups integration', () => {
       expect(byName.get('process_count')?.metricType).toBe('process');
       expect(byName.get('top_process_ram_mb_sum')?.sourceTable).toBe('device_process_samples');
 
-      // Each series aggregates its OWN column, so the values must differ.
-      expect(byName.get('cpu_percent')?.avgValue).toBe(20);
-      expect(byName.get('ram_used_mb')?.avgValue).toBe(2048);
-      expect(byName.get('cpu_percent')?.sampleCount).toBe(2);
-      expect(byName.get('top_process_ram_mb_sum')?.avgValue).toBe(512);
+      // Each series aggregates its OWN column, so every aggregate must carry
+      // that column's numbers — not the first series', and not a mix.
+      expect(byName.get('cpu_percent')).toEqual(expect.objectContaining({
+        avgValue: 20,      // (10 + 30) / 2
+        minValue: 10,
+        maxValue: 30,
+        p95Value: 29,      // percentile_cont(0.95) over [10, 30]
+        sumValue: 40,
+        sampleCount: 2,
+        gapSeconds: 180,   // 300 - 2 * expectedSampleSeconds(60)
+      }));
+      expect(byName.get('cpu_percent')?.metadata).toEqual({
+        rollupVersion: 'metric-rollups-v1',
+        source: 'raw',
+        expectedSampleSeconds: 60,
+        isGap: false,
+      });
+
+      expect(byName.get('ram_used_mb')).toEqual(expect.objectContaining({
+        avgValue: 2048, minValue: 2048, maxValue: 2048, sumValue: 4096, sampleCount: 2,
+      }));
+
+      expect(byName.get('top_process_ram_mb_sum')).toEqual(expect.objectContaining({
+        avgValue: 512, minValue: 512, maxValue: 512, p95Value: 512, sumValue: 512,
+        sampleCount: 1,
+        gapSeconds: 240,   // 300 - 1 * 60
+      }));
       expect(byName.get('top_process_net_bps_sum')?.avgValue).toBe(2000);
+      expect(byName.get('top_process_disk_bps_sum')?.avgValue).toBe(1000);
+      expect(byName.get('top_process_cpu_percent_max')?.avgValue).toBe(12);
+      expect(byName.get('top_process_count')?.avgValue).toBe(1);
+      expect(byName.get('top_process_count')?.metadata).toEqual({
+        rollupVersion: 'metric-rollups-v1',
+        source: 'raw',
+        sourceTable: 'device_process_samples',
+        expectedSampleSeconds: 60,
+        isGap: false,
+      });
     });
 
     it('emits no rollups for a device_metrics column that is NULL across the whole window', async () => {
