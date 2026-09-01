@@ -165,7 +165,7 @@ describe('changeContractCurrency reprice (price-book reprice of catalog lines, #
     queueResult([{ id: 'l1', catalogItemId: 'cat1' }, { id: 'l2', catalogItemId: null }]);
     await expect(
       svc.changeContractCurrency('c1', { currencyCode: 'EUR', reprice: true }, actor)
-    ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409, message: expect.stringContaining('1 non-catalog line(s) cannot be repriced — pass clearLines instead') });
+    ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409, message: expect.stringContaining('1 non-catalog line(s) have no price in the new currency — remove all lines first, or keep the current currency') });
     expect(resolvePriceMock).not.toHaveBeenCalled();
     expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
     expect((db as unknown as Chain).delete.mock.calls.length).toBe(0);
