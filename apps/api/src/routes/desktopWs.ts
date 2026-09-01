@@ -59,9 +59,14 @@ import {
   type RemoteWsUpgradeContext,
 } from '../services/remoteWsUpgrade';
 
-// Zod validation for desktop user messages
-const desktopInputEvent = z.object({
-  type: z.enum(['mousemove', 'mousedown', 'mouseup', 'keydown', 'keyup', 'wheel', 'click', 'dblclick', 'mouse_move', 'mouse_down', 'mouse_up', 'key_down', 'key_up']),
+// Zod validation for desktop user messages.
+// Exported for desktopWs_inputSchema.test.ts, which asserts this enum covers
+// every input kind the Viewer's sendInputFn (apps/viewer/src/components/
+// DesktopViewer.tsx) can emit on the WebSocket fallback transport — the same
+// events the agent's WebRTC-side desktopInputTypes allowlist
+// (agent/internal/heartbeat/handlers_desktop.go) accepts.
+export const desktopInputEvent = z.object({
+  type: z.enum(['mousemove', 'mousedown', 'mouseup', 'keydown', 'keyup', 'wheel', 'click', 'dblclick', 'mouse_move', 'mouse_down', 'mouse_up', 'mouse_scroll', 'key_down', 'key_up', 'key_press']),
   x: z.number().min(-10000).max(100000).optional(),
   y: z.number().min(-10000).max(100000).optional(),
   button: z.union([z.string().max(20), z.number().int().min(0).max(4)]).optional(),
