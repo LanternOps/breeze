@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl, isS3NotFound } from '../../services/s3Storage';
 import { getBinarySource, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl, HELPER_FILENAMES } from '../../services/binarySource';
+import { getPromotedComponentVersion, type PromotedComponent } from '../../services/promotedAgentVersion';
 
 export const downloadRoutes = new Hono();
 
@@ -31,8 +32,17 @@ interface ComponentDownloadConfig {
   filenameFor: (os: string, arch: string) => string | undefined;
   /** 400 message when filenameFor returns undefined (helper's per-OS lookup table). */
   invalidOsMessage?: (os: string) => string;
-  /** Canonical GitHub release asset URL for BINARY_SOURCE=github. */
-  githubUrlFor: (os: string, arch: string) => string;
+  /**
+   * agent_versions.component value for this route, used to resolve the
+   * promoted (isLatest) release the bytes must come from (#3499).
+   */
+  component: PromotedComponent;
+  /**
+   * Canonical GitHub release asset URL for BINARY_SOURCE=github. `version`
+   * pins the release tag to the promoted agent_versions row; when omitted the
+   * builder falls back to the env-resolved BINARY_VERSION/BREEZE_VERSION.
+   */
+  githubUrlFor: (os: string, arch: string, version?: string) => string;
   /** Local binary directory to serve from in non-github mode. */
   binaryDir: () => string;
 }
@@ -81,9 +91,50 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
       );
     }
 
-    // GitHub redirect mode — no local binaries needed
+    // GitHub redirect mode — no local binaries needed.
+    //
+    // #3499: pin the release tag to the same agent_versions isLatest row that
+    // GET /agent-versions/latest serves the checksum from. Resolving it from
+    // per-process env here instead let the bytes and the checksum drift a full
+    // release apart whenever the binary sync stalled, which install.sh reports
+    // as "Checksum verification failed for downloaded agent binary".
+    //
+    // null means "no promoted row at all" — the cold-start state of a
+    // deployment that has never synced — so fall back to the env-resolved URL
+    // and keep those deployments working exactly as they did. A lookup FAULT
+    // is different and throws: serving the env version then would reintroduce
+    // the very mismatch this fixes and report a server-side DB fault to the
+    // end user as a checksum failure.
     if (getBinarySource() === 'github') {
-      return c.redirect(config.githubUrlFor(os, arch), 302);
+      let redirectUrl: string;
+      try {
+        const promotedVersion = await getPromotedComponentVersion(
+          config.component,
+          os,
+          arch,
+        );
+        // Inside the try on purpose: the URL builder ALSO throws — on a
+        // malformed release tag, which a promoted row can carry because
+        // agent_versions.version has no format constraint. That is the same
+        // "we cannot determine a release to serve" condition, so it belongs on
+        // the same 503 rather than falling through to a bare 500.
+        redirectUrl = config.githubUrlFor(os, arch, promotedVersion ?? undefined);
+      } catch (err) {
+        console.error(
+          `[${config.logTag}] refusing to serve ${filename}: could not resolve a release to redirect to`,
+          err,
+        );
+        return c.json(
+          {
+            error: 'Service unavailable',
+            message:
+              'Could not determine the current release. Retry shortly; if this persists, check the API logs.',
+          },
+          503,
+          { 'Retry-After': '30' },
+        );
+      }
+      return c.redirect(redirectUrl, 302);
     }
 
     // Local mode: try S3 presigned redirect first (bandwidth offload)
@@ -168,6 +219,7 @@ registerComponentDownloadRoute({
   logTag: 'agent-download',
   s3Prefix: 'agent',
   entityLabel: 'Agent binary',
+  component: 'agent',
   filenameFor: perArchFilename('agent'),
   githubUrlFor: getGithubAgentUrl,
   binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
@@ -176,7 +228,15 @@ registerComponentDownloadRoute({
 // ============================================
 // Agent .pkg Installer Download (macOS, public, no auth)
 // ============================================
-
+// Deliberately NOT version-pinned to the promoted agent_versions row the way
+// the five component routes above are (#3499). install.sh's macOS branch never
+// sha256-checks the .pkg against /agent-versions/latest — it verifies xar magic
+// bytes and Apple notarization via `spctl --assess` instead — so there is no
+// checksum/bytes pair here to keep consistent, and no install-time failure to
+// prevent. The tradeoff is that a macOS install lands on the env-resolved
+// release while Linux lands on the promoted one; the agent reconciles on its
+// first heartbeat, which offers the promoted version through the normal
+// verified updater path.
 downloadRoutes.get('/download/:os/:arch/pkg', async (c) => {
   const os = c.req.param('os');
   const arch = c.req.param('arch');
@@ -270,9 +330,10 @@ registerComponentDownloadRoute({
   logTag: 'helper-download',
   s3Prefix: 'helper',
   entityLabel: 'Helper binary',
+  component: 'helper',
   filenameFor: (os) => HELPER_FILENAMES[os],
   invalidOsMessage: (os) => `No helper binary available for OS: ${os}`,
-  githubUrlFor: (os) => getGithubHelperUrl(os),
+  githubUrlFor: (os, _arch, version) => getGithubHelperUrl(os, version),
   binaryDir: () => resolve(process.env.HELPER_BINARY_DIR || './agent/bin'),
 });
 
@@ -289,6 +350,7 @@ registerComponentDownloadRoute({
   logTag: 'watchdog-download',
   s3Prefix: 'watchdog',
   entityLabel: 'Watchdog binary',
+  component: 'watchdog',
   filenameFor: perArchFilename('watchdog'),
   githubUrlFor: getGithubWatchdogUrl,
   binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
@@ -307,6 +369,7 @@ registerComponentDownloadRoute({
   logTag: 'backup-download',
   s3Prefix: 'backup',
   entityLabel: 'Backup binary',
+  component: 'backup',
   filenameFor: perArchFilename('backup'),
   githubUrlFor: getGithubBackupUrl,
   binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
@@ -325,6 +388,7 @@ registerComponentDownloadRoute({
   logTag: 'user-helper-download',
   s3Prefix: 'user-helper',
   entityLabel: 'User-helper binary',
+  component: 'user-helper',
   filenameFor: perArchFilename('user-helper'),
   githubUrlFor: getGithubUserHelperUrl,
   binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),

@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   getGithubAgentUrl,
+  getGithubBackupUrl,
   getGithubHelperUrl,
   getGithubInstallerAppUrl,
   getGithubRegularMsiUrl,
   getGithubReleasePageUrl,
   getGithubReleaseRepository,
+  getGithubUserHelperUrl,
   getGithubViewerUrl,
+  getGithubWatchdogUrl,
 } from './binarySource';
 
 describe('binarySource release-source unification', () => {
@@ -68,5 +71,77 @@ describe('binarySource release-source unification', () => {
     expect(() => getGithubAgentUrl('windows', 'amd64')).toThrow(
       /Invalid release source repository/,
     );
+  });
+
+  // Issue #3499. The component-download routes resolve the promoted
+  // agent_versions row and pass its version here, so the bytes come from the
+  // same release as the checksum GET /agent-versions/latest handed the client.
+  // Without these assertions the builders could accept the argument and ignore
+  // it — the routes would still "pass a version", every route test would still
+  // pass, and the bug would be back.
+  describe('explicit version overrides the env-resolved release (#3499)', () => {
+    it('pins the release tag to the version passed, not BINARY_VERSION', () => {
+      // The exact production divergence: env says 0.105.1, the promoted row
+      // says 0.104.0. The bytes must come from 0.104.0.
+      process.env.BINARY_VERSION = '0.105.1';
+
+      const url = getGithubAgentUrl('linux', 'amd64', '0.104.0');
+
+      expect(url).toBe(
+        'https://github.com/lanternops/breeze/releases/download/v0.104.0/breeze-agent-linux-amd64',
+      );
+      expect(url).not.toContain('0.105.1');
+    });
+
+    it('pins every component builder, not just the agent', () => {
+      process.env.BINARY_VERSION = '0.105.1';
+      const base = 'https://github.com/lanternops/breeze/releases/download/v0.104.0';
+
+      expect(getGithubBackupUrl('linux', 'amd64', '0.104.0')).toBe(
+        `${base}/breeze-backup-linux-amd64`,
+      );
+      expect(getGithubWatchdogUrl('windows', 'amd64', '0.104.0')).toBe(
+        `${base}/breeze-watchdog-windows-amd64.exe`,
+      );
+      expect(getGithubUserHelperUrl('windows', 'amd64', '0.104.0')).toBe(
+        `${base}/breeze-user-helper-windows-amd64.exe`,
+      );
+      expect(getGithubHelperUrl('darwin', '0.104.0')).toBe(
+        `${base}/breeze-helper-macos.dmg`,
+      );
+    });
+
+    it('overrides even the floating "latest" default when no version is pinned', () => {
+      // With BINARY_VERSION unset the env resolution is the literal "latest",
+      // i.e. whatever GitHub published most recently — an unbounded external
+      // value. A promoted row must still win.
+      expect(getGithubAgentUrl('linux', 'amd64', '0.104.0')).toBe(
+        'https://github.com/lanternops/breeze/releases/download/v0.104.0/breeze-agent-linux-amd64',
+      );
+    });
+
+    it('accepts an already-v-prefixed version without doubling the prefix', () => {
+      expect(getGithubAgentUrl('linux', 'amd64', 'v0.104.0')).toBe(
+        'https://github.com/lanternops/breeze/releases/download/v0.104.0/breeze-agent-linux-amd64',
+      );
+    });
+
+    it('omitting the version preserves the historical env-resolved behavior', () => {
+      process.env.BINARY_VERSION = '0.105.1';
+      expect(getGithubAgentUrl('linux', 'amd64')).toBe(
+        'https://github.com/lanternops/breeze/releases/download/v0.105.1/breeze-agent-linux-amd64',
+      );
+    });
+
+    it('refuses a malformed version rather than 404ing mysteriously', () => {
+      // agent_versions.version has no format constraint and rows are creatable
+      // via POST /agent-versions, so this string is no longer env-only.
+      expect(() => getGithubAgentUrl('linux', 'amd64', '../../evil')).toThrow(
+        /malformed release tag/,
+      );
+      expect(() => getGithubAgentUrl('linux', 'amd64', 'unknown/../x')).toThrow(
+        /malformed release tag/,
+      );
+    });
   });
 });

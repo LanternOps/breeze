@@ -869,15 +869,20 @@ async function registerFromOfficialManifest(args: {
 /**
  * The GitHub release tag boot-time sync is pinned to (#3742).
  *
- * Every `/api/v1/agents/download/*` redirect is built from
- * getGithubReleaseVersion() (BINARY_VERSION || BREEZE_VERSION), so that is the
- * only release whose bytes this server can actually serve. Boot sync used to
- * fetch `/releases/latest` unconditionally, which — with AGENT_AUTO_PROMOTE
- * defaulting to true — promoted isLatest past the deployed images on a mere
- * API restart: the heartbeat then told agents to upgrade to a version whose
- * assets the redirect couldn't serve, and every attempt died on checksum
- * mismatch. Pinning sync to the same version as the redirect makes "a
- * self-hoster's fleet moves when THEY upgrade their server" the default.
+ * Boot sync used to fetch `/releases/latest` unconditionally, which — with
+ * AGENT_AUTO_PROMOTE defaulting to true — promoted isLatest past the deployed
+ * images on a mere API restart: the heartbeat then told agents to upgrade to a
+ * version whose assets the redirect couldn't serve, and every attempt died on
+ * checksum mismatch. Pinning sync to this version makes "a self-hoster's fleet
+ * moves when THEY upgrade their server" the default.
+ *
+ * NOTE (#3499): this used to also be the only release whose bytes the server
+ * could serve, because every `/api/v1/agents/download/*` redirect was built
+ * from getGithubReleaseVersion(). That is no longer true — the redirect now
+ * follows the promoted `agent_versions` row, so the bytes and the checksum
+ * agree by construction and a stale sync can no longer produce the mismatch
+ * described above. This pin still governs which release boot sync REGISTERS
+ * (and, under AGENT_AUTO_PROMOTE=true, promotes).
  *
  * Returns undefined when no version is pinned (BREEZE_VERSION unset or
  * literally "latest"), preserving the previous /releases/latest behaviour for
@@ -893,10 +898,13 @@ function unpublishedPinnedReleaseHint(pinnedTag: string, err: unknown): string {
   const reason = err instanceof Error ? err.message : String(err);
   return (
     `[binarySync] GitHub sync of pinned release ${pinnedTag} FAILED (${reason}). ` +
-    `No agent binaries were registered for this version. If ${pinnedTag} is not ` +
-    `published yet (server images rolled ahead of the GitHub release), set ` +
-    `BINARY_VERSION to the last PUBLISHED release so boot sync and the download ` +
-    `redirect agree — do not expect a fallback to /releases/latest (#3742).`
+    `No agent binaries were registered for this version, so the fleet stays on ` +
+    `the last successfully synced release: agent_versions is unchanged, and ` +
+    `since #3499 the download routes serve that same promoted release, so ` +
+    `installs and upgrades keep working — they just will not advance to ` +
+    `${pinnedTag}. To move the fleet, publish ${pinnedTag}, or set ` +
+    `BINARY_VERSION to a PUBLISHED release so boot sync can register it. There ` +
+    `is deliberately no fallback to /releases/latest (#3742).`
   );
 }
 
@@ -909,9 +917,13 @@ export async function syncBinaries(): Promise<void> {
     try {
       await syncFromGitHub(pinnedTag);
     } catch (err) {
-      // Deliberately NOT falling back to /releases/latest: that would register
-      // an older release as isLatest while the download redirect stays pinned
-      // to this version, which is the inverse of the #3742 checksum loop.
+      // Deliberately NOT falling back to /releases/latest: that would silently
+      // move the fleet's promoted release to something the operator never
+      // asked for. (Pre-#3499 it was worse still — the download redirect
+      // stayed pinned to this version while isLatest moved, which is the
+      // inverse of the #3742 checksum loop. The redirect now follows the
+      // promoted row, so that particular mismatch is gone; the reason to
+      // refuse the fallback is now intent, not divergence.)
       // Tell the operator what to do instead.
       if (pinnedTag) console.error(unpublishedPinnedReleaseHint(pinnedTag, err));
       throw err;
