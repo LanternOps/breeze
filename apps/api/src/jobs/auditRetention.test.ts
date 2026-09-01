@@ -405,6 +405,42 @@ describe('auditRetention worker', () => {
       expect(stats.errors).toBe(0);
     });
 
+    // A broken driver/adapter must not look like "this org has nothing to
+    // prune". Collapsing the two would silently skip the prefix DELETE and
+    // retain expired audit rows past policy while reporting success.
+    it('raises instead of silently skipping the prefix DELETE when the cutoff read comes back empty', async () => {
+      dbExecuteMock.mockImplementation(async (query: unknown) => {
+        switch (classify(sqlText(query))) {
+          case 'policySelect':
+            return [{ id: 'p1', org_id: 'org-a', retention_days: 30 }];
+          case 'cutoff':
+            return []; // impossible for a FROM-less SELECT — driver/mock is broken
+          default:
+            return [];
+        }
+      });
+
+      const stats = await pruneExpiredAuditLogs();
+
+      expect(stats.errors).toBe(1);
+      expect(stats.orgsPruned).toBe(0);
+      // The failure must abort this org's prune, not fall through to the DELETEs.
+      expect(executedKinds()).not.toContain('prefixDelete');
+      expect(executedKinds()).not.toContain('unsealedSweep');
+    });
+
+    it('treats a NULL cutoff (org has no chain rows) as legitimate, not an error', async () => {
+      mockByStatement({
+        policies: [{ id: 'p1', org_id: 'org-a', retention_days: 30 }],
+        cutoffSeq: null,
+      });
+
+      const stats = await pruneExpiredAuditLogs();
+
+      expect(stats.errors).toBe(0);
+      expect(stats.orgsPruned).toBe(1);
+    });
+
     it('reports unsealed-sweep deletions separately instead of dropping them', async () => {
       mockByStatement({
         policies: [{ id: 'p1', org_id: 'org-a', retention_days: 30 }],

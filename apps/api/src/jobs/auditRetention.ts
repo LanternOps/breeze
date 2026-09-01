@@ -265,9 +265,24 @@ async function deleteChainPrefix(
         WHERE c3.org_id = ${policy.org_id}
       )
     )::text AS cutoff_seq
-  `)) as unknown as Array<{ cutoff_seq: string | null }>;
-  // NULL only when the org has no chain entries at all — nothing to prefix-cut.
-  const cutoffSeq = cutoffRows[0]?.cutoff_seq ?? null;
+  `)) as unknown as Array<{ cutoff_seq?: string | null }> | undefined;
+  const cutoffRow = cutoffRows?.[0];
+  if (!cutoffRow || cutoffRow.cutoff_seq === undefined) {
+    // `SELECT COALESCE(...)` has no FROM, so Postgres ALWAYS returns exactly one
+    // row carrying this column. Getting nothing back means the driver, the
+    // executor adapter or a test double is broken — it does NOT mean the org has
+    // nothing to prune. Collapsing the two (`rows[0]?.x ?? null`) would silently
+    // skip the prefix DELETE and retain expired audit rows past policy, which in
+    // this job is a compliance failure that reports itself as success. Fail loudly
+    // instead; the per-policy catch records it and the pass continues. Same
+    // principle as the deliberate non-null-safety in db/rowCount.ts.
+    throw new Error(
+      `[AuditRetention] cutoff query returned no row for org=${policy.org_id} — expected exactly one`,
+    );
+  }
+  // NULL (not absent) only when the org has no chain entries at all — nothing to
+  // prefix-cut, but the unsealed sweep below still runs.
+  const cutoffSeq = cutoffRow.cutoff_seq;
 
   // Step 2 — delete that prefix in bounded batches instead of one unbounded
   // statement (issue #4239). `ORDER BY c.chain_seq` is load-bearing, not
