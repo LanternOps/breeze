@@ -22,9 +22,13 @@ should actually run.
 | Field | Value |
 |---|---|
 | Date | 2026-09-01 |
-| Breeze build SHA | `d313665b2a50a0f4b38933232901000136c11464` (branch `feat/quickbooks-accounting-mappings`) |
-| Tester | Task 7 verification agent (automated) |
+| Breeze build SHA | `20a5d14494b7e9e45792982b7e6bc12ba83956d0` (branch `feat/quickbooks-accounting-mappings`) |
+| Tester | Final-review fix wave (automated) |
 | Environment | Local worktree, ephemeral `pnpm test-stack` Postgres 16 (pgvector) + Redis 7 containers |
+
+The gate was re-run in full against that SHA, which is the head of the
+branch's code changes; only this document changed afterwards. See the
+[change log](#change-log) for what moved between runs.
 
 ### a. API unit/service/route tests
 
@@ -33,7 +37,7 @@ cd apps/api && npx vitest run src/services/accounting/ src/routes/accounting/ \
   src/middleware/selfManagedDbContextRoutes.test.ts src/db/autoMigrate.test.ts
 ```
 
-**Result: PASS** — 13 test files, 448 tests, 0 failures.
+**Result: PASS** — 13 test files, 456 tests, 0 failures.
 
 ### b. Web component/i18n/mutation-safety tests
 
@@ -46,7 +50,7 @@ cd apps/web && npx vitest run \
   src/lib/__tests__/no-silent-mutations.test.ts
 ```
 
-**Result: PASS** — 5 test files, 232 tests, 0 failures.
+**Result: PASS** — 5 test files, 234 tests, 0 failures.
 
 ### c. Typechecks
 
@@ -54,36 +58,24 @@ cd apps/web && npx vitest run \
 cd apps/api && NODE_OPTIONS="--max-old-space-size=8192" npx tsc --noEmit -p .
 ```
 
-**Result: FAIL (2 errors)**
+**Result: FAIL (1 error) — the known pre-existing one only.**
 
 1. `src/jobs/scheduleRegistry.contract.test.ts(33,20): error TS2307: Cannot
    find module 'cron-parser'` — **pre-existing, unrelated to this branch**
    (missing dependency in the workspace's `node_modules`; not caused by
    accounting-mapping work). Expected per this task's brief.
-2. `src/routes/accounting/index.ts(174,28): error TS2345: Argument of type
-   '"json"' is not assignable to parameter of type 'never'.` — **NOT
-   pre-existing.** This is inside `requireMappingWrite`, a post-validation
-   write guard introduced in Task 5 (`af9b414bc feat(accounting): expose
-   QuickBooks mapping routes`):
 
-   ```ts
-   const requireMappingWrite: MiddlewareHandler = async (c, next) => {
-     if (c.get('auth')?.scope === 'system') return next();
-     const body = c.req.valid('json') as { breezeEntityType: MappingEntityType };
-     ...
-   };
-   ```
-
-   Declaring the handler as a bare `MiddlewareHandler` (no generic env/schema
-   parameters) erases the `zValidator('json', mappingDecisionSchema)` typing
-   that the route chain attaches, so `c.req.valid` resolves its parameter
-   type to `never` and `'json'` fails to typecheck. It compiles to working
-   JS at runtime (Hono doesn't enforce this at runtime), which is why it
-   shipped without being caught — this branch had not had `tsc --noEmit` run
-   against it before this task. **This is a production-code compile error on
-   this branch and was left unfixed per this task's contract** (test/doc-only
-   fixes are in scope here, production-code fixes are not). See "Concerns"
-   below.
+The second error this section recorded on the previous run —
+`src/routes/accounting/index.ts(174,28): error TS2345: Argument of type
+'"json"' is not assignable to parameter of type 'never'`, inside
+`requireMappingWrite` — was a real production-code compile error introduced
+by Task 5 and left unfixed by the Task 7 verification pass (whose contract
+was test/doc-only). It has since been fixed on this branch by `e69c9cf01
+fix(accounting): type requireMappingWrite against validated mapping input`,
+which types the handler against the validated mapping input instead of
+declaring it a bare `MiddlewareHandler` (which erased the
+`zValidator('json', mappingDecisionSchema)` typing and resolved
+`c.req.valid`'s parameter type to `never`). It is gone as of the SHA above.
 
 ```bash
 cd apps/web && NODE_OPTIONS="--max-old-space-size=8192" npx tsc --noEmit -p .
@@ -122,6 +114,29 @@ cd apps/api && npx vitest run --config vitest.integration.config.ts \
 **Result: PASS** — 1 test file, 4 tests, 0 failures. Exercises RLS +
 the polymorphic `breeze_entity_id` ownership trigger through the real
 unprivileged `breeze_app` pool.
+
+Added for the final-review fix wave — the org-lifecycle contract suites,
+because `accounting_entity_mappings` is now cleared by org erasure and by
+org merge (see the change log):
+
+```bash
+cd apps/api && npx vitest run --config vitest.integration.config.ts \
+  src/__tests__/integration/tenantCascade.integration.test.ts \
+  src/__tests__/integration/tenantCascadeExecution.integration.test.ts \
+  src/__tests__/integration/tenantCascadePartner.integration.test.ts \
+  src/__tests__/integration/tenantCascadeSso.integration.test.ts \
+  src/__tests__/integration/orgMergeRegistry.integration.test.ts \
+  src/__tests__/integration/orgMergeCustomExecutors.integration.test.ts \
+  src/__tests__/integration/orgMerge.integration.test.ts \
+  src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts \
+  src/__tests__/integration/tenant-export-policy.integration.test.ts \
+  src/__tests__/integration/accountingConnectionHomeCurrency.integration.test.ts
+```
+
+**Result: PASS** — 10 test files, 57 tests, 0 failures. Both new
+assertions were confirmed RED first (the two production hunks stashed:
+`expected undefined to be 1` for the erasure pre-clear, `expected +0 to be
+1` for the merge fixup) before the fixes were restored.
 
 ```bash
 pnpm db:check-drift
@@ -179,6 +194,11 @@ per-worktree-isolated mechanism for exactly this (`docker-compose.test.yml`)
 and needed no extra setup.
 
 ### Concerns raised, not fixed (production code, out of this task's scope)
+
+**RESOLVED as of `20a5d1449` — kept for the record.** The concern below was
+raised by the Task 7 verification pass, whose contract was test/doc-only. It
+was fixed on this branch by `e69c9cf01`; item (c) above now records a single
+pre-existing `tsc` error.
 
 - **`apps/api/src/routes/accounting/index.ts:174`** — `requireMappingWrite`
   fails `tsc --noEmit`. See item (c) above for the exact error and root
@@ -410,3 +430,59 @@ no new production code was needed or added to prove this out.
   needs to filter explicitly by `integrationId`/`partnerId` per row, exactly
   as this query does, since a system context bypasses RLS rather than
   narrowing through it.
+
+---
+
+## Change log
+
+Newest first. Each entry records what changed in the branch since the
+previous automated-gate run, so a reader can tell whether the recorded
+evidence still describes the code they are looking at.
+
+### `20a5d14494b7e9e45792982b7e6bc12ba83956d0` — 2026-09-01, final-review fix wave
+
+Two findings from the whole-branch final review, plus four minors.
+
+- **Org erasure and org merge now clear `accounting_entity_mappings`.** The
+  table is partner-axis with a polymorphic `(breeze_entity_type,
+  breeze_entity_id)` Breeze side — no `org_id` column, no FK — so it is
+  correctly absent from `CORE_ORG_CASCADE_DELETE_ORDER` and from
+  `orgMergeRegistry`, and nothing cleaned it. Erasure stranded the deleted
+  org's UUID paired with the QuickBooks Customer id it was billed under; a
+  merge left the loser org's row holding a permanent claim on that Customer,
+  which `claimedRemoteIds` then filtered out of every proposal while a manual
+  confirm 409'd forever against `accounting_entity_mappings_remote_uniq` —
+  with the orphan row invisible in the UI. Erasure is fixed by an explicit
+  pre-clear in `ASSOCIATED_SYSTEM_SCOPED_TABLES` (`tenantCascade.ts`); the
+  merge by a `DELETE` (not a repoint) of the loser's `'org'` rows in
+  `runPostPassFixups` (`orgMerge.ts`), beside `config_policy_assignments`,
+  which is the only place the merge engine can reach a table with no `org_id`
+  column. `'catalog_item'` rows are partner-scoped and untouched. **Phase C's
+  `'invoice'`/`'payment'` rows will need their own arms in both places, and
+  nothing in CI will notice their absence.**
+- **`syncMappedEntity` now guards create-time currency.** It never read
+  `conn.homeCurrency`, so an org stamped EUR in a USD realm synced green,
+  QuickBooks created the Customer at the realm default, and `CurrencyRef` is
+  immutable after creation — Phase C's invoice-push guard would then 409 that
+  org forever. A pre-flight typed 409 (`currency_mismatch`, same shape as
+  `income_account_required`) now fires on the CREATE branch of both the
+  customer and item paths, and on a NULL home currency. Updates stay ungated:
+  a sparse update cannot change `CurrencyRef`.
+- Minors: persisted-mapping `confidence` is derived rather than always
+  `existing_link` (the workbench was labelling the operator's own decision a
+  "Suggested match"); the item tab's income-account load is isolated from the
+  mapping load so one failure no longer hides the list; `accountSubType` is
+  optional on the web type, matching the API.
+
+Gate re-run in full against this SHA: (a) 456 tests, (b) 234 tests, (c) one
+pre-existing `cron-parser` error only, (d) all suites PASS including the
+org-lifecycle contract suites now in scope.
+
+### `d313665b2a50a0f4b38933232901000136c11464` — 2026-09-01, Task 7 initial run
+
+First recorded run of the automated gate. Section (c) recorded two `tsc`
+errors: the pre-existing `cron-parser` one, and a real production-code error
+in `requireMappingWrite` that the run's test/doc-only contract left unfixed
+(fixed later by `e69c9cf01`). The sandbox walkthrough (Section 2) was
+PENDING then and is still PENDING now — no Intuit sandbox credentials have
+been exercised against this branch.
