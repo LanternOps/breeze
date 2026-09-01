@@ -34,12 +34,25 @@
  *     would pass vacuously if the fixture/query were wrong in a way that
  *     always finds zero rows regardless of what actually happened.
  *
- * What would make this test FAIL (and did, pre-#3828-fix if `writeTicketOutbox`
- * were ever changed to wrap its insert in `withSystemDbAccessContext` /
- * `runOutsideDbContext`, escaping the ambient request transaction): case 1's
- * outbox row would commit independently in its own short transaction BEFORE
- * the injected throw even runs, so it would SURVIVE the rollback — the
- * `toHaveLength(0)` assertion on `ticket_outbox` would see 1 row instead of 0.
+ * What would make this test FAIL, precisely: `withDbAccessContext` early-
+ * returns `fn()` unchanged when a context is ALREADY open (`dbContextStorage.
+ * getStore()` truthy — see `apps/api/src/db/index.ts`), and
+ * `withSystemDbAccessContext` delegates straight to it — so wrapping
+ * `writeTicketOutbox`'s insert in `withSystemDbAccessContext` ALONE would
+ * just NEST into this test's ambient transaction and still roll back
+ * normally; that mis-wrap stays caught only by the structural grep above,
+ * not behaviorally by this test. What THIS test behaviorally catches is the
+ * `runOutsideDbContext` escape form — `runOutsideDbContext` actually exits
+ * both AsyncLocalStorage stores, so `runOutsideDbContext(() =>
+ * withSystemDbAccessContext(...))` opens a genuinely separate transaction.
+ * If `writeTicketOutbox` were ever changed to that form, case 1's outbox row
+ * would commit independently in its own short transaction BEFORE the
+ * injected throw even runs, so it would SURVIVE the rollback — the
+ * `toHaveLength(0)` assertion on `ticket_outbox` would see 1 row instead of
+ * 0. (Verified directly: temporarily applying that exact mutation during
+ * development made both non-control cases fail — with an FK violation, not
+ * even a clean assertion mismatch, since the escaped transaction couldn't
+ * see the not-yet-committed `tickets` row — then reverted before this PR.)
  */
 import './setup';
 import { describe, expect, it } from 'vitest';
@@ -94,15 +107,22 @@ describe('ticket_outbox rollback atomicity (real Postgres, hostile-ticket scenar
     // authMiddleware's dispatch(), which wraps the entire route handler
     // (not just the service call) in one withDbAccessContext/baseDb.transaction.
     const injectedError = new Error('injected: hostile ticket handler failure after outbox insert');
+    // Captured outside the transaction callback (rather than asserted inside
+    // it) so a genuine assertion failure here surfaces as itself, not as a
+    // misleading "wrong error" from the .rejects.toThrow(injectedError) check
+    // below swallowing an AssertionError instead of injectedError.
+    let statusInsideTransaction: string | undefined;
     await expect(
       withDbAccessContext(partnerContext, async () => {
         const updated = await changeTicketStatus(ticket.id, { status: 'open' }, {}, { userId: user.id });
-        // Prove the outbox write really happened before we blow up the tx —
-        // otherwise a no-op writeTicketOutbox could make case 1 pass vacuously.
-        expect(updated!.status).toBe('open');
+        statusInsideTransaction = updated!.status;
         throw injectedError;
       })
     ).rejects.toThrow(injectedError);
+
+    // Prove the outbox write really happened before the tx blew up —
+    // otherwise a no-op writeTicketOutbox could make case 1 pass vacuously.
+    expect(statusInsideTransaction).toBe('open');
 
     // THE property under test: the status_changed outbox row must not survive
     // the rollback triggered by the handler's later failure.
@@ -116,7 +136,9 @@ describe('ticket_outbox rollback atomicity (real Postgres, hostile-ticket scenar
 
     // Only the create's outbox row remains — the status-change one never
     // committed. If writeTicketOutbox ever escaped the ambient transaction
-    // (e.g. wrapped in withSystemDbAccessContext), this would be 2, not 1.
+    // (e.g. via runOutsideDbContext(() => withSystemDbAccessContext(...))),
+    // this would be 2, not 1 — see the file header for why
+    // withSystemDbAccessContext ALONE would not trigger this.
     const allOutboxRows = await withSystemDbAccessContext(() =>
       db.select({ id: ticketOutbox.id }).from(ticketOutbox).where(eq(ticketOutbox.ticketId, ticket.id))
     );
