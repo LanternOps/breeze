@@ -51,7 +51,11 @@ const AI_BUDGET_DEFAULTS: EffectiveAiBudget = {
   messagesPerMinutePerUser: 20,
   messagesPerHourPerOrg: 200,
   approvalMode: 'per_step',
-  alertThresholdPercents: [...DEFAULT_AI_ALERT_THRESHOLD_PERCENTS],
+  // Frozen as a tripwire (#4388 review finding): if a merge site is ever
+  // added that forgets to copy this array before returning it, mutating it
+  // in place (e.g. .push()) throws in strict mode instead of silently
+  // corrupting the default thresholds for every other org, process-wide.
+  alertThresholdPercents: Object.freeze([...DEFAULT_AI_ALERT_THRESHOLD_PERCENTS]) as number[],
 };
 
 const AI_BUDGET_FIELDS = [
@@ -187,7 +191,14 @@ export async function getEffectiveOrgSettings(
     .where(eq(aiBudgets.orgId, orgId))
     .then((rows) => rows[0]);
 
-  const mergedBudget: Record<string, unknown> = { ...AI_BUDGET_DEFAULTS };
+  // #4388 review — `{ ...AI_BUDGET_DEFAULTS }` is a shallow copy: without
+  // this explicit override, every org with no org-row/partner override for
+  // `alertThresholdPercents` would share the exact same array reference
+  // process-wide, for the lifetime of the process.
+  const mergedBudget: Record<string, unknown> = {
+    ...AI_BUDGET_DEFAULTS,
+    alertThresholdPercents: [...AI_BUDGET_DEFAULTS.alertThresholdPercents],
+  };
 
   // Org table row fills in on top of defaults
   if (orgBudgetRow) {
@@ -330,8 +341,13 @@ export async function getEffectiveAiBudget(
       .then((rows) => rows[0]),
   ]);
 
-  // Start from defaults
-  const result: EffectiveAiBudget = { ...AI_BUDGET_DEFAULTS };
+  // Start from defaults. #4388 review — same shallow-copy hazard as
+  // getEffectiveOrgSettings above: without the explicit override, every org
+  // with no override would share one mutable array reference process-wide.
+  const result: EffectiveAiBudget = {
+    ...AI_BUDGET_DEFAULTS,
+    alertThresholdPercents: [...AI_BUDGET_DEFAULTS.alertThresholdPercents],
+  };
 
   // Org table row overrides defaults
   if (orgBudgetRow) {

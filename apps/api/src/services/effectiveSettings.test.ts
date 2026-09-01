@@ -265,4 +265,32 @@ describe('getEffectiveAiBudget alertThresholdPercents (#4388)', () => {
     expect((effective.aiBudgets as Record<string, unknown>).alertThresholdPercents).toEqual([90]);
     expect(locked).toContain('aiBudgets.alertThresholdPercents');
   });
+
+  // Regression for the #4388 review finding: `{ ...AI_BUDGET_DEFAULTS }` is a
+  // shallow copy, so without an explicit fresh-array override, every org with
+  // no org-row/partner override for `alertThresholdPercents` would receive
+  // the SAME array object, process-wide, for the lifetime of the process — a
+  // caller mutating one org's result in place (`.push()`) would silently
+  // corrupt the default thresholds seen by every other org.
+  it('returns a fresh alertThresholdPercents array on every call, not a shared reference', async () => {
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({}),
+      mockOrgBudgetRow({ alertThresholdPercents: null }),
+    );
+    const first = await getEffectiveAiBudget('org1');
+
+    primeSelectSeq(
+      mockOrg({ partnerId: 'p1' }),
+      mockPartnerSettings({}),
+      mockOrgBudgetRow({ alertThresholdPercents: null }),
+    );
+    const second = await getEffectiveAiBudget('org2');
+
+    expect(first.alertThresholdPercents).toEqual(second.alertThresholdPercents);
+    expect(first.alertThresholdPercents).not.toBe(second.alertThresholdPercents);
+
+    first.alertThresholdPercents.push(1);
+    expect(second.alertThresholdPercents).toEqual([50, 80, 95]);
+  });
 });
