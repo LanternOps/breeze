@@ -35,7 +35,12 @@ export function isCommandFailure(result: CommandResult): boolean {
       // If this stops compiling, a new status was added to CommandResult.
       // Decide deliberately whether it is a failure — do not let it default.
       const exhaustive: never = result.status;
-      return exhaustive;
+      void exhaustive;
+      // Fail closed if one ever slips past the type system (an `any` at a
+      // call site, a payload off the wire): an unrecognised status is treated
+      // as a failure, never silently as a success. Returning `exhaustive`
+      // here would return the status STRING from a function typed `boolean`.
+      return true;
     }
   }
 }
@@ -189,9 +194,12 @@ export function classifyCommandFailure(
 
   if (/cannot execute command|is offline|is unknown/i.test(raw)) {
     // The queue refuses ANY non-online device with the same sentence:
-    // `Device is ${device.status}, cannot execute command` (commandQueue.ts:832,
-    // 1013). `device_status` has seven values, so answering a flat "The device
-    // is offline." is wrong for five of the six non-online ones — and not in a
+    // `Device is ${device.status}, cannot execute command`
+    // (commandQueue.ts:1013, inside executeCommand — the similar string at
+    // :832 returns a bare `{ error }` with no `status`, is not a
+    // CommandResult, and never reaches this classifier).
+    // `device_status` has seven values, so answering a flat "The device is
+    // offline." is wrong for five of the six non-online ones — and not in a
     // cosmetic way:
     //
     //   - `updating` is set on every agent self-update (agentWs.ts:2156), so a
@@ -205,15 +213,20 @@ export function classifyCommandFailure(
     // state otherwise. `code` stays `device_offline` either way: it is the
     // machine-readable "device would not take the command" discriminant, and
     // callers branch on it, not on the prose.
+    //
+    // The guard regex above also admits two shapes this sentence does not
+    // cover (`is offline` / `is unknown` on their own). Those keep the clean
+    // default rather than echoing `raw`: no production code emits them today,
+    // and passing unrecognised internal text through with a confident 503
+    // would be worse than the generic sentence — the 500 fallback at the end
+    // of this function is where genuinely unclassified text belongs.
     const deviceState = /^Device is (\w+), cannot execute command$/i.exec(raw)?.[1]?.toLowerCase();
     return {
       kind: 'device_offline',
       message:
         deviceState && deviceState !== 'offline'
           ? `The device is ${deviceState} and cannot run commands.`
-          : deviceState === 'offline'
-            ? 'The device is offline.'
-            : raw || 'The device is offline.',
+          : 'The device is offline.',
       status: 503,
       code: 'device_offline',
     };

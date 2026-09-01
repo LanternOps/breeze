@@ -249,11 +249,13 @@ describe('mapCommandFailure', () => {
     expect(failure.message).toBe(expected);
   });
 
-  it('keeps the raw text when the refusal is not the queue-shaped sentence', () => {
-    // Anything else matching the offline heuristics keeps its own words rather
-    // than being overwritten with a message that may not be true.
+  it('does not echo unrecognised internal text back with a confident 503', () => {
+    // The guard regex admits bare `is offline` / `is unknown` shapes that the
+    // queue sentence does not cover. They keep the generic message rather than
+    // passing raw internal wording through — unclassified text belongs on the
+    // 500 fallback, not on a 503 that asserts we know what happened.
     const result: CommandResult = { status: 'failed', error: 'Relay says the host is unknown' };
-    expect(mapCommandFailure(result, 'fallback').message).toBe('Relay says the host is unknown');
+    expect(mapCommandFailure(result, 'fallback').message).toBe('The device is offline.');
   });
 
   it('falls through to 500 with the raw error for unclassified failures', () => {

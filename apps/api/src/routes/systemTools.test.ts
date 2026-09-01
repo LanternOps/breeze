@@ -1230,24 +1230,36 @@ describe('system tools routes', () => {
     // the table must have one row per gate.
     it('has one row per agent command in the five converted route files', () => {
       const files = ['processes', 'services', 'registry', 'eventLogs', 'scheduledTasks'];
-      const counts = files.map((name) => {
-        const src = readFileSync(join(__dirname, 'systemTools', `${name}.ts`), 'utf8');
-        return {
-          name,
-          dispatches: (src.match(/await executeCommand\(/g) ?? []).length,
-          gates: (src.match(/if \(isCommandFailure\(result\)\) \{/g) ?? []).length,
-        };
-      });
+      const ungated: string[] = [];
+      let dispatchTotal = 0;
 
-      // Any dispatch without a gate is a route that can still report an agent
-      // timeout as success — the #4025 bug, reintroduced.
-      for (const { name, dispatches, gates } of counts) {
-        expect(gates, `${name}.ts has ${dispatches} agent command(s) but ${gates} failure gate(s)`).toBe(dispatches);
+      for (const name of files) {
+        const src = readFileSync(join(__dirname, 'systemTools', `${name}.ts`), 'utf8');
+
+        // Pair each dispatch with the text that FOLLOWS it, up to the next
+        // dispatch. Counting `executeCommand`s and `isCommandFailure`s
+        // separately and comparing the totals would let one route grow a
+        // second gate while another loses its only one — the totals still
+        // balance and #4025 walks back in. Matching on a bare
+        // `isCommandFailure(` reference rather than a full `if (…) {` also
+        // keeps this from red-flagging the `!isCommandFailure(result)` idiom
+        // fileBrowser.ts uses, which is equally correct.
+        const segments = src.split(/await executeCommand\(/).slice(1);
+        dispatchTotal += segments.length;
+
+        segments.forEach((segment, index) => {
+          if (!/isCommandFailure\(/.test(segment)) {
+            ungated.push(`${name}.ts dispatch #${index + 1}`);
+          }
+        });
       }
 
-      const totalGates = counts.reduce((sum, file) => sum + file.gates, 0);
-      expect(routes, `source has ${totalGates} gated call sites; the table has ${routes.length} rows`)
-        .toHaveLength(totalGates);
+      // A dispatch with no failure gate before the next one is a route that
+      // can still report an agent timeout as success.
+      expect(ungated, `agent commands with no isCommandFailure gate: ${ungated.join(', ')}`).toEqual([]);
+
+      expect(routes, `source has ${dispatchTotal} agent commands; the table has ${routes.length} rows`)
+        .toHaveLength(dispatchTotal);
     });
 
     it.each(routes)('$label answers 503 agent_timeout, never a success', async ({ path, init, mutating }) => {
