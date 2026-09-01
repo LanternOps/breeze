@@ -179,8 +179,12 @@ export async function loadImpactSummary(auth: AuthContext, input: ImpactQueryInp
     auth.orgCondition(aiAlertVerdicts.orgId),
     verdictOrgFilter,
     isNull(aiAlertVerdicts.supersededBy),
-    sql`${aiAlertVerdicts.feedbackAt} >= (${from}::date) AT TIME ZONE 'UTC'`,
-    sql`${aiAlertVerdicts.feedbackAt} < (${through}::date + 1) AT TIME ZONE 'UTC'`
+    // The `::timestamp` is load-bearing: without it the bare `date` makes
+    // `AT TIME ZONE` ambiguous and Postgres picks the `timestamptz` overload,
+    // which reads the day session-locally and shifts the bound by twice the
+    // session's UTC offset. See impactRollup.ts's module header.
+    sql`${aiAlertVerdicts.feedbackAt} >= (${from}::date)::timestamp AT TIME ZONE 'UTC'`,
+    sql`${aiAlertVerdicts.feedbackAt} < (${through}::date + 1)::timestamp AT TIME ZONE 'UTC'`
   );
 
   const [rawSeriesRows, rawByOrgRows, rawFeedbackRows, partnerId] = await Promise.all([

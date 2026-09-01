@@ -26,8 +26,28 @@ import { impactFixToolsArray } from './impactFixTools';
  * <timestamptz>)` is deliberately never used anywhere in this file: it follows
  * the session timezone, which a self-hoster can change, so it would silently
  * re-bucket an entire fleet's history. Ranges are bounded half-open on
- * `(<day>::date) AT TIME ZONE 'UTC'` instead, which keeps the predicates
- * sargable against the source indexes this wave adds.
+ * `(<day>::date)::timestamp AT TIME ZONE 'UTC'` instead, which keeps the
+ * predicates sargable against the source indexes this wave adds.
+ *
+ * THE `::timestamp` IN THAT BOUND IS LOAD-BEARING, not noise. `AT TIME ZONE`
+ * has two overloads — `timezone(text, timestamp) -> timestamptz` and
+ * `timezone(text, timestamptz) -> timestamp` — and a bare `date` casts
+ * implicitly to BOTH, so Postgres resolves the ambiguity toward the preferred
+ * datetime type, `timestamptz`. `(<day>::date) AT TIME ZONE 'UTC'` therefore
+ * reads the day as a SESSION-LOCAL instant, converts it to a naive UTC
+ * `timestamp`, and then gets compared back against a `timestamptz` column in
+ * the session zone again — shifting the bound by TWICE the session's UTC
+ * offset. Under a UTC session it is a no-op, so it passes every unit test and
+ * every local run; under `TimeZone = America/New_York` it silently drops
+ * (and mis-buckets) facts near the range edges. Caught by
+ * `__tests__/integration/aiAgentImpact.integration.test.ts`'s NY-session case;
+ * the explicit `::timestamp` pins the `timezone(text, timestamp)` overload so
+ * the bound is the true UTC midnight in any session. `generate_series` has the
+ * same pair of overloads and is pinned the same way.
+ *
+ * The bucketing expressions themselves — `(<column> AT TIME ZONE 'UTC')::date`
+ * — need no such cast: the argument is already a `timestamptz` column, so only
+ * one overload matches.
  */
 
 /** `YYYY-MM-DD` for a UTC calendar day. */
@@ -142,7 +162,7 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
   await inRollupDbContext(REBUILD_CONTEXT_LABEL, () => db.execute(sql`
     WITH days AS (
       SELECT d::date AS day
-      FROM generate_series(${fromDay}::date, ${toDay}::date, interval '1 day') AS d
+      FROM generate_series((${fromDay}::date)::timestamp, (${toDay}::date)::timestamp, interval '1 day') AS d
     ),
     verdicts AS (
       SELECT (v.created_at AT TIME ZONE 'UTC')::date AS day,
@@ -151,8 +171,8 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
                ('transient_self_healed', 'recurring_pattern', 'duplicate_of_group'))::int AS noise_flagged
       FROM ai_alert_verdicts v
       WHERE v.org_id = ${orgId}::uuid
-        AND v.created_at >= (${fromDay}::date) AT TIME ZONE 'UTC'
-        AND v.created_at <  (${toDay}::date + 1) AT TIME ZONE 'UTC'
+        AND v.created_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC'
+        AND v.created_at <  (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
       GROUP BY 1
     ),
     suppressions AS (
@@ -163,8 +183,8 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
         AND i.action_name = 'manage_alerts'
         AND i.arguments->>'action' = 'suppress'
         AND i.status = 'completed'
-        AND i.executed_at >= (${fromDay}::date) AT TIME ZONE 'UTC'
-        AND i.executed_at <  (${toDay}::date + 1) AT TIME ZONE 'UTC'
+        AND i.executed_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC'
+        AND i.executed_at <  (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
       GROUP BY 1
     ),
     triage AS (
@@ -175,8 +195,8 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
         AND r.status IN ('completed', 'awaiting_approval')
         AND r.error_code IS NULL
         AND r.outcome ? 'ticketProposal'
-        AND r.finished_at >= (${fromDay}::date) AT TIME ZONE 'UTC'
-        AND r.finished_at <  (${toDay}::date + 1) AT TIME ZONE 'UTC'
+        AND r.finished_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC'
+        AND r.finished_at <  (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
       GROUP BY 1
     ),
     drafts AS (
@@ -184,8 +204,8 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
       FROM ticket_drafts d
       WHERE d.org_id = ${orgId}::uuid
         AND d.state = 'consumed'
-        AND d.consumed_at >= (${fromDay}::date) AT TIME ZONE 'UTC'
-        AND d.consumed_at <  (${toDay}::date + 1) AT TIME ZONE 'UTC'
+        AND d.consumed_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC'
+        AND d.consumed_at <  (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
       GROUP BY 1
     ),
     proposed AS (
@@ -196,8 +216,8 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
         WHERE i.org_id = ${orgId}::uuid
           AND i.origin_principal_kind = 'ai_agent'
           AND i.action_name = ANY(${fixTools})
-          AND i.created_at >= (${fromDay}::date) AT TIME ZONE 'UTC'
-          AND i.created_at <  (${toDay}::date + 1) AT TIME ZONE 'UTC'
+          AND i.created_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC'
+          AND i.created_at <  (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
         UNION ALL
         -- Arm (b): ordinary Tier-2 proposals, which exist ONLY in the run outcome
         -- (runLoop.ts:798-860 — recordProposal creates an intent for tier 3 only).
@@ -210,8 +230,8 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
         ) AS p(item)
         WHERE r.org_id = ${orgId}::uuid
           AND r.profile = 'full'
-          AND r.finished_at >= (${fromDay}::date) AT TIME ZONE 'UTC'
-          AND r.finished_at <  (${toDay}::date + 1) AT TIME ZONE 'UTC'
+          AND r.finished_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC'
+          AND r.finished_at <  (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
           AND p.item->>'intentId' IS NULL
           AND p.item->>'tool' = ANY(${fixTools})
       ) s GROUP BY 1
@@ -225,8 +245,8 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
           AND i.origin_principal_kind = 'ai_agent'
           AND i.action_name = ANY(${fixTools})
           AND i.status = 'completed'
-          AND i.executed_at >= (${fromDay}::date) AT TIME ZONE 'UTC'
-          AND i.executed_at <  (${toDay}::date + 1) AT TIME ZONE 'UTC'
+          AND i.executed_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC'
+          AND i.executed_at <  (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
         UNION ALL
         -- Arm (b): act-mode direct executions (a separate execution path — no
         -- intent is ever created for these). A verify-FAILED execution earns no
@@ -242,8 +262,8 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
         WHERE r.org_id = ${orgId}::uuid
           AND r.profile = 'full'
           AND r.mode_at_start = 'act'
-          AND r.finished_at >= (${fromDay}::date) AT TIME ZONE 'UTC'
-          AND r.finished_at <  (${toDay}::date + 1) AT TIME ZONE 'UTC'
+          AND r.finished_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC'
+          AND r.finished_at <  (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
           AND a.item->>'actOpKey' IS NOT NULL
           AND a.item->>'execution' = 'succeeded'
           AND COALESCE(a.item->>'verification', 'skipped') <> 'failed'
@@ -255,8 +275,8 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
              count(*) FILTER (WHERE w.state = 'recurred')::int      AS fix_watches_recurred
       FROM ai_agent_fix_watches w
       WHERE w.org_id = ${orgId}::uuid
-        AND w.evaluated_at >= (${fromDay}::date) AT TIME ZONE 'UTC'
-        AND w.evaluated_at <  (${toDay}::date + 1) AT TIME ZONE 'UTC'
+        AND w.evaluated_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC'
+        AND w.evaluated_at <  (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
       GROUP BY 1
     ),
     narratives AS (
@@ -266,8 +286,8 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
         AND r.profile = 'narrative'
         AND r.status = 'completed'
         AND r.report_run_id IS NOT NULL
-        AND r.finished_at >= (${fromDay}::date) AT TIME ZONE 'UTC'
-        AND r.finished_at <  (${toDay}::date + 1) AT TIME ZONE 'UTC'
+        AND r.finished_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC'
+        AND r.finished_at <  (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
       GROUP BY 1
     ),
     cost AS (
@@ -277,8 +297,8 @@ export async function rebuildOrgImpactRange(orgId: string, fromDay: UtcDay, toDa
              COALESCE(SUM(r.cost_cents), 0)::int AS llm_cents
       FROM ai_agent_runs r
       WHERE r.org_id = ${orgId}::uuid
-        AND r.queued_at >= (${fromDay}::date) AT TIME ZONE 'UTC'
-        AND r.queued_at <  (${toDay}::date + 1) AT TIME ZONE 'UTC'
+        AND r.queued_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC'
+        AND r.queued_at <  (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
       GROUP BY 1
     )
     INSERT INTO ai_agent_impact_daily (
@@ -337,22 +357,22 @@ export async function findImpactSourceOrgIds(fromDay: UtcDay, toDay: UtcDay): Pr
   const result = await inRollupDbContext(DISCOVER_CONTEXT_LABEL, () => db.execute(sql`
     SELECT DISTINCT org_id FROM (
       SELECT org_id FROM ai_agent_runs
-       WHERE queued_at   >= (${fromDay}::date) AT TIME ZONE 'UTC' AND queued_at   < (${toDay}::date + 1) AT TIME ZONE 'UTC'
+       WHERE queued_at   >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC' AND queued_at   < (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
       UNION SELECT org_id FROM ai_agent_runs
-       WHERE finished_at >= (${fromDay}::date) AT TIME ZONE 'UTC' AND finished_at < (${toDay}::date + 1) AT TIME ZONE 'UTC'
+       WHERE finished_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC' AND finished_at < (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
       UNION SELECT org_id FROM ai_alert_verdicts
-       WHERE created_at  >= (${fromDay}::date) AT TIME ZONE 'UTC' AND created_at  < (${toDay}::date + 1) AT TIME ZONE 'UTC'
+       WHERE created_at  >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC' AND created_at  < (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
       UNION SELECT org_id FROM action_intents
        WHERE origin_principal_kind = 'ai_agent'
-         AND created_at  >= (${fromDay}::date) AT TIME ZONE 'UTC' AND created_at  < (${toDay}::date + 1) AT TIME ZONE 'UTC'
+         AND created_at  >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC' AND created_at  < (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
       UNION SELECT org_id FROM action_intents
        WHERE origin_principal_kind = 'ai_agent'
-         AND executed_at >= (${fromDay}::date) AT TIME ZONE 'UTC' AND executed_at < (${toDay}::date + 1) AT TIME ZONE 'UTC'
+         AND executed_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC' AND executed_at < (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
       UNION SELECT org_id FROM ai_agent_fix_watches
-       WHERE evaluated_at >= (${fromDay}::date) AT TIME ZONE 'UTC' AND evaluated_at < (${toDay}::date + 1) AT TIME ZONE 'UTC'
+       WHERE evaluated_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC' AND evaluated_at < (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
       UNION SELECT org_id FROM ticket_drafts
        WHERE state = 'consumed'
-         AND consumed_at >= (${fromDay}::date) AT TIME ZONE 'UTC' AND consumed_at < (${toDay}::date + 1) AT TIME ZONE 'UTC'
+         AND consumed_at >= (${fromDay}::date)::timestamp AT TIME ZONE 'UTC' AND consumed_at < (${toDay}::date + 1)::timestamp AT TIME ZONE 'UTC'
     ) src
   `));
 
