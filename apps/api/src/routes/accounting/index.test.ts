@@ -17,24 +17,40 @@ function mintState(partnerId: string, userId: string | null, exp = Date.now() + 
   return { state, cookie };
 }
 
-const { authState, mocks } = vi.hoisted(() => ({
-  authState: {
-    scope: 'partner' as 'partner' | 'system' | 'organization',
-    partnerId: '11111111-1111-1111-1111-111111111111' as string | null,
-    mfa: true,
-  },
-  mocks: {
-    getConnection: vi.fn(),
-    upsertConnection: vi.fn(),
-    deleteConnection: vi.fn(),
-    exchangeCode: vi.fn(),
-    fetchRealmSettings: vi.fn(),
-    updateHomeCurrency: vi.fn(),
-    captureException: vi.fn(),
-    captureMessage: vi.fn(),
-    buildAuthUrl: vi.fn((state: string) => `https://qbo.example.test/connect?scope=com.intuit.quickbooks.accounting&state=${encodeURIComponent(state)}`),
-  },
-}));
+const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
+  class AccountingConnectionErrorClass extends Error {
+    constructor(
+      public readonly code: 'not_connected' | 'reauth_required',
+      public readonly status: 404 | 409,
+      message: string,
+    ) {
+      super(message);
+      this.name = 'AccountingConnectionError';
+    }
+  }
+  return {
+    authState: {
+      scope: 'partner' as 'partner' | 'system' | 'organization',
+      partnerId: '11111111-1111-1111-1111-111111111111' as string | null,
+      mfa: true,
+    },
+    mocks: {
+      getConnection: vi.fn(),
+      upsertConnection: vi.fn(),
+      deleteConnection: vi.fn(),
+      exchangeCode: vi.fn(),
+      fetchRealmSettings: vi.fn(),
+      updateHomeCurrency: vi.fn(),
+      updateMultiCurrencyEnabled: vi.fn(),
+      refreshRealmSettings: vi.fn(),
+      captureException: vi.fn(),
+      captureMessage: vi.fn(),
+      writeRouteAudit: vi.fn(),
+      buildAuthUrl: vi.fn((state: string) => `https://qbo.example.test/connect?scope=com.intuit.quickbooks.accounting&state=${encodeURIComponent(state)}`),
+    },
+    AccountingConnectionErrorClass,
+  };
+});
 
 vi.mock('../../db', () => ({
   db: {
@@ -88,6 +104,9 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
   upsertConnection: mocks.upsertConnection,
   deleteConnection: mocks.deleteConnection,
   updateHomeCurrency: mocks.updateHomeCurrency,
+  updateMultiCurrencyEnabled: mocks.updateMultiCurrencyEnabled,
+  refreshRealmSettings: mocks.refreshRealmSettings,
+  AccountingConnectionError: AccountingConnectionErrorClass,
   // Real implementation, not a mock: the route's benign-race branch must key on
   // the error CODE, so the test exercises the real predicate.
   isHomeCurrencyCasAbort: (err: unknown) => typeof err === 'object' && err !== null
@@ -97,6 +116,10 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
 vi.mock('../../services/sentry', () => ({
   captureException: mocks.captureException,
   captureMessage: mocks.captureMessage,
+}));
+
+vi.mock('../../services/auditEvents', () => ({
+  writeRouteAudit: mocks.writeRouteAudit,
 }));
 
 vi.mock('../../services/accounting/providerRegistry', () => ({
@@ -308,6 +331,31 @@ describe('accounting routes', () => {
       { updatedAt: PERSISTED_AT, realmId: 'realm-A' },
       'CAD',
     );
+  });
+
+  it('callback persists the realm multi-currency flag alongside the home currency', async () => {
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+    mocks.fetchRealmSettings.mockResolvedValueOnce({ homeCurrency: 'CAD', multiCurrencyEnabled: true });
+
+    const res = await runCallback(app, 'realm-A');
+
+    expect(res.status).toBe(302);
+    expect(mocks.updateMultiCurrencyEnabled).toHaveBeenCalledWith(
+      expect.anything(),
+      CONNECTION_ID,
+      authState.partnerId,
+      true,
+    );
+  });
+
+  it('callback never blanks a previously-captured multi-currency flag when the realm reports null', async () => {
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+    mocks.fetchRealmSettings.mockResolvedValueOnce({ homeCurrency: 'CAD', multiCurrencyEnabled: null });
+
+    const res = await runCallback(app, 'realm-A');
+
+    expect(res.status).toBe(302);
+    expect(mocks.updateMultiCurrencyEnabled).not.toHaveBeenCalled();
   });
 
   it('same-realm reconnect RETAINS the prior captured currency when the capture then fails', async () => {
@@ -527,5 +575,52 @@ describe('accounting routes', () => {
     expect(res.status).toBe(403);
     await expect(res.json()).resolves.toMatchObject({ error: 'MFA required' });
     expect(mocks.deleteConnection).not.toHaveBeenCalled();
+  });
+
+  describe('POST /:provider/settings/refresh', () => {
+    it('refreshes and returns the realm settings, and audits the action', async () => {
+      mocks.refreshRealmSettings.mockResolvedValueOnce({ homeCurrency: 'CAD', multiCurrencyEnabled: true });
+
+      const res = await app.request('/accounting/quickbooks/settings/refresh', { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({ homeCurrency: 'CAD', multiCurrencyEnabled: true });
+      expect(mocks.refreshRealmSettings).toHaveBeenCalledWith(authState.partnerId, 'quickbooks');
+      expect(mocks.writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'accounting.settings.refresh' }),
+      );
+    });
+
+    it('requires MFA', async () => {
+      authState.mfa = false;
+
+      const res = await app.request('/accounting/quickbooks/settings/refresh', { method: 'POST' });
+
+      expect(res.status).toBe(403);
+      expect(mocks.refreshRealmSettings).not.toHaveBeenCalled();
+    });
+
+    it('maps not_connected to 404', async () => {
+      mocks.refreshRealmSettings.mockRejectedValueOnce(
+        new AccountingConnectionErrorClass('not_connected', 404, 'QuickBooks is not connected for this partner'),
+      );
+
+      const res = await app.request('/accounting/quickbooks/settings/refresh', { method: 'POST' });
+
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toMatchObject({ code: 'not_connected' });
+    });
+
+    it('maps reauth_required to 409', async () => {
+      mocks.refreshRealmSettings.mockRejectedValueOnce(
+        new AccountingConnectionErrorClass('reauth_required', 409, 'QuickBooks needs to be reconnected'),
+      );
+
+      const res = await app.request('/accounting/quickbooks/settings/refresh', { method: 'POST' });
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({ code: 'reauth_required' });
+    });
   });
 });

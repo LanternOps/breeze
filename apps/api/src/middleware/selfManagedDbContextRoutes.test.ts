@@ -42,6 +42,11 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/accounting/quickbooks/mappings/sync'],
     ['POST', '/api/v1/accounting/quickbooks/mappings/sync/'],
     ['put', '/api/v1/accounting/quickbooks/mappings'], // method is case-insensitive
+    // Phase C Task 2 — settings refresh calls provider.fetchRealmSettings
+    // (real QuickBooks HTTP) inside the handler.
+    ['POST', '/api/v1/accounting/quickbooks/settings/refresh'],
+    ['POST', '/api/v1/accounting/quickbooks/settings/refresh/'],
+    ['post', '/api/v1/accounting/quickbooks/settings/refresh'], // method is case-insensitive
     // #2190 — distributor catalog imports run a best-effort AI enrichment call
     // inside the handler.
     ['POST', '/api/v1/catalog/distributors/td-synnex/import'],
@@ -144,6 +149,11 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/accounting/quickbooks/mappings/sync', 'sync is POST-only'],
     ['PUT', '/api/v1/accounting/quickbooks/mappings/sync', 'sync is POST-only, not PUT'],
     ['POST', '/api/v1/accounting/quickbooks/mappings/sync/extra', 'extra segment must not match'],
+    // Phase C Task 2 — refresh is POST-only, and the sibling PATCH .../settings
+    // route (no /refresh) makes no outbound call — keep the ambient tx.
+    ['GET', '/api/v1/accounting/quickbooks/settings/refresh', 'refresh is POST-only'],
+    ['POST', '/api/v1/accounting/quickbooks/settings/refresh/extra', 'extra segment must not match'],
+    ['PATCH', '/api/v1/accounting/quickbooks/settings', 'plain settings PATCH does only DB work'],
     // #2190 — the other distributor routes (status/config/test/search/lookup/pricing)
     // do only DB work — keep the ambient tx.
     ['GET', '/api/v1/catalog/distributors/td-synnex/status', 'status route is DB-only'],

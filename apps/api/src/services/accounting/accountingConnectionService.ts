@@ -1,6 +1,9 @@
 import { and, eq } from 'drizzle-orm';
 import { accountingConnections } from '../../db/schema';
 import { decryptSecret, encryptSecret } from '../secretCrypto';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { getAccountingProvider } from './providerRegistry';
+import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
 import type { AccountingProviderId } from './types';
 
 export type AccountingEnvironment = 'sandbox' | 'production';
@@ -18,6 +21,8 @@ export interface AccountingConnection {
   refreshTokenExpiresAt: Date | null;
   environment: AccountingEnvironment;
   homeCurrency: string | null;
+  /** Nullable = unknown (never captured, or the capture failed). Multi-currency §11. */
+  multiCurrencyEnabled: boolean | null;
   defaultIncomeAccountRef: string | null;
   defaultTaxCodeRef: string | null;
   pushMode: AccountingPushMode;
@@ -99,6 +104,7 @@ function mapConnection(row: AccountingConnectionRow): AccountingConnection {
     refreshTokenExpiresAt: row.refreshTokenExpiresAt ?? null,
     environment: row.environment as AccountingEnvironment,
     homeCurrency: row.homeCurrency ?? null,
+    multiCurrencyEnabled: row.multiCurrencyEnabled ?? null,
     defaultIncomeAccountRef: row.defaultIncomeAccountRef ?? null,
     defaultTaxCodeRef: row.defaultTaxCodeRef ?? null,
     pushMode: row.pushMode as AccountingPushMode,
@@ -343,6 +349,139 @@ export async function markStatus(
   if (updated.length === 0) {
     throw new Error(`markStatus matched no accounting_connections row (id=${connectionId}); status '${status}' not persisted`);
   }
+}
+
+/**
+ * Persists the provider-reported multi-currency flag (multi-currency §11).
+ * Unlike `updateHomeCurrency`, this is a plain guarded UPDATE — no
+ * realm-generation compare-and-set — because the flag carries no per-realm
+ * identity risk the way a cached currency VALUE does (there is nothing to
+ * "belong to a different realm"); the 0-row-throw still applies (Global
+ * Constraint: a silent no-op here hides an RLS-context mistake, matching
+ * updateTokens/markStatus).
+ */
+export async function updateMultiCurrencyEnabled(
+  db: DbExecutor,
+  connectionId: string,
+  partnerId: string,
+  multiCurrencyEnabled: boolean | null,
+): Promise<void> {
+  const updated = await db
+    .update(accountingConnections)
+    .set({
+      multiCurrencyEnabled,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(accountingConnections.id, connectionId),
+      eq(accountingConnections.partnerId, partnerId)
+    ))
+    .returning({ id: accountingConnections.id });
+  if (updated.length === 0) {
+    throw new Error(`updateMultiCurrencyEnabled matched no accounting_connections row (id=${connectionId}); multi-currency flag not persisted`);
+  }
+}
+
+export type AccountingConnectionErrorCode = 'not_connected' | 'reauth_required';
+
+/** Typed failure the route translates straight to an HTTP status (mirrors AccountingMappingError). */
+export class AccountingConnectionError extends Error {
+  constructor(
+    public readonly code: AccountingConnectionErrorCode,
+    public readonly status: 404 | 409,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'AccountingConnectionError';
+  }
+}
+
+/**
+ * Re-fetches the connected realm's settings (home currency + multi-currency
+ * flag) on demand — the "Refresh settings" action, distinct from the OAuth
+ * callback's connect-time capture. Resolves the connection and a live access
+ * token itself (mirrors `resolveConnectionAndToken` in
+ * accountingMappingService.ts), so the route stays a thin pass-through.
+ *
+ * `getValidAccessToken` may ROTATE the connection's tokens (`updateTokens`),
+ * which bumps `updated_at` on the row. Re-reading the connection AFTER
+ * obtaining the token — rather than reusing the pre-token generation — is
+ * deliberate: `updateHomeCurrency`'s compare-and-set below stakes its claim on
+ * `updatedAt`, so comparing against a stale pre-refresh snapshot would make
+ * the write lose the race on every call that also happened to rotate a token,
+ * misreading an ordinary refresh as a concurrent reconnect.
+ *
+ * Both writes are best-effort against a value the realm reports as unknown
+ * (null): a null is never written over a previously captured non-null value,
+ * mirroring the OAuth callback's "never blank on an ordinary external
+ * condition" rule for home currency.
+ */
+export async function refreshRealmSettings(
+  partnerId: string,
+  provider: AccountingProviderId,
+): Promise<{ homeCurrency: string | null; multiCurrencyEnabled: boolean | null }> {
+  const conn = await getConnection(db, partnerId, provider);
+  if (!conn) {
+    throw new AccountingConnectionError('not_connected', 404, 'QuickBooks is not connected for this partner');
+  }
+  if (conn.status === 'reauth_required') {
+    throw new AccountingConnectionError('reauth_required', 409, 'QuickBooks needs to be reconnected');
+  }
+  if (conn.status !== 'connected') {
+    throw new AccountingConnectionError('not_connected', 404, 'QuickBooks is not connected for this partner');
+  }
+
+  let accessToken: string;
+  try {
+    accessToken = await runOutsideDbContext(() => withSystemDbAccessContext(() => getValidAccessToken(db, conn)));
+  } catch (err) {
+    if (err instanceof ReauthRequiredError) {
+      throw new AccountingConnectionError('reauth_required', 409, 'QuickBooks needs to be reconnected');
+    }
+    throw err;
+  }
+
+  // See the doc comment above: re-read to capture the generation the row will
+  // actually be at when we write, not the pre-token-refresh snapshot.
+  const freshConn = await getConnection(db, partnerId, provider);
+  if (!freshConn) {
+    throw new AccountingConnectionError('not_connected', 404, 'QuickBooks is not connected for this partner');
+  }
+
+  const liveConn: AccountingConnection = { ...freshConn, accessToken };
+  const providerImpl = getAccountingProvider(provider);
+  const settings = await runOutsideDbContext(() => providerImpl.fetchRealmSettings(liveConn));
+
+  // The home-currency CAS MUST run before the multi-currency flag write, not
+  // after: `updateMultiCurrencyEnabled` bumps `updated_at` on the same row, and
+  // `updateHomeCurrency`'s compare-and-set below is keyed on `freshConn.updatedAt`
+  // — writing the flag first would make the CAS observe a generation it never
+  // captured and abort on every call, misreading our OWN prior write as a
+  // concurrent reconnect.
+  if (settings.homeCurrency && freshConn.updatedAt) {
+    try {
+      await withSystemDbAccessContext(() => updateHomeCurrency(
+        db,
+        freshConn.id,
+        partnerId,
+        { updatedAt: freshConn.updatedAt as Date, realmId: freshConn.realmId },
+        settings.homeCurrency as string,
+      ));
+    } catch (err) {
+      // A lost compare-and-set is an EXPECTED race (a concurrent reconnect or
+      // another refresh call already advanced the generation) — the winning
+      // write already captured a currency for the generation that survived,
+      // so this is not a defect. Any OTHER failure is genuine and propagates.
+      if (!isHomeCurrencyCasAbort(err)) throw err;
+    }
+  }
+
+  if (typeof settings.multiCurrencyEnabled === 'boolean') {
+    await withSystemDbAccessContext(() =>
+      updateMultiCurrencyEnabled(db, freshConn.id, partnerId, settings.multiCurrencyEnabled));
+  }
+
+  return { homeCurrency: settings.homeCurrency, multiCurrencyEnabled: settings.multiCurrencyEnabled };
 }
 
 /** Returns true if a connection row was deleted, false if none matched. */

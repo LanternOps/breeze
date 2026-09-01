@@ -62,6 +62,12 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/income-accounts\/?$/ },
   { method: 'PUT', pattern: /^\/api\/v1\/accounting\/[^/]+\/mappings\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/mappings\/sync\/?$/ },
+  // Phase C Task 2 (2026-09-01-quickbooks-phase-c-invoice-push) — on-demand
+  // realm settings refresh. refreshRealmSettings (accountingConnectionService.ts)
+  // calls provider.fetchRealmSettings, a real outbound QuickBooks HTTP call, and
+  // manages its own short DB access contexts around it — the same treatment as
+  // the mapping routes above.
+  { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/settings\/refresh\/?$/ },
   // #2190 — the three distributor catalog import routes run a best-effort AI
   // enrichment (enrichDistributorListing, up to a 12s outbound Anthropic call)
   // before persisting. The import services manage their own short

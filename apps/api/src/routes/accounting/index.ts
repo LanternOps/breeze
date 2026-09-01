@@ -10,10 +10,13 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthC
 import { PERMISSIONS } from '../../services/permissions';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT, QBO_REDIRECT_URI } from '../../config/env';
 import {
+  AccountingConnectionError,
   deleteConnection,
   getConnection,
   isHomeCurrencyCasAbort,
+  refreshRealmSettings,
   updateHomeCurrency,
+  updateMultiCurrencyEnabled,
   upsertConnection,
 } from '../../services/accounting/accountingConnectionService';
 import type { AccountingConnection } from '../../services/accounting/accountingConnectionService';
@@ -125,6 +128,11 @@ function handleMappingError(c: { json: (b: unknown, s: number) => Response }, er
   // no cast, and every current/future code (including item_price_required)
   // flows through generically — the route never re-enumerates codes.
   if (err instanceof AccountingMappingError) return c.json({ error: err.message, code: err.code }, err.status);
+  throw err;
+}
+
+function handleConnectionError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+  if (err instanceof AccountingConnectionError) return c.json({ error: err.message, code: err.code }, err.status);
   throw err;
 }
 
@@ -391,10 +399,10 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
   // outage must never turn a successful OAuth grant into a connect error.
   // The QBO call runs with no ambient DB context; the write is a short
   // compare-and-set on the row we just persisted.
+  let capturedSettings: { homeCurrency: string | null; multiCurrencyEnabled: boolean | null } | null = null;
   try {
-    // Persisting multiCurrencyEnabled is Task 2's job — only homeCurrency is
-    // threaded through here for now.
-    const { homeCurrency } = await runOutsideDbContext(() => providerClient.fetchRealmSettings(connection));
+    capturedSettings = await runOutsideDbContext(() => providerClient.fetchRealmSettings(connection));
+    const { homeCurrency } = capturedSettings;
     if (homeCurrency && connection.updatedAt) {
       // The generation this capture belongs to: the row as we just wrote it
       // (updatedAt) AND the realm we just exchanged for. A reconnect to another
@@ -431,6 +439,24 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
     } else {
       captureException(err instanceof Error ? err : new Error(String(err)), c);
       console.warn('[accounting] QuickBooks home currency capture failed', { partnerId: state.partnerId, provider });
+    }
+  }
+
+  // Persist the realm's multi-currency flag. Deliberately run AFTER the home
+  // currency block above, never before: updateMultiCurrencyEnabled is a plain
+  // guarded UPDATE that bumps updated_at, and updateHomeCurrency's
+  // compare-and-set above is keyed on connection.updatedAt captured at the top
+  // of this handler — writing the flag first would make that CAS observe a
+  // generation it never captured and spuriously abort on every callback.
+  // A null flag is left untouched (unknown must never blank a previously
+  // captured true/false), matching the home-currency "never blank" rule above.
+  if (typeof capturedSettings?.multiCurrencyEnabled === 'boolean') {
+    try {
+      await withSystemDbAccessContext(() =>
+        updateMultiCurrencyEnabled(db, connection.id, state.partnerId, capturedSettings!.multiCurrencyEnabled));
+    } catch (err) {
+      captureException(err instanceof Error ? err : new Error(String(err)), c);
+      console.warn('[accounting] QuickBooks multi-currency flag capture failed', { partnerId: state.partnerId, provider });
     }
   }
 
@@ -561,6 +587,40 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
 
   if (!updated) return c.json({ error: 'Accounting connection not found' }, 404);
   return c.json(updated);
+});
+
+// On-demand realm settings refresh (multi-currency §11 / Phase C). Write +
+// MFA-gated (same tier as PATCH /:provider/settings above — it makes a real
+// outbound QuickBooks call and persists the result). The service call makes a
+// live QBO HTTP request, so this route also carries the
+// SELF_MANAGED_DB_CONTEXT_ROUTES registration (middleware/selfManagedDbContextRoutes.ts).
+accountingRoutes.post('/:provider/settings/refresh', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+  const { provider } = c.req.valid('param');
+  const configError = validateProviderConfig(provider);
+  if (configError) return c.json({ error: configError }, 400);
+  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+
+  let settings;
+  try {
+    settings = await refreshRealmSettings(partner.partnerId, provider);
+  } catch (err) {
+    return handleConnectionError(c, err);
+  }
+
+  writeRouteAudit(c, {
+    orgId: null,
+    action: 'accounting.settings.refresh',
+    resourceType: 'accounting_connection',
+    resourceId: null,
+    details: {
+      provider,
+      homeCurrency: settings.homeCurrency,
+      multiCurrencyEnabled: settings.multiCurrencyEnabled,
+    },
+  });
+
+  return c.json(settings);
 });
 
 // Mapping proposals (reconciliation) — read-only, so partner/system scope is

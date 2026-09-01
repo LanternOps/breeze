@@ -1,5 +1,115 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { decryptSecret } from '../secretCrypto';
+
+// refreshRealmSettings resolves the ambient `db` from '../../db' itself (its
+// signature is `(partnerId, provider)` — no db parameter), so it needs the
+// module mocked. Every OTHER test in this file constructs its own local mock
+// db and passes it directly as a function argument, so this mock does not
+// affect them.
+const { dbRef, ambientDb, getValidAccessTokenMock, ReauthRequiredErrorClass, fetchRealmSettingsMock } = vi.hoisted(() => {
+  class ReauthRequiredErrorClass extends Error {
+    constructor(message = 'Accounting connection requires reauthorization') {
+      super(message);
+      this.name = 'ReauthRequiredError';
+    }
+  }
+  const dbRef: { current: any } = { current: null };
+  const ambientDb = {
+    select: (...args: any[]) => dbRef.current.select(...args),
+    insert: (...args: any[]) => dbRef.current.insert(...args),
+    update: (...args: any[]) => dbRef.current.update(...args),
+    delete: (...args: any[]) => dbRef.current.delete(...args),
+    transaction: (...args: any[]) => dbRef.current.transaction(...args),
+  };
+  return {
+    dbRef,
+    ambientDb,
+    getValidAccessTokenMock: vi.fn(),
+    ReauthRequiredErrorClass,
+    fetchRealmSettingsMock: vi.fn(),
+  };
+});
+
+vi.mock('../../db', () => ({
+  db: ambientDb,
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+}));
+
+vi.mock('./accountingTokens', () => ({
+  getValidAccessToken: getValidAccessTokenMock,
+  ReauthRequiredError: ReauthRequiredErrorClass,
+}));
+
+vi.mock('./providerRegistry', () => ({
+  getAccountingProvider: () => ({ fetchRealmSettings: fetchRealmSettingsMock }),
+}));
+
+/**
+ * A single-row fake DB used only by refreshRealmSettings tests: supports the
+ * plain select/update `getConnection`/`updateMultiCurrencyEnabled` need, AND
+ * the `db.transaction(fn)` -> `tx.select().for('update')` / `tx.update()`
+ * shape `updateHomeCurrency` needs — all against the SAME mutable row, so a
+ * write made mid-flow (e.g. simulating a token-refresh bump of `updatedAt`)
+ * is visible to a subsequent read, matching real Postgres.
+ */
+function makeAmbientFakeDb(initialRow: Record<string, unknown> | null) {
+  const state = { row: initialRow };
+  const selectImpl = () => ({
+    from: () => ({ where: () => ({ limit: async () => (state.row ? [state.row] : []) }) }),
+  });
+  const updateImpl = () => ({
+    set: (patch: Record<string, unknown>) => ({
+      where: () => ({
+        returning: async () => {
+          if (!state.row) return [];
+          state.row = { ...state.row, ...patch };
+          return [{ id: state.row.id }];
+        },
+      }),
+    }),
+  });
+  const tx = {
+    select: vi.fn(() => ({
+      from: () => ({ where: () => ({ limit: () => ({ for: async () => (state.row ? [state.row] : []) }) }) }),
+    })),
+    update: vi.fn(updateImpl),
+    insert: vi.fn(),
+    delete: vi.fn(),
+  };
+  const db = {
+    select: vi.fn(selectImpl),
+    update: vi.fn(updateImpl),
+    insert: vi.fn(),
+    delete: vi.fn(),
+    transaction: vi.fn(async (fn: any) => fn(tx)),
+  };
+  return { db, state, tx };
+}
+
+function ambientConnectionRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    partnerId: 'p1',
+    provider: 'quickbooks',
+    realmIdEncrypted: null,
+    accessTokenEncrypted: null,
+    refreshTokenEncrypted: null,
+    accessTokenExpiresAt: null,
+    refreshTokenExpiresAt: null,
+    environment: 'production',
+    homeCurrency: 'USD',
+    multiCurrencyEnabled: null,
+    defaultIncomeAccountRef: null,
+    defaultTaxCodeRef: null,
+    pushMode: 'auto',
+    status: 'connected',
+    lastError: null,
+    createdAt: new Date('2026-09-01T00:00:00Z'),
+    updatedAt: new Date('2026-09-01T00:00:00Z'),
+    ...overrides,
+  };
+}
 
 function makeMockDb(captured: { row?: any; insertValues?: any; updateSet?: any }) {
   const ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
@@ -48,6 +158,11 @@ function makeMockDb(captured: { row?: any; insertValues?: any; updateSet?: any }
 }
 
 describe('accountingConnectionService', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbRef.current = null;
+  });
+
   it('encrypts tokens on upsert and returns decrypted on read', async () => {
     const captured: { row?: any } = {};
     const db = makeMockDb(captured);
@@ -225,5 +340,171 @@ describe('accountingConnectionService', () => {
 
     await expect(updateHomeCurrency(db, 'c1', 'p1', { updatedAt: new Date(), realmId: 'realm-A' }, 'USD'))
       .rejects.toThrow(/matched no accounting_connections row/);
+  });
+
+  it('mapConnection surfaces multiCurrencyEnabled from the row', async () => {
+    const captured: { row?: any } = { row: ambientConnectionRow({ multiCurrencyEnabled: true }) };
+    const db = makeMockDb(captured);
+    const { getConnection } = await import('./accountingConnectionService');
+
+    const conn = await getConnection(db, 'p1', 'quickbooks');
+    expect(conn?.multiCurrencyEnabled).toBe(true);
+  });
+
+  it('mapConnection surfaces null multiCurrencyEnabled (unknown) as null, not false', async () => {
+    const captured: { row?: any } = { row: ambientConnectionRow({ multiCurrencyEnabled: null }) };
+    const db = makeMockDb(captured);
+    const { getConnection } = await import('./accountingConnectionService');
+
+    const conn = await getConnection(db, 'p1', 'quickbooks');
+    expect(conn?.multiCurrencyEnabled).toBeNull();
+  });
+
+  describe('updateMultiCurrencyEnabled', () => {
+    it('writes the flag under a plain guarded UPDATE', async () => {
+      const setSpy = vi.fn(() => ({
+        where: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'c1' }]) })),
+      }));
+      const db = { select: vi.fn(), insert: vi.fn(), update: vi.fn(() => ({ set: setSpy })), delete: vi.fn() } as any;
+      const { updateMultiCurrencyEnabled } = await import('./accountingConnectionService');
+
+      await updateMultiCurrencyEnabled(db, 'c1', 'p1', true);
+
+      expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ multiCurrencyEnabled: true }));
+    });
+
+    it('throws on a zero-row match instead of silently dropping the write', async () => {
+      const db = {
+        select: vi.fn(), insert: vi.fn(), delete: vi.fn(),
+        update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => []) })) })) })),
+      } as any;
+      const { updateMultiCurrencyEnabled } = await import('./accountingConnectionService');
+
+      await expect(updateMultiCurrencyEnabled(db, 'c1', 'p1', false))
+        .rejects.toThrow(/matched no accounting_connections row/);
+    });
+  });
+
+  describe('refreshRealmSettings', () => {
+    it('fetches realm settings and persists both fields', async () => {
+      const { db, state } = makeAmbientFakeDb(ambientConnectionRow());
+      dbRef.current = db;
+      getValidAccessTokenMock.mockResolvedValue('fresh-token');
+      fetchRealmSettingsMock.mockResolvedValue({ homeCurrency: 'CAD', multiCurrencyEnabled: true });
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      const result = await refreshRealmSettings('p1', 'quickbooks');
+
+      expect(result).toEqual({ homeCurrency: 'CAD', multiCurrencyEnabled: true });
+      expect(state.row?.multiCurrencyEnabled).toBe(true);
+      expect(state.row?.homeCurrency).toBe('CAD');
+      expect(fetchRealmSettingsMock).toHaveBeenCalledWith(expect.objectContaining({ accessToken: 'fresh-token' }));
+    });
+
+    it('throws not_connected (404) when the partner has no connection', async () => {
+      const { db } = makeAmbientFakeDb(null);
+      dbRef.current = db;
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      await expect(refreshRealmSettings('p1', 'quickbooks')).rejects.toMatchObject({ code: 'not_connected', status: 404 });
+      expect(fetchRealmSettingsMock).not.toHaveBeenCalled();
+    });
+
+    it('throws reauth_required (409) when the connection status is reauth_required', async () => {
+      const { db } = makeAmbientFakeDb(ambientConnectionRow({ status: 'reauth_required' }));
+      dbRef.current = db;
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      await expect(refreshRealmSettings('p1', 'quickbooks')).rejects.toMatchObject({ code: 'reauth_required', status: 409 });
+      expect(fetchRealmSettingsMock).not.toHaveBeenCalled();
+    });
+
+    it('throws reauth_required (409) when the token refresh reports the grant is dead', async () => {
+      const { db } = makeAmbientFakeDb(ambientConnectionRow());
+      dbRef.current = db;
+      getValidAccessTokenMock.mockRejectedValue(new ReauthRequiredErrorClass());
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      await expect(refreshRealmSettings('p1', 'quickbooks')).rejects.toMatchObject({ code: 'reauth_required', status: 409 });
+      expect(fetchRealmSettingsMock).not.toHaveBeenCalled();
+    });
+
+    it('aborts the home-currency write on a lost CAS but still returns the freshly fetched settings', async () => {
+      const { db } = makeAmbientFakeDb(ambientConnectionRow({ homeCurrency: 'USD' }));
+      dbRef.current = db;
+      getValidAccessTokenMock.mockResolvedValue('fresh-token');
+      fetchRealmSettingsMock.mockResolvedValue({ homeCurrency: 'CAD', multiCurrencyEnabled: false });
+
+      const { refreshRealmSettings, AccountingHomeCurrencyCasAbortError } = await import('./accountingConnectionService');
+      // Force the exact abort updateHomeCurrency itself throws (reusing its own
+      // error class/fixture per the task brief), independent of timing games.
+      db.transaction = vi.fn(async () => {
+        throw new AccountingHomeCurrencyCasAbortError('updateHomeCurrency aborted: lost the compare-and-set');
+      });
+
+      const result = await refreshRealmSettings('p1', 'quickbooks');
+
+      expect(result).toEqual({ homeCurrency: 'CAD', multiCurrencyEnabled: false });
+    });
+
+    it('propagates a GENUINE (non-CAS) home-currency write failure', async () => {
+      const { db } = makeAmbientFakeDb(ambientConnectionRow({ homeCurrency: 'USD' }));
+      dbRef.current = db;
+      getValidAccessTokenMock.mockResolvedValue('fresh-token');
+      fetchRealmSettingsMock.mockResolvedValue({ homeCurrency: 'CAD', multiCurrencyEnabled: null });
+      db.transaction = vi.fn(async () => {
+        throw new Error('deadlock detected');
+      });
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      await expect(refreshRealmSettings('p1', 'quickbooks')).rejects.toThrow('deadlock detected');
+    });
+
+    it('skips the home-currency write (never blanks it) when the realm reports no currency', async () => {
+      const { db, state } = makeAmbientFakeDb(ambientConnectionRow({ homeCurrency: 'USD' }));
+      dbRef.current = db;
+      getValidAccessTokenMock.mockResolvedValue('fresh-token');
+      fetchRealmSettingsMock.mockResolvedValue({ homeCurrency: null, multiCurrencyEnabled: true });
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      const result = await refreshRealmSettings('p1', 'quickbooks');
+
+      expect(result).toEqual({ homeCurrency: null, multiCurrencyEnabled: true });
+      expect(state.row?.homeCurrency).toBe('USD'); // untouched
+      expect(state.row?.multiCurrencyEnabled).toBe(true);
+    });
+
+    it('skips the multi-currency write (never blanks it) when the realm reports null', async () => {
+      const { db, state } = makeAmbientFakeDb(ambientConnectionRow({ homeCurrency: 'USD', multiCurrencyEnabled: true }));
+      dbRef.current = db;
+      getValidAccessTokenMock.mockResolvedValue('fresh-token');
+      fetchRealmSettingsMock.mockResolvedValue({ homeCurrency: 'USD', multiCurrencyEnabled: null });
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      const result = await refreshRealmSettings('p1', 'quickbooks');
+
+      expect(result).toEqual({ homeCurrency: 'USD', multiCurrencyEnabled: null });
+      expect(state.row?.multiCurrencyEnabled).toBe(true); // untouched
+    });
+
+    it('re-reads the connection after a token refresh so the CAS compares against the post-refresh generation', async () => {
+      const { db, state } = makeAmbientFakeDb(ambientConnectionRow({ homeCurrency: 'USD' }));
+      dbRef.current = db;
+      fetchRealmSettingsMock.mockResolvedValue({ homeCurrency: 'CAD', multiCurrencyEnabled: null });
+      // getValidAccessToken rotating the token (updateTokens) would bump
+      // updatedAt on the row underneath the initial read.
+      getValidAccessTokenMock.mockImplementation(async () => {
+        if (state.row) state.row = { ...state.row, updatedAt: new Date('2026-09-01T01:00:00Z') };
+        return 'rotated-token';
+      });
+
+      const { refreshRealmSettings } = await import('./accountingConnectionService');
+      const result = await refreshRealmSettings('p1', 'quickbooks');
+
+      // If the CAS had compared against the STALE pre-refresh updatedAt, this
+      // write would have lost the race and homeCurrency would stay 'USD'.
+      expect(state.row?.homeCurrency).toBe('CAD');
+      expect(result.homeCurrency).toBe('CAD');
+    });
   });
 });

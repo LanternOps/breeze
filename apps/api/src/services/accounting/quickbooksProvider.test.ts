@@ -9,7 +9,7 @@ function conn(overrides: Partial<AccountingConnection> = {}): AccountingConnecti
     realmId: 'realm123', accessToken: 'tok', refreshToken: 'r',
     accessTokenExpiresAt: new Date(Date.now() + 3_600_000),
     refreshTokenExpiresAt: new Date(Date.now() + 86_400_000),
-    environment: 'sandbox', homeCurrency: 'USD',
+    environment: 'sandbox', homeCurrency: 'USD', multiCurrencyEnabled: null,
     defaultIncomeAccountRef: null, defaultTaxCodeRef: null,
     pushMode: 'auto', status: 'connected',
     createdAt: null, updatedAt: null, lastError: null,

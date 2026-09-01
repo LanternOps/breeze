@@ -554,6 +554,12 @@ async function loadMappingRows(
 interface MappingDecisionFields {
   remoteEntityId: string | null;
   remoteSyncToken: string | null;
+  /**
+   * QBO CurrencyRef.value (Phase C, multi-currency §11). Org rows only — a
+   * catalog item syncs once per partner with no per-currency identity of its
+   * own, so this always stays null for a `catalog_item` mapping row.
+   */
+  remoteCurrencyCode: string | null;
   linkStatus: MappingDecision;
   syncStatus: 'pending';
   lastError: null;
@@ -673,11 +679,15 @@ export async function saveMappingDecision(input: SaveMappingDecisionInput): Prom
       throw new AccountingMappingError('entity_not_found', 404, `QuickBooks ${remoteEntityType} ${remoteEntityId} was not found`);
     }
 
-    fields = { remoteEntityId, remoteSyncToken: found.syncToken ?? null, linkStatus: 'confirmed', syncStatus: 'pending', lastError: null };
+    // RemoteItem carries no currencyCode (only RemoteCustomer does), so this is
+    // naturally null for a catalog_item confirm even without the explicit gate
+    // — the gate documents the intent rather than relying on that incidentally.
+    const remoteCurrencyCode = breezeEntityType === 'org' ? (found as RemoteCustomer).currencyCode ?? null : null;
+    fields = { remoteEntityId, remoteSyncToken: found.syncToken ?? null, remoteCurrencyCode, linkStatus: 'confirmed', syncStatus: 'pending', lastError: null };
   } else if (decision === 'create_new') {
-    fields = { remoteEntityId: null, remoteSyncToken: null, linkStatus: 'create_new', syncStatus: 'pending', lastError: null };
+    fields = { remoteEntityId: null, remoteSyncToken: null, remoteCurrencyCode: null, linkStatus: 'create_new', syncStatus: 'pending', lastError: null };
   } else {
-    fields = { remoteEntityId: null, remoteSyncToken: null, linkStatus: 'unlinked', syncStatus: 'pending', lastError: null };
+    fields = { remoteEntityId: null, remoteSyncToken: null, remoteCurrencyCode: null, linkStatus: 'unlinked', syncStatus: 'pending', lastError: null };
   }
 
   return upsertMappingRow({ existing, integrationId: conn.id, partnerId, breezeEntityType, breezeEntityId, remoteEntityType, fields });
@@ -878,12 +888,14 @@ async function persistRemoteRef(params: {
   partnerId: string;
   remoteEntityId: string;
   remoteSyncToken: string | null;
+  remoteCurrencyCode: string | null;
 }): Promise<MappingRow> {
   const rows = await db
     .update(accountingEntityMappings)
     .set({
       remoteEntityId: params.remoteEntityId,
       remoteSyncToken: params.remoteSyncToken,
+      remoteCurrencyCode: params.remoteCurrencyCode,
       linkStatus: 'confirmed',
       syncStatus: 'synced',
       lastSyncedAt: new Date(),
@@ -970,6 +982,11 @@ export async function syncMappedEntity(input: SyncMappedEntityInput): Promise<Ma
       partnerId,
       remoteEntityId: remote.id,
       remoteSyncToken: remote.syncToken ?? null,
+      // RemoteRef.currencyCode is only ever populated by upsertCustomer (types.ts)
+      // — a catalog_item sync's `remote` always carries none — but the explicit
+      // entity-type gate documents that this is a deliberate org-only field, not
+      // an accident of which provider methods happen to fill it in today.
+      remoteCurrencyCode: breezeEntityType === 'org' ? (remote.currencyCode ?? null) : null,
     });
   } catch (dbErr) {
     captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {

@@ -6,6 +6,7 @@ import {
   text,
   timestamp,
   char,
+  boolean,
   uniqueIndex,
   index,
   foreignKey,
@@ -25,6 +26,10 @@ export const accountingConnections = pgTable('accounting_connections', {
   refreshTokenExpiresAt: timestamp('refresh_token_expires_at', { withTimezone: true }),
   environment: varchar('environment', { length: 12 }).notNull().default('production'),
   homeCurrency: char('home_currency', { length: 3 }),
+  // Nullable = unknown (never captured, or the capture failed). Not restricted
+  // to a fixed set of values — a cache of an external fact, same rationale as
+  // homeCurrency above (multi-currency §11).
+  multiCurrencyEnabled: boolean('multi_currency_enabled'),
   defaultIncomeAccountRef: varchar('default_income_account_ref', { length: 64 }),
   defaultTaxCodeRef: varchar('default_tax_code_ref', { length: 64 }),
   pushMode: varchar('push_mode', { length: 10 }).notNull().default('auto'), // 'auto' | 'manual'
@@ -51,6 +56,14 @@ export const accountingEntityMappings = pgTable('accounting_entity_mappings', {
   remoteEntityType: varchar('remote_entity_type', { length: 20 }).notNull(),
   remoteEntityId: text('remote_entity_id'),
   remoteSyncToken: varchar('remote_sync_token', { length: 64 }),
+  // Customer's CurrencyRef.value as reported by QuickBooks (multi-currency
+  // §11 / Phase C). Org rows only — a catalog item syncs once per partner with
+  // no per-currency identity of its own, so this stays null for `catalog_item`
+  // mapping rows.
+  remoteCurrencyCode: char('remote_currency_code', { length: 3 }),
+  // QBO-assigned DocNumber on a collision (QuickBooks silently renumbers a
+  // duplicate DocNumber rather than rejecting it) — Phase C invoice push.
+  remoteDocNumber: varchar('remote_doc_number', { length: 40 }),
   linkStatus: varchar('link_status', { length: 20 }).notNull().default('suggested'),
   syncStatus: varchar('sync_status', { length: 30 }).notNull().default('pending'),
   lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),

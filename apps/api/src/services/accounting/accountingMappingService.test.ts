@@ -585,6 +585,27 @@ describe('saveMappingDecision', () => {
     });
   });
 
+  it('persists remoteCurrencyCode from the live listing row when confirming an org mapping', async () => {
+    stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }] });
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Acme', syncToken: '3', currencyCode: 'EUR' }]);
+
+    const row = await saveMappingDecision(confirmOrg('qb-1'));
+
+    expect(row).toMatchObject({ remoteCurrencyCode: 'EUR' });
+  });
+
+  it('confirming a catalog_item mapping never persists a remoteCurrencyCode (RemoteItem carries none)', async () => {
+    stubReads({ items: [{ id: ITEM_A, name: 'Widget', sku: 'W-1' }] });
+    listRemoteItemsMock.mockResolvedValue([{ id: 'qb-item-1', displayName: 'Widget', syncToken: '0' }]);
+
+    const row = await saveMappingDecision({
+      partnerId: PARTNER, provider: 'quickbooks', breezeEntityType: 'catalog_item',
+      breezeEntityId: ITEM_A, decision: 'confirmed', remoteEntityId: 'qb-item-1',
+    });
+
+    expect(row).toMatchObject({ remoteEntityId: 'qb-item-1', remoteCurrencyCode: null });
+  });
+
   it('rejects a remote ID already claimed by another Breeze entity', async () => {
     stubReads({
       orgs: [{ id: ORG_A, name: 'Acme' }],
@@ -748,6 +769,31 @@ describe('syncMappedEntity', () => {
     // sparse update, proving persistRemoteRef's write is what the retry reads.
     expect(upsertCustomerMock.mock.calls[1]?.[2]).toMatchObject({ remoteEntityId: 'qb-new', remoteSyncToken: '0' });
     expect(second).toMatchObject({ remoteEntityId: 'qb-new', remoteSyncToken: '1' });
+  });
+
+  it('create_new sync persists remoteCurrencyCode from the create response for an org', async () => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null })],
+    });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-new', syncToken: '0', currencyCode: 'USD' });
+
+    const row = await syncMappedEntity(syncOrg());
+
+    expect(row).toMatchObject({ remoteCurrencyCode: 'USD' });
+  });
+
+  it('never persists a remoteCurrencyCode for a catalog_item sync (Item upsert response carries none)', async () => {
+    stubReads({
+      items: [{ id: ITEM_A, name: 'Managed Service', sku: 'MS-1' }],
+      mappings: [itemMappingRow()],
+      itemPrices: [{ itemId: ITEM_A, currencyCode: 'USD', unitPrice: '125.50' }],
+    });
+    upsertItemMock.mockResolvedValueOnce({ id: 'qb-item-1', syncToken: '0' });
+
+    const row = await syncMappedEntity(syncCatalogItem());
+
+    expect(row).toMatchObject({ remoteCurrencyCode: null });
   });
 
   it.each([
