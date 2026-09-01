@@ -557,7 +557,7 @@
       "addSection": {
         "captionPlaceholder": "Bildunterschrift (optional)",
         "headingPlaceholder": "Überschriftentext",
-        "imageHelp": "PNG, JPEG oder WebP, bis zu 5 MB.",
+        "imageHelp": "PNG oder JPEG, bis zu 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Abschnitt hinzufügen",
         "richTextPlaceholder": "Vorschlagstext…",
@@ -875,7 +875,7 @@
         "preparedForPlaceholder": "Kundennamen überschreiben",
         "showPreparedBy": "„Erstellt von“ anzeigen (Ihr Unternehmen)",
         "imageLabel": "Deckblattbild",
-        "imageHelp": "PNG, JPEG oder WebP, bis zu 5 MB.",
+        "imageHelp": "PNG oder JPEG, bis zu 5 MB.",
         "removeImage": "Bild entfernen"
       },
       "ghost": {
