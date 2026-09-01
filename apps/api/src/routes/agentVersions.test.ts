@@ -30,6 +30,14 @@ vi.mock("../db", () => ({
   },
 }));
 
+// #3499: the component=backup rewrite guard asks this resolver what the
+// versionless download route will actually serve. Default to "no promoted
+// row", which makes the guard fall back to comparing against the env version —
+// the behavior every pre-existing test in this file was written against.
+vi.mock("../services/promotedAgentVersion", () => ({
+  getPromotedComponentVersion: vi.fn(async () => null),
+}));
+
 vi.mock("../services/manifestSigning", () => ({
   // Simulate no DB-provisioned deployment keys by default so tests that
   // don't set env vars still get a soft-pass (no env + no DB = empty keyset).
@@ -88,6 +96,7 @@ import { writeRouteAudit } from "../services/auditEvents";
 import { syncFromGitHub } from "../services/binarySync";
 import { captureException } from "../services/sentry";
 import { ResponseTooLargeError, SsrfBlockedError } from "../services/urlSafety";
+import { getPromotedComponentVersion } from "../services/promotedAgentVersion";
 import { requiredPlatformTrustFor } from "../services/releaseAssetTrust";
 
 // Recursively searches an and()/eq() spy tree (see drizzleSpies above) for an
@@ -739,21 +748,26 @@ describe("agentVersions routes", () => {
 
   describe("GET /agent-versions/latest", () => {
     it("should return latest version for platform/arch", async () => {
+      const rows = [
+        {
+          version: "1.2.0",
+          downloadUrl: "https://s3.example.com/agent-1.2.0-linux-amd64",
+          checksum: "a".repeat(64),
+          releaseManifest: null,
+          manifestSignature: null,
+          signingKeyId: null,
+          fileSize: BigInt(45000000),
+          releaseNotes: "Bug fixes",
+        },
+      ];
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
+          // .orderBy() is the created_at tiebreak that keeps this endpoint in
+          // lockstep with services/promotedAgentVersion.ts (#3499).
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([
-              {
-                version: "1.2.0",
-                downloadUrl: "https://s3.example.com/agent-1.2.0-linux-amd64",
-                checksum: "a".repeat(64),
-                releaseManifest: null,
-                manifestSignature: null,
-                signingKeyId: null,
-                fileSize: BigInt(45000000),
-                releaseNotes: "Bug fixes",
-              },
-            ]),
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(rows),
+            }),
           }),
         }),
       } as any);
@@ -771,11 +785,35 @@ describe("agentVersions routes", () => {
       expect(body.releaseNotes).toBe("Bug fixes");
     });
 
+    it("orders by created_at DESC, matching the resolver that serves the bytes (#3499)", async () => {
+      // This endpoint hands out the checksum; services/promotedAgentVersion.ts
+      // resolves the bytes it is verified against. Nothing in the schema
+      // enforces one isLatest row per (component, platform, arch, edition) —
+      // the invariant is demote-then-insert, not a unique constraint. If only
+      // one of the two ordered, a duplicate promoted row would make them
+      // select DIFFERENT rows: a checksum for a release the download route
+      // does not serve, silently. That is #3499 again.
+      const orderByMock = vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([]),
+      });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ orderBy: orderByMock }),
+        }),
+      } as any);
+
+      await app.request("/agent-versions/latest?platform=linux&arch=amd64");
+
+      expect(orderByMock).toHaveBeenCalledTimes(1);
+    });
+
     it("should return 404 when no version exists", async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([]),
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]),
+            }),
           }),
         }),
       } as any);
@@ -789,7 +827,9 @@ describe("agentVersions routes", () => {
 
     it("scopes the lookup to this server's own edition (default self-host)", async () => {
       const whereMock = vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue([]),
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
       });
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({ where: whereMock }),
@@ -804,7 +844,9 @@ describe("agentVersions routes", () => {
 
     it("scopes the lookup to BINARY_EDITION=hosted when configured", async () => {
       const whereMock = vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue([]),
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
       });
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({ where: whereMock }),
@@ -1314,21 +1356,16 @@ describe("agentVersions routes", () => {
       }
     });
 
-    // AGENT_AUTO_PROMOTE=false means isLatest can point at a fleet version
-    // that is NOT what the server currently serves at the versionless route
-    // (deploy-to-promote window). isLatest must never be treated as
-    // sufficient on its own — only an exact match against the server's
-    // pinned current version (getGithubReleaseVersion) may trigger the
-    // rewrite. See the invariant comment on
-    // backupVersionIsServableByVersionlessRoute in agentVersions.ts.
     // #3499 inverted this case. The versionless /download/backup/:os/:arch
     // route used to serve the server's env version (BINARY_VERSION), so a
     // promoted row that the env had moved past was NOT servable by it and the
-    // rewrite had to be withheld. The route now serves the promoted (isLatest)
-    // row itself, so this row IS exactly what it serves and the rewrite is
-    // correct — this is the deploy-to-promote window (AGENT_AUTO_PROMOTE=false,
+    // rewrite had to be withheld — the guard tested the env version and
+    // isLatest was explicitly not sufficient. The route now serves the
+    // promoted row, so this row IS exactly what it serves and the rewrite is
+    // correct. This is the deploy-to-promote window (AGENT_AUTO_PROMOTE=false,
     // server on 1.1.0, fleet still promoted to 1.0.0) that used to hand out
-    // mismatched bytes.
+    // mismatched bytes. The guard no longer restates either rule: it asks the
+    // route's own resolver what will be served and compares.
     it("rewrites component=backup when the row IS the promoted isLatest row, even though the server's env version has moved ahead (#3499)", async () => {
       const canonical =
         "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-backup-linux-amd64";
@@ -1368,6 +1405,10 @@ describe("agentVersions routes", () => {
           }),
         }),
       } as any);
+
+      // The versionless route resolves the promoted row — this one — even
+      // though the server's own env version has moved ahead to 1.1.0.
+      vi.mocked(getPromotedComponentVersion).mockResolvedValue("1.0.0");
 
       process.env.PUBLIC_API_URL = "https://us.example.com";
       process.env.BINARY_VERSION = "1.1.0";
@@ -1454,14 +1495,14 @@ describe("agentVersions routes", () => {
       }
     });
 
-    // The other half of the #3499 inversion. Matching the server's env version
-    // (BINARY_VERSION) no longer makes a row servable by the versionless
-    // route, because that route resolves the promoted row instead. A
-    // non-promoted row must therefore keep the stored immutable URL — the
-    // conservative direction: the agent's host-equality check refuses the
-    // canonical github URL and simply does not heal, rather than downloading
-    // the promoted version's bytes against this row's checksum.
-    it("does NOT rewrite component=backup when the row merely matches the server's env version but is not promoted (#3499)", async () => {
+    // The other half of the #3499 change. Once a row IS promoted, matching the
+    // server's env version no longer makes a different row servable by the
+    // versionless route — that route serves the promoted one. So a
+    // non-promoted row keeps the stored immutable URL: the agent's
+    // host-equality check refuses the canonical github URL and simply does not
+    // heal, rather than downloading the promoted version's bytes against this
+    // row's checksum.
+    it("does NOT rewrite component=backup when the row merely matches the server's env version but another row is promoted (#3499)", async () => {
       const canonical =
         "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-backup-linux-amd64";
       const checksum = "e".repeat(64);
@@ -1493,11 +1534,16 @@ describe("agentVersions routes", () => {
                 // #3499 the versionless route serves whatever is promoted, not
                 // this. Must NOT rewrite.
                 isLatest: false,
+
               },
             ]),
           }),
         }),
       } as any);
+
+      // 1.1.0 is promoted, so that — not this row — is what the versionless
+      // route serves, even though this row matches BINARY_VERSION.
+      vi.mocked(getPromotedComponentVersion).mockResolvedValue("1.1.0");
 
       process.env.PUBLIC_API_URL = "https://us.example.com";
       process.env.BINARY_VERSION = "1.0.0";

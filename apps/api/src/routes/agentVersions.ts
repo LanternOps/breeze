@@ -17,6 +17,8 @@ import { syncFromGitHub } from "../services/binarySync";
 import { captureException } from "../services/sentry";
 import { ResponseTooLargeError, SsrfBlockedError } from "../services/urlSafety";
 import { getBinaryEdition } from "../services/binaryEdition";
+import { getGithubReleaseVersion } from "../services/binarySource";
+import { getPromotedComponentVersion } from "../services/promotedAgentVersion";
 import { PERMISSIONS } from "../services/permissions";
 import {
   verifyReleaseArtifactManifestAsset,
@@ -684,6 +686,15 @@ agentVersionRoutes.get(
           eq(agentVersions.edition, getBinaryEdition()),
         ),
       )
+      // MUST match the tiebreak in services/promotedAgentVersion.ts, which
+      // resolves the bytes these checksums are verified against (#3499).
+      // Nothing enforces one promoted row per (component, platform, arch,
+      // edition) — the invariant is maintained by demote-then-insert, not a
+      // unique constraint — so if only one of the two ordered, a duplicate
+      // isLatest row would make them select DIFFERENT rows and hand out a
+      // checksum for a release the download route does not serve. That is
+      // #3499 all over again, and silent.
+      .orderBy(desc(agentVersions.createdAt))
       .limit(1);
 
     if (!latestVersion) {
@@ -797,22 +808,30 @@ agentVersionRoutes.get(
     // and fails safe, but can never actually heal. So for component=backup
     // only, rewrite exclusively when this row IS the one that route serves.
     //
-    // Which row that is changed in #3499. It used to be the server's own
-    // per-process env version (BINARY_VERSION/BREEZE_VERSION, via
-    // binarySource.getGithubReleaseVersion), so this guard compared against
-    // that and isLatest was explicitly NOT sufficient: production runs
-    // AGENT_AUTO_PROMOTE=false, so after deploying server version Y the DB's
-    // isLatest rows can still point at the still-rolling-out fleet version X.
-    // #3499 inverted exactly that: the download route now resolves the
-    // promoted (isLatest) agent_versions row — the same row this endpoint
-    // reads the checksum from — so isLatest is now the correct predicate and
-    // the env version is the wrong one. During that same deploy-to-promote
-    // window the route now serves X, matching a pin of X instead of breaking
-    // it. These two must stay in lockstep: this guard has to test for whatever
-    // the versionless route actually serves. Every other component keeps the
-    // unconditional rewrite.
-    const backupVersionIsServableByVersionlessRoute =
-      versionInfo.component !== "backup" || versionInfo.isLatest;
+    // WHICH row that is changed in #3499, so rather than restate the route's
+    // rule here and let the two drift, ask the route's OWN resolver what it
+    // will serve and compare. Restating it is what made this guard subtly
+    // wrong twice: it used to hardcode "the env version", correct only while
+    // the route resolved BINARY_VERSION/BREEZE_VERSION; a plain `isLatest`
+    // test would be equally wrong for a never-synced deployment, where no row
+    // is promoted and the route legitimately falls back to the env version.
+    // Deriving it keeps both cases right by construction.
+    //
+    // A resolver fault throws rather than guessing, and this endpoint is
+    // already DB-dependent (it just read versionInfo), so it surfaces as a 5xx
+    // instead of a rewrite that might not match. Every other component keeps
+    // the unconditional rewrite.
+    let backupVersionIsServableByVersionlessRoute = true;
+    if (versionInfo.component === "backup") {
+      const versionlessRouteServes =
+        (await getPromotedComponentVersion(
+          "backup",
+          dbPlatformToRouteOs(versionInfo.platform),
+          versionInfo.architecture,
+        )) ?? getGithubReleaseVersion();
+      backupVersionIsServableByVersionlessRoute =
+        versionInfo.version === versionlessRouteServes;
+    }
 
     const serverRelativeUrl = backupVersionIsServableByVersionlessRoute
       ? buildServerRelativeAgentDownloadUrl(

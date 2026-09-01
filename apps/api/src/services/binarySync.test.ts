@@ -2604,8 +2604,14 @@ describe("unpublished pinned release is loud, not a /releases/latest fallback (#
 
     await expect(syncBinaries()).rejects.toThrow(/GitHub API error: 404/);
 
+    // The remedy wording changed with #3499: a failed sync no longer leaves the
+    // download redirect disagreeing with agent_versions (the redirect follows
+    // the promoted row now), so the hint says the fleet simply will not advance
+    // rather than promising that setting BINARY_VERSION realigns the redirect.
+    // It must still name BINARY_VERSION as the lever and still refuse the
+    // /releases/latest fallback.
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/pinned release v0\.106\.0 FAILED.*set BINARY_VERSION to the last PUBLISHED release/s),
+      expect.stringMatching(/pinned release v0\.106\.0 FAILED.*set BINARY_VERSION to a PUBLISHED release/s),
     );
     expect(fetchSpy).not.toHaveBeenCalledWith(
       `${apiBase}/releases/latest`,

@@ -56,6 +56,14 @@ function githubDownloadBase(version?: string): string {
   // agent_versions rows store a bare semver ("0.105.1"); the env var is also
   // bare by convention. Normalize either form to the "v"-prefixed release tag.
   const tag = resolved.startsWith('v') ? resolved : `v${resolved}`;
+  // The tag is now interpolated into a URL path from a DB row (creatable via
+  // POST /agent-versions) rather than only from env, and agent_versions.version
+  // has no format constraint. Refuse anything that could escape the release
+  // path instead of 404ing mysteriously — the same standard releaseSource.ts
+  // applies to the repository segment.
+  if (!/^v[0-9A-Za-z._-]+$/.test(tag)) {
+    throw new Error(`Refusing to build a download URL for malformed release tag "${tag}"`);
+  }
   return `${getReleaseSourceReleaseBase()}/download/${tag}`;
 }
 

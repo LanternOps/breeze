@@ -58,6 +58,11 @@ const { dbMock } = vi.hoisted(() => {
 
 vi.mock('../db', () => ({ db: dbMock }));
 
+vi.mock('./sentry', () => ({
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+}));
+
 // Mock columns are plain strings so PgDialect compiles them into bound params,
 // letting the assertions pin the real WHERE structure rather than a substring.
 vi.mock('../db/schema', () => ({
@@ -75,8 +80,10 @@ vi.mock('../db/schema', () => ({
 // Import under test — AFTER all mocks are installed.
 import {
   getPromotedComponentVersion,
-  resetPromotedVersionWarningCache,
+  PromotedVersionUnavailableError,
+  __resetPromotedVersionCaptureCacheForTests,
 } from './promotedAgentVersion';
+import { captureException, captureMessage } from './sentry';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 function compiledWhere() {
@@ -97,7 +104,7 @@ describe('getPromotedComponentVersion', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     dbMock._reset();
-    resetPromotedVersionWarningCache();
+    __resetPromotedVersionCaptureCacheForTests();
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
   });
@@ -148,6 +155,25 @@ describe('getPromotedComponentVersion', () => {
     expect(boundValueFor('av.edition')).toBe('hosted');
   });
 
+  it('ANDs its predicates with equality — not OR, and not negated', async () => {
+    // The bound-parameter assertions above are blind to SQL structure: they
+    // pass identically whether the predicates are ANDed or ORed, and whether
+    // isLatest is compared with = or <>. Both mutations are catastrophic — OR
+    // returns a row matching ANY clause (bytes for a different
+    // platform/arch/component than the checksum), and <> selects precisely the
+    // NON-promoted rows. Pin the operators themselves.
+    dbMock._setResult([{ version: '0.104.0' }]);
+
+    await getPromotedComponentVersion('agent', 'linux', 'amd64');
+    const { sql } = compiledWhere();
+
+    expect(sql).not.toMatch(/\bor\b/i);
+    expect(sql).toMatch(/\band\b/i);
+    // Five equality predicates, no negation.
+    expect(sql).not.toContain('<>');
+    expect(sql.match(/=/g)).toHaveLength(5);
+  });
+
   it('defaults the edition filter to self-host', async () => {
     delete process.env.BINARY_EDITION;
     dbMock._setResult([{ version: '0.104.0' }]);
@@ -169,27 +195,49 @@ describe('getPromotedComponentVersion', () => {
     expect(vi.mocked(console.warn).mock.calls[0]?.[0]).toContain('#3499');
   });
 
-  it('warns only once per component/os/arch for a persistent gap', async () => {
-    // Otherwise a self-hoster with no synced rows logs on every download.
+  it('logs the missing row EVERY time but captures to Sentry only once per tuple', async () => {
+    // The console line is what an operator greps to confirm the gap is still
+    // happening, so it must not be deduped to one line from whenever the first
+    // download landed. The Sentry capture is the expensive one — dedupe that.
     dbMock._setResult([]);
     await getPromotedComponentVersion('agent', 'linux', 'amd64');
     await getPromotedComponentVersion('agent', 'linux', 'amd64');
-    expect(console.warn).toHaveBeenCalledTimes(1);
 
-    // A different tuple is still reported.
-    await getPromotedComponentVersion('agent', 'windows', 'amd64');
     expect(console.warn).toHaveBeenCalledTimes(2);
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(captureMessage).mock.calls[0]?.[1]).toMatchObject({
+      eventCode: 'agent_promoted_version_missing',
+    });
+
+    // A different tuple is a distinct gap and captures again.
+    await getPromotedComponentVersion('agent', 'windows', 'amd64');
+    expect(captureMessage).toHaveBeenCalledTimes(2);
   });
 
-  it('returns null and logs the fault when the lookup throws', async () => {
-    // Degrades to the pre-#3499 env-resolved behavior instead of turning a
-    // transient DB fault into a failed install. Must never be swallowed.
+  it('THROWS when the lookup faults — never silently serves the env version', async () => {
+    // Falling back here would reintroduce #3499 (bytes that do not match the
+    // checksum the client already holds) and would surface a server-side DB
+    // fault to an end user as "Checksum verification failed", the exact string
+    // this fix exists to eliminate. The caller turns this into a 503.
     dbMock._setError(new Error('connection terminated'));
 
     await expect(
       getPromotedComponentVersion('agent', 'linux', 'amd64'),
-    ).resolves.toBeNull();
+    ).rejects.toBeInstanceOf(PromotedVersionUnavailableError);
+
     expect(console.error).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(console.error).mock.calls[0]?.[0]).toContain('#3499');
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('THROWS on an unmapped route OS rather than reporting a missing row', async () => {
+    // VALID_OS gates this upstream, but that invariant lives in another file.
+    // An unmapped OS must not match zero rows and masquerade as a
+    // never-synced deployment, which would silently fall back to env.
+    dbMock._setResult([{ version: '0.104.0' }]);
+
+    await expect(
+      getPromotedComponentVersion('agent', 'solaris', 'amd64'),
+    ).rejects.toBeInstanceOf(PromotedVersionUnavailableError);
+    expect(dbMock.select).not.toHaveBeenCalled();
   });
 });

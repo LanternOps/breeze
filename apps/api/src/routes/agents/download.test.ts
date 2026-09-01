@@ -340,6 +340,26 @@ describe('component downloads serve the DB-promoted version (issue #3499)', () =
     );
   });
 
+  it('503s instead of serving the env version when the promoted lookup faults', async () => {
+    // The fallback-to-env path is reserved for "no promoted row at all". A
+    // lookup FAULT must not silently serve a release that may not match the
+    // checksum the client already holds — that is #3499, and it would report a
+    // server-side DB fault to the end user as a checksum failure.
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(getPromotedComponentVersion).mockRejectedValue(
+      new Error('connection terminated'),
+    );
+
+    const res = await downloadRoutes.request('/download/linux/amd64');
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get('retry-after')).toBe('30');
+    const body = await res.text();
+    // Must not leak the fault detail to an unauthenticated caller.
+    expect(body).not.toContain('connection terminated');
+    expect(console.error).toHaveBeenCalled();
+  });
+
   it('does not consult the promoted row in local (non-github) mode', async () => {
     // Local mode streams from disk / S3; there is no release tag to reconcile,
     // so the extra query would be pure overhead on every download.
@@ -348,6 +368,21 @@ describe('component downloads serve the DB-promoted version (issue #3499)', () =
 
     await downloadRoutes.request('/download/linux/amd64');
 
+    expect(getPromotedComponentVersion).not.toHaveBeenCalled();
+  });
+
+  it('leaves the macOS .pkg route on env resolution, deliberately', async () => {
+    // install.sh's darwin branch verifies the .pkg with xar magic bytes and
+    // `spctl` Gatekeeper notarization, never a SHA-256 against
+    // /agent-versions/latest — so there is no checksum/bytes pair to keep
+    // consistent here and nothing for #3499 to fix. Pinned as a test so the
+    // one builder without a version parameter reads as intentional rather
+    // than an omission.
+    vi.mocked(getGithubAgentPkgUrl).mockReturnValue('https://github.test/pkg');
+
+    const res = await downloadRoutes.request('/download/darwin/arm64/pkg');
+
+    expect(res.status).toBe(302);
     expect(getPromotedComponentVersion).not.toHaveBeenCalled();
   });
 

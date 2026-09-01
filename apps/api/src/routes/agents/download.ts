@@ -97,15 +97,37 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
     // GET /agent-versions/latest serves the checksum from. Resolving it from
     // per-process env here instead let the bytes and the checksum drift a full
     // release apart whenever the binary sync stalled, which install.sh reports
-    // as "Checksum verification failed for downloaded agent binary". A null
-    // result (no promoted row, or a DB fault — both logged by the resolver)
-    // falls back to the historical env-resolved URL.
+    // as "Checksum verification failed for downloaded agent binary".
+    //
+    // null means "no promoted row at all" — the cold-start state of a
+    // deployment that has never synced — so fall back to the env-resolved URL
+    // and keep those deployments working exactly as they did. A lookup FAULT
+    // is different and throws: serving the env version then would reintroduce
+    // the very mismatch this fixes and report a server-side DB fault to the
+    // end user as a checksum failure.
     if (getBinarySource() === 'github') {
-      const promotedVersion = await getPromotedComponentVersion(
-        config.component,
-        os,
-        arch,
-      );
+      let promotedVersion: string | null;
+      try {
+        promotedVersion = await getPromotedComponentVersion(
+          config.component,
+          os,
+          arch,
+        );
+      } catch (err) {
+        console.error(
+          `[${config.logTag}] refusing to serve ${filename}: could not resolve the promoted release`,
+          err,
+        );
+        return c.json(
+          {
+            error: 'Service unavailable',
+            message:
+              'Could not determine the current release. Retry shortly; if this persists, check the API logs.',
+          },
+          503,
+          { 'Retry-After': '30' },
+        );
+      }
       return c.redirect(
         config.githubUrlFor(os, arch, promotedVersion ?? undefined),
         302,
@@ -203,7 +225,15 @@ registerComponentDownloadRoute({
 // ============================================
 // Agent .pkg Installer Download (macOS, public, no auth)
 // ============================================
-
+// Deliberately NOT version-pinned to the promoted agent_versions row the way
+// the five component routes above are (#3499). install.sh's macOS branch never
+// sha256-checks the .pkg against /agent-versions/latest — it verifies xar magic
+// bytes and Apple notarization via `spctl --assess` instead — so there is no
+// checksum/bytes pair here to keep consistent, and no install-time failure to
+// prevent. The tradeoff is that a macOS install lands on the env-resolved
+// release while Linux lands on the promoted one; the agent reconciles on its
+// first heartbeat, which offers the promoted version through the normal
+// verified updater path.
 downloadRoutes.get('/download/:os/:arch/pkg', async (c) => {
   const os = c.req.param('os');
   const arch = c.req.param('arch');

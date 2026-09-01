@@ -2,6 +2,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { agentVersions } from '../db/schema';
 import { getBinaryEdition } from './binaryEdition';
+import { captureException, captureMessage } from './sentry';
 
 /**
  * Which release the public component-download routes should actually serve.
@@ -21,6 +22,17 @@ import { getBinaryEdition } from './binaryEdition';
  * halves could disagree at all. This resolver is the single query both halves
  * now go through, so a stale sync yields a *consistent old version* instead of
  * an inconsistent pair.
+ *
+ * MUST STAY IN LOCKSTEP with two other readers of the promoted row:
+ *   - `GET /agent-versions/latest` (routes/agentVersions.ts) — serves the
+ *     checksum these bytes are verified against. Same five predicates and the
+ *     same `ORDER BY created_at DESC` tiebreak: if one orders and the other
+ *     does not, a duplicate `isLatest` row makes them select DIFFERENT rows
+ *     and reintroduces #3499 with no signal at all.
+ *   - `resolvePinnedUpgradeTarget({ pin: null })` (routes/agents/helpers.ts)
+ *     — picks the version the heartbeat OFFERS the fleet. If it and this
+ *     resolver disagree, agents are told to upgrade to a version whose bytes
+ *     this server will not serve.
  *
  * `agent_versions` is a global (non-tenant) table with no RLS, so this is safe
  * to call from the public, unauthenticated download routes in any DB context —
@@ -44,45 +56,81 @@ export type PromotedComponent =
   | 'watchdog'
   | 'backup';
 
-// A deployment that has never completed a binary sync has no isLatest row at
-// all, and a self-hoster in that state would otherwise log once per download.
-// Dedupe per (component, os, arch) so a persistent gap reports once per
-// process rather than per request — same shape as warnedMissingPinBuilds in
-// routes/agents/helpers.ts.
-const warnedMissingPromotedRows = new Set<string>();
-
-function warnOnce(key: string, message: string): void {
-  if (warnedMissingPromotedRows.has(key)) return;
-  warnedMissingPromotedRows.add(key);
-  console.warn(message);
+/**
+ * The promoted row could not be read, so we do NOT know which bytes match the
+ * checksum `/agent-versions/latest` is handing out.
+ *
+ * Deliberately NOT degraded into "serve the env-resolved version": that is the
+ * pre-#3499 behavior, i.e. the bug. It would hand the client bytes that fail
+ * the checksum it already holds, surfacing a server-side DB fault to an end
+ * user as "Checksum verification failed for downloaded agent binary" — the
+ * single most misleading message available, and the exact string this fix
+ * exists to eliminate. It would also silently break the lockstep the
+ * component=backup rewrite guard in routes/agentVersions.ts depends on.
+ * Callers should fail the request (503) so the fault is reported where it is.
+ */
+export class PromotedVersionUnavailableError extends Error {
+  constructor(component: string, platform: string, arch: string, cause: unknown) {
+    super(
+      `Could not resolve the promoted agent_versions row for ${component} ` +
+        `${platform}/${arch}; refusing to serve a release that may not match ` +
+        `the checksum clients were given (#3499)`,
+    );
+    this.name = 'PromotedVersionUnavailableError';
+    this.cause = cause;
+  }
 }
 
-/** Test-only: clears the once-per-process warning dedupe. */
-export function resetPromotedVersionWarningCache(): void {
-  warnedMissingPromotedRows.clear();
+// A deployment that has never completed a binary sync has no isLatest row at
+// all. Log EVERY occurrence (an operator grepping needs to see it is ongoing,
+// not one line from whenever the first download happened) but capture to
+// Sentry only once per (component, os, arch) so a persistent gap does not
+// burn the quota — the shape resolvePinnedUpgradeTarget uses in
+// routes/agents/helpers.ts for the analogous fleet-wide freeze.
+const capturedMissingPromotedRows = new Set<string>();
+
+/** Test-only: clears the once-per-process Sentry capture dedupe. */
+export function __resetPromotedVersionCaptureCacheForTests(): void {
+  capturedMissingPromotedRows.clear();
 }
 
 /**
  * Resolve the promoted (`isLatest`) version for a component/os/arch, using the
  * exact row that `GET /agent-versions/latest` would serve a checksum from.
  *
- * Returns `null` when there is no such row, which tells the caller to fall
- * back to the historical env-resolved version. Returning `null` (rather than
- * throwing) on a DB fault is deliberate: it degrades to exactly the behavior
- * this route had before #3499 instead of turning a transient DB blip into a
- * failed install, and the client-side checksum verification remains the
- * backstop either way. The fault is logged, never swallowed silently.
+ * Returns `null` only when there is genuinely no such row — the expected
+ * cold-start state of a deployment that has never synced — which tells the
+ * caller to fall back to the historical env-resolved version so those
+ * deployments keep working exactly as before.
+ *
+ * @throws {PromotedVersionUnavailableError} if the lookup itself fails.
  */
 export async function getPromotedComponentVersion(
   component: PromotedComponent,
   routeOs: string,
   arch: string,
 ): Promise<string | null> {
-  const platform = ROUTE_OS_TO_DB_PLATFORM[routeOs] ?? routeOs;
-  const key = `${component}:${routeOs}:${arch}`;
+  const platform = ROUTE_OS_TO_DB_PLATFORM[routeOs];
+  if (!platform) {
+    // Unreachable while VALID_OS gates the routes, but that invariant lives in
+    // another file. Report it distinctly instead of letting an unmapped OS
+    // match no row and masquerade as a never-synced deployment.
+    throw new PromotedVersionUnavailableError(
+      component,
+      routeOs,
+      arch,
+      new Error(`Unmapped route OS "${routeOs}"`),
+    );
+  }
 
+  // Outside the try: a fail-closed edition misconfiguration is a defect to
+  // surface, not a transient fault to fall back from.
+  const edition = getBinaryEdition();
+  const key = `${component}:${platform}:${arch}`;
+
+  let row: { version: string } | undefined;
   try {
-    const [row] = await db
+    [row] = await db
       .select({ version: agentVersions.version })
       .from(agentVersions)
       .where(
@@ -94,32 +142,44 @@ export async function getPromotedComponentVersion(
           // Each server only serves its own build edition (#4072) — same
           // scoping as /agent-versions/latest, so the checksum route and this
           // one can never land on different editions of the same version.
-          eq(agentVersions.edition, getBinaryEdition()),
+          eq(agentVersions.edition, edition),
         ),
       )
       // Newest first if the single-isLatest invariant is ever violated (it is
       // maintained by demote-then-insert, not by a unique constraint).
+      // /agent-versions/latest applies the SAME tiebreak — see the lockstep
+      // note above; ordering only here would itself cause a divergence.
       .orderBy(desc(agentVersions.createdAt))
       .limit(1);
-
-    if (!row) {
-      warnOnce(
-        key,
-        `[promotedAgentVersion] no promoted ${getBinaryEdition()}-edition ` +
-          `agent_versions row for ${component} ${platform}/${arch}; serving the ` +
-          `env-resolved release version instead. The checksum from ` +
-          `/agent-versions/latest cannot be guaranteed to match these bytes (#3499).`,
-      );
-      return null;
-    }
-
-    return row.version;
   } catch (err) {
     console.error(
-      `[promotedAgentVersion] lookup failed for ${component} ${platform}/${arch}; ` +
-        `falling back to the env-resolved release version (#3499)`,
+      `[promotedAgentVersion] lookup failed for ${component} ${platform}/${arch} ` +
+        `(edition ${edition})`,
       err,
     );
+    captureException(new PromotedVersionUnavailableError(component, platform, arch, err));
+    throw new PromotedVersionUnavailableError(component, platform, arch, err);
+  }
+
+  if (!row) {
+    console.warn(
+      `[promotedAgentVersion] no promoted ${edition}-edition agent_versions row ` +
+        `for ${component} ${platform}/${arch}; serving the env-resolved release ` +
+        `version instead. The checksum from /agent-versions/latest cannot be ` +
+        `guaranteed to match these bytes (#3499).`,
+    );
+    if (!capturedMissingPromotedRows.has(key)) {
+      capturedMissingPromotedRows.add(key);
+      captureMessage(
+        `No promoted agent_versions row for ${component} ${platform}/${arch} ` +
+          `(edition ${edition}); every download of this component falls back to ` +
+          `the env-resolved release and may fail client-side checksum ` +
+          `verification (#3499).`,
+        { eventCode: 'agent_promoted_version_missing', level: 'warning' },
+      );
+    }
     return null;
   }
+
+  return row.version;
 }
