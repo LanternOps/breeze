@@ -77,6 +77,13 @@ type input struct {
 	mi        mouseInput
 }
 
+// Compile-time proof that the Windows handler offers literal text injection, so
+// InjectText takes the layout-independent path rather than key synthesis.
+var (
+	_ TextTyper       = (*WindowsInputHandler)(nil)
+	_ TypeCharHandler = (*WindowsInputHandler)(nil)
+)
+
 // WindowsInputHandler handles input on Windows
 type WindowsInputHandler struct {
 	mu           sync.Mutex
@@ -437,25 +444,75 @@ func (h *WindowsInputHandler) SendKeyDown(key string) error {
 	return nil
 }
 
+// windowsUnicodeChunkUnits is how many UTF-16 code units are posted per
+// SendInput call (two INPUT structs each — a key-down and a key-up).
+const windowsUnicodeChunkUnits = 64
+
+// TypeText types a whole string using KEYEVENTF_UNICODE. This bypasses VK code
+// mapping entirely, so the characters that arrive do not depend on the remote
+// machine's keyboard layout — the macOS counterpart of the same guarantee is
+// CGEventKeyboardSetUnicodeString (issue #4089).
+func (h *WindowsInputHandler) TypeText(text string) error {
+	h.ensureInputDesktop()
+	for _, chunk := range chunkUTF16(text, windowsUnicodeChunkUnits) {
+		if err := sendUnicodeUnits(chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // TypeChar types a single Unicode character using KEYEVENTF_UNICODE.
 // This bypasses VK code mapping entirely and works for any character
 // including ":", "!", "@", non-ASCII, emoji, etc.
 func (h *WindowsInputHandler) TypeChar(ch rune) error {
-	down := input{inputType: INPUT_KEYBOARD}
-	ki := (*keybdInput)(unsafe.Pointer(&down.mi))
-	ki.wVk = 0
-	ki.wScan = uint16(ch)
-	ki.dwFlags = KEYEVENTF_UNICODE
+	return h.TypeText(string(ch))
+}
 
-	up := input{inputType: INPUT_KEYBOARD}
-	kiUp := (*keybdInput)(unsafe.Pointer(&up.mi))
-	kiUp.wVk = 0
-	kiUp.wScan = uint16(ch)
-	kiUp.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+// sendUnicodeUnits posts a key-down/key-up pair for each UTF-16 code unit in a
+// single SendInput call.
+//
+// The INPUT structs are built in one slice because SendInput reads cInputs
+// *contiguous* structs from the pointer it is given. The previous version passed
+// cInputs=2 with a pointer to a local `down` variable while `up` was a separate
+// local — Go makes no adjacency guarantee, so the second struct was whatever
+// memory happened to follow `down` and the key-up was never reliably delivered.
+//
+// Iterating code units rather than runes also fixes non-BMP characters: wScan is
+// a single UTF-16 unit, so a rune above U+FFFF must be sent as its surrogate
+// pair rather than truncated to 16 bits.
+func sendUnicodeUnits(units []uint16) error {
+	if len(units) == 0 {
+		return nil
+	}
 
-	ret, _, _ := sendInput.Call(2, uintptr(unsafe.Pointer(&down)), unsafe.Sizeof(down))
-	if ret == 0 {
-		return fmt.Errorf("SendInput UNICODE failed for char U+%04X", ch)
+	events := make([]input, 0, len(units)*2)
+	for _, unit := range units {
+		down := input{inputType: INPUT_KEYBOARD}
+		ki := (*keybdInput)(unsafe.Pointer(&down.mi))
+		ki.wVk = 0
+		ki.wScan = unit
+		ki.dwFlags = KEYEVENTF_UNICODE
+
+		up := input{inputType: INPUT_KEYBOARD}
+		kiUp := (*keybdInput)(unsafe.Pointer(&up.mi))
+		kiUp.wVk = 0
+		kiUp.wScan = unit
+		kiUp.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+
+		events = append(events, down, up)
+	}
+
+	sent, _, callErr := sendInput.Call(
+		uintptr(len(events)),
+		uintptr(unsafe.Pointer(&events[0])),
+		unsafe.Sizeof(events[0]),
+	)
+	if int(sent) != len(events) {
+		if errno, ok := callErr.(syscall.Errno); ok && errno != 0 {
+			return fmt.Errorf("SendInput UNICODE injected %d of %d events: %w", int(sent), len(events), errno)
+		}
+		return fmt.Errorf("SendInput UNICODE injected %d of %d events", int(sent), len(events))
 	}
 	return nil
 }

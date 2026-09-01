@@ -24,6 +24,12 @@ interface Props {
   maxFps: number;
   bitrate: number;
   pasteProgress: { current: number; total: number } | null;
+  /**
+   * Set when a paste did not fully land on the remote machine. Without it the
+   * progress indicator simply completing is indistinguishable from a paste the
+   * agent dropped — see pasteFailureMessage in lib/pasteText.ts.
+   */
+  pasteNotice: string | null;
   remapCmdCtrl: boolean;
   monitors: MonitorInfo[];
   activeMonitor: number;
@@ -135,6 +141,7 @@ export default function ViewerToolbar({
   maxFps,
   bitrate,
   pasteProgress,
+  pasteNotice,
   remapCmdCtrl,
   monitors,
   activeMonitor,
@@ -609,6 +616,13 @@ export default function ViewerToolbar({
             <XIcon className="w-3 h-3" />
           </button>
         </div>
+      )}
+
+      {/* Paste failure notice — transient, cleared on a timer by DesktopViewer */}
+      {pasteNotice && (
+        <span className="text-xs text-red-400 max-w-xs truncate" title={pasteNotice}>
+          {pasteNotice}
+        </span>
       )}
 
       {/* Divider between status/telemetry and the primary action group */}

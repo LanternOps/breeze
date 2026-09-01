@@ -193,10 +193,23 @@ static void inputMouseScroll(int delta) {
     }
 }
 
-static void inputKeyDown(int keycode, int flags) {
+// setFlags selects how the event's modifier flags are handled:
+//
+//   1 — call CGEventSetFlags unconditionally, so `flags` is the COMPLETE
+//       modifier state and anything still held is cleared. Used for key
+//       presses, where a stale modifier bleeding in is the "aggressive
+//       uppercasing" of issue #4089 (and, on the Return that separates two
+//       lines of a pasted shell block, turns Shift+Return into a line break
+//       that never executes the command).
+//   0 — leave the event's ambient flags alone unless `flags` is non-zero. The
+//       viewer holds a modifier down across several events (Shift+Click,
+//       Cmd+Click) by sending key_down for the modifier alone; explicitly
+//       zeroing the flags on those would immediately drop the modifier it just
+//       asked to hold.
+static void inputKeyDown(int keycode, int flags, int setFlags) {
     CGEventRef event = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)keycode, true);
     if (event) {
-        if (flags != 0) {
+        if (setFlags || flags != 0) {
             CGEventSetFlags(event, (CGEventFlags)flags);
         }
         CGEventPost(kCGHIDEventTap, event);
@@ -204,10 +217,10 @@ static void inputKeyDown(int keycode, int flags) {
     }
 }
 
-static void inputKeyUp(int keycode, int flags) {
+static void inputKeyUp(int keycode, int flags, int setFlags) {
     CGEventRef event = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)keycode, false);
     if (event) {
-        if (flags != 0) {
+        if (setFlags || flags != 0) {
             CGEventSetFlags(event, (CGEventFlags)flags);
         }
         CGEventPost(kCGHIDEventTap, event);
@@ -281,10 +294,11 @@ static void sessionMouseScroll(int delta) {
     }
 }
 
-static void sessionKeyDown(int keycode, int flags) {
+// setFlags has the same meaning as in inputKeyDown above.
+static void sessionKeyDown(int keycode, int flags, int setFlags) {
     CGEventRef event = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)keycode, true);
     if (event) {
-        if (flags != 0) {
+        if (setFlags || flags != 0) {
             CGEventSetFlags(event, (CGEventFlags)flags);
         }
         CGEventPost(kCGSessionEventTap, event);
@@ -292,15 +306,59 @@ static void sessionKeyDown(int keycode, int flags) {
     }
 }
 
-static void sessionKeyUp(int keycode, int flags) {
+static void sessionKeyUp(int keycode, int flags, int setFlags) {
     CGEventRef event = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)keycode, false);
     if (event) {
-        if (flags != 0) {
+        if (setFlags || flags != 0) {
             CGEventSetFlags(event, (CGEventFlags)flags);
         }
         CGEventPost(kCGSessionEventTap, event);
         CFRelease(event);
     }
+}
+
+// ---- Literal Unicode injection (issue #4089) ----
+// CGEventKeyboardSetUnicodeString overrides the characters a keyboard event
+// produces, so the string is delivered exactly as given no matter what the
+// remote machine's active input source is. That is the whole point: the keycode
+// table above is US ANSI, so replaying a paste through it renders '/' as '?' and
+// '=' as '+' on a non-US layout.
+//
+// The event is created with virtual keycode 0 (no physical key) and both the
+// down and the up event carry the string, which is what AppKit-based typing
+// helpers do — a receiver that reads characters on key-down gets them once, and
+// one that reads on key-up is not left with a mismatched empty event.
+//
+// Flags are set to 0 EXPLICITLY rather than left alone. The keycode helpers
+// above only ever OR modifier bits in and never clear them, so a modifier still
+// held from an earlier event would otherwise bleed into the pasted text — the
+// "aggressive uppercasing" reported in #4089.
+static void postUnicodeString(CGEventTapLocation tap, const UniChar *chars, int len) {
+    if (len <= 0) {
+        return;
+    }
+    CGEventRef down = CGEventCreateKeyboardEvent(NULL, 0, true);
+    if (down) {
+        CGEventSetFlags(down, (CGEventFlags)0);
+        CGEventKeyboardSetUnicodeString(down, (UniCharCount)len, chars);
+        CGEventPost(tap, down);
+        CFRelease(down);
+    }
+    CGEventRef up = CGEventCreateKeyboardEvent(NULL, 0, false);
+    if (up) {
+        CGEventSetFlags(up, (CGEventFlags)0);
+        CGEventKeyboardSetUnicodeString(up, (UniCharCount)len, chars);
+        CGEventPost(tap, up);
+        CFRelease(up);
+    }
+}
+
+static void inputTypeUnicode(const UniChar *chars, int len) {
+    postUnicodeString(kCGHIDEventTap, chars, len);
+}
+
+static void sessionTypeUnicode(const UniChar *chars, int len) {
+    postUnicodeString(kCGSessionEventTap, chars, len);
 }
 */
 // #cgo LDFLAGS: -framework IOKit
@@ -311,6 +369,14 @@ import (
 	"log/slog"
 	"strings"
 	"sync/atomic"
+	"unsafe"
+)
+
+// Compile-time proof that the macOS handler offers literal text injection, so
+// InjectText takes the layout-independent path rather than key synthesis.
+var (
+	_ TextTyper       = (*DarwinInputHandler)(nil)
+	_ TypeCharHandler = (*DarwinInputHandler)(nil)
 )
 
 // macOS virtual keycodes (from Carbon HIToolbox/Events.h)
@@ -585,19 +651,60 @@ func (h *DarwinInputHandler) SendKeyPress(key string, modifiers []string) error 
 	if !ok {
 		return fmt.Errorf("unknown key: %s", key)
 	}
+	// modifiers is the COMPLETE modifier state the viewer wants for this key,
+	// so the flags are set unconditionally (setFlags=1) — including to zero.
+	// Leaving them alone when no modifier is requested lets a modifier still
+	// held from an earlier event bleed in, which is the stuck-Shift uppercasing
+	// of issue #4089. The IOHIDPostEvent path already passes flags on every
+	// event, so it needs no equivalent.
 	flags := modifiersToFlags(modifiers)
 	switch {
 	case h.shouldUseHID():
 		C.hidKeyDown(C.int(keycode), flags)
 		C.hidKeyUp(C.int(keycode), flags)
 	case h.shouldUseSessionTap():
-		C.sessionKeyDown(C.int(keycode), flags)
-		C.sessionKeyUp(C.int(keycode), flags)
+		C.sessionKeyDown(C.int(keycode), flags, 1)
+		C.sessionKeyUp(C.int(keycode), flags, 1)
 	default:
-		C.inputKeyDown(C.int(keycode), flags)
-		C.inputKeyUp(C.int(keycode), flags)
+		C.inputKeyDown(C.int(keycode), flags, 1)
+		C.inputKeyUp(C.int(keycode), flags, 1)
 	}
 	return nil
+}
+
+// darwinUnicodeChunkUnits is how many UTF-16 code units ride on one CGEvent.
+// CGEventKeyboardSetUnicodeString takes a UniChar buffer and has no documented
+// hard limit, but long buffers have historically been truncated by receivers, so
+// a paste is delivered as a series of small events instead of one large one.
+const darwinUnicodeChunkUnits = 20
+
+// TypeText injects text literally via CGEventKeyboardSetUnicodeString, so the
+// characters that arrive do not depend on the remote machine's keyboard layout
+// (issue #4089). This is the primitive InjectText prefers.
+func (h *DarwinInputHandler) TypeText(text string) error {
+	if !h.inputAvailable {
+		return errInputUnavailable
+	}
+	// IOHIDPostEvent cannot carry a Unicode string, so at the login window both
+	// of its sub-cases fall through to the CGEvent session tap — the same tap
+	// shouldUseSessionTap() already uses when IOHIDSystem is unavailable.
+	useSessionTap := h.shouldUseHID() || h.shouldUseSessionTap()
+
+	for _, chunk := range chunkUTF16(text, darwinUnicodeChunkUnits) {
+		buf := (*C.UniChar)(unsafe.Pointer(&chunk[0]))
+		if useSessionTap {
+			C.sessionTypeUnicode(buf, C.int(len(chunk)))
+		} else {
+			C.inputTypeUnicode(buf, C.int(len(chunk)))
+		}
+	}
+	return nil
+}
+
+// TypeChar satisfies TypeCharHandler for callers that type one character at a
+// time (the AI computer-use "type" action).
+func (h *DarwinInputHandler) TypeChar(ch rune) error {
+	return h.TypeText(string(ch))
 }
 
 func (h *DarwinInputHandler) SendKeyDown(key string) error {
@@ -613,9 +720,9 @@ func (h *DarwinInputHandler) SendKeyDown(key string) error {
 	case h.shouldUseHID():
 		C.hidKeyDown(C.int(keycode), 0)
 	case h.shouldUseSessionTap():
-		C.sessionKeyDown(C.int(keycode), 0)
+		C.sessionKeyDown(C.int(keycode), 0, 0)
 	default:
-		C.inputKeyDown(C.int(keycode), 0)
+		C.inputKeyDown(C.int(keycode), 0, 0)
 	}
 	return nil
 }
@@ -633,9 +740,9 @@ func (h *DarwinInputHandler) SendKeyUp(key string) error {
 	case h.shouldUseHID():
 		C.hidKeyUp(C.int(keycode), 0)
 	case h.shouldUseSessionTap():
-		C.sessionKeyUp(C.int(keycode), 0)
+		C.sessionKeyUp(C.int(keycode), 0, 0)
 	default:
-		C.inputKeyUp(C.int(keycode), 0)
+		C.inputKeyUp(C.int(keycode), 0, 0)
 	}
 	return nil
 }
