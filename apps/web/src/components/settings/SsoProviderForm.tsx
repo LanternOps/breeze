@@ -466,6 +466,7 @@ export default function SsoProviderForm({
           <label className="flex items-start gap-3">
             <input
               type="checkbox"
+              data-testid="provider-enforce-sso"
               className="mt-1 h-4 w-4 rounded border-border text-primary focus:ring-primary"
               {...register('enforceSSO')}
             />

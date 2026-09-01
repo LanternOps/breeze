@@ -11,7 +11,11 @@ type MaintenanceSettings = {
   recurrence: "once" | "daily" | "weekly" | "monthly";
   durationHours: number;
   timezone: string;
-  /** ISO-8601 local datetime for 'once' recurrence (e.g. "2026-03-15T02:00"). Only used when recurrence is 'once'. */
+  /**
+   * When the window opens, in the configured timezone. Recurrence-discriminated:
+   * an ISO-8601 local datetime for 'once' (e.g. "2026-03-15T02:00"), and an
+   * "HH:MM" time of day for 'daily' / 'weekly' / 'monthly' (issue #4224).
+   */
   windowStart: string;
   suppressAlerts: boolean;
   suppressPatching: boolean;
@@ -36,6 +40,73 @@ const defaults: MaintenanceSettings = {
   notifyOnStart: true,
   notifyOnEnd: true,
 };
+/** Anchor a recurring window inherits when nothing else is stored — matches the API fallback. */
+const DEFAULT_START_TIME = "00:00";
+// These three must stay in lockstep with `parseRecurringWindowAnchor` in
+// apps/api/src/services/featureConfigResolver.ts — if the form and the
+// evaluator disagree on a stored value, the UI shows one time and the window
+// opens at another.
+const TIME_OF_DAY_PATTERN = /^(\d{1,2}):(\d{2})(?::\d{2})?$/;
+const DATETIME_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}[T ](\d{1,2}):(\d{2})/;
+/** A trailing `Z` or `±HH:MM` offset — an instant, not local wall-clock time. */
+const EXPLICIT_UTC_OFFSET_PATTERN = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+
+/** Extracts an "HH:MM" time of day from either shape `windowStart` can hold. */
+function toTimeOfDay(windowStart: string): string {
+  // A datetime naming an instant cannot be read digit-for-digit as a time of
+  // day in the policy's timezone — that would shift the window by the zone's
+  // offset. Fall back to the visible default and let the admin choose.
+  if (EXPLICIT_UTC_OFFSET_PATTERN.test(windowStart)) return DEFAULT_START_TIME;
+  const match =
+    TIME_OF_DAY_PATTERN.exec(windowStart) ??
+    DATETIME_TIME_PATTERN.exec(windowStart);
+  if (!match) return DEFAULT_START_TIME;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return DEFAULT_START_TIME;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+/**
+ * Keeps `windowStart` in the shape the current recurrence's control accepts.
+ *
+ * Both `<input type="time">` and `<input type="datetime-local">` silently
+ * discard a value they cannot parse, so a cadence switch that left the other
+ * shape behind would render a blank field and then save it — the exact
+ * "no start time" outcome issue #4224 is about.
+ */
+function normalizeWindowStart(
+  recurrence: MaintenanceSettings["recurrence"],
+  windowStart: unknown,
+): string {
+  const raw = typeof windowStart === "string" ? windowStart.trim() : "";
+  // A one-off window needs a date; a carried-over "HH:MM" cannot supply one,
+  // so drop it and make the admin pick rather than saving an unusable value.
+  if (recurrence === "once") return TIME_OF_DAY_PATTERN.test(raw) ? "" : raw;
+  return toTimeOfDay(raw);
+}
+
+/**
+ * Settings straight off a feature link may predate #4224 (`windowStart` null or
+ * absent for a recurring cadence). Normalising on the way in makes the midnight
+ * anchor the API has been applying all along visible in the form.
+ */
+function hydrate(raw: Partial<MaintenanceSettings>): MaintenanceSettings {
+  const merged = { ...defaults, ...raw };
+  return {
+    ...merged,
+    windowStart: normalizeWindowStart(merged.recurrence, merged.windowStart),
+  };
+}
+
+/** Never persist a half-entered start time — a recurring window always gets a usable anchor. */
+function toPayload(settings: MaintenanceSettings): MaintenanceSettings {
+  return {
+    ...settings,
+    windowStart: normalizeWindowStart(settings.recurrence, settings.windowStart),
+  };
+}
+
 const createRecurrenceOptions = () => [
   {
     value: "once",
@@ -106,31 +177,41 @@ export default function MaintenanceTab({
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
-  const [settings, setSettings] = useState<MaintenanceSettings>(() => ({
-    ...defaults,
-    ...(effectiveLink?.inlineSettings as
-      | Partial<MaintenanceSettings>
-      | undefined),
-  }));
+  const [settings, setSettings] = useState<MaintenanceSettings>(() =>
+    hydrate({
+      ...defaults,
+      ...(effectiveLink?.inlineSettings as
+        | Partial<MaintenanceSettings>
+        | undefined),
+    }),
+  );
   useEffect(() => {
     const link = existingLink ?? parentLink;
     if (link?.inlineSettings) {
-      setSettings((prev) => ({
-        ...prev,
-        ...(link.inlineSettings as Partial<MaintenanceSettings>),
-      }));
+      setSettings((prev) =>
+        hydrate({
+          ...prev,
+          ...(link.inlineSettings as Partial<MaintenanceSettings>),
+        }),
+      );
     }
   }, [existingLink, parentLink]);
   const update = <K extends keyof MaintenanceSettings>(
     key: K,
     value: MaintenanceSettings[K],
   ) => setSettings((prev) => ({ ...prev, [key]: value }));
+  const changeRecurrence = (recurrence: MaintenanceSettings["recurrence"]) =>
+    setSettings((prev) => ({
+      ...prev,
+      recurrence,
+      windowStart: normalizeWindowStart(recurrence, prev.windowStart),
+    }));
   const handleSave = async () => {
     clearError();
     const result = await save(existingLink?.id ?? null, {
       featureType: "maintenance",
       featurePolicyId: linkedPolicyId,
-      inlineSettings: settings,
+      inlineSettings: toPayload(settings),
     });
     if (result) onLinkChanged(result, "maintenance");
   };
@@ -144,7 +225,7 @@ export default function MaintenanceTab({
     const result = await save(null, {
       featureType: "maintenance",
       featurePolicyId: linkedPolicyId,
-      inlineSettings: settings,
+      inlineSettings: toPayload(settings),
     });
     if (result) onLinkChanged(result, "maintenance");
   };
@@ -181,10 +262,10 @@ export default function MaintenanceTab({
             )}
           </label>
           <select
+            data-testid="maintenance-recurrence"
             value={settings.recurrence}
             onChange={(e) =>
-              update(
-                "recurrence",
+              changeRecurrence(
                 e.target.value as MaintenanceSettings["recurrence"],
               )
             }
@@ -198,15 +279,21 @@ export default function MaintenanceTab({
           </select>
         </div>
 
-        {/* Window Start (only for 'once' recurrence) */}
-        {settings.recurrence === "once" && (
+        {/* Window start — a full date/time for a one-off window, a time of day
+            for the recurring cadences (issue #4224). */}
+        {settings.recurrence === "once" ? (
           <div>
-            <label className="text-sm font-medium">
+            <label
+              htmlFor="maintenance-start-datetime"
+              className="text-sm font-medium"
+            >
               {i18n.t(
                 "policies:configurationPolicies.featureTabs.maintenanceTab.startDateTime",
               )}
             </label>
             <input
+              id="maintenance-start-datetime"
+              data-testid="maintenance-start-datetime"
               type="datetime-local"
               value={settings.windowStart}
               onChange={(e) => update("windowStart", e.target.value)}
@@ -215,6 +302,33 @@ export default function MaintenanceTab({
             <p className="mt-1 text-xs text-muted-foreground">
               {i18n.t(
                 "policies:configurationPolicies.featureTabs.maintenanceTab.theSpecificDateAndTimeForThis",
+              )}
+            </p>
+          </div>
+        ) : (
+          <div>
+            <label
+              htmlFor="maintenance-start-time"
+              className="text-sm font-medium"
+            >
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.maintenanceTab.startTime",
+              )}
+            </label>
+            <input
+              id="maintenance-start-time"
+              data-testid="maintenance-start-time"
+              type="time"
+              value={settings.windowStart}
+              // Left as typed — a half-entered time reads as "" and snapping it
+              // back to 00:00 here would fight the user mid-edit. `toPayload`
+              // normalises on the way out instead.
+              onChange={(e) => update("windowStart", e.target.value)}
+              className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.maintenanceTab.theTimeOfDayEachWindowOpensIn",
               )}
             </p>
           </div>

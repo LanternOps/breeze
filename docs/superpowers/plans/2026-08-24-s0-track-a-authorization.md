@@ -106,7 +106,7 @@ git commit -m "fix(api): authorize automation resource ownership"
 
 **Files:**
 - Modify: `apps/api/src/db/schema/automations.ts`
-- Create: `apps/api/migrations/2026-09-11-a-automation-resource-bindings.sql`
+- Create: `apps/api/migrations/2026-09-25-a-automation-resource-bindings.sql`
 - Modify: `apps/api/src/services/tenantCascade.ts`
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts`
 - Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`
@@ -146,7 +146,7 @@ Expected: the named integration files execute and pass; migration naming/drift p
 - [x] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/db/schema/automations.ts apps/api/migrations/2026-09-11-a-automation-resource-bindings.sql apps/api/src/services/tenantCascade.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/__tests__/integration/automationResourceBindings.integration.test.ts
+git add apps/api/src/db/schema/automations.ts apps/api/migrations/2026-09-25-a-automation-resource-bindings.sql apps/api/src/services/tenantCascade.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/__tests__/integration/automationResourceBindings.integration.test.ts
 git commit -m "fix(db): bind automation resources to tenant ownership"
 ```
 
@@ -199,7 +199,7 @@ git commit -m "fix(api): fail closed on automation reference changes"
 - Modify: `packages/shared/src/constants/permissions.ts`
 - Modify: `apps/api/src/db/seed.ts`
 - Modify: `apps/api/src/routes/permissionsCatalog.ts`
-- Create: `apps/api/migrations/2026-09-11-b-cross-site-restore-permission.sql`
+- Create: `apps/api/migrations/2026-09-25-b-cross-site-restore-permission.sql`
 - Modify: `apps/api/src/db/seed.test.ts`
 
 **Interfaces:**
@@ -233,7 +233,7 @@ Expected: all selected tests pass.
 - [x] **Step 5: Commit**
 
 ```bash
-git add packages/shared/src/constants/permissions.ts apps/api/src/db/seed.ts apps/api/src/routes/permissionsCatalog.ts apps/api/migrations/2026-09-11-b-cross-site-restore-permission.sql apps/api/src/db/seed.test.ts
+git add packages/shared/src/constants/permissions.ts apps/api/src/db/seed.ts apps/api/src/routes/permissionsCatalog.ts apps/api/migrations/2026-09-25-b-cross-site-restore-permission.sql apps/api/src/db/seed.test.ts
 git commit -m "fix(authz): add explicit cross-site restore grant"
 ```
 
@@ -329,7 +329,7 @@ git commit -m "fix(api): enforce site scope across recovery routes"
 - Modify: `apps/api/src/db/schema/recoveryTokens.ts`
 - Modify: `apps/api/src/db/schema/drPlans.ts`
 - Modify: `apps/api/src/db/schema/c2c.ts`
-- Create: `apps/api/migrations/2026-09-11-c-recovery-authorization-subject.sql`
+- Create: `apps/api/migrations/2026-09-25-c-recovery-authorization-subject.sql`
 - Create: `apps/api/src/services/recoveryAuthorizationSubject.ts`
 - Create: `apps/api/src/services/recoveryAuthorizationSubject.test.ts`
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts`
@@ -372,7 +372,7 @@ pnpm db:check-drift
 - [x] **Step 5: Commit**
 
 ```bash
-git add apps/api/src/db apps/api/src/services/recoveryAuthorizationSubject.ts apps/api/src/services/recoveryAuthorizationSubject.test.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/__tests__/integration apps/api/migrations/2026-09-11-c-recovery-authorization-subject.sql
+git add apps/api/src/db apps/api/src/services/recoveryAuthorizationSubject.ts apps/api/src/services/recoveryAuthorizationSubject.test.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/__tests__/integration apps/api/migrations/2026-09-25-c-recovery-authorization-subject.sql
 git commit -m "fix(db): persist recovery authorization subjects"
 ```
 

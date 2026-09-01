@@ -214,8 +214,14 @@ function bareHostname(hostname: string): string {
  * The single place the resolve-and-filter policy lives, shared by `safeFetch`,
  * `assertSafeUrl` and `createGuardedLookup` so they can never drift apart.
  * Throws `SsrfBlockedError` when nothing safe remains.
+ *
+ * Exported for callers that dial a socket themselves and therefore need the
+ * validated record rather than a finished `Response` — the LLM egress CONNECT
+ * proxy (`services/llm/llmEgressProxy.ts`) is the motivating case: it must pin
+ * the IP it dials, and re-implementing this filter there would be exactly the
+ * drift this helper exists to prevent.
  */
-async function resolveSafeRecords(
+export async function resolveSafeRecords(
   hostname: string,
   opts?: SsrfGuardOptions
 ): Promise<{ safe: LookupAddress[]; allIps: string[] }> {
@@ -261,6 +267,17 @@ async function resolveSafeRecords(
  * window.
  */
 export async function assertSafeUrl(urlStr: string, opts?: SsrfGuardOptions): Promise<void> {
+  // #1105 tripwire, same reasoning as `safeFetch` below. This function sends no
+  // request, but it DOES perform a real `dns.lookup` against a hostname the
+  // caller does not control — an unbounded network wait. Run inside a held
+  // withDbAccessContext transaction it pins a pooled connection
+  // idle-in-transaction for the duration of that resolution, which is the same
+  // pool-poison class as an outbound fetch, only quieter. Guarding the
+  // primitive (rather than trusting each new route to register itself in
+  // middleware/selfManagedDbContextRoutes.ts) is what makes a new violation
+  // visible at all. Warn-only in prod; throws under DB_CONTEXT_TRIPWIRE_STRICT.
+  assertOutsideHeldDbContext('assertSafeUrl');
+
   const u = new URL(urlStr);
   if (u.protocol !== 'https:' && u.protocol !== 'http:') {
     throw new SsrfBlockedError(`unsupported URL scheme: ${u.protocol}`);
@@ -369,6 +386,149 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    * callback's JWKS fetch (SR2-13).
    */
   maxBytes?: number;
+  /**
+   * Optional callback invoked once with the validated IP `safeFetch` has
+   * pinned for this request, before the socket is dialed. Exists so callers
+   * that need to audit/record which address was actually contacted (e.g. the
+   * LLM egress recorder) don't have to duplicate `resolveSafeRecords`.
+   *
+   * Fire-and-forget: a throwing `onConnect` is swallowed and never fails the
+   * request or surfaces to the caller. Backward compatible — omitting it is a
+   * no-op, matching every existing caller's behavior exactly.
+   */
+  onConnect?: (ip: string) => void;
+  /**
+   * Resolve as soon as the response HEADERS arrive, handing back a `Response`
+   * whose body is the LIVE socket rather than a buffer.
+   *
+   * `safeFetch` otherwise buffers the entire body before resolving, which is
+   * right for the one-shot JSON callers it was built for but wrong for a
+   * long-lived event stream: an SSE chat completion buffered to completion
+   * stops being a stream at all (every delta lands in one burst once the turn
+   * ends) and pins the whole turn in memory for the life of the request.
+   *
+   * The SSRF properties are identical either way — resolution, filtering and
+   * IP pinning all happen before the socket is dialed, so this option changes
+   * only how the body is delivered. `maxBytes` is still enforced, but as bytes
+   * FLOW: an overrun destroys the socket and errors the body stream, rather
+   * than rejecting a promise that has already resolved. Cancelling the body
+   * (`reader.cancel()`) destroys the request, so a consumer that stops reading
+   * early releases the socket promptly.
+   *
+   * Defaults to false — every existing caller keeps byte-identical behavior.
+   */
+  streamResponse?: boolean;
+}
+
+/**
+ * Statuses the `Response` constructor forbids from carrying a body at all.
+ * Deliberately excludes the 1xx informational codes: `Response` rejects any
+ * status below 200 outright, and Node never surfaces them to the response
+ * callback anyway (they arrive on the request's `information` event).
+ */
+const NULL_BODY_STATUSES = new Set([204, 205, 304]);
+
+/** Copy Node's response headers onto a WHATWG `Headers`, preserving repeats. */
+function toResponseHeaders(raw: http.IncomingHttpHeaders): Headers {
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(raw)) {
+    if (v == null) continue;
+    if (Array.isArray(v)) {
+      for (const item of v) headers.append(k, item);
+    } else {
+      headers.set(k, String(v));
+    }
+  }
+  return headers;
+}
+
+/**
+ * Wrap a live `IncomingMessage` as a web `ReadableStream`, enforcing `maxBytes`
+ * as the bytes flow and tearing the socket down on cancel/overrun.
+ *
+ * `registerFailer` hands the caller a way to fail this body, so a socket error
+ * raised on the REQUEST after the promise already resolved (an abort, a
+ * timeout, a reset mid-stream) can be surfaced here instead of vanishing into
+ * an inert `reject` — a swallowed error there would leave the consumer waiting
+ * forever on a stream that never ends. It is invoked synchronously during
+ * construction, so the hook is in place before the `Response` is handed out.
+ */
+function streamedResponseBody(
+  req: http.ClientRequest,
+  res: http.IncomingMessage,
+  maxBytes: number | undefined,
+  registerFailer: (fail: (err: Error) => void) => void
+): ReadableStream<Uint8Array> {
+  let received = 0;
+  let settled = false;
+
+  /** Idempotent socket teardown — overrun, cancel and transport failure race. */
+  const teardown = (): void => {
+    res.destroy();
+    req.destroy();
+  };
+
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      const fail = (err: Error): void => {
+        if (settled) return;
+        settled = true;
+        teardown();
+        controller.error(err);
+      };
+      registerFailer(fail);
+
+      res.on('data', (c: Buffer) => {
+        if (settled) return;
+        received += c.length;
+        if (maxBytes !== undefined && received > maxBytes) {
+          // Overrun: stop the socket before the next chunk lands, then error
+          // the body. Mirrors the buffered path's teardown, except the caller
+          // learns about it through the stream rather than a rejected promise.
+          // `maxBytes` exactly is allowed; the first byte past it is not.
+          settled = true;
+          teardown();
+          controller.error(new ResponseTooLargeError(maxBytes));
+          return;
+        }
+        controller.enqueue(new Uint8Array(c));
+        // Respect the consumer's backpressure: stop reading the socket once
+        // the queue is full and let `pull` restart it.
+        if ((controller.desiredSize ?? 1) <= 0) res.pause();
+      });
+
+      res.on('end', () => {
+        if (settled) return;
+        settled = true;
+        controller.close();
+      });
+
+      res.on('error', fail);
+
+      // A peer that drops the connection part-way through the body may emit
+      // neither 'end' nor 'error' — only 'close', with `res.complete` false.
+      // Treating that as a clean EOF would hand the consumer a silently
+      // truncated response; leaving it unhandled would hang them forever.
+      res.on('close', () => {
+        if (settled) return;
+        if (!res.complete) {
+          fail(new Error('response closed before the body was complete'));
+          return;
+        }
+        settled = true;
+        controller.close();
+      });
+    },
+    pull() {
+      res.resume();
+    },
+    cancel() {
+      // A consumer that walked away must not leave the socket open — or, for
+      // an LLM endpoint, leave the model generating into a dead connection.
+      settled = true;
+      teardown();
+    }
+  });
 }
 
 /**
@@ -377,7 +537,8 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
  * SNI and used to derive Host so TLS verification succeeds normally.
  *
  * Throws `SsrfBlockedError` for policy violations and `Error` (with `cause`)
- * for transport/TLS/timeout failures. Returns a standard `Response`.
+ * for transport/TLS/timeout failures. Returns a standard `Response` — buffered
+ * by default, or streamed when `init.streamResponse` is set.
  */
 export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promise<Response> {
   // #1105 tripwire: an outbound HTTP request inside a held withDbAccessContext
@@ -408,6 +569,15 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     allowPrivateNetwork: init.allowPrivateNetwork
   });
   const safeRecord = safe[0]!;
+
+  if (init.onConnect) {
+    try {
+      init.onConnect(safeRecord.address);
+    } catch {
+      // Fire-and-forget by contract — a caller's audit hook must never be
+      // able to fail the request it's merely observing.
+    }
+  }
 
   // Cleartext is only conceded for the on-LAN hop the operator owns. Checked
   // against the pinned record specifically, so it cannot drift from the address
@@ -510,9 +680,47 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
   const timeoutMs = init.timeoutMs;
 
   return new Promise<Response>((resolve, reject) => {
+    // Set once the body has been handed to the caller as a live stream. From
+    // that moment a transport error can no longer `reject` (the promise is
+    // settled), so it has to be raised on the body instead.
+    let failStream: ((err: Error) => void) | null = null;
+
     const req = requester(reqOptions, (res) => {
       // Follow no redirects by default — caller gets the raw response and can
       // re-invoke safeFetch if they want to trust the Location header.
+      const status = res.statusCode ?? 0;
+
+      if (init.streamResponse) {
+        const headers = toResponseHeaders(res.headers);
+        // 204/304 and friends may not carry a body at all; draining is the only
+        // correct thing to do with the (empty) stream.
+        if (NULL_BODY_STATUSES.has(status)) {
+          // There is no body to hand back and the promise is about to settle,
+          // so a later socket error has nowhere to be reported TO — but it
+          // must still have a listener. An 'error' emitted on an EventEmitter
+          // with none throws synchronously and takes the whole process down,
+          // and this is the one response path with neither a stream nor a live
+          // `reject` to absorb it. Route both the response's and the request's
+          // late errors here so they leave a trace instead of vanishing.
+          const noteLateError = (err: Error): void => {
+            console.warn(
+              `safeFetch: ignoring a late error on an already-returned ${status} response `
+                + `from ${hostname}: ${err.message}`
+            );
+          };
+          res.on('error', noteLateError);
+          failStream = noteLateError;
+          res.resume();
+          resolve(new Response(null, { status, statusText: res.statusMessage ?? '', headers }));
+          return;
+        }
+        const body = streamedResponseBody(req, res, init.maxBytes, (fail) => {
+          failStream = fail;
+        });
+        resolve(new Response(body, { status, statusText: res.statusMessage ?? '', headers }));
+        return;
+      }
+
       const chunks: Buffer[] = [];
       let received = 0;
       let aborted = false;
@@ -534,20 +742,11 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
       res.on('end', () => {
         if (aborted) return;
         const bodyBytes = Buffer.concat(chunks);
-        const responseHeaders = new Headers();
-        for (const [k, v] of Object.entries(res.headers)) {
-          if (v == null) continue;
-          if (Array.isArray(v)) {
-            for (const item of v) responseHeaders.append(k, item);
-          } else {
-            responseHeaders.set(k, String(v));
-          }
-        }
         resolve(
           new Response(bodyBytes, {
             status: res.statusCode ?? 0,
             statusText: res.statusMessage ?? '',
-            headers: responseHeaders
+            headers: toResponseHeaders(res.headers)
           })
         );
       });
@@ -556,6 +755,15 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
 
     req.on('error', (err) => {
       // Includes TLS verification failures — propagate without suppression.
+      // Once the body is streaming the promise is already settled, so the only
+      // place left to report a socket failure is the body itself; rejecting
+      // here would be a no-op and leave the consumer waiting on a stream that
+      // never ends. This is also the path an abort/timeout `req.destroy(err)`
+      // takes mid-stream.
+      if (failStream) {
+        failStream(err);
+        return;
+      }
       reject(err);
     });
 

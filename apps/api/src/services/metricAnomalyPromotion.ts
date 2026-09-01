@@ -1,7 +1,7 @@
 import { and, eq, ne } from 'drizzle-orm';
 
 import { db } from '../db';
-import { alerts, metricAnomalies } from '../db/schema';
+import { alerts, metricAnomalies, metricAnomalyIncidents } from '../db/schema';
 import { publishEvent } from './eventBus';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
 import { resolveDeviceSiteId } from './deviceSiteResolver';
@@ -97,6 +97,37 @@ function anomalyIdentityWhere(options: PromoteMetricAnomalyToAlertOptions) {
     eq(metricAnomalies.orgId, options.orgId),
     eq(metricAnomalies.deviceId, options.deviceId),
   );
+}
+
+/**
+ * Wave 6 PR 4 (#3828 Task 3) — promotion linkage read. If the canonical
+ * incident row (`metric_anomaly_incidents`, collapsing key matches exactly:
+ * `org_id, device_id, anomaly_type, bucket_seconds, window_start`) already
+ * has `agent_run_id` set — an anomaly-triggered agent run was already
+ * dispatched for this incident BEFORE a human promoted it — surface that run
+ * on the new alert's context. Informational only: this is a manual-promotion
+ * read path (`PATCH /devices/:id/anomalies/:anomalyId/status`), not an
+ * admission decision, and the REVERSE cross-dedupe (an agent run created
+ * AFTER promotion consulting this alert) is a documented v1 deferral — see
+ * the plan's Self-Review Notes. `null` when no incident row exists yet (the
+ * anomaly pilot's detector-side upsert is new in this same PR) or the
+ * incident hasn't been dispatched to an agent.
+ */
+async function findIncidentAgentRunId(orgId: string, anomaly: MetricAnomalyRow): Promise<string | null> {
+  const [row] = await db
+    .select({ agentRunId: metricAnomalyIncidents.agentRunId })
+    .from(metricAnomalyIncidents)
+    .where(
+      and(
+        eq(metricAnomalyIncidents.orgId, orgId),
+        eq(metricAnomalyIncidents.deviceId, anomaly.deviceId),
+        eq(metricAnomalyIncidents.anomalyType, anomaly.anomalyType),
+        eq(metricAnomalyIncidents.bucketSeconds, anomaly.bucketSeconds),
+        eq(metricAnomalyIncidents.windowStart, anomaly.windowStart),
+      ),
+    )
+    .limit(1);
+  return row?.agentRunId ?? null;
 }
 
 /**
@@ -212,6 +243,7 @@ export async function promoteMetricAnomalyToAlert(
   const title = titleForAnomaly(canonical);
   const message = messageForAnomaly(canonical);
   const now = new Date();
+  const incidentAgentRunId = await findIncidentAgentRunId(canonical.orgId, canonical);
 
   const [alert] = await db
     .insert(alerts)
@@ -234,6 +266,9 @@ export async function promoteMetricAnomalyToAlert(
         confidence: canonical.confidence,
         score: canonical.score,
         modelVersion: (canonical.baselineSummary as { modelVersion?: unknown } | null)?.modelVersion ?? null,
+        // Wave 6 PR 4 (#3828 Task 3) — informational only; see
+        // findIncidentAgentRunId's docstring.
+        agentRunId: incidentAgentRunId,
       },
       triggeredAt: now,
     })

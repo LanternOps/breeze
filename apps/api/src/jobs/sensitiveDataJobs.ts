@@ -4,7 +4,7 @@ import { and, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { deviceCommands, devices, organizations, sensitiveDataPolicies, sensitiveDataScans } from '../db/schema';
 import { CommandTypes, queueCommandForExecution } from '../services/commandQueue';
-import { isCronDue } from '../services/automationRuntime';
+import { isCronDue } from '../services/cronDue';
 import { attachWorkerObservability } from './workerObservability';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';

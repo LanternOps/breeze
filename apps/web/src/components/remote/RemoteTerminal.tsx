@@ -94,6 +94,28 @@ export default function RemoteTerminal({
   // not drive the UI or the wire.
   const connectAttemptRef = useRef(0);
 
+  // initTerminal must be immune to prop-identity churn (deviceHostname flips
+  // ~100-300ms after mount once the parent's device fetch resolves; onError/t
+  // can also change identity across renders). These refs hold the latest
+  // value for use inside the one-shot init routine without pulling them into
+  // its dependency array — see initTerminal below and issue #4152.
+  const deviceHostnameRef = useRef(deviceHostname);
+  const onErrorRef = useRef(onError);
+  const tRef = useRef(t);
+  deviceHostnameRef.current = deviceHostname;
+  onErrorRef.current = onError;
+  tRef.current = t;
+  // The hostname actually announced in the terminal's "connecting to" line so
+  // far. Compared against the live prop by the effect below to decide whether
+  // to write an updated line — never to decide whether to re-init.
+  const announcedHostnameRef = useRef<string | null>(null);
+  // Set synchronously the instant init starts (before the first await), so a
+  // second invocation can never slip past the guard while the first is still
+  // mid-flight — this is what actually prevents the double-init race, not the
+  // terminalRef null-check alone (that check happens too late: it stays null
+  // until well after the first `await import(...)`).
+  const initStartedRef = useRef(false);
+
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   // Tracks whether the one-shot auto-connect has already fired. This gates the
   // auto-connect effect so it runs exactly once, on initial mount: without it,
@@ -110,9 +132,18 @@ export default function RemoteTerminal({
   const [bytesTransferred, setBytesTransferred] = useState({ sent: 0, received: 0 });
   const [terminalReady, setTerminalReady] = useState(false);
 
-  // Initialize xterm.js
+  // Initialize xterm.js. Deliberately has no dependencies: this must run
+  // exactly once per mount, immune to deviceHostname/onError/t identity
+  // changes (issue #4152). Anything that can change after mount is read via
+  // a ref (deviceHostnameRef/onErrorRef/tRef) instead of being captured in
+  // the closure via the dependency array.
   const initTerminal = useCallback(async () => {
-    if (!terminalContainerRef.current || terminalRef.current) return;
+    if (!terminalContainerRef.current || initStartedRef.current) return;
+    // Flip this synchronously, before any await, so a second invocation
+    // triggered while this one is still mid-flight (e.g. a hostname prop
+    // update landing between the dynamic imports below) can never pass the
+    // guard and start a second terminal.
+    initStartedRef.current = true;
 
     try {
       // Dynamic import of xterm.js
@@ -176,18 +207,22 @@ export default function RemoteTerminal({
       });
       resizeObserverRef.current.observe(terminalContainerRef.current);
 
-      // Display welcome message
-      terminal.writeln(`\x1b[1;34m${t('remoteTerminal.welcome')}\x1b[0m`);
-      terminal.writeln(`\x1b[90m${t('remoteTerminal.connectingTo', { hostname: deviceHostname })}\x1b[0m`);
+      // Display welcome message. Read the hostname/translator via refs so
+      // this stays correct even though this callback has no deps: it always
+      // sees the latest value at the moment init actually runs.
+      const hostnameAtInit = deviceHostnameRef.current;
+      terminal.writeln(`\x1b[1;34m${tRef.current('remoteTerminal.welcome')}\x1b[0m`);
+      terminal.writeln(`\x1b[90m${tRef.current('remoteTerminal.connectingTo', { hostname: hostnameAtInit })}\x1b[0m`);
       terminal.writeln('');
+      announcedHostnameRef.current = hostnameAtInit;
 
       // Signal that terminal is ready for connection
       setTerminalReady(true);
     } catch (error) {
       console.error('Failed to initialize terminal:', error);
-      onError?.(t('remoteTerminal.errors.initialize'));
+      onErrorRef.current?.(tRef.current('remoteTerminal.errors.initialize'));
     }
-  }, [deviceHostname, onError, t]);
+  }, []);
 
   // Connect to remote session
   const connect = useCallback(async () => {
@@ -555,22 +590,48 @@ export default function RemoteTerminal({
     }, 100);
   }, []);
 
-  // Initialize terminal on mount
+  // Initialize terminal on mount. initTerminal has no deps (see above), so
+  // this effect's identity never changes across renders and it runs exactly
+  // once per real mount/unmount — a deviceHostname/onError/t prop change
+  // cannot re-trigger it (issue #4152).
   useEffect(() => {
     initTerminal();
 
     return () => {
       if (resizeObserverRef.current) {
         resizeObserverRef.current.disconnect();
+        resizeObserverRef.current = null;
       }
       if (webSocketRef.current) {
         webSocketRef.current.close();
+        webSocketRef.current = null;
       }
       if (terminalRef.current) {
         terminalRef.current.dispose();
+        terminalRef.current = null;
       }
+      fitAddonRef.current = null;
+      // Reset the one-shot init guard and readiness flag so a genuine
+      // remount (a fresh mount of this component, or React StrictMode's
+      // dev-mode mount→cleanup→mount on the same instance) can re-init
+      // cleanly instead of being permanently blocked by stale guard state.
+      initStartedRef.current = false;
+      announcedHostnameRef.current = null;
+      setTerminalReady(false);
     };
   }, [initTerminal]);
+
+  // The device hostname resolves asynchronously after mount (the page starts
+  // with a "Loading device..." placeholder). Once it changes to the real
+  // value, update the terminal's "connecting to" line in place rather than
+  // re-initializing the terminal — the line is display-only and never
+  // affects the guard above.
+  useEffect(() => {
+    if (!terminalReady || !terminalRef.current) return;
+    if (deviceHostname === announcedHostnameRef.current) return;
+    terminalRef.current.writeln(`\x1b[90m${t('remoteTerminal.connectingTo', { hostname: deviceHostname })}\x1b[0m`);
+    announcedHostnameRef.current = deviceHostname;
+  }, [deviceHostname, terminalReady, t]);
 
   // Auto-connect exactly once, on initial mount. The attempt flag is only set
   // when the timer actually fires (not when scheduled), so an effect re-run

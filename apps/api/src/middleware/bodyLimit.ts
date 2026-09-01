@@ -33,11 +33,13 @@ export type BodyLimitRule =
   | 'avatar'
   | 'contract-template'
   | 'agent-ingest'
+  | 'ticket-attachment'
   // Route-level limits TIGHTER than the global default, so `bodyLimitForPath`
   // never returns them — the route's own gate is the one that answers. They
   // share this namespace so all body-limit 413s group on one tag.
   | 'agent-logs'
-  | 'agent-process-sample';
+  | 'agent-process-sample'
+  | 'agent-pam-observation';
 
 export interface BodyLimitPolicy {
   rule: BodyLimitRule;
@@ -71,6 +73,19 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
       rule: 'software-package',
       maxSize: 512 * 1024 * 1024,
       error: 'Package too large (max 500MB)',
+    };
+  }
+  // Ticket comment attachments (W08 #3902): one multipart file per request,
+  // capped at 10 MiB by TICKET_ATTACHMENT_LIMITS.maxBytes and by the
+  // ticket_attachments_size_chk CHECK. Without this carve-out every upload
+  // 413s at the global 1 MB gate before the route's own check ever runs
+  // (#3482 class). The 64 KiB headroom covers the multipart envelope so the
+  // route's specific ATTACHMENT_TOO_LARGE message wins.
+  if (path.match(/^\/api\/v1\/tickets\/[^/]+\/attachments$/)) {
+    return {
+      rule: 'ticket-attachment',
+      maxSize: 10 * 1024 * 1024 + 64 * 1024,
+      error: 'Attachment too large (max 10 MB)',
     };
   }
   // Agent command results submitted via the heartbeat/REST fallback leg (used

@@ -351,3 +351,49 @@ describe('ScriptExecutionModal secret parameters (#3409 PR4c-2)', () => {
     expect(onExecute.mock.calls[0][3]).toBe('user');
   });
 });
+
+// Paper cut (2026-08-28 pre-release sweep): statusFilter defaults to 'online',
+// so a fleet of OS-compatible-but-offline devices renders the OS-mismatch
+// empty state, sending the tech to check OS compatibility for no reason.
+describe('ScriptExecutionModal empty state (2026-08-28 sweep)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const offlineWindowsDevices: Device[] = [
+    { id: 'd-1', hostname: 'ws-01', os: 'windows', status: 'offline', siteId: 's-1', siteName: 'HQ' },
+    { id: 'd-2', hostname: 'ws-02', os: 'windows', status: 'offline', siteId: 's-1', siteName: 'HQ' },
+  ];
+
+  it('blames the status filter, not the OS, when compatible devices are merely offline', () => {
+    render(
+      <ScriptExecutionModal
+        script={{ ...baseScript, parameters: [] }}
+        devices={offlineWindowsDevices}
+        isOpen
+        onClose={vi.fn()}
+        onExecute={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(/2 compatible devices are hidden by the status filter/i)).toBeInTheDocument();
+    expect(screen.queryByText(/requires Windows/i)).toBeNull();
+
+    fireEvent.click(screen.getByText('Show all devices'));
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2);
+  });
+
+  it('still blames the OS when no device is OS-compatible at all', () => {
+    render(
+      <ScriptExecutionModal
+        script={{ ...baseScript, parameters: [] }}
+        devices={[{ id: 'd-3', hostname: 'mac-01', os: 'macos', status: 'online', siteId: 's-1', siteName: 'HQ' }]}
+        isOpen
+        onClose={vi.fn()}
+        onExecute={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(/requires Windows/i)).toBeInTheDocument();
+  });
+});

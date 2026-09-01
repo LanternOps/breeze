@@ -8,6 +8,7 @@ vi.mock('../db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
+    transaction: vi.fn(),
   },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -64,6 +65,10 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
+vi.mock('../services/pamActuationLifecycle', () => ({
+  requestPamCleanup: vi.fn(),
+}));
+
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
@@ -82,6 +87,7 @@ vi.mock('../services/permissions', () => ({
 
 import {
   executableRuleSchema,
+  cleanupSoftwarePolicyElevations,
   resolveOrgIdForWrite,
   softwarePoliciesRoutes,
   softwareRulesSchema,
@@ -91,6 +97,30 @@ import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
+import { requestPamCleanup } from '../services/pamActuationLifecycle';
+
+describe('cleanupSoftwarePolicyElevations', () => {
+  it('creates cleanup generations for only the active requests transitioned by the policy removal', async () => {
+    const execute = vi.fn().mockResolvedValue({ rows: [{ id: 'elevation-1' }, { id: 'elevation-2' }] });
+    const tx = { execute } as any;
+
+    await cleanupSoftwarePolicyElevations(tx, 'policy-1');
+
+    expect(requestPamCleanup).toHaveBeenCalledTimes(2);
+    expect(requestPamCleanup).toHaveBeenNthCalledWith(1, tx, {
+      elevationRequestId: 'elevation-1', cause: 'policy_removed',
+    });
+    expect(requestPamCleanup).toHaveBeenNthCalledWith(2, tx, {
+      elevationRequestId: 'elevation-2', cause: 'policy_removed',
+    });
+  });
+
+  it('propagates cleanup failure so the caller transaction rolls back', async () => {
+    const tx = { execute: vi.fn().mockResolvedValue({ rows: [{ id: 'elevation-1' }] }) } as any;
+    vi.mocked(requestPamCleanup).mockRejectedValueOnce(new Error('cleanup failed'));
+    await expect(cleanupSoftwarePolicyElevations(tx, 'policy-1')).rejects.toThrow('cleanup failed');
+  });
+});
 
 function makeOrgAuth(orgId: string): AuthContext {
   return {
@@ -884,7 +914,8 @@ describe('partner-wide software policies (#2126)', () => {
         }),
       }),
     };
-    vi.mocked(db.update).mockReturnValue(updateChain);
+    const tx = { update: vi.fn().mockReturnValue(updateChain) };
+    vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn(tx));
 
     const res = await app.request(`/${POLICY_ID}`, {
       method: 'PATCH',
@@ -893,6 +924,6 @@ describe('partner-wide software policies (#2126)', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(db.update).toHaveBeenCalled();
+    expect(tx.update).toHaveBeenCalled();
   });
 });

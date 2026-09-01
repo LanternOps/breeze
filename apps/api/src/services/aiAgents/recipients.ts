@@ -197,6 +197,56 @@ export async function validateAgentRecipients(
 }
 
 /**
+ * Task 6 (wave 4b, #3826) act-mode activation prerequisite: does this agent
+ * currently have at least one recipient that resolves to a real, active
+ * user? An unattended agent whose only recipient is a role nobody currently
+ * holds (or a userId whose membership has since lapsed) notifies no one when
+ * something goes wrong — never a state act mode should be allowed to start
+ * in. `validateAgentRecipients` only proves each STORED id is real and
+ * VISIBLE to the owner tenant at write time; it does not prove anyone
+ * currently resolves from it (a roleId can be visible and valid while zero
+ * users hold it), so this is a genuinely separate check, not a restatement.
+ *
+ * Org-owned agent: delegates straight to `resolveRecipientUserIds` against
+ * the only org an org-owned agent's runs are ever admitted for. Partner-owned
+ * (baseline) agent: there is no run org yet to resolve against, so this
+ * checks direct partner membership only — the same asymmetry
+ * `validateAgentRecipients` already draws between the two ownership shapes
+ * (a partner-wide agent's eventual per-org visibility is re-derived live at
+ * notification time, same as today).
+ */
+export async function hasResolvableAgentRecipient(
+  owner: AgentRecipientsOwner,
+  recipients: Partial<AiAgentRecipients>,
+): Promise<boolean> {
+  const userIds = [...new Set(recipients.userIds ?? [])];
+  const roleIds = [...new Set(recipients.roleIds ?? [])];
+  if (userIds.length === 0 && roleIds.length === 0) return false;
+
+  if (owner.orgId) {
+    const resolved = await resolveRecipientUserIds(
+      { orgId: owner.orgId, partnerId: owner.partnerId, recipients },
+      owner.orgId,
+    );
+    return resolved.length > 0;
+  }
+
+  if (!owner.partnerId) return false;
+  const partnerId = owner.partnerId;
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      if (userIds.length > 0 && (await activePartnerMembers(partnerId, { userIds })).length > 0) {
+        return true;
+      }
+      if (roleIds.length > 0 && (await activePartnerMembers(partnerId, { roleIds })).length > 0) {
+        return true;
+      }
+      return false;
+    }),
+  );
+}
+
+/**
  * Resolve the user ids to notify about a run/intent in `orgId`, from live
  * membership. Explicit userIds are kept only while currently active with
  * access to the org (direct member, or partner user of the org's owning

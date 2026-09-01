@@ -4,7 +4,10 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['src/__tests__/integration/rls.integration.test.ts'],
+    include: [
+      'src/__tests__/integration/rls.integration.test.ts',
+      'src/__tests__/integration/auth-browser-transition-rls.integration.test.ts',
+    ],
     exclude: [],
   }
 });

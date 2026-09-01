@@ -59,7 +59,13 @@ describe('manage_alerts — per-alert site scoping', () => {
 
   it('resolve unrestricted caller is unaffected', async () => {
     mockDb.select.mockReturnValue({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'a1', orgId: 'org-1', deviceId: 'd1', title: 'T' }]) }) }) });
-    mockDb.update.mockReturnValue({ set: () => ({ where: () => Promise.resolve() }) });
+    // `resolve` is a compare-and-swap since #4094 and chains `.returning({id})`;
+    // a non-empty result is the winner. This suite is about the SITE axis, so it
+    // always plays the winner — the CAS outcome itself is covered in
+    // aiToolsAlerts.resolveCas.test.ts.
+    mockDb.update.mockReturnValue({
+      set: () => ({ where: () => ({ returning: () => Promise.resolve([{ id: 'a1' }]) }) }),
+    });
     const r = await handlerFor('manage_alerts')({ action: 'resolve', alertId: 'a1' }, makeAuth(undefined));
     expect(r).not.toContain('access denied');
     expect(mockDb.update).toHaveBeenCalled();

@@ -1,19 +1,40 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const { workerCloseMock, workerConstructorMock, queueCloseMock, createInstrumentedQueueMock } = vi.hoisted(() => ({
+  workerCloseMock: vi.fn(),
+  workerConstructorMock: vi.fn(),
+  queueCloseMock: vi.fn(),
+  createInstrumentedQueueMock: vi.fn(() => ({ close: queueCloseMock })),
+}));
+
 vi.mock('../db', () => ({
   db: {},
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
   runOutsideDbContext: (fn: () => unknown) => fn(),
 }));
-vi.mock('../services/bullmqQueue', () => ({ createInstrumentedQueue: vi.fn() }));
+vi.mock('../services/bullmqQueue', () => ({ createInstrumentedQueue: createInstrumentedQueueMock }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn() }));
+vi.mock('bullmq', () => ({
+  Worker: class {
+    close = workerCloseMock;
+    on = vi.fn();
+    constructor(...args: unknown[]) {
+      workerConstructorMock(...args);
+    }
+  },
+}));
 vi.mock('../services/unifi/unifiTelemetryService', () => ({ reconcileTelemetry: vi.fn(async () => ({})) }));
 vi.mock('../services/unifi/unifiCollectorService', () => ({
   getCollectorOwnerDeviceId: vi.fn(),
   markCollectorPoll: vi.fn(async () => undefined),
 }));
 
-import { processIngest } from './unifiTelemetryWorker';
+import {
+  processIngest,
+  getUnifiTelemetryQueue,
+  initializeUnifiTelemetryWorker,
+  shutdownUnifiTelemetryWorker,
+} from './unifiTelemetryWorker';
 import * as telemetrySvc from '../services/unifi/unifiTelemetryService';
 import * as collectorSvc from '../services/unifi/unifiCollectorService';
 import * as dbModule from '../db';
@@ -94,5 +115,48 @@ describe('processIngest reconcile-failure status (rollback-safe)', () => {
     (telemetrySvc.reconcileTelemetry as any).mockRejectedValueOnce(new Error('should not run'));
     await processIngest({ ...basePayload, deviceId: 'dev-attacker' });
     expect(collectorSvc.markCollectorPoll).not.toHaveBeenCalled();
+  });
+});
+
+describe('shutdownUnifiTelemetryWorker', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('closes the worker and the lazily-created queue exactly once after initialize', async () => {
+    await initializeUnifiTelemetryWorker();
+    // The worker only initializes its own Worker handle — the queue is
+    // created lazily via getUnifiTelemetryQueue() (enqueue path). Peek it
+    // here so shutdown has something to close.
+    getUnifiTelemetryQueue();
+
+    await shutdownUnifiTelemetryWorker();
+
+    expect(workerCloseMock).toHaveBeenCalledTimes(1);
+    expect(queueCloseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a second shutdown call is a no-op (handles already nulled)', async () => {
+    await initializeUnifiTelemetryWorker();
+    getUnifiTelemetryQueue();
+
+    await shutdownUnifiTelemetryWorker();
+    await shutdownUnifiTelemetryWorker();
+
+    expect(workerCloseMock).toHaveBeenCalledTimes(1);
+    expect(queueCloseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves without throwing when called before initialize or queue creation', async () => {
+    await expect(shutdownUnifiTelemetryWorker()).resolves.toBeUndefined();
+    expect(workerCloseMock).not.toHaveBeenCalled();
+    expect(queueCloseMock).not.toHaveBeenCalled();
+  });
+
+  it('closes the queue when it was created lazily via getUnifiTelemetryQueue() without ever initializing the worker', async () => {
+    getUnifiTelemetryQueue();
+
+    await shutdownUnifiTelemetryWorker();
+
+    expect(workerCloseMock).not.toHaveBeenCalled();
+    expect(queueCloseMock).toHaveBeenCalledTimes(1);
   });
 });

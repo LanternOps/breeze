@@ -399,6 +399,7 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `PUBLIC_ENABLE_EDR_INTEGRATIONS` | `false` | Surface the EDR UI: the `/security/edr` fleet page, the device Security-tab EDR panel, and the Security dashboard summary cards. Set `true` at web image build time to enable. |
 | `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST` | `false` | Surface network-discovered assets alongside agent endpoints in the Devices list view. Set `true` at web image build time to enable. |
 | `BREEZE_WORKSPACE_ENABLED` | `false` in the production compose files (`true` in the dev override) | Load the built-in **AI Workspace** extension. Off by default — leave it unset unless you want Workspace. **Requires a PostgreSQL image that provides the `pgvector` extension** (see the aside below). |
+| `BREEZE_AI_AGENTS_ENABLED` | `false` | Surface **AI Agents** (Settings → AI Agents). Off by default — no agent exists, runs, or appears in the UI until this is `true`. Even when enabled, agents only observe and propose in this release; nothing runs unattended. Must also be mapped in the `api` service's `environment:` block, not just set in `.env`. |
 
 <Aside>
   Variables prefixed with `PUBLIC_` are **web build-time flags** — they are baked into the web bundle when the image is built and cannot be changed at runtime by editing `.env`. To toggle them, set the value in your build environment and rebuild the web image.
@@ -411,6 +412,17 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 
   If you do not want Workspace, leave `BREEZE_WORKSPACE_ENABLED` unset — no extension is needed and nothing else changes.
 </Aside>
+
+## Durable event dispatch
+
+Event dispatch settings select how a subscriber receives events. They do not enable or disable the feature behind that subscriber. For example, the ticket-helpdesk and anomaly agent lanes still run in-process with the default `off` mode. See [AI Agents](/features/ai-agents/) for lane requirements and durable trigger guidance.
+
+| Variable | Default | Description |
+|---|---|---|
+| `EVENT_DISPATCH_MODE` | `off` | Accepts `off`, `shadow`, or `enforce`. `off` uses in-process delivery only. `shadow` also mirrors routing plans into delivery receipts for observability but executes nothing through the queue. `enforce` sends each named subscriber through the BullMQ queue only, skips its in-process delivery, and leaves unnamed subscribers in-process. |
+| `EVENT_DISPATCH_QUEUE_SUBSCRIBERS` | — | Comma-separated subscriber IDs used only when the mode is `enforce`: `ai-agent-alert-verdict`, `ai-agent-anomaly`, `ai-agent-ticket-helpdesk`, `automation-worker`, `dns-threat-alerts`, `notification-dispatcher`, `policy-alert-bridge`, `webhook-delivery`. An empty list is accepted but leaves everything in-process and produces a boot warning. The variable is ignored in other modes. |
+
+Both variables are validated when the API starts. An invalid mode or an unknown subscriber ID stops the API from starting and identifies the invalid value. As with other API settings, map each variable in the `api` service's `environment:` block of your compose file as well as setting it in `.env`.
 
 ## MCP Server
 

@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
 const s3ClientCtorMock = vi.fn();
-const s3SendMock = vi.fn(async () => ({}));
+// Typed with an (unused) command parameter so `mock.calls[n][0]` is a real
+// tuple slot — without it the calls tuple is `[]` and every input assertion
+// below is a compile error, not a passing test.
+const s3SendMock = vi.fn(async (_command?: unknown) => ({}));
 
 vi.mock('@aws-sdk/client-s3', () => ({
   S3Client: class S3Client {
@@ -17,6 +20,12 @@ vi.mock('@aws-sdk/client-s3', () => ({
     constructor(public input: unknown) {}
   },
   HeadObjectCommand: class HeadObjectCommand {
+    constructor(public input: unknown) {}
+  },
+  DeleteObjectCommand: class DeleteObjectCommand {
+    constructor(public input: unknown) {}
+  },
+  DeleteObjectsCommand: class DeleteObjectsCommand {
     constructor(public input: unknown) {}
   },
 }));
@@ -374,5 +383,108 @@ describe('uploadBinary object-storage error handling', { timeout: IMPORT_TIMEOUT
       uploadBinary('/tmp/binary', 'software/org-1/cat-2/ver-3/setup.msi'),
     ).resolves.toBeUndefined();
     expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W08 #3902 — buffer put / object stream / batch delete
+// ---------------------------------------------------------------------------
+describe('s3Storage buffer/stream/delete primitives (W08 #3902)', { timeout: IMPORT_TIMEOUT_MS }, () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    process.env = { ...ORIGINAL_ENV };
+    process.env.S3_BUCKET = 'binaries';
+    process.env.S3_ACCESS_KEY = 'key';
+    process.env.S3_SECRET_KEY = 'secret';
+    process.env.S3_ENDPOINT = 'https://s3.example.com';
+    s3SendMock.mockImplementation(async () => ({}));
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it('putObjectBuffer sends the caller ContentType (never octet-stream), the exact length and the sha256 metadata', async () => {
+    const { putObjectBuffer } = await import('./s3Storage');
+    const body = Buffer.from('hello world');
+    await putObjectBuffer('ticket-attachments/abc', body, 'image/png', 'a'.repeat(64));
+
+    expect(s3SendMock).toHaveBeenCalledTimes(1);
+    const input = (s3SendMock.mock.calls[0]![0] as unknown as { input: Record<string, unknown> }).input;
+    expect(input.Bucket).toBe('binaries');
+    expect(input.Key).toBe('ticket-attachments/abc');
+    expect(input.ContentType).toBe('image/png');
+    expect(input.ContentType).not.toBe('application/octet-stream');
+    expect(input.ContentLength).toBe(body.length);
+    expect(input.Metadata).toEqual({ sha256: 'a'.repeat(64) });
+  });
+
+  it('putObjectBuffer surfaces a send fault as S3OperationError, not the raw SDK error', async () => {
+    const { putObjectBuffer, S3OperationError } = await import('./s3Storage');
+    s3SendMock.mockImplementation(async () => {
+      const e = new Error('boom') as Error & { name: string };
+      e.name = 'TimeoutError';
+      throw e;
+    });
+    await expect(putObjectBuffer('k', Buffer.from('x'), 'image/png', 'b'.repeat(64)))
+      .rejects.toBeInstanceOf(S3OperationError);
+  });
+
+  it('getObjectStream returns the body stream and content length', async () => {
+    const { getObjectStream } = await import('./s3Storage');
+    const fakeBody = { pipe: () => {} };
+    s3SendMock.mockImplementation(async () => ({ Body: fakeBody, ContentLength: 11 }));
+    const res = await getObjectStream('ticket-attachments/abc');
+    expect(res.body).toBe(fakeBody);
+    expect(res.contentLength).toBe(11);
+  });
+
+  it('getObjectStream maps a NoSuchKey rejection to a null body rather than throwing', async () => {
+    const { getObjectStream } = await import('./s3Storage');
+    s3SendMock.mockImplementation(async () => {
+      const e = new Error('missing') as Error & { name: string };
+      e.name = 'NoSuchKey';
+      throw e;
+    });
+    const res = await getObjectStream('ticket-attachments/gone');
+    expect(res.body).toBeNull();
+  });
+
+  it('getObjectStream still throws S3OperationError on a real transport fault', async () => {
+    const { getObjectStream, S3OperationError } = await import('./s3Storage');
+    s3SendMock.mockImplementation(async () => {
+      const e = new Error('denied') as Error & { name: string };
+      e.name = 'AccessDenied';
+      throw e;
+    });
+    await expect(getObjectStream('k')).rejects.toBeInstanceOf(S3OperationError);
+  });
+
+  it('deleteObjects chunks 1500 keys into two DeleteObjectsCommand calls', async () => {
+    const { deleteObjects } = await import('./s3Storage');
+    const keys = Array.from({ length: 1500 }, (_, i) => `ticket-attachments/${i}`);
+    await deleteObjects(keys);
+    expect(s3SendMock).toHaveBeenCalledTimes(2);
+    const first = (s3SendMock.mock.calls[0]![0] as unknown as { input: { Delete: { Objects: unknown[] } } }).input;
+    const second = (s3SendMock.mock.calls[1]![0] as unknown as { input: { Delete: { Objects: unknown[] } } }).input;
+    expect(first.Delete.Objects).toHaveLength(1000);
+    expect(second.Delete.Objects).toHaveLength(500);
+  });
+
+  it('deleteObjects sends nothing for an empty list', async () => {
+    const { deleteObjects } = await import('./s3Storage');
+    await deleteObjects([]);
+    expect(s3SendMock).not.toHaveBeenCalled();
+  });
+
+  it('deleteObjects THROWS when the response carries a non-empty Errors array (D9 erasure contract)', async () => {
+    const { deleteObjects, S3OperationError } = await import('./s3Storage');
+    s3SendMock.mockImplementation(async () => ({
+      Deleted: [{ Key: 'ticket-attachments/1' }],
+      Errors: [{ Key: 'ticket-attachments/2', Code: 'AccessDenied', Message: 'nope' }],
+    }));
+    await expect(deleteObjects(['ticket-attachments/1', 'ticket-attachments/2']))
+      .rejects.toBeInstanceOf(S3OperationError);
   });
 });

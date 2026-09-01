@@ -40,3 +40,36 @@ describe('LOGOUT_ACTION_TYPES <-> authSlice contract', () => {
     expect(LOGOUT_ACTION_TYPES.has(logoutAsync.pending.type)).toBe(false);
   });
 });
+
+
+// ── W06 (#3900) ────────────────────────────────────────────────────────────
+describe('every slice is wiped on sign-out', () => {
+  it('timeSuggestions is registered in combineReducers, so withLogoutReset clears it', async () => {
+    // A slice missing from combineReducers leaks the previous account's
+    // customer data — org names, device hostnames and ticket subjects all ride
+    // along on a suggestion row.
+    const { store } = await import('./index');
+    expect(store.getState()).toHaveProperty('timeSuggestions');
+  });
+
+  it('a populated timeSuggestions slice returns to its initial state on LOGOUT', async () => {
+    const { default: reducer, suggestionsLoaded, initialTimeSuggestionsState } =
+      await import('./timeSuggestionsSlice');
+    const populated = reducer(initialTimeSuggestionsState, suggestionsLoaded({
+      enabled: true, date: '2026-08-29', timezone: 'UTC', unloggedCount: 1,
+      suggestions: [{
+        key: 'a', signals: [], startedAt: 'S', endedAt: 'E', durationMinutes: 45,
+        device: { id: 'd1', hostname: 'CUSTOMER-PC' }, org: { id: 'o1', name: 'Acme' },
+        quickSupport: null, candidateTicket: null, otherTickets: [],
+        suggestedSource: 'remote_session', alreadyLoggedOverlapMinutes: 0,
+      }],
+    }));
+    expect(populated.items).toHaveLength(1);
+
+    const { withLogoutReset } = await import('./resettable');
+    const { combineReducers } = await import('@reduxjs/toolkit');
+    const root = withLogoutReset(combineReducers({ timeSuggestions: reducer }));
+    const after = root({ timeSuggestions: populated }, { type: logout.type });
+    expect(after.timeSuggestions).toEqual(initialTimeSuggestionsState);
+  });
+});

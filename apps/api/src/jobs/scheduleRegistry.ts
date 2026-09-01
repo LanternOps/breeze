@@ -62,6 +62,7 @@
  * guarantees hold, but absolute times move.)
  */
 
+import { isStructurallyValidCron } from '@breeze/shared';
 import { captureException } from '../services/sentry';
 
 /** A repeatable interval at or above this is epoch-aligned enough to matter. */
@@ -95,6 +96,7 @@ export const JOB_SCHEDULES = {
   'audit-chain-anchor': '48 4 * * *',
   'contract-billing-sweep': '8 5 * * *',
   'tdsynnex-sftp-sync': '38 5 * * *',
+  'auth-browser-transition-cleanup': '58 5 * * *',
   'invoice-overdue-sweep': '8 6 * * *',
   'event-log-retention': '3 7 * * *',
   'agent-log-retention': '23 7 * * *',
@@ -111,9 +113,11 @@ export const JOB_SCHEDULES = {
   'reliability-history-retention': '3 14 * * *',
   'playbook-execution-retention': '23 14 * * *',
   'cve-enrichment': '43 14 * * *',
+  'receipt-retention': '3 15 * * *',
   'winget-index-sync': '3 16 * * *',
   'sso-domain-recheck': '23 16 * * *',
   'exchange-rate-sync': '13 17 * * *',
+  'ai-unattended-exposure-retention': '8 18 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0
@@ -131,6 +135,9 @@ export const JOB_SCHEDULES = {
   'warranty-batch-sync': '42 3,9,15,21 * * *',
   'cis-scan-scheduler': '47 * * * *',
   'cis-score-aggregator': '52 * * * *',
+  // W08 #3902 — hourly sweep of abandoned pending ticket-comment attachments.
+  // :32 is one of the two remaining free minutes in the ≡2 (mod 5) lane.
+  'ticket-attachment-pending-reaper': '32 * * * *',
   'user-risk-scan': '57 4,10,16,22 * * *',
 } as const;
 
@@ -148,44 +155,6 @@ export function jobSchedule(key: JobScheduleKey): string {
 // Operator overrides
 // ---------------------------------------------------------------------------
 
-const CRON_FIELD_RANGES: ReadonlyArray<readonly [number, number]> = [
-  [0, 59], // minute
-  [0, 23], // hour
-  [1, 31], // day of month
-  [1, 12], // month
-  [0, 7], // day of week (7 == Sunday)
-];
-
-const MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
-const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-
-function isValidCronField(field: string, index: number): boolean {
-  const [min, max] = CRON_FIELD_RANGES[index]!;
-  const names = index === 3 ? MONTH_NAMES : index === 4 ? DAY_NAMES : [];
-
-  const readValue = (token: string): number | null => {
-    const named = names.indexOf(token.toLowerCase());
-    if (named >= 0) return index === 3 ? named + 1 : named;
-    if (!/^\d+$/.test(token)) return null;
-    const value = Number(token);
-    return value >= min && value <= max ? value : null;
-  };
-
-  return field.split(',').every((listItem) => {
-    if (listItem === '') return false;
-    const [rangePart, stepPart, ...extra] = listItem.split('/');
-    if (extra.length > 0) return false;
-    if (stepPart !== undefined && !/^[1-9]\d*$/.test(stepPart)) return false;
-    if (rangePart === '*') return true;
-    const bounds = rangePart!.split('-');
-    if (bounds.length > 2) return false;
-    const parsed = bounds.map(readValue);
-    if (parsed.some((value) => value === null)) return false;
-    if (parsed.length === 2 && parsed[0]! > parsed[1]!) return false;
-    return true;
-  });
-}
-
 /**
  * Structural validation of an operator-supplied cron pattern.
  *
@@ -195,15 +164,14 @@ function isValidCronField(field: string, index: number): boolean {
  * (a two-field value such as star-slash-five, which looks fine and is not).
  * `scheduleRegistry.contract.test.ts`
  * cross-checks this function against the real parser over a corpus.
+ *
+ * Moved to `@breeze/shared` (P2-2 task 2) so the scheduled-sweeps schedule
+ * validator (`validators/aiAgentSchedules.ts`) can reuse the same structural
+ * rule instead of duplicating it — re-exported here (rather than left as an
+ * import-only consumer) so every existing caller of this module keeps working
+ * unchanged.
  */
-export function isStructurallyValidCron(pattern: string): boolean {
-  const fields = pattern.trim().split(/\s+/);
-  // 6 fields = the optional leading seconds field BullMQ also accepts.
-  if (fields.length !== 5 && fields.length !== 6) return false;
-  const fiveFields = fields.length === 6 ? fields.slice(1) : fields;
-  if (fields.length === 6 && !isValidCronField(fields[0]!, 0)) return false;
-  return fiveFields.every((field, index) => isValidCronField(field, index));
-}
+export { isStructurallyValidCron };
 
 /**
  * Read an operator cron override, falling back LOUDLY to the allocated slot.

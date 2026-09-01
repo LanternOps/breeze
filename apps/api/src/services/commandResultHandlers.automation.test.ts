@@ -65,12 +65,15 @@ describe('script automation terminal reconciliation', () => {
     applyAutomationActionTerminalMock.mockResolvedValue(true);
   });
 
-  it('returns the guarded source row and terminalizes only after its transition', async () => {
+  // D1 (port design §6): the handler record returns
+  // Promise<CommandResultHandlerOutcome>, so handleScriptResult no longer hands
+  // back the effective execution row. The terminal-evidence call IS the
+  // observable contract these tests guard.
+  it('terminalizes only after the guarded source transition', async () => {
     updateMock.mockReturnValueOnce(updateReturning([{ id: EXECUTION_ID, scriptId: 'script-1' }]));
 
-    const effective = await commandResultHandlers.script!(scriptInput());
+    await commandResultHandlers.script!(scriptInput());
 
-    expect(effective).toEqual({ id: EXECUTION_ID, scriptId: 'script-1' });
     expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
       source: 'script_execution',
       scriptExecutionId: EXECUTION_ID,
@@ -95,9 +98,8 @@ describe('script automation terminal reconciliation', () => {
       .mockReturnValueOnce(updateReturning([]));
     selectMock.mockReturnValueOnce(selectRows([{ status: 'completed', exitCode: 0 }]));
 
-    const effective = await commandResultHandlers.script!(scriptInput());
+    await commandResultHandlers.script!(scriptInput());
 
-    expect(effective).toBeNull();
     expect(applyAutomationActionTerminalMock).not.toHaveBeenCalled();
   });
 
@@ -106,11 +108,11 @@ describe('script automation terminal reconciliation', () => {
       .mockReturnValueOnce(updateReturning([]))
       .mockReturnValueOnce(updateReturning([{ id: EXECUTION_ID, scriptId: 'script-1' }]));
 
-    const effective = await commandResultHandlers.script!(scriptInput());
+    await commandResultHandlers.script!(scriptInput());
 
-    expect(effective).toEqual({ id: EXECUTION_ID, scriptId: 'script-1' });
     expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
       source: 'script_execution',
+      scriptExecutionId: EXECUTION_ID,
       terminalStatus: 'succeeded',
     }));
   });

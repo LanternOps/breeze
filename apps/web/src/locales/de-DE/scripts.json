@@ -827,7 +827,10 @@
     },
     "matchCount": "{{count}} Übereinstimmung",
     "empty": {
-      "noCompatibleDevices": "Keine kompatiblen Geräte gefunden. Dieses Skript erfordert {{os}}."
+      "noCompatibleDevices": "Keine kompatiblen Geräte gefunden. Dieses Skript erfordert {{os}}.",
+      "offlineFiltered_one": "Keine {{status}}-Geräte gefunden. {{count}} kompatibles Gerät ist durch den Statusfilter ausgeblendet — alle Geräte anzeigen, um es einzubeziehen.",
+      "offlineFiltered_other": "Keine {{status}}-Geräte gefunden. {{count}} kompatible Geräte sind durch den Statusfilter ausgeblendet — alle Geräte anzeigen, um sie einzubeziehen.",
+      "showAllDevices": "Alle Geräte anzeigen"
     },
     "orSeparator": "oder",
     "progress": {

@@ -155,7 +155,18 @@ async function loadReusableElevationRequest(options: {
   };
 }
 
-async function validateRemediationExecutionApproval(
+/**
+ * Exported for reuse by the wave-4b act-mode resolver
+ * (services/aiAgents/remediationActResolver.ts, Task 7, #3826): an unattended
+ * agent resolving a suggestion to `run_script` must clear the SAME
+ * high/critical-risk elevation-approval gate a human executing it through
+ * this route would, not a re-implementation that could silently drift from
+ * it. See that module's docstring for why act mode is allowed to act on a
+ * suggestion this route itself would still reject with 400 (status
+ * 'suggested', not yet 'accepted'/'edited') — this function only concerns the
+ * elevation approval, not the lifecycle-status gate above it.
+ */
+export async function validateRemediationExecutionApproval(
   existing: typeof remediationSuggestions.$inferSelect,
   deviceId: string,
 ): Promise<string | null> {

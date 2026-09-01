@@ -28,6 +28,7 @@
  *     src/__tests__/integration/recoveryCode.integration.test.ts
  */
 import './setup';
+import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
@@ -48,6 +49,8 @@ function pendingRecord(userId: string) {
     passkeyAvailable: false,
     authEpoch: 1,
     mfaEpoch: 1,
+    transitionId: randomUUID(),
+    browserGeneration: 1,
     statusExpectation: 'active',
     allowedMethods: { totp: true, sms: true, passkey: true },
     expiresAt: Date.now() + 5 * 60 * 1000,

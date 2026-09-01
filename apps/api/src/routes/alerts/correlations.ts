@@ -7,6 +7,8 @@ import { db } from '../../db';
 import { alertCorrelationGroups, alertCorrelationMembers, alertCorrelations, alerts, devices, mlFeedbackEvents } from '../../db/schema';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { latestVerdictForGroup, projectAlertAiVerdictSummary } from '../../services/aiAgents/alertVerdicts';
+import { RESOLVABLE_ALERT_STATUSES } from '../../services/alertService';
 import { buildAlertCorrelationRca } from '../../services/alertCorrelationRca';
 import { publishEvent } from '../../services/eventBus';
 import { captureException } from '../../services/sentry';
@@ -190,6 +192,12 @@ type GroupAlert = ReturnType<typeof toGroupAlert>;
 
 interface CorrelationGroupForUi {
   id: string;
+  // Phase 2 wave P2-1 (alert verdicts), Task 14 — needed by the `:groupId`
+  // detail handler to call `latestVerdictForGroup(orgId, id)`. Additive on
+  // the shared list mapping (also reaches `GET /correlations`'s per-group
+  // rows, harmlessly — no extra query, `orgId` was already loaded off the
+  // raw `alert_correlation_groups` row this maps from).
+  orgId: string;
   rootCause: GroupAlert | null;
   relatedCount: number;
   alerts: GroupAlert[];
@@ -275,6 +283,11 @@ async function buildCorrelationGroups(auth: AuthContext): Promise<CorrelationGro
 
     return {
       id: rootId,
+      // Ephemeral (non-persisted) clustering path — `aiVerdict` is only
+      // wired for `buildPersistedCorrelationGroups`'s `GET
+      // /correlations/:groupId`, so `orgId` here exists solely to satisfy
+      // `CorrelationGroupForUi`, not to be read.
+      orgId: rootCause?.orgId ?? '',
       rootCause: rootCause ? toGroupAlert(rootCause) : null,
       relatedCount: Math.max(groupAlerts.length - 1, 0),
       alerts: groupAlerts.map(toGroupAlert),
@@ -366,6 +379,7 @@ async function buildPersistedCorrelationGroups(auth: AuthContext, groupId?: stri
 
     return {
       id: group.id,
+      orgId: group.orgId,
       rootCause: rootCause ? toGroupAlert(rootCause) : null,
       relatedCount: Math.max(groupAlerts.length - 1, 0),
       alerts: groupAlerts.map(toGroupAlert),
@@ -569,6 +583,73 @@ async function updatePersistedGroupStatus(
   }
 }
 
+/**
+ * Explain a shortfall between the pre-read `eligible` set and what the UPDATE
+ * actually wrote — and page only for the half that is a bug.
+ *
+ * Before #4094 the UPDATE matched on id alone, so a shortfall had exactly one
+ * plausible cause and this reported it as an RLS scope mismatch with confidence.
+ * Adding the status predicate introduced a SECOND, entirely benign cause: a
+ * technician or the auto-resolve sweep transitioned a member between the read and
+ * the write. That is expected under load on precisely the alerts MSPs act on in
+ * groups, so reporting both as one exception would have turned a high-signal
+ * tenancy alarm into routine noise — the failure mode where an on-call engineer
+ * dismisses the issue on sight and buries the one occurrence that is a real
+ * cross-tenant write.
+ *
+ * So re-read the unwritten rows in the SAME request context and split them:
+ *   - visible + terminal  → the CAS legitimately lost. Debug log, no exception.
+ *   - not visible at all  → the row exists (we just read it) but this context
+ *                           cannot see it on re-read: a tenancy bug. Page.
+ *   - visible + still open→ neither explanation fits. Page; something is wrong
+ *                           with the predicate itself.
+ */
+async function reportUnwrittenAlerts(action: 'acknowledge' | 'resolve', unwrittenIds: string[]) {
+  if (unwrittenIds.length === 0) return;
+
+  let visible: Array<{ id: string; status: string }> = [];
+  try {
+    visible = await db
+      .select({ id: alerts.id, status: alerts.status })
+      .from(alerts)
+      .where(inArray(alerts.id, unwrittenIds));
+  } catch (error) {
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    return;
+  }
+
+  const statusById = new Map(visible.map((row) => [row.id, row.status]));
+  const raced: string[] = [];
+  const unexplained: string[] = [];
+
+  for (const id of unwrittenIds) {
+    const status = statusById.get(id);
+    if (status === undefined) {
+      // Invisible on re-read despite having been selected moments ago.
+      unexplained.push(id);
+      continue;
+    }
+    const terminal = action === 'acknowledge' ? status !== 'active' : status === 'resolved' || status === 'dismissed';
+    (terminal ? raced : unexplained).push(id);
+  }
+
+  if (raced.length > 0) {
+    console.debug(
+      `[AlertCorrelationRoute] mutateAlerts ${action}: ${raced.length} member(s) lost the ` +
+      `compare-and-swap to a concurrent transition; feedback suppressed for them (expected).`
+    );
+  }
+
+  if (unexplained.length > 0) {
+    captureException(new Error(
+      `[AlertCorrelationRoute] mutateAlerts ${action} skipped ${unexplained.length} alert(s) ` +
+      `that a concurrent status change does NOT explain — they are either invisible to this ` +
+      `tenant context on re-read (RLS scope mismatch) or still in a mutable status. ` +
+      `Suppressing feedback for them.`
+    ));
+  }
+}
+
 async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'resolve', userId: string) {
   const now = new Date();
   const eligible = action === 'acknowledge'
@@ -580,12 +661,21 @@ async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'reso
   }
 
   const alertIds = eligible.map((alert) => alert.id);
+  // The `eligible` filter above reads a snapshot; the status predicate here is what
+  // actually decides who transitioned each row (#4094). Filtering by id alone let a
+  // group resolve re-stamp — and republish `alert.resolved` for — alerts a
+  // technician or the auto-resolve sweep had already finished in between.
   const returned = await db
     .update(alerts)
     .set(action === 'acknowledge'
       ? { status: 'acknowledged', acknowledgedAt: now, acknowledgedBy: userId }
       : { status: 'resolved', resolvedAt: now, resolvedBy: userId })
-    .where(inArray(alerts.id, alertIds))
+    .where(and(
+      inArray(alerts.id, alertIds),
+      action === 'acknowledge'
+        ? eq(alerts.status, 'active')
+        : inArray(alerts.status, [...RESOLVABLE_ALERT_STATUSES])
+    ))
     .returning({ id: alerts.id });
 
   // Under breeze_app RLS a write that matches 0 rows throws no error. Emitting ML feedback
@@ -593,11 +683,10 @@ async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'reso
   // acknowledgements. Only emit for alerts the UPDATE actually wrote.
   const writtenIds = new Set(returned.map((row) => row.id));
   if (writtenIds.size !== eligible.length) {
-    captureException(new Error(
-      `[AlertCorrelationRoute] mutateAlerts ${action} RLS scope mismatch: ` +
-      `${eligible.length} eligible alert(s) but only ${writtenIds.size} written; ` +
-      `suppressing feedback for ${eligible.length - writtenIds.size} unwritten alert(s).`
-    ));
+    await reportUnwrittenAlerts(
+      action,
+      eligible.filter((alert) => !writtenIds.has(alert.id)).map((alert) => alert.id)
+    );
   }
 
   for (const alert of eligible) {
@@ -610,7 +699,9 @@ async function mutateAlerts(alertRows: AlertRow[], action: 'acknowledge' | 'reso
         alertId: alert.id,
         ruleId: alert.ruleId,
         deviceId: alert.deviceId,
-        ...(action === 'acknowledge' ? { acknowledgedBy: userId } : { resolvedBy: userId }),
+        ...(action === 'acknowledge'
+          ? { acknowledgedBy: userId }
+          : { resolvedBy: userId, resolvedAt: now.toISOString(), triggeredAt: alert.triggeredAt.toISOString() }),
       },
       'alerts-correlation-route',
       { userId }
@@ -673,7 +764,13 @@ alertCorrelationRoutes.get(
       return c.json({ error: 'Correlation group not found' }, 404);
     }
 
-    return c.json({ group, data: group });
+    // Phase 2 wave P2-1 (alert verdicts), Task 14 — detail-only: NOT added to
+    // the list mapping above, which would N+1 a `latestVerdictForGroup` call
+    // per row of `GET /correlations`.
+    const verdict = await latestVerdictForGroup(group.orgId, group.id);
+    const groupWithVerdict = { ...group, aiVerdict: verdict ? projectAlertAiVerdictSummary(verdict) : null };
+
+    return c.json({ group: groupWithVerdict, data: groupWithVerdict });
   }
 );
 

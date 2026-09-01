@@ -827,7 +827,10 @@
     },
     "matchCount": "{{count}} eşleşmesi",
     "empty": {
-      "noCompatibleDevices": "Uyumlu cihaz bulunamadı. Bu komut dosyası {{os}} gerektirir."
+      "noCompatibleDevices": "Uyumlu cihaz bulunamadı. Bu komut dosyası {{os}} gerektirir.",
+      "offlineFiltered_one": "Hiçbir {{status}} cihaz eşleşmiyor. {{count}} uyumlu cihaz durum filtresi tarafından gizleniyor — dahil etmek için tüm cihazları göster.",
+      "offlineFiltered_other": "Hiçbir {{status}} cihaz eşleşmiyor. {{count}} uyumlu cihaz durum filtresi tarafından gizleniyor — dahil etmek için tüm cihazları göster.",
+      "showAllDevices": "Tüm cihazları göster"
     },
     "orSeparator": "veya ",
     "progress": {

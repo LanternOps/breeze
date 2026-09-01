@@ -10,6 +10,7 @@ import {
   isRfc1918OrUla,
   isAlwaysBlockedIp,
   createGuardedLookup,
+  resolveSafeRecords,
   safeFetchFollowingRedirects,
   SsrfBlockedError,
   ResponseTooLargeError,
@@ -169,6 +170,31 @@ describe('createGuardedLookup', () => {
     });
 
     expect(records).toEqual([{ address: '8.8.8.8', family: 4 }]);
+  });
+});
+
+// Exported for socket-dialing callers (the LLM egress CONNECT proxy pins the
+// record it hands back). Same policy as the helpers above — asserted directly
+// so the export cannot silently drift from what safeFetch enforces.
+describe('resolveSafeRecords (exported)', () => {
+  afterEach(() => {
+    __setLookupForTests(null);
+  });
+
+  it('returns only the safe records and throws when none remain', async () => {
+    __setLookupForTests(async () => [
+      { address: '169.254.169.254', family: 4 },
+      { address: '8.8.8.8', family: 4 },
+    ]);
+    await expect(resolveSafeRecords('provider.example.test')).resolves.toEqual({
+      safe: [{ address: '8.8.8.8', family: 4 }],
+      allIps: ['169.254.169.254', '8.8.8.8'],
+    });
+
+    __setLookupForTests(async () => [{ address: '127.0.0.1', family: 4 }]);
+    await expect(resolveSafeRecords('provider.example.test')).rejects.toBeInstanceOf(
+      SsrfBlockedError
+    );
   });
 });
 
@@ -563,6 +589,64 @@ describe('safeFetch — maxBytes body cap (SR2-13)', () => {
   });
 });
 
+describe('safeFetch — onConnect hook', () => {
+  afterEach(() => {
+    __setLookupForTests(null);
+    vi.restoreAllMocks();
+  });
+
+  function primeLookupPublic(ip = '8.8.8.8'): void {
+    __setLookupForTests(async () => [{ address: ip, family: 4 }]);
+  }
+
+  function spyRequestOk(): void {
+    vi.spyOn(http, 'request').mockImplementation((_options: any, callback?: any) => {
+      const req = new EventEmitter() as any;
+      req.write = vi.fn();
+      req.destroy = vi.fn();
+      req.setTimeout = vi.fn();
+      req.end = vi.fn(() => {
+        const res = new EventEmitter() as any;
+        res.statusCode = 200;
+        res.statusMessage = 'OK';
+        res.headers = {};
+        callback?.(res);
+        res.emit('data', Buffer.from('ok'));
+        res.emit('end');
+      });
+      return req;
+    });
+  }
+
+  it('invokes onConnect with the pinned IP exactly once', async () => {
+    primeLookupPublic('8.8.8.8');
+    spyRequestOk();
+    const onConnect = vi.fn();
+
+    await safeFetch('http://guarded.example.test/x', { onConnect });
+
+    expect(onConnect).toHaveBeenCalledTimes(1);
+    expect(onConnect).toHaveBeenCalledWith('8.8.8.8');
+  });
+
+  it('does not fail the request when onConnect throws', async () => {
+    primeLookupPublic('8.8.8.8');
+    spyRequestOk();
+    const onConnect = vi.fn(() => {
+      throw new Error('boom');
+    });
+
+    const res = await safeFetch('http://guarded.example.test/x', { onConnect });
+    expect(res.status).toBe(200);
+  });
+
+  it('is a no-op when onConnect is not supplied (backward compatible)', async () => {
+    primeLookupPublic('8.8.8.8');
+    spyRequestOk();
+    await expect(safeFetch('http://guarded.example.test/x')).resolves.toBeDefined();
+  });
+});
+
 describe('safeFetch — DNS pinning & rebinding defense', () => {
   let server: http.Server;
   let port: number;
@@ -807,5 +891,245 @@ describe('safeFetchFollowingRedirects', () => {
 
     expect(await run(303)).toEqual(['POST', 'GET']);
     expect(await run(307)).toEqual(['POST', 'POST']);
+  });
+});
+
+/**
+ * Streaming mode (#4121). `safeFetch` buffers by default, which is right for
+ * the one-shot JSON callers it was built for and wrong for an SSE chat stream.
+ * These cover the delivery contract; the SSRF policy itself is unchanged and
+ * covered by the suites above.
+ */
+describe('safeFetch — streamResponse', () => {
+  afterEach(() => {
+    __setLookupForTests(null);
+    vi.restoreAllMocks();
+  });
+
+  function primeLookupPublic(ip = '8.8.8.8'): void {
+    __setLookupForTests(async () => [{ address: ip, family: 4 }]);
+  }
+
+  /**
+   * A fake `http.request` whose response is driven by the test, so we can
+   * observe what happens BEFORE the body ends — the whole point of streaming.
+   */
+  function spyStreamingRequest(opts?: {
+    statusCode?: number;
+    headers?: Record<string, string | string[]>;
+  }): { req: any; res: any } {
+    const handle: { req: any; res: any } = { req: null, res: null };
+    vi.spyOn(http, 'request').mockImplementation((_options: any, callback?: any) => {
+      const res: any = new EventEmitter();
+      res.statusCode = opts?.statusCode ?? 200;
+      res.statusMessage = 'OK';
+      res.headers = opts?.headers ?? { 'content-type': 'text/event-stream' };
+      // The streaming body pauses/resumes the socket for backpressure and
+      // destroys it on teardown; `complete` distinguishes a clean EOF from a
+      // connection that dropped part-way through the body.
+      res.pause = vi.fn();
+      res.resume = vi.fn();
+      res.destroy = vi.fn();
+      res.complete = false;
+
+      const req: any = new EventEmitter();
+      req.write = vi.fn();
+      req.destroy = vi.fn();
+      req.setTimeout = vi.fn();
+      req.end = vi.fn(() => {
+        callback?.(res);
+      });
+      handle.req = req;
+      handle.res = res;
+      return req;
+    });
+    return handle;
+  }
+
+  const decode = (v?: Uint8Array): string => new TextDecoder().decode(v);
+
+  it('resolves as soon as headers arrive, before the body has ended', async () => {
+    primeLookupPublic();
+    const h = spyStreamingRequest({ headers: { 'content-type': 'text/event-stream' } });
+
+    // No 'end' is ever emitted before this await — in buffered mode it would hang.
+    const res = await safeFetch('http://sse.example.test/v1/chat/completions', {
+      streamResponse: true
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/event-stream');
+    expect(res.body).not.toBeNull();
+  });
+
+  it('delivers each chunk as it arrives rather than one buffered burst', async () => {
+    primeLookupPublic();
+    const h = spyStreamingRequest();
+
+    const res = await safeFetch('http://sse.example.test/v1', { streamResponse: true });
+    const reader = res.body!.getReader();
+
+    h.res.emit('data', Buffer.from('first'));
+    expect(decode((await reader.read()).value)).toBe('first');
+
+    // The second chunk is only written AFTER the first was read, so the read
+    // above cannot have come from a fully-buffered body.
+    h.res.emit('data', Buffer.from('second'));
+    expect(decode((await reader.read()).value)).toBe('second');
+
+    h.res.emit('end');
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it('pauses the socket when the consumer stops reading and resumes on pull', async () => {
+    primeLookupPublic();
+    const h = spyStreamingRequest();
+
+    const res = await safeFetch('http://sse.example.test/v1', { streamResponse: true });
+    const reader = res.body!.getReader();
+    const resumesAfterStart = h.res.resume.mock.calls.length;
+
+    // Nobody is reading. The default queuing strategy has a highWaterMark of 1,
+    // so one un-read chunk drives desiredSize to 0 and the socket must stop.
+    h.res.emit('data', Buffer.from('chunk-one'));
+    expect(h.res.pause).toHaveBeenCalled();
+
+    // Reading drains the queue, which triggers `pull` and restarts the socket.
+    expect(decode((await reader.read()).value)).toBe('chunk-one');
+    expect(h.res.resume.mock.calls.length).toBeGreaterThan(resumesAfterStart);
+  });
+
+  it('enforces maxBytes as bytes flow, destroying the socket and erroring the body', async () => {
+    primeLookupPublic();
+    const h = spyStreamingRequest();
+
+    const res = await safeFetch('http://big.example.test/v1', {
+      streamResponse: true,
+      maxBytes: 4
+    });
+    const reader = res.body!.getReader();
+
+    h.res.emit('data', Buffer.alloc(8, 0x61));
+
+    await expect(reader.read()).rejects.toBeInstanceOf(ResponseTooLargeError);
+    expect(h.req.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a body of exactly maxBytes through', async () => {
+    primeLookupPublic();
+    const h = spyStreamingRequest();
+
+    const res = await safeFetch('http://exact.example.test/v1', {
+      streamResponse: true,
+      maxBytes: 4
+    });
+    const reader = res.body!.getReader();
+
+    h.res.emit('data', Buffer.from('abcd'));
+    expect(decode((await reader.read()).value)).toBe('abcd');
+
+    h.res.complete = true;
+    h.res.emit('end');
+    expect((await reader.read()).done).toBe(true);
+    expect(h.req.destroy).not.toHaveBeenCalled();
+  });
+
+  it('errors the body when the peer drops the connection mid-response', async () => {
+    primeLookupPublic();
+    const h = spyStreamingRequest();
+
+    const res = await safeFetch('http://truncated.example.test/v1', { streamResponse: true });
+    const reader = res.body!.getReader();
+
+    h.res.emit('data', Buffer.from('partial'));
+    expect(decode((await reader.read()).value)).toBe('partial');
+
+    // 'close' with no 'end' and `complete === false` is a truncated response.
+    // Closing the stream cleanly here would hand back a silently short body.
+    h.res.emit('close');
+
+    await expect(reader.read()).rejects.toThrow(/closed before the body was complete/);
+  });
+
+  it('surfaces a mid-stream transport error on the body instead of hanging forever', async () => {
+    primeLookupPublic();
+    const h = spyStreamingRequest();
+
+    const res = await safeFetch('http://flaky.example.test/v1', { streamResponse: true });
+    const reader = res.body!.getReader();
+
+    // The promise has already settled, so this error has nowhere to go except
+    // the body. Swallowing it would leave the consumer awaiting a stream that
+    // never closes — the failure mode this assertion exists to prevent.
+    h.req.emit('error', new Error('socket hang up'));
+
+    await expect(reader.read()).rejects.toThrow('socket hang up');
+  });
+
+  it('destroys the request when the consumer cancels the body early', async () => {
+    primeLookupPublic();
+    const h = spyStreamingRequest();
+
+    const res = await safeFetch('http://sse.example.test/v1', { streamResponse: true });
+    await res.body!.cancel();
+
+    expect(h.req.destroy).toHaveBeenCalled();
+  });
+
+  it('returns a null body for statuses that may not carry one', async () => {
+    primeLookupPublic();
+    spyStreamingRequest({ statusCode: 204, headers: {} });
+
+    const res = await safeFetch('http://empty.example.test/v1', { streamResponse: true });
+
+    expect(res.status).toBe(204);
+    expect(res.body).toBeNull();
+  });
+
+  it('does not crash the process when a null-body response errors afterwards', async () => {
+    primeLookupPublic();
+    const h = spyStreamingRequest({ statusCode: 204, headers: {} });
+
+    const res = await safeFetch('http://empty.example.test/v1', { streamResponse: true });
+    expect(res.status).toBe(204);
+
+    // This branch has no stream to absorb the failure and an already-settled
+    // promise, but the emitter still needs a listener: an 'error' with none
+    // throws synchronously and takes the whole API process down.
+    expect(() => h.res.emit('error', new Error('socket reset after headers'))).not.toThrow();
+  });
+
+  it('still applies the SSRF policy before any socket is opened', async () => {
+    __setLookupForTests(async () => [{ address: '169.254.169.254', family: 4 }]);
+    const requestSpy = vi.spyOn(http, 'request');
+
+    await expect(
+      safeFetch('http://metadata.example.test/v1', { streamResponse: true })
+    ).rejects.toBeInstanceOf(SsrfBlockedError);
+    expect(requestSpy).not.toHaveBeenCalled();
+  });
+
+  it('leaves the default (buffered) path byte-identical for existing callers', async () => {
+    primeLookupPublic();
+    const h = spyStreamingRequest();
+
+    let settled = false;
+    const promise = safeFetch('http://buffered.example.test/v1').then((r) => {
+      settled = true;
+      return r;
+    });
+
+    // safeFetch resolves DNS before it dials, so the fake request does not
+    // exist yet on the turn this test was scheduled on.
+    while (h.res === null) await new Promise((resolve) => setImmediate(resolve));
+
+    h.res.emit('data', Buffer.from('ab'));
+    await new Promise((resolve) => setImmediate(resolve));
+    // Without streamResponse the caller must NOT see a response until 'end'.
+    expect(settled).toBe(false);
+
+    h.res.emit('end');
+    const res = await promise;
+    await expect(res.text()).resolves.toBe('ab');
   });
 });

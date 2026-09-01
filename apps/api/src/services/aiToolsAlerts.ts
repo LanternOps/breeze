@@ -13,6 +13,14 @@ import { eq, and, desc, sql, inArray, ne, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
+import {
+  ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE,
+  ALERT_CAS_LOST_MESSAGE,
+  ALERT_SUPPRESS_CAS_LOST_MESSAGE,
+  buildAcknowledgeAlertCas,
+  buildResolveAlertCas,
+  buildSuppressAlertCas,
+} from './alertService';
 import { deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { emitAlertStateFeedback } from './mlFeedbackEmitters';
 import {
@@ -158,14 +166,27 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         }
 
         const acknowledgedAt = new Date();
-        await db
+        // Winner-takes-all (#4101), same shape as the `resolve` branch below and as
+        // both HTTP acknowledge routes. Without the status predicate an agent step
+        // racing a technician's resolve — or racing a retried/duplicated copy of
+        // its own tool call — stamped `acknowledged` over the resolution and
+        // reported `success: true`. There was no `RETURNING` at all, so a write
+        // that matched zero rows (a lost race, or a row invisible to this tenant
+        // context, which raises no error under breeze_app RLS) was indistinguishable
+        // from a real acknowledgement.
+        const acknowledgeWrite = await db
           .update(alerts)
           .set({
             status: 'acknowledged',
             acknowledgedAt,
             acknowledgedBy: auth.user.id
           })
-          .where(eq(alerts.id, input.alertId as string));
+          .where(buildAcknowledgeAlertCas(input.alertId as string))
+          .returning({ id: alerts.id });
+
+        if (acknowledgeWrite.length === 0) {
+          return JSON.stringify({ error: ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE });
+        }
 
         let eventWarning: string | undefined;
         try {
@@ -210,7 +231,9 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
 
         // Mirror POST /alerts/:id/resolve: already-resolved is a no-op error and
         // dismissed is terminal (resolving it would let synthetic evaluators
-        // re-create the alert the user permanently dismissed).
+        // re-create the alert the user permanently dismissed). Like the route's,
+        // this read is a fast path with a specific message, NOT the concurrency
+        // control — the compare-and-swap below is.
         if (alert.status === 'resolved') {
           return JSON.stringify({ error: 'Alert is already resolved' });
         }
@@ -220,7 +243,13 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
 
         const resolvedAt = new Date();
         const resolutionNote = (input.resolutionNote as string) ?? 'Resolved via AI assistant';
-        await db
+        // Winner-takes-all (#4094), same predicate as `resolveAlert` and the two
+        // HTTP resolve routes. An agent racing a technician — or racing a retried
+        // or duplicated tool call of its own — must not republish `alert.resolved`
+        // for a transition it did not perform. (At-least-once event delivery,
+        // tracked for wave 3.5c in #4085, is not shipped yet; it will raise the
+        // odds further when it lands, but the race is already reachable today.)
+        const resolveWrite = await db
           .update(alerts)
           .set({
             status: 'resolved',
@@ -228,7 +257,12 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
             resolvedBy: auth.user.id,
             resolutionNote
           })
-          .where(eq(alerts.id, input.alertId as string));
+          .where(buildResolveAlertCas(input.alertId as string))
+          .returning({ id: alerts.id });
+
+        if (resolveWrite.length === 0) {
+          return JSON.stringify({ error: ALERT_CAS_LOST_MESSAGE });
+        }
 
         let resolveEventWarning: string | undefined;
         try {
@@ -240,7 +274,9 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
               ruleId: alert.ruleId,
               deviceId: alert.deviceId,
               resolvedBy: auth.user.id,
-              resolutionNote
+              resolutionNote,
+              resolvedAt: resolvedAt.toISOString(),
+              triggeredAt: alert.triggeredAt.toISOString(),
             },
             'ai-tools',
             { userId: auth.user.id }
@@ -293,14 +329,21 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const resolutionNote = (input.resolutionNote as string)
           ?? (forever ? 'Suppressed indefinitely via AI assistant' : `Suppressed for ${durationHours}h via AI assistant`);
 
-        await db
+        // Winner-takes-all (#4101) — same shape as the acknowledge branch above. A
+        // stale suppress landing on a just-resolved alert would un-resolve it.
+        const suppressWrite = await db
           .update(alerts)
           .set({
             status: 'suppressed',
             suppressedUntil,
             resolutionNote
           })
-          .where(eq(alerts.id, input.alertId as string));
+          .where(buildSuppressAlertCas(input.alertId as string))
+          .returning({ id: alerts.id });
+
+        if (suppressWrite.length === 0) {
+          return JSON.stringify({ error: ALERT_SUPPRESS_CAS_LOST_MESSAGE });
+        }
 
         let suppressEventWarning: string | undefined;
         try {

@@ -59,6 +59,7 @@ vi.mock('../db/schema', () => ({
   alertNotifications:       { id: 'id' },
   escalationPolicies:       { id: 'id', orgId: 'orgId' },
   organizations:            { id: 'id' },
+  users:                    { id: 'id' },
   partnerUsers:             {},
   organizationUsers:        {},
   patchPolicies: {},
@@ -116,6 +117,18 @@ vi.mock('../services/alertCooldown', () => ({
 
 vi.mock('../services/eventBus', () => ({
   publishEvent: vi.fn(),
+}));
+
+// Phase 2 wave P2-1 (alert verdicts), Task 14 — `alerts.ts` now imports
+// `latestVerdictsForAlerts`/`projectAlertAiVerdictSummary`. Unmocked, the
+// real module drags in `createActionIntent` (services/actionIntents/
+// intentService.ts) and its own transitive graph (aiTools/aiToolSchemas, …),
+// which this file's partial `../db/schema` mock was never built to cover.
+// Mocked here purely to sever that transitive chain — this suite doesn't
+// exercise aiVerdict at all.
+vi.mock('../services/aiAgents/alertVerdicts', () => ({
+  latestVerdictsForAlerts: vi.fn(async () => new Map()),
+  projectAlertAiVerdictSummary: vi.fn(),
 }));
 
 vi.mock('../services/notificationSenders', () => ({

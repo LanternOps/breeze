@@ -7,6 +7,7 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
+import { extractRowCount } from '../db/rowCount';
 import { agentLogs } from '../db/schema';
 import { lt } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
@@ -53,13 +54,7 @@ export function createAgentLogRetentionWorker(): Worker<RetentionJobData> {
           .delete(agentLogs)
           .where(lt(agentLogs.timestamp, cutoff));
 
-        // Drizzle returns different shapes per driver; try common patterns.
-        const raw = result as unknown as Record<string, unknown>;
-        const deletedCount = typeof raw?.rowCount === 'number'
-          ? raw.rowCount
-          : typeof raw?.count === 'number'
-            ? raw.count
-            : Array.isArray(result) ? (result as unknown[]).length : 'unknown';
+        const deletedCount = extractRowCount(result);
 
         const durationMs = Date.now() - startTime;
         console.log(`[AgentLogRetention] Pruned ${deletedCount} agent logs older than ${retentionDays} days in ${durationMs}ms`);

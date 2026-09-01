@@ -58,6 +58,7 @@ import { resolvePatchConfigForDevice } from '../../services/featureConfigResolve
 import { policyOwnershipCondition, withPartnerWideVisibility } from '../../services/configPolicyOwnership';
 import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
+import { getBinaryEdition } from '../../services/binaryEdition';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { normalizeCertificateSerial } from '../../services/agentCertificateBinding';
@@ -290,50 +291,22 @@ export function inferPatchOsType(source: string, deviceOs: unknown): 'windows' |
 }
 
 // ============================================
-// Version Comparison
+// Version Comparison / artifact-edition compatibility
 // ============================================
-
-export function parseComparableVersion(raw: string): { core: number[]; prerelease: string | null } | null {
-  const trimmed = raw.trim().replace(/^v/i, '');
-  if (!trimmed) return null;
-
-  const [rawCorePart, prereleasePart] = trimmed.split('-', 2);
-  const corePart = rawCorePart ?? '';
-  if (!corePart) return null;
-  const coreTokens = corePart.split('.');
-  if (coreTokens.length === 0) return null;
-
-  const core: number[] = [];
-  for (const token of coreTokens) {
-    if (!/^\d+$/.test(token)) return null;
-    core.push(Number.parseInt(token, 10));
-  }
-
-  return {
-    core,
-    prerelease: prereleasePart ?? null,
-  };
-}
-
-export function compareAgentVersions(leftRaw: string, rightRaw: string): number {
-  const left = parseComparableVersion(leftRaw);
-  const right = parseComparableVersion(rightRaw);
-  if (!left || !right) return 0;
-
-  const maxLen = Math.max(left.core.length, right.core.length);
-  for (let i = 0; i < maxLen; i += 1) {
-    const leftPart = left.core[i] ?? 0;
-    const rightPart = right.core[i] ?? 0;
-    if (leftPart !== rightPart) {
-      return leftPart > rightPart ? 1 : -1;
-    }
-  }
-
-  if (left.prerelease === right.prerelease) return 0;
-  if (!left.prerelease) return 1;
-  if (!right.prerelease) return -1;
-  return left.prerelease.localeCompare(right.prerelease);
-}
+//
+// Moved to services/agentEditionCompat.ts (#4093) so the DISPATCH path
+// (services/commandQueue.ts) can gate on the same predicate the heartbeat
+// offer path uses. This module imports services/commandQueue, so a direct
+// import in the other direction would be a cycle. Re-exported here: every
+// existing import site (and the suites that mock `./helpers`) keeps working.
+export {
+  parseComparableVersion,
+  compareAgentVersions,
+  AGENT_EDITION_CHECK_INTRODUCED,
+  agentAcceptsServedEdition,
+  editionWithheldDetail,
+  type EditionWithheldContext,
+} from '../../services/agentEditionCompat';
 
 // ============================================
 // Policy Probe Processing
@@ -2347,6 +2320,11 @@ export async function resolvePinnedUpgradeTarget(args: {
           eq(agentVersions.architecture, architecture),
           eq(agentVersions.component, component),
           eq(agentVersions.isLatest, true),
+          // Each server only serves its own build edition (#4072) — same
+          // scoping as the download/register/promote paths. Without this, a
+          // row registered for the OTHER edition could be resolved and
+          // offered, and the agent would hard-refuse it after download.
+          eq(agentVersions.edition, getBinaryEdition()),
         ),
       )
       .orderBy(desc(agentVersions.createdAt)) // newest first if multiple isLatest rows exist
@@ -2363,6 +2341,8 @@ export async function resolvePinnedUpgradeTarget(args: {
         eq(agentVersions.architecture, architecture),
         eq(agentVersions.component, component),
         eq(agentVersions.version, pin),
+        // Edition-scoped like the latest-promoted lookup above (#4072).
+        eq(agentVersions.edition, getBinaryEdition()),
       ),
     )
     .limit(1);
@@ -2376,7 +2356,9 @@ export async function resolvePinnedUpgradeTarget(args: {
     // version) so a persistent misconfig captures ONCE per process, not per beat.
     console.warn(
       `[agents] update withheld for ${agentId ?? 'device'}: pinned ${component} version ` +
-        `"${pin}" has no registered build for ${platform}/${architecture} (fail closed)`,
+        `"${pin}" has no registered ${getBinaryEdition()}-edition build for ` +
+        `${platform}/${architecture} (fail closed; a build registered under the other ` +
+        `edition does not count — #4072)`,
     );
     const key = `${component}:${platform}:${architecture}:${pin}`;
     if (!warnedMissingPinBuilds.has(key)) {
@@ -2384,8 +2366,8 @@ export async function resolvePinnedUpgradeTarget(args: {
       captureException(
         new Error(
           `Agent update withheld (#2124): pinned ${component} version "${pin}" has no ` +
-            `registered build for ${platform}/${architecture}; fleet freeze until a build ` +
-            `is published or the pin is corrected.`,
+            `registered ${getBinaryEdition()}-edition build for ${platform}/${architecture}; ` +
+            `fleet freeze until a build is published under this edition or the pin is corrected.`,
         ),
       );
     }

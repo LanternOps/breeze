@@ -32,7 +32,12 @@ vi.mock('./redis', () => ({
 
 import { db } from '../db';
 import { getRedis } from './redis';
-import { getAgentTenantState, isAgentTenantActive, invalidateAgentTenantCache } from './tenantStatus';
+import {
+  getAgentTenantState,
+  isAgentTenantActive,
+  invalidateAgentTenantCache,
+  isUsableOrgStatus,
+} from './tenantStatus';
 
 // getAgentTenantState runs a single org⋈partner join:
 // select().from().innerJoin().where().limit()
@@ -210,4 +215,13 @@ describe('invalidateAgentTenantCache', () => {
 
     await expect(invalidateAgentTenantCache(['org-1'])).resolves.toBeUndefined();
   });
+});
+
+describe('isUsableOrgStatus excludes lifecycle states', () => {
+  for (const status of ['merging', 'archived', 'purging', 'churned', 'suspended', 'offboarding']) {
+    it(`${status} is not usable`, () => expect(isUsableOrgStatus(status as never)).toBe(false));
+  }
+  for (const status of ['active', 'trial']) {
+    it(`${status} is usable`, () => expect(isUsableOrgStatus(status as never)).toBe(true));
+  }
 });

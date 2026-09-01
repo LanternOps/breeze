@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { sourceBadgeLabelKey } from './timeEntrySource';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
@@ -30,6 +31,9 @@ interface TsEntry {
   /** `billed` locks startedAt/endedAt/isBillable/hourlyRate server-side (409 ENTRY_BILLED
    *  if any of them is PRESENT in a PATCH) — only the description may change. */
   billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract';
+  /** W06 (#3900) server-stamped provenance. Absent on an API predating the
+   *  column — render nothing rather than guessing 'manual'. */
+  source?: string | null;
   isApproved: boolean;
   ticketId: string;
   ticketNumber: string;
@@ -546,6 +550,14 @@ export default function TimesheetPage() {
                                 <span className="text-sm">{entry.description}</span>
                               ) : (
                                 <span className="text-sm text-muted-foreground">{t('longTail.time.TimesheetPage.noDescription')}</span>
+                              )}
+                              {sourceBadgeLabelKey(entry.source) && (
+                                <span
+                                  data-testid={`time-entry-source-${entry.id}`}
+                                  className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+                                >
+                                  {t(/* i18n-dynamic */ sourceBadgeLabelKey(entry.source)!)}
+                                </span>
                               )}
                               {entry.isApproved && (
                                 <span

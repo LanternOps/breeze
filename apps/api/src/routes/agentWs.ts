@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import { z } from 'zod';
 import { eq, and, notInArray, sql } from 'drizzle-orm';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
 import { commandCasPriorStatusTags } from '../services/commandCasDiagnostics';
@@ -74,6 +74,9 @@ import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import { applyCommandAutomationTerminal } from '../services/automationTerminalEvidence';
 import { commandAcceptsAgentResultCondition } from '../services/commandResultAcceptance';
 import { redactResultAgainstCommandSecrets } from '../services/commandSecretRedaction';
+import { INSTANCE_ID } from '../services/instanceIdentity';
+import { clearAgentPresence, clearAgentPresenceUnfenced, setAgentPresence, refreshAgentPresence } from '../services/agentPresence';
+import { breezeRole } from '../config/env';
 /** Capabilities advertised to agents in the post-connect `connected` message. */
 export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async'] as const;
 
@@ -225,6 +228,7 @@ function ownsCurrentAgentSocket(agentId: string, ws: WSContext, epoch: number): 
 function evictAgentSocket(agentId: string): void {
   activeConnections.delete(agentId);
   agentSocketEpochs.delete(agentId);
+  void clearAgentPresenceUnfenced(agentId);
 }
 
 // Track per-agent ping/pong state for stale connection detection
@@ -1899,6 +1903,12 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
   // installed. Zero until then, which never matches a live epoch.
   let socketEpoch = 0;
 
+  // Fencing token for this connection's presence lease (wave 3.5b, #4084).
+  // Generated once per handler set so a superseded socket's delayed
+  // onClose/onError can never delete a newer connection's lease — the
+  // server-side Lua compare-and-delete only acts when the token matches.
+  const connectionToken = randomUUID();
+
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
       // Finding #4: enforce the one-socket-per-agent invariant. A second socket
@@ -1927,6 +1937,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
       // Store connection and stamp this socket's delivery epoch.
       activeConnections.set(agentId, ws);
       socketEpoch = installAgentSocketEpoch(agentId);
+      void setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
       console.log(`Agent ${agentId} connected via WebSocket. Active connections: ${activeConnections.size}`);
 
       // Update device status under tenant DB context. Pending commands are
@@ -2085,6 +2096,13 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           const state = agentPingStates.get(agentId);
           if (state) {
             state.lastPongAt = Date.now();
+            void refreshAgentPresence(agentId, connectionToken).then((refreshed) => {
+              // Self-heal: an evict-path unconditional delete may have raced a
+              // reconnect; if we are still the live socket, re-establish the lease.
+              if (!refreshed && activeConnections.get(agentId) === ws) {
+                return setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
+              }
+            });
           }
           return;
         }
@@ -2094,6 +2112,11 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
           const state = agentPingStates.get(agentId);
           if (state) {
             state.lastPongAt = Date.now();
+            void refreshAgentPresence(agentId, connectionToken).then((refreshed) => {
+              if (!refreshed && activeConnections.get(agentId) === ws) {
+                return setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
+              }
+            });
           }
         }
 
@@ -2645,6 +2668,7 @@ onClose: async (_event: unknown, ws: WSContext) => {
         if (agentSocketEpochs.get(agentId) === socketEpoch) {
           agentSocketEpochs.delete(agentId);
         }
+        void clearAgentPresence(agentId, connectionToken);
         console.log(`Agent ${agentId} disconnected. Active connections: ${activeConnections.size}`);
 
         // Update device status to offline (but preserve 'updating' — let
@@ -2705,6 +2729,7 @@ if (activeConnections.get(agentId) === ws) {
         if (agentSocketEpochs.get(agentId) === socketEpoch) {
           agentSocketEpochs.delete(agentId);
         }
+        void clearAgentPresence(agentId, connectionToken);
       }
       if (agentDb) {
         void runWithAgentDbAccess('agentWs.onError.markOffline', async () => {
@@ -3004,6 +3029,19 @@ export function __resetCrossTenantDropsForTest() {
   crossTenantDrops.clear();
 }
 
+// Test-only: install a fake agent socket directly into `activeConnections`
+// without going through the real WS upgrade/auth handshake. Needed by the
+// wave 3.5b (#4084) relay integration suite, which needs a "locally connected"
+// agent on ONE simulated process while dispatching from another. Never usable
+// in production — a real socket must come through createAgentWsHandlers.
+export function __installAgentSocketForTest(agentId: string, ws: { send(data: string): void }): void {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('__installAgentSocketForTest is test-only');
+  }
+  activeConnections.set(agentId, ws as never);
+  installAgentSocketEpoch(agentId);
+}
+
 /**
  * Create the agent WebSocket routes
  * The upgradeWebSocket function must be passed from the main app
@@ -3071,10 +3109,29 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
 }
 
 /**
+ * Wave 3.5b (#4084): a worker-role process never holds agent sockets — this
+ * throws rather than letting a socket-local entry point silently return
+ * false/empty, which would otherwise read as "every agent is offline" instead
+ * of "this process cannot answer that question at all". Callers on a process
+ * that may own sockets (`all`/`api`) must route through
+ * dispatchCommandToAgent/isAgentConnectedAnywhere (services/agentCommandRelay.ts)
+ * once BREEZE_ROLE=worker is actually in use (3.5d, #4086).
+ */
+function assertSocketLocalDispatchAllowed(fn: string): void {
+  if (breezeRole() === 'worker') {
+    throw new Error(
+      `[BREEZE_ROLE] ${fn} is socket-local and cannot run in the worker role — `
+      + 'use dispatchCommandToAgent/isAgentConnectedAnywhere (services/agentCommandRelay.ts)',
+    );
+  }
+}
+
+/**
  * Send a command to a connected agent via WebSocket
  * Returns true if the command was sent, false if agent is not connected
  */
 export function sendCommandToAgent(agentId: string, command: AgentCommand): boolean {
+  assertSocketLocalDispatchAllowed('sendCommandToAgent');
   const ws = activeConnections.get(agentId);
   if (!ws) {
     return false;
@@ -3132,6 +3189,7 @@ export function disconnectAgent(agentId: string, code: number = 4040, reason: st
  * Check if an agent is connected via WebSocket
  */
 export function isAgentConnected(agentId: string): boolean {
+  assertSocketLocalDispatchAllowed('isAgentConnected');
   return activeConnections.has(agentId);
 }
 

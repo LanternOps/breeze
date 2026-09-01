@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TOOL_TIERS } from './aiAgentSdkTools';
+import { ACT_MANIFEST, resolveActOperation } from './aiAgents/actManifest';
 import {
   BLOCKED_TOOLS,
   checkAgentGuardrails,
@@ -89,6 +90,80 @@ describe('disposition (wave 3b tri-state)', () => {
     vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'false');
     const check = checkAgentGuardrails('get_device_details', {}, policyWith({}));
     expect(check.disposition).toBe('deny');
+  });
+});
+
+// P2-4 (#4191): the ticket-scope exemption to the device-less-mutation deny.
+// Truth table: manage_tickets + scope.ticketId passes; manage_tickets with NO
+// scope still denies (unchanged); a non-ticket tool with scope set is NOT
+// exempted (scope is manage_tickets-specific, never a blanket carve-out).
+describe('manage_tickets ticket-scope exemption to the device-less-mutation deny (P2-4)', () => {
+  beforeEach(() => {
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('manage_tickets mutation WITH scope.ticketId is not denied for lack of device binding', () => {
+    const check = checkAgentGuardrails(
+      'manage_tickets',
+      { action: 'update_fields', ticketId: 'ticket-1', fields: { priority: 'high' } },
+      policyWith({
+        mode: 'shadow',
+        deviceId: null,
+        toolAllowlist: ['manage_tickets:update_fields'],
+        scope: { ticketId: 'ticket-1' },
+      }),
+    );
+    expect(check.disposition).not.toBe('deny');
+    expect(check.reason).not.toMatch(/device-bound/);
+  });
+
+  it('manage_tickets mutation WITHOUT scope still denies device-less (unchanged behavior)', () => {
+    const check = checkAgentGuardrails(
+      'manage_tickets',
+      { action: 'update_fields', ticketId: 'ticket-1', fields: { priority: 'high' } },
+      policyWith({
+        mode: 'shadow',
+        deviceId: null,
+        toolAllowlist: ['manage_tickets:update_fields'],
+      }),
+    );
+    expect(check.disposition).toBe('deny');
+    expect(check.reason).toMatch(/device-bound/);
+  });
+
+  it('scope.ticketId does NOT exempt a different tool from the device-less-mutation deny', () => {
+    const check = checkAgentGuardrails(
+      'manage_services',
+      { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' },
+      policyWith({
+        mode: 'shadow',
+        deviceId: null,
+        toolAllowlist: ['manage_services:restart'],
+        scope: { ticketId: 'ticket-1' },
+      }),
+    );
+    expect(check.disposition).toBe('deny');
+    expect(check.reason).toMatch(/device-bound/);
+  });
+
+  it('link_device and draft (new P2-4 actions) also pass the exemption with scope', () => {
+    for (const action of ['link_device', 'draft']) {
+      const check = checkAgentGuardrails(
+        'manage_tickets',
+        { action, ticketId: 'ticket-1', hostname: 'WKS-1', kind: 'reply', content: 'x' },
+        policyWith({
+          mode: 'shadow',
+          deviceId: null,
+          toolAllowlist: [`manage_tickets:${action}`],
+          scope: { ticketId: 'ticket-1' },
+        }),
+      );
+      expect(check.disposition).not.toBe('deny');
+    }
   });
 });
 
@@ -211,9 +286,42 @@ describe('checkAgentGuardrails — fail closed for every registered tool', () =>
           || BLOCKED_TOOLS.has(toolName)
           || isSecretBearingTool(toolName);
 
-        // Tier 3 is the explicitly allowlistable case. Tier 4, blocked, and
-        // secret-bearing tools remain denied even when the snapshot names them.
-        expect(agent.allowed).toBe(base.tier === 3 && !unconditionallyDenied);
+        // Tier 4, blocked, and secret-bearing tools remain denied even when
+        // the snapshot names them — these denials sit upstream of the act
+        // branch and allowlisting can never reach past them.
+        if (unconditionallyDenied) {
+          expect(agent.allowed).toBe(false);
+          return;
+        }
+
+        // The DISPATCHED call's own tier/readOnly-ness governs the
+        // expectation from here, not `base` above (computed from an empty
+        // input purely to select which tools this test runs for). A
+        // multiplexed tool's first listed action can itself downgrade to a
+        // Tier-2 read-only call — e.g. execute_command's first TIER2_ACTIONS
+        // entry, event_logs_list — which always auto-executes regardless of
+        // mode or the act manifest; that's the required "readOnly Tier-2
+        // semantics unchanged" invariant, not a act-branch outcome at all.
+        const actualBase = checkGuardrails(toolName, input);
+        const actuallyReadOnly = actualBase.tier === 1
+          || (actualBase.tier === 2 && (actualBase.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
+        if (actuallyReadOnly) {
+          expect(agent.allowed).toBe(true);
+          return;
+        }
+
+        // Tier 3 under EMPTY's `mode: 'act'` (wave 4b): allowlisting alone no
+        // longer unlocks execution — 'allowed' now tracks manifest
+        // membership. A manifest-matched op executes (disposition 'act');
+        // everything else records a proposal (disposition 'propose',
+        // allowed:false), same as it would under shadow. This replaces the
+        // pre-wave-4b placeholder where any allowlisted Tier-3 tool reached
+        // an 'allow' disposition with requiresApproval:true.
+        const manifestMatched = resolveActOperation(toolName, input) !== null;
+        expect(agent.allowed).toBe(actualBase.tier === 3 && manifestMatched);
+        if (actualBase.tier === 3) {
+          expect(agent.disposition).toBe(manifestMatched ? 'act' : 'propose');
+        }
       });
     }
   }
@@ -352,16 +460,38 @@ describe('checkAgentGuardrails — fail closed for every registered tool', () =>
     expect(checkAgentGuardrails('manage_services', { action: 'restart' }, EMPTY).allowed).toBe(false);
   });
 
-  it('preserves Tier-3 approval semantics for an allowlisted tool', () => {
+  it('preserves Tier-3 metadata (tier, approvalScope) through the act disposition for a manifest-matched op', () => {
+    // Pre-wave-4b, an allowlisted Tier-3 tool under mode 'act' fell through
+    // to the base tier-3 arm unmodified: disposition 'allow', allowed:true,
+    // requiresApproval:true. Wave 4b's act branch (this task) intercepts it
+    // instead: a manifest-matched op still carries tier/approvalScope from
+    // checkGuardrails' base (spread through), but requiresApproval flips to
+    // false — act mode revalidates and executes rather than waiting on a
+    // human approval step.
+    const result = checkAgentGuardrails('run_script', { scriptId: 'script-1', deviceIds: ['dev-1'] }, {
+      ...EMPTY,
+      toolAllowlist: ['run_script'],
+    });
+
+    expect(result.disposition).toBe('act');
+    expect(result.allowed).toBe(true);
+    expect(result.tier).toBe(3);
+    expect(result.requiresApproval).toBe(false);
+    expect(result.approvalScope).toBeDefined();
+  });
+
+  it('an allowlisted Tier-3 tool with NO matching manifest entry proposes instead of executing under act', () => {
+    // run_script with no scriptId cannot be normalized to a manifest target
+    // (actManifest.ts's `matches` requires one) — it is exactly as
+    // allowlisted as the case above, but not act-eligible, so it must
+    // propose rather than silently fall back to unattended execution.
     const result = checkAgentGuardrails('run_script', {}, {
       ...EMPTY,
       toolAllowlist: ['run_script'],
     });
 
-    expect(result.allowed).toBe(true);
-    expect(result.tier).toBe(3);
-    expect(result.requiresApproval).toBe(true);
-    expect(result.approvalScope).toBeDefined();
+    expect(result.disposition).toBe('propose');
+    expect(result.allowed).toBe(false);
   });
 
   it('honours exact tool:action allowlist entries', () => {
@@ -399,9 +529,13 @@ describe('checkAgentGuardrails — fail closed for every registered tool', () =>
     expect(checkAgentGuardrails('file_operations', {
       action: 'delete', path: 'C:\\Windows\\Temp\\..\\System32\\drivers\\x.sys',
     }, policy).allowed).toBe(false);
+    // file_operations has no ACT_MANIFEST entry, so a non-protected path
+    // still never reaches 'allowed:true' under act — it proposes instead.
+    // Asserting disposition (not `allowed`) is what proves the protected
+    // check itself didn't fire here: a 'deny' above vs. a 'propose' here.
     expect(checkAgentGuardrails('file_operations', {
       action: 'delete', path: 'C:\\Windows\\System32-old\\x.sys',
-    }, policy).allowed).toBe(true);
+    }, policy).disposition).toBe('propose');
   });
 
   it('denies protected registry keys case-insensitively, including subkeys only', () => {
@@ -414,9 +548,11 @@ describe('checkAgentGuardrails — fail closed for every registered tool', () =>
     expect(checkAgentGuardrails('registry_operations', {
       action: 'delete_key', key: 'hklm\\system\\CurrentControlSet',
     }, policy).allowed).toBe(false);
+    // registry_operations has no ACT_MANIFEST entry — see the same note on
+    // the Windows-paths test above.
     expect(checkAgentGuardrails('registry_operations', {
       action: 'delete_key', key: 'HKLM\\SYSTEM-OLD',
-    }, policy).allowed).toBe(true);
+    }, policy).disposition).toBe('propose');
   });
 
   it('denies inputs carrying a protected device tag', () => {
@@ -440,5 +576,164 @@ describe('checkAgentGuardrails — fail closed for every registered tool', () =>
       ...EMPTY,
       deviceSiteId: null,
     }).allowed).toBe(false);
+  });
+});
+
+/**
+ * Task 2's own disposition matrix, spelled out explicitly rather than left
+ * to infer from the tests above — the plan calls this "the heart of the
+ * wave", so each row gets its own named test rather than a shared loop that
+ * would blur which case failed.
+ */
+describe('Task 2 — act disposition matrix', () => {
+  beforeEach(() => {
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const actPolicy = (overrides: Partial<AgentGuardrailPolicy> = {}) =>
+    policyWith({ mode: 'act', ...overrides });
+
+  it('act + manifest-matched restart => act (executes, no approval)', () => {
+    const check = checkAgentGuardrails(
+      'manage_services',
+      { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' },
+      actPolicy({ toolAllowlist: ['manage_services:restart'] }),
+    );
+    expect(check.disposition).toBe('act');
+    expect(check.allowed).toBe(true);
+    expect(check.requiresApproval).toBe(false);
+  });
+
+  it('act + stop (same tool, non-manifest action) => propose, not act', () => {
+    const check = checkAgentGuardrails(
+      'manage_services',
+      { deviceId: 'dev-1', action: 'stop', serviceName: 'spooler' },
+      actPolicy({ toolAllowlist: ['manage_services:stop'] }),
+    );
+    expect(check.disposition).toBe('propose');
+    expect(check.allowed).toBe(false);
+  });
+
+  it('act + execute_command => propose — the lower-level alias path is never act-eligible', () => {
+    // A mutating commandType with no TIER2_ACTIONS entry stays base Tier 3
+    // (allowed:true, requiresApproval:true from checkGuardrails) — this is
+    // NOT a readOnly downgrade, so it genuinely reaches the act branch and
+    // must still fail to match the manifest.
+    const check = checkAgentGuardrails(
+      'execute_command',
+      { deviceId: 'dev-1', commandType: 'kill_process', payload: { pid: '4242' } },
+      actPolicy({ toolAllowlist: ['execute_command'] }),
+    );
+    expect(check.disposition).toBe('propose');
+    expect(check.allowed).toBe(false);
+  });
+
+  it('act + a genuinely unknown (tier-4) tool still denies, even fed a manifest-shaped input — ordering proof', () => {
+    // Proves the tier-4/unknown-tool denial in checkAgentGuardrails fires
+    // BEFORE the mode branch is ever reached: an act-looking payload on a
+    // tool the registry has never heard of is not "rescued" into a proposal
+    // or an execution, it is denied on the same unconditional ground a
+    // read-only call to it would be.
+    const check = checkAgentGuardrails(
+      'manage_services_nonexistent',
+      { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' },
+      actPolicy({ toolAllowlist: ['manage_services_nonexistent'] }),
+    );
+    expect(check.tier).toBe(4);
+    expect(check.disposition).toBe('deny');
+    expect(check.allowed).toBe(false);
+  });
+
+  it('act + secret-bearing tool still denies, even allowlisted and manifest-shaped — ordering proof', () => {
+    // isSecretBearingTool's check sits above the mode branch too; assert it
+    // against every entry in the real registry, not a single sample.
+    for (const toolName of SECRET_BEARING_TOOLS) {
+      const check = checkAgentGuardrails(
+        toolName,
+        { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' },
+        actPolicy({ toolAllowlist: [toolName] }),
+      );
+      expect(check.disposition, toolName).toBe('deny');
+      expect(check.allowed, toolName).toBe(false);
+    }
+  });
+
+  it('act + a read-only tool => allow (never enters the act/propose branch at all)', () => {
+    const check = checkAgentGuardrails('get_device_details', { deviceId: 'dev-1' }, actPolicy());
+    expect(check.disposition).toBe('allow');
+    expect(check.allowed).toBe(true);
+  });
+
+  it('off + a manifest-matched call still denies — mode gate precedes the manifest entirely', () => {
+    const check = checkAgentGuardrails(
+      'manage_services',
+      { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' },
+      policyWith({ mode: 'off', toolAllowlist: ['manage_services:restart'] }),
+    );
+    expect(check.disposition).toBe('deny');
+    expect(check.allowed).toBe(false);
+  });
+
+  it('shadow + the exact same manifest-matched call => propose, never act — modes never leak into each other', () => {
+    const check = checkAgentGuardrails(
+      'manage_services',
+      { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' },
+      policyWith({ mode: 'shadow', toolAllowlist: ['manage_services:restart'] }),
+    );
+    expect(check.disposition).toBe('propose');
+    expect(check.allowed).toBe(false);
+  });
+
+  it('the manifest key set reachable via checkAgentGuardrails matches ACT_MANIFEST exactly (no drift between the two modules)', () => {
+    // manage_services / disk_cleanup / run_script / execute_playbook each get
+    // one representative matching call; the virtual remediation_suggestion
+    // key is intentionally excluded — it is never reachable via a raw
+    // checkAgentGuardrails dispatch (Task 7). manage_processes.kill is also
+    // excluded — deferred out of act-manifest v1 (#3826 scoped re-review):
+    // see the dedicated test below.
+    const reachableKeys = new Set(
+      [
+        checkAgentGuardrails('manage_services', { deviceId: 'dev-1', action: 'restart', serviceName: 'x' },
+          actPolicy({ toolAllowlist: ['manage_services'] })),
+        checkAgentGuardrails('disk_cleanup', { deviceId: 'dev-1', action: 'execute', paths: ['/tmp/a'] },
+          actPolicy({ toolAllowlist: ['disk_cleanup'] })),
+        checkAgentGuardrails('run_script', { scriptId: 's-1', deviceIds: ['dev-1'] },
+          actPolicy({ toolAllowlist: ['run_script'] })),
+        checkAgentGuardrails('execute_playbook', { deviceId: 'dev-1', playbookId: 'pb-1' },
+          actPolicy({ toolAllowlist: ['execute_playbook'] })),
+      ].map((c) => c.disposition),
+    );
+    expect(reachableKeys).toEqual(new Set(['act']));
+    // 5 manifest entries total; 4 are reachable through a raw tool call, 1
+    // (remediation_suggestion) is virtual — see actManifest.test.ts.
+    expect(ACT_MANIFEST.length).toBe(5);
+  });
+
+  it('act + manage_processes kill => propose, exactly like shadow — deferred out of v1 (#3826), no capability regression', () => {
+    // manage_processes.kill was removed from ACT_MANIFEST (unreachable via
+    // the agent SDK to begin with — manage_processes is not in TOOL_TIERS —
+    // and its identity pin was never implemented). Under act mode this call
+    // now falls through to the ordinary unmatched-mutation branch, which
+    // records a proposal exactly like shadow mode would for the same call:
+    // no capability regression, since nothing could execute it before either.
+    const actCheck = checkAgentGuardrails(
+      'manage_processes',
+      { deviceId: 'dev-1', action: 'kill', processId: '1', processName: 'x' },
+      actPolicy({ toolAllowlist: ['manage_processes'] }),
+    );
+    expect(actCheck.disposition).toBe('propose');
+    expect(actCheck.allowed).toBe(false);
+
+    const shadowCheck = checkAgentGuardrails(
+      'manage_processes',
+      { deviceId: 'dev-1', action: 'kill', processId: '1', processName: 'x' },
+      policyWith({ mode: 'shadow', toolAllowlist: ['manage_processes'] }),
+    );
+    expect(shadowCheck.disposition).toBe('propose');
+    expect(shadowCheck.allowed).toBe(false);
   });
 });

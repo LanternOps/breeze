@@ -41,6 +41,16 @@ import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
 // while the REST path rejected at 1 MB. The byte-accurate one wins.
 import { commandResultSchema } from '../routes/agents/schemas';
 import { applyAutomationActionTerminal } from './automationActionResults';
+import { handlePeripheralPolicyResultV2 } from './peripheralPolicyState';
+import {
+  pamAgentResultV2Schema,
+  recordPamActuationResult,
+  type PamActuationResultClassification,
+} from './pamActuationResult';
+
+export type CommandResultHandlerOutcome =
+  | { kind: 'pam'; classification: PamActuationResultClassification }
+  | void;
 
 export type CommandResultHandler = (params: {
   agentId: string;
@@ -59,7 +69,7 @@ export type CommandResultHandler = (params: {
   result: z.infer<typeof commandResultSchema>;
   resolvedDeviceId: string;
   stdout: string | undefined;
-}) => Promise<unknown>;
+}) => Promise<CommandResultHandlerOutcome>;
 
 // ---------------------------------------------------------------------------
 // Per-command-type result handlers (used by the dispatch map in processCommandResult)
@@ -319,7 +329,7 @@ async function handleSnmpPollResult({ agentId, command, result, commandId }: Par
   }
 }
 
-async function handleScriptResult({ agentId, command, result, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<{ id: string; scriptId: string } | null> {
+async function handleScriptResult({ agentId, command, result, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
   try {
     const payload = command.payload as Record<string, unknown> | null;
     const executionId = payload?.executionId as string | undefined;
@@ -342,7 +352,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
         undefined,
         { commandId: command.id, agentId, executionId },
       );
-      return null;
+      return;
     }
     if (executionId) {
       let scriptStatus: 'completed' | 'failed' | 'timeout';
@@ -506,9 +516,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             eq(scriptExecutionBatches.scriptId, updatedExecutions[0].scriptId)
           ));
       }
-      return effectiveExecution;
     }
-    return null;
   } catch (err) {
     // #3162 lived undetected because this catch logged to the container and
     // nothing else — a swallowed 22P02 silently discarded every automation's
@@ -521,7 +529,6 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       agentId,
       executionId: String((command.payload as Record<string, unknown> | null)?.executionId ?? ''),
     });
-    return null;
   }
 }
 
@@ -557,6 +564,57 @@ async function handleCisResult({ agentId, command, result, stdout }: Parameters<
   }
 }
 
+const peripheralPolicyResultV2Schema = z.object({
+  schemaVersion: z.literal(2),
+  phase: z.enum(['clear_legacy', 'enforce']),
+  revision: z.number().int().positive(),
+  digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  outcome: z.enum(['applied', 'rejected']),
+  reasonCode: z.enum([
+    'wrong_identity',
+    'lower_revision',
+    'revision_digest_conflict',
+    'malformed_digest',
+    'invalid_payload',
+    'detection_failed',
+    'enforcement_failed',
+    'persistence_failed',
+  ]).optional(),
+});
+
+async function handlePeripheralPolicyV2Result({
+  commandId,
+  result,
+  resolvedDeviceId,
+}: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const parsed = peripheralPolicyResultV2Schema.safeParse(result.result);
+  if (!parsed.success) {
+    console.warn(`[AgentWs] Ignoring malformed peripheral v2 result for command ${commandId}`);
+    return;
+  }
+  await handlePeripheralPolicyResultV2(resolvedDeviceId, commandId, parsed.data);
+}
+
+async function handlePamActuationV2Result({
+  agentId,
+  commandId,
+  result,
+  resolvedDeviceId,
+}: Parameters<CommandResultHandler>[0]): Promise<CommandResultHandlerOutcome> {
+  const parsed = pamAgentResultV2Schema.safeParse(result.result);
+  if (!parsed.success) {
+    console.warn(`[AgentWs] Ignoring malformed PAM v2 result for command ${commandId}`);
+    return;
+  }
+  const classification = await recordPamActuationResult({
+    agentId,
+    deviceId: resolvedDeviceId,
+    commandId,
+    result: parsed.data,
+  });
+  return { kind: 'pam', classification };
+}
+
 export const commandResultHandlers: Record<string, CommandResultHandler> = {
   network_discovery: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,
@@ -576,4 +634,7 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   quarantine_file: handleSensitiveDataResult,
   cis_benchmark: handleCisResult,
   apply_cis_remediation: handleCisResult,
+  peripheral_policy_sync_v2: handlePeripheralPolicyV2Result,
+  pam_apply_v2: handlePamActuationV2Result,
+  pam_cleanup_v2: handlePamActuationV2Result,
 };

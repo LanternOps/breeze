@@ -74,3 +74,22 @@ export function SettingsIcon({ color, size }: Props) {
   );
 }
 
+
+// Clock face for the Time tab: a ring with hour and minute hands. Deliberately
+// not a stopwatch — the tab is the weekly timesheet, and the running-timer
+// affordance is the TimerBar sitting directly above it.
+export function TimeIcon({ color, size }: Props) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Circle cx={12} cy={12} r={8.5} stroke={color} strokeWidth={1.75} fill="none" />
+      <Path
+        d="M12 7 L12 12 L15.5 14"
+        stroke={color}
+        strokeWidth={1.75}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </Svg>
+  );
+}

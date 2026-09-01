@@ -26,7 +26,7 @@ import { createOrganization, createPartner } from './db-utils';
 import { getTestDb } from './setup';
 
 const RUN = !!process.env.DATABASE_URL;
-const MIGRATION = '2026-09-11-a-automation-resource-bindings.sql';
+const MIGRATION = '2026-09-25-a-automation-resource-bindings.sql';
 const notices: string[] = [];
 const adminSql = postgres(process.env.DATABASE_URL ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test', {
   max: 1,

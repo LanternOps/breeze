@@ -27,7 +27,12 @@ import NotificationCenter from './NotificationCenter';
 import TimerWidget from '../time/TimerWidget';
 import CommandPalette from './CommandPalette';
 import SupportModal from '../support/SupportModal';
-import { useAuthStore, apiLogout, fetchWithAuth } from '../../stores/auth';
+import {
+  useAuthStore,
+  apiLogout,
+  apiPrepareCfTerminalLogout,
+  fetchWithAuth,
+} from '../../stores/auth';
 import { useAiStore } from '../../stores/aiStore';
 import { useHelpStore } from '../../stores/helpStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -52,6 +57,15 @@ import { useTranslation } from 'react-i18next';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 
+const LOGOUT_BEARER_DEADLINE_MS = 30_000;
+const LOGOUT_MAX_ATTEMPTS = 2;
+
+interface LogoutBearerLease {
+  token: string;
+  expiresAt: number;
+  attempts: number;
+}
+
 export default function Header() {
   const { t } = useTranslation('common');
   const [mounted, setMounted] = useState(false);
@@ -65,6 +79,7 @@ export default function Header() {
   const [showSupportModal, setShowSupportModal] = useState(false);
   const [billingLoading, setBillingLoading] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [logoutFailure, setLogoutFailure] = useState<{ message: string } | null>(null);
   const features = useFeaturesStore((s) => s.features);
   const loadFeatures = useFeaturesStore((s) => s.load);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -73,6 +88,9 @@ export default function Header() {
   const themePanelRef = useRef<HTMLDivElement>(null);
   const userTriggerRef = useRef<HTMLButtonElement>(null);
   const userPanelRef = useRef<HTMLDivElement>(null);
+  const logoutBearerRef = useRef<LogoutBearerLease | null>(null);
+  const logoutBearerDeadlineRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const logoutFlowStartedRef = useRef(false);
 
   const { user, isAuthenticated } = useAuthStore();
   // Resolve the avatar through fetchWithAuth so internal /api/v1/users/<id>/avatar
@@ -93,6 +111,16 @@ export default function Header() {
 
   useEffect(() => subscribeTheme(setTheme), []);
   useEffect(() => subscribeDensity(setDensity), []);
+
+  const clearLogoutBearer = () => {
+    logoutBearerRef.current = null;
+    if (logoutBearerDeadlineRef.current !== null) {
+      clearTimeout(logoutBearerDeadlineRef.current);
+      logoutBearerDeadlineRef.current = null;
+    }
+  };
+
+  useEffect(() => () => clearLogoutBearer(), []);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -219,6 +247,46 @@ export default function Header() {
 
   const handleSignOut = async () => {
     setIsLoggingOut(true);
+    setLogoutFailure(null);
+    let bearer = logoutBearerRef.current;
+    if (
+      bearer
+      && (Date.now() >= bearer.expiresAt || bearer.attempts >= LOGOUT_MAX_ATTEMPTS)
+    ) {
+      clearLogoutBearer();
+      bearer = null;
+    }
+    if (!bearer) {
+      if (logoutFlowStartedRef.current) {
+        setIsLoggingOut(false);
+        await navigateTo('/login', { replace: true });
+        return;
+      }
+      logoutFlowStartedRef.current = true;
+      const accessToken = useAuthStore.getState().tokens?.accessToken;
+      if (!accessToken) {
+        setIsLoggingOut(false);
+        await navigateTo('/login', { replace: true });
+        return;
+      }
+      bearer = {
+        token: accessToken,
+        expiresAt: Date.now() + LOGOUT_BEARER_DEADLINE_MS,
+        attempts: 0,
+      };
+      logoutBearerRef.current = bearer;
+      logoutBearerDeadlineRef.current = setTimeout(() => {
+        logoutBearerRef.current = null;
+        logoutBearerDeadlineRef.current = null;
+      }, LOGOUT_BEARER_DEADLINE_MS);
+    }
+    bearer.attempts += 1;
+
+    const routeToSafeReauthentication = async () => {
+      clearLogoutBearer();
+      setIsLoggingOut(false);
+      await navigateTo('/login', { replace: true });
+    };
 
     // When CF Access trust is in front of Breeze, a normal SPA-side logout
     // only clears the Breeze session — CF Access still holds a session for
@@ -227,24 +295,46 @@ export default function Header() {
     // endpoint, which clears the Breeze refresh cookie and bounces the
     // browser through CF Access's own logout endpoint with returnTo set
     // to /login?signedOut=1.
-    const cfAccessEnabled = useFeaturesStore.getState().cfAccessLogin.enabled;
-    if (cfAccessEnabled) {
-      // Drop in-memory state first so any racing component doesn't read
-      // stale tokens before the navigation lands.
-      try { useAuthStore.getState().logout(); } catch { /* zustand always present */ }
-      try { localStorage.removeItem('breeze-auth'); } catch { /* localStorage may be unavailable */ }
-      try { localStorage.removeItem('breeze-org'); } catch { /* localStorage may be unavailable */ }
-      window.location.assign('/api/v1/auth/cf-access-logout');
-      return;
-    }
-
     try {
-      await apiLogout();
-      await navigateTo('/login', { replace: true });
+      const cfAccessEnabled = useFeaturesStore.getState().cfAccessLogin.enabled;
+      if (cfAccessEnabled) {
+        const outcome = await apiPrepareCfTerminalLogout(bearer.token);
+        if (outcome.kind === 'ready') {
+          clearLogoutBearer();
+          window.location.assign(outcome.navigationUrl);
+          return;
+        }
+        if (bearer.attempts >= LOGOUT_MAX_ATTEMPTS) {
+          await routeToSafeReauthentication();
+          return;
+        }
+        setLogoutFailure({ message: outcome.message });
+        setIsLoggingOut(false);
+        return;
+      }
+
+      const outcome = await apiLogout(bearer.token);
+      if (outcome.kind === 'complete') {
+        clearLogoutBearer();
+        await navigateTo('/login', { replace: true });
+        return;
+      }
+      if (bearer.attempts >= LOGOUT_MAX_ATTEMPTS) {
+        await routeToSafeReauthentication();
+        return;
+      }
+      setLogoutFailure({ message: outcome.message });
     } catch {
-      // Even if logout fails on server, redirect to login
-      await navigateTo('/login', { replace: true });
+      console.error('[logout] Unexpected terminal logout failure');
+      if (bearer.attempts >= LOGOUT_MAX_ATTEMPTS) {
+        await routeToSafeReauthentication();
+        return;
+      }
+      setLogoutFailure({
+        message: 'Your local session was cleared, but server sign-out could not be confirmed.',
+      });
     }
+    setIsLoggingOut(false);
   };
 
   // Get user initials for avatar
@@ -258,6 +348,30 @@ export default function Header() {
     }
     return parts[0][0].toUpperCase();
   };
+
+  if (logoutFailure) {
+    return (
+      <section
+        data-testid="logout-failure"
+        className="fixed inset-0 z-[100] flex items-center justify-center bg-background px-4"
+        aria-live="polite"
+      >
+        <div className="w-full max-w-md rounded-lg border bg-card p-6 text-center shadow-lg">
+          <h1 className="text-lg font-semibold">Signed out on this device</h1>
+          <p className="mt-2 text-sm text-muted-foreground">{logoutFailure.message}</p>
+          <button
+            data-testid="logout-retry"
+            type="button"
+            disabled={isLoggingOut}
+            onClick={() => void handleSignOut()}
+            className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+          >
+            {isLoggingOut ? 'Retrying…' : 'Retry server sign-out'}
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <header className="flex h-16 items-center justify-between gap-2 border-b bg-card px-2 sm:px-4 md:px-6">

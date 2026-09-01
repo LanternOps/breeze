@@ -22,10 +22,14 @@ export interface FactorChangeResult {
  * MFA factor change unaffected. This closes that gap as a single reusable
  * primitive every factor handler folds its own write into.
  *
- * Atomic durable effect (invariant 3): `mutate` (the caller's factor write)
- * + mfa_epoch advance + refresh-family revoke commit together in ONE
+ * Atomic durable effect (invariant 3): mfa_epoch advance + refresh-family
+ * revoke + `mutate` (the caller's factor write) commit together in ONE
  * transaction or not at all — a throw inside `mutate` rolls back the whole
  * transaction (no epoch bump, no revoke).
+ *
+ * Global lock order is user, refresh families, then route-specific factor
+ * rows. Keeping `mutate` last prevents passkey verify (which holds the user
+ * and family before updating the passkey) from deadlocking with factor delete.
  *
  * Post-commit cleanup and remote-session teardown are best-effort and run
  * AFTER the commit: they can never restore token validity, only extend the
@@ -58,9 +62,9 @@ export async function invalidateMfaAssuranceAfterFactorChange(
   mutate?: (tx: Tx) => Promise<void>,
 ): Promise<FactorChangeResult> {
   const epochRow = await dbModule.db.transaction(async (tx: Tx) => {
-    if (mutate) await mutate(tx);
     const row = await advanceUserEpochs(tx, userId, { mfa: true });
     await revokeAllRefreshFamilies(tx, userId, reason);
+    if (mutate) await mutate(tx);
     return row;
   });
 

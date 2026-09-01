@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import type { DispatchOutcome } from '../services/agentCommandRelay';
 
 const { mockDb } = vi.hoisted(() => ({
   mockDb: {
@@ -23,7 +24,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  discoveryProfiles: {},
+  discoveryProfiles: { id: 'discoveryProfiles.id' },
   discoveryJobs: { id: 'discoveryJobs.id' },
   discoveredAssets: {
     id: 'discoveredAssets.id',
@@ -56,7 +57,10 @@ vi.mock('../db/schema', () => ({
     id: 'devices.id',
     orgId: 'devices.orgId',
     siteId: 'devices.siteId',
-    deviceRoleSource: 'devices.deviceRoleSource'
+    deviceRoleSource: 'devices.deviceRoleSource',
+    agentId: 'devices.agentId',
+    status: 'devices.status',
+    isEphemeral: 'devices.isEphemeral'
   },
   deviceNetwork: {
     deviceId: 'deviceNetwork.deviceId',
@@ -76,12 +80,16 @@ vi.mock('../services/redis', () => ({
   isBullMQAvailable: vi.fn(() => true),
 }));
 
-vi.mock('../routes/agentWs', () => ({
-  sendCommandToAgent: vi.fn(),
-  isAgentConnected: vi.fn()
+const agentRelayMock = {
+  isAgentConnectedAnywhere: vi.fn(async () => true),
+  dispatchCommandToAgent: vi.fn(async (): Promise<DispatchOutcome> => ({ status: 'sent', via: 'local' })),
+};
+vi.mock('../services/agentCommandRelay', () => ({
+  isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
+  dispatchCommandToAgent: agentRelayMock.dispatchCommandToAgent,
 }));
 
-vi.mock('../services/automationRuntime', () => ({
+vi.mock('../services/cronDue', () => ({
   isCronDue: vi.fn()
 }));
 
@@ -105,7 +113,7 @@ import { inferAssetTypeFromVendor } from '../services/macVendorLookup';
 import { devices, discoveredAssets } from '../db/schema';
 import type { DiscoveredHostResult } from './discoveryWorker';
 
-const { cleanupSpeculativeTopologyLinks, processResults } = await import('./discoveryWorker') as typeof import('./discoveryWorker');
+const { cleanupSpeculativeTopologyLinks, processResults, __testables } = await import('./discoveryWorker') as typeof import('./discoveryWorker');
 
 // Helper: build a chainable Drizzle-like mock that resolves to resolveValue
 // when awaited directly (thenable) or via .limit() / .returning().
@@ -798,5 +806,88 @@ describe('cleanupSpeculativeTopologyLinks', () => {
 
     expect(deleted).toBe(2);
     expect(vi.mocked(db.delete)).toHaveBeenCalledWith(expect.anything());
+  });
+});
+
+describe('processDispatchScan (wave 3.5b #4084 — dispatch via facade)', () => {
+  // Requested-agent path: profile select, then validateRequestedAgentForDiscovery's
+  // devices select. Supplying data.agentId means the `if (!agentId)` site-auto
+  // devices lookup never runs, keeping the select queue to exactly these two.
+  const DATA = {
+    type: 'dispatch-scan' as const,
+    jobId: 'job-1',
+    profileId: 'profile-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    agentId: 'agent-1',
+  };
+  const PROFILE_ROW = { id: 'profile-1' };
+  const VALID_AGENT_ROW = { agentId: 'agent-1', orgId: 'org-1', siteId: 'site-1', status: 'online' };
+
+  let selectQueue: unknown[][];
+  let selectCallIndex: number;
+  let updateLog: Array<{ payload: Record<string, unknown> }>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectQueue = [[PROFILE_ROW], [VALID_AGENT_ROW]];
+    selectCallIndex = 0;
+    updateLog = [];
+
+    vi.mocked(mockDb.select).mockImplementation(() =>
+      makeSelectChain(selectQueue[selectCallIndex++] ?? [])
+    );
+    vi.mocked(mockDb.update).mockImplementation(() => {
+      const chain: Record<string, unknown> = {};
+      chain.set = (payload: Record<string, unknown>) => {
+        updateLog.push({ payload });
+        return chain;
+      };
+      chain.where = () => Promise.resolve([]);
+      return chain;
+    });
+
+    agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(true);
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'sent', via: 'local' });
+  });
+
+  it('marks the job failed with "No online agent available for this site" (byte-identical to today) when no agent is connected anywhere, without calling dispatch', async () => {
+    agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await __testables.processDispatchScan(DATA);
+
+    expect(result).toEqual({ dispatched: false, agentId: null, durationMs: expect.any(Number) });
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(updateLog.some((u) => (u.payload.errors as { message: string } | undefined)?.message === 'No online agent available for this site')).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('flips the job to running when the outcome is sent', async () => {
+    const result = await __testables.processDispatchScan(DATA);
+
+    expect(result).toEqual({ dispatched: true, agentId: 'agent-1', durationMs: expect.any(Number) });
+    expect(updateLog.some((u) => u.payload.status === 'running')).toBe(true);
+  });
+
+  it('marks the job failed with "Failed to send command to agent" (today\'s message) when the outcome is offline', async () => {
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'offline' });
+
+    const result = await __testables.processDispatchScan(DATA);
+
+    expect(result).toEqual({ dispatched: false, agentId: 'agent-1', durationMs: expect.any(Number) });
+    expect(updateLog.some((u) => (u.payload.errors as { message: string } | undefined)?.message === 'Failed to send command to agent')).toBe(true);
+  });
+
+  it('marks the job failed naming the outcome when indeterminate', async () => {
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'indeterminate' });
+
+    const result = await __testables.processDispatchScan(DATA);
+
+    expect(result).toEqual({ dispatched: false, agentId: 'agent-1', durationMs: expect.any(Number) });
+    expect(updateLog.some((u) => {
+      const message = (u.payload.errors as { message?: string } | undefined)?.message;
+      return typeof message === 'string' && /dispatch outcome indeterminate/i.test(message);
+    })).toBe(true);
   });
 });

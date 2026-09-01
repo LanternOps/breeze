@@ -1,19 +1,37 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { users, partners, organizations } from '../../db/schema';
 import {
   hashPassword,
   isPasswordStrong,
   getRedis,
-  createTokenPair,
   rateLimiter,
-  mintRefreshTokenFamily,
-  bindRefreshJtiToFamily,
-  getUserEpochs,
 } from '../../services';
+import {
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceCapabilityError,
+  AuthIssuanceConflictError,
+  beginAuthIssuance,
+  cancelAuthIssuance,
+  finishAuthIssuance,
+} from '../../services/authBrowserTransition';
+import {
+  authBrowserTransitionsEnforced,
+  bindIssuedUserSession,
+  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
+  type UserSessionIdentity,
+} from '../../services/userSession';
+import {
+  advanceUserEpochs,
+  lockActiveRefreshFamiliesForUsers,
+  revokeAllRefreshFamilies,
+} from '../../services/authLifecycle';
+import { recordAuthTransitionLegacyIssuer } from '../../services/authTransitionMetrics';
 import { acceptInviteSchema, invitePreviewSchema } from './schemas';
 import {
   getClientRateLimitKey,
@@ -21,15 +39,37 @@ import {
   resolveUserAuditOrgId,
   writeAuthAudit,
   toPublicTokens,
-  setRefreshTokenCookie,
   hashInviteToken,
   inviteRedisKey,
   inviteUserRedisKey,
+  isAuthTransitionV1Request,
+  authClientUpgradeRequiredResponse,
+  installAuthorizedUserSessionCookies,
+  installLegacyUserSessionCookiesDuringTransition,
 } from './helpers';
+import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
 export const inviteRoutes = new Hono();
+
+function inviteIssuanceError(c: Context, error: unknown): Response | null {
+  if (error instanceof AuthBindingRotationRequiredError) {
+    installAuthBindingReplacement(c, error.replacement);
+    return c.json({
+      error: 'Authentication binding refresh required',
+      reason: 'binding_refresh',
+    }, 428);
+  }
+  if (
+    error instanceof AuthBindingUnavailableError
+    || error instanceof AuthIssuanceConflictError
+    || error instanceof AuthIssuanceCapabilityError
+  ) {
+    return c.json({ error: 'Authentication temporarily unavailable' }, 409);
+  }
+  return null;
+}
 
 function setInviteTokenNoStore(c: Context): void {
   c.header('Cache-Control', 'no-store');
@@ -128,6 +168,8 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
         email: users.email,
         name: users.name,
         status: users.status,
+        authEpoch: users.authEpoch,
+        mfaEpoch: users.mfaEpoch,
       })
       .from(users)
       .where(eq(users.id, userId))
@@ -142,16 +184,87 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
     return c.json({ error: 'This invite has already been accepted' }, 400);
   }
 
-  // Activate the user account
-  try {
-    const passwordHash = await hashPassword(password);
+  const transitionV1 = isAuthTransitionV1Request(c);
+  if (!transitionV1 && authBrowserTransitionsEnforced()) {
+    return authClientUpgradeRequiredResponse(c);
+  }
 
-    // Pre-auth path: RLS UPDATE policy on `users` requires partner/org
-    // /self context. Without the system-scope wrap, this silently
-    // matches zero rows and returns success — the invitee's account
-    // never gets activated. Same fix as reset-password (see password.ts).
-    await withSystemDbAccessContext(async () =>
-      db
+  const context = await resolveCurrentUserTokenContext(userId);
+  const identity: UserSessionIdentity = {
+    userId: user.id,
+    email: user.email,
+    roleId: context.roleId,
+    orgId: context.orgId,
+    partnerId: context.partnerId,
+    scope: context.scope,
+    mfa: false,
+  };
+  const passwordHash = await hashPassword(password);
+
+  if (!transitionV1) {
+    try {
+      await withSystemDbAccessContext(() => db.transaction(async (tx) => {
+        const activated = await tx
+          .update(users)
+          .set({
+            passwordHash,
+            status: 'active',
+            passwordChangedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(eq(users.id, userId), eq(users.status, 'invited')))
+          .returning({ id: users.id });
+        if (activated.length !== 1) throw new Error('Invite is no longer available');
+        await advanceUserEpochs(tx, userId, { auth: true, passwordReset: true });
+        await lockActiveRefreshFamiliesForUsers(tx, [userId]);
+        await revokeAllRefreshFamilies(tx, userId, 'invite_accepted');
+      }));
+
+      recordAuthTransitionLegacyIssuer('invite', 'web');
+      const issued = await issueUserSessionLegacyDuringTransition(identity);
+      installLegacyUserSessionCookiesDuringTransition(c, issued);
+
+      await redis.del(inviteRedisKey(tokenHash)).catch((err: unknown) => {
+        console.error('[AcceptInvite] Failed to delete invite token after commit:', err);
+      });
+      await redis.del(inviteUserRedisKey(userId)).catch((err: unknown) => {
+        console.error('[AcceptInvite] Failed to delete invite-user key after commit:', err);
+      });
+
+      const auditOrgId = await resolveUserAuditOrgId(userId);
+      writeAuthAudit(c, {
+        orgId: auditOrgId ?? undefined,
+        action: 'user.invite.accepted',
+        result: 'success',
+        userId: user.id,
+        email: user.email,
+        name: user.name,
+      });
+      writeAuthAudit(c, {
+        orgId: auditOrgId ?? undefined,
+        action: 'user.password.set',
+        result: 'success',
+        userId: user.id,
+        email: user.email,
+        name: user.name,
+      });
+
+      return c.json({
+        user: { id: user.id, email: user.email, name: user.name, mfaEnabled: false },
+        tokens: toPublicTokens(issued),
+      });
+    } catch (err) {
+      console.error(`[AcceptInvite] Failed to activate user ${userId}:`, err);
+      return c.json({ error: 'Failed to activate account. Please try again.' }, 500);
+    }
+  }
+
+  let capability;
+  try {
+    capability = await beginAuthIssuance(requestAuthBinding(c));
+    const guardedCapability = capability;
+    const issued = await finishAuthIssuance(guardedCapability, async (tx) => {
+      const activated = await tx
         .update(users)
         .set({
           passwordHash,
@@ -159,64 +272,51 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
           passwordChangedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(users.id, userId))
-    );
+        .where(and(
+          eq(users.id, userId),
+          eq(users.status, 'invited'),
+          eq(users.authEpoch, user.authEpoch),
+          eq(users.mfaEpoch, user.mfaEpoch),
+        ))
+        .returning({ id: users.id });
+      if (activated.length !== 1) throw new AuthIssuanceCapabilityError();
 
-    // Clean up invite tokens (single-use)
+      const epochs = await advanceUserEpochs(tx, userId, { auth: true, passwordReset: true });
+      await lockActiveRefreshFamiliesForUsers(tx, [userId]);
+      await revokeAllRefreshFamilies(tx, userId, 'invite_accepted');
+      return issueUserSession(identity, {
+        tx,
+        capability: guardedCapability,
+        expectedEpochs: { authEpoch: epochs.authEpoch, mfaEpoch: epochs.mfaEpoch },
+      });
+    });
+
+    await bindIssuedUserSession(issued);
     await redis.del(inviteRedisKey(tokenHash)).catch((err: unknown) => {
-      console.error('[AcceptInvite] Failed to delete invite token:', err);
+      console.error('[AcceptInvite] Failed to delete invite token after commit:', err);
     });
     await redis.del(inviteUserRedisKey(userId)).catch((err: unknown) => {
-      console.error('[AcceptInvite] Failed to delete invite-user key:', err);
+      console.error('[AcceptInvite] Failed to delete invite-user key after commit:', err);
     });
-  } catch (err) {
-    console.error(`[AcceptInvite] Failed to activate user ${userId}:`, err);
-    return c.json({ error: 'Failed to activate account. Please try again.' }, 500);
-  }
+    installAuthorizedUserSessionCookies(c, issued);
 
-  // Audit logs
-  const auditOrgId = await resolveUserAuditOrgId(userId);
-  writeAuthAudit(c, {
-    orgId: auditOrgId ?? undefined,
-    action: 'user.invite.accepted',
-    result: 'success',
-    userId: user.id,
-    email: user.email,
-    name: user.name,
-  });
-  writeAuthAudit(c, {
-    orgId: auditOrgId ?? undefined,
-    action: 'user.password.set',
-    result: 'success',
-    userId: user.id,
-    email: user.email,
-    name: user.name,
-  });
-
-  // Auto-login: resolve context and create tokens
-  try {
-    const context = await resolveCurrentUserTokenContext(userId);
-
-    // Mint a fresh refresh-token family so invite-accept auto-login is
-    // covered by the same reuse-detection envelope as a normal /login.
-    const inviteFamilyId = await mintRefreshTokenFamily(user.id);
-    const epochs = await getUserEpochs(user.id);
-    if (!epochs) throw new Error('user epochs unavailable at token mint');
-    const tokens = await createTokenPair({
-      sub: user.id,
+    const auditOrgId = await resolveUserAuditOrgId(userId);
+    writeAuthAudit(c, {
+      orgId: auditOrgId ?? undefined,
+      action: 'user.invite.accepted',
+      result: 'success',
+      userId: user.id,
       email: user.email,
-      roleId: context.roleId,
-      orgId: context.orgId,
-      partnerId: context.partnerId,
-      scope: context.scope,
-      mfa: false,
-      aep: epochs.authEpoch,
-      mep: epochs.mfaEpoch,
-    }, { refreshFam: inviteFamilyId });
-
-    await bindRefreshJtiToFamily(tokens.refreshJti, inviteFamilyId);
-
-    setRefreshTokenCookie(c, tokens.refreshToken);
+      name: user.name,
+    });
+    writeAuthAudit(c, {
+      orgId: auditOrgId ?? undefined,
+      action: 'user.password.set',
+      result: 'success',
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+    });
 
     return c.json({
       user: {
@@ -225,19 +325,13 @@ inviteRoutes.post('/accept-invite', zValidator('json', acceptInviteSchema), asyn
         name: user.name,
         mfaEnabled: false,
       },
-      tokens: toPublicTokens(tokens),
+      tokens: toPublicTokens(issued),
     });
   } catch (err) {
-    console.error(`[AcceptInvite] Account activated but auto-login failed for ${userId}:`, err);
-    return c.json({
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        mfaEnabled: false,
-      },
-      tokens: null,
-      message: 'Account activated. Please sign in manually.',
-    });
+    if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+    const response = inviteIssuanceError(c, err);
+    if (response) return response;
+    console.error(`[AcceptInvite] Failed guarded activation for ${userId}:`, err);
+    return c.json({ error: 'Failed to activate account. Please try again.' }, 500);
   }
 });

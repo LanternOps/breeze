@@ -443,7 +443,7 @@
     "title": "Título"
   },
   "remoteTerminal": {
-    "connectedBang": "Explosión conectada",
+    "connectedBang": "¡Conectado!",
     "connectingTo": "Conectándose a {{hostname}}...",
     "copySelection": "Copiar selección",
     "disconnect": "Desconectar",

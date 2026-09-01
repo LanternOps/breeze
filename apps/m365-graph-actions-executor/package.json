@@ -16,12 +16,12 @@
     "@azure/keyvault-secrets": "^4.9.0",
     "@breeze/shared": "workspace:*",
     "@hono/node-server": "^2.1.1",
-    "hono": "^4.13.3",
+    "hono": "^4.13.5",
     "jose": "^6.2.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "tsup": "^8.3.5",
     "tsx": "^4.23.12",
     "typescript": "^5.7.2",

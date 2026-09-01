@@ -87,3 +87,34 @@ describe('verifyDeviceAccess — site scoping', () => {
     expect(result).toEqual({ device: row });
   });
 });
+
+describe('verifyDeviceAccess — device-exact pinning (allowedDeviceIds)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('denies a SIBLING device in the SAME site when the caller is pinned to one exact device', async () => {
+    // The verified gap: a device-bound agent run today pins only to the
+    // device's SITE (allowedSiteIds), so a sibling device sharing that site
+    // passes the site check even though the run is scoped to one device.
+    const row = { id: 'sibling-device', orgId: 'org-1', siteId: 'site-A', hostname: 'h', status: 'online' };
+    mockDeviceRow(row);
+    const auth = makeAuth({ allowedSiteIds: ['site-A'], allowedDeviceIds: ['pinned-device'] });
+    const result = await verifyDeviceAccess('sibling-device', auth);
+    expect(result).toEqual({ error: 'Device not found or access denied' });
+  });
+
+  it('allows the exact pinned device', async () => {
+    const row = { id: 'pinned-device', orgId: 'org-1', siteId: 'site-A', hostname: 'h', status: 'online' };
+    mockDeviceRow(row);
+    const auth = makeAuth({ allowedSiteIds: ['site-A'], allowedDeviceIds: ['pinned-device'] });
+    const result = await verifyDeviceAccess('pinned-device', auth);
+    expect(result).toEqual({ device: row });
+  });
+
+  it('does not narrow an unrestricted (no allowedDeviceIds) caller — no regression', async () => {
+    const row = { id: 'any-device', orgId: 'org-1', siteId: 'site-A', hostname: 'h', status: 'online' };
+    mockDeviceRow(row);
+    const auth = makeAuth({ allowedSiteIds: ['site-A'] }); // allowedDeviceIds undefined
+    const result = await verifyDeviceAccess('any-device', auth);
+    expect(result).toEqual({ device: row });
+  });
+});

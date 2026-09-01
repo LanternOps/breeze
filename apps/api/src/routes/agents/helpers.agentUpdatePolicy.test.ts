@@ -20,13 +20,14 @@
  * the module references at load time. The lookup is a single org⋈partner joined
  * SELECT, so each `_set(...)` seeds the one row that join returns.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks — vi.hoisted() must run before any import.
 // ---------------------------------------------------------------------------
 const { dbMock } = vi.hoisted(() => {
   let nextResult: unknown[] = [];
+  const chains: any[] = [];
 
   const makeSelectChain = () => {
     const chain: any = {
@@ -37,6 +38,7 @@ const { dbMock } = vi.hoisted(() => {
       limit: vi.fn(() => Promise.resolve(nextResult)),
     };
     chain.then = (resolve: any, reject: any) => Promise.resolve(nextResult).then(resolve, reject);
+    chains.push(chain);
     return chain;
   };
 
@@ -44,6 +46,11 @@ const { dbMock } = vi.hoisted(() => {
     select: vi.fn(() => makeSelectChain()),
     _setResult(rows: unknown[]) {
       nextResult = rows;
+    },
+    /** The `.where()` argument of the most recent select chain. */
+    _lastWhereArg(): unknown {
+      const chain = chains[chains.length - 1];
+      return chain?.where.mock.calls[0]?.[0];
     },
   };
 
@@ -100,6 +107,7 @@ vi.mock('../../db/schema', () => ({
     component: 'av.component',
     isLatest: 'av.is_latest',
     createdAt: 'av.created_at',
+    edition: 'av.edition',
   },
 }));
 
@@ -136,8 +144,10 @@ import {
   getOrgAgentUpdatePolicy,
   getOrgAgentUpdateConfig,
   resolvePinnedUpgradeTarget,
+  agentAcceptsServedEdition,
   __resetMalformedWindowWarnCache,
 } from './helpers';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const ORG_ID = '00000000-0000-4000-8000-000000000001';
 
@@ -462,5 +472,118 @@ describe('resolvePinnedUpgradeTarget', () => {
     dbMock._setResult([]);
     await resolvePinnedUpgradeTarget({ ...base, pin: '0.85.0', agentId: 'device-2' });
     expect(vi.mocked(captureException)).toHaveBeenCalledTimes(1);
+  });
+
+  // #4072 — both resolver queries (latest-promoted and exact-pin) must be
+  // scoped to THIS server's own edition, like every other serving path
+  // (download, register, promote). An unscoped query can resolve a row of the
+  // OTHER edition when both are registered for the same version, offering an
+  // artifact the agent will hard-refuse after download. Compiled via PgDialect
+  // (mock columns become bound params) so the assertion pins the actual WHERE
+  // structure, not a substring.
+  describe('edition scoping (#4072)', () => {
+    const OLD_ENV = process.env.BINARY_EDITION;
+    afterEach(() => {
+      if (OLD_ENV === undefined) delete process.env.BINARY_EDITION;
+      else process.env.BINARY_EDITION = OLD_ENV;
+    });
+
+    function compiledWhere() {
+      return new PgDialect().sqlToQuery(dbMock._lastWhereArg() as never);
+    }
+
+    it('latest-promoted lookup (pin=null) filters on agent_versions.edition = this server edition', async () => {
+      process.env.BINARY_EDITION = 'hosted';
+      dbMock._setResult([{ version: '0.88.0' }]);
+      await resolvePinnedUpgradeTarget({ ...base, pin: null });
+      const { params } = compiledWhere();
+      const editionColIdx = params.indexOf('av.edition');
+      expect(editionColIdx).toBeGreaterThanOrEqual(0);
+      expect(params[editionColIdx + 1]).toBe('hosted');
+    });
+
+    it('exact-pin lookup filters on agent_versions.edition = this server edition', async () => {
+      delete process.env.BINARY_EDITION; // default self-host
+      dbMock._setResult([{ version: '0.85.0' }]);
+      await resolvePinnedUpgradeTarget({ ...base, pin: '0.85.0' });
+      const { params } = compiledWhere();
+      const editionColIdx = params.indexOf('av.edition');
+      expect(editionColIdx).toBeGreaterThanOrEqual(0);
+      expect(params[editionColIdx + 1]).toBe('self-host');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// agentAcceptsServedEdition (#4072) — can the binary doing the download apply
+// an artifact of THIS server's edition? The updater's edition check (agent
+// v0.105.0+) runs client-side after download; offering a version the build
+// will refuse wedges the device in a permanent ~60s retry loop. A reported
+// agentEdition (either value) also marks the build as carrying the one-way
+// self-host → hosted allowance, since both shipped in the same agent release.
+// ---------------------------------------------------------------------------
+describe('agentAcceptsServedEdition (#4072)', () => {
+  const OLD_ENV = process.env.BINARY_EDITION;
+  afterEach(() => {
+    if (OLD_ENV === undefined) delete process.env.BINARY_EDITION;
+    else process.env.BINARY_EDITION = OLD_ENV;
+  });
+
+  describe('serving hosted artifacts (BINARY_EDITION=hosted)', () => {
+    beforeEach(() => {
+      process.env.BINARY_EDITION = 'hosted';
+    });
+
+    it('accepts when the agent reports edition hosted', () => {
+      expect(agentAcceptsServedEdition({ reportedEdition: 'hosted', agentVersion: '0.107.1' })).toBe(true);
+    });
+
+    it('accepts when the agent reports edition self-host (build carries the one-way transition allowance)', () => {
+      expect(agentAcceptsServedEdition({ reportedEdition: 'self-host', agentVersion: '0.109.0' })).toBe(true);
+    });
+
+    it('accepts a silent agent OLDER than 0.105.0 (predates the edition check entirely)', () => {
+      expect(agentAcceptsServedEdition({ reportedEdition: undefined, agentVersion: '0.104.9' })).toBe(true);
+      expect(agentAcceptsServedEdition({ reportedEdition: null, agentVersion: '0.94.0' })).toBe(true);
+    });
+
+    it('withholds from a silent agent in the stranded band [0.105.0, 0.107.0) — it would hard-refuse the download', () => {
+      expect(agentAcceptsServedEdition({ reportedEdition: undefined, agentVersion: '0.105.0' })).toBe(false);
+      expect(agentAcceptsServedEdition({ reportedEdition: undefined, agentVersion: '0.105.1' })).toBe(false);
+      expect(agentAcceptsServedEdition({ reportedEdition: null, agentVersion: '0.106.5' })).toBe(false);
+    });
+
+    it('withholds from ANY silent agent ≥0.105.0 (a silent newer build is a self-host build without the transition allowance)', () => {
+      expect(agentAcceptsServedEdition({ reportedEdition: undefined, agentVersion: '0.107.1' })).toBe(false);
+      expect(agentAcceptsServedEdition({ reportedEdition: undefined, agentVersion: '0.108.0' })).toBe(false);
+    });
+
+    it('withholds from a silent 0.105.0 PRERELEASE — it carries the check even though semver orders it below 0.105.0', () => {
+      expect(agentAcceptsServedEdition({ reportedEdition: undefined, agentVersion: '0.105.0-rc.1' })).toBe(false);
+      // …while a prerelease of an OLDER core version predates the check.
+      expect(agentAcceptsServedEdition({ reportedEdition: undefined, agentVersion: '0.104.9-rc.1' })).toBe(true);
+    });
+
+    it('withholds when the version is missing or unparseable (fail closed; offer resumes once the agent reports)', () => {
+      expect(agentAcceptsServedEdition({ reportedEdition: undefined, agentVersion: undefined })).toBe(false);
+      expect(agentAcceptsServedEdition({ reportedEdition: undefined, agentVersion: null })).toBe(false);
+      expect(agentAcceptsServedEdition({ reportedEdition: undefined, agentVersion: 'dev-abc123' })).toBe(false);
+    });
+  });
+
+  describe('serving self-host artifacts (BINARY_EDITION unset/self-host)', () => {
+    beforeEach(() => {
+      delete process.env.BINARY_EDITION;
+    });
+
+    it('accepts self-host and silent agents of any version', () => {
+      expect(agentAcceptsServedEdition({ reportedEdition: 'self-host', agentVersion: '0.109.0' })).toBe(true);
+      expect(agentAcceptsServedEdition({ reportedEdition: undefined, agentVersion: '0.105.1' })).toBe(true);
+      expect(agentAcceptsServedEdition({ reportedEdition: null, agentVersion: '0.94.0' })).toBe(true);
+    });
+
+    it('withholds from a hosted-build agent — hosted builds hard-refuse self-host artifacts by design', () => {
+      expect(agentAcceptsServedEdition({ reportedEdition: 'hosted', agentVersion: '0.107.1' })).toBe(false);
+    });
   });
 });

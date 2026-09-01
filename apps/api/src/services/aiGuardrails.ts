@@ -19,6 +19,8 @@ import { getRedis } from './redis';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import type { AuthContext } from '../middleware/auth';
 import { envFlag } from '../config/env';
+import { resolveActOperation } from './aiAgents/actManifest';
+import { getCachedAiKillStateSnapshot } from './aiKillState';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -62,7 +64,13 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
     // create/comment above. move_org stays Tier 3 (tenant-shape mutation).
     'log_time_entry',
     'start_timer',
-    'stop_timer'
+    'stop_timer',
+    // P2-4 (#4191) ticket triage: same family as update_fields — low-risk,
+    // ticket-scoped mutations an autonomous triage run makes. link_device
+    // only sets a currently-null device_id (never overwrites); draft only
+    // writes an internal ticket_drafts row, never a customer-visible comment.
+    'link_device',
+    'draft'
   ],
   manage_services: ['list'],
   // SR5-01 partial relaxation (2026-07-20): directory LISTING is recon-only —
@@ -529,6 +537,16 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     log_time_entry: { resource: 'time_entries', action: 'write' },
     start_timer: { resource: 'time_entries', action: 'write' },
     stop_timer: { resource: 'time_entries', action: 'write' },
+    // P2-4 (#4191): deliberately 'update', not 'write' — no seeded role
+    // grants `tickets:update` (seed.ts only ever grants tickets:read/write/
+    // manage), so this fails CLOSED for `checkToolPermission`'s interactive
+    // path. link_device/draft are agent-only ticket-triage executors, never
+    // reachable from a live chat/MCP session; the only path that can execute
+    // them is the ai_agent-principal release path, which never consults RBAC
+    // at all (`checkAgentGuardrails`'s doc comment). A future human-facing
+    // caller of these two actions needs a real permission grant added first.
+    link_device: { resource: 'tickets', action: 'update' },
+    draft: { resource: 'tickets', action: 'update' },
   },
   list_invoices: { resource: 'invoices', action: 'read' },
   get_invoice: { resource: 'invoices', action: 'read' },
@@ -1190,7 +1208,14 @@ export type GuardrailCheck =
       approvalScope: AiApprovalScope;
     });
 
-export type GuardrailDisposition = 'allow' | 'propose' | 'deny';
+/**
+ * `'act'` (wave 4 Part B): a manifest-matched, rule-equivalent mutation under
+ * a live `mode: 'act'` policy. Distinct from `'allow'` — `'act'` additionally
+ * signals the run-loop pre-hook to revalidate (live policy + guardrail
+ * re-run + device/asset pinning) and reserve a `maxActionsPerRun` slot before
+ * dispatch (actRevalidation.ts, Task 3); `'allow'` never does either.
+ */
+export type GuardrailDisposition = 'allow' | 'propose' | 'deny' | 'act';
 
 /**
  * checkAgentGuardrails' verdict. `allowed` stays false for 'propose' on
@@ -1198,6 +1223,26 @@ export type GuardrailDisposition = 'allow' | 'propose' | 'deny';
  * fails CLOSED rather than executing a proposal.
  */
 export type AgentGuardrailCheck = GuardrailCheck & { disposition: GuardrailDisposition };
+
+/**
+ * The sub-operation discriminator for a tool call, resolved EXACTLY the way
+ * `checkGuardrails` and `checkAgentGuardrails` each used to do inline (two
+ * byte-identical copies, now one). `TOOL_ACTION_INPUT_KEYS` overrides the
+ * default `action` key for a multiplexer keyed on something else
+ * (`execute_command`'s `commandType`, #3088). A non-string value at that key
+ * resolves to `undefined`, not a coerced string — callers fall back to
+ * whatever "no action" means for them (checkGuardrails: the tool's base
+ * tier; checkAgentGuardrails: a hard deny on a multiplexed tool;
+ * policyDecide.ts: no `tool:action` key, so a bare-tool registry lookup).
+ *
+ * Exported so `policyDecide.ts`'s canonical-key derivation reuses this
+ * instead of a third inline copy (wave 5 Part B, #3827).
+ */
+export function resolveActionForTool(toolName: string, input: Record<string, unknown>): string | undefined {
+  const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
+  const actionValue = input[actionKey];
+  return typeof actionValue === 'string' ? actionValue : undefined;
+}
 
 /**
  * Check guardrails for a tool invocation.
@@ -1227,13 +1272,9 @@ export function checkGuardrails(
     };
   }
 
-  // Check for action-based tier escalation. The discriminator is `action` for
-  // most tools; a TOOL_ACTION_INPUT_KEYS entry overrides the key (#3088 —
-  // execute_command multiplexes on `commandType`). Non-string values resolve
-  // to undefined, which falls through to the base tier (fail-closed).
-  const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
-  const actionValue = input[actionKey];
-  const action = typeof actionValue === 'string' ? actionValue : undefined;
+  // Check for action-based tier escalation. Non-string values resolve to
+  // undefined, which falls through to the base tier (fail-closed).
+  const action = resolveActionForTool(toolName, input);
 
   // Tier 1 downgrade: read-only actions on otherwise-high-tier tools
   if (action && TIER1_ACTIONS[toolName]?.includes(action)) {
@@ -1318,6 +1359,19 @@ export interface AgentGuardrailPolicy {
    * bound the blast radius.
    */
   deviceId: string | null;
+  /**
+   * P2-4 (#4191): the intent's resolved TICKET target, populated by the
+   * release path (`agentReleaseAuthority.ts`'s ticket mirror of its own
+   * device-target resolution, `resolveIntentTargetTicket` in
+   * `intentTargetScope.ts`) — never from tool input. Ticket-triage runs are
+   * device-less by construction (one run walks the ticket queue, not a
+   * device fleet), so without this a mutating `manage_tickets` call would
+   * always trip the device-less-mutation deny below. Deliberately NOT a
+   * general "any tool with a ticket" escape hatch: only `manage_tickets`
+   * itself consults it (see the deny below) — no run-profile literal
+   * anywhere in this file, keyed off tool name + scope alone.
+   */
+  scope?: { ticketId: string };
 }
 
 const SERVICE_INPUT_KEYS = ['serviceName', 'service', 'name'];
@@ -1550,6 +1604,17 @@ export function checkAgentGuardrails(
   if (!envFlag('BREEZE_AI_AGENTS_ENABLED', false)) {
     return deny('Autonomous AI agents are disabled');
   }
+  // Wave 5A Task 2 (#3827): DB-backed kill switch, ADDITIONAL to the env
+  // flag above, not a replacement for it — the two need not agree, and
+  // either alone denies. `getCachedAiKillStateSnapshot` is a pure sync read
+  // of a module-level cache (see `aiKillState.ts`'s header for the ≤5s
+  // staleness bound and why its default is not-killed); this function stays
+  // synchronous, unable to await a fresh DB read on every dispatch, exactly
+  // like the env-flag check above it.
+  const killState = getCachedAiKillStateSnapshot();
+  if (killState.killed) {
+    return deny(`Autonomous AI agents are kill-switched (epoch ${killState.epoch})`);
+  }
   if (!isAgentGuardrailPolicy(policy)) {
     return deny('AI agent run policy snapshot is missing or invalid');
   }
@@ -1570,8 +1635,7 @@ export function checkAgentGuardrails(
   if (policy.mode === 'off') return deny('Agent mode is off');
 
   const actionKey = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
-  const actionValue = input[actionKey];
-  const action = typeof actionValue === 'string' ? actionValue : undefined;
+  const action = resolveActionForTool(toolName, input);
 
   // A non-string action (`action: ['write']`) makes checkGuardrails skip its
   // TIER3_ACTIONS escalation and fall back to the tool's REGISTERED BASE TIER —
@@ -1580,7 +1644,7 @@ export function checkAgentGuardrails(
   // allowlist entirely. An unresolvable action on a multiplexed tool denies.
   if (action === undefined && isActionMultiplexedTool(toolName)) {
     return deny(
-      `Tool "${toolName}" requires a string "${actionKey}"; got ${describeType(actionValue)}`,
+      `Tool "${toolName}" requires a string "${actionKey}"; got ${describeType(input[actionKey])}`,
     );
   }
 
@@ -1591,7 +1655,17 @@ export function checkAgentGuardrails(
   // allowedSiteIds only when a device exists), so a mutation from it would be
   // org-wide. Deny rather than propose: a human approving it could not see
   // what it is bounded to.
-  if (!readOnly && policy.deviceId === null) {
+  //
+  // P2-4 (#4191) exemption: a `manage_tickets` call carrying an explicit
+  // ticket binding (`policy.scope.ticketId`, populated only by the release
+  // path from the intent's own scope — see AgentGuardrailPolicy.scope's doc
+  // comment) satisfies the same "the mutation is bounded to something a
+  // human can see" requirement the device/site scope exists to prove, just
+  // on the ticket axis instead of the device axis. Every other tool, and
+  // every OTHER `manage_tickets` call with no ticket scope, still denies
+  // exactly as before — this is not a blanket device-less carve-out.
+  const ticketScoped = toolName === 'manage_tickets' && !!policy.scope?.ticketId;
+  if (!readOnly && policy.deviceId === null && !ticketScoped) {
     return deny(`Tool "${toolName}" mutates and the run is not device-bound`);
   }
 
@@ -1603,6 +1677,39 @@ export function checkAgentGuardrails(
 
   const protectedHit = touchesProtected(input, policy.protectedResources);
   if (protectedHit) return deny(`Denied: ${protectedHit}`);
+
+  // Act mode (wave 4 Part B): a manifest-matched, rule-equivalent mutation
+  // executes (through the normal tool path — the pre/post hooks in
+  // runLoop.ts do the actual revalidate/reserve/verify work); everything
+  // else that mutates records a proposal, exactly like shadow. This branch
+  // sits AFTER the allowlist and protected checks (same placement rule as
+  // shadow below), so both outcomes are only reachable for a call the agent
+  // could legitimately make in the first place — every structural deny above
+  // (kill switch, tier 4, secret-bearing, site scope, disabled/off, device-
+  // less mutation, allowlist, protected resources) is untouched and sits
+  // strictly upstream of this branch, never the reverse.
+  if (policy.mode === 'act' && !readOnly) {
+    const op = resolveActOperation(toolName, input);
+    if (op) {
+      return {
+        ...base,
+        allowed: true,
+        requiresApproval: false,
+        disposition: 'act',
+        reason: `Rule-equivalent operation "${op.key}" — act mode executes with verification`,
+      };
+    }
+    // Unmatched mutation under act: identical semantics to shadow — propose,
+    // never auto-approve-and-execute. There is no "act mode but not manifest
+    // -matched" execution path; the manifest IS the entire act-eligible surface.
+    return {
+      ...base,
+      allowed: false,
+      requiresApproval: false,
+      disposition: 'propose',
+      reason: `Tool "${toolName}" is not act-eligible; recorded as a proposal`,
+    };
+  }
 
   // Shadow proposes; it never mutates — and this branch now sits AFTER the
   // allowlist and protected checks so 'propose' is only reachable for a call
@@ -1831,6 +1938,37 @@ function buildApprovalDescription(
       parts.push(`${action?.toUpperCase()} service "${input.serviceName}"`);
       if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
       break;
+
+    // P2-4 (#4191): ticket-triage actions get real copy; every other
+    // manage_tickets action (create/assign/update_status/link_alert/...)
+    // falls through to the SAME generic `${toolName}: ${action}` shape the
+    // top-level default produced before this case existed — no regression
+    // for actions this case doesn't special-case. Deliberately NEVER
+    // includes ticket subject/description/comment content — only ids,
+    // hostnames, and field NAMES (never field VALUES, which is what elides
+    // a categoryId's opaque uuid along with everything else).
+    case 'manage_tickets': {
+      const shortTicketId = typeof input.ticketId === 'string' ? `${input.ticketId.slice(0, 8)}...` : 'unknown';
+      if (action === 'update_fields') {
+        const fieldNames = input.fields && typeof input.fields === 'object'
+          ? Object.keys(input.fields as Record<string, unknown>)
+          : [];
+        parts.push(`Update ticket #${shortTicketId} fields (${fieldNames.join(', ') || 'none'})`);
+      } else if (action === 'link_device') {
+        const target = typeof input.hostname === 'string'
+          ? input.hostname
+          : (typeof input.serial === 'string' ? input.serial : 'unknown device');
+        parts.push(`Link device ${target} to ticket #${shortTicketId}`);
+      } else if (action === 'comment') {
+        parts.push(`Post private AI triage note on ticket #${shortTicketId}`);
+      } else if (action === 'draft') {
+        const kindLabel = input.kind === 'resolution_note' ? 'resolution note' : 'reply';
+        parts.push(`Store AI ${kindLabel} draft on ticket #${shortTicketId}`);
+      } else {
+        parts.push(`${toolName}${action ? `: ${action}` : ''}`);
+      }
+      break;
+    }
 
     case 'security_scan':
       parts.push(`Security: ${action}`);

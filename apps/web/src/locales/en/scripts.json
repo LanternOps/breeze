@@ -827,7 +827,10 @@
     },
     "matchCount": "{{count}} match",
     "empty": {
-      "noCompatibleDevices": "No compatible devices found. This script requires {{os}}."
+      "noCompatibleDevices": "No compatible devices found. This script requires {{os}}.",
+      "offlineFiltered_one": "No {{status}} devices match. {{count}} compatible device is hidden by the status filter — show all devices to include it.",
+      "offlineFiltered_other": "No {{status}} devices match. {{count}} compatible devices are hidden by the status filter — show all devices to include them.",
+      "showAllDevices": "Show all devices"
     },
     "orSeparator": " or ",
     "progress": {

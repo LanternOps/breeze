@@ -361,6 +361,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
 
       - name: Setup pnpm
@@ -380,6 +382,9 @@ jobs:
       # Migrating an EMPTY DB below cannot catch edits to already-shipped
       # migrations (no recorded checksums to mismatch) — but autoMigrate
       # refuses to boot on them in prod. Enforce immutability statically.
+      - name: Release-lineage and migration-guard tests
+        run: pnpm test:release-lineage
+
       - name: Shipped-migration immutability guard
         run: bash scripts/check-migration-immutability.sh
 
@@ -484,8 +489,8 @@ jobs:
       - name: Run Web tests
         run: pnpm test --filter=@breeze/web
 
-  # Not yet wired into ci-success / branch protection — see #3139. Promote to
-  # required once the job proves stable.
+  # REQUIRED check: asserted in ci-success (see #3941, and #3139 for the
+  # original gap).
   test-mobile:
     name: Test Mobile
     runs-on: ubuntu-latest
@@ -1667,7 +1672,7 @@ jobs:
           toolchain: stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             apps/helper/src-tauri -> target
@@ -1730,7 +1735,7 @@ jobs:
 
       - name: Rust cache
         if: steps.changes.outputs.cargo == 'true'
-        uses: swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             apps/helper/src-tauri -> target
@@ -1904,62 +1909,23 @@ jobs:
             exit 1
           fi
           PGID="$(cat /tmp/ee-boot.pgid 2>/dev/null || echo "$BOOT_PID")"
-          # Guarded like the two failure branches above: under this step's
-          # default `bash -e`, an unguarded `kill` on an already-exited
-          # group (e.g. the process crashed on its own between logging the
-          # built-in load line and this kill) would abort the step on a bare
-          # "process not found" with no log content, making a correct
-          # migration load look like an unexplained CI failure. Dump the log
-          # so it's diagnosable either way — and then decide: an already-dead
-          # group that ALSO logged the fatal sentinel is a genuine boot
-          # failure that merely happened to log the built-in line first, and
-          # must fail the step rather than be waved through.
-          if ! kill -- "-$PGID" 2>/dev/null; then
-            echo "API process group had already exited after logging the built-in load line — dumping its output:"
-            cat /tmp/ee-workspace-boot.log
-            if grep -q "$FATAL" /tmp/ee-workspace-boot.log; then
-              echo "The API logged the built-in load line and then FAILED startup — the schema this step is"
-              echo "supposed to guarantee may be incomplete, so the workspace integration suite below would"
-              echo "fail confusingly. Failing here instead."
-              exit 1
-            fi
-            echo "::warning::API exited on its own after loading built-in extensions (no startup failure logged); migrations were applied, continuing."
-          fi
-          # Bound the wait for graceful shutdown instead of an unbounded
-          # `wait "$BOOT_PID"`, which could otherwise eat the whole job
-          # ceiling if the process ignores SIGTERM or hangs mid-shutdown.
-          # Poll the GROUP, not $BOOT_PID: the leader (pnpm's wrapper) can
-          # exit seconds before the node/tsx descendants finish shutting
-          # down, and watching only the leader cuts the grace period short
-          # (observed on the first live run of this step). Count only
-          # NON-ZOMBIE members: `kill -0` "succeeds" against a zombie, but a
-          # zombie is dead — unreaped only because its parent died with it —
-          # and cannot touch the DB. The step's shell cannot reap
-          # grandchildren; init does so asynchronously after SIGKILL, so a
-          # zombie-only group must be treated as gone, not as a survivor
-          # (also observed live: `[node]`/`[esbuild] <defunct>` tripping a
-          # naive `kill -0 -- -PGID` assert).
-          live_in_group() {
-            ps -eo pgid=,stat= | awk -v p="$PGID" '$1 == p && $2 !~ /^Z/' | wc -l
-          }
-          for _ in $(seq 1 30); do
-            [ "$(live_in_group)" -gt 0 ] || break
-            sleep 1
-          done
-          kill -9 -- "-$PGID" 2>/dev/null || true
+          # Teardown (SIGTERM → bounded grace → SIGKILL → fail closed on a
+          # survivor) lives in scripts/ci/stop-ee-boot-group.sh rather than
+          # inline here, so its branches are reachable by a real test:
+          # apps/api/src/config/eeBootStopGroup.test.ts drives them with
+          # stubbed `kill`/`ps` and with genuine process groups. While this was
+          # inline YAML the only thing a test could assert was the workflow's
+          # text, which is how the ESRCH-vs-EPERM conflation (#3471) survived
+          # two earlier hardening passes on this same step. The script
+          # discriminates a group that is already gone (ESRCH — benign, its
+          # migrations landed) from one that is alive but refuses the signal
+          # (EPERM — a live API that would keep writing to this DB shard, so a
+          # hard failure naming the PGID).
+          bash scripts/ci/stop-ee-boot-group.sh "$PGID" /tmp/ee-workspace-boot.log "$FATAL"
+          # Reap the setsid leader. `wait` only works in the shell that spawned
+          # the job, so it cannot move into the script; it runs after the
+          # teardown has already proved the group is gone, so it cannot hang.
           wait "$BOOT_PID" 2>/dev/null || true
-          # Fail CLOSED on a genuinely surviving process group — but give
-          # SIGKILL a moment to land before judging (delivery is async).
-          for _ in $(seq 1 10); do
-            [ "$(live_in_group)" -gt 0 ] || break
-            sleep 1
-          done
-          if [ "$(live_in_group)" -gt 0 ]; then
-            echo "API process group $PGID survived SIGTERM and SIGKILL. A live API would keep writing to"
-            echo "this step's DB shard and poison the workspace integration suite that runs next."
-            ps -eo pid,pgid,stat,cmd | awk -v pgid="$PGID" '$2 == pgid' || true
-            exit 1
-          fi
 
       - name: Integration-test workspace (ee)
         if: matrix.shard == 1
@@ -2285,11 +2251,116 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.override.yml.ci down -v || true
 
+  auth-browser-transition-browser-contract:
+    name: Auth Browser Transition (Chromium)
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: breeze_test
+          POSTGRES_PASSWORD: breeze_test
+          POSTGRES_DB: breeze_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U breeze_test -d breeze_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5432/breeze_test
+      DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5432/breeze_test
+      BREEZE_APP_DB_PASSWORD: breeze_test
+      POSTGRES_PASSWORD: breeze_test
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-auth-transition-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+      APP_ENCRYPTION_KEY: e9367714341ea19491ff7cd095d1a97e15ae3f7962416723ecfb29a89ed71eb9
+      MFA_ENCRYPTION_KEY: e86f8b88f2c058d428de55c4abec1b50a3cd960a7205dffdb65be8130abbb777
+      NODE_ENV: test
+      E2E_MODE: 'true'
+      AUTO_MIGRATE: 'false'
+      API_PORT: '3005'
+      FORCE_HTTPS: 'false'
+      AUTH_BROWSER_TRANSITIONS_ENFORCED: 'true'
+      AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: 'true'
+      CF_ACCESS_TRUST_ENABLED: 'true'
+      CF_ACCESS_TEAM_DOMAIN: ci-browser-contract.cloudflareaccess.com
+      CF_ACCESS_AUD: ci-browser-contract-audience
+      DASHBOARD_URL: http://127.0.0.1:3005
+      E2E_AUTH_TRANSITION_API_URL: http://127.0.0.1:3005
+      E2E_ADMIN_EMAIL: admin@breeze.local
+      E2E_ADMIN_PASSWORD: BreezeAdmin123!
+      AUTH_TRANSITION_TEST_CONTROL_SECRET: ci-auth-transition-test-control-v1-7Kp4mQ9x
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install browser-contract dependencies
+        working-directory: e2e-tests
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: e2e-tests
+        run: npx playwright install --with-deps chromium
+
+      - name: Migrate and seed auth contract database
+        run: |
+          pnpm --filter=@breeze/api db:migrate
+          pnpm --filter=@breeze/api db:seed
+
+      - name: Start guarded API test process
+        run: |
+          pnpm --filter=@breeze/api exec tsx src/index.ts > auth-browser-transition-api.log 2>&1 &
+          echo $! > auth-browser-transition-api.pid
+          timeout 120 bash -c 'until curl -sf http://127.0.0.1:3005/health/ready; do sleep 2; done'
+
+      - name: Run Chromium auth transition contract
+        run: pnpm --dir e2e-tests exec playwright test --config=playwright.auth-browser-transition.config.ts
+
+      - name: Show API log on failure
+        if: failure()
+        run: tail -300 auth-browser-transition-api.log || true
+
+      - name: Stop guarded API test process
+        if: always()
+        run: |
+          if [ -f auth-browser-transition-api.pid ]; then
+            kill "$(cat auth-browser-transition-api.pid)" || true
+          fi
+
   # Summary job that depends on all other jobs for branch protection
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test]
+    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test, auth-browser-transition-browser-contract]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -2301,6 +2372,7 @@ jobs:
           TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT: ${{ needs.test-m365-graph-actions-executor.result }}
           TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT: ${{ needs.test-m365-communications-executor.result }}
           TEST_WEB_RESULT: ${{ needs.test-web.result }}
+          TEST_MOBILE_RESULT: ${{ needs.test-mobile.result }}
           TEST_PORTAL_RESULT: ${{ needs.test-portal.result }}
           TEST_OFFICE_ADDIN_CORE_RESULT: ${{ needs.test-office-addin-core.result }}
           TEST_EXCEL_ADDIN_RESULT: ${{ needs.test-excel-addin.result }}
@@ -2322,6 +2394,7 @@ jobs:
           CHECK_MIGRATIONS_NONSUPERUSER_RESULT: ${{ needs.check-migrations-nonsuperuser.result }}
           RUST_CHECK_RESULT: ${{ needs.rust-check.result }}
           SMOKE_TEST_RESULT: ${{ needs.smoke-test.result }}
+          AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT: ${{ needs.auth-browser-transition-browser-contract.result }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
           if [[ "${LINT_RESULT}" != "success" ]] || \
@@ -2331,6 +2404,7 @@ jobs:
              [[ "${TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT}" != "success" ]] || \
              [[ "${TEST_WEB_RESULT}" != "success" ]] || \
+             [[ "${TEST_MOBILE_RESULT}" != "success" ]] || \
              [[ "${TEST_PORTAL_RESULT}" != "success" ]] || \
              [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]] || \
              [[ "${TEST_EXCEL_ADDIN_RESULT}" != "success" ]] || \
@@ -2350,6 +2424,7 @@ jobs:
              [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]] || \
              [[ "${INTEGRATION_TEST_RESULT}" != "success" ]] || \
              [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "success" ]] || \
+             [[ "${AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT}" != "success" ]] || \
              [[ "${RUST_CHECK_RESULT}" != "success" ]]; then
             echo "One or more required jobs failed"
             exit 1

@@ -81,9 +81,24 @@ function captureInsert() {
   return { values, returning };
 }
 
+/**
+ * The auto-resolve UPDATE is a compare-and-swap since #4094: it chains
+ * `.returning({id})` and skips the `alert.resolved` publish when the result is
+ * empty. `where(...)` must therefore still be awaitable (nothing else in this file
+ * chains past it) AND expose `returning`.
+ *
+ * Defaults to a one-row winner so the existing auto-resolve assertions keep
+ * asserting a publish; pass `[]` to model losing the race to another resolver.
+ */
+function casWhere(returning: unknown[] = [{ id: 'alert-1' }]) {
+  return Object.assign(Promise.resolve(undefined), {
+    returning: vi.fn().mockResolvedValue(returning),
+  });
+}
+
 function stubAutoResolve() {
   // autoResolveWarrantyAlerts: select open alerts (resolves to []), then nothing to update.
-  const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+  const set = vi.fn().mockReturnValue({ where: vi.fn(() => casWhere()) });
   updateMock.mockReturnValue({ set });
   return set;
 }
@@ -193,7 +208,7 @@ describe('evaluateWarrantyAlerts gating', () => {
     // created under the old enabled-by-default behavior must have it auto-resolved
     // once it resolves to disabled — otherwise the gate at `if (!settings.enabled)`
     // returns BEFORE the cleanup and the alert is stranded active forever.
-    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    const set = vi.fn().mockReturnValue({ where: vi.fn(() => casWhere()) });
     updateMock.mockReturnValue({ set });
 
     // 1: warranty row (expiring, fixed-term) → reaches policy resolution
@@ -208,7 +223,7 @@ describe('evaluateWarrantyAlerts gating', () => {
     selectMock.mockReturnValueOnce(queueSelect([]));
     // 6: autoResolveWarrantyAlerts open-alert select → an existing open (active) alert
     selectMock.mockReturnValueOnce(
-      queueSelect([{ id: 'alert-stranded-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active' }])
+      queueSelect([{ id: 'alert-stranded-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', triggeredAt: new Date('2026-01-01T00:00:00.000Z') }])
     );
 
     const result = await evaluateWarrantyAlerts(DEVICE_ID);
@@ -261,7 +276,7 @@ describe('evaluateWarrantyAlerts gating', () => {
   });
 
   it('auto-resolves a stale TIMED-SUPPRESSED expiry alert when the device is now a subscription (#1320)', async () => {
-    const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    const set = vi.fn().mockReturnValue({ where: vi.fn(() => casWhere()) });
     updateMock.mockReturnValue({ set });
 
     // 1: warranty row flagged as a subscription → short-circuits to autoResolve
@@ -274,7 +289,7 @@ describe('evaluateWarrantyAlerts gating', () => {
     // this query — that carve-out is verified in the integration test since the
     // mock here ignores the WHERE predicate.
     selectMock.mockReturnValueOnce(
-      queueSelect([{ id: 'alert-suppressed-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'suppressed', suppressedUntil: new Date(Date.now() + 86_400_000) }])
+      queueSelect([{ id: 'alert-suppressed-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'suppressed', suppressedUntil: new Date(Date.now() + 86_400_000), triggeredAt: new Date('2026-01-01T00:00:00.000Z') }])
     );
 
     const result = await evaluateWarrantyAlerts(DEVICE_ID);

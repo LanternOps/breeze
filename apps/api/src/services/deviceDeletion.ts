@@ -12,6 +12,7 @@ import { extractRowCount } from '../db/rowCount';
 import {
   DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_LINKED_DEVICE_ID_TABLES,
+  DEVICE_LINK_DEPENDENT_COLUMNS,
   getDeviceCascadeDeleteTables,
 } from '../routes/devices/core';
 
@@ -199,8 +200,24 @@ export async function deleteDeviceCascade(
   await tx.execute(sql`UPDATE log_correlations SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
   await tx.execute(sql`UPDATE network_change_events SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
 
+  // Detach, don't delete — and clear the whole link, not just the pointer.
+  //
+  // #3952: `discovered_assets.link_source` is constrained to be NULL whenever
+  // `linked_device_id` is (`discovered_assets_link_source_requires_link`), so
+  // nulling the pointer alone left every AUTO-linked asset in a state Postgres
+  // rejects with 23514, aborting the cascade and surfacing as a 500. Both
+  // columns go in ONE statement deliberately: a CHECK is evaluated per row at
+  // the end of each statement, so splitting this into "null the pointer, then
+  // null the source" would still transit the forbidden state and fail
+  // identically. See DEVICE_LINK_DEPENDENT_COLUMNS for why the registry is
+  // per-table rather than a flat column list.
   for (const linkedTable of DEVICE_LINKED_DEVICE_ID_TABLES) {
-    await tx.execute(sql`UPDATE ${sql.identifier(linkedTable)} SET linked_device_id = NULL WHERE linked_device_id = ${deviceId}`);
+    const cleared = ['linked_device_id', ...(DEVICE_LINK_DEPENDENT_COLUMNS[linkedTable] ?? [])];
+    const assignments = sql.join(
+      cleared.map((column) => sql`${sql.identifier(column)} = NULL`),
+      sql`, `,
+    );
+    await tx.execute(sql`UPDATE ${sql.identifier(linkedTable)} SET ${assignments} WHERE linked_device_id = ${deviceId}`);
   }
 
   // Tenant business records (tickets, support_sessions): preserve history,
@@ -220,6 +237,17 @@ export async function deleteDeviceCascade(
   }
 
   for (const table of getDeviceCascadeDeleteTables()) {
+    if (table === 'peripheral_policy_delivery_events') {
+      // Delivery events are append-only and breeze_app has no DELETE grant.
+      // Permanent device deletion is an audited retention boundary, so arm
+      // both layers only for this one statement and immediately restore the
+      // caller's role before continuing through ordinary child tables.
+      await tx.execute(sql`SET LOCAL ROLE breeze_audit_admin`);
+      await tx.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
+      await tx.execute(sql`DELETE FROM peripheral_policy_delivery_events WHERE device_id = ${deviceId}`);
+      await tx.execute(sql`RESET ROLE`);
+      continue;
+    }
     await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
   }
 

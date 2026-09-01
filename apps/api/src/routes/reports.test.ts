@@ -73,7 +73,8 @@ vi.mock('../services/siteScope', () => ({
       : null,
     executionScopeUserId: authority.principalUserId,
     executionScopeFingerprint: authority.fingerprint,
-    executionScopeCapturedAt: authority.capturedAt
+    executionScopeCapturedAt: authority.capturedAt,
+    executionScopePrincipalKind: 'user'
   })),
   decodeSiteScope: vi.fn((row: any, orgId: string) => {
     if (row.executionScopeKind === undefined) {
@@ -170,7 +171,8 @@ vi.mock('../db/schema', () => ({
     executionScopeSiteIds: 'reports.executionScopeSiteIds',
     executionScopeUserId: 'reports.executionScopeUserId',
     executionScopeFingerprint: 'reports.executionScopeFingerprint',
-    executionScopeCapturedAt: 'reports.executionScopeCapturedAt'
+    executionScopeCapturedAt: 'reports.executionScopeCapturedAt',
+    executionScopePrincipalKind: 'reports.executionScopePrincipalKind'
   },
   reportRuns: {
     id: 'reportRuns.id',
@@ -188,7 +190,8 @@ vi.mock('../db/schema', () => ({
     executionScopeSiteIds: 'reportRuns.executionScopeSiteIds',
     executionScopeUserId: 'reportRuns.executionScopeUserId',
     executionScopeFingerprint: 'reportRuns.executionScopeFingerprint',
-    executionScopeCapturedAt: 'reportRuns.executionScopeCapturedAt'
+    executionScopeCapturedAt: 'reportRuns.executionScopeCapturedAt',
+    executionScopePrincipalKind: 'reportRuns.executionScopePrincipalKind'
   },
   devices: {
     id: 'devices.id',
@@ -1252,12 +1255,17 @@ describe('report definition scope enforcement', () => {
     expect(Object.keys(metadataProjection)).toEqual([
       'id',
       'orgId',
+      // P2-3 (#4190): `type` rides along so the write routes can refuse a
+      // system-managed definition off this same metadata read. Still a
+      // METADATA projection — `config` (the payload) stays out.
+      'type',
       'executionScopeVersion',
       'executionScopeKind',
       'executionScopeSiteIds',
       'executionScopeUserId',
       'executionScopeFingerprint',
-      'executionScopeCapturedAt'
+      'executionScopeCapturedAt',
+      'executionScopePrincipalKind'
     ]);
     expect(metadataProjection).not.toHaveProperty('config');
     expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
@@ -2859,6 +2867,7 @@ describe('report run immutable scope enforcement', () => {
           'executionScopeCapturedAt',
           'executionScopeFingerprint',
           'executionScopeKind',
+          'executionScopePrincipalKind',
           'executionScopeSiteIds',
           'executionScopeUserId',
           'executionScopeVersion',

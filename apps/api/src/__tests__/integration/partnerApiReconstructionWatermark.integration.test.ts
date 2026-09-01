@@ -24,7 +24,7 @@ import {
 } from '../../routes/partnerApi/identity';
 import { partnerInventoryRoutes } from '../../routes/partnerApi/inventory';
 import { partnerRelationshipRoutes } from '../../routes/partnerApi/relationships';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { createOrganization, createPartner, createSite, reapplyOrgIdFkDeferrability } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -46,6 +46,14 @@ describe('partner reconstruction resource watermarks', () => {
     await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(hardeningMigration))).resolves.toBeDefined();
     await expect(db.execute(sql.raw(hardeningMigration))).resolves.toBeDefined();
+    // The hardening migration unconditionally runs
+    // `ALTER TABLE public.devices ALTER CONSTRAINT devices_site_org_fk NOT DEFERRABLE`
+    // (by design, for the enrollment-atomicity reason in its own comment), so
+    // replaying it undoes the org-lifecycle branch's deferrable-FK contract
+    // (migrations/2026-09-12-100001-org-lifecycle-foundations.sql Section 2,
+    // which lists devices_site_org_fk among the 16 constraints it converts).
+    // Restore it rather than editing the shipped migration.
+    await reapplyOrgIdFkDeferrability(db);
     const sourceId = '55555555-5555-4555-8555-555555555555';
     const [identity] = await db.execute<{ value: string }>(sql`
       SELECT public.breeze_partner_export_stable_uuid(

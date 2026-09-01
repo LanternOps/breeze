@@ -62,50 +62,51 @@ function hrefsOf(id: string) {
 }
 
 describe('navSections structure (#1321, #1324)', () => {
-  it('has a dedicated Monitoring section with Network Monitor + Network Discovery, in that order', () => {
-    const monitoring = section('monitoring');
-    expect(monitoring.label).toBe('Monitoring');
-    expect(hrefsOf('monitoring')).toEqual(['/monitoring', '/discovery']);
-
-    const names = monitoring.items.map((i) => i.name);
-    expect(names).toEqual(['Network Monitor', 'Network Discovery']);
-  });
-
   it('has a dedicated Backup section with Backup, Cloud Backup, Disaster Recovery, in that order', () => {
     const backup = section('backup');
     expect(backup.label).toBe('Backup');
     expect(hrefsOf('backup')).toEqual(['/backup', '/c2c', '/dr']);
 
     const names = backup.items.map((i) => i.name);
-    expect(names).toEqual(['Backup', 'Cloud Backup', 'Disaster Recovery']);
+    expect(names).toEqual(['Device Backup', 'Cloud Backup', 'Disaster Recovery']);
   });
 
-  it('removed Network Monitor from Security (now lives only under Monitoring)', () => {
+  it('keeps Network Monitor out of Security (lives under Fleet Management)', () => {
     expect(hrefsOf('security')).not.toContain('/monitoring');
     // Security still leads with its own Security item.
     expect(section('security').items[0].href).toBe('/security');
   });
 
-  it('removed Network Discovery and all backup items from Operations', () => {
-    const ops = hrefsOf('operations');
-    expect(ops).not.toContain('/discovery');
-    expect(ops).not.toContain('/backup');
-    expect(ops).not.toContain('/c2c');
-    expect(ops).not.toContain('/dr');
-    // Operations retains its non-backup items (Quotes, Invoices, Contracts, Product
-    // Catalog added by the billing engine).
-    expect(ops).toEqual([
+  it('groups billing surfaces under Billing and device config under Fleet Management', () => {
+    expect(hrefsOf('billing')).toEqual([
       '/billing/quotes',
       '/billing/invoices',
       '/contracts',
       '/timesheet',
       '/settings/catalog',
-      '/software',
-      '/software-inventory',
+    ]);
+    expect(hrefsOf('fleet-management')).toEqual([
       '/devices/groups',
       '/configuration-policies',
-      '/integrations',
+      '/software',
+      '/monitoring',
+      '/discovery',
+      '/onedrive',
     ]);
+  });
+
+  it('keeps every AI surface together and every platform-admin surface in Administration', () => {
+    expect(hrefsOf('ai')).toEqual([
+      '/fleet', '/workspace', '/settings/ai-agents', '/ai-agents/runs', '/settings/ai-usage', '/ai-for-office',
+    ]);
+    const admin = section('administration');
+    expect(admin.items.length).toBeGreaterThan(0);
+    for (const item of admin.items) expect(item.platformAdminOnly, item.href).toBe(true);
+    for (const s of navSections) {
+      if (s.id === 'administration') continue;
+      for (const item of s.items) expect(item.platformAdminOnly, `${s.id} > ${item.href}`).toBeFalsy();
+    }
+    expect(topLevelNav.map((i) => i.href)).not.toContain('/onedrive');
   });
 
   it('each moved href appears in exactly one section (no duplicate membership)', () => {
@@ -116,15 +117,16 @@ describe('navSections structure (#1321, #1324)', () => {
     }
   });
 
-  it('orders sections AI & Fleet -> Monitoring -> Security -> Operations -> Backup -> Reporting -> Settings', () => {
+  it('orders sections AI -> Fleet Management -> Security -> Backup -> Billing -> Reporting -> Settings -> Administration', () => {
     expect(navSections.map((s) => s.id)).toEqual([
-      'ai-fleet',
-      'monitoring',
+      'ai',
+      'fleet-management',
       'security',
-      'operations',
       'backup',
+      'billing',
       'reporting',
       'settings',
+      'administration',
     ]);
   });
 });
@@ -245,6 +247,20 @@ describe('sidebar i18n seed', () => {
     expect(nestedLink.closest('a')).toHaveAttribute('href', '/monitoring');
     expect(screen.queryByText('Network Monitor')).not.toBeInTheDocument();
   });
+
+  it.each(['/software-inventory', '/software-policies'])(
+    'highlights the single Software item for alias path %s',
+    async (path) => {
+      const { container } = render(<Sidebar currentPath={path} />);
+      const link = await waitFor(() => {
+        const a = container.querySelector('a[href="/software"]');
+        expect(a).not.toBeNull();
+        return a as HTMLAnchorElement;
+      });
+      expect(link.className).toContain('bg-primary');
+      expect(container.querySelector(`a[href="${path}"]`)).toBeNull();
+    },
+  );
 
   it('switches an already-mounted sidebar when the language changes', async () => {
     render(<Sidebar currentPath="/" />);

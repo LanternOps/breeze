@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { Queue } from 'bullmq';
 import { getBullMQConnection } from './redis';
 import { captureException } from './sentry';
@@ -14,11 +15,25 @@ interface TicketEventEnvelope {
   orgId: string;
   partnerId: string | null;
   actorUserId?: string | null;
+  /**
+   * W07 (#3901): unique per emitted event; the notify worker uses it in the
+   * user_notifications dedupe key so a BullMQ retry never re-pushes while a
+   * genuine A->B->A reassignment does. Stamped by emitTicketEvent — emitters
+   * never set it. Jobs queued before this shipped lack it; the worker falls
+   * back to job.id.
+   */
+  eventId: string;
 }
 
 export type TicketEvent = TicketEventEnvelope & (
-  | { type: 'ticket.created'; payload: { internalNumber: string; subject: string; assigneeId: string | null; source: TicketSource } }
-  | { type: 'ticket.status_changed'; payload: { from: TicketStatus; to: TicketStatus; resolutionNote: string | null } }
+  // #3828 wave-6-3 task 2: subject dropped from the payload — the notify
+  // worker's ticket.created/ticket.assigned branch (collectAssigneeNotification)
+  // already fetches ticket.subject from the DB and never read the payload field.
+  | { type: 'ticket.created'; payload: { internalNumber: string; assigneeId: string | null; source: TicketSource } }
+  // #3828 wave-6-3 task 2: resolutionNote dropped from the payload (it is
+  // free-text ticket content, same reasoning as `subject` above) — the notify
+  // worker's resolved-email branch now reads it from the ticket row instead.
+  | { type: 'ticket.status_changed'; payload: { from: TicketStatus; to: TicketStatus } }
   | { type: 'ticket.assigned'; payload: { assigneeId: string | null } }
   // `inbound` marks a comment that originated from an inbound customer email. The
   // notify worker's ticket.commented branch skips the requester echo when
@@ -36,6 +51,11 @@ export type TicketEvent = TicketEventEnvelope & (
 
 export type TicketEventType = TicketEvent['type'];
 
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+/** What emitters pass: eventId is optional and normally omitted. */
+export type TicketEventInput = DistributiveOmit<TicketEvent, 'eventId'> & { eventId?: string };
+
 let queue: Queue | null = null;
 
 export function getTicketEventsQueue(): Queue {
@@ -47,7 +67,8 @@ export function getTicketEventsQueue(): Queue {
 
 // Fire-and-forget by design: a Redis outage must never fail the user-facing
 // mutation that emitted the event. Consumers (notifications) are best-effort.
-export async function emitTicketEvent(event: TicketEvent): Promise<void> {
+export async function emitTicketEvent(input: TicketEventInput): Promise<void> {
+  const event = { ...input, eventId: input.eventId ?? randomUUID() } as TicketEvent;
   try {
     await getTicketEventsQueue().add(event.type, event, {
       removeOnComplete: { count: 100 },

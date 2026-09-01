@@ -265,6 +265,7 @@
       },
       "refresh": "Refresh",
       "reportTypes": {
+        "ai_org_narrative": "Weekly AI Operations Narrative",
         "alert_summary": "Alert Summary",
         "compliance": "Compliance Report",
         "device_inventory": "Device Inventory",
@@ -290,6 +291,10 @@
         "generateNow": "Generate now"
       },
       "adhocReport": "Ad-hoc Report",
+      "aiNarrative": {
+        "managedBySchedule": "Managed by AI schedule",
+        "openLatest": "Open latest"
+      },
       "confirmDelete": "Are you sure you want to delete \"{{name}}\"?",
       "createReport": "Create Report",
       "description": "Generate and schedule reports for your infrastructure.",
@@ -304,7 +309,8 @@
         "downloadFailed": "Download failed",
         "fetchReports": "Failed to fetch reports",
         "generateReport": "Failed to generate report",
-        "generic": "An error occurred"
+        "generic": "An error occurred",
+        "noCompletedRun": "No completed narrative to open yet"
       },
       "formats": {
         "csv": "CSV",
@@ -316,6 +322,7 @@
       "newReport": "New Report",
       "nextOccurrence": "Next: {{next}}",
       "reportTypes": {
+        "ai_org_narrative": "Weekly AI Operations Narrative",
         "alert_summary": "Alert Summary",
         "compliance": "Compliance Report",
         "device_inventory": "Device Inventory",
@@ -770,6 +777,10 @@
         }
       },
       "selectedFields": "Selected fields",
+      "success": {
+        "created": "Report \"{{name}}\" saved.",
+        "updated": "Report \"{{name}}\" updated."
+      },
       "values": {
         "enabled": "Enabled",
         "off": "Off",
@@ -805,6 +816,7 @@
       "previewAlt": "{{name}} preview",
       "reportTypes": {
         "activity": "Activity",
+        "ai_org_narrative": "Weekly AI Operations Narrative",
         "alert_summary": "Alert Summary",
         "alerts": "Alerts",
         "compliance": "Compliance Report",

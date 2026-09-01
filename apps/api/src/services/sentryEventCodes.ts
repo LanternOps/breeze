@@ -86,6 +86,18 @@ export const SENTRY_EVENT_CODES = [
   'inbound_email_claim_race_lost',
   /** No usable platform LLM key is configured on this deployment. */
   'llm_platform_key_missing',
+  /** The LLM egress audit queue shed rows — the audit trail has gaps (#3922). */
+  'llm_egress_audit_queue_shed',
+
+  // --- ai spend / billing -----------------------------------------------
+  /** The billing service's AI-credit check failed; the gate fell open. */
+  'ai_billing_credits_check_failed',
+  /** A platform-funded AI deduction did not land — that spend went unbilled. */
+  'ai_billing_credits_deduct_failed',
+  /** An org reached the AI billing path with no partner row to bill. */
+  'ai_billing_org_partner_missing',
+  /** A rejected partner AI key could not be stamped (config moved under us). */
+  'ai_partner_key_error_stamp_stale',
 
   // --- backup -----------------------------------------------------------
   /** A backup result matched no job row (deleted, or invisible under RLS). */
@@ -100,6 +112,12 @@ export const SENTRY_EVENT_CODES = [
   'device_deletion_lock_timeout_unreadable',
   /** The device cascade ran without holding the parent `devices` row lock. */
   'device_deletion_parent_lock_missing',
+
+  // --- mcp transport ----------------------------------------------------
+  /** A principal presented an `Mcp-Session-Id` owned by someone else (MED-1). */
+  'mcp_session_principal_mismatch',
+  /** Unknown/expired `Mcp-Session-Id` rate spiked — suspect session-store loss (#3744). */
+  'mcp_session_unknown_rate_high',
 ] as const;
 
 /**

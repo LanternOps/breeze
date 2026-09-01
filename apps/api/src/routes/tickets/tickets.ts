@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { and, asc, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { tickets, ticketComments, ticketAlertLinks, devices, organizations, users, alerts, ticketStatuses } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
@@ -25,6 +25,8 @@ import {
   getTicketTriageSuggestion,
 } from '../../services/ticketTriage';
 import { emitTicketTriageFeedback } from '../../services/mlFeedbackEmitters';
+import { ATTACHMENT_META_COLUMNS, ticketAttachments } from '../../db/schema/ticketAttachments';
+import type { TicketAttachmentMeta } from '@breeze/shared';
 import type { AuthContext } from '../../middleware/auth';
 
 // NOTE: authMiddleware is applied by the hub router in ./index.ts (alerts pattern) —
@@ -89,7 +91,10 @@ export function actorFrom(c: { get: (k: 'auth') => AuthContext }) {
 
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof TicketServiceError) {
-    return c.json({ error: err.message }, err.status);
+    // `code` is optional on the error; include it when present so callers can
+    // branch on a stable token instead of the message (W08 #3902 relies on
+    // ATTACHMENT_NOT_CLAIMABLE reaching the client).
+    return c.json(err.code ? { error: err.message, code: err.code } : { error: err.message }, err.status);
   }
   throw err;
 }
@@ -487,11 +492,31 @@ ticketsRoutes.get(
       .from(ticketComments)
       .where(eq(ticketComments.ticketId, id))
       .orderBy(asc(ticketComments.createdAt));
+    // W08 #3902: one extra query, grouped in memory — a join onto commentRows
+    // would fan the comment rows out per attachment. ATTACHMENT_META_COLUMNS
+    // keeps the (up to 10 MiB) `data` column out of every detail response
+    // (spec D10); tickets.test.ts asserts the selected column set.
+    const attachmentRows = await db
+      .select(ATTACHMENT_META_COLUMNS)
+      .from(ticketAttachments)
+      .where(and(eq(ticketAttachments.ticketId, id), isNotNull(ticketAttachments.commentId)));
+    const attachmentsByComment = new Map<string, TicketAttachmentMeta[]>();
+    for (const row of attachmentRows) {
+      // Belt for the braces: a pending row must never reach the feed even if
+      // the predicate above were ever relaxed.
+      if (!row.commentId) continue;
+      const list = attachmentsByComment.get(row.commentId);
+      if (list) list.push(row as unknown as TicketAttachmentMeta);
+      else attachmentsByComment.set(row.commentId, [row as unknown as TicketAttachmentMeta]);
+    }
+
     const comments = commentRows.map((row) => ({
       ...row,
       deleted: row.deletedAt != null,
       // Never ship the prior text of a deleted comment to the client.
       content: row.deletedAt != null ? '' : row.content,
+      // ...nor its photos. Rows and objects survive so a restore is free.
+      attachments: row.deletedAt != null ? [] : (attachmentsByComment.get(row.id) ?? []),
     }));
 
     const alertLinks = await db
@@ -702,7 +727,7 @@ ticketsRoutes.post(
     try {
       const ticket = await changeTicketStatus(id,
         { status: body.status, statusId: body.statusId },
-        { resolutionNote: body.resolutionNote, pendingReason: body.pendingReason },
+        { resolutionNote: body.resolutionNote, pendingReason: body.pendingReason, aiDraftId: body.aiDraftId },
         actorFrom(c)
       );
       return c.json({ data: ticket });
@@ -809,7 +834,9 @@ ticketsRoutes.post(
 
     try {
       const result = await addTicketComment(id, body, actorFrom(c));
-      return c.json({ data: result.comment }, 201);
+      // W08 #3902: echo the claimed attachment META back so the composer can
+      // render the posted comment without a second round trip.
+      return c.json({ data: { ...result.comment, attachments: result.attachments } }, 201);
     } catch (err) {
       return handleServiceError(c, err);
     }

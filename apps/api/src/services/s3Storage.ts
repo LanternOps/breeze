@@ -1,4 +1,5 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3';
+import type { Readable } from 'node:stream';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl } from '@breeze/shared';
 import { createReadStream, statSync } from 'node:fs';
@@ -404,6 +405,105 @@ export async function uploadBinary(localPath: string, s3Key: string, checksum?: 
     // handler as an opaque 500 (#2794). Classify + log here so both the API
     // caller and `docker logs breeze-api` get something actionable.
     throw wrapS3Failure('uploadBinary', bucket, s3Key, err);
+  }
+}
+
+/**
+ * Put an in-memory buffer with a real content type (W08 #3902). `uploadBinary`
+ * only streams a LOCAL PATH as `application/octet-stream`, which is wrong for
+ * ticket attachments: the stored ContentType is what the authenticated content
+ * route echoes back, and octet-stream would turn every inline image into a
+ * download. `sha256` is stored as object metadata so an operator can verify an
+ * object against its row without reading the bytes.
+ */
+export async function putObjectBuffer(
+  key: string,
+  body: Buffer,
+  contentType: string,
+  sha256: string,
+): Promise<void> {
+  const bucket = requireBucket();
+  const client = getS3Client();
+  try {
+    await client.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Body: body,
+        ContentLength: body.length,
+        ContentType: contentType,
+        Metadata: { sha256 },
+      })
+    );
+  } catch (err) {
+    throw wrapS3Failure('putObjectBuffer', bucket, key, err);
+  }
+}
+
+/**
+ * Open an object for streaming (W08 #3902). A genuinely absent key resolves to
+ * `{ body: null }` so the caller can 404; every other fault (timeout,
+ * AccessDenied, DNS, 5xx) is classified and thrown, never masked as a 404
+ * (#1807, #1808).
+ */
+export async function getObjectStream(
+  key: string,
+): Promise<{ body: Readable | null; contentLength: number | null }> {
+  const bucket = requireBucket();
+  const client = getS3Client();
+  try {
+    const resp = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    return {
+      body: (resp.Body as unknown as Readable) ?? null,
+      contentLength: typeof resp.ContentLength === 'number' ? resp.ContentLength : null,
+    };
+  } catch (err) {
+    if (isS3NotFound(err)) return { body: null, contentLength: null };
+    throw wrapS3Failure('getObjectStream', bucket, key, err);
+  }
+}
+
+/** S3 caps a single DeleteObjects request at 1000 keys. */
+const DELETE_OBJECTS_BATCH = 1000;
+
+/**
+ * Batch-delete object keys (W08 #3902), <=1000 per request.
+ *
+ * THROWS when the provider reports a per-key error. This is load-bearing for
+ * the org-erasure contract (spec D9): erasure deletes objects BEFORE rows, so a
+ * silently-swallowed partial failure would leave customer bytes in the bucket
+ * with no row left to find them by. Erasure is rerunnable precisely because
+ * this throws and the rows survive.
+ */
+export async function deleteObjects(keys: readonly string[]): Promise<void> {
+  if (keys.length === 0) return; // never send a zero-key delete
+  const bucket = requireBucket();
+  const client = getS3Client();
+  for (let i = 0; i < keys.length; i += DELETE_OBJECTS_BATCH) {
+    const chunk = keys.slice(i, i + DELETE_OBJECTS_BATCH);
+    let resp: { Errors?: Array<{ Key?: string; Code?: string; Message?: string }> };
+    try {
+      resp = await client.send(
+        new DeleteObjectsCommand({
+          Bucket: bucket,
+          Delete: { Objects: chunk.map((Key) => ({ Key })), Quiet: true },
+        })
+      );
+    } catch (err) {
+      throw wrapS3Failure('deleteObjects', bucket, chunk[0] ?? '', err);
+    }
+    const errors = resp?.Errors ?? [];
+    if (errors.length > 0) {
+      const first = errors[0]!;
+      throw wrapS3Failure(
+        'deleteObjects',
+        bucket,
+        first.Key ?? chunk[0] ?? '',
+        Object.assign(new Error(`${errors.length} object(s) failed to delete: ${first.Code ?? 'unknown'} ${first.Message ?? ''}`.trim()), {
+          name: first.Code ?? 'DeleteObjectsPartialFailure',
+        }),
+      );
+    }
   }
 }
 

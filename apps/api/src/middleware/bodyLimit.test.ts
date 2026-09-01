@@ -319,6 +319,13 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     globalMaxSize: 1 * MB,
     note: 'route limit (256KB) is TIGHTER than the global default, so it applies as written.',
   },
+  'agents/pamObservations.ts': {
+    paths: [
+      '/api/v1/agents/agent-1/commands/11111111-1111-4111-8111-111111111111/pam-observations',
+    ],
+    globalMaxSize: 1 * MB,
+    note: 'route limit (32KB) is TIGHTER than the global default, so it applies as written.',
+  },
   'agents/processSample.ts': {
     paths: ['/api/v1/agents/agent-1/process-sample'],
     globalMaxSize: 1 * MB,
@@ -385,5 +392,27 @@ describe('route-level bodyLimit registrations vs the global gate', () => {
         ).toEqual({ file, path, maxSize: expected });
       }
     }
+  });
+});
+
+describe('ticket attachment upload carve-out (W08 #3902)', () => {
+  it('gives POST /tickets/:id/attachments 10 MiB + 64 KiB of headroom', () => {
+    const p = bodyLimitForPath('/api/v1/tickets/11111111-2222-4333-8444-555555555555/attachments');
+    expect(p).toEqual({
+      rule: 'ticket-attachment',
+      maxSize: 10 * 1024 * 1024 + 64 * 1024,
+      error: 'Attachment too large (max 10 MB)',
+    });
+  });
+
+  it('does NOT widen the sibling comment route', () => {
+    expect(bodyLimitForPath('/api/v1/tickets/11111111-2222-4333-8444-555555555555/comments').rule)
+      .toBe('default');
+  });
+
+  it('does not match the content sub-path', () => {
+    expect(
+      bodyLimitForPath('/api/v1/tickets/11111111-2222-4333-8444-555555555555/attachments/22222222-2222-4333-8444-555555555555/content').rule,
+    ).toBe('default');
   });
 });

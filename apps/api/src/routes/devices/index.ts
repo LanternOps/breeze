@@ -31,6 +31,7 @@ import { statsRoutes } from './stats';
 import { postureRoutes } from './posture';
 import { optionsRoutes } from './options';
 import { healthRoutes } from './health';
+import { agentRollbackRoutes } from '../agentRollback';
 
 export const deviceRoutes = new Hono();
 
@@ -82,6 +83,9 @@ deviceRoutes.route('/', statsRoutes);
 // `/management-posture/*` paths must not be eaten by the `/:id` matcher
 // (which would read `management-posture` as a device id).
 deviceRoutes.route('/', postureRoutes);
+
+// Mount the high-power literal sub-resource before core's /:id routes.
+deviceRoutes.route('/', agentRollbackRoutes);
 
 // Mount core routes (/, /:id, PATCH /:id, DELETE /:id)
 deviceRoutes.route('/', coreRoutes);

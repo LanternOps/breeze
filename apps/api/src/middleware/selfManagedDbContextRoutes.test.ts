@@ -88,6 +88,19 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/devices/dev-1/sessions/live'],
     ['GET', '/api/v1/devices/dev-1/sessions/live/'],
     ['get', '/api/v1/devices/dev-1/sessions/live'],
+
+    // LLM provider catalog fidelity verification — runs a full tool-use
+    // round-trip against the provider AND spawns an Agent SDK subprocess.
+    ['POST', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify'],
+    ['POST', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify/'],
+    ['post', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify'],
+    // Revision authoring resolves the operator-supplied base URL through
+    // assertSafeUrl (a real DNS lookup) BEFORE any DB work — holding the
+    // request transaction across it pins a pooled connection on a resolver
+    // the operator chose the timeout of.
+    ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions'],
+    ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions/'],
+    ['post', '/api/v1/admin/llm-provider-catalog/entry-1/revisions'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -176,6 +189,16 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/devices/dev-1/sessions/live', 'live is GET-only'],
     ['GET', '/api/v1/devices//sessions/live', 'empty device id must not match'],
     ['GET', '/api/v1/devices/dev-1/sessions/live/extra', 'extra segment must not match'],
+
+    // The other catalog mutations are DB-only and MUST keep the ambient tx.
+    ['GET', '/api/v1/admin/llm-provider-catalog', 'catalog listing is DB-only'],
+    ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/activate', 'activation is DB-only'],
+    ['GET', '/api/v1/admin/llm-provider-catalog/entry-1/revisions', 'revision create is POST-only'],
+    ['POST', '/api/v1/admin/llm-provider-catalog//revisions', 'empty entry id must not match'],
+    ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify', 'verify is POST-only'],
+    ['POST', '/api/v1/admin/llm-provider-catalog/revisions//verify', 'empty revision id must not match'],
+    ['POST', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify/extra', 'extra segment must not match'],
   ];
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {

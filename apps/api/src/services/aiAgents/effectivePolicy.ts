@@ -3,6 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import {
   AI_AGENT_LIMIT_DEFAULTS,
   AI_AGENT_POLICY_SNAPSHOT_VERSION,
+  aiAgentActAssetsSchema,
   aiAgentLimitsSchema,
   aiAgentProtectedResourcesSchema,
   aiAgentRecipientsSchema,
@@ -40,6 +41,7 @@ type PolicyRowFields = Pick<
   | 'limits'
   | 'triggers'
   | 'recipients'
+  | 'actAssets'
   | 'instructions'
   | 'cooldownSeconds'
 >;
@@ -54,6 +56,7 @@ export function normalizeAgentPolicy(row: PolicyRowFields): AiAgentPolicy {
     limits: aiAgentLimitsSchema.parse(row.limits ?? {}),
     triggers: aiAgentTriggersSchema.parse(row.triggers ?? {}),
     recipients: aiAgentRecipientsSchema.parse(row.recipients ?? {}),
+    actAssets: aiAgentActAssetsSchema.parse(row.actAssets ?? {}),
     instructions: row.instructions ?? null,
     cooldownSeconds: row.cooldownSeconds,
   };
@@ -113,6 +116,7 @@ function partnerProvenance(): AiAgentPolicyProvenance {
     limits: 'partner',
     triggers: 'partner',
     recipients: 'partner',
+    actAssets: 'partner',
     instructions: 'partner',
     cooldownSeconds: 'partner',
   };
@@ -128,7 +132,34 @@ export function mergeAgentPolicies(
   opts: { allowedModels: string[] | null },
 ): { effective: AiAgentPolicy; provenance: AiAgentPolicyProvenance } {
   const provenance = partnerProvenance();
-  if (!org) return { effective: partner, provenance };
+  if (!org) {
+    return {
+      // Wave 6 PR 4 follow-up (#3828) — `anomalyEnabled` is the one field on
+      // this policy that must NOT pass through from the partner baseline
+      // unchanged, even in this "no org override at all" fast path. Every
+      // other field's tighten-only contract is "org can only narrow the
+      // partner's ceiling", which correctly degrades to "use the partner's
+      // value" when there is no org row to narrow with. A binary opt-in
+      // safety gate is different: if the partner baseline alone could turn
+      // it on, every org under that partner would start receiving
+      // anomaly-triggered runs the moment the partner flips one row, with
+      // zero action at any individual org. So this ignores partner.triggers.
+      // anomalyEnabled here and always resolves to `undefined` (falsy) —
+      // see AiAgentTriggers.anomalyEnabled's docstring for the full account,
+      // and the general-merge branch below for the "org override present"
+      // case (same rule: only the org's OWN value is ever consulted).
+      //
+      // P2-4 Task A6 (#4191) — `ticketAutonomousWrites` gets the identical
+      // treatment, for the identical reason: a partner-wide baseline row
+      // must never blanket-enable unattended ticket writes for every org
+      // under it. See AiAgentTriggers.ticketAutonomousWrites's docstring.
+      effective: {
+        ...partner,
+        triggers: { ...partner.triggers, anomalyEnabled: undefined, ticketAutonomousWrites: undefined },
+      },
+      provenance,
+    };
+  }
 
   const pick = <K extends keyof AiAgentPolicy>(
     key: K,
@@ -180,12 +211,58 @@ export function mergeAgentPolicies(
       siteIds: intersectOptional(partner.triggers.siteIds, org.triggers.siteIds),
       deviceGroupIds: intersectOptional(partner.triggers.deviceGroupIds, org.triggers.deviceGroupIds),
       deviceTags: intersectOptional(partner.triggers.deviceTags, org.triggers.deviceTags),
+      // Wave 6 PR 3 (#3828, Task 4) — same tighten-only intersection as the
+      // other narrowing lists above. Unenforced by the admission subscriber
+      // this PR (`AiAgentTriggers.ticketCategories`'s docstring), but merged
+      // here anyway so the effective policy never silently drops a value an
+      // operator configured, ahead of whichever task wires evaluation in.
+      ticketCategories: intersectOptional(partner.triggers.ticketCategories, org.triggers.ticketCategories),
+      ticketPriorities: intersectOptional(
+        partner.triggers.ticketPriorities,
+        org.triggers.ticketPriorities,
+      ) as AiAgentPolicy['triggers']['ticketPriorities'],
       respectMaintenanceWindows:
         partner.triggers.respectMaintenanceWindows || org.triggers.respectMaintenanceWindows,
+      // Wave 6 PR 4 follow-up (#3828) — deliberately NOT tighten-only
+      // intersection/AND, and deliberately NOT "either layer true → true".
+      // Reads ONLY the org's own override: `partner.triggers.anomalyEnabled`
+      // is never consulted in either direction. See this field's docstring
+      // on AiAgentTriggers (packages/shared) and the `!org` branch above
+      // (same rule applied to the "no org override" fast path).
+      anomalyEnabled: org.triggers.anomalyEnabled === true ? true : undefined,
+      // P2-4 Task A6 (#4191) — same org-row-only opt-in as anomalyEnabled
+      // directly above: reads ONLY org.triggers.ticketAutonomousWrites,
+      // partner.triggers.ticketAutonomousWrites is never consulted in
+      // either direction. See AiAgentTriggers.ticketAutonomousWrites's
+      // docstring (packages/shared) for the full rationale.
+      ticketAutonomousWrites: org.triggers.ticketAutonomousWrites === true ? true : undefined,
     }, 'merged'),
     recipients: pick('recipients', {
       userIds: union(partner.recipients.userIds, org.recipients.userIds),
       roleIds: union(partner.recipients.roleIds, org.recipients.roleIds),
+    }, 'merged'),
+    // Tighten-only, same as toolAllowlist: an org may only NARROW the
+    // partner's authorized script set, never add a script the partner never
+    // opted in — an org intersecting against an empty partner baseline stays
+    // empty, which is exactly "run_script never act-eligible" (Task 6).
+    //
+    // supervisedActionKeys (wave 5 Part B, #3827) mirrors scriptIds exactly,
+    // for the same reason: an org may only narrow the partner's authorized
+    // POLICY_DECIDABLE_TIER3 key set, never widen it. `?? []` on both sides is
+    // load-bearing, not defensive — the field is optional on AiAgentActAssets
+    // because AI_AGENT_POLICY_SNAPSHOT_VERSION was NOT bumped for it (v3 is
+    // already tolerant), so a partner or org row written before this deploy
+    // has no `supervisedActionKeys` key in its stored `actAssets` jsonb at
+    // all. `normalizeAgentPolicy` fills the shared-schema default of `[]`
+    // for any row read through it, but `mergeAgentPolicies` is also exported
+    // pure and callable directly with a hand-built AiAgentPolicy (as several
+    // tests here do), so the merge itself must not assume the key is present.
+    actAssets: pick('actAssets', {
+      scriptIds: intersect(partner.actAssets.scriptIds, org.actAssets.scriptIds),
+      supervisedActionKeys: intersect(
+        partner.actAssets.supervisedActionKeys ?? [],
+        org.actAssets.supervisedActionKeys ?? [],
+      ),
     }, 'merged'),
     instructions: pick(
       'instructions',

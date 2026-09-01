@@ -8,6 +8,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
+import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
@@ -52,7 +53,7 @@ export function createIPHistoryRetentionWorker(): Worker<RetentionJobData> {
           DELETE FROM device_ip_history
           WHERE is_active = false AND deactivated_at <= ${cutoff}
         `);
-        const deletedCount = Number((result as unknown as { count: number }).count ?? result.length ?? 0);
+        const deletedCount = extractRowCount(result);
 
         const durationMs = Date.now() - startTime;
         console.log(`[IPHistoryRetention] Pruned ${deletedCount} inactive rows older than ${retentionDays} days in ${durationMs}ms`);

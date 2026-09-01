@@ -1044,7 +1044,10 @@ describe('mobile routes', () => {
         body: JSON.stringify({ note: 'done' })
       });
 
-      expect(res.status).toBe(400);
+      // 409, not 400, since #4094. The identical outcome is also reachable by
+      // LOSING the compare-and-swap a moment later, and one user action must not
+      // return two different status codes depending purely on timing.
+      expect(res.status).toBe(409);
       expect(emitAlertStateFeedbackMock).not.toHaveBeenCalled();
     });
 

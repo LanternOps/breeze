@@ -265,6 +265,7 @@
       },
       "refresh": "Actualizar",
       "reportTypes": {
+        "ai_org_narrative": "Narrativa semanal de operaciones con IA",
         "alert_summary": "Resumen de alerta",
         "compliance": "Informe de cumplimiento",
         "device_inventory": "Inventario de dispositivos",
@@ -290,6 +291,10 @@
         "generateNow": "Generar ahora"
       },
       "adhocReport": "Informe ad hoc",
+      "aiNarrative": {
+        "managedBySchedule": "Gestionado por la programación de IA",
+        "openLatest": "Abrir el más reciente"
+      },
       "confirmDelete": "¿Está seguro de que desea eliminar \"{{name}}\"?",
       "createReport": "Crear informe",
       "description": "Genere y programe informes para su infraestructura.",
@@ -304,7 +309,8 @@
         "downloadFailed": "Descarga fallida",
         "fetchReports": "No se pudieron recuperar los informes",
         "generateReport": "No se pudo generar el informe",
-        "generic": "Se produjo un error"
+        "generic": "Se produjo un error",
+        "noCompletedRun": "Todavía no hay una narrativa completada para abrir"
       },
       "formats": {
         "csv": "CSV",
@@ -316,6 +322,7 @@
       "newReport": "Nuevo informe",
       "nextOccurrence": "Siguiente: {{next}}",
       "reportTypes": {
+        "ai_org_narrative": "Narrativa semanal de operaciones con IA",
         "alert_summary": "Resumen de alerta",
         "compliance": "Informe de cumplimiento",
         "device_inventory": "Inventario de dispositivos",
@@ -770,6 +777,10 @@
         }
       },
       "selectedFields": "Campos seleccionados",
+      "success": {
+        "created": "Informe \"{{name}}\" guardado.",
+        "updated": "Informe \"{{name}}\" actualizado."
+      },
       "values": {
         "enabled": "Activado",
         "off": "Apagado",
@@ -805,6 +816,7 @@
       "previewAlt": "Vista previa de {{name}}",
       "reportTypes": {
         "activity": "Actividad",
+        "ai_org_narrative": "Narrativa semanal de operaciones con IA",
         "alert_summary": "Resumen de alerta",
         "alerts": "Alertas",
         "compliance": "Informe de cumplimiento",
