@@ -118,6 +118,14 @@ export const SENTRY_EVENT_CODES = [
   'mcp_session_principal_mismatch',
   /** Unknown/expired `Mcp-Session-Id` rate spiked — suspect session-store loss (#3744). */
   'mcp_session_unknown_rate_high',
+
+  // --- retention --------------------------------------------------------
+  /**
+   * A retention sweep hit its batch cap with rows still eligible (#4343). If
+   * this repeats nightly for one table, that table is growing faster than its
+   * job can prune it — raise the job's batch-size / max-batches knobs.
+   */
+  'retention_backlog_remaining',
 ] as const;
 
 /**

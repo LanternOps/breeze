@@ -13,6 +13,7 @@ import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
+import { warnOnRetentionBacklog } from './retentionBatch';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -103,6 +104,8 @@ export function createReliabilityRetentionWorker(): Worker<RetentionJobData> {
         console.log(
           `[ReliabilityRetention] Pruned ${result.deleted} reliability history rows older than ${result.retentionDays} days (batches=${result.batches}, hasMore=${result.hasMore}) in ${result.durationMs}ms`
         );
+        // `hasMore=true` buried in an info line is not an alert (#4343).
+        warnOnRetentionBacklog('[ReliabilityRetention]', 'device_reliability_history', result);
         return result;
       });
     },

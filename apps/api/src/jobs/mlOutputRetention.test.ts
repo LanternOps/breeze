@@ -155,4 +155,25 @@ describe('ML output retention worker', () => {
       ],
     });
   });
+
+  // #4343: the only prior signal was a `+` appended inside an info-level detail
+  // string — far too easy to miss for a table that never catches up.
+  it('warns loudly, and only for the capped table, when a backlog remains', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    dbExecuteMock
+      .mockResolvedValueOnce({ rowCount: 4 })
+      .mockResolvedValueOnce({ rowCount: 4 })
+      .mockResolvedValueOnce({ rowCount: 1 })
+      .mockResolvedValueOnce({ rowCount: 0 });
+    createMlOutputRetentionWorker();
+
+    await capturedWorkerProcessor.current!({
+      data: { retentionDays: 30, batchSize: 4, maxBatches: 2 },
+    });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('remediation_suggestions');
+    warn.mockRestore();
+  });
 });

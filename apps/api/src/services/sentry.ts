@@ -229,6 +229,19 @@ const ALLOWED_TAG_NAMES = new Set([
   // so proving every current and future path passes a hardcoded literal is a
   // real sweep, not a glance. Unproven means not allowlisted.
   'dbContextOpener',
+  // #4343: which table a retention sweep left a backlog on. Without it every
+  // `retention_backlog_remaining` event from all nine call sites collapses into
+  // one issue reading "a retention job is behind" — scrubEvent deletes
+  // `message`, so the table baked into the warning text never arrives either.
+  //
+  // Structurally bounded, and checked: every caller passes one of eight
+  // hardcoded table literals (`agent_logs`, `device_change_log`,
+  // `device_event_logs`, `device_ip_history`, `snmp_metrics`,
+  // `device_reliability_history`, `user_risk_scores`, and mlOutputRetention's
+  // three-literal `PrunedTable['table']` union). Per-run detail that is NOT
+  // bounded — eventLogRetention's org id — is deliberately kept out of this tag
+  // and goes only to the console line, which is not scrubbed.
+  'retentionTarget',
   // The AI billing calls (services/aiCostTracker.ts) are deliberately
   // FAIL-OPEN, so the only thing separating "billing said no" from "billing
   // never answered" is this tag. Its value is either an HTTP status rendered

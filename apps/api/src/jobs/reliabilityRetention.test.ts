@@ -50,6 +50,7 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
+  captureMessage: vi.fn(),
 }));
 
 import {
@@ -132,5 +133,38 @@ describe('reliability retention worker', () => {
       batches: 2,
       hasMore: true,
     });
+  });
+
+  // #4343: hasMore was only ever reported into an info-level log line, so a job
+  // that never caught up looked identical to one that did.
+  it('warns loudly when the batch cap leaves a backlog behind', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    dbExecuteMock
+      .mockResolvedValueOnce({ rowCount: 4 })
+      .mockResolvedValueOnce({ rowCount: 4 });
+    createReliabilityRetentionWorker();
+
+    await capturedWorkerProcessor.current!({
+      data: { retentionDays: 30, batchSize: 4, maxBatches: 2 },
+    });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('device_reliability_history');
+    warn.mockRestore();
+  });
+
+  it('stays silent when the sweep drained the backlog', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    dbExecuteMock.mockResolvedValueOnce({ rowCount: 1 });
+    createReliabilityRetentionWorker();
+
+    await capturedWorkerProcessor.current!({
+      data: { retentionDays: 30, batchSize: 4, maxBatches: 2 },
+    });
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

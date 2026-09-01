@@ -13,6 +13,7 @@ import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
 import { cronFromEnv } from './scheduleRegistry';
+import { warnOnRetentionBacklog } from './retentionBatch';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -131,6 +132,8 @@ export function createUserRiskRetentionWorker(): Worker<RetentionJobData> {
         console.log(
           `[UserRiskRetention] Compacted user risk snapshots older than ${result.retentionDays} days (deleted=${result.deleted}, batches=${result.batches}, hasMore=${result.hasMore}) in ${result.durationMs}ms`
         );
+        // `hasMore=true` buried in an info line is not an alert (#4343).
+        warnOnRetentionBacklog('[UserRiskRetention]', 'user_risk_scores', result);
         return result;
       });
     },
