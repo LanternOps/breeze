@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 import type { AgentReleaseAuthority } from '../services/actionIntents/agentReleaseAuthority';
 
@@ -6,11 +6,15 @@ import type { AgentReleaseAuthority } from '../services/actionIntents/agentRelea
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock } = vi.hoisted(() => {
+/** The value the mocked canonical resolver returns — the worker must pass
+ *  THIS through to the evidence row rather than rebuilding a key itself. */
+const CANONICAL_OP_KEY = 'run_script:execute';
+
+const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock, opEvidenceMock, canonicalKeyMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
-  const aiAgentRunsTbl = { id: col('id'), agentId: col('agent_id') };
+  const aiAgentRunsTbl = { id: col('id'), agentId: col('agent_id'), orgId: col('org_id'), alertId: col('alert_id') };
   const aiAgentsTbl = { id: col('id'), orgId: col('org_id'), partnerId: col('partner_id'), recipients: col('recipients') };
 
   const notifyMock = {
@@ -72,6 +76,22 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
     // own fail-closed contract). Default not-killed; the dedicated
     // "final pre-dispatch kill read" describe block below overrides per test.
     killStateMock: { readAiKillState: vi.fn(async () => ({ killed: false, epoch: 0 })) },
+    // P2-5 (#4192) Task 4. Both are collaborators mocked at the module
+    // boundary, same treatment (and same reason) as effectDigestMock above:
+    // `opEvidence.ts`'s exactly-once ON CONFLICT contract is pinned against
+    // the real dialect in services/aiAgents/opEvidence.test.ts, and the
+    // canonical `tool:action` derivation in
+    // services/actionIntents/canonicalPolicyKey.test.ts. Neither module can
+    // load for real here anyway — `drizzle-orm` is mocked wholesale in this
+    // file. What THIS file proves is that the worker calls the shared
+    // resolver (never a second ad hoc parse of `arguments`) and hands the
+    // writer the right metric, for the right branches, only when it won the
+    // terminal CAS.
+    opEvidenceMock: {
+      insertOpEvidence: vi.fn(async (_rows: unknown[]) => 1),
+      intentEvidenceSourceId: vi.fn((intentId: string) => intentId),
+    },
+    canonicalKeyMock: { canonicalPolicyKey: vi.fn(() => CANONICAL_OP_KEY) },
     // getToolTimeout is mocked (per-test override); withToolTimeout is kept
     // REAL (see vi.mock below) so the timeout test's timer actually fires.
     toolTimeoutsMock: { getToolTimeout: vi.fn() },
@@ -288,6 +308,14 @@ vi.mock('../services/aiAgents/recipients', () => ({
   resolveRecipientUserIds: recipientsMock.resolveRecipientUserIds,
 }));
 
+vi.mock('../services/aiAgents/opEvidence', () => ({
+  insertOpEvidence: opEvidenceMock.insertOpEvidence,
+  intentEvidenceSourceId: opEvidenceMock.intentEvidenceSourceId,
+}));
+vi.mock('../services/actionIntents/canonicalPolicyKey', () => ({
+  canonicalPolicyKey: canonicalKeyMock.canonicalPolicyKey,
+}));
+
 // bullmq is a real dependency we don't want to spin up — mock Worker/Job to
 // inert stand-ins since these tests only exercise the exported functions,
 // never `createWorker` itself.
@@ -304,7 +332,11 @@ import { releaseApprovedIntent, processIntentReleaseJob } from './intentReleaseW
 // The mocked db handle the worker threads into the digest recompute — imported
 // so that call can be asserted against the real object rather than
 // expect.anything().
-import { db as mockedDb, runOutsideDbContext as mockedRunOutside } from '../db';
+import { db as mockedDb, runOutsideDbContext as mockedRunOutside, withSystemDbAccessContext as mockedWithSystemContext } from '../db';
+// The mocked drizzle predicate builders — imported so the evidence loader's
+// `org_id` predicate (a tenancy invariant, not an implementation detail) can
+// be asserted rather than assumed.
+import { eq as mockedEq } from 'drizzle-orm';
 import type { ActionIntent } from '../db/schema/actionIntents';
 import { GoogleConnectionUnavailableError } from '../services/googleToolsHeadless';
 import { M365ConnectionUnavailableError } from '../services/m365ToolsHeadless';
@@ -1566,6 +1598,392 @@ describe('releaseApprovedIntent', () => {
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // P2-5 (#4192) Task 4 — graduation op evidence on terminal writes
+  //
+  // The rule under test reduces to ONE discriminator: evidence is written iff
+  // the terminal write stamps `executedAt` (`failIntent`'s existing
+  // `executed?: boolean` option), `completed -> executed` and
+  // `failed -> failed`. Every other exit of `releaseApprovedIntent` — the
+  // lost claim CAS, both kill-switch pauses, and every pre-execution
+  // revalidation/digest/session stop — is NOT an attempted operation and must
+  // leave the ledger untouched, or an agent would be graded down for actions
+  // it was never allowed to try.
+  // -------------------------------------------------------------------------
+  describe('op evidence on terminal writes (P2-5, #4192)', () => {
+    const AGENT_RUN_ID = 'run-1';
+    /** The EFFECTIVE (partner-baseline) agent id the run row records. */
+    const AGENT_ID = 'agent-baseline-1';
+
+    const agentAuth = {
+      principal: { kind: 'ai_agent' as const, agentId: AGENT_ID, runId: AGENT_RUN_ID },
+      user: { id: AGENT_ID, email: `agent+${AGENT_ID}@breeze.internal`, name: 'Fix agent', isPlatformAdmin: false },
+      token: {},
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      scope: 'organization' as const,
+      accessibleOrgIds: ['org-1'],
+      orgCondition: () => undefined,
+      canAccessOrg: () => true,
+    };
+
+    function agentIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
+      return baseIntent({
+        requestedByUserId: null,
+        requestingAgentRunId: AGENT_RUN_ID,
+        approvalScope: 'supervised',
+        ...overrides,
+      } as Partial<ActionIntent>);
+    }
+
+    /**
+     * Everything an AGENT-originated release needs to reach dispatch.
+     * Deliberately NOT `primeThroughRevalidation`: an agent intent branches
+     * out of `revalidateApprovedIntentForRelease` at (e) into
+     * `checkAgentReleaseAuthority` and never reaches `checkToolPermission`.
+     */
+    function primeAgentThroughRevalidation(
+      intent: ActionIntent,
+      opts: { runRow?: unknown[] } = {},
+    ) {
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([
+        { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+      ]);
+      aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+      actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(agentAuth);
+      tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+      toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+      dbState.selectAgentRunsResults.push(opts.runRow ?? [{ agentId: AGENT_ID, alertId: null }]);
+    }
+
+    beforeEach(() => {
+      // `vi.clearAllMocks()` clears call history, never implementations or the
+      // `...Once` queues — and several tests earlier in this file leave both
+      // behind (see the Tier-2 block's comment). Pin every collaborator this
+      // describe depends on rather than inheriting whatever ran last.
+      agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockReset();
+      agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockResolvedValue({ ok: true });
+      killStateMock.readAiKillState.mockReset();
+      killStateMock.readAiKillState.mockResolvedValue({ killed: false, epoch: 0 });
+      aiToolsMock.requiresLiveSession.mockReturnValue(false);
+      opEvidenceMock.insertOpEvidence.mockReset();
+      opEvidenceMock.insertOpEvidence.mockResolvedValue(1);
+      opEvidenceMock.intentEvidenceSourceId.mockReset();
+      opEvidenceMock.intentEvidenceSourceId.mockImplementation((intentId: string) => intentId);
+      canonicalKeyMock.canonicalPolicyKey.mockReset();
+      canonicalKeyMock.canonicalPolicyKey.mockReturnValue(CANONICAL_OP_KEY);
+      (mockedWithSystemContext as unknown as Mock).mockImplementation(
+        async (fn: () => Promise<unknown>) => fn(),
+      );
+    });
+
+    type Branch = {
+      name: string;
+      /** null = this exit writes no evidence row at all. */
+      metric: 'executed' | 'failed' | null;
+      intent?: Partial<ActionIntent>;
+      /** Runs INSTEAD of priming — the claim CAS never lets the body start. */
+      unclaimed?: boolean;
+      arrange: () => void;
+    };
+
+    // One case per exit of `releaseApprovedIntent`, in source order.
+    const BRANCHES: Branch[] = [
+      {
+        name: 'claim CAS approved->executing lost — silent return, nothing ran',
+        metric: null,
+        unclaimed: true,
+        arrange: () => {
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+        },
+      },
+      {
+        name: 'kill switch during revalidation — pauses executing->approved, never terminal',
+        metric: null,
+        arrange: () => {
+          agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockResolvedValue({
+            ok: false,
+            errorCode: 'kill_switch_engaged',
+          });
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> approved
+        },
+      },
+      {
+        name: 'revalidation stop (tier_escalated) — failed with no executedAt',
+        metric: null,
+        arrange: () => {
+          aiToolsMock.getToolTier.mockReturnValue(4);
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'digest_check_failed — the recompute threw before any dispatch',
+        metric: null,
+        intent: { effectDigest: 'pinned-1' },
+        arrange: () => {
+          effectDigestMock.computeEffectDigestForRelease.mockRejectedValueOnce(new Error('db down'));
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'content_changed — the pinned target drifted, nothing dispatched',
+        metric: null,
+        intent: { effectDigest: 'pinned-1' },
+        arrange: () => {
+          effectDigestMock.computeEffectDigestForRelease.mockResolvedValueOnce({ digest: 'pinned-2' });
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'session_required — no headless path exists for this tool',
+        metric: null,
+        arrange: () => {
+          aiToolsMock.requiresLiveSession.mockReturnValue(true);
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'pre-dispatch kill read — pauses executing->approved, never terminal',
+        metric: null,
+        arrange: () => {
+          killStateMock.readAiKillState.mockResolvedValue({ killed: true, epoch: 3 });
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'connection_unavailable — the provider call was never made',
+        metric: null,
+        arrange: () => {
+          googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(true);
+          googleHeadlessMock.executeGoogleToolHeadless.mockRejectedValueOnce(
+            new GoogleConnectionUnavailableError('{"error":"no connection"}'),
+          );
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'execution_error — the executor threw after dispatch (ATTEMPTED)',
+        metric: 'failed',
+        arrange: () => {
+          aiToolsMock.executeTool.mockRejectedValueOnce(new Error('boom'));
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'tool_returned_error — an error body, not a throw (ATTEMPTED)',
+        metric: 'failed',
+        arrange: () => {
+          aiToolsMock.executeTool.mockResolvedValueOnce(
+            JSON.stringify({ error: 'Device not found or access denied' }),
+          );
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'secret_seal_invariant_violated — the guard tripped after the reset happened (ATTEMPTED)',
+        metric: 'failed',
+        intent: { actionName: 'google_reset_password' },
+        arrange: () => {
+          mockHeadlessGoogleSecret('google_reset_password', {
+            kind: 'error',
+            llmText: 'Reset partially failed. Temporary password: hunter2leaked (raw prose bypass)',
+          });
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'success — completed with a result (ATTEMPTED)',
+        metric: 'executed',
+        arrange: () => {
+          aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+    ];
+
+    it.each(BRANCHES)('$name', async (branch) => {
+      const intent = agentIntent(branch.intent);
+      if (!branch.unclaimed) primeAgentThroughRevalidation(intent);
+      branch.arrange();
+
+      await releaseApprovedIntent(intent.id);
+
+      if (branch.metric === null) {
+        expect(opEvidenceMock.insertOpEvidence).not.toHaveBeenCalled();
+        return;
+      }
+      expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+      expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledWith([
+        {
+          orgId: intent.orgId,
+          agentId: AGENT_ID,
+          namespace: 'policy_key',
+          opKey: CANONICAL_OP_KEY,
+          ruleId: null,
+          sourceKind: 'intent',
+          sourceId: intent.id,
+          metric: branch.metric,
+          runId: AGENT_RUN_ID,
+          occurredAt: expect.any(Date),
+        },
+      ]);
+    });
+
+    it('redelivery: a second release of the same intent adds no second row — the claim CAS loses', async () => {
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+      expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+
+      // BullMQ redelivers: the row is terminal now, so the claim CAS returns
+      // false and the whole body — evidence included — is skipped.
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+      await releaseApprovedIntent(intent.id);
+
+      expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+    });
+
+    it('a human/chat intent (no requesting agent run) completes but produces no agent evidence', async () => {
+      const intent = baseIntent();
+      primeThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.anything(),
+      );
+      expect(opEvidenceMock.insertOpEvidence).not.toHaveBeenCalled();
+    });
+
+    it('a LOST terminal CAS writes no evidence — the outcome belongs to whoever won it', async () => {
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(false); // executing -> completed LOST
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(opEvidenceMock.insertOpEvidence).not.toHaveBeenCalled();
+      expect(sentryMock.captureException).toHaveBeenCalled();
+    });
+
+    it('writes nothing when the requesting run is not readable in the intent org', async () => {
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent, { runRow: [] });
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.anything(),
+      );
+      expect(opEvidenceMock.insertOpEvidence).not.toHaveBeenCalled();
+    });
+
+    it('loads the run predicated by BOTH id and org_id, and takes the op key from the shared canonical resolver', async () => {
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(mockedEq).toHaveBeenCalledWith(schema.aiAgentRunsTbl.id, AGENT_RUN_ID);
+      expect(mockedEq).toHaveBeenCalledWith(schema.aiAgentRunsTbl.orgId, intent.orgId);
+      expect(canonicalKeyMock.canonicalPolicyKey).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments,
+      );
+    });
+
+    it('success: the evidence write shares the terminal CAS transaction, while the success audit stays outside it', async () => {
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+
+      let depth = 0;
+      const seen = { cas: -1, evidence: -1, audit: -1 };
+      const systemContext = mockedWithSystemContext as unknown as Mock;
+      systemContext.mockImplementation(async (fn: () => Promise<unknown>) => {
+        depth += 1;
+        try {
+          return await fn();
+        } finally {
+          depth -= 1;
+        }
+      });
+      intentServiceMock.transitionIntent.mockImplementationOnce(async () => {
+        seen.cas = depth;
+        return true;
+      });
+      opEvidenceMock.insertOpEvidence.mockImplementationOnce(async () => {
+        seen.evidence = depth;
+        return 1;
+      });
+      metricsMock.recordActionIntentEvent.mockImplementationOnce(() => {
+        seen.audit = depth;
+      });
+
+      try {
+        await releaseApprovedIntent(intent.id);
+      } finally {
+        systemContext.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+      }
+
+      expect(seen.cas).toBeGreaterThanOrEqual(1);
+      expect(seen.evidence).toBe(seen.cas);
+      expect(seen.audit).toBe(0);
+    });
+
+    it('failure: the evidence write shares the terminal CAS transaction, while the failure audit stays outside it', async () => {
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(
+        JSON.stringify({ error: 'Device not found or access denied' }),
+      );
+
+      let depth = 0;
+      const seen = { cas: -1, evidence: -1, audit: -1 };
+      const systemContext = mockedWithSystemContext as unknown as Mock;
+      systemContext.mockImplementation(async (fn: () => Promise<unknown>) => {
+        depth += 1;
+        try {
+          return await fn();
+        } finally {
+          depth -= 1;
+        }
+      });
+      intentServiceMock.transitionIntent.mockImplementationOnce(async () => {
+        seen.cas = depth;
+        return true;
+      });
+      opEvidenceMock.insertOpEvidence.mockImplementationOnce(async () => {
+        seen.evidence = depth;
+        return 1;
+      });
+      auditMock.writeAuditEvent.mockImplementationOnce(() => {
+        seen.audit = depth;
+      });
+
+      try {
+        await releaseApprovedIntent(intent.id);
+      } finally {
+        systemContext.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+      }
+
+      expect(seen.cas).toBeGreaterThanOrEqual(1);
+      expect(seen.evidence).toBe(seen.cas);
+      expect(seen.audit).toBe(0);
     });
   });
 });

@@ -11,7 +11,9 @@ import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvent
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
 import { createNotification } from '../services/userNotifications';
 import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
-import { transitionIntent } from '../services/actionIntents/intentService';
+import { transitionIntent, type ActionIntentTransitionPatch } from '../services/actionIntents/intentService';
+import { canonicalPolicyKey } from '../services/actionIntents/canonicalPolicyKey';
+import { insertOpEvidence, intentEvidenceSourceId } from '../services/aiAgents/opEvidence';
 import { attemptPolicyDecision, PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
 import { readAiKillState } from '../services/aiKillState';
@@ -226,6 +228,128 @@ export function isSessionRequiredForRelease(toolName: string): boolean {
 }
 
 /**
+ * The subset of `ActionIntentTransitionPatch` a TERMINAL write may carry.
+ * Narrower than the full patch on purpose: `decided*` / `executionStartedAt`
+ * belong to the decide and claim transitions, not to terminalization.
+ */
+type TerminalPatch = Pick<ActionIntentTransitionPatch, 'executedAt' | 'errorCode' | 'result'>;
+
+/**
+ * True iff this terminal write represents an ATTEMPTED operation — the one
+ * discriminator the graduation ledger grades on (P2-5, #4192; spec §4.5).
+ *
+ * The discriminator is already in this file and already documented: a
+ * terminal write stamps `executed_at` exactly when the provider-side effect
+ * happened. `failIntent`'s `executed: true` option marks `execution_error`
+ * and `secret_seal_invariant_violated` — "both of which mean a real attempt
+ * was made … the earlier revalidation stops never touched execution" — and
+ * the `tool_returned_error` and success CASes stamp it directly. There is
+ * deliberately no second, hand-maintained list of "which branches count":
+ * a new terminal exit is classified by whether it stamps `executedAt`, so
+ * the two can never drift apart.
+ */
+function isAttemptedTerminal(patch: TerminalPatch): boolean {
+  return patch.executedAt != null;
+}
+
+/**
+ * Writes the ONE `ai_agent_op_evidence` row this terminal outcome earns
+ * (P2-5, #4192). Callers must already hold the terminal CAS's transaction —
+ * `terminalizeIntent` is the only caller, and it is what opens it.
+ *
+ * Only AGENT-originated intents produce evidence: a human/chat/MCP release
+ * has no agent to grade, and `requesting_agent_run_id` is the column that
+ * says so. The run row is loaded predicated by BOTH `id` AND `org_id` (RLS
+ * passes unconditionally under a system context, so the org predicate is the
+ * real isolation here), which also yields the EFFECTIVE agent id the run
+ * recorded — `ai_agent_runs.agent_id` is the partner-baseline row, which is
+ * exactly the grain graduation tracks. A run that is not readable in this
+ * org writes nothing rather than guessing an agent id.
+ *
+ * `alert_id` rides along on the same read: the released-intent fix watch
+ * (Task 5) is anchored to the triggering alert and must not pay for a second
+ * round trip inside the same transaction.
+ *
+ * Leak rules: identifiers only — `op_key`, ids, timestamps. Never a tool
+ * result, an error message, or any model-authored text.
+ */
+async function recordIntentTerminalEvidence(
+  intent: ActionIntent,
+  metric: 'executed' | 'failed',
+): Promise<void> {
+  const runId = intent.requestingAgentRunId;
+  if (!runId) return;
+
+  const [run] = await db
+    .select({ agentId: aiAgentRuns.agentId, alertId: aiAgentRuns.alertId })
+    .from(aiAgentRuns)
+    .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, intent.orgId)))
+    .limit(1);
+  if (!run) return;
+
+  await insertOpEvidence([
+    {
+      orgId: intent.orgId,
+      agentId: run.agentId,
+      namespace: 'policy_key',
+      // The SHARED resolver, never a second ad hoc parse of `arguments` —
+      // the graduation ledger and the policy-decide registry must agree on
+      // what "this operation" is called or a promoted key grades the wrong
+      // evidence (services/actionIntents/canonicalPolicyKey.ts).
+      opKey: canonicalPolicyKey(intent.actionName, intent.arguments),
+      ruleId: null,
+      sourceKind: 'intent',
+      sourceId: intentEvidenceSourceId(intent.id),
+      metric,
+      runId,
+      occurredAt: new Date(),
+    },
+  ]);
+}
+
+/**
+ * Runs a terminal CAS and, only when it WINS, the evidence write, inside ONE
+ * outer system transaction (P2-5, #4192).
+ *
+ * `transitionIntent` opens its own `withSystemDbAccessContext`
+ * (intentService.ts), and a nested context JOINS an ambient one
+ * (db/index.ts's `withDbAccessContext`: `if (dbContextStorage.getStore())
+ * return fn()`), so the CAS and the evidence row land in the same commit.
+ * That atomicity is the point: an evidence row can only exist for an outcome
+ * that actually became terminal, and a terminal outcome cannot quietly go
+ * unrecorded. An evidence-write failure therefore rolls the CAS back and
+ * propagates rather than being swallowed — a swallowed write would under-
+ * count `failed`/`recurred` evidence, which is precisely the direction
+ * auto-demotion cannot afford to miss.
+ *
+ * NEVER wraps `executeTool` — the worker deliberately executes outside any
+ * DB context so a slow external call cannot pin a pooled connection
+ * idle-in-transaction. The audit/metric writes stay OUTSIDE too, exactly
+ * where they were: they are best-effort reporting, and a failing audit must
+ * not undo a committed terminal state.
+ *
+ * `onWon` is the in-transaction extension hook (Task 5 hangs the released-
+ * intent fix watch off it); it runs AFTER the evidence insert and only when
+ * the CAS won.
+ */
+async function terminalizeIntent(
+  intent: ActionIntent,
+  to: 'completed' | 'failed',
+  patch: TerminalPatch,
+  onWon?: () => Promise<void>,
+): Promise<boolean> {
+  return withSystemDbAccessContext(async () => {
+    const won = await transitionIntent(intent.id, 'executing', to, patch);
+    if (!won) return false;
+    if (isAttemptedTerminal(patch)) {
+      await recordIntentTerminalEvidence(intent, to === 'completed' ? 'executed' : 'failed');
+    }
+    if (onWon) await onWon();
+    return true;
+  });
+}
+
+/**
  * CAS `executing -> failed` with the given `error_code`, then (only if the
  * CAS actually won) writes the failure audit/metric. `executed: true` also
  * stamps `executedAt` — used for `execution_error` and
@@ -239,7 +363,13 @@ async function failIntent(
   errorCode: string,
   options: { details?: Record<string, unknown>; executed?: boolean } = {},
 ): Promise<void> {
-  const won = await transitionIntent(intent.id, 'executing', 'failed', {
+  // Routed through `terminalizeIntent` so `executed: true` — the ONE
+  // attempted-ness discriminator — also writes the `failed` evidence row in
+  // the same transaction as the CAS. The non-attempted stops (every
+  // revalidation/digest/session refusal) pass no `executedAt` and so write
+  // nothing, which is the whole point: an agent is never graded down for an
+  // action it was refused permission to try.
+  const won = await terminalizeIntent(intent, 'failed', {
     errorCode,
     ...(options.executed ? { executedAt: new Date() } : {}),
   });
@@ -626,7 +756,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       await failOnPlaintextSecretGuard(intent, err);
       return;
     }
-    const failed = await transitionIntent(intent.id, 'executing', 'failed', {
+    const failed = await terminalizeIntent(intent, 'failed', {
       executedAt: new Date(),
       errorCode: 'tool_returned_error',
       result: storedResult,
@@ -662,7 +792,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     await failOnPlaintextSecretGuard(intent, err);
     return;
   }
-  const completed = await transitionIntent(intent.id, 'executing', 'completed', {
+  const completed = await terminalizeIntent(intent, 'completed', {
     executedAt: new Date(),
     result: finalResult,
   });
