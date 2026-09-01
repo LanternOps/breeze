@@ -364,6 +364,59 @@ describe('auth store fetchWithAuth', () => {
     expect(replace).toHaveBeenCalledWith(`/login?next=${encodeURIComponent('/devices')}&reason=session-expired`);
   });
 
+  // Self-hosted origin rejection, NOT a dead session. A self-hoster who reaches
+  // the dashboard over an SSH tunnel (`ssh -L 8443:127.0.0.1:443`) browses
+  // https://localhost:8443 while the generated .env allows only
+  // https://localhost, so validateCookieCsrfRequest answers POST /auth/refresh
+  // with 403 {"error":"Invalid request origin"}. Evicting is still correct —
+  // no access token can be minted from that origin — but reporting it as
+  // "session expired" made a pure config problem read as a wrong password,
+  // after EVERY successful login. The reason code is what lets the login page
+  // name the origin and the two settings that fix it.
+  it('reports a 403 "Invalid request origin" refresh as origin-rejected, not session-expired', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))
+      .mockResolvedValueOnce(makeResponse({ error: 'Invalid request origin' }, false, 403));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      await fetchWithAuth('/devices');
+    } finally {
+      restore();
+    }
+
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().sessionExpiredReason).toBe('origin-rejected');
+    expect(replace).toHaveBeenCalledWith(`/login?next=${encodeURIComponent('/devices')}&reason=origin-rejected`);
+  });
+
+  // The discriminator is the body, not the status: every OTHER 403 on refresh
+  // stays a generic expiry, or the notice would blame CORS for unrelated
+  // rejections.
+  it('leaves an unrelated 403 on refresh as a generic session expiry', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))
+      .mockResolvedValueOnce(makeResponse({ error: 'Forbidden' }, false, 403));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      await fetchWithAuth('/devices');
+    } finally {
+      restore();
+    }
+
+    expect(useAuthStore.getState().sessionExpiredReason).toBe('session-expired');
+    expect(replace).toHaveBeenCalledWith(`/login?next=${encodeURIComponent('/devices')}&reason=session-expired`);
+  });
+
   // QA 2026-07-08: a single transient 502 on /auth/refresh must NOT boot the
   // user — a gateway blip reaches no verdict on the refresh cookie, so we retry
   // with backoff and recover the session instead of hard-logging-out.
@@ -1515,6 +1568,21 @@ describe('restoreAccessTokenFromCookieDetailed (Task 3 — proactive keepalive)'
     const outcome = await restoreAccessTokenFromCookieDetailed();
 
     expect(outcome).toBe('auth-failed');
+  });
+
+  // Split out from 'auth-failed' so the heartbeat's eviction can carry the
+  // reason code the login notice keys off. Still an eviction — the origin can
+  // never mint a token — just an honestly-labelled one.
+  it("returns 'origin-rejected' on a 403 \"Invalid request origin\"", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(makeResponse({ error: 'Invalid request origin' }, false, 403))
+    );
+
+    const outcome = await restoreAccessTokenFromCookieDetailed();
+
+    expect(outcome).toBe('origin-rejected');
+    expect(useAuthStore.getState().tokens).toBeNull();
   });
 
   it("returns 'transient' once a 5xx exhausts the retry budget — no verdict on the cookie", async () => {
