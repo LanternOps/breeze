@@ -62,6 +62,13 @@ vi.mock('./invoiceAssembly', async (importOriginal) => ({
 // opens a BullMQ socket.
 vi.mock('../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
 
+// issueInvoice/voidInvoice also enqueue QuickBooks push/void jobs (Phase C,
+// Task 4) — same reason as the PDF render mock above.
+vi.mock('../jobs/accountingSyncWorker', () => ({
+  enqueueAccountingInvoicePush: vi.fn().mockResolvedValue(undefined),
+  enqueueAccountingInvoiceVoid: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { Mock } from 'vitest';
@@ -70,6 +77,10 @@ import { db } from '../db';
 import { InvoiceServiceError } from './invoiceTypes';
 import { resolvePrice, computeBundleEconomics, CatalogServiceError } from './catalogService';
 import { mergeBillingContact } from './contacts/compat';
+import { enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid } from '../jobs/accountingSyncWorker';
+
+const enqueueAccountingInvoicePushMock = vi.mocked(enqueueAccountingInvoicePush);
+const enqueueAccountingInvoiceVoidMock = vi.mocked(enqueueAccountingInvoiceVoid);
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, type DraftLineSpec } from './invoiceAssembly';
 
 const resolvePriceMock = vi.mocked(resolvePrice);
@@ -660,6 +671,20 @@ describe('issueInvoice document_locale stamp', () => {
     queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} });
     await svc.issueInvoice('inv1', actor);
     expect(issueSet().documentLocale).toBe('en');
+  });
+
+  // Phase C, Task 4: issuance fires an accounting-sync push job post-commit,
+  // next to enqueueInvoicePdfRender.
+  it('enqueues an accounting push for the issued invoice, keyed off the locked row', async () => {
+    queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} });
+    await svc.issueInvoice('inv1', actor);
+    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith('inv1', 'p1');
+  });
+
+  it('does not let a failed accounting-push enqueue fail the (already-committed) issuance', async () => {
+    queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {} });
+    enqueueAccountingInvoicePushMock.mockRejectedValueOnce(new Error('boom'));
+    await expect(svc.issueInvoice('inv1', actor)).resolves.toBeDefined();
   });
 });
 

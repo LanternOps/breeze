@@ -14,6 +14,7 @@ import { snapshotCost } from './catalogPricing';
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
+import { enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid } from '../jobs/accountingSyncWorker';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
@@ -1276,6 +1277,15 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
   } catch (err) {
     console.error('[invoiceService] enqueueInvoicePdfRender failed (issuance already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
   }
+  // Auto-push to QuickBooks (Phase C, Task 4). enqueueAccountingInvoicePush is
+  // itself Redis-outage-safe (try/catch + Sentry) — the worker decides whether
+  // this partner is even connected/pushMode:'auto'; the try/catch here is the
+  // same defensive belt-and-braces as the PDF render above.
+  try {
+    await enqueueAccountingInvoicePush(invoiceId, inv.partnerId);
+  } catch (err) {
+    console.error('[invoiceService] enqueueAccountingInvoicePush failed (issuance already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
+  }
   return getOwnedInvoiceOr404(invoiceId);
 }
 
@@ -1579,6 +1589,16 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
   }));
 
   await emitInvoiceEvent({ type: 'invoice.voided', invoiceId, orgId: voidedOrgId, partnerId: voidedPartnerId, actorUserId: actor.userId });
+  // Auto-void in QuickBooks (Phase C, Task 4). Fire-and-forget, own try/catch —
+  // mirrors the issue-side push hook. VOID jobs process regardless of
+  // pushMode: books must not keep a voided invoice open in QuickBooks just
+  // because auto-push is off (voidInvoiceInAccounting itself no-ops when the
+  // invoice was never pushed).
+  try {
+    await enqueueAccountingInvoiceVoid(invoiceId, voidedPartnerId);
+  } catch (err) {
+    console.error('[invoiceService] enqueueAccountingInvoiceVoid failed (void already committed)', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
+  }
 
   if (opts.reissue && draftId) {
     await recomputeInvoiceTotals(draftId);

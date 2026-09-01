@@ -49,16 +49,16 @@ const EXPECTED_114_NAMES = [
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'ticketSlaWorker', 'inboundEmailWorker', 'ticketMailboxPollWorker', 'invoiceWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'aiUnattendedExposureRetention',
-  'alertVerdictScheduler', 'aiAgentSweepScheduler',
+  'alertVerdictScheduler', 'aiAgentSweepScheduler', 'accountingSyncWorker',
 ];
 
 describe('workerRegistry: losslessness', () => {
-  it('contains exactly the 115 known names, in order', () => {
+  it('contains exactly the 116 known names, in order', () => {
     expect(WORKER_REGISTRY.map((e) => e.name)).toEqual(EXPECTED_114_NAMES);
   });
 
-  it('has exactly 115 entries', () => {
-    expect(WORKER_REGISTRY.length).toBe(115);
+  it('has exactly 116 entries', () => {
+    expect(WORKER_REGISTRY.length).toBe(116);
   });
 
   it('every entry has a well-formed shape', () => {
@@ -78,14 +78,14 @@ describe('workerRegistry: losslessness', () => {
 
 describe('workerRegistry: selectWorkers', () => {
   it("'all' selects every entry", () => {
-    expect(selectWorkers('all').length).toBe(115);
+    expect(selectWorkers('all').length).toBe(116);
     expect(selectWorkers('all')).toEqual(WORKER_REGISTRY);
   });
 
   it("'api' and 'worker' partition the set with no overlap and no loss", () => {
     const api = selectWorkers('api');
     const worker = selectWorkers('worker');
-    expect(api.length + worker.length).toBe(115);
+    expect(api.length + worker.length).toBe(116);
 
     const apiNames = new Set(api.map((e) => e.name));
     const workerNames = new Set(worker.map((e) => e.name));
@@ -93,7 +93,7 @@ describe('workerRegistry: selectWorkers', () => {
       expect(workerNames.has(name)).toBe(false);
     }
     const union = new Set([...apiNames, ...workerNames]);
-    expect(union.size).toBe(115);
+    expect(union.size).toBe(116);
   });
 
   it("'api' selects only socket-owner placements", () => {
