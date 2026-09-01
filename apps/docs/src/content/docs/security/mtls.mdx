@@ -60,7 +60,7 @@ Breeze optionally integrates with **Cloudflare API Shield** to issue mTLS client
 5. **Restart the API**
 
    ```bash
-   docker compose -f docker/docker-compose.prod.yml restart api
+   docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod restart api
    ```
 
 6. **Enroll new agents**

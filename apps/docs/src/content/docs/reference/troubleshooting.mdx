@@ -50,13 +50,14 @@ This is a **public** key (also embedded in the agent and CI), so it is safe to c
 
 **Cause**: PostgreSQL not ready or connection string incorrect.
 
-**Fix**:
+**Fix**: run from the host with `.env.prod` sourced (`set -a; source .env.prod; set +a`):
 ```bash
-# Check PostgreSQL is running
-docker compose -f docker/docker-compose.prod.yml exec postgres pg_isready
+# Check PostgreSQL is running (prod uses a managed Postgres instance, not a
+# local container)
+pg_isready -d "$DATABASE_URL"
 
 # Check connection string
-docker compose -f docker/docker-compose.prod.yml exec api env | grep DATABASE_URL
+docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod exec api env | grep DATABASE_URL
 ```
 
 ## Agent Issues
@@ -107,9 +108,9 @@ sudo cat /etc/breeze/config.json
 curl -H "Authorization: Bearer $TOKEN" \
   http://localhost:9090/api/v1/query?query=histogram_quantile(0.95,rate(http_request_duration_seconds_bucket[5m]))
 
-# Database slow queries
-docker compose -f docker/docker-compose.prod.yml exec postgres \
-  psql -U breeze -c "SELECT * FROM pg_stat_activity WHERE state = 'active';"
+# Database slow queries (prod uses a managed Postgres instance, not a
+# local container; run with .env.prod sourced)
+psql "$DATABASE_URL" -c "SELECT * FROM pg_stat_activity WHERE state = 'active';"
 ```
 
 ### Postgres `write CONNECT_TIMEOUT` while the database is healthy
@@ -147,9 +148,10 @@ alone only lengthens the failing request; it does not unstall the loop.
 
 ### Redis memory growing
 
-**Check**:
+**Check**: prod Redis requires auth (`requirepass`), so pass the password from the mounted secret:
 ```bash
-docker compose -f docker/docker-compose.prod.yml exec redis redis-cli info memory
+docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod exec -T redis \
+  sh -ec 'redis-cli --no-auth-warning -a "$(cat /run/secrets/redis_password)" info memory'
 ```
 
 **Fix**: Adjust `REDIS_MAXMEMORY` in `.env.prod`. Redis uses `allkeys-lru` eviction by default.
@@ -173,20 +175,20 @@ ls -la /var/backups/breeze/
 
 ```bash
 # Check container logs
-docker compose -f docker/docker-compose.prod.yml logs <service-name>
+docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod logs <service-name>
 
 # Check resource limits
 docker stats --no-stream
 
 # Recreate container
-docker compose -f docker/docker-compose.prod.yml up -d --force-recreate <service-name>
+docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod up -d --force-recreate <service-name>
 ```
 
 ### Health check failing
 
 ```bash
 # Manual health check
-docker compose -f docker/docker-compose.prod.yml exec api \
+docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod exec api \
   wget --no-verbose --tries=1 --spider http://localhost:3001/health
 
 # Check readiness
@@ -343,7 +345,7 @@ one, include the following so it can be triaged without a back-and-forth:
   | Agent enrollment | `enroll-last-error.txt` and the `BreezeAgent` Event Log entries |
   | Agent (Linux) | `sudo journalctl -u breeze-agent -n 200` |
   | Agent (macOS) | `/Library/Application Support/Breeze/logs/agent.log` |
-  | Server / API | `docker compose -f docker/docker-compose.prod.yml logs -f api` |
+  | Server / API | `docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod logs -f api` |
 
 <Aside type="caution">
   Scrub bearer tokens (`brz_...`), enrollment secrets, and any internal hostnames
