@@ -13,6 +13,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
 import {
@@ -72,6 +73,7 @@ export function createIPHistoryRetentionWorker(): Worker<RetentionJobData> {
       const durationMs = Date.now() - startTime;
       console.log(`${LOG_PREFIX} Pruned ${deletedCount} inactive rows older than ${retentionDays} days (batches=${batches}) in ${durationMs}ms`);
       warnOnRetentionBacklog(LOG_PREFIX, 'device_ip_history', { deleted: deletedCount, batches, hasMore });
+      recordRetentionRun('ip_history_retention', { rowsDeleted: deletedCount, incomplete: hasMore });
 
       return { durationMs, deletedCount, retentionDays, batches, hasMore };
     },

@@ -15,6 +15,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
 import {
@@ -72,6 +73,7 @@ export function createAgentLogRetentionWorker(): Worker<RetentionJobData> {
       const durationMs = Date.now() - startTime;
       console.log(`${LOG_PREFIX} Pruned ${deletedCount} agent logs older than ${retentionDays} days (batches=${batches}) in ${durationMs}ms`);
       warnOnRetentionBacklog(LOG_PREFIX, 'agent_logs', { deleted: deletedCount, batches, hasMore });
+      recordRetentionRun('agent_log_retention', { rowsDeleted: deletedCount, incomplete: hasMore });
 
       return { durationMs, deletedCount, retentionDays, batches, hasMore };
     },

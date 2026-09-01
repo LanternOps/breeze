@@ -14,6 +14,7 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
 import {
@@ -71,6 +72,9 @@ export function createSnmpRetentionWorker(): Worker<RetentionJobData> {
       const durationMs = Date.now() - startTime;
       console.log(`${LOG_PREFIX} Pruned ${deletedCount} metrics older than ${retentionDays} days (batches=${batches}) in ${durationMs}ms`);
       warnOnRetentionBacklog(LOG_PREFIX, 'snmp_metrics', { deleted: deletedCount, batches, hasMore });
+      // The batched prune now tracks a real rows-deleted count (unlike the old
+      // single unbounded DELETE this replaced), so publish it as such.
+      recordRetentionRun('snmp_retention', { rowsDeleted: deletedCount, incomplete: hasMore });
 
       return { durationMs, deletedCount, retentionDays, batches, hasMore };
     },
