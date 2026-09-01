@@ -7,6 +7,7 @@ import approvalsReducer from './approvalsSlice';
 import aiChatReducer from './aiChatSlice';
 import ticketsReducer from './ticketsSlice';
 import timeReducer from './timeSlice';
+import timeSuggestionsReducer from './timeSuggestionsSlice';
 import lifecycleReducer from './lifecycleSlice';
 import { withLogoutReset } from './resettable';
 import { loadServerClock } from '../services/serverClock';
@@ -18,6 +19,7 @@ const appReducer = combineReducers({
   aiChat: aiChatReducer,
   tickets: ticketsReducer,
   time: timeReducer,
+  timeSuggestions: timeSuggestionsReducer,
   lifecycle: lifecycleReducer,
 });
 
