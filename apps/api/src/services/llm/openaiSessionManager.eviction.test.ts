@@ -347,6 +347,28 @@ describe('OpenAISessionManager eviction (#4384)', () => {
       });
     });
 
+    it('keeps every org in a cohort on its OWN scope, including after the first await', async () => {
+      // The writes are serialized, so orgs 2..N resume in a continuation
+      // scheduled inside runOutsideDbContext rather than running synchronously
+      // within it. If AsyncLocalStorage.exit() did not cover the whole async
+      // subtree, the ambient requester context would leak back in for exactly
+      // those later iterations and their UPDATEs would match zero rows under
+      // RLS — the single-session cross-tenant test above cannot see this.
+      seed(manager, 'a1', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
+      seed(manager, 'b1', 'org-b', { idleFor: 3 * HOUR, state: 'idle' });
+      seed(manager, 'c1', 'org-c', { idleFor: 3 * HOUR, state: 'idle' });
+
+      contextStore.run(
+        { scope: 'organization', orgId: 'org-requester', accessibleOrgIds: ['org-requester'] },
+        () => internals(manager).evictStaleSessions(),
+      );
+      await vi.waitFor(() => expect(capturedExpires).toHaveLength(3));
+
+      const orgs = capturedExpires.map((w) => (w.context as { orgId: string }).orgId).sort();
+      expect(orgs).toEqual(['org-a', 'org-b', 'org-c']);
+      expect(orgs).not.toContain('org-requester');
+    });
+
     it('does not expire rows for sessions it leaves in place', async () => {
       seed(manager, 'healthy', 'org-a', { idleFor: 1 * MINUTE, state: 'idle' });
 

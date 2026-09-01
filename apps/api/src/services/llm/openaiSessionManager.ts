@@ -395,16 +395,24 @@ export class OpenAISessionManager {
    */
   private markSessionsExpired(sessionIdsByOrg: Map<string, string[]>): void {
     if (sessionIdsByOrg.size === 0) return;
-    runOutsideDbContextSafe(() => {
-      void (async () => {
-        // One org per statement, one statement at a time. A tick can retire a
-        // whole cohort that idled out together, and a transaction per session
-        // would put up to MAX_ACTIVE_SESSIONS of them against a pool of
-        // DB_POOL_MAX (30) shared with live request traffic. Eviction is
-        // background work with no deadline, so it yields to that traffic.
-        for (const [orgId, sessionIds] of sessionIdsByOrg) {
-          try {
-            await withDbAccessContext(
+    void (async () => {
+      // One org per statement, one statement at a time. A tick can retire a
+      // whole cohort that idled out together, and a transaction per session
+      // would put up to MAX_ACTIVE_SESSIONS of them against a pool of
+      // DB_POOL_MAX (30) shared with live request traffic. Eviction is
+      // background work with no deadline, so it yields to that traffic.
+      for (const [orgId, sessionIds] of sessionIdsByOrg) {
+        try {
+          // The context escape is re-entered on EVERY iteration, never once
+          // around the loop. `AsyncLocalStorage.exit()` covers the synchronous
+          // call and what it schedules, but an iteration resuming after `await`
+          // sees the caller's ambient context live again — and
+          // withDbAccessContext JOINS an open context instead of replacing it,
+          // so orgs 2..N would run under the REQUESTER's GUCs and match zero
+          // rows under RLS. Pinned by the multi-org test; an earlier draft that
+          // hoisted this out of the loop failed it.
+          await runOutsideDbContextSafe(() =>
+            withDbAccessContext(
               { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
               () =>
                 db
@@ -416,19 +424,19 @@ export class OpenAISessionManager {
                       eq(aiSessions.status, 'active'),
                     ),
                   ),
-            );
-          } catch (err) {
-            // Never abandon the remaining orgs: a failure here strands rows as
-            // 'active', which is the very defect this helper exists to fix.
-            captureException(err);
-            console.error(
-              `[OpenAISessionManager] Failed to expire ${sessionIds.length} evicted session(s) for org ${orgId}:`,
-              err,
-            );
-          }
+            ),
+          );
+        } catch (err) {
+          // Never abandon the remaining orgs: a failure here strands rows as
+          // 'active', which is the very defect this helper exists to fix.
+          captureException(err);
+          console.error(
+            `[OpenAISessionManager] Failed to expire ${sessionIds.length} evicted session(s) for org ${orgId}:`,
+            err,
+          );
         }
-      })();
-    });
+      }
+    })();
   }
 
   private evictStaleSessions(): void {
