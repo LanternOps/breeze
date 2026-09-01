@@ -229,7 +229,7 @@ function shouldEmitProxyTrustWarnNow(key: string): boolean {
   return true;
 }
 
-const TRUST_GATED_HEADER_LIST = 'CF-Connecting-IP/X-Forwarded-For/X-Real-IP/X-Forwarded-Proto';
+const TRUST_GATED_HEADER_LIST = 'CF-Connecting-IP/X-Forwarded-For/X-Real-IP/X-Forwarded-Proto/X-Forwarded-Host';
 
 function warnForwardedHeadersFromUntrustedPeer(peerIp: string | undefined): void {
   // Count every occurrence — Prometheus rates are only useful unsampled.

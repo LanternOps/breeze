@@ -143,9 +143,17 @@ export function canonicalHttpsRedirect(c: Context, publicApiUrl: URL): URL | nul
  * (sandboxed iframes, redirects across origins), malformed values, other
  * schemes, or a value smuggling a path/query/credentials.
  */
+// The ASCII serialization of an HTTP(S) origin, as a browser emits it:
+// scheme, host (DNS name in punycode, IPv4, or bracketed IPv6), optional port.
+// Checked BEFORE the WHATWG parser so lenient spellings the parser would
+// normalise (backslashes, percent-encoding, userinfo, an empty `?`/`#`) are
+// rejected rather than canonicalised into a match.
+const HTTP_ORIGIN_RE = /^https?:\/\/(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*\.?|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$/;
+
 export function parseHttpOrigin(value: string | undefined): string | null {
   const trimmed = value?.trim();
   if (!trimmed || trimmed.toLowerCase() === 'null') return null;
+  if (!HTTP_ORIGIN_RE.test(trimmed)) return null;
   let parsed: URL;
   try {
     parsed = new URL(trimmed);

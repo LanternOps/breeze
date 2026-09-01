@@ -242,6 +242,14 @@ describe('isSameOriginRequest', () => {
     ['non-http scheme', 'ftp://localhost:8443'],
     ['origin with a path', 'https://localhost:8443/login'],
     ['empty origin', ''],
+    // Spellings the WHATWG parser would normalise into a match; the Origin
+    // grammar rejects them before parsing.
+    ['backslash origin', 'https:\\\\localhost:8443'],
+    ['origin with userinfo', 'https://user@localhost:8443'],
+    ['percent-encoded host', 'https://local%68ost:8443'],
+    ['origin with an empty query', 'https://localhost:8443?'],
+    ['origin with an empty fragment', 'https://localhost:8443#'],
+    ['origin with a trailing slash', 'https://localhost:8443/'],
   ])('rejects a %s even with Sec-Fetch-Site: same-origin', (_label, origin) => {
     process.env.TRUST_PROXY_HEADERS = 'false';
     const c = ctx({ headers: { origin, 'sec-fetch-site': 'same-origin', host: 'localhost:8443' }, url: 'https://localhost:8443/x' });
@@ -260,6 +268,11 @@ describe('isSameOriginRequest', () => {
     it('accepts Origin equal to the request scheme + Host', () => {
       const c = ctx({ headers: { host: 'localhost:8443' }, url: 'https://localhost:8443/api/v1/auth/refresh' });
       expect(isSameOriginRequest(c, 'https://localhost:8443')).toBe(true);
+    });
+
+    it('accepts IPv4 and bracketed IPv6 hosts', () => {
+      expect(isSameOriginRequest(ctx({ headers: { host: '192.168.1.50' }, url: 'https://192.168.1.50/x' }), 'https://192.168.1.50')).toBe(true);
+      expect(isSameOriginRequest(ctx({ headers: { host: '[::1]:8443' }, url: 'https://[::1]:8443/x' }), 'https://[::1]:8443')).toBe(true);
     });
 
     it('normalises host case and default ports', () => {
