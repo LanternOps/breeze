@@ -882,7 +882,7 @@ export async function renderQuotePdf(
 
   // Intro notes, if any (above the blocks).
   if (quote.introNotes) {
-    doc.fillColor('#4b5563').fontSize(10).font('Helvetica').text(quote.introNotes, c.left, y, { width: c.contentWidth });
+    doc.fillColor('#4b5563').fontSize(10).font(fonts.body.regular).text(quote.introNotes, c.left, y, { width: c.contentWidth });
     y = doc.y + 14;
   }
 
@@ -955,7 +955,7 @@ export async function renderQuotePdf(
         }
         const caption = (b.content as { caption?: string }).caption;
         if (caption) {
-          doc.fillColor('#6b7280').fontSize(9).font('Helvetica').text(caption, c.left, y, { width: c.contentWidth });
+          doc.fillColor('#6b7280').fontSize(9).font(fonts.body.regular).text(caption, c.left, y, { width: c.contentWidth });
           y = doc.y;
         }
         doc.fillColor('#111827');
@@ -1028,8 +1028,8 @@ export async function renderQuotePdf(
   // ---- Terms & Conditions --------------------------------------------------
   if (quote.termsAndConditions) {
     y = ensureSpace(doc, y + 14, 60);
-    doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('TERMS & CONDITIONS', c.left, y); y = doc.y + 4;
-    doc.fillColor('#6b7280').fontSize(9).font('Helvetica').text(quote.termsAndConditions, c.left, y, { width: c.contentWidth });
+    doc.fillColor('#9ca3af').fontSize(9).font(fonts.heading.bold).text('TERMS & CONDITIONS', c.left, y); y = doc.y + 4;
+    doc.fillColor('#6b7280').fontSize(9).font(fonts.body.regular).text(quote.termsAndConditions, c.left, y, { width: c.contentWidth });
     y = doc.y;
   }
 
@@ -1038,7 +1038,7 @@ export async function renderQuotePdf(
   // footer band below, on EVERY page.
   if (quote.terms) {
     y = ensureSpace(doc, y + 14, 60);
-    doc.fillColor('#9ca3af').fontSize(9).font('Helvetica').text(quote.terms, c.left, y, { width: c.contentWidth });
+    doc.fillColor('#9ca3af').fontSize(9).font(fonts.body.regular).text(quote.terms, c.left, y, { width: c.contentWidth });
   }
 
   // ---- Per-page footer band: branding footer + quote number + page X of Y ---

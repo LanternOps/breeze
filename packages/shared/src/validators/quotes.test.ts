@@ -299,6 +299,10 @@ describe('table block content', () => {
       },
     };
     expect(quoteBlockInputSchema.safeParse(cols9).success).toBe(false);
+    // Same discipline for the row cap: 101 rows of 2 cells each (matching
+    // `valid`'s 2 columns), so the only violation is rows.max(100).
+    const rows101 = { ...valid, content: { ...valid.content, rows: Array.from({ length: 101 }, () => ({ cells: ['a', 'b'] })) } };
+    expect(quoteBlockInputSchema.safeParse(rows101).success).toBe(false);
     const bigCell = structuredClone(valid); bigCell.content.rows[0].cells[0] = 'x'.repeat(2001);
     expect(quoteBlockInputSchema.safeParse(bigCell).success).toBe(false);
     for (const weight of [0, -1, 1.5, Infinity, 11]) {
