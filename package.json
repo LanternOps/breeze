@@ -34,7 +34,7 @@
   },
   "devDependencies": {
     "@typescript-eslint/parser": "^8.65.0",
-    "eslint": "^10.9.0",
+    "eslint": "^10.9.1",
     "tsx": "^4.23.12",
     "turbo": "^2.10.5",
     "typescript": "^5.7.2"
