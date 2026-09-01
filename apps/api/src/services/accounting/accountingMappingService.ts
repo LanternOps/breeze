@@ -102,6 +102,12 @@ export class AccountingMappingError extends Error {
   }
 }
 
+// Every value `accounting_entity_mappings.sync_status` can hold (schema/accounting.ts's
+// syncStatusCheck). Exported so callers outside this module (e.g. invoiceService.ts's
+// `accountingSync` on GET /invoices/:id) can type a mapping-row read without
+// re-deriving the literal union.
+export type MappingSyncStatus = 'pending' | 'synced' | 'error' | 'synced_with_tax_variance';
+
 export interface MappingProposal {
   breezeEntityType: MappingEntityType;
   breezeEntityId: string;
@@ -115,7 +121,7 @@ export interface MappingProposal {
   // mapping rows never carry it themselves, but this type is the shared shape
   // `accountingEntityMappings.syncStatus` casts through (toProposalFromMapping),
   // so it must stay a superset of every value the DB column actually allows.
-  syncStatus: 'pending' | 'synced' | 'error' | 'synced_with_tax_variance';
+  syncStatus: MappingSyncStatus;
   lastError: string | null;
 }
 
@@ -139,23 +145,21 @@ function orgBillingEmail(billingContact: unknown): string | null {
 }
 
 /**
- * Resolve the partner's connection and a valid access token, rejecting
- * disconnected/reauth states as typed errors. Token rotation (and its
- * persisted write) runs under a system DB context per the plan's Global
- * Constraints — it is a partner-axis write, not tied to the caller's
- * request-scoped RLS context. Everything else in this module reads through
- * the ambient `db` (the caller's partner-scoped context), matching "Request
- * route reads/writes otherwise stay in the caller's partner RLS context."
+ * Resolve the partner's connection row, rejecting disconnected/reauth DB
+ * states as typed errors. This is a plain read through the ambient `db` (the
+ * caller's partner-scoped context) — it never refreshes a live access token,
+ * so it is safe to call for a purely-local decision (e.g. `saveMappingDecision`'s
+ * `create_new`/`unlinked` paths) without risking a `ReauthRequiredError` from
+ * an expired grant that the caller doesn't actually need a token for.
  *
- * Exported for `accountingInvoicePush.ts` (Phase C, Task 3): the invoice-push
- * coordinator needs the exact same connection/token/reauth resolution this
- * module already owns, and re-deriving it would risk the two falling out of
- * agreement on what "not connected"/"reauth required" mean.
+ * Split out of `resolveConnectionAndToken` below (Phase C, Task 5 — the
+ * unlink-without-live-token fix): callers that DO need a live token call
+ * `resolveConnectionAndToken`, which composes this with `resolveLiveConnection`.
  */
-export async function resolveConnectionAndToken(
+async function resolveConnection(
   partnerId: string,
   provider: 'quickbooks',
-): Promise<{ conn: AccountingConnection; liveConn: AccountingConnection }> {
+): Promise<AccountingConnection> {
   const conn = await getConnection(db, partnerId, provider);
   if (!conn) {
     throw new AccountingMappingError('not_connected', 404, 'QuickBooks is not connected for this partner');
@@ -168,7 +172,16 @@ export async function resolveConnectionAndToken(
   if (conn.status !== 'connected') {
     throw new AccountingMappingError('not_connected', 404, 'QuickBooks is not connected for this partner');
   }
+  return conn;
+}
 
+/**
+ * Refresh (if needed) and attach a LIVE access token to an already-resolved
+ * connection row. Token rotation (and its persisted write) runs under a
+ * system DB context per the plan's Global Constraints — it is a partner-axis
+ * write, not tied to the caller's request-scoped RLS context.
+ */
+async function resolveLiveConnection(conn: AccountingConnection): Promise<AccountingConnection> {
   let accessToken: string;
   try {
     accessToken = await runOutsideDbContext(() => withSystemDbAccessContext(() => getValidAccessToken(db, conn)));
@@ -178,8 +191,28 @@ export async function resolveConnectionAndToken(
     }
     throw err;
   }
+  return { ...conn, accessToken };
+}
 
-  return { conn, liveConn: { ...conn, accessToken } };
+/**
+ * Resolve the partner's connection AND a valid access token, rejecting
+ * disconnected/reauth states as typed errors. Everything else in this module
+ * reads through the ambient `db` (the caller's partner-scoped context),
+ * matching "Request route reads/writes otherwise stay in the caller's
+ * partner RLS context."
+ *
+ * Exported for `accountingInvoicePush.ts` (Phase C, Task 3): the invoice-push
+ * coordinator needs the exact same connection/token/reauth resolution this
+ * module already owns, and re-deriving it would risk the two falling out of
+ * agreement on what "not connected"/"reauth required" mean.
+ */
+export async function resolveConnectionAndToken(
+  partnerId: string,
+  provider: 'quickbooks',
+): Promise<{ conn: AccountingConnection; liveConn: AccountingConnection }> {
+  const conn = await resolveConnection(partnerId, provider);
+  const liveConn = await resolveLiveConnection(conn);
+  return { conn, liveConn };
 }
 
 /**
@@ -645,10 +678,17 @@ async function upsertMappingRow(params: {
  * id (app-layer first line) and that the remote entity actually exists before
  * ever writing a mapping row. `create_new` and `unlinked` never call
  * QuickBooks: they only ever write `remoteEntityId: null`.
+ *
+ * Only `confirmed` resolves a LIVE access token (Phase C, Task 5 follow-up
+ * gate #2): `create_new`/`unlinked` are purely-local decisions, so refreshing
+ * a token they never use would needlessly block an expired-grant partner from
+ * unlinking a mapping — `getValidAccessToken` throwing `ReauthRequiredError`
+ * must not stand between that partner and a decision that never touches
+ * QuickBooks.
  */
 export async function saveMappingDecision(input: SaveMappingDecisionInput): Promise<MappingRow> {
   const { partnerId, provider, breezeEntityType, breezeEntityId, decision, remoteEntityId } = input;
-  const { conn, liveConn } = await resolveConnectionAndToken(partnerId, provider);
+  const conn = await resolveConnection(partnerId, provider);
   const remoteEntityType: 'Customer' | 'Item' = breezeEntityType === 'org' ? 'Customer' : 'Item';
 
   if (breezeEntityType === 'org') {
@@ -676,6 +716,9 @@ export async function saveMappingDecision(input: SaveMappingDecisionInput): Prom
       );
     }
 
+    // Only the confirmed path ever talks to QuickBooks, so only it resolves a
+    // live token — resolved here, not upfront (see the function doc above).
+    const liveConn = await resolveLiveConnection(conn);
     const remoteProvider = getAccountingProvider(conn.provider);
     const remoteList = await runOutsideDbContext(() =>
       callProviderOrThrow(

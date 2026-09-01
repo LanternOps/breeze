@@ -2,7 +2,8 @@ import { and, or, eq, desc, lt, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   invoices, invoiceLines, invoicePayments, invoiceStripePayments, organizations, partners,
-  catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets
+  catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
+  accountingEntityMappings, accountingConnections
 } from '../db/schema';
 import { getConnection } from './stripeConnectService';
 import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus, toCents, fromCents } from './invoiceMath';
@@ -15,6 +16,7 @@ import { formatInvoiceNumber } from './invoiceNumbers';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid } from '../jobs/accountingSyncWorker';
+import type { MappingSyncStatus } from './accounting/accountingMappingService';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
@@ -613,6 +615,57 @@ export async function updateIssuedDueDate(invoiceId: string, dueDate: string, ac
   return { invoice: updated, audit: { orgId: inv.orgId, invoiceId, oldDueDate, newDueDate: dueDate } };
 }
 
+export interface InvoiceAccountingSync {
+  provider: 'quickbooks';
+  syncStatus: MappingSyncStatus;
+  lastSyncedAt: string | null;
+  lastError: string | null;
+  remoteDocNumber: string | null;
+}
+
+/**
+ * QuickBooks push status for this invoice's `accounting_entity_mappings` row
+ * (Phase C, Task 5). `accounting_entity_mappings` is a partner-axis (shape 3)
+ * RLS table — this is a plain read through the ambient `db` (the caller's
+ * request-scoped context), so it deliberately does NOT escalate to a system
+ * context: an org-scoped token has no partner access and the read returns no
+ * rows, which this function reports as `null` (fail closed) with no special-
+ * casing needed. The join to `accounting_connections` scopes the mapping to
+ * THIS partner's QuickBooks connection (never another provider/partner's row
+ * with a colliding breezeEntityId, which the schema's uniqueness constraints
+ * make impossible anyway, but the join keeps the read self-contained).
+ */
+async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): Promise<InvoiceAccountingSync | null> {
+  const rows = await db
+    .select({
+      syncStatus: accountingEntityMappings.syncStatus,
+      lastSyncedAt: accountingEntityMappings.lastSyncedAt,
+      lastError: accountingEntityMappings.lastError,
+      remoteDocNumber: accountingEntityMappings.remoteDocNumber,
+    })
+    .from(accountingEntityMappings)
+    .innerJoin(accountingConnections, and(
+      eq(accountingConnections.id, accountingEntityMappings.integrationId),
+      eq(accountingConnections.partnerId, partnerId),
+      eq(accountingConnections.provider, 'quickbooks'),
+    ))
+    .where(and(
+      eq(accountingEntityMappings.partnerId, partnerId),
+      eq(accountingEntityMappings.breezeEntityType, 'invoice'),
+      eq(accountingEntityMappings.breezeEntityId, invoiceId),
+    ))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    provider: 'quickbooks',
+    syncStatus: row.syncStatus as MappingSyncStatus,
+    lastSyncedAt: row.lastSyncedAt ? row.lastSyncedAt.toISOString() : null,
+    lastError: row.lastError,
+    remoteDocNumber: row.remoteDocNumber,
+  };
+}
+
 export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); requireInvoiceAccess(actor, inv);
   const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
@@ -622,6 +675,10 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   // (e.g. Stripe unconfigured) just means "not connected".
   const conn = await getConnection(inv.partnerId).catch(() => null);
   const connected = conn?.status === 'connected';
+  // Best-effort, same fail-closed rationale as the Stripe lookup above: a
+  // lookup failure (e.g. no accounting connection row) must never fail the
+  // whole invoice detail load.
+  const accountingSync = await getInvoiceAccountingSync(invoiceId, inv.partnerId).catch(() => null);
   // Multi-currency (#3777, spec §10): surface the CACHED account currency and a
   // warn-don't-block mismatch so the detail page can flag the FX spread before
   // the partner sends a pay link. Cached columns only — no Stripe call here.
@@ -629,6 +686,7 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
     invoice: inv, lines, stripeConnected: connected, // accounting view (all lines)
     stripeAccountCurrency: connected ? conn.defaultCurrency ?? null : null,
     currencyWarning: connected ? buildStripeCurrencyWarning(inv.currencyCode, conn.defaultCurrency) : null,
+    accountingSync,
   };
 }
 

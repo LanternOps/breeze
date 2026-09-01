@@ -651,6 +651,39 @@ describe('saveMappingDecision', () => {
     expect(row).toMatchObject({ remoteEntityId: null, remoteSyncToken: null, linkStatus: 'unlinked' });
   });
 
+  // Phase C, Task 5 follow-up gate #2: an expired-grant partner (getValidAccessToken
+  // throws ReauthRequiredError) must still be able to unlink/create_new a mapping,
+  // since neither decision ever calls QuickBooks or needs a live token.
+  it('unlinked succeeds even when getValidAccessToken would throw ReauthRequiredError (no live token resolved)', async () => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ remoteEntityId: 'qb-1', remoteSyncToken: '3', linkStatus: 'confirmed', syncStatus: 'synced' })],
+    });
+    getValidAccessTokenMock.mockRejectedValue(new ReauthRequiredError());
+
+    const row = await saveMappingDecision(unlinkOrg());
+
+    expect(row).toMatchObject({ remoteEntityId: null, remoteSyncToken: null, linkStatus: 'unlinked' });
+    expect(getValidAccessTokenMock).not.toHaveBeenCalled();
+  });
+
+  it('create_new also succeeds without resolving a live token (getValidAccessToken never called)', async () => {
+    stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }] });
+    getValidAccessTokenMock.mockRejectedValue(new ReauthRequiredError());
+
+    const row = await saveMappingDecision(createNewOrg());
+
+    expect(row).toMatchObject({ remoteEntityId: null, linkStatus: 'create_new' });
+    expect(getValidAccessTokenMock).not.toHaveBeenCalled();
+  });
+
+  it('confirmed still requires a live token — a reauth_required grant is rejected as 409', async () => {
+    stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }] });
+    getValidAccessTokenMock.mockRejectedValue(new ReauthRequiredError());
+
+    await expect(saveMappingDecision(confirmOrg('qb-1'))).rejects.toMatchObject({ code: 'reauth_required', status: 409 });
+  });
+
   it('throws entity_not_found for a Breeze org id that does not belong to this partner', async () => {
     stubReads({ orgs: [] });
     await expect(saveMappingDecision(confirmOrg('qb-1'))).rejects.toMatchObject({ code: 'entity_not_found', status: 404 });

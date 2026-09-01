@@ -1368,6 +1368,7 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]); // invoice
     queueResult([]); // lines
     queueResult([{ partnerId: 'p1', status: 'connected', defaultCurrency: 'USD', accountCountry: 'US' }]); // stripe_connect_accounts
+    queueResult([]); // accounting_entity_mappings (no QuickBooks mapping row)
     const out = await svc.getInvoice('i1', actor);
     expect(out.stripeConnected).toBe(true);
     expect(out.stripeAccountCurrency).toBe('USD');
@@ -1380,6 +1381,7 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
     queueResult([]);
     queueResult([{ partnerId: 'p1', status: 'connected', defaultCurrency: 'EUR', accountCountry: 'DE' }]);
+    queueResult([]);
     const out = await svc.getInvoice('i1', actor);
     expect(out.stripeAccountCurrency).toBe('EUR');
     expect(out.currencyWarning).toBeNull();
@@ -1389,6 +1391,7 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
     queueResult([]);
     queueResult([{ partnerId: 'p1', status: 'connected', defaultCurrency: null, accountCountry: null }]);
+    queueResult([]);
     const out = await svc.getInvoice('i1', actor);
     expect(out.stripeConnected).toBe(true);
     expect(out.stripeAccountCurrency).toBeNull();
@@ -1401,10 +1404,48 @@ describe('getInvoice — Stripe account currency exposure (#3777)', () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]);
     queueResult([]);
     queueResult([]); // no connection row
+    queueResult([]);
     const out = await svc.getInvoice('i1', actor);
     expect(out.stripeConnected).toBe(false);
     expect(out.stripeAccountCurrency).toBeNull();
     expect(out.currencyWarning).toBeNull();
+  });
+});
+
+describe('getInvoice — accountingSync (QuickBooks Phase C, Task 5)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  const partnerActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+  it('surfaces the QuickBooks mapping row when a partner-scoped read can see it', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]); // invoice
+    queueResult([]); // lines
+    queueResult([]); // stripe connection (not connected)
+    queueResult([{
+      syncStatus: 'synced',
+      lastSyncedAt: new Date('2026-09-01T12:00:00.000Z'),
+      lastError: null,
+      remoteDocNumber: '1042',
+    }]); // accounting_entity_mappings ⋈ accounting_connections
+    const out = await svc.getInvoice('i1', partnerActor);
+    expect(out.accountingSync).toEqual({
+      provider: 'quickbooks',
+      syncStatus: 'synced',
+      lastSyncedAt: '2026-09-01T12:00:00.000Z',
+      lastError: null,
+      remoteDocNumber: '1042',
+    });
+  });
+
+  it('is null when the mapping read returns no row (never connected, or RLS hides a partner-axis table from an org-scoped read) — fail closed, no special-casing', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([]);
+    queueResult([]);
+    // Simulates an org-scoped ambient RLS context on `accounting_entity_mappings`
+    // (a partner-axis table): the row exists, but the caller's context can't
+    // see it, so the query returns zero rows exactly like "no mapping at all".
+    queueResult([]);
+    const out = await svc.getInvoice('i1', partnerActor);
+    expect(out.accountingSync).toBeNull();
   });
 });
 

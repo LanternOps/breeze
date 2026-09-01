@@ -3,10 +3,12 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { accountingConnections } from '../../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
+import { accountingConnections, invoices } from '../../db/schema';
+import {
+  authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext,
+} from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT, QBO_REDIRECT_URI } from '../../config/env';
 import {
@@ -29,11 +31,14 @@ import {
   AccountingMappingError,
   listMappingProposals,
   listRemoteIncomeAccountsForPartner,
+  resolveConnectionAndToken,
   saveMappingDecision,
   syncMappedEntity,
   type MappingDecision,
   type MappingEntityType,
 } from '../../services/accounting/accountingMappingService';
+import { AccountingInvoicePushError, pushInvoiceToAccounting } from '../../services/accounting/accountingInvoicePush';
+import { enqueueAccountingInvoicePush } from '../../jobs/accountingSyncWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getAccountingProvider } from '../../services/accounting/providerRegistry';
 import { captureException, captureMessage } from '../../services/sentry';
@@ -117,6 +122,16 @@ const mappingSyncSchema = z.object({
   breezeEntityId: z.string().guid(),
 });
 
+// Phase C, Task 5 — invoice push routes.
+const invoicePushParamSchema = z.object({ provider: z.enum(['quickbooks']), invoiceId: z.string().guid() });
+const invoicePushBulkSchema = z.object({
+  invoiceIds: z.array(z.string().guid()).min(1).max(100),
+});
+const remoteCandidatesQuerySchema = partnerQuerySchema.extend({
+  entityType: z.enum(['org', 'catalog_item']),
+  q: z.string().max(255).optional(),
+});
+
 function handleImportError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   // QbImportError.status is a narrowed literal union (400|404|409|502), so no cast.
   if (err instanceof QbImportError) return c.json({ error: err.message, code: err.code }, err.status);
@@ -128,6 +143,19 @@ function handleMappingError(c: { json: (b: unknown, s: number) => Response }, er
   // no cast, and every current/future code (including item_price_required)
   // flows through generically — the route never re-enumerates codes.
   if (err instanceof AccountingMappingError) return c.json({ error: err.message, code: err.code }, err.status);
+  throw err;
+}
+
+/**
+ * Deliberately a DIFFERENT body shape from `handleMappingError` above
+ * (`{ error: code, message }`, not `{ error: message, code }`) — the invoice
+ * push coordinator's error taxonomy (Phase C, Task 3) is a separate typed
+ * class from the mapping workbench's, and this shape is what Task 5's spec
+ * calls for.
+ */
+function handleInvoicePushError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+  // AccountingInvoicePushError.status is a narrowed literal union (404|409|502), so no cast.
+  if (err instanceof AccountingInvoicePushError) return c.json({ error: err.code, message: err.message }, err.status);
   throw err;
 }
 
@@ -176,6 +204,15 @@ function toMappingResponse(mapping: {
 // auth.partnerId/orgId, which a system-scope token never carries).
 const requireCustomerMappingWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 const requireItemMappingWrite = requirePermission(PERMISSIONS.CATALOG_WRITE.resource, PERMISSIONS.CATALOG_WRITE.action);
+
+// Phase C, Task 5 — the manual/bulk invoice push routes below gate on
+// INVOICES_WRITE directly (not an entity-aware split like the two mapping
+// mutation routes above: an invoice push is always an invoice-shaped write).
+// Wrapped in `partnerScopedPermission` for the same system-scope bypass as
+// `requireImportPermissions` above — see that constant's comment.
+const requireInvoicePush = partnerScopedPermission(
+  requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action),
+);
 
 // Typed against the validated `json` env — matching `optionalJsonValidator`'s
 // idiom (lib/validation.ts) for a standalone middleware that reads
@@ -742,3 +779,152 @@ accountingRoutes.post('/:provider/mappings/sync', authMiddleware, partnerScopes,
 
   return c.json({ data: toMappingResponse(mapping) });
 });
+
+
+// ---------------------------------------------------------------------------
+// Phase C, Task 5 (2026-09-01-quickbooks-phase-c-invoice-push) — manual/bulk
+// invoice push and remote-candidate search.
+// ---------------------------------------------------------------------------
+
+// Manual, synchronous invoice push. Write + MFA-gated on INVOICES_WRITE
+// (system scope bypasses the role lookup — see `requireInvoicePush`).
+// `pushInvoiceToAccounting` makes a REAL outbound QuickBooks call and does
+// NOT self-wrap in a DB access context (accountingInvoicePush.ts's own
+// doc comment: "Callers (routes, jobs) provide the context") — this route
+// therefore carries the SELF_MANAGED_DB_CONTEXT_ROUTES registration
+// (middleware/selfManagedDbContextRoutes.ts) and supplies its own short
+// `withAuthDbAccessContext`, exactly mirroring how `processAccountingSyncJob`
+// (jobs/accountingSyncWorker.ts) supplies a SYSTEM context for the same
+// coordinator off the request path.
+accountingRoutes.post(
+  '/:provider/invoices/:invoiceId/push',
+  authMiddleware,
+  partnerScopes,
+  requireMfa(),
+  requireInvoicePush,
+  zValidator('param', invoicePushParamSchema),
+  zValidator('query', partnerQuerySchema),
+  async (c) => {
+    const { provider, invoiceId } = c.req.valid('param');
+    const configError = validateProviderConfig(provider);
+    if (configError) return c.json({ error: configError }, 400);
+    const auth = c.get('auth');
+    const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
+    if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+
+    let outcome;
+    try {
+      outcome = await withAuthDbAccessContext(auth, () => pushInvoiceToAccounting(invoiceId, partner.partnerId));
+    } catch (err) {
+      return handleInvoicePushError(c, err);
+    }
+
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'accounting.invoice.push',
+      resourceType: 'accounting_mapping',
+      resourceId: outcome.mappingId,
+      details: {
+        provider,
+        invoiceId,
+        remoteEntityId: outcome.remoteEntityId,
+        docNumber: outcome.docNumber,
+        syncStatus: outcome.syncStatus,
+        taxVarianceCents: outcome.taxVarianceCents,
+      },
+    });
+
+    return c.json({ syncStatus: outcome.syncStatus, docNumber: outcome.docNumber, taxVarianceCents: outcome.taxVarianceCents });
+  },
+);
+
+// Bulk enqueue. Same gates as the manual push route above, but this one only
+// ever touches Redis (`enqueueAccountingInvoicePush` is fire-and-forget and
+// never calls QuickBooks itself — the actual push happens later on the
+// accounting-sync worker), so it keeps the normal ambient request
+// transaction and carries NO SELF_MANAGED_DB_CONTEXT_ROUTES entry.
+accountingRoutes.post(
+  '/:provider/invoices/push-bulk',
+  authMiddleware,
+  partnerScopes,
+  requireMfa(),
+  requireInvoicePush,
+  zValidator('param', providerParamSchema),
+  zValidator('query', partnerQuerySchema),
+  zValidator('json', invoicePushBulkSchema),
+  async (c) => {
+    const { provider } = c.req.valid('param');
+    const configError = validateProviderConfig(provider);
+    if (configError) return c.json({ error: configError }, 400);
+    const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+    if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+    const { invoiceIds } = c.req.valid('json');
+
+    // Ownership filter: one `inArray` select rather than N per-id lookups. An
+    // id that isn't this partner's (wrong partner, or doesn't exist at all)
+    // is silently counted into `skipped` — this is a bulk convenience action,
+    // not a per-id validation surface.
+    const owned = await db
+      .select({ id: invoices.id })
+      .from(invoices)
+      .where(and(inArray(invoices.id, invoiceIds), eq(invoices.partnerId, partner.partnerId)));
+    const ownedIds = new Set(owned.map((row) => row.id));
+
+    let enqueued = 0;
+    for (const invoiceId of invoiceIds) {
+      if (!ownedIds.has(invoiceId)) continue;
+      await enqueueAccountingInvoicePush(invoiceId, partner.partnerId);
+      enqueued++;
+    }
+    const skipped = invoiceIds.length - enqueued;
+
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'accounting.invoice.push_bulk',
+      resourceType: 'accounting_mapping',
+      resourceId: null,
+      details: { provider, requested: invoiceIds.length, enqueued, skipped },
+    });
+
+    return c.json({ enqueued, skipped });
+  },
+);
+
+// Remote candidate search (Phase B follow-up, surfaced by Task 5): replaces
+// manual remote-ID entry in the mapping workbench. Read-only — same gate
+// shape as GET /:provider/customers above (no MFA/permission; see that
+// route's comment for why). Makes a real outbound QuickBooks call via
+// `resolveConnectionAndToken` + `listRemoteCustomers`/`listRemoteItems`, so it
+// carries the same SELF_MANAGED_DB_CONTEXT_ROUTES + `withAuthDbAccessContext`
+// treatment as the push route above.
+accountingRoutes.get(
+  '/:provider/remote-candidates',
+  authMiddleware,
+  partnerScopes,
+  zValidator('param', providerParamSchema),
+  zValidator('query', remoteCandidatesQuerySchema),
+  async (c) => {
+    const { provider } = c.req.valid('param');
+    const configError = validateProviderConfig(provider);
+    if (configError) return c.json({ error: configError }, 400);
+    const auth = c.get('auth');
+    const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
+    if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+    const { entityType, q } = c.req.valid('query');
+
+    try {
+      const { liveConn } = await withAuthDbAccessContext(auth, () => resolveConnectionAndToken(partner.partnerId, provider));
+      const providerImpl = getAccountingProvider(provider);
+      const data = entityType === 'org'
+        ? (await runOutsideDbContext(() => providerImpl.listRemoteCustomers(liveConn, q))).map((r) => ({
+          id: r.id, displayName: r.displayName, email: r.email ?? null, currencyCode: r.currencyCode ?? null,
+        }))
+        : (await runOutsideDbContext(() => providerImpl.listRemoteItems(liveConn, q))).map((r) => ({
+          id: r.id, displayName: r.displayName, sku: r.sku ?? null,
+        }));
+      return c.json(data);
+    } catch (err) {
+      return handleMappingError(c, err);
+    }
+  },
+);

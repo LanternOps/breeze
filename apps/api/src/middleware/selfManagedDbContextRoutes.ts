@@ -68,6 +68,17 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // manages its own short DB access contexts around it — the same treatment as
   // the mapping routes above.
   { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/settings\/refresh\/?$/ },
+  // Phase C Task 5 (2026-09-01-quickbooks-phase-c-invoice-push) — manual
+  // invoice push and remote-candidate search. `pushInvoiceToAccounting`
+  // (accountingInvoicePush.ts) and `resolveConnectionAndToken` +
+  // `listRemoteCustomers`/`listRemoteItems` (accountingMappingService.ts) both
+  // make a real outbound QuickBooks HTTP call; the routes supply their own
+  // short `withAuthDbAccessContext` around each (routes/accounting/index.ts).
+  // `push-bulk` is NOT registered here: it only enqueues to Redis
+  // (`enqueueAccountingInvoicePush`) and never calls QuickBooks itself, so it
+  // keeps the normal ambient request transaction.
+  { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/invoices\/[^/]+\/push\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/remote-candidates\/?$/ },
   // #2190 — the three distributor catalog import routes run a best-effort AI
   // enrichment (enrichDistributorListing, up to a 12s outbound Anthropic call)
   // before persisting. The import services manage their own short
