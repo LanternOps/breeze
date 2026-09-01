@@ -168,7 +168,9 @@ describe('client-ai admin — tenant mapping', () => {
   it('PUT maps a DrizzleQueryError-wrapped tenant-uniqueness violation to 409 tenant_already_mapped', async () => {
     // DrizzleQueryError shape: generic outer error, real PostgresError (with
     // code + constraint_name) on .cause — mirrors what postgres.js + Drizzle
-    // actually produce, not a flattened one-level stub.
+    // actually produce. Note this fixture is the same one-level depth the old
+    // hand-rolled `.cause?.code` check also handled; the constraint-name
+    // discrimination this PR adds is what the NEXT test actually guards.
     const pgErr = Object.assign(new Error('duplicate key value violates unique constraint'), {
       code: '23505',
       constraint_name: 'client_ai_tenant_mappings_tenant_uniq',
