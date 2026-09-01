@@ -31,38 +31,48 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
-const { dbUpdateMock, capturedExpires, mockState, captureExceptionMock } = vi.hoisted(() => ({
-  dbUpdateMock: vi.fn(),
-  capturedExpires: [] as {
-    context: unknown;
-    set: Record<string, unknown>;
-    where: SQL;
-  }[],
-  mockState: {
-    /** Simulates an already-open request-scoped DB context (the ALS store). */
-    ambientContext: null as unknown,
-    /** Context in force at the moment the UPDATE is issued. */
-    effectiveContext: null as unknown,
-  },
-  captureExceptionMock: vi.fn(),
-}));
+const { dbUpdateMock, capturedExpires, mockState, contextStore, captureExceptionMock } =
+  vi.hoisted(() => {
+    const { AsyncLocalStorage } = require('node:async_hooks') as typeof import('node:async_hooks');
+    return {
+      dbUpdateMock: vi.fn(),
+      capturedExpires: [] as {
+        context: unknown;
+        set: Record<string, unknown>;
+        where: SQL;
+      }[],
+      mockState: {
+        /** Context in force at the moment the UPDATE is issued. */
+        effectiveContext: null as unknown,
+      },
+      /**
+       * The REAL primitive the db module uses, not a hand-rolled stand-in. A
+       * synchronous save/restore would diverge the moment the implementation
+       * awaits between writes: `AsyncLocalStorage.exit()` covers the whole async
+       * subtree scheduled inside it, a flag restored in a `finally` does not.
+       * Using the same primitive means this mock cannot drift from the contract.
+       */
+      contextStore: new AsyncLocalStorage<unknown>(),
+      captureExceptionMock: vi.fn(),
+    };
+  });
 
 vi.mock('../../db', () => ({
   db: { update: dbUpdateMock },
   withDbAccessContext: vi.fn(async (ctx: unknown, fn: () => unknown) => {
-    // Real semantics: an already-open context is JOINED, not replaced.
-    mockState.effectiveContext = mockState.ambientContext ?? ctx;
-    return await fn();
-  }),
-  runOutsideDbContext: vi.fn(<T,>(fn: () => T): T => {
-    const saved = mockState.ambientContext;
-    mockState.ambientContext = null; // real impl exits the ALS store
-    try {
-      return fn();
-    } finally {
-      mockState.ambientContext = saved;
+    // Real semantics (db/index.ts:529-531): an already-open context is JOINED,
+    // and the caller's GUCs win over the context handed in here.
+    const ambient = contextStore.getStore();
+    if (ambient !== undefined) {
+      mockState.effectiveContext = ambient;
+      return await fn();
     }
+    return await contextStore.run(ctx, async () => {
+      mockState.effectiveContext = ctx;
+      return await fn();
+    });
   }),
+  runOutsideDbContext: vi.fn(<T,>(fn: () => T): T => contextStore.exit(fn)),
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
@@ -121,7 +131,6 @@ describe('OpenAISessionManager eviction (#4384)', () => {
 
   beforeEach(() => {
     capturedExpires.length = 0;
-    mockState.ambientContext = null;
     mockState.effectiveContext = null;
     captureExceptionMock.mockClear();
     dbUpdateMock.mockReset();
@@ -272,9 +281,13 @@ describe('OpenAISessionManager eviction (#4384)', () => {
         accessibleOrgIds: [orgId],
       });
       // Guarded on status='active' so a row already closed is never re-stamped.
-      const { params } = dialect.sqlToQuery(write.where);
+      const { sql: whereSql, params } = dialect.sqlToQuery(write.where);
       expect(params).toContain(sessionId);
       expect(params).toContain('active');
+      // Bind the params to their columns — asserting membership alone would
+      // still pass if the id were compared against some other text column.
+      expect(whereSql).toMatch(/"id"\s+in/i);
+      expect(whereSql).toMatch(/"status"\s*=/i);
     }
 
     it('idle-timeout eviction expires the row', async () => {
@@ -315,13 +328,13 @@ describe('OpenAISessionManager eviction (#4384)', () => {
       // Reproduces the production shape: getOrCreate() runs inside the
       // REQUESTER's context, while the LRU victim belongs to another tenant.
       seed(manager, 'victim', 'org-victim', { idleFor: 10 * MINUTE, state: 'idle' });
-      mockState.ambientContext = {
-        scope: 'organization',
-        orgId: 'org-requester',
-        accessibleOrgIds: ['org-requester'],
-      };
 
-      internals(manager).evictLeastRecentlyActive();
+      // The requester's context is genuinely open around the eviction, exactly
+      // as the auth middleware leaves it around getOrCreate().
+      contextStore.run(
+        { scope: 'organization', orgId: 'org-requester', accessibleOrgIds: ['org-requester'] },
+        () => internals(manager).evictLeastRecentlyActive(),
+      );
       await flush();
 
       expect(capturedExpires).toHaveLength(1);
@@ -344,7 +357,7 @@ describe('OpenAISessionManager eviction (#4384)', () => {
       expect(capturedExpires).toHaveLength(0);
     });
 
-    it('still notifies the client on every eviction path', async () => {
+    it('still notifies the client on the stale-eviction path', async () => {
       const session = seed(manager, 'notified', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
       const events = session.eventBus.getReplayEvents();
 
@@ -353,6 +366,72 @@ describe('OpenAISessionManager eviction (#4384)', () => {
 
       const published = session.eventBus.getReplayEvents(events.length);
       expect(published.map((e) => e.type)).toEqual(['error', 'done']);
+    });
+
+    it('still notifies the client on the LRU path', async () => {
+      const victim = seed(manager, 'lru-notified', 'org-a', { idleFor: 10 * MINUTE, state: 'idle' });
+      seed(manager, 'keeper', 'org-b', { idleFor: 1 * MINUTE, state: 'idle' });
+      const before = victim.eventBus.getReplayEvents().length;
+
+      internals(manager).evictLeastRecentlyActive();
+      await flush();
+
+      const published = victim.eventBus.getReplayEvents(before);
+      expect(published.map((e) => e.type)).toEqual(['error', 'done']);
+    });
+
+    it('batches a whole idle cohort into one statement per org', async () => {
+      // A load spike creates sessions that idle out together; one transaction
+      // per session would contend with live traffic for the connection pool.
+      seed(manager, 'a1', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
+      seed(manager, 'a2', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
+      seed(manager, 'a3', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
+      seed(manager, 'b1', 'org-b', { idleFor: 3 * HOUR, state: 'idle' });
+
+      internals(manager).evictStaleSessions();
+      // The writes are serialized, so poll rather than guessing a microtask depth.
+      await vi.waitFor(() => expect(capturedExpires).toHaveLength(2));
+
+      expect(manager.activeCount).toBe(0);
+      const orgs = capturedExpires.map(
+        (w) => (w.context as { orgId: string }).orgId,
+      );
+      expect(orgs.sort()).toEqual(['org-a', 'org-b']);
+      const orgAWrite = capturedExpires.find(
+        (w) => (w.context as { orgId: string }).orgId === 'org-a',
+      )!;
+      const { params } = dialect.sqlToQuery(orgAWrite.where);
+      expect(params).toEqual(expect.arrayContaining(['a1', 'a2', 'a3']));
+    });
+
+    it('keeps expiring later orgs when one org\'s write fails', async () => {
+      // A stranded 'active' row is the exact defect being fixed, so one bad
+      // org must not abandon the rest of the cohort.
+      dbUpdateMock.mockImplementationOnce(() => ({
+        set: () => ({ where: () => Promise.reject(new Error('pool exhausted')) }),
+      }));
+      seed(manager, 'a1', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
+      seed(manager, 'b1', 'org-b', { idleFor: 3 * HOUR, state: 'idle' });
+
+      internals(manager).evictStaleSessions();
+      await vi.waitFor(() => expect(capturedExpires).toHaveLength(1));
+
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+      // org-b still got its write despite org-a blowing up.
+      expect((capturedExpires[0]!.context as { orgId: string }).orgId).toBe('org-b');
+    });
+
+    it('does not expire rows on shutdown — sessions stay resumable across a deploy', async () => {
+      // Sessions are rehydrated from ai_messages on the next request, so a
+      // restart must NOT terminate them. Pinned because afterEach calls
+      // shutdown() everywhere and would otherwise mask a regression here.
+      seed(manager, 'survives-restart', 'org-a', { idleFor: 1 * MINUTE, state: 'idle' });
+
+      manager.shutdown();
+      await flush();
+
+      expect(manager.get('survives-restart')).toBeUndefined();
+      expect(capturedExpires).toHaveLength(0);
     });
   });
 });

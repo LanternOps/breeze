@@ -19,7 +19,7 @@
 
 import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
 import { aiMessages, aiSessions } from '../../db/schema';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, inArray, sql } from 'drizzle-orm';
 import type { AuthContext } from '../../middleware/auth';
 import type { AuditSnapshot } from '../streamingSessionManager';
 import { SessionEventBus } from '../streamingSessionManager';
@@ -393,24 +393,47 @@ export class OpenAISessionManager {
    * The `status = 'active'` guard keeps a row already closed by the user from
    * being re-stamped as expired.
    */
-  private markSessionExpired(sessionId: string, orgId: string): void {
-    runOutsideDbContextSafe(() =>
-      withDbAccessContext(
-        { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
-        () =>
-          db
-            .update(aiSessions)
-            .set({ status: 'expired', updatedAt: new Date() })
-            .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.status, 'active'))),
-      ).catch((err) => {
-        captureException(err);
-        console.error('[OpenAISessionManager] Failed to expire session:', err);
-      }),
-    );
+  private markSessionsExpired(sessionIdsByOrg: Map<string, string[]>): void {
+    if (sessionIdsByOrg.size === 0) return;
+    runOutsideDbContextSafe(() => {
+      void (async () => {
+        // One org per statement, one statement at a time. A tick can retire a
+        // whole cohort that idled out together, and a transaction per session
+        // would put up to MAX_ACTIVE_SESSIONS of them against a pool of
+        // DB_POOL_MAX (30) shared with live request traffic. Eviction is
+        // background work with no deadline, so it yields to that traffic.
+        for (const [orgId, sessionIds] of sessionIdsByOrg) {
+          try {
+            await withDbAccessContext(
+              { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
+              () =>
+                db
+                  .update(aiSessions)
+                  .set({ status: 'expired', updatedAt: new Date() })
+                  .where(
+                    and(
+                      inArray(aiSessions.id, sessionIds),
+                      eq(aiSessions.status, 'active'),
+                    ),
+                  ),
+            );
+          } catch (err) {
+            // Never abandon the remaining orgs: a failure here strands rows as
+            // 'active', which is the very defect this helper exists to fix.
+            captureException(err);
+            console.error(
+              `[OpenAISessionManager] Failed to expire ${sessionIds.length} evicted session(s) for org ${orgId}:`,
+              err,
+            );
+          }
+        }
+      })();
+    });
   }
 
   private evictStaleSessions(): void {
     const now = Date.now();
+    const expiredByOrg = new Map<string, string[]>();
     for (const [sessionId, session] of [...this.sessions.entries()]) {
       const idle = now - session.lastActivityAt;
       const age = now - session.createdAt;
@@ -418,9 +441,12 @@ export class OpenAISessionManager {
       if (idle <= SESSION_IDLE_TIMEOUT_MS && age <= SESSION_MAX_AGE_MS) continue;
 
       // Applies to the 24h hard cap too: a session that reaches it mid-stream
-      // stays for at most one more tick (60s) and is evicted as soon as the
-      // turn finishes. Deferring the cap briefly beats truncating an answer and
-      // storing it as if it were whole.
+      // is evicted on the first tick after its turn ends (bounded by the
+      // provider's own FETCH_TIMEOUT_MS, not by this interval). Turns cannot
+      // chain to hold it open indefinitely — runPreFlightChecks enforces the
+      // same 24h cap before any NEW turn starts, so the slip is one turn at
+      // most. Deferring briefly beats truncating an answer and storing it as
+      // if it were whole.
       if (this.isTurnInFlight(session, now)) continue;
 
       console.log(`[OpenAISessionManager] Evicting session ${sessionId} (idle=${idle}ms, age=${age}ms)`);
@@ -433,8 +459,13 @@ export class OpenAISessionManager {
       });
       session.eventBus.publish({ type: 'done' });
       this.remove(sessionId);
-      this.markSessionExpired(sessionId, session.orgId);
+
+      const forOrg = expiredByOrg.get(session.orgId);
+      if (forOrg) forOrg.push(sessionId);
+      else expiredByOrg.set(session.orgId, [sessionId]);
     }
+
+    this.markSessionsExpired(expiredByOrg);
   }
 
   private evictLeastRecentlyActive(): void {
@@ -466,6 +497,6 @@ export class OpenAISessionManager {
       session.eventBus.publish({ type: 'done' });
     }
     this.remove(oldest.id);
-    if (session) this.markSessionExpired(oldest.id, session.orgId);
+    if (session) this.markSessionsExpired(new Map([[session.orgId, [oldest.id]]]));
   }
 }
