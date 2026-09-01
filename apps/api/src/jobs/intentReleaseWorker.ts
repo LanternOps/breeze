@@ -254,8 +254,32 @@ function isAttemptedTerminal(patch: TerminalPatch): boolean {
 
 /**
  * Writes the ONE `ai_agent_op_evidence` row this terminal outcome earns
- * (P2-5, #4192). Callers must already hold the terminal CAS's transaction —
- * `terminalizeIntent` is the only caller, and it is what opens it.
+ * (P2-5, #4192), in a SAVEPOINT nested inside the terminal CAS's
+ * transaction. `terminalizeIntent` is the only caller, and it is what opens
+ * that transaction.
+ *
+ * **The evidence write is the side that yields.** The ledger is a grading
+ * side-channel; the terminal state is the record of a real-world side effect
+ * and outranks it. If an insert failure (a 23503 on the `agent_id` or the
+ * composite `(run_id, org_id)` FK, a CHECK, a transient error) were allowed
+ * to propagate, it would unwind an `executing -> completed` CAS for an action
+ * that ALREADY RAN: the throw escapes `releaseApprovedIntent`, BullMQ
+ * redelivers, the claim CAS `approved -> executing` loses because the row is
+ * still `executing`, and the stale-executing reaper terminalizes it
+ * `failed:execution_lost` — a successful action permanently recorded as a
+ * failure, with no result stored, no success audit and no notification. So a
+ * failure here rolls back to the SAVEPOINT and is captured, never rethrown.
+ * The happy path is still a single atomic commit, which is what the plan
+ * asks for; only the losing side changed.
+ *
+ * The SAVEPOINT must actually RECEIVE the statements, which is why the
+ * executor is threaded explicitly instead of using the ambient `db` proxy:
+ * postgres-js records the first failed query of a transaction scope in that
+ * scope's `uncaughtError` and rethrows it when the scope ends, EVEN IF the
+ * caller caught the rejection (`postgres/src/index.js`'s `scope()`), so a
+ * statement issued through the OUTER scope would abort the outer transaction
+ * no matter how it is wrapped. `insertOpEvidence`'s second parameter exists
+ * for exactly this.
  *
  * Only AGENT-originated intents produce evidence: a human/chat/MCP release
  * has no agent to grade, and `requesting_agent_run_id` is the column that
@@ -280,31 +304,49 @@ async function recordIntentTerminalEvidence(
   const runId = intent.requestingAgentRunId;
   if (!runId) return;
 
-  const [run] = await db
-    .select({ agentId: aiAgentRuns.agentId, alertId: aiAgentRuns.alertId })
-    .from(aiAgentRuns)
-    .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, intent.orgId)))
-    .limit(1);
-  if (!run) return;
+  try {
+    await db.transaction(async (tx) => {
+      const [run] = await tx
+        .select({ agentId: aiAgentRuns.agentId, alertId: aiAgentRuns.alertId })
+        .from(aiAgentRuns)
+        .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, intent.orgId)))
+        .limit(1);
+      if (!run) return;
 
-  await insertOpEvidence([
-    {
-      orgId: intent.orgId,
-      agentId: run.agentId,
-      namespace: 'policy_key',
-      // The SHARED resolver, never a second ad hoc parse of `arguments` —
-      // the graduation ledger and the policy-decide registry must agree on
-      // what "this operation" is called or a promoted key grades the wrong
-      // evidence (services/actionIntents/canonicalPolicyKey.ts).
-      opKey: canonicalPolicyKey(intent.actionName, intent.arguments),
-      ruleId: null,
-      sourceKind: 'intent',
-      sourceId: intentEvidenceSourceId(intent.id),
-      metric,
-      runId,
-      occurredAt: new Date(),
-    },
-  ]);
+      await insertOpEvidence(
+        [
+          {
+            orgId: intent.orgId,
+            agentId: run.agentId,
+            namespace: 'policy_key',
+            // The SHARED resolver, never a second ad hoc parse of
+            // `arguments` — the graduation ledger and the policy-decide
+            // registry must agree on what "this operation" is called or a
+            // promoted key grades the wrong evidence
+            // (services/actionIntents/canonicalPolicyKey.ts).
+            opKey: canonicalPolicyKey(intent.actionName, intent.arguments),
+            ruleId: null,
+            sourceKind: 'intent',
+            sourceId: intentEvidenceSourceId(intent.id),
+            metric,
+            runId,
+            occurredAt: new Date(),
+          },
+        ],
+        tx,
+      );
+    });
+  } catch (error) {
+    // Loud, but never at the cost of a terminal state that records a real
+    // side effect. Identifiers only in the message — no tool result, no
+    // model-authored text.
+    captureException(
+      new Error(
+        `ai_agent_op_evidence write failed for intent ${intent.id} (metric ${metric}); terminal state kept`,
+        { cause: error },
+      ),
+    );
+  }
 }
 
 /**
@@ -315,12 +357,15 @@ async function recordIntentTerminalEvidence(
  * (intentService.ts), and a nested context JOINS an ambient one
  * (db/index.ts's `withDbAccessContext`: `if (dbContextStorage.getStore())
  * return fn()`), so the CAS and the evidence row land in the same commit.
- * That atomicity is the point: an evidence row can only exist for an outcome
- * that actually became terminal, and a terminal outcome cannot quietly go
- * unrecorded. An evidence-write failure therefore rolls the CAS back and
- * propagates rather than being swallowed — a swallowed write would under-
- * count `failed`/`recurred` evidence, which is precisely the direction
- * auto-demotion cannot afford to miss.
+ * That atomicity is the point in ONE direction: an evidence row can only
+ * exist for an outcome that actually became terminal, so a rolled-back CAS
+ * can never leave a phantom row behind. It is deliberately NOT symmetric —
+ * the evidence insert runs in its own SAVEPOINT and a failure there is
+ * captured, not rethrown (see `recordIntentTerminalEvidence`): the ledger is
+ * a grading side-channel, while the terminal state is the record of a
+ * real-world side effect, and rolling a completed action back to
+ * `executing` to protect a counter trades a permanent, silent
+ * `failed:execution_lost` for a missing row that Sentry names out loud.
  *
  * NEVER wraps `executeTool` — the worker deliberately executes outside any
  * DB context so a slow external call cannot pin a pooled connection
