@@ -42,6 +42,20 @@ const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const EVICTION_INTERVAL_MS = 60 * 1000;
 const MAX_ACTIVE_SESSIONS = 200;
 
+/**
+ * How long a `processing` session may go without stream progress before
+ * eviction stops treating it as a live turn.
+ *
+ * Eviction protects an in-flight turn (see `isTurnInFlight`), and `state` alone
+ * would make that protection unbounded: `runTurn` can throw before it resets
+ * state to 'idle', and a hung provider never emits another delta, so a wedged
+ * session would be pinned in memory forever. `lastActivityAt` is refreshed when
+ * a turn starts and on every content delta, so a genuinely live stream never
+ * approaches this window — anything past it is a dead turn, and reclaiming it
+ * costs nothing.
+ */
+export const PROCESSING_STALL_TIMEOUT_MS = 10 * 60 * 1000;
+
 export class OpenAISessionManager {
   private sessions = new Map<string, OpenAISession>();
   private evictionTimer: ReturnType<typeof setInterval> | null = null;
@@ -112,6 +126,11 @@ export class OpenAISessionManager {
       return false;
     }
     session.state = 'processing';
+    // The state and its staleness clock move together: eviction reads
+    // lastActivityAt to tell a live turn from a wedged one, and before this the
+    // stamp was refreshed only in getOrCreate() — so a session that had been
+    // sitting idle stayed the LRU victim for the whole turn it was streaming.
+    session.lastActivityAt = Date.now();
     return true;
   }
 
@@ -206,6 +225,8 @@ export class OpenAISessionManager {
           switch (event.type) {
             case 'content_delta':
               assistantText += event.delta;
+              // Stream progress keeps the turn alive for eviction purposes.
+              session.lastActivityAt = Date.now();
               session.eventBus.publish({ type: 'content_delta', delta: event.delta });
               break;
             case 'message_end':
@@ -332,56 +353,119 @@ export class OpenAISessionManager {
     return this.sessions.size;
   }
 
+  /**
+   * True while a turn is actively streaming for this session.
+   *
+   * Eviction must never take such a session: `remove()` aborts its controller
+   * and closes its event bus mid-turn, and because the provider treats a
+   * user-kind abort as a clean stop, the partial `assistantText` is then
+   * persisted as a COMPLETE assistant message while the terminal `done` publish
+   * lands on an already-closed bus.
+   *
+   * Liveness is `state` AND recent progress, never `state` alone — see
+   * PROCESSING_STALL_TIMEOUT_MS for why a wedged turn must stay reclaimable.
+   */
+  private isTurnInFlight(session: OpenAISession, now: number): boolean {
+    return (
+      session.state === 'processing' &&
+      now - session.lastActivityAt <= PROCESSING_STALL_TIMEOUT_MS
+    );
+  }
+
+  /**
+   * Retire the DB row for a session that eviction has just dropped.
+   *
+   * An evicted session is gone from memory and the client has been told to
+   * start a new one, so leaving `status = 'active'` strands the row: every
+   * caller keyed on active sessions overcounts, worst under exactly the load
+   * that drives LRU eviction. This mirrors what `runPreFlightChecks` would have
+   * written lazily on the next request (services/aiAgentSdk.ts) — eviction just
+   * stops deferring it.
+   *
+   * `runOutsideDbContext` is load-bearing, not decoration: `withDbAccessContext`
+   * JOINS an already-open context instead of replacing it (db/index.ts), and
+   * `evictLeastRecentlyActive()` is reached from `getOrCreate()` on the request
+   * path, which the auth middleware has already wrapped in the REQUESTER's
+   * context. Without the escape the UPDATE would run under the requester's
+   * GUCs, match zero rows under RLS for a victim in another tenant, and fail
+   * silently. On the timer path there is no ambient context and this is a no-op.
+   *
+   * The `status = 'active'` guard keeps a row already closed by the user from
+   * being re-stamped as expired.
+   */
+  private markSessionExpired(sessionId: string, orgId: string): void {
+    runOutsideDbContextSafe(() =>
+      withDbAccessContext(
+        { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
+        () =>
+          db
+            .update(aiSessions)
+            .set({ status: 'expired', updatedAt: new Date() })
+            .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.status, 'active'))),
+      ).catch((err) => {
+        captureException(err);
+        console.error('[OpenAISessionManager] Failed to expire session:', err);
+      }),
+    );
+  }
+
   private evictStaleSessions(): void {
     const now = Date.now();
     for (const [sessionId, session] of [...this.sessions.entries()]) {
       const idle = now - session.lastActivityAt;
       const age = now - session.createdAt;
 
-      if (idle > SESSION_IDLE_TIMEOUT_MS || age > SESSION_MAX_AGE_MS) {
-        console.log(`[OpenAISessionManager] Evicting session ${sessionId} (idle=${idle}ms, age=${age}ms)`);
-        session.eventBus.publish({
-          type: 'error',
-          message:
-            age > SESSION_MAX_AGE_MS
-              ? 'Session expired (24h limit). Please start a new session.'
-              : 'Session expired due to inactivity. Please start a new session.',
-        });
-        session.eventBus.publish({ type: 'done' });
-        this.remove(sessionId);
+      if (idle <= SESSION_IDLE_TIMEOUT_MS && age <= SESSION_MAX_AGE_MS) continue;
 
-        if (age > SESSION_MAX_AGE_MS) {
-          withDbAccessContext(
-            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-            () =>
-              db
-                .update(aiSessions)
-                .set({ status: 'expired', updatedAt: new Date() })
-                .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.status, 'active'))),
-          ).catch((err) => {
-            captureException(err);
-            console.error('[OpenAISessionManager] Failed to expire session:', err);
-          });
-        }
-      }
+      // Applies to the 24h hard cap too: a session that reaches it mid-stream
+      // stays for at most one more tick (60s) and is evicted as soon as the
+      // turn finishes. Deferring the cap briefly beats truncating an answer and
+      // storing it as if it were whole.
+      if (this.isTurnInFlight(session, now)) continue;
+
+      console.log(`[OpenAISessionManager] Evicting session ${sessionId} (idle=${idle}ms, age=${age}ms)`);
+      session.eventBus.publish({
+        type: 'error',
+        message:
+          age > SESSION_MAX_AGE_MS
+            ? 'Session expired (24h limit). Please start a new session.'
+            : 'Session expired due to inactivity. Please start a new session.',
+      });
+      session.eventBus.publish({ type: 'done' });
+      this.remove(sessionId);
+      this.markSessionExpired(sessionId, session.orgId);
     }
   }
 
   private evictLeastRecentlyActive(): void {
+    const now = Date.now();
     let oldest: { id: string; lastActivity: number } | null = null;
     for (const [id, session] of this.sessions) {
+      // Under cap pressure the least-recently-active session is often the one
+      // mid-stream, since its stamp predates the turn it is currently serving.
+      if (this.isTurnInFlight(session, now)) continue;
       if (!oldest || session.lastActivityAt < oldest.lastActivity) {
         oldest = { id, lastActivity: session.lastActivityAt };
       }
     }
-    if (oldest) {
-      console.log(`[OpenAISessionManager] LRU evicting session ${oldest.id}`);
-      const session = this.sessions.get(oldest.id);
-      if (session) {
-        session.eventBus.publish({ type: 'error', message: 'Session evicted due to server capacity. Please start a new session.' });
-        session.eventBus.publish({ type: 'done' });
-      }
-      this.remove(oldest.id);
+
+    if (!oldest) {
+      // Every session is mid-turn. Overshooting the soft cap is self-correcting
+      // — the next getOrCreate reclaims space as soon as any turn ends — while
+      // corrupting a live turn is not.
+      console.warn(
+        '[OpenAISessionManager] LRU eviction skipped: all sessions have a turn in flight',
+      );
+      return;
     }
+
+    console.log(`[OpenAISessionManager] LRU evicting session ${oldest.id}`);
+    const session = this.sessions.get(oldest.id);
+    if (session) {
+      session.eventBus.publish({ type: 'error', message: 'Session evicted due to server capacity. Please start a new session.' });
+      session.eventBus.publish({ type: 'done' });
+    }
+    this.remove(oldest.id);
+    if (session) this.markSessionExpired(oldest.id, session.orgId);
   }
 }
