@@ -2345,61 +2345,6 @@ async function seedAutomationDeviceResults(
     });
 }
 
-/** Mark a device's result row `running` and stamp its start time. */
-async function markDeviceResultRunning(
-  runId: string,
-  deviceId: string,
-  startedAt: Date,
-): Promise<void> {
-  await db
-    .update(automationRunDeviceResults)
-    .set({ status: 'running', startedAt, updatedAt: new Date() })
-    .where(
-      and(
-        eq(automationRunDeviceResults.runId, runId),
-        eq(automationRunDeviceResults.deviceId, deviceId),
-      ),
-    );
-}
-
-/**
- * Finalize a device's result row with its terminal status, completion time,
- * accumulated per-device output, and (on failure) the first error message.
- * Output is capped so a chatty run can't bloat the row.
- */
-async function finalizeDeviceResult(
-  runId: string,
-  deviceId: string,
-  outcome: {
-    status: 'success' | 'failed' | 'skipped';
-    startedAt: Date;
-    completedAt: Date;
-    output: string;
-    error: string | null;
-  },
-): Promise<void> {
-  const MAX_OUTPUT_CHARS = 16_000;
-  const trimmedOutput = outcome.output.length > MAX_OUTPUT_CHARS
-    ? `${outcome.output.slice(0, MAX_OUTPUT_CHARS)}\n…(truncated)`
-    : outcome.output;
-  await db
-    .update(automationRunDeviceResults)
-    .set({
-      status: outcome.status,
-      startedAt: outcome.startedAt,
-      completedAt: outcome.completedAt,
-      output: trimmedOutput.length > 0 ? trimmedOutput : null,
-      error: outcome.error,
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(automationRunDeviceResults.runId, runId),
-        eq(automationRunDeviceResults.deviceId, deviceId),
-      ),
-    );
-}
-
 /**
  * Best-effort recovery when executeAutomationRun throws (#2023): a run left in
  * `running` (and its seeded device rows left `pending`/`running`) would show as
