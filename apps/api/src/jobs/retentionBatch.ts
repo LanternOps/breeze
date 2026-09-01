@@ -199,6 +199,24 @@ export async function pruneInCtidBatches(options: {
 }
 
 /**
+ * One Sentry capture per table per hour. `eventLogRetention` calls this INSIDE
+ * a per-org loop, so an incident affecting every org would otherwise emit one
+ * event per org per nightly run. Mirrors `shouldCaptureHeldContext` in
+ * `db/index.ts`. The console line is never throttled — stdout is cheap and the
+ * per-org detail is what makes it useful.
+ */
+const BACKLOG_CAPTURE_WINDOW_MS = 60 * 60 * 1000;
+const lastBacklogCapture = new Map<string, number>();
+
+function shouldCaptureBacklog(target: string): boolean {
+  const now = Date.now();
+  const last = lastBacklogCapture.get(target);
+  if (last !== undefined && now - last < BACKLOG_CAPTURE_WINDOW_MS) return false;
+  lastBacklogCapture.set(target, now);
+  return true;
+}
+
+/**
  * Announce a retention backlog on channels someone will actually see.
  *
  * A capped sweep that reports `hasMore` and says nothing is how a table grows
@@ -211,26 +229,41 @@ export async function pruneInCtidBatches(options: {
  * oversized table drains over several runs instead of one job monopolising a
  * connection. If the warning persists, raise that job's batch-size or
  * max-batches knob.
+ *
+ * @param target A HARDCODED table name. It becomes the `retentionTarget` Sentry
+ *   tag, which is allowlisted only because every caller passes a literal —
+ *   never interpolate an id, org, or hostname here.
+ * @param detail Optional per-run context (e.g. `org=<uuid>`). Goes to the
+ *   console line ONLY, never to Sentry, so unbounded values cannot fork the
+ *   issue or leak a tenant id into a tag.
  */
 export function warnOnRetentionBacklog(
   logPrefix: string,
-  label: string,
+  target: string,
   result: BatchedPruneResult,
+  detail?: string,
 ): void {
   if (!result.hasMore) return;
+  const scope = detail ? `${target} (${detail})` : target;
   const message =
-    `${logPrefix} Hit the ${result.batches}-batch cap on ${label} with rows still eligible ` +
+    `${logPrefix} Hit the ${result.batches}-batch cap on ${scope} with rows still eligible ` +
     `(deleted ${result.deleted} this run); the remainder is left for the next scheduled run. ` +
     'If this repeats, raise the batch-size / max-batches limits for this job.';
   console.warn(message);
+  if (!shouldCaptureBacklog(target)) return;
   try {
     captureMessage(message, {
       eventCode: 'retention_backlog_remaining',
-      level: 'warning',
-      tags: { retentionTarget: label, batches: String(result.batches) },
+      // Only the bounded table name is tagged; `detail` is deliberately absent.
+      tags: { retentionTarget: target },
     });
   } catch (err) {
     // Never let the reporter take down the sweep that just succeeded.
     console.warn(`${logPrefix} Failed to report retention backlog to Sentry:`, err);
   }
+}
+
+/** Test-only: the capture throttle is module state and must not leak across tests. */
+export function __resetBacklogCaptureThrottle(): void {
+  lastBacklogCapture.clear();
 }

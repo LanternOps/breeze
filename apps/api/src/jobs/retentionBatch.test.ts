@@ -22,6 +22,7 @@ import { SQL, sql } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 import {
+  __resetBacklogCaptureThrottle,
   parsePositiveIntEnv,
   pruneInCtidBatches,
   resolveRetentionDays,
@@ -295,6 +296,7 @@ describe('pruneInCtidBatches', () => {
 describe('warnOnRetentionBacklog', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    __resetBacklogCaptureThrottle();
   });
 
   it('warns on stdout AND reports to Sentry when the cap left rows behind', () => {
@@ -313,8 +315,52 @@ describe('warnOnRetentionBacklog', () => {
     expect(captureMessageMock).toHaveBeenCalledTimes(1);
     expect(captureMessageMock.mock.calls[0]?.[1]).toMatchObject({
       eventCode: 'retention_backlog_remaining',
-      level: 'warning',
+      tags: { retentionTarget: 'agent_logs' },
     });
+    warn.mockRestore();
+  });
+
+  // `detail` carries an org UUID at the eventLogRetention call site. Tag values
+  // fork the Sentry issue and are not scrubbed, so an unbounded value there
+  // both leaks a tenant id and shatters the issue into one per org.
+  it('keeps unbounded detail out of the Sentry tag while still logging it', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const orgId = '11111111-1111-4111-8111-111111111111';
+
+    warnOnRetentionBacklog('[EventLogRetention]', 'device_event_logs', { deleted: 1, batches: 200, hasMore: true }, `org=${orgId}`);
+
+    // Console keeps the detail — that is what makes the line actionable.
+    expect(String(warn.mock.calls[0]?.[0])).toContain(orgId);
+    // Sentry gets only the bounded table name.
+    const tags = (captureMessageMock.mock.calls[0]?.[1] as { tags: Record<string, string> }).tags;
+    expect(tags).toEqual({ retentionTarget: 'device_event_logs' });
+    expect(JSON.stringify(tags)).not.toContain(orgId);
+    warn.mockRestore();
+  });
+
+  // eventLogRetention calls this inside a per-org loop; an incident affecting
+  // every org must not emit one Sentry event per org per nightly run.
+  it('throttles repeat captures for the same target but keeps logging each one', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const backlog = { deleted: 1, batches: 200, hasMore: true };
+
+    warnOnRetentionBacklog('[EventLogRetention]', 'device_event_logs', backlog, 'org=a');
+    warnOnRetentionBacklog('[EventLogRetention]', 'device_event_logs', backlog, 'org=b');
+    warnOnRetentionBacklog('[EventLogRetention]', 'device_event_logs', backlog, 'org=c');
+
+    expect(warn).toHaveBeenCalledTimes(3);
+    expect(captureMessageMock).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('still reports a DIFFERENT target that backlogs in the same window', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const backlog = { deleted: 1, batches: 200, hasMore: true };
+
+    warnOnRetentionBacklog('[AgentLogRetention]', 'agent_logs', backlog);
+    warnOnRetentionBacklog('[SnmpRetention]', 'snmp_metrics', backlog);
+
+    expect(captureMessageMock).toHaveBeenCalledTimes(2);
     warn.mockRestore();
   });
 

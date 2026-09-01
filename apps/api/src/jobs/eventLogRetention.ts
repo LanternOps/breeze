@@ -122,7 +122,9 @@ export function createEventLogRetentionWorker(): Worker<RetentionJobData> {
             orgsPruned += 1;
             if (result.hasMore) {
               orgsWithBacklog.push(orgId);
-              warnOnRetentionBacklog(LOG_PREFIX, `device_event_logs org=${orgId}`, result);
+              // The org id goes in `detail` (console only) — never in the
+              // target, which becomes a Sentry tag and must stay bounded.
+              warnOnRetentionBacklog(LOG_PREFIX, 'device_event_logs', result, `org=${orgId}`);
             }
           } catch (err) {
             console.error(`${LOG_PREFIX} Failed to prune events for org ${orgId}:`, err);
@@ -143,9 +145,12 @@ export function createEventLogRetentionWorker(): Worker<RetentionJobData> {
           orgsSkipped,
           orgsFailed,
           deleted: deletedTotal,
-          // A failed org's rows certainly remain, so it counts as a backlog too
-          // — otherwise a run that threw mid-sweep reports a clean drain.
-          hasMore: orgsWithBacklog.length > 0 || orgsFailed > 0,
+          // A failed OR skipped org's rows certainly remain, so both count as a
+          // backlog — otherwise a run where every policy lookup threw deletes
+          // nothing and still reports a clean drain. A skipped org is not
+          // pruned at all (see the `continue` above), so it is exactly as
+          // un-drained as a failed one.
+          hasMore: orgsWithBacklog.length > 0 || orgsFailed > 0 || orgsSkipped > 0,
         };
       }
     },

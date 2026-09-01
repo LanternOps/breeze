@@ -195,7 +195,9 @@ describe('event log retention worker', () => {
 
     const result = await capturedWorkerProcessor.current!({ data: { batchSize: 100, maxBatches: 5 } });
 
-    expect(result).toMatchObject({ orgsProcessed: 2, orgsPruned: 1, orgsSkipped: 1 });
+    // A skipped org was never pruned, so its rows certainly remain — reporting
+    // a clean drain here is the same misreport a failed org would cause.
+    expect(result).toMatchObject({ orgsProcessed: 2, orgsPruned: 1, orgsSkipped: 1, hasMore: true });
     // Only the healthy org was touched.
     expect(renderedSql()).not.toContain(ORG_A);
     expect(renderedSql()).toContain(ORG_B);
