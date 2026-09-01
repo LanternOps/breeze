@@ -41,6 +41,7 @@ vi.mock('../../jobs/quoteSendQueue', () => ({
 vi.mock('../../services/quoteImageStorage', () => ({
   writeQuoteImage: vi.fn(), readQuoteImage: vi.fn(), sniffImageMime: vi.fn(), MAX_QUOTE_IMAGE_SIZE_BYTES: 5 * 1024 * 1024,
   fetchRemoteImage: vi.fn(),
+  QUOTE_IMAGE_WEBP_REJECTED_MESSAGE: "WebP images can't be used in quote PDFs — please upload a PNG or JPEG image instead.",
   RemoteImageError: class RemoteImageError extends Error {
     constructor(public reason: string, msg: string) { super(msg); this.name = 'RemoteImageError'; }
   },
@@ -54,7 +55,7 @@ vi.mock('../../services/contractTemplateRender', () => ({ loadContractBlockRende
 import { quoteLifecycleRoutes } from './lifecycle';
 import { getQuote } from '../../services/quoteService';
 import { scheduleQuoteSend, cancelQuoteSend } from '../../jobs/quoteSendQueue';
-import { fetchRemoteImage, writeQuoteImage, RemoteImageError } from '../../services/quoteImageStorage';
+import { fetchRemoteImage, writeQuoteImage, sniffImageMime, RemoteImageError, QUOTE_IMAGE_WEBP_REJECTED_MESSAGE } from '../../services/quoteImageStorage';
 import { loadContractBlockRenderData } from '../../services/contractTemplateRender';
 
 const QUOTE_ID = '11111111-1111-4111-8111-111111111111';
@@ -268,9 +269,23 @@ describe('POST /:id/images — from URL (JSON body)', () => {
   });
 
   it('415s a URL whose bytes are not a supported image', async () => {
-    vi.mocked(fetchRemoteImage).mockRejectedValue(new RemoteImageError('not_image', "That URL isn't a PNG, JPEG, or WebP image"));
+    vi.mocked(fetchRemoteImage).mockRejectedValue(new RemoteImageError('not_image', "That URL isn't a PNG or JPEG image"));
     const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, jsonReq('https://cdn/page.png'));
     expect(res.status).toBe(415);
+  });
+
+  // #3483: pdfkit (the quote PDF renderer) can't embed WebP — doc.image() threw
+  // and the render loop's catch-and-continue silently dropped the image from
+  // the exported PDF. fetchRemoteImage now rejects WebP explicitly (as
+  // RemoteImageError('not_image', ...)); this proves the route surfaces that
+  // as a visible 415 rather than accepting the image only to have it vanish
+  // from the PDF later.
+  it('415s a remote WebP image with a message telling the author to use PNG/JPEG', async () => {
+    vi.mocked(fetchRemoteImage).mockRejectedValue(new RemoteImageError('not_image', QUOTE_IMAGE_WEBP_REJECTED_MESSAGE));
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, jsonReq('https://cdn/photo.webp'));
+    expect(res.status).toBe(415);
+    expect(await res.json()).toEqual({ error: QUOTE_IMAGE_WEBP_REJECTED_MESSAGE });
+    expect(writeQuoteImage).not.toHaveBeenCalled();
   });
 
   it('502s an unreachable / blocked URL', async () => {
@@ -300,6 +315,54 @@ describe('POST /:id/images — from URL (JSON body)', () => {
     vi.mocked(fetchRemoteImage).mockRejectedValue(new Error('boom'));
     const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, jsonReq('https://cdn/a.png'));
     expect(res.status).toBe(500);
+    expect(writeQuoteImage).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /:id/images — multipart file upload', () => {
+  const PERMS = ['quotes:read', 'quotes:write'];
+
+  function makeMultipart(bytes: Buffer, mime: string, filename: string): { body: BodyInit; headers: HeadersInit } {
+    const formData = new FormData();
+    const view = new Uint8Array(bytes.byteLength);
+    view.set(bytes);
+    formData.append('file', new Blob([view], { type: mime }), filename);
+    // Undici sets Content-Type (with boundary) automatically for a FormData body.
+    return { body: formData, headers: {} };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getQuote).mockResolvedValue({ quote: { orgId: 'org-1' } } as never);
+    vi.mocked(writeQuoteImage).mockResolvedValue({ id: 'img-9', byteSize: 4, sha256: 'x' } as never);
+  });
+
+  it('accepts a sniffed PNG and writes it', async () => {
+    vi.mocked(sniffImageMime).mockReturnValue('image/png');
+    const { body, headers } = makeMultipart(Buffer.from([1, 2, 3, 4]), 'image/png', 'a.png');
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, { method: 'POST', body, headers });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { imageId: 'img-9', mime: 'image/png', byteSize: 4 } });
+    expect(writeQuoteImage).toHaveBeenCalledWith(QUOTE_ID, 'org-1', 'image/png', expect.any(Buffer));
+  });
+
+  // #3483: the upload surface previously advertised (and accepted) WebP, but
+  // pdfkit can't embed it — the image silently vanished from the exported PDF.
+  // The route must now reject it visibly at upload time instead.
+  it('415s a WebP file with a message telling the author to use PNG/JPEG, and never persists it', async () => {
+    vi.mocked(sniffImageMime).mockReturnValue('image/webp');
+    const { body, headers } = makeMultipart(Buffer.from([1, 2, 3, 4]), 'image/webp', 'photo.webp');
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, { method: 'POST', body, headers });
+    expect(res.status).toBe(415);
+    expect(await res.json()).toEqual({ error: QUOTE_IMAGE_WEBP_REJECTED_MESSAGE });
+    expect(writeQuoteImage).not.toHaveBeenCalled();
+  });
+
+  it('415s bytes that sniff to no recognized image format', async () => {
+    vi.mocked(sniffImageMime).mockReturnValue(null);
+    const { body, headers } = makeMultipart(Buffer.from('not an image'), 'image/png', 'fake.png');
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/images`, { method: 'POST', body, headers });
+    expect(res.status).toBe(415);
     expect(writeQuoteImage).not.toHaveBeenCalled();
   });
 });

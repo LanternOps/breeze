@@ -2218,7 +2218,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                   <input
                     ref={imageFileInputRef}
                     type="file"
-                    accept="image/png,image/jpeg,image/webp"
+                    accept="image/png,image/jpeg"
                     onChange={(e) => setImageFile(e.target.files?.[0] ?? null)}
                     data-testid="quote-block-image-file"
                     className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:bg-muted file:px-3 file:py-1.5 file:text-xs file:font-medium"
@@ -2515,7 +2515,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                   <>
                     <input
                       type="file"
-                      accept="image/png,image/jpeg,image/webp"
+                      accept="image/png,image/jpeg"
                       onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadCoverImage(f); }}
                       disabled={isPending('cover-image')}
                       data-testid="quote-cover-page-image-file"

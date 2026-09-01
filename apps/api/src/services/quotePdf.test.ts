@@ -338,6 +338,33 @@ describe('renderQuotePdf', () => {
     expect(text).toContain('world');
   });
 
+  // #3483: quote image uploads now reject WebP at the API boundary (route-level
+  // fix), but bytes already stored before that shipped must still not corrupt
+  // or abort the whole document. pdfkit's doc.image() throws synchronously on
+  // WebP; this proves the render loop's catch actually swallows that specific
+  // draw failure and keeps rendering everything around it — replacing the old
+  // imageIntrinsicSize-only assertion that WebP merely fails to *parse*
+  // (which never proved the render path degrades instead of vanishing silently).
+  it('degrades gracefully — surrounding content still renders — when an image block holds WebP bytes pdfkit cannot embed', async () => {
+    const webpBytes = Buffer.from([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]); // RIFF....WEBP
+    const buf = await renderQuotePdf(
+      { id: 'q1', quoteNumber: 'Q-WEBP', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD' },
+      [
+        { id: 'b1', blockType: 'image', sortOrder: 0, content: { imageId: 'img-webp', caption: 'Skipped image', width: 200 } },
+        { id: 'b2', blockType: 'rich_text', sortOrder: 1, content: { html: '<p>AFTERWEBP</p>' } },
+      ],
+      [],
+      async () => ({ data: webpBytes }),
+      {},
+    );
+    expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+    const text = extractPdfText(buf);
+    // The caption and the block after the failed image draw must still
+    // render — a decode failure degrades to "no image", never aborts the doc.
+    expect(text).toContain('Skipped image');
+    expect(text).toContain('AFTERWEBP');
+  });
+
   it('embeds a product thumbnail for a catalog-sourced line via loadCatalogImage', async () => {
     const requested: string[] = [];
     const buf = await renderQuotePdf(
@@ -1049,7 +1076,11 @@ describe('imageIntrinsicSize', () => {
   it('returns null for unparseable buffers', () => {
     expect(imageIntrinsicSize(Buffer.from('not an image at all'))).toBeNull();
     expect(imageIntrinsicSize(Buffer.alloc(0))).toBeNull();
-    // WebP (RIFF) — pdfkit can't embed it and the probe doesn't parse it.
+    // WebP (RIFF) — the probe doesn't parse it either, so the render loop
+    // falls back to a fixed fitHeight rather than a measured aspect ratio.
+    // (The renderQuotePdf-level "degrades gracefully ... WebP" test above
+    // proves the actual doc.image() failure this feeds into is caught and
+    // reported, not silently swallowed — #3483.)
     expect(imageIntrinsicSize(Buffer.from('RIFF0000WEBPVP8 '))).toBeNull();
   });
 });
