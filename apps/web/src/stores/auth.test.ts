@@ -88,12 +88,14 @@ const baseTokens: Tokens = {
 function mockLocation(pathname: string, search = '') {
   const originalLocation = window.location;
   const replace = vi.fn();
+  const reload = vi.fn();
   Object.defineProperty(window, 'location', {
     configurable: true,
-    value: { pathname, search, hash: '', replace }
+    value: { pathname, search, hash: '', replace, reload }
   });
   return {
     replace,
+    reload,
     restore: () => {
       Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
     }
@@ -406,6 +408,9 @@ describe('auth store fetchWithAuth', () => {
   // and the caller waits out the server-supplied `Retry-After` once.
   it('waits out a 429 on refresh rather than retrying into it, and keeps the session', async () => {
     vi.useFakeTimers();
+    // Pin jitter (#3984) to 0 so the wait is exactly the advertised 1_000ms —
+    // jitter bounds get their own dedicated test below.
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
     try {
       useAuthStore.getState().login(baseUser, baseTokens);
       const refreshedTokens: Tokens = { accessToken: 'access-after-429', expiresInSeconds: 3600 };
@@ -445,6 +450,131 @@ describe('auth store fetchWithAuth', () => {
       expect(useAuthStore.getState().authThrottledUntil).toBeNull();
       expect(refreshCallsOf(fetchMock)).toHaveLength(2);
     } finally {
+      randomSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  // #3984: a throttled fleet reading the same Retry-After would otherwise all
+  // retry at the exact same instant, turning their own recovery into a second
+  // synchronized burst. Jitter must only ever ADD time (retrying before the
+  // server's granted window just earns another 429) and must stay bounded
+  // (never balloon the wait unrecognizably).
+  it('jitters the throttle wait, always at or above the advertised window and bounded above it', async () => {
+    vi.useFakeTimers();
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        makeResponseWithHeaders({ retryAfter: 10 }, false, 429, { 'Retry-After': '10' })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      // random() = 0 -> no jitter added: wait is exactly the advertised 10s.
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+      try {
+        const pending = restoreAccessTokenFromCookieDetailed();
+        await vi.advanceTimersByTimeAsync(0);
+        const untilNoJitter = useAuthStore.getState().authThrottledUntil!;
+        expect(untilNoJitter - Date.now()).toBe(10_000);
+        await vi.advanceTimersByTimeAsync(10_000);
+        await pending;
+      } finally {
+        randomSpy.mockRestore();
+      }
+
+      useAuthStore.setState({ authThrottledUntil: null, tokens: null });
+
+      // random() just under 1 -> maximum jitter: up to 25% extra, never more.
+      const randomSpyMax = vi.spyOn(Math, 'random').mockReturnValue(0.999999);
+      try {
+        const pending = restoreAccessTokenFromCookieDetailed();
+        await vi.advanceTimersByTimeAsync(0);
+        const untilMaxJitter = useAuthStore.getState().authThrottledUntil!;
+        const waitMs = untilMaxJitter - Date.now();
+        expect(waitMs).toBeGreaterThanOrEqual(10_000);
+        expect(waitMs).toBeLessThan(10_000 * 1.25);
+        await vi.advanceTimersByTimeAsync(waitMs);
+        await pending;
+      } finally {
+        randomSpyMax.mockRestore();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // #3984: before this fix, AuthThrottledMask (AuthOverlay.tsx) independently
+  // counted down to its OWN `window.location.reload()` using the same
+  // `authThrottledUntil` deadline this module publishes — so once the bounded
+  // in-memory wait was exhausted, TWO timers raced to "recover" the same
+  // throttle. Now only the store schedules the reload; it must fire exactly
+  // once, only after the bounded wait is exhausted, and never while the
+  // access token is still valid.
+  it('schedules exactly one automatic reload once the bounded wait is exhausted', async () => {
+    vi.useFakeTimers();
+    const { reload, restore } = mockLocation('/devices');
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0); // no jitter, deterministic
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        makeResponseWithHeaders({ retryAfter: 1 }, false, 429, { 'Retry-After': '1' })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = restoreAccessTokenFromCookieDetailed();
+
+      // The bounded in-memory wait (MAX_THROTTLE_WAITS=1): one wait, one
+      // retry, still throttled. This is the store's OWN retry — no reload
+      // yet, because the wait isn't exhausted until this resolves.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await pending).toBe('throttled');
+      expect(reload).not.toHaveBeenCalled();
+
+      // Now exhausted: the store schedules exactly one reload for the next
+      // advertised window.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(reload).toHaveBeenCalledTimes(1);
+    } finally {
+      randomSpy.mockRestore();
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  // The scheduled reload re-checks whether the throttle is still actually
+  // blocking the page at fire time — a keepalive refresh that gets throttled
+  // while the access token is still valid must never discard unsaved work.
+  it('does not fire the scheduled reload if the session was restored before the deadline', async () => {
+    vi.useFakeTimers();
+    const { reload, restore } = mockLocation('/devices');
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        makeResponseWithHeaders({ retryAfter: 1 }, false, 429, { 'Retry-After': '1' })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      await vi.advanceTimersByTimeAsync(0);
+      const pending = restoreAccessTokenFromCookieDetailed();
+      await vi.advanceTimersByTimeAsync(1_000); // exhausts the bounded wait, schedules the reload
+      await pending;
+
+      // A concurrent path (another tab, another refresh) restores the token
+      // before the scheduled reload's deadline elapses.
+      useAuthStore.getState().setTokens(baseTokens);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(reload).not.toHaveBeenCalled();
+    } finally {
+      randomSpy.mockRestore();
+      restore();
       vi.useRealTimers();
     }
   });

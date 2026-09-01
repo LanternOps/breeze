@@ -85,8 +85,9 @@ export default function AuthOverlay() {
       if (state.sessionExpiredReason) return;
       // A rate-limited refresh legitimately takes longer than this timer
       // (the server's window is 60s). Bouncing to /login here would reinstate
-      // exactly the forced logout #3696 removes — the throttle mask below owns
-      // the recovery, including its own auto-retry.
+      // exactly the forced logout #3696 removes — the throttle mask below just
+      // reflects the wait; the auth store (not this timer) owns automatic
+      // recovery (#3984).
       if (state.authThrottledUntil && state.authThrottledUntil > Date.now()) return;
       if (!state.isAuthenticated || !state.tokens?.accessToken) {
         redirectToLogin();
@@ -294,9 +295,11 @@ export default function AuthOverlay() {
   // on an interval while `isAuthenticated` (AdminSessionManager.tsx:308-320),
   // so a 429 there lands while the access token is still valid and every data
   // call is still succeeding. Masking that session would be wrong on its own,
-  // and `AuthThrottledMask` ends its countdown with `window.location.reload()`
-  // — so an unconditional branch would throw away unsaved work to "recover" a
-  // session that was never impaired. See #3696 review.
+  // and the store's own throttle recovery (`scheduleThrottleReload`, #3984)
+  // ends with `window.location.reload()` — so an unconditional branch would
+  // throw away unsaved work to "recover" a session that was never impaired.
+  // (The store re-checks this same condition before it actually reloads, but
+  // this branch must stay in sync with it regardless.) See #3696 review.
   if (authThrottledUntil !== null && !tokens?.accessToken) {
     return <AuthThrottledMask retryAt={authThrottledUntil} />;
   }
@@ -337,9 +340,15 @@ function redirectToLogin() {
  * Shown while POST /auth/refresh is rate-limited (#3696). The session is fine —
  * this is a wait, not an eviction — so the copy must not say "expired".
  *
- * Recovery is a full reload rather than an in-place retry: the web app is an
- * Astro MPA whose access token is memory-only, so a fresh document is exactly
- * what re-runs the bootstrap refresh. The reload is what spends the next slot.
+ * Purely a display: the countdown is cosmetic. The actual recovery reload is
+ * owned and scheduled by the auth store (`scheduleThrottleReload`, #3984) once
+ * its own bounded in-memory retry is exhausted — a full reload rather than an
+ * in-place retry because the web app is an Astro MPA whose access token is
+ * memory-only, so a fresh document is what re-runs the bootstrap refresh. This
+ * component used to independently reload at the end of its OWN countdown,
+ * racing the store's own retry-in-progress at the same deadline; the reload
+ * usually won, wasting the store's retry. Never re-add an automatic action
+ * here — the store is the single owner of recovery.
  */
 function AuthThrottledMask({ retryAt }: { retryAt: number }) {
   const { t } = useTranslation('auth');
@@ -351,9 +360,6 @@ function AuthThrottledMask({ retryAt }: { retryAt: number }) {
     const tick = () => {
       const remaining = Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
       setSecondsLeft(remaining);
-      if (remaining === 0 && typeof window !== 'undefined') {
-        window.location.reload();
-      }
     };
     tick();
     const timer = setInterval(tick, 1000);

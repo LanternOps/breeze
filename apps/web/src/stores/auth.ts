@@ -168,6 +168,9 @@ export const useAuthStore = create<AuthState>()(
         // Re-login clears any stale expiry state and re-arms
         // handleSessionExpired for the new session.
         sessionExpiryInFlight = false;
+        // A fresh login makes any pending throttle-recovery reload stale —
+        // the session is already restored, don't reload out from under it.
+        cancelThrottleReload();
         set((state) => ({
           user,
           tokens,
@@ -193,6 +196,9 @@ export const useAuthStore = create<AuthState>()(
         // currency (lib/useApproximateTotal), so they must not outlive the
         // session either.
         resetApproximateTotalCache();
+        // An evicted session must never come back via a stray throttle-recovery
+        // reload — the redirect to /login owns navigation from here.
+        cancelThrottleReload();
         set((state) => ({
           user: null,
           tokens: null,
@@ -438,11 +444,24 @@ const DEFAULT_REFRESH_RETRY_AFTER_MS = 60_000;
 // misconfigured value must not wedge the tab indefinitely.
 const MAX_REFRESH_RETRY_AFTER_MS = 90_000;
 
+// Every client throttled in the same server window reads the same
+// Retry-After and, without this, would wake at the exact same instant — a
+// throttled fleet's own recovery becomes a second synchronized burst (#3984).
+// Jitter only ever ADDS time (never subtracts): retrying before the server's
+// granted window elapses just earns another 429, so the floor stays the raw
+// wait and only the ceiling spreads out.
+const RETRY_JITTER_FACTOR = 0.25;
+
+function withRetryJitter(waitMs: number): number {
+  return waitMs + Math.floor(Math.random() * waitMs * RETRY_JITTER_FACTOR);
+}
+
 /**
  * Seconds-to-wait from a 429, preferring the standard `Retry-After` header and
  * falling back to the JSON `retryAfter` field the API also sends. Clamped into
  * a sane range so neither a `0` (retry immediately — the very hammering being
- * rejected) nor an absurd value can be honoured literally.
+ * rejected) nor an absurd value can be honoured literally, then jittered so a
+ * whole throttled fleet doesn't retry in lockstep.
  */
 function parseRetryAfterMs(response: Response, body: { retryAfter?: unknown } | null): number {
   // Optional chaining: `headers` is absent on partially-stubbed Response
@@ -466,9 +485,11 @@ function parseRetryAfterMs(response: Response, body: { retryAfter?: unknown } | 
       '[auth] /auth/refresh returned 429 with no usable Retry-After; ' +
         `falling back to ${DEFAULT_REFRESH_RETRY_AFTER_MS}ms`
     );
-    return DEFAULT_REFRESH_RETRY_AFTER_MS;
+    return withRetryJitter(DEFAULT_REFRESH_RETRY_AFTER_MS);
   }
-  return Math.min(MAX_REFRESH_RETRY_AFTER_MS, Math.max(1_000, Math.round(seconds * 1_000)));
+  return withRetryJitter(
+    Math.min(MAX_REFRESH_RETRY_AFTER_MS, Math.max(1_000, Math.round(seconds * 1_000)))
+  );
 }
 
 async function refreshFetchOnce(): Promise<RefreshFetchResult> {
@@ -684,6 +705,42 @@ if (typeof window !== 'undefined' && window.location?.hash?.startsWith('#ssoCode
 // server window; more would let a genuinely wedged client hang for minutes.
 const MAX_THROTTLE_WAITS = 1;
 
+// Single owner of the "throttle outlasted the bounded in-memory wait above"
+// recovery action (#3984). Before this, AuthThrottledMask (AuthOverlay.tsx)
+// independently counted down to its OWN `window.location.reload()` using the
+// same `authThrottledUntil` deadline this module publishes — so the mask's
+// reload and this module's own retry-in-progress fired at the same instant,
+// and the reload usually preempted the retry, wasting it. Only this module
+// schedules a reload now; the mask is pure display.
+//
+// A reload (not an in-place retry) is deliberate: the web app is an Astro MPA
+// whose access token lives in memory only, and AuthOverlay's own recovery
+// effect runs once per mount — a fresh document is what re-arms it.
+let throttleReloadTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleThrottleReload(waitMs: number): void {
+  if (typeof window === 'undefined') return;
+  if (throttleReloadTimer) clearTimeout(throttleReloadTimer);
+  throttleReloadTimer = setTimeout(() => {
+    throttleReloadTimer = null;
+    // Only reload if the throttle is still actually blocking the page. A
+    // background keepalive refresh (AdminSessionManager) can get throttled
+    // while the access token is still valid and every data call is still
+    // succeeding — reloading there would discard unsaved work to "recover" a
+    // session that was never impaired.
+    if (!useAuthStore.getState().tokens?.accessToken) {
+      window.location.reload();
+    }
+  }, waitMs);
+}
+
+function cancelThrottleReload(): void {
+  if (throttleReloadTimer) {
+    clearTimeout(throttleReloadTimer);
+    throttleReloadTimer = null;
+  }
+}
+
 /**
  * Wait out a `429` on /auth/refresh and try once more (#3696).
  *
@@ -715,10 +772,14 @@ async function requestTokenRefreshWaitingOutThrottle(): Promise<RefreshOutcome> 
   // logout(), and by the next successful refresh.
   if (outcome.kind === 'throttled') {
     useAuthStore.getState().setAuthThrottledUntil(Date.now() + outcome.retryAfterMs);
+    // The in-memory bounded wait above is exhausted — schedule the ONE
+    // automatic recovery action left (see comment on scheduleThrottleReload).
+    scheduleThrottleReload(outcome.retryAfterMs);
   } else {
     // Any other verdict (restored, auth-failed, transient) ends the throttle —
     // drop the mask so a wait we entered above can never outlive its cause.
     useAuthStore.getState().setAuthThrottledUntil(null);
+    cancelThrottleReload();
   }
 
   return outcome;
