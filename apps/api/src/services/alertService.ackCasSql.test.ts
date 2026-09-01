@@ -8,6 +8,7 @@ vi.mock('../db', () => ({ db: {} }));
 import { alertStatusEnum } from '../db/schema/alerts';
 import {
   ACKNOWLEDGEABLE_ALERT_STATUSES,
+  DISMISSIBLE_ALERT_STATUSES,
   RESOLVABLE_ALERT_STATUSES,
   SUPPRESSIBLE_ALERT_STATUSES,
   buildAcknowledgeAlertCas,
@@ -62,7 +63,7 @@ describe('suppress compare-and-swap predicate (compiled SQL)', () => {
 });
 
 /**
- * Drift guard. The three status lists are separate on purpose — they express three
+ * Drift guard. The four status lists are separate on purpose — they express four
  * different invariants and must be free to diverge — but every one of them is
  * derived from the same enum, so a new `alert_status` value must be classified
  * deliberately rather than silently inheriting whatever the list happens to hold.
@@ -75,17 +76,42 @@ describe('CAS status lists stay anchored to the alert_status enum', () => {
       ...ACKNOWLEDGEABLE_ALERT_STATUSES,
       ...SUPPRESSIBLE_ALERT_STATUSES,
       ...RESOLVABLE_ALERT_STATUSES,
+      ...DISMISSIBLE_ALERT_STATUSES,
     ]) {
       expect(alertStatusEnum.enumValues).toContain(status);
     }
   });
 
-  it('never admits a terminal status into any CAS', () => {
+  it('never admits a terminal status into the three NON-dismiss CAS lists', () => {
+    // Dismiss is excluded from this loop by design, not by omission — see the
+    // dedicated assertion below. The ban stays absolute for the other three: any
+    // terminal status in those sets is a transition overwriting somebody's
+    // resolution, which is #4101 exactly.
     for (const terminal of TERMINAL) {
       expect(ACKNOWLEDGEABLE_ALERT_STATUSES).not.toContain(terminal);
       expect(SUPPRESSIBLE_ALERT_STATUSES).not.toContain(terminal);
       expect(RESOLVABLE_ALERT_STATUSES).not.toContain(terminal);
     }
+  });
+
+  it('lets dismiss — and ONLY dismiss — admit `resolved`, never `dismissed` (#4293)', () => {
+    // The one deliberate exception to the rule above. Dismiss is the terminal
+    // "make this go away for good" action and is documented as legal from every
+    // other status, `resolved` included; that is the workflow it exists for.
+    //
+    // The half that is NOT an exception is `dismissed` itself. Admitting it would
+    // make the predicate match an already-dismissed row, so the losing caller's
+    // UPDATE would succeed again and re-stamp dismissedAt/dismissedBy — the CAS
+    // present in the code, absent in effect.
+    expect([...DISMISSIBLE_ALERT_STATUSES]).toContain('resolved');
+    expect([...DISMISSIBLE_ALERT_STATUSES]).not.toContain('dismissed');
+  });
+
+  it('dismissible == every enum value except `dismissed`, derived from the enum', () => {
+    // Same reasoning as the suppressible check below: a new status nobody classifies
+    // here would be silently un-dismissable, with no error to explain why.
+    const dismissible = alertStatusEnum.enumValues.filter((status) => status !== 'dismissed');
+    expect([...DISMISSIBLE_ALERT_STATUSES].sort()).toEqual([...dismissible].sort());
   });
 
   it('suppressible == every non-terminal status, derived from the enum', () => {

@@ -23,8 +23,10 @@ import { setCooldown, markConfigPolicyRuleCooldown } from '../../services/alertC
 import {
   ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE,
   ALERT_CAS_LOST_MESSAGE,
+  ALERT_DISMISS_CAS_LOST_MESSAGE,
   ALERT_SUPPRESS_CAS_LOST_MESSAGE,
   buildAcknowledgeAlertCas,
+  buildDismissAlertCas,
   buildResolveAlertCas,
   buildSuppressAlertCas,
 } from '../../services/alertService';
@@ -1157,11 +1159,22 @@ alertsRoutes.post(
       return c.json({ error: 'Alert not found' }, 404);
     }
 
+    // Fast path with a specific message. It is NOT the concurrency control — the
+    // compare-and-swap below is. Two techs on the same alert both clear this check.
+    // 409, not the 400 this used to return: losing at the pre-read and losing at the
+    // CAS are the same real-world event (somebody dismissed first), so they must not
+    // return two codes purely on which side of the read the other write landed.
+    // #4099 made exactly this change for resolve and #4288 for acknowledge.
     if (alert.status === 'dismissed') {
-      return c.json({ error: 'Alert is already dismissed' }, 400);
+      return c.json({ error: 'Alert is already dismissed' }, 409);
     }
 
     const dismissedAt = new Date();
+    // Winner-takes-all (#4293). Updating by id alone could not reopen an alert the
+    // way an unguarded acknowledge could — dismiss is legal from any other status —
+    // but it did silently clobber provenance: two concurrent dismissals both matched,
+    // so `dismissedAt`/`dismissedBy` recorded whichever write landed second while both
+    // callers got a 200, an ML feedback emit and an audit row claiming the transition.
     const [updated] = await db
       .update(alerts)
       .set({
@@ -1169,10 +1182,14 @@ alertsRoutes.post(
         dismissedAt,
         dismissedBy: auth.user.id
       })
-      .where(eq(alerts.id, alertId))
+      .where(buildDismissAlertCas(alertId))
       .returning();
     if (!updated) {
-      return c.json({ error: 'Failed to dismiss alert' }, 500);
+      // The CAS matched nothing between the read above and this write: the alert was
+      // dismissed first. The feedback and audit below belong to whoever performed
+      // that transition, not to this caller. Previously a 500 — correct only while
+      // the branch was unreachable, which an id-only UPDATE made it.
+      return c.json({ error: ALERT_DISMISS_CAS_LOST_MESSAGE }, 409);
     }
 
     // Like suppress: no event-bus publish (nothing should notify/escalate off a

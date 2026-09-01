@@ -232,7 +232,7 @@ audit log.
 | `POST` | `/alerts/:id/acknowledge` | Acknowledge alert. Valid only from `active`; returns `409` if the alert left that status first (another user, or the auto-resolve sweep, got there first) |
 | `POST` | `/alerts/:id/resolve` | Resolve alert. Returns `409` if the alert already reached a terminal status |
 | `POST` | `/alerts/:id/suppress` | Suppress alert. Returns `409` if the alert already reached a terminal status |
-| `POST` | `/alerts/:id/dismiss` | Permanently dismiss an alert. Terminal and valid from any status (including `resolved`); dismissed alerts are hidden from `GET /alerts` unless you filter to `status=dismissed` |
+| `POST` | `/alerts/:id/dismiss` | Permanently dismiss an alert. Terminal and valid from any status (including `resolved`); dismissed alerts are hidden from `GET /alerts` unless you filter to `status=dismissed`. Returns `409` if the alert was already dismissed — including when a concurrent caller dismissed it first, in which case `dismissedAt`/`dismissedBy` name that caller, not this one |
 | `POST` | `/alerts/bulk` | Bulk state change for up to 100 alerts — `action` is one of `acknowledge`, `resolve`, `suppress`, or `dismiss` |
 
 ### Alert Rules
