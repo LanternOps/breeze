@@ -21,7 +21,7 @@ vi.mock('expo-notifications', () => ({
 }));
 vi.mock('../services/api', () => ({ registerPushToken: vi.fn() }));
 
-import { resolvePushRoute, shouldReplayResponse } from './pushRouting';
+import { resolvePushRoute, shouldHandleTap, shouldReplayResponse } from './pushRouting';
 
 describe('resolvePushRoute (#4336)', () => {
   it('routes ticket data to TicketDetail', () => {
@@ -60,5 +60,27 @@ describe('shouldReplayResponse (#4336)', () => {
     expect(shouldReplayResponse(undefined, null)).toBe(false);
     expect(shouldReplayResponse(null, null)).toBe(false);
     expect(shouldReplayResponse('', 'r-1')).toBe(false);
+  });
+});
+
+describe('shouldHandleTap (#4336)', () => {
+  it('skips a tap for the identifier we already acted on', () => {
+    // expo delivers the app-LAUNCHING response to the response listener as well
+    // as through getLastNotificationResponseAsync, so without this the cold
+    // start handles the same tap twice.
+    expect(shouldHandleTap('r-1', 'r-1')).toBe(false);
+  });
+
+  it('handles a genuinely new tap', () => {
+    expect(shouldHandleTap('r-2', 'r-1')).toBe(true);
+    expect(shouldHandleTap('r-1', null)).toBe(true);
+  });
+
+  it('handles an identifier-less tap rather than dropping it', () => {
+    // Opposite default to shouldReplayResponse, deliberately: a live tap is a
+    // real user action, so failing to dedupe it must not mean discarding it.
+    // The worst case is one redundant navigation to a screen they asked for.
+    expect(shouldHandleTap(undefined, 'r-1')).toBe(true);
+    expect(shouldHandleTap('', 'r-1')).toBe(true);
   });
 });

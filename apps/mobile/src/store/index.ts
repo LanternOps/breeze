@@ -105,6 +105,7 @@ export {
   selectTicketPushPrefs,
   selectTicketPushPrefsSaving,
   selectTicketPushPrefsError,
+  selectTicketPushPrefsErrorKind,
 } from './notificationPrefsSlice';
 
 export {

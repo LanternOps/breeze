@@ -40,12 +40,38 @@ describe('navigateToTicket (#4336)', () => {
 
     ref.ready = true;
     flushPendingNavigation();
-    flushPendingNavigation(); // onReady can fire again on a container remount
+    flushPendingNavigation(); // more than one flush source; must not double-navigate
 
     expect(ref.navigate).toHaveBeenCalledTimes(1);
     expect(ref.navigate).toHaveBeenCalledWith('TicketsTab', {
       screen: 'TicketDetail',
       params: { ticketId: 't-2' },
+    });
+  });
+
+  it('delivers a tap buffered while the navigator was torn down and remounted', () => {
+    // The real scenario this exists for: ApprovalGate renders ApprovalScreen
+    // INSTEAD of MainNavigator, so the root navigator unmounts and isReady()
+    // goes true -> false -> true within one container lifetime. NavigationContainer's
+    // onReady fires at most ONCE per container (react-navigation guards it with
+    // an onReadyCalledRef it never resets), so the remount is flushed by
+    // MainNavigator's own mount effect instead. Without that second flush
+    // source, a ticket tap taken during an approval is stranded forever.
+    ref.ready = true;
+    flushPendingNavigation(); // container's one-and-only onReady, nothing buffered
+    expect(ref.navigate).not.toHaveBeenCalled();
+
+    ref.ready = false; // approval takeover unmounts MainNavigator
+    navigateToTicket('t-4'); // technician taps a ticket push underneath it
+    expect(ref.navigate).not.toHaveBeenCalled();
+
+    ref.ready = true; // approval decided, MainNavigator remounts
+    flushPendingNavigation(); // from MainNavigator's mount effect
+
+    expect(ref.navigate).toHaveBeenCalledTimes(1);
+    expect(ref.navigate).toHaveBeenCalledWith('TicketsTab', {
+      screen: 'TicketDetail',
+      params: { ticketId: 't-4' },
     });
   });
 

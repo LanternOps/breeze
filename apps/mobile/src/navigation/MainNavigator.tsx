@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { View } from 'react-native';
 import type { NavigatorScreenParams } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -16,6 +17,7 @@ import { TicketsScreen } from '../screens/tickets/TicketsScreen';
 import { TicketDetailScreen } from '../screens/tickets/TicketDetailScreen';
 import { TimesheetScreen } from '../screens/time/TimesheetScreen';
 import { TimeSuggestionsScreen } from '../screens/time/TimeSuggestionsScreen';
+import { flushPendingNavigation } from './navigationRef';
 import { HomeIcon, SystemsIcon, TicketsIcon, TimeIcon } from '../components/TabIcons';
 import { TimerBar } from '../components/TimerBar';
 import { palette, fontFamily } from '../theme';
@@ -166,6 +168,28 @@ function TabBarWithTimer(props: BottomTabBarProps) {
 }
 
 export function MainNavigator() {
+  // Second flush source for buffered ticket taps (#4336), and the one that
+  // matters most.
+  //
+  // NavigationContainer's `onReady` fires at most ONCE per container instance —
+  // react-navigation guards it with an `onReadyCalledRef` it never resets
+  // (@react-navigation/core BaseNavigationContainer) — while the container's
+  // readiness is defined as "a root navigator has registered a focus listener",
+  // i.e. THIS component being mounted. ApprovalGate renders ApprovalScreen
+  // instead of its children for the duration of an approval takeover, so
+  // readiness genuinely cycles true -> false -> true inside one session.
+  //
+  // A ticket tap taken while an approval is on screen therefore buffers, and
+  // `onReady` never fires again to release it. Flushing on mount here delivers
+  // it the moment the tab tree comes back, which is exactly the behaviour the
+  // spec asks for: the tap navigates underneath and is revealed when the
+  // decision clears. This runs after the navigator's own effects (React flushes
+  // child effects before parent effects), so the container is ready by now;
+  // flushPendingNavigation re-buffers rather than dropping if it somehow is not.
+  useEffect(() => {
+    flushPendingNavigation();
+  }, []);
+
   return (
     <Tab.Navigator
       tabBar={(props: BottomTabBarProps) => <TabBarWithTimer {...props} />}

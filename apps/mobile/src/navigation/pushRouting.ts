@@ -35,3 +35,23 @@ export function shouldReplayResponse(
   if (!identifier) return false;
   return identifier !== lastHandled;
 }
+
+/**
+ * Live-tap guard.
+ *
+ * expo delivers the response that LAUNCHED the app to the response listener as
+ * well as through `getLastNotificationResponseAsync()`, so a cold-start tap
+ * arrives down both paths and would otherwise be handled twice.
+ *
+ * The default is the opposite of {@link shouldReplayResponse} on purpose: a
+ * live tap is a real user action, so being unable to dedupe it (no identifier)
+ * must not mean discarding it. The worst case is one redundant navigation to a
+ * screen the technician just asked for.
+ */
+export function shouldHandleTap(
+  identifier: string | null | undefined,
+  lastHandled: string | null
+): boolean {
+  if (!identifier) return true;
+  return identifier !== lastHandled;
+}

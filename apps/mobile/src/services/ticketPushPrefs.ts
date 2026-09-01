@@ -20,7 +20,14 @@ export interface TicketPushPreferences {
   slaScope: TicketSlaPushScope;
 }
 
-export type UpdateTicketPushPreferences = Partial<TicketPushPreferences>;
+/**
+ * At least one key, mirroring the server's `.refine()` on
+ * `updateTicketPushPreferencesSchema`. A plain `Partial<>` would let
+ * `updateTicketPushPrefs({})` typecheck and then 400 at runtime.
+ */
+export type UpdateTicketPushPreferences =
+  | { assignedEnabled: boolean; slaScope?: TicketSlaPushScope }
+  | { assignedEnabled?: boolean; slaScope: TicketSlaPushScope };
 
 /** Mirrors TICKET_PUSH_PREFERENCE_DEFAULTS in packages/shared. */
 export const TICKET_PUSH_PREFERENCE_DEFAULTS: TicketPushPreferences = {

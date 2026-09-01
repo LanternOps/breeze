@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Sentry from '@sentry/react-native';
 
 import { store, useAppDispatch } from '../store';
 import { fetchTickets } from '../store/ticketsSlice';
@@ -11,7 +12,7 @@ import {
   removeNotificationSubscription,
 } from '../services/notifications';
 import { navigateToTicket } from './navigationRef';
-import { LAST_HANDLED_RESPONSE_KEY, shouldReplayResponse } from './pushRouting';
+import { LAST_HANDLED_RESPONSE_KEY, shouldHandleTap, shouldReplayResponse } from './pushRouting';
 
 /**
  * W10 (#4336). Ticket-only push listeners.
@@ -45,6 +46,9 @@ export function PushTapRouter() {
       } catch (err) {
         console.warn('[PushTapRouter] could not persist last handled response', err);
       }
+      // Re-checked after the await: a sign-out (or any teardown) mid-write must
+      // not navigate a tree that has already been swapped out.
+      if (cancelled) return;
       navigateToTicket(ticketId);
     };
 
@@ -69,7 +73,11 @@ export function PushTapRouter() {
         if (!shouldReplayResponse(identifier, lastHandled.current)) return;
         await handleTap(identifier, parsed.ticketId);
       } catch (err) {
+        // Reported, not just logged: a failure here means the push that
+        // launched the app silently opened nothing, which is invisible to us
+        // and looks to the technician like the notification did not work.
         console.warn('[PushTapRouter] cold-start replay failed', err);
+        Sentry.captureException(err, { tags: { area: 'push-tap-cold-start' } });
       }
     })();
 
@@ -86,7 +94,11 @@ export function PushTapRouter() {
     const tapped = addNotificationResponseReceivedListener((response) => {
       const parsed = parseTicketNotification(response.notification);
       if (!parsed) return;
-      void handleTap(response.notification.request.identifier, parsed.ticketId);
+      const identifier = response.notification.request.identifier;
+      // expo also delivers the app-LAUNCHING response here, so without this the
+      // cold-start branch above and this listener both act on the same tap.
+      if (!shouldHandleTap(identifier, lastHandled.current)) return;
+      void handleTap(identifier, parsed.ticketId);
     });
 
     return () => {

@@ -25,6 +25,7 @@ import {
   saveTicketPushPrefs,
   selectTicketPushPrefs,
   selectTicketPushPrefsError,
+  selectTicketPushPrefsErrorKind,
   selectTicketPushPrefsSaving,
   useAppDispatch,
   useAppSelector,
@@ -98,6 +99,7 @@ export function SettingsSheet({ visible, onCancel }: Props) {
   const pushRegistration = useAppSelector((s) => s.auth.pushRegistration);
   const pushRegistrationReason = useAppSelector((s) => s.auth.pushRegistrationReason);
   const prefsError = useAppSelector(selectTicketPushPrefsError);
+  const prefsErrorKind = useAppSelector(selectTicketPushPrefsErrorKind);
 
   const screenWidth = Dimensions.get('window').width;
   const sheetWidth = Math.min(screenWidth * 0.84, 420);
@@ -138,11 +140,19 @@ export function SettingsSheet({ visible, onCancel }: Props) {
 
   // A failed preference save has already been rolled back in the slice; without
   // this the value would just silently snap back and look like a missed tap.
+  // The two failures are worded apart on purpose — a load failure happens on
+  // sheet open, when the technician has not saved anything.
   useEffect(() => {
     if (!prefsError) return;
-    setToast({ kind: 'error', text: 'Could not save notification settings.' });
+    setToast({
+      kind: 'error',
+      text:
+        prefsErrorKind === 'load'
+          ? 'Could not load notification settings.'
+          : 'Could not save notification settings.',
+    });
     dispatch(clearNotificationPrefsError());
-  }, [prefsError, dispatch]);
+  }, [prefsError, prefsErrorKind, dispatch]);
 
   function onRevokeDevice(device: PairedMobileDevice) {
     if (device.isCurrent) {
