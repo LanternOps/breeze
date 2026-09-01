@@ -273,16 +273,34 @@ describe('QuoteWorkspace — an older refetch must not clobber a newer one (#351
     render(<QuoteWorkspace id="q-1" />);
     await waitFor(() => expect(screen.getByTestId('quote-add-block')).toBeInTheDocument());
 
-    // GET #2 — the terms blur-save's refresh() leading edge.
+    // GET #2 — the terms blur-save's refresh() leading edge. Awaited to its own
+    // deferred slot BEFORE the add-block interaction starts. Neither GET is
+    // issued by the fireEvent that provokes it: #2 comes from an async
+    // continuation of the terms PATCH (QuoteEditor.tsx:499, via refresh() ->
+    // resync()) and #3 from a continuation of the block POST
+    // (QuoteEditor.tsx:1436 -> finishBlockCreate -> resync()). Firing both
+    // interactions back-to-back leaves those two continuations unsynchronised,
+    // so nothing pins WHICH one lands in deferred[0] — yet every assertion
+    // below depends on deferred[0] being the older request and deferred[1] the
+    // newer one. Sequencing the provocations pins that order instead of
+    // inheriting it from whichever continuation drained first, and gives each
+    // chain its own waitFor budget rather than making them share one window.
     fireEvent.change(screen.getByTestId('quote-terms'), { target: { value: 'Net 30' } });
     fireEvent.blur(screen.getByTestId('quote-terms'));
+    await waitFor(() => expect(deferred).toHaveLength(1));
 
-    // GET #3 — the add-block resync, issued while #2 is still open.
+    // GET #3 — the add-block resync. #2 is still an unresolved promise here, so
+    // the two requests genuinely overlap, exactly as before: this only removes
+    // the ambiguity about their order, not the concurrency being tested.
     fireEvent.click(screen.getByTestId('quote-add-block-type-heading'));
     fireEvent.change(screen.getByTestId('quote-block-heading-text'), { target: { value: 'Scope of work' } });
     fireEvent.click(screen.getByTestId('quote-add-block-submit'));
+    await waitFor(() => expect(deferred).toHaveLength(2));
 
-    await waitFor(() => expect(deferred.length).toBe(2));
+    // Neither refetch has answered yet, so the canvas is still pre-mutation.
+    // Pinning that here is what stops the "block survives" assertion at the end
+    // from passing for the trivial reason that the canvas never moved at all.
+    expect(screen.getByTestId('quote-blocks-empty')).toBeInTheDocument();
 
     // The NEWER request answers first, carrying the block that was just created.
     deferred[1].resolve(json({ data: { ...draft, blocks: [newBlock] } }));
