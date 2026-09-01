@@ -37,6 +37,24 @@ const dbMocks = vi.hoisted(() => {
 
 vi.mock("../db", () => ({
   db: { transaction: dbMocks.transaction, select: dbMocks.select },
+  // Required by urlSafety's safeFetch (#1105 tripwire) now that binarySync
+  // routes its downloads through it.
+  assertOutsideHeldDbContext: vi.fn(),
+}));
+
+// binarySync's fetches go through the SSRF-guarded helper (#4262), which dials
+// http/https directly and never touches global `fetch`. Bridge it back to the
+// stubbed global or the `vi.stubGlobal("fetch", …)` below stops intercepting
+// and this suite makes real network calls.
+vi.mock("../services/urlSafety", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/urlSafety")>()),
+  // Typed against SafeFetchInit (not RequestInit) so a call site's `maxBytes` /
+  // `timeoutMs` survive the bridge instead of being silently dropped, and a
+  // vi.fn() so a suite CAN assert on what binarySync passed the helper.
+  safeFetchFollowingRedirects: vi.fn(
+    (url: string, init?: import("../services/urlSafety").SafeFetchInit) =>
+      globalThis.fetch(url, init as RequestInit),
+  ),
 }));
 
 // agentVersions.ts imports these middlewares/services at module scope; stub

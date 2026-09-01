@@ -32,6 +32,29 @@ vi.mock("../db", () => ({
     transaction: dbMocks.transaction,
     select: dbMocks.select,
   },
+  // urlSafety's safeFetch calls this (#1105 tripwire); the real `../db` is
+  // mocked away, so the named export has to exist or the import fails.
+  assertOutsideHeldDbContext: vi.fn(),
+}));
+
+// binarySync's outbound calls now go through the SSRF-guarded
+// `safeFetchFollowingRedirects` (#4262), which dials Node's http/https directly
+// so it can DNS-resolve and IP-pin each hop — it never touches global `fetch`.
+// Without this bridge every `vi.stubGlobal("fetch", …)` below would stop
+// intercepting and these cases would make REAL network calls (that is exactly
+// how PR #4255's installerBuilder cases went unhooked). Route the helper back
+// to the stubbed global; the guard's real redirect/SSRF semantics are covered
+// by `binarySync.redirect.test.ts` and `urlSafety.test.ts`, and that binarySync
+// actually adopts it by the source scan in `binarySync.redirect.test.ts`.
+vi.mock("./urlSafety", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./urlSafety")>()),
+  // Typed against SafeFetchInit (not RequestInit) so a call site's `maxBytes` /
+  // `timeoutMs` survive the bridge instead of being silently dropped, and a
+  // vi.fn() so a suite CAN assert on what binarySync passed the helper.
+  safeFetchFollowingRedirects: vi.fn(
+    (url: string, init?: import("./urlSafety").SafeFetchInit) =>
+      globalThis.fetch(url, init as RequestInit),
+  ),
 }));
 
 // Capture eq/and so a test can inspect the WHERE built for the per-component

@@ -39,6 +39,15 @@ vi.mock("../services/manifestSigning", () => ({
   signManifest: vi.fn().mockResolvedValue("test-signature"),
 }));
 
+// #4262: the sync-github route now classifies SSRF-guard refusals. Mock the
+// service so the route's error branches can be driven directly, and the Sentry
+// capture so it can be asserted without a DSN.
+vi.mock("../services/binarySync", () => ({
+  syncFromGitHub: vi.fn(),
+}));
+vi.mock("../services/sentry", () => ({
+  captureException: vi.fn(),
+}));
 vi.mock("../services/auditEvents", () => ({
   writeRouteAudit: vi.fn(),
 }));
@@ -76,6 +85,9 @@ import { db } from "../db";
 import { agentVersions } from "../db/schema";
 import * as manifestSigning from "../services/manifestSigning";
 import { writeRouteAudit } from "../services/auditEvents";
+import { syncFromGitHub } from "../services/binarySync";
+import { captureException } from "../services/sentry";
+import { ResponseTooLargeError, SsrfBlockedError } from "../services/urlSafety";
 import { requiredPlatformTrustFor } from "../services/releaseAssetTrust";
 
 // Recursively searches an and()/eq() spy tree (see drizzleSpies above) for an
@@ -244,6 +256,72 @@ describe("agentVersions routes", () => {
       }),
     };
   }
+
+  describe("POST /agent-versions/sync-github — guard-refusal classification (#4262)", () => {
+    it("answers 502 and does NOT leak the resolved internal address", async () => {
+      // The refusal message and .resolvedIps both name internal addresses.
+      // Pre-#4262 the raw err.message was echoed straight into the body; the
+      // route must now return a fixed operator-facing string instead. This is
+      // the assertion most at risk of being silently refactored away, because
+      // "just echo the error" reads like an improvement.
+      vi.mocked(syncFromGitHub).mockRejectedValue(
+        new SsrfBlockedError(
+          "all resolved IPs for api.github.com are private/loopback/link-local",
+          { hostname: "api.github.com", resolvedIps: ["10.1.2.3", "169.254.169.254"] },
+        ),
+      );
+
+      const res = await app.request("/agent-versions/sync-github", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(502);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toMatch(/private or link-local/i);
+      // The whole point: no internal address reaches the client.
+      expect(body.error).not.toMatch(/10\.1\.2\.3|169\.254\.169\.254/);
+      // …but it IS escalated server-side, since the catch otherwise loses it.
+      expect(vi.mocked(captureException)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(captureException).mock.calls[0]?.[2]).toMatchObject({
+        release_sync_failure_reason: "ssrf-blocked",
+      });
+    });
+
+    it("answers 502 on a body-ceiling abort", async () => {
+      vi.mocked(syncFromGitHub).mockRejectedValue(
+        new ResponseTooLargeError(1024 * 1024),
+      );
+
+      const res = await app.request("/agent-versions/sync-github", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(502);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toMatch(/1048576-byte limit/);
+      expect(vi.mocked(captureException).mock.calls[0]?.[2]).toMatchObject({
+        release_sync_failure_reason: "response-too-large",
+      });
+    });
+
+    it("leaves the pre-existing generic classification alone", async () => {
+      // Guards against over-reach: a plain failure must still take the original
+      // 422 path, not be swept into the new 502 branches.
+      vi.mocked(syncFromGitHub).mockRejectedValue(
+        new Error("something mundane broke"),
+      );
+
+      const res = await app.request("/agent-versions/sync-github", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(422);
+      expect((await res.json() as { error: string }).error).toBe(
+        "something mundane broke",
+      );
+      expect(vi.mocked(captureException)).not.toHaveBeenCalled();
+    });
+  });
 
   describe("GET /agent-versions (platform-admin list)", () => {
     it("non-platform-admin → 403", async () => {
