@@ -20,12 +20,20 @@
  *     a verify-FAILED execution, an execution with no `actOpKey`, a narrative
  *     run with no `report_run_id`, a watch in a non-terminal state). All
  *     eleven stored columns are asserted exactly, per day.
- *  2. **UTC bucketing.** A fact at `23:59:59Z` and one at `00:00:01Z` the next
+ *  2. **UTC bucketing.** A verdict at `23:59:59Z` and one at `00:00:01Z` the next
  *     day land in DIFFERENT buckets, and the whole rebuild produces byte-identical
- *     counters when the server session's `TimeZone` is `America/New_York`. This
- *     is the `date_trunc('day', <timestamptz>)` trap: `date_trunc` follows the
+ *     counters when the server session's `TimeZone` is `America/New_York` — for
+ *     `rebuildOrgImpactRange` AND for `loadImpactSummary`'s own live feedback
+ *     read, whose bounds live in a different file (`impactQuery.ts`). This is
+ *     the `date_trunc('day', <timestamptz>)` trap: `date_trunc` follows the
  *     session timezone a self-hoster can change, so it would silently re-bucket
  *     an entire fleet's history. A mocked test cannot observe a session GUC.
+ *  2b. **The half-open UPPER bound covers all of `through`.** Every window the
+ *     rollup worker opens ENDS on `through` (the last complete UTC day), so
+ *     `< (through::date + 1)` — not `< through::date` — is what makes the final
+ *     day count at all. A dedicated case rebuilds a range that ENDS on the day
+ *     carrying one fact per source CTE, so dropping the `+ 1` anywhere zeroes a
+ *     counter; `findImpactSourceOrgIds` gets the same treatment.
  *  3. **Zero-emitting day grid.** A day with no facts gets an explicit all-zero
  *     row, and re-running the rebuild after DELETING a day's facts RESETS that
  *     day to zero instead of leaving a stale nonzero bucket behind.
@@ -562,8 +570,18 @@ async function seedFullFixture(t: Tenant): Promise<void> {
  * Expectations for `seedBoundaryFixture`, which places EVERY source fact one
  * second past a UTC midnight so a session-dependent bucketing expression moves
  * it into the previous bucket.
+ *
+ * DAY_A carries the two verdicts that straddle a midnight: one at `00:00:01Z`
+ * and one at `23:59:59Z`. The `23:59:59Z` one and DAY_B's `00:00:01Z` one are
+ * the mandated adjacent-second pair — they must land in DIFFERENT buckets
+ * (2 and 1, never 3 and 0).
+ *
+ * DAY_C carries a single verdict at `23:59:59Z`, on the LAST day of the
+ * `DAY_A..DAY_C` rebuild range: it is what makes the half-open upper bound
+ * `< (toDay::date + 1)` load-bearing in the verdicts CTE.
  */
-const BOUNDARY_EXPECTED_DAY_A: StoredCounters = { ...ZERO, alertsJudged: 1, llmCents: 5 };
+const BOUNDARY_EXPECTED_DAY_A: StoredCounters = { ...ZERO, alertsJudged: 2, llmCents: 5 };
+const BOUNDARY_EXPECTED_DAY_C: StoredCounters = { ...ZERO, alertsJudged: 1 };
 const BOUNDARY_EXPECTED_DAY_B: StoredCounters = {
   alertsJudged: 1,
   noiseFlagged: 1,
@@ -579,10 +597,32 @@ const BOUNDARY_EXPECTED_DAY_B: StoredCounters = {
 };
 
 /**
+ * `loadImpactSummary`'s live feedback read over `seedBoundaryFixture`. The two
+ * verdicts sit on the exact edges of the query's own `[FROM, THROUGH]` window,
+ * so this value dies if either bound in `impactQuery.ts` regresses: the `up`
+ * disappears when the lower bound drifts (the `::timestamp` overload pin) and
+ * the `down` disappears when the upper bound loses its `+ 1`.
+ */
+const BOUNDARY_EXPECTED_FEEDBACK = { up: 1, down: 1, rate: 0.5 };
+
+/**
  * One fact per source CTE, each at `00:00:01Z` — the instant a UTC-4/-5 session
- * still calls the PREVIOUS day. The lone DAY_A verdict additionally sits on the
+ * still calls the PREVIOUS day. The DAY_A verdicts additionally sit on the
  * rebuild range's lower edge, so a session-dependent range bound (`<day>::timestamptz`
- * instead of `(<day>::date) AT TIME ZONE 'UTC'`) drops it out of the window entirely.
+ * instead of `(<day>::date)::timestamp AT TIME ZONE 'UTC'`) drops them out of
+ * the window entirely.
+ *
+ * Three extra verdicts carry the bounds the rest of the fixture cannot reach:
+ *
+ *  - `DAY_A 23:59:59Z` — the last second of a bucket, one second-ish from the
+ *    `DAY_B 00:00:01Z` verdict above. They must land in different buckets.
+ *  - `DAY_C 23:59:59Z` — the last second of the `DAY_A..DAY_C` rebuild range,
+ *    so the half-open upper bound has to reach past `toDay`'s own midnight.
+ *  - a feedback pair on the edges of `loadImpactSummary`'s OWN `[FROM, THROUGH]`
+ *    window (`FROM 00:00:01Z` up, `THROUGH 23:59:59Z` down). Those two bounds
+ *    live in `impactQuery.ts`, not the rollup, and are reached only by
+ *    `loadImpactSummary` — a mid-range `feedback_at` leaves them untested.
+ *    Both sit OUTSIDE `DAY_A..DAY_C`, so they never perturb a rollup counter.
  */
 async function seedBoundaryFixture(t: Tenant): Promise<void> {
   const adminDb = getTestDb() as any;
@@ -591,7 +631,26 @@ async function seedBoundaryFixture(t: Tenant): Promise<void> {
 
   const verdictRunId = await insertRun(t, { profile: 'verdict', queuedAt: edgeA, costCents: 5 });
   await insertVerdict(t, verdictRunId, { classification: 'actionable', createdAt: edgeA });
+  // The `23:59:59Z` half of the adjacent-second pair; still DAY_A.
+  await insertVerdict(t, verdictRunId, { classification: 'actionable', createdAt: at(DAY_A, '23:59:59') });
   await insertVerdict(t, verdictRunId, { classification: 'transient_self_healed', createdAt: edge });
+  // The last second of the DAY_A..DAY_C rebuild range.
+  await insertVerdict(t, verdictRunId, { classification: 'needs_human', createdAt: at(DAY_C, '23:59:59') });
+
+  // Feedback bounds for impactQuery.ts. Deliberately outside DAY_A..DAY_C.
+  const feedbackRunId = await insertRun(t, { profile: 'verdict', queuedAt: at(FROM, '00:00:01'), costCents: 0 });
+  await insertVerdict(t, feedbackRunId, {
+    classification: 'actionable',
+    createdAt: at(FROM, '00:00:01'),
+    feedback: 'up',
+    feedbackAt: at(FROM, '00:00:01'),
+  });
+  await insertVerdict(t, feedbackRunId, {
+    classification: 'actionable',
+    createdAt: at(THROUGH, '23:59:59'),
+    feedback: 'down',
+    feedbackAt: at(THROUGH, '23:59:59'),
+  });
 
   await insertRun(t, {
     profile: 'triage',
@@ -791,7 +850,31 @@ describe('ai_agent_impact_daily — rollup counters against live Postgres', () =
     expect(rows.map((r) => r.day)).toEqual([DAY_A, DAY_B, DAY_C]);
     expect(countersOf(rows[0]!)).toEqual(BOUNDARY_EXPECTED_DAY_A);
     expect(countersOf(rows[1]!)).toEqual(BOUNDARY_EXPECTED_DAY_B);
-    expect(countersOf(rows[2]!)).toEqual(ZERO);
+    // NOT zero: the DAY_C verdict sits at 23:59:59Z, the last second of the
+    // range, so it only counts if the upper bound reaches past DAY_C midnight.
+    expect(countersOf(rows[2]!)).toEqual(BOUNDARY_EXPECTED_DAY_C);
+
+    // The adjacent-second pair, called out explicitly: a verdict at
+    // DAY_A 23:59:59Z and one at DAY_B 00:00:01Z are two seconds apart and
+    // MUST land in different buckets. A bucketing expression that follows the
+    // session (or an off-by-one date cast) collapses this to [3, 0] or [1, 2].
+    expect([countersOf(rows[0]!).alertsJudged, countersOf(rows[1]!).alertsJudged]).toEqual([2, 1]);
+  });
+
+  it('counts facts on the FINAL day of a rebuild range (the half-open upper bound spans all of `through`)', async () => {
+    // Every window the rollup worker opens ends on `through`, so this is the
+    // production shape — not an edge case. The range here ENDS on DAY_B, the
+    // day carrying one fact per source CTE, so dropping the `+ 1` from
+    // `< (toDay::date + 1)::timestamp AT TIME ZONE 'UTC'` in ANY of the nine
+    // CTEs excludes the whole of DAY_B and zeroes that counter.
+    const t = await createTenant();
+    await seedBoundaryFixture(t);
+
+    await rebuildOrgImpactRange(t.orgId, DAY_A, DAY_B);
+
+    const rows = await readStoredRows(t.orgId);
+    expect(rows.map((r) => r.day)).toEqual([DAY_A, DAY_B]);
+    expect(countersOf(rows[1]!)).toEqual(BOUNDARY_EXPECTED_DAY_B);
   });
 
   it('produces identical counters when the server session timezone is America/New_York', async () => {
@@ -812,7 +895,15 @@ describe('ai_agent_impact_daily — rollup counters against live Postgres', () =
     const utcRows = (await readStoredRows(t.orgId)).map((r) => ({ day: r.day, ...countersOf(r) }));
     expect(utcRows.some((r) => r.alertsJudged > 0)).toBe(true);
 
-    const nyRows = await withAppSessionTimeZone('America/New_York', async () => {
+    // The rollup is not the only file with UTC range bounds: `impactQuery.ts`
+    // has its own pair for the LIVE feedback read, reached only through
+    // `loadImpactSummary`. Baseline them under the UTC session first.
+    const utcSummary = await withDbAccessContext(orgDbContext(t.orgId), () =>
+      loadImpactSummary(orgAuth(t.orgId, t.partnerId, t.userId), { window: 7, orgId: t.orgId }),
+    );
+    expect(utcSummary.positiveFeedback).toEqual(BOUNDARY_EXPECTED_FEEDBACK);
+
+    const ny = await withAppSessionTimeZone('America/New_York', async () => {
       // Prove the GUC actually reached the pool the rollup runs on — otherwise
       // this whole case would pass vacuously against a UTC session.
       const shown = firstRow(await withSystemDbAccessContext(() => db.execute(sql`SHOW TimeZone`)));
@@ -821,10 +912,23 @@ describe('ai_agent_impact_daily — rollup counters against live Postgres', () =
       // A SECOND org rebuilt for the first time under the NY session, so the
       // comparison is not merely "an UPSERT rewrote the same values".
       await rebuildOrgImpactRange(t2.orgId, DAY_A, DAY_C);
-      return (await readStoredRows(t2.orgId)).map((r) => ({ day: r.day, ...countersOf(r) }));
+      const rows = (await readStoredRows(t2.orgId)).map((r) => ({ day: r.day, ...countersOf(r) }));
+
+      // Same session, the OTHER file's bounds. The `up` verdict's feedback_at
+      // sits at `FROM 00:00:01Z`: under a UTC-4/-5 session an unpinned
+      // `(FROM::date) AT TIME ZONE 'UTC'` lower bound moves to FROM 08:00Z and
+      // silently drops it, so this read collapses to `{up: 0, down: 1, rate: 0}`.
+      const summary = await withDbAccessContext(orgDbContext(t2.orgId), () =>
+        loadImpactSummary(orgAuth(t2.orgId, t2.partnerId, t2.userId), { window: 7, orgId: t2.orgId }),
+      );
+      return { rows, summary };
     });
 
-    expect(nyRows).toEqual(utcRows);
+    expect(ny.rows).toEqual(utcRows);
+    expect(ny.summary.positiveFeedback).toEqual(utcSummary.positiveFeedback);
+    // The two orgs carry byte-identical fixtures, so the whole aggregate — not
+    // just the feedback rate — must survive the session change.
+    expect(ny.summary.totals).toEqual(utcSummary.totals);
   });
 });
 
@@ -1017,6 +1121,12 @@ describe('ai_agent_impact_daily — org discovery', () => {
     // would silently skip this org and its drafts_sent would stay at zero.
     const discovered = await findImpactSourceOrgIds(FROM, THROUGH);
     expect(discovered).toContain(t.orgId);
+
+    // The draft sits at 09:00Z on DAY_B, the LAST day of this narrower range.
+    // `findImpactSourceOrgIds` carries its own copy of the half-open bounds, so
+    // this is what proves its `< (toDay::date + 1)` spans all of `toDay` —
+    // without it the scan skips the org and its counters never get rebuilt.
+    expect(await findImpactSourceOrgIds(FROM, DAY_B)).toContain(t.orgId);
 
     const outsideRange = await findImpactSourceOrgIds(
       shiftUtcDay(THROUGH, -60),
