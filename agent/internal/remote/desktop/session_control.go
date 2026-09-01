@@ -148,6 +148,89 @@ func (s *Session) handleInputMessage(data []byte) {
 	}
 }
 
+// sendInputCapabilities answers the viewer's input_capabilities request so it
+// knows whether this agent understands the type_text message (issue #4089).
+//
+// Agents that predate type_text have no case for it and no default branch, so
+// they silently ignore both the request and the message. The viewer treats "no
+// reply" as "not supported" and keeps using per-character key synthesis, which
+// is why an updated viewer talking to an old agent still pastes as it does
+// today instead of pasting nothing at all.
+//
+//   - typeText:    this agent handles the type_text control message.
+//   - unicodeText: literal Unicode injection is available, so pasted text is
+//     delivered verbatim and does not depend on the remote keyboard layout.
+//     False on platforms that can only synthesise US-layout key presses
+//     (Linux/XTEST has no Unicode injection primitive).
+func (s *Session) sendInputCapabilities() {
+	_, unicodeText := s.inputHandler.(TextTyper)
+	if !unicodeText {
+		_, unicodeText = s.inputHandler.(TypeCharHandler)
+	}
+
+	resp, err := json.Marshal(map[string]any{
+		"type":        "input_capabilities",
+		"typeText":    true,
+		"unicodeText": unicodeText,
+	})
+	if err != nil {
+		slog.Warn("Failed to marshal input_capabilities", "session", s.id, "error", err.Error())
+		return
+	}
+
+	s.mu.RLock()
+	dc := s.controlDC
+	s.mu.RUnlock()
+	if dc != nil {
+		if err := dc.SendText(string(resp)); err != nil {
+			slog.Debug("Failed to send input_capabilities", "session", s.id, "error", err.Error())
+		}
+	}
+}
+
+// handleTypeText injects a literal string on the remote machine — the viewer's
+// "Paste Text" action (issue #4089).
+//
+// Two deliberate departures from the surrounding code:
+//
+//  1. It rides the CONTROL channel, not the input channel. The input channel is
+//     created with maxRetransmits: 0 (apps/viewer/src/lib/webrtc.ts) so a lost
+//     datagram is never retransmitted; that is the right trade for a mouse move
+//     and the wrong one for a paste, where a single dropped message silently
+//     truncates a shell command. The control channel is reliable.
+//  2. It stamps the idle watchdog, which control traffic otherwise must not do
+//     (see onViewerDataChannelMessage). A paste is genuine operator presence,
+//     unlike the viewer's automated viewer_stats heartbeat.
+//
+// The text itself is never logged: a paste can carry a password or a token.
+func (s *Session) handleTypeText(data []byte) {
+	// Same early drop as handleInputMessage: nothing can be injected at the
+	// macOS login window without IOHIDSystem, and the viewer has already been
+	// told so once via sendInputStatus().
+	if !s.inputHandler.InputAvailable() {
+		return
+	}
+
+	var msg struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(data, &msg); err != nil {
+		slog.Warn("Failed to parse type_text message", "session", s.id, "error", err.Error())
+		return
+	}
+	if msg.Text == "" {
+		return
+	}
+
+	s.recordInputActivity()
+	s.inputActive.Store(true)
+
+	if err := InjectText(s.inputHandler, msg.Text); err != nil {
+		slog.Warn("Text injection incomplete",
+			"session", s.id, "bytes", len(msg.Text), "error", err.Error())
+	}
+}
+
 // handleBlockLocalInput engages or releases blocking of the local physical
 // keyboard/mouse on the target for this session (issue #966) and reports the
 // outcome to the viewer via a block_local_input_result control message.
@@ -322,6 +405,10 @@ func (s *Session) handleControlMessage(data []byte) {
 		if dc != nil {
 			dc.SendText(string(resp))
 		}
+	case "input_capabilities":
+		s.sendInputCapabilities()
+	case "type_text":
+		s.handleTypeText(data)
 	case "toggle_audio":
 		enabled := msg.Value != 0
 		s.audioEnabled.Store(enabled)
