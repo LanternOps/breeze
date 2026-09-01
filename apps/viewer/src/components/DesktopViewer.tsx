@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type ConnectionParams } from '../lib/protocol';
 import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '../lib/api';
-import { scaleVideoCoords, AgentSessionError, SessionEndedError, type AuthenticatedConnectionParams } from '../lib/webrtc';
+import { scaleVideoCoords, isWebRTCSupported, AgentSessionError, SessionEndedError, type AuthenticatedConnectionParams } from '../lib/webrtc';
 import { connectWebRTC as connectWebRTCTransport, type WebRTCSessionWrapper } from '../lib/transports/webrtc';
 import { connectWebSocket as connectWebSocketTransport, type WebSocketSessionWrapper } from '../lib/transports/websocket';
 import { capabilitiesFor, type TransportCapabilities } from '../lib/transports/types';
@@ -57,6 +57,17 @@ const SESSION_ENDED_MESSAGE =
 // Retrying is safe and always mints a brand new one-time ticket.
 const HANDSHAKE_REJECTED_MESSAGE =
   'The connection was refused before it opened. Retry to reconnect.';
+
+// Shown when this WebView has no WebRTC implementation at all, so the session
+// runs on the WebSocket/JPEG transport instead (issue #3410). This is normal on
+// Linux, where the Viewer renders in webkit2gtk and WebRTC is only present if
+// the distro built it with the GStreamer WebRTC plugins. Not an error — the
+// session works, just without the WebRTC-only extras (audio, multi-monitor,
+// bitrate control), so it is a notice rather than a failure state.
+const WEBRTC_UNSUPPORTED_MESSAGE =
+  'This system’s WebView has no WebRTC support, so the session is using the ' +
+  'compatibility (WebSocket) transport. Video will be lower quality, and audio, ' +
+  'multi-monitor and bitrate controls are unavailable.';
 
 // Module-level dedupe for the one-time connect-code exchange.
 // React strict-mode in dev mounts → unmounts → remounts the component
@@ -172,6 +183,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [capabilities, setCapabilities] = useState<TransportCapabilities | null>(null);
   const [desktopState, setDesktopState] = useState<{ state: 'loginwindow' | 'user_session' | null; username: string | null }>({ state: null, username: null });
   const [webRTCAvailable, setWebRTCAvailable] = useState(false);
+  // Whether THIS WebView can construct an RTCPeerConnection at all (issue
+  // #3410). Deliberately distinct from `webRTCAvailable` above, which tracks
+  // whether the REMOTE macOS device is in a state where WebRTC capture works.
+  // A WebView either has WebRTC or it does not, and that never changes while
+  // the app is running, so it is read once via a lazy initializer.
+  const [webrtcSupported] = useState(isWebRTCSupported);
+  const [webrtcNoticeDismissed, setWebrtcNoticeDismissed] = useState(false);
   const [remoteUserName, setRemoteUserName] = useState<string | null>(null);
   const [credentialsPrompt, setCredentialsPrompt] = useState<{ requiresUsername: boolean; submit: (creds: { username?: string; password: string }) => void } | null>(null);
   // Bumped every time a new WebRTC connection is established (initial connect
@@ -336,6 +354,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       return;
     }
     if (transportRef.current === target) return;
+    // Never tear down a working session to switch to a transport this WebView
+    // cannot run. Guarding here covers both the toolbar's manual switch and the
+    // macOS auto-handoff, which are the only ways to reach WebRTC after the
+    // initial connect (issue #3410).
+    if (target === 'webrtc' && !webrtcSupported) {
+      console.warn('Ignoring switch to WebRTC: this WebView has no RTCPeerConnection.');
+      return;
+    }
     const auth = authRef.current;
     if (!auth) return;
 
@@ -454,7 +480,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       switchingToRef.current = null;
       setSwitchingTo(null);
     }
-  }, [connectVncTransport, setTransportState]);
+  }, [connectVncTransport, setTransportState, webrtcSupported]);
 
   // ── WebRTC connection ──────────────────────────────────────────────
 
@@ -712,9 +738,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     oldRtc?.close();
 
     reconnectInFlightRef.current = true;
-    const originalTransport = transportRef.current;
-    if (!originalTransport) {
-      console.warn('Reconnect: transport ref was null, defaulting to WebRTC');
+    const recordedTransport = transportRef.current;
+    // No transport recorded — the drop beat the first successful connect. Default
+    // to WebRTC, except on a WebView that has none: there WebSocket is the only
+    // transport that can ever come back, and retrying WebRTC would burn the
+    // entire 30s reconnect window on attempts that cannot succeed (issue #3410).
+    const originalTransport: Transport = recordedTransport ?? (webrtcSupported ? 'webrtc' : 'websocket');
+    if (!recordedTransport) {
+      console.warn(`Reconnect: transport ref was null, defaulting to ${originalTransport}`);
     }
     try {
       if (originalTransport === 'websocket') {
@@ -795,7 +826,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     } finally {
       reconnectInFlightRef.current = false;
     }
-  }, [connectWebRTC, connectWebSocket, connectVncTransport, stopReconnect, remoteOs]);
+  }, [connectWebRTC, connectWebSocket, connectVncTransport, stopReconnect, remoteOs, webrtcSupported]);
 
   const startReconnect = useCallback(() => {
     if (!authRef.current || userDisconnectRef.current) return;
@@ -932,8 +963,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           setRemoteOs(exchange.osType);
         }
 
-        // Try WebRTC first
-        const webrtcOk = await connectWebRTC(authParams);
+        // Try WebRTC first — unless this WebView has no WebRTC at all, in which
+        // case skip straight to WebSocket rather than paying a doomed signalling
+        // round trip on every connect and reconnect (issue #3410).
+        const webrtcOk = webrtcSupported ? await connectWebRTC(authParams) : false;
         if (cancelled) {
           webrtcRef.current?.close();
           webrtcRef.current = null;
@@ -1031,7 +1064,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	        });
 	      }
 	    };
-	  }, [connectWebRTC, connectWebSocket, connectVncTransport, onError, params, stopReconnect]);
+	  }, [connectWebRTC, connectWebSocket, connectVncTransport, onError, params, stopReconnect, webrtcSupported]);
 
   // Mark a window as "session active" only when fully connected.
   // Pass session_id so Rust can detect duplicate deep links for the same session.
@@ -2011,6 +2044,29 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
               handleDisconnect();
             }}
           />
+        )}
+
+        {/* WebRTC-unsupported notice (issue #3410).
+            Non-modal and dismissible: the session works, so this explains the
+            degraded quality rather than blocking on it. Gated on the WebSocket
+            transport so it never contradicts what the toolbar badge shows. */}
+        {!webrtcSupported && transport === 'websocket' && !webrtcNoticeDismissed && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="absolute top-3 left-1/2 -translate-x-1/2 z-30 max-w-xl flex items-start gap-2 px-3 py-2 rounded bg-amber-900/90 border border-amber-700 text-amber-100 text-xs shadow-lg"
+          >
+            <span className="flex-1">{WEBRTC_UNSUPPORTED_MESSAGE}</span>
+            <button
+              type="button"
+              onClick={() => setWebrtcNoticeDismissed(true)}
+              className="shrink-0 text-amber-400 hover:text-amber-100"
+              title="Dismiss"
+              aria-label="Dismiss WebRTC compatibility notice"
+            >
+              ✕
+            </button>
+          </div>
         )}
 
         {/* Transport-switching overlay */}

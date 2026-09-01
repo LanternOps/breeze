@@ -1,5 +1,11 @@
-import { describe, it, expect } from 'vitest';
-import { scaleVideoCoords } from './webrtc';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import {
+  scaleVideoCoords,
+  isWebRTCSupported,
+  createWebRTCSession,
+  WebRTCUnsupportedError,
+  type AuthenticatedConnectionParams,
+} from './webrtc';
 
 function setVideoSize(video: HTMLVideoElement, w: number, h: number) {
   Object.defineProperty(video, 'videoWidth', { value: w, configurable: true });
@@ -43,6 +49,85 @@ describe('scaleVideoCoords', () => {
 
     expect(scaleVideoCoords(1000, 250, video)).toEqual({ x: 960, y: 540 });
     expect(scaleVideoCoords(0, 250, video).x).toBe(0);
+  });
+});
+
+// ── WebRTC feature detection (issue #3410) ────────────────────────────────
+//
+// The Linux Viewer is a Tauri app rendering in webkit2gtk. Depending on how the
+// distro built webkit2gtk/GStreamer, `RTCPeerConnection` can be absent as a
+// global entirely, so `new RTCPeerConnection(...)` threw a bare ReferenceError
+// ("Can't find variable: RTCPeerConnection" — JavaScriptCore's phrasing) from
+// deep inside createWebRTCSession.
+
+/** Minimal stand-in so the "supported" branch can be exercised under jsdom. */
+class FakeRTCPeerConnection {
+  close() {}
+}
+
+const globalScope = globalThis as Record<string, unknown>;
+
+/**
+ * Remove the global outright rather than stubbing it to `undefined`.
+ *
+ * The distinction matters: an assigned-but-undefined global makes
+ * `new RTCPeerConnection()` a TypeError, whereas the identifier being genuinely
+ * absent — the real webkit2gtk case — makes it a ReferenceError. Only the
+ * latter reproduces issue #3410, so the guard has to be proven against it.
+ */
+function removeRTCPeerConnection(): void {
+  delete globalScope.RTCPeerConnection;
+}
+
+afterEach(() => {
+  delete globalScope.RTCPeerConnection;
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe('isWebRTCSupported', () => {
+  it('is false when the RTCPeerConnection global is missing (webkit2gtk)', () => {
+    removeRTCPeerConnection();
+    expect(isWebRTCSupported()).toBe(false);
+  });
+
+  it('is true when the RTCPeerConnection global is present', () => {
+    vi.stubGlobal('RTCPeerConnection', FakeRTCPeerConnection);
+    expect(isWebRTCSupported()).toBe(true);
+  });
+});
+
+describe('createWebRTCSession — missing RTCPeerConnection', () => {
+  const params: AuthenticatedConnectionParams = {
+    sessionId: 'sess-3410',
+    apiUrl: 'https://api.example.com',
+    accessToken: 'viewer-token',
+    deviceId: 'dev-1',
+  };
+
+  it('rejects with WebRTCUnsupportedError instead of a bare ReferenceError', async () => {
+    removeRTCPeerConnection();
+    const videoEl = document.createElement('video');
+
+    const err = await createWebRTCSession(params, videoEl).catch((e) => e);
+
+    expect(err).toBeInstanceOf(WebRTCUnsupportedError);
+    // Before the guard this was `ReferenceError: RTCPeerConnection is not
+    // defined` (JavaScriptCore words it "Can't find variable: …"), thrown from
+    // the unguarded constructor. A ReferenceError here means the guard is gone.
+    expect(err).not.toBeInstanceOf(ReferenceError);
+    expect(String(err.message)).toMatch(/webrtc/i);
+  });
+
+  it('bails out before spending a request on the ICE-servers endpoint', async () => {
+    removeRTCPeerConnection();
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const videoEl = document.createElement('video');
+
+    await createWebRTCSession(params, videoEl).catch(() => {});
+
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 

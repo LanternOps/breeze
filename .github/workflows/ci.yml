@@ -547,6 +547,40 @@ jobs:
       - name: Run Portal tests
         run: pnpm test --filter=@breeze/portal
 
+  # The Viewer's TypeScript tests (transports, keymap, protocol, paste, …) ran
+  # in no CI job at all until issue #3410 added a regression test here and found
+  # the gap — only the Rust half (apps/viewer/src-tauri) was covered, by
+  # rust-check. Uses test:run because the package's `test` script is watch mode.
+  test-viewer:
+    name: Test Viewer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Viewer tests
+        run: pnpm --filter=@breeze/viewer test:run
+
+      - name: Run Viewer type check
+        working-directory: apps/viewer
+        run: pnpm exec tsc --noEmit
+
   test-office-addin-core:
     name: Test Office Add-in Core
     runs-on: ubuntu-latest
@@ -2360,7 +2394,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, test-portal, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test, auth-browser-transition-browser-contract]
+    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test, auth-browser-transition-browser-contract]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -2374,6 +2408,7 @@ jobs:
           TEST_WEB_RESULT: ${{ needs.test-web.result }}
           TEST_MOBILE_RESULT: ${{ needs.test-mobile.result }}
           TEST_PORTAL_RESULT: ${{ needs.test-portal.result }}
+          TEST_VIEWER_RESULT: ${{ needs.test-viewer.result }}
           TEST_OFFICE_ADDIN_CORE_RESULT: ${{ needs.test-office-addin-core.result }}
           TEST_EXCEL_ADDIN_RESULT: ${{ needs.test-excel-addin.result }}
           TEST_WORD_ADDIN_RESULT: ${{ needs.test-word-addin.result }}
@@ -2406,6 +2441,7 @@ jobs:
              [[ "${TEST_WEB_RESULT}" != "success" ]] || \
              [[ "${TEST_MOBILE_RESULT}" != "success" ]] || \
              [[ "${TEST_PORTAL_RESULT}" != "success" ]] || \
+             [[ "${TEST_VIEWER_RESULT}" != "success" ]] || \
              [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]] || \
              [[ "${TEST_EXCEL_ADDIN_RESULT}" != "success" ]] || \
              [[ "${TEST_WORD_ADDIN_RESULT}" != "success" ]] || \

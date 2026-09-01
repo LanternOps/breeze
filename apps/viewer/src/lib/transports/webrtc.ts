@@ -4,7 +4,7 @@
  * React refs/state are threaded in via WebRTCDeps callbacks.
  */
 
-import { createWebRTCSession, AgentSessionError, SessionEndedError, type AuthenticatedConnectionParams } from '../webrtc';
+import { createWebRTCSession, AgentSessionError, SessionEndedError, WebRTCUnsupportedError, type AuthenticatedConnectionParams } from '../webrtc';
 import type { TransportSession } from './types';
 import { capabilitiesFor } from './types';
 
@@ -195,6 +195,19 @@ export async function connectWebRTC(
     // dead sessionId and the viewer shows a terminal "session ended" state.
     if (err instanceof SessionEndedError) {
       throw err;
+    }
+    // This WebView has no WebRTC implementation at all (commonly a Linux
+    // webkit2gtk build without the GStreamer WebRTC plugins — issue #3410).
+    // That is a permanent capability gap, not a failed attempt, so say so
+    // plainly instead of logging it as a connection failure that a retry might
+    // clear. Returning null routes the caller to the WebSocket transport.
+    if (err instanceof WebRTCUnsupportedError) {
+      console.warn(
+        'WebRTC is unavailable in this WebView (no RTCPeerConnection global) — ' +
+          'using the WebSocket transport instead. On Linux this usually means the ' +
+          'webkit2gtk build is missing its GStreamer WebRTC plugins.',
+      );
+      return null;
     }
     console.warn('WebRTC connection failed:', err);
     return null;

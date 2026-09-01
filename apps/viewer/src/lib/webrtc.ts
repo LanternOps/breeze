@@ -78,6 +78,36 @@ export function parseRetryAfterMs(headerValue: string | null): number | null {
   return seconds * 1000;
 }
 
+/**
+ * Error thrown when this WebView has no WebRTC implementation at all, so no
+ * amount of retrying or re-signalling can ever produce a peer connection.
+ * Distinguished from a *failed* connection attempt: callers should fall
+ * straight through to the WebSocket transport and tell the user why, rather
+ * than treating it as a transient error worth another attempt.
+ */
+export class WebRTCUnsupportedError extends Error {
+  constructor(
+    message = 'WebRTC is not available in this WebView, so remote desktop cannot use the WebRTC transport.',
+  ) {
+    super(message);
+    this.name = 'WebRTCUnsupportedError';
+  }
+}
+
+/**
+ * Whether this WebView can construct an RTCPeerConnection at all.
+ *
+ * The Linux Viewer is a Tauri app rendered by webkit2gtk. Whether that build
+ * exposes WebRTC depends entirely on how the distro compiled webkit2gtk and
+ * whether the matching GStreamer plugins are installed — on a fair number of
+ * builds `RTCPeerConnection` is simply not a global. Reading it as a bare
+ * identifier would itself throw a ReferenceError there, so this MUST stay a
+ * `typeof` check against the global object (issue #3410).
+ */
+export function isWebRTCSupported(): boolean {
+  return typeof (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection === 'function';
+}
+
 export interface AuthenticatedConnectionParams {
   sessionId: string;
   apiUrl: string;
@@ -132,6 +162,14 @@ export async function createWebRTCSession(
   displayIndex?: number,
   targetSessionId?: number,
 ): Promise<WebRTCSession> {
+  // Bail out before any network work when the WebView has no WebRTC at all.
+  // This must come first: the ICE-servers request below would otherwise burn a
+  // round trip (and a rate-limit slot) fetching TURN credentials for a peer
+  // connection that can never be constructed (issue #3410).
+  if (!isWebRTCSupported()) {
+    throw new WebRTCUnsupportedError();
+  }
+
   // Fetch ICE servers (includes TURN credentials if configured)
   let iceServers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
   try {
