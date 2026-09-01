@@ -321,12 +321,12 @@ require_order 'name: Scan exact executor digest' 'name: Promote scanned executor
   "executor release promotion must occur only after its exact digest passes scanning"
 require_order 'name: Promote scanned executor digest' 'name: Upload executor digest' "$executor_release_block" \
   "executor digest artifact must describe the promoted image"
-require_grep 'breeze-m365-graph-read-executor:security-scan' .github/workflows/security.yml \
-  "security workflow must build and scan the executor image"
+require_grep 'dockerfile: apps/m365-graph-read-executor/Dockerfile' .github/workflows/security.yml \
+  "security workflow's trivy-image-scan matrix must build and scan the executor image"
 [[ -x scripts/security/check-m365-graph-read-runtime.sh ]] || \
   fail "scripts/security/check-m365-graph-read-runtime.sh must be executable"
-require_grep 'breeze-m365-graph-actions-executor:security-scan' .github/workflows/security.yml \
-  "security workflow must build and scan the actions-executor image"
+require_grep 'dockerfile: apps/m365-graph-actions-executor/Dockerfile' .github/workflows/security.yml \
+  "security workflow's trivy-image-scan matrix must build and scan the actions-executor image"
 [[ -x scripts/security/check-m365-graph-actions-runtime.sh ]] || \
   fail "scripts/security/check-m365-graph-actions-runtime.sh must be executable"
 
@@ -382,8 +382,8 @@ require_order 'name: Scan exact executor digest' 'name: Promote scanned executor
   "communications-executor release promotion must occur only after its exact digest passes scanning"
 require_order 'name: Promote scanned executor digest' 'name: Upload executor digest' "$comms_release_block" \
   "communications-executor digest artifact must describe the promoted image"
-require_grep 'breeze-m365-communications-executor:security-scan' .github/workflows/security.yml \
-  "security workflow must build and scan the communications-executor image"
+require_grep 'dockerfile: apps/m365-communications-executor/Dockerfile' .github/workflows/security.yml \
+  "security workflow's trivy-image-scan matrix must build and scan the communications-executor image"
 require_grep 'directory: "/apps/m365-communications-executor"' .github/dependabot.yml \
   "Dependabot must maintain the communications-executor Dockerfile's digest-pinned base image"
 
@@ -525,6 +525,17 @@ require_grep "severity: 'HIGH,CRITICAL'" .github/workflows/security.yml \
   "Trivy must fail on HIGH and CRITICAL vulnerabilities"
 require_grep '^  trivy-image-scan:' .github/workflows/security.yml \
   "security workflow must scan built Docker images"
+# The scan must target the Dockerfiles release.yml and hosted-images.yml
+# actually publish. It previously built the docker/Dockerfile.api|web compose
+# variants, which ship to nobody, leaving the two most widely deployed images
+# with no image-level gate at all (issues #4273 / #4260). Full published-vs-
+# scanned reconciliation lives in
+# apps/api/src/config/dockerfileImageScanCoverage.test.ts; these two keep the
+# regression visible to the shell gate as well.
+require_grep 'dockerfile: apps/api/Dockerfile' .github/workflows/security.yml \
+  "security workflow's trivy-image-scan matrix must build and scan the shipped API image"
+require_grep 'dockerfile: apps/web/Dockerfile' .github/workflows/security.yml \
+  "security workflow's trivy-image-scan matrix must build and scan the shipped Web image"
 require_grep "format: 'sarif'" .github/workflows/security.yml \
   "Trivy filesystem scan must emit SARIF"
 require_grep "format: 'cyclonedx'" .github/workflows/security.yml \
