@@ -52,8 +52,9 @@ This is a **public** key (also embedded in the agent and CI), so it is safe to c
 
 **Fix**:
 ```bash
-# Check PostgreSQL is running
-docker compose -f deploy/docker-compose.prod.yml exec postgres pg_isready
+# Check PostgreSQL is running (prod uses a managed Postgres instance, not a
+# local container)
+pg_isready -d "$DATABASE_URL"
 
 # Check connection string
 docker compose -f deploy/docker-compose.prod.yml exec api env | grep DATABASE_URL
@@ -107,9 +108,9 @@ sudo cat /etc/breeze/config.json
 curl -H "Authorization: Bearer $TOKEN" \
   http://localhost:9090/api/v1/query?query=histogram_quantile(0.95,rate(http_request_duration_seconds_bucket[5m]))
 
-# Database slow queries
-docker compose -f deploy/docker-compose.prod.yml exec postgres \
-  psql -U breeze -c "SELECT * FROM pg_stat_activity WHERE state = 'active';"
+# Database slow queries (prod uses a managed Postgres instance, not a
+# local container)
+psql "$DATABASE_URL" -c "SELECT * FROM pg_stat_activity WHERE state = 'active';"
 ```
 
 ### Postgres `write CONNECT_TIMEOUT` while the database is healthy

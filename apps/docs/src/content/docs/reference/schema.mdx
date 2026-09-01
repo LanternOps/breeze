@@ -123,9 +123,9 @@ pnpm db:studio
 ## Inspecting the Database
 
 ```bash
-# Connect to the database
-docker compose -f deploy/docker-compose.prod.yml exec postgres \
-  psql -U breeze -d breeze
+# Connect to the database (prod uses a managed Postgres instance, not a
+# local container — connect with the DATABASE_URL from .env.prod)
+psql "$DATABASE_URL"
 
 # List tables
 \dt
