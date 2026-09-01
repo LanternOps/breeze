@@ -57,10 +57,25 @@ export interface RetentionRunOutcome {
    */
   rowsDeleted?: number;
   /**
-   * True when a batch-capped run hit its MAX_BATCHES ceiling with a full final
-   * batch, i.e. rows remain past the cutoff. Only the capped jobs
-   * (`ml_output_retention`, `user_risk_retention`, `reliability_retention`,
-   * `metric_rollup_maintenance`) report this; omit it elsewhere.
+   * True when the run did NOT clear everything it was supposed to, so rows
+   * remain past the cutoff. Two causes, both meaning the same thing to an
+   * operator:
+   *
+   *  - A batch-capped job hit its MAX_BATCHES ceiling with a full final batch
+   *    (`ml_output_retention`, `user_risk_retention`, `reliability_retention`,
+   *    `metric_rollup_maintenance`).
+   *  - A per-item loop swallowed failures and moved on, leaving those items
+   *    unpruned (`audit_retention` errors per policy, `event_log_retention`
+   *    skips orgs whose retention lookup failed, `playbook_retention` runs two
+   *    independently-failing halves).
+   *
+   * That second group is why this is not named `hasMore`: without it, a run in
+   * which EVERY item failed still publishes a fresh last-run stamp and a 0-row
+   * counter, and a staleness alert built on those never fires. The underlying
+   * errors are captured to Sentry per item, but the metric surface this module
+   * exists to provide would otherwise say nothing was wrong.
+   *
+   * Omit entirely for jobs with no completeness signal at all.
    */
   incomplete?: boolean;
 }
@@ -87,6 +102,30 @@ export function setRetentionMetricsRecorder(
 }
 
 /**
+ * Every `record*` below is best-effort and swallows its own failure. This is
+ * load-bearing, not defensive habit:
+ *
+ *  - Each of the 15 retention call sites sits immediately AFTER the DELETE has
+ *    committed and immediately BEFORE the job's `return`. A throw here would
+ *    turn a completed, successful purge into a `failed` BullMQ job with a
+ *    metrics-library stack trace as its apparent cause.
+ *  - Worse, `rollupDeviceMetricsRange` calls this from inside a `catch` block.
+ *    A throw there would REPLACE the in-flight rollup error before the rethrow
+ *    ran, discarding the actual failure entirely.
+ *
+ * prom-client's `labels()` throws on an arg-count mismatch and `inc()` throws on
+ * a non-finite value, so the invariant is one careless future label change away
+ * from being violated. Enforce it here rather than trusting 16 call sites to.
+ */
+function safelyRecord(what: string, emit: () => void): void {
+  try {
+    emit();
+  } catch (error) {
+    console.error(`[RetentionMetrics] Failed to record ${what}:`, error);
+  }
+}
+
+/**
  * Record one completed retention run. Always stamps
  * `breeze_retention_last_run_timestamp_seconds{job_name}`; additionally moves
  * the rows-deleted counter and/or the backlog gauge when the caller supplies
@@ -96,12 +135,12 @@ export function recordRetentionRun(
   jobName: RetentionJobName,
   outcome: RetentionRunOutcome = {}
 ): void {
-  recorder.onRetentionRun(jobName, outcome);
+  safelyRecord(`run for ${jobName}`, () => recorder.onRetentionRun(jobName, outcome));
 }
 
 /** Record one metric-rollup run (`services/metricRollups.ts::rollupDeviceMetricsRange`). */
 export function recordRollupRun(status: RollupRunStatus, durationSeconds: number): void {
-  recorder.onRollupRun(status, durationSeconds);
+  safelyRecord(`rollup run (${status})`, () => recorder.onRollupRun(status, durationSeconds));
 }
 
 const ROWS_DELETED_METRIC = 'breeze_retention_rows_deleted_total';
@@ -154,7 +193,7 @@ export function registerRetentionPrometheusMetrics(registry: Registry): void {
     (registry.getSingleMetric(BACKLOG_METRIC) as Gauge<'job_name'> | undefined) ??
     new Gauge({
       name: BACKLOG_METRIC,
-      help: '1 when a batch-capped retention job hit its MAX_BATCHES ceiling and left rows behind, 0 when it finished the backlog',
+      help: '1 when a retention job left rows behind (hit its MAX_BATCHES ceiling, or skipped items that errored), 0 when it fully cleared the backlog',
       labelNames: ['job_name'] as const,
       registers: [registry],
     });

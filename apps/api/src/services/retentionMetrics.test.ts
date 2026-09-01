@@ -150,6 +150,65 @@ describe('retention/rollup job metrics', () => {
     expect(histogramAggregate(duration, '_count', { status: 'skipped' })).toBe(1);
   });
 
+  it('swallows a throwing recorder instead of failing the job that called it', () => {
+    // Every retention call site sits immediately before the job's `return`,
+    // AFTER the DELETE committed — a throw here would turn a successful purge
+    // into a failed BullMQ job.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const boom = new Error('prom-client: Invalid number of arguments');
+    setRetentionMetricsRecorder({
+      onRetentionRun: () => {
+        throw boom;
+      },
+      onRollupRun: () => {
+        throw boom;
+      },
+    });
+
+    expect(() => recordRetentionRun('audit_retention', { rowsDeleted: 1 })).not.toThrow();
+    expect(() => recordRollupRun('success', 1)).not.toThrow();
+    expect(consoleError).toHaveBeenCalledTimes(2);
+
+    consoleError.mockRestore();
+  });
+
+  it('lets a caller rethrow its own error unmasked when the recorder throws in a catch block', () => {
+    // `rollupDeviceMetricsRange` calls recordRollupRun('failure', …) from inside
+    // a catch. If that call threw, it would REPLACE the in-flight rollup error
+    // before the rethrow ran, discarding the actual cause.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    setRetentionMetricsRecorder({
+      onRollupRun: () => {
+        throw new Error('metrics exploded');
+      },
+    });
+
+    const original = new Error('rollup statement failed');
+    const rethrown = (() => {
+      try {
+        throw original;
+      } catch (error) {
+        recordRollupRun('failure', 0.5);
+        return error;
+      }
+    })();
+
+    expect(rethrown).toBe(original);
+    consoleError.mockRestore();
+  });
+
+  it('flags a run that errored past items as incomplete, not as a clean sweep', async () => {
+    // audit_retention swallows per-policy failures and continues; the degenerate
+    // "every policy failed" run must not look healthy on the dashboard.
+    recordRetentionRun('audit_retention', { rowsDeleted: 0, incomplete: true });
+
+    const backlog = await samplesFor(registry, 'breeze_retention_backlog_incomplete');
+    expect(valueFor(backlog, { job_name: 'audit_retention' })).toBe(1);
+
+    const lastRun = await samplesFor(registry, 'breeze_retention_last_run_timestamp_seconds');
+    expect(valueFor(lastRun, { job_name: 'audit_retention' })).toBeGreaterThan(0);
+  });
+
   it('is an inert no-op before any registry has been wired up', () => {
     setRetentionMetricsRecorder(null);
     expect(() => recordRetentionRun('playbook_retention', { rowsDeleted: 1 })).not.toThrow();
