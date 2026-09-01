@@ -1893,62 +1893,23 @@ jobs:
             exit 1
           fi
           PGID="$(cat /tmp/ee-boot.pgid 2>/dev/null || echo "$BOOT_PID")"
-          # Guarded like the two failure branches above: under this step's
-          # default `bash -e`, an unguarded `kill` on an already-exited
-          # group (e.g. the process crashed on its own between logging the
-          # built-in load line and this kill) would abort the step on a bare
-          # "process not found" with no log content, making a correct
-          # migration load look like an unexplained CI failure. Dump the log
-          # so it's diagnosable either way — and then decide: an already-dead
-          # group that ALSO logged the fatal sentinel is a genuine boot
-          # failure that merely happened to log the built-in line first, and
-          # must fail the step rather than be waved through.
-          if ! kill -- "-$PGID" 2>/dev/null; then
-            echo "API process group had already exited after logging the built-in load line — dumping its output:"
-            cat /tmp/ee-workspace-boot.log
-            if grep -q "$FATAL" /tmp/ee-workspace-boot.log; then
-              echo "The API logged the built-in load line and then FAILED startup — the schema this step is"
-              echo "supposed to guarantee may be incomplete, so the workspace integration suite below would"
-              echo "fail confusingly. Failing here instead."
-              exit 1
-            fi
-            echo "::warning::API exited on its own after loading built-in extensions (no startup failure logged); migrations were applied, continuing."
-          fi
-          # Bound the wait for graceful shutdown instead of an unbounded
-          # `wait "$BOOT_PID"`, which could otherwise eat the whole job
-          # ceiling if the process ignores SIGTERM or hangs mid-shutdown.
-          # Poll the GROUP, not $BOOT_PID: the leader (pnpm's wrapper) can
-          # exit seconds before the node/tsx descendants finish shutting
-          # down, and watching only the leader cuts the grace period short
-          # (observed on the first live run of this step). Count only
-          # NON-ZOMBIE members: `kill -0` "succeeds" against a zombie, but a
-          # zombie is dead — unreaped only because its parent died with it —
-          # and cannot touch the DB. The step's shell cannot reap
-          # grandchildren; init does so asynchronously after SIGKILL, so a
-          # zombie-only group must be treated as gone, not as a survivor
-          # (also observed live: `[node]`/`[esbuild] <defunct>` tripping a
-          # naive `kill -0 -- -PGID` assert).
-          live_in_group() {
-            ps -eo pgid=,stat= | awk -v p="$PGID" '$1 == p && $2 !~ /^Z/' | wc -l
-          }
-          for _ in $(seq 1 30); do
-            [ "$(live_in_group)" -gt 0 ] || break
-            sleep 1
-          done
-          kill -9 -- "-$PGID" 2>/dev/null || true
+          # Teardown (SIGTERM → bounded grace → SIGKILL → fail closed on a
+          # survivor) lives in scripts/ci/stop-ee-boot-group.sh rather than
+          # inline here, so its branches are reachable by a real test:
+          # apps/api/src/config/eeBootStopGroup.test.ts drives them with
+          # stubbed `kill`/`ps` and with genuine process groups. While this was
+          # inline YAML the only thing a test could assert was the workflow's
+          # text, which is how the ESRCH-vs-EPERM conflation (#3471) survived
+          # two earlier hardening passes on this same step. The script
+          # discriminates a group that is already gone (ESRCH — benign, its
+          # migrations landed) from one that is alive but refuses the signal
+          # (EPERM — a live API that would keep writing to this DB shard, so a
+          # hard failure naming the PGID).
+          bash scripts/ci/stop-ee-boot-group.sh "$PGID" /tmp/ee-workspace-boot.log "$FATAL"
+          # Reap the setsid leader. `wait` only works in the shell that spawned
+          # the job, so it cannot move into the script; it runs after the
+          # teardown has already proved the group is gone, so it cannot hang.
           wait "$BOOT_PID" 2>/dev/null || true
-          # Fail CLOSED on a genuinely surviving process group — but give
-          # SIGKILL a moment to land before judging (delivery is async).
-          for _ in $(seq 1 10); do
-            [ "$(live_in_group)" -gt 0 ] || break
-            sleep 1
-          done
-          if [ "$(live_in_group)" -gt 0 ]; then
-            echo "API process group $PGID survived SIGTERM and SIGKILL. A live API would keep writing to"
-            echo "this step's DB shard and poison the workspace integration suite that runs next."
-            ps -eo pid,pgid,stat,cmd | awk -v pgid="$PGID" '$2 == pgid' || true
-            exit 1
-          fi
 
       - name: Integration-test workspace (ee)
         if: matrix.shard == 1
