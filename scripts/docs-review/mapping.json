@@ -218,7 +218,8 @@
     {
       "pattern": "docker-compose*.yml",
       "docs": [
-        "deploy/production.mdx"
+        "deploy/production.mdx",
+        "getting-started/prerequisites.mdx"
       ]
     },
     {
@@ -2402,7 +2403,10 @@
     {
       "pattern": "apps/web/src/components/billing/quotes/QuoteContractBlockEditor.tsx",
       "docs": [
-        "features/quotes.mdx",
+        "features/quotes.mdx"
+      ]
+    },
+    {
       "pattern": "scripts/guided-setup.sh",
       "docs": [
         "getting-started/prerequisites.mdx"
