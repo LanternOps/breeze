@@ -17,7 +17,6 @@ import { syncFromGitHub } from "../services/binarySync";
 import { captureException } from "../services/sentry";
 import { ResponseTooLargeError, SsrfBlockedError } from "../services/urlSafety";
 import { getBinaryEdition } from "../services/binaryEdition";
-import { getGithubReleaseVersion } from "../services/binarySource";
 import { PERMISSIONS } from "../services/permissions";
 import {
   verifyReleaseArtifactManifestAsset,
@@ -791,25 +790,29 @@ agentVersionRoutes.get(
 
     // breeze-backup is version-slaved to the agent but requested by EXACT
     // version (unlike agent/helper/watchdog, which always want "latest").
-    // The versionless /download/backup/:os/:arch route can only ever serve
-    // whatever the server currently considers latest (BINARY_VERSION /
-    // BREEZE_VERSION — see binarySource.getGithubReleaseVersion). Rewriting
-    // to that route for a NON-current backup version would hand an agent
-    // healing to an older pinned version newer bytes than it asked for; the
-    // updater verifies checksum+manifest against the pinned version and
-    // fails safe, but can never actually heal. So for component=backup only,
-    // rewrite exclusively when this row IS the exact version the versionless
-    // route would serve — it matches the server's own pinned version
-    // (getGithubReleaseVersion). isLatest is NOT sufficient: production runs
+    // The versionless /download/backup/:os/:arch route can only ever serve ONE
+    // release, so rewriting a NON-servable backup version to it would hand an
+    // agent healing to an older pinned version different bytes than it asked
+    // for; the updater verifies checksum+manifest against the pinned version
+    // and fails safe, but can never actually heal. So for component=backup
+    // only, rewrite exclusively when this row IS the one that route serves.
+    //
+    // Which row that is changed in #3499. It used to be the server's own
+    // per-process env version (BINARY_VERSION/BREEZE_VERSION, via
+    // binarySource.getGithubReleaseVersion), so this guard compared against
+    // that and isLatest was explicitly NOT sufficient: production runs
     // AGENT_AUTO_PROMOTE=false, so after deploying server version Y the DB's
     // isLatest rows can still point at the still-rolling-out fleet version X.
-    // An agent pinned to X would then get rewritten to the versionless route,
-    // which serves Y's bytes — checksum verification fails fleet-wide for the
-    // entire deploy-to-promote window. Every other component keeps the
+    // #3499 inverted exactly that: the download route now resolves the
+    // promoted (isLatest) agent_versions row — the same row this endpoint
+    // reads the checksum from — so isLatest is now the correct predicate and
+    // the env version is the wrong one. During that same deploy-to-promote
+    // window the route now serves X, matching a pin of X instead of breaking
+    // it. These two must stay in lockstep: this guard has to test for whatever
+    // the versionless route actually serves. Every other component keeps the
     // unconditional rewrite.
     const backupVersionIsServableByVersionlessRoute =
-      versionInfo.component !== "backup" ||
-      versionInfo.version === getGithubReleaseVersion();
+      versionInfo.component !== "backup" || versionInfo.isLatest;
 
     const serverRelativeUrl = backupVersionIsServableByVersionlessRoute
       ? buildServerRelativeAgentDownloadUrl(

@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl, isS3NotFound } from '../../services/s3Storage';
 import { getBinarySource, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl, HELPER_FILENAMES } from '../../services/binarySource';
+import { getPromotedComponentVersion, type PromotedComponent } from '../../services/promotedAgentVersion';
 
 export const downloadRoutes = new Hono();
 
@@ -31,8 +32,17 @@ interface ComponentDownloadConfig {
   filenameFor: (os: string, arch: string) => string | undefined;
   /** 400 message when filenameFor returns undefined (helper's per-OS lookup table). */
   invalidOsMessage?: (os: string) => string;
-  /** Canonical GitHub release asset URL for BINARY_SOURCE=github. */
-  githubUrlFor: (os: string, arch: string) => string;
+  /**
+   * agent_versions.component value for this route, used to resolve the
+   * promoted (isLatest) release the bytes must come from (#3499).
+   */
+  component: PromotedComponent;
+  /**
+   * Canonical GitHub release asset URL for BINARY_SOURCE=github. `version`
+   * pins the release tag to the promoted agent_versions row; when omitted the
+   * builder falls back to the env-resolved BINARY_VERSION/BREEZE_VERSION.
+   */
+  githubUrlFor: (os: string, arch: string, version?: string) => string;
   /** Local binary directory to serve from in non-github mode. */
   binaryDir: () => string;
 }
@@ -81,9 +91,25 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
       );
     }
 
-    // GitHub redirect mode — no local binaries needed
+    // GitHub redirect mode — no local binaries needed.
+    //
+    // #3499: pin the release tag to the same agent_versions isLatest row that
+    // GET /agent-versions/latest serves the checksum from. Resolving it from
+    // per-process env here instead let the bytes and the checksum drift a full
+    // release apart whenever the binary sync stalled, which install.sh reports
+    // as "Checksum verification failed for downloaded agent binary". A null
+    // result (no promoted row, or a DB fault — both logged by the resolver)
+    // falls back to the historical env-resolved URL.
     if (getBinarySource() === 'github') {
-      return c.redirect(config.githubUrlFor(os, arch), 302);
+      const promotedVersion = await getPromotedComponentVersion(
+        config.component,
+        os,
+        arch,
+      );
+      return c.redirect(
+        config.githubUrlFor(os, arch, promotedVersion ?? undefined),
+        302,
+      );
     }
 
     // Local mode: try S3 presigned redirect first (bandwidth offload)
@@ -168,6 +194,7 @@ registerComponentDownloadRoute({
   logTag: 'agent-download',
   s3Prefix: 'agent',
   entityLabel: 'Agent binary',
+  component: 'agent',
   filenameFor: perArchFilename('agent'),
   githubUrlFor: getGithubAgentUrl,
   binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
@@ -270,9 +297,10 @@ registerComponentDownloadRoute({
   logTag: 'helper-download',
   s3Prefix: 'helper',
   entityLabel: 'Helper binary',
+  component: 'helper',
   filenameFor: (os) => HELPER_FILENAMES[os],
   invalidOsMessage: (os) => `No helper binary available for OS: ${os}`,
-  githubUrlFor: (os) => getGithubHelperUrl(os),
+  githubUrlFor: (os, _arch, version) => getGithubHelperUrl(os, version),
   binaryDir: () => resolve(process.env.HELPER_BINARY_DIR || './agent/bin'),
 });
 
@@ -289,6 +317,7 @@ registerComponentDownloadRoute({
   logTag: 'watchdog-download',
   s3Prefix: 'watchdog',
   entityLabel: 'Watchdog binary',
+  component: 'watchdog',
   filenameFor: perArchFilename('watchdog'),
   githubUrlFor: getGithubWatchdogUrl,
   binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
@@ -307,6 +336,7 @@ registerComponentDownloadRoute({
   logTag: 'backup-download',
   s3Prefix: 'backup',
   entityLabel: 'Backup binary',
+  component: 'backup',
   filenameFor: perArchFilename('backup'),
   githubUrlFor: getGithubBackupUrl,
   binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
@@ -325,6 +355,7 @@ registerComponentDownloadRoute({
   logTag: 'user-helper-download',
   s3Prefix: 'user-helper',
   entityLabel: 'User-helper binary',
+  component: 'user-helper',
   filenameFor: perArchFilename('user-helper'),
   githubUrlFor: getGithubUserHelperUrl,
   binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),

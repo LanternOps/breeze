@@ -1321,7 +1321,15 @@ describe("agentVersions routes", () => {
     // pinned current version (getGithubReleaseVersion) may trigger the
     // rewrite. See the invariant comment on
     // backupVersionIsServableByVersionlessRoute in agentVersions.ts.
-    it("does NOT rewrite component=backup when the row is isLatest but not the server's current version — returns the stored immutable URL untouched", async () => {
+    // #3499 inverted this case. The versionless /download/backup/:os/:arch
+    // route used to serve the server's env version (BINARY_VERSION), so a
+    // promoted row that the env had moved past was NOT servable by it and the
+    // rewrite had to be withheld. The route now serves the promoted (isLatest)
+    // row itself, so this row IS exactly what it serves and the rewrite is
+    // correct — this is the deploy-to-promote window (AGENT_AUTO_PROMOTE=false,
+    // server on 1.1.0, fleet still promoted to 1.0.0) that used to hand out
+    // mismatched bytes.
+    it("rewrites component=backup when the row IS the promoted isLatest row, even though the server's env version has moved ahead (#3499)", async () => {
       const canonical =
         "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-backup-linux-amd64";
       const checksum = "f".repeat(64);
@@ -1349,11 +1357,11 @@ describe("agentVersions routes", () => {
                 releaseManifest: signed.manifest,
                 manifestSignature: signed.signature,
                 signingKeyId: "test-key",
-                // isLatest in the DB, but the server has already deployed a
-                // newer version and is pinned to it (AGENT_AUTO_PROMOTE=false
-                // means the fleet-wide promotion of 1.0.0 hasn't happened
-                // yet). The versionless route would serve 1.1.0's bytes, not
-                // this row's — must NOT rewrite.
+                // Promoted in the DB even though the server has already
+                // deployed a newer version (AGENT_AUTO_PROMOTE=false, so
+                // 1.1.0 is not the fleet target yet). Since #3499 the
+                // versionless route resolves this promoted row, so it serves
+                // exactly these bytes — rewrite is correct.
                 isLatest: true,
               },
             ]),
@@ -1369,9 +1377,11 @@ describe("agentVersions routes", () => {
         );
         expect(res.status).toBe(200);
         const body = await res.json();
-        // Stored canonical (immutable GitHub asset) URL, NOT the
-        // server-relative versionless route.
-        expect(body.url).toBe(canonical);
+        // Server-relative versionless route: it now resolves this same
+        // promoted row, so the bytes it serves match this row's checksum.
+        expect(body.url).toBe(
+          "https://us.example.com/api/v1/agents/download/backup/linux/amd64",
+        );
         expect(body.checksum).toBe(checksum);
       } finally {
         delete process.env.PUBLIC_API_URL;
@@ -1381,14 +1391,14 @@ describe("agentVersions routes", () => {
 
     // Design: breeze-backup's version is slaved to the agent's, and agents
     // request it by EXACT version. buildServerRelativeAgentDownloadUrl points
-    // at the versionless /download/backup/:os/:arch route, which can only
-    // ever serve whatever the server currently considers latest. Rewriting a
-    // non-latest, non-current backup version to that route would silently
-    // hand the agent NEWER bytes than the version it pinned — the updater's
+    // at the versionless /download/backup/:os/:arch route, which can only ever
+    // serve ONE release — since #3499, the promoted (isLatest) row. Rewriting
+    // a non-promoted backup version to that route would silently hand the
+    // agent DIFFERENT bytes than the version it pinned — the updater's
     // checksum/manifest check then (correctly) rejects them, and the agent
     // can never heal. So the rewrite must be gated to rows the versionless
     // route would actually serve.
-    it("does NOT rewrite component=backup when the row is neither latest nor the server's current version — returns the stored immutable URL untouched", async () => {
+    it("does NOT rewrite component=backup when the row is neither promoted nor the server's current version — returns the stored immutable URL untouched", async () => {
       const canonical =
         "https://github.com/LanternOps/breeze/releases/download/v0.90.0/breeze-backup-linux-amd64";
       const checksum = "d".repeat(64);
@@ -1444,7 +1454,14 @@ describe("agentVersions routes", () => {
       }
     });
 
-    it("rewrites component=backup when the requested version matches the server's pinned current version, even though isLatest is false", async () => {
+    // The other half of the #3499 inversion. Matching the server's env version
+    // (BINARY_VERSION) no longer makes a row servable by the versionless
+    // route, because that route resolves the promoted row instead. A
+    // non-promoted row must therefore keep the stored immutable URL — the
+    // conservative direction: the agent's host-equality check refuses the
+    // canonical github URL and simply does not heal, rather than downloading
+    // the promoted version's bytes against this row's checksum.
+    it("does NOT rewrite component=backup when the row merely matches the server's env version but is not promoted (#3499)", async () => {
       const canonical =
         "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-backup-linux-amd64";
       const checksum = "e".repeat(64);
@@ -1472,9 +1489,9 @@ describe("agentVersions routes", () => {
                 releaseManifest: signed.manifest,
                 manifestSignature: signed.signature,
                 signingKeyId: "test-key",
-                // Not (yet) flagged isLatest in the DB, but it's the version
-                // BINARY_VERSION pins the server to — the versionless route
-                // would serve exactly this.
+                // Matches BINARY_VERSION, but is NOT the promoted row — since
+                // #3499 the versionless route serves whatever is promoted, not
+                // this. Must NOT rewrite.
                 isLatest: false,
               },
             ]),
@@ -1490,9 +1507,9 @@ describe("agentVersions routes", () => {
         );
         expect(res.status).toBe(200);
         const body = await res.json();
-        expect(body.url).toBe(
-          "https://us.example.com/api/v1/agents/download/backup/linux/amd64",
-        );
+        // Stored canonical (immutable GitHub asset) URL, NOT the
+        // server-relative versionless route.
+        expect(body.url).toBe(canonical);
         expect(body.checksum).toBe(checksum);
       } finally {
         delete process.env.PUBLIC_API_URL;
