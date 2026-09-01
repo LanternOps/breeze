@@ -1,29 +1,41 @@
 /**
  * Change Log Retention Worker
  *
- * BullMQ worker that prunes old device change log entries.
- * Default retention: 90 days (configurable via CHANGE_LOG_RETENTION_DAYS env var).
+ * BullMQ worker that prunes old device change log entries in bounded ctid
+ * batches. Default retention: 90 days (configurable via
+ * CHANGE_LOG_RETENTION_DAYS, clamped to 1..365). Batch bounds:
+ * CHANGE_LOG_RETENTION_BATCH_SIZE / CHANGE_LOG_RETENTION_MAX_BATCHES.
+ *
+ * Previously a single unbounded DELETE that held a pooled connection for the
+ * whole statement (#4343). Pruning rides `device_change_log_created_at_idx`.
  */
 
 import { Queue, Worker, Job } from 'bullmq';
+import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { extractRowCount } from '../db/rowCount';
-import { deviceChangeLog } from '../db/schema';
-import { lt } from 'drizzle-orm';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
 import { jobSchedule } from './scheduleRegistry';
+import {
+  parsePositiveIntEnv,
+  pruneInCtidBatches,
+  resolveRetentionDays,
+  warnOnRetentionBacklog,
+} from './retentionBatch';
 
-const { db } = dbModule;
+const LOG_PREFIX = '[ChangeLogRetention]';
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   if (typeof dbModule.withSystemDbAccessContext !== 'function') {
-    throw new Error('[ChangeLogRetention] withSystemDbAccessContext is not available — DB module may not have loaded correctly');
+    throw new Error(`${LOG_PREFIX} withSystemDbAccessContext is not available — DB module may not have loaded correctly`);
   }
   return dbModule.withSystemDbAccessContext(fn);
 };
 
 const QUEUE_NAME = 'change-log-retention';
-const DEFAULT_RETENTION_DAYS = parseInt(process.env.CHANGE_LOG_RETENTION_DAYS || '90', 10);
+const MAX_RETENTION_DAYS = 365;
+const DEFAULT_RETENTION_DAYS = resolveRetentionDays(process.env.CHANGE_LOG_RETENTION_DAYS, 90, MAX_RETENTION_DAYS);
+const BATCH_SIZE = parsePositiveIntEnv(LOG_PREFIX, 'CHANGE_LOG_RETENTION_BATCH_SIZE', 10000);
+const MAX_BATCHES = parsePositiveIntEnv(LOG_PREFIX, 'CHANGE_LOG_RETENTION_MAX_BATCHES', 50);
 
 let retentionQueue: Queue | null = null;
 
@@ -38,6 +50,8 @@ export function getChangeLogRetentionQueue(): Queue {
 
 interface RetentionJobData {
   retentionDays?: number;
+  batchSize?: number;
+  maxBatches?: number;
 }
 
 export function createChangeLogRetentionWorker(): Worker<RetentionJobData> {
@@ -46,19 +60,27 @@ export function createChangeLogRetentionWorker(): Worker<RetentionJobData> {
     async (job: Job<RetentionJobData>) => {
       return runWithSystemDbAccess(async () => {
         const startTime = Date.now();
-        const retentionDays = Math.max(1, job.data.retentionDays ?? DEFAULT_RETENTION_DAYS);
-        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+        const retentionDays = resolveRetentionDays(job.data.retentionDays, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS);
+        const batchSize = Math.max(1, job.data.batchSize ?? BATCH_SIZE);
+        const maxBatches = Math.max(1, job.data.maxBatches ?? MAX_BATCHES);
+        // postgres-js does not coerce JS Date in template-literal params; pass an ISO string.
+        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
 
-        const result = await db
-          .delete(deviceChangeLog)
-          .where(lt(deviceChangeLog.createdAt, cutoff));
-
-        const deletedCount = extractRowCount(result);
+        // Prunes on created_at (ingest time), matching the pre-batching
+        // behaviour — NOT the `timestamp` column, which is the observed change
+        // time and can predate ingest.
+        const { deleted: deletedCount, batches, hasMore } = await pruneInCtidBatches({
+          table: 'device_change_log',
+          where: sql`created_at < ${cutoff}`,
+          batchSize,
+          maxBatches,
+        });
 
         const durationMs = Date.now() - startTime;
-        console.log(`[ChangeLogRetention] Pruned ${deletedCount} rows older than ${retentionDays} days in ${durationMs}ms`);
+        console.log(`${LOG_PREFIX} Pruned ${deletedCount} rows older than ${retentionDays} days (batches=${batches}) in ${durationMs}ms`);
+        warnOnRetentionBacklog(LOG_PREFIX, 'device_change_log', { deleted: deletedCount, batches, hasMore });
 
-        return { durationMs, deletedCount };
+        return { durationMs, deletedCount, retentionDays, batches, hasMore };
       });
     },
     {
@@ -93,7 +115,7 @@ export async function initializeChangeLogRetention(): Promise<void> {
 
     await queue.add(
       'cleanup',
-      { retentionDays: DEFAULT_RETENTION_DAYS },
+      { retentionDays: DEFAULT_RETENTION_DAYS, batchSize: BATCH_SIZE, maxBatches: MAX_BATCHES },
       {
         // Daily at a registry-allocated slot. NOT `every: 24h` — BullMQ anchors
         // `every` to the Unix epoch, so every 24h job fires at 00:00:00.000 UTC
@@ -121,4 +143,11 @@ export async function shutdownChangeLogRetention(): Promise<void> {
     retentionQueue = null;
   }
 }
+
+export const __testOnly = {
+  QUEUE_NAME,
+  DEFAULT_RETENTION_DAYS,
+  BATCH_SIZE,
+  MAX_BATCHES,
+};
 

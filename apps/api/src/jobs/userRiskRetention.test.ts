@@ -133,4 +133,37 @@ describe('user risk retention worker', () => {
       hasMore: true,
     });
   });
+
+  // #4343: hasMore was only ever reported into an info-level log line, so a job
+  // that never caught up looked identical to one that did.
+  it('warns loudly when the batch cap leaves a backlog behind', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    dbExecuteMock
+      .mockResolvedValueOnce({ rowCount: 5 })
+      .mockResolvedValueOnce({ rowCount: 5 });
+    createUserRiskRetentionWorker();
+
+    await capturedWorkerProcessor.current!({
+      data: { retentionDays: 30, batchSize: 5, maxBatches: 2 },
+    });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('user_risk_scores');
+    warn.mockRestore();
+  });
+
+  it('stays silent when the sweep drained the backlog', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    dbExecuteMock.mockResolvedValueOnce({ rowCount: 1 });
+    createUserRiskRetentionWorker();
+
+    await capturedWorkerProcessor.current!({
+      data: { retentionDays: 30, batchSize: 5, maxBatches: 2 },
+    });
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
 });

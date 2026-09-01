@@ -1,27 +1,51 @@
 /**
  * Event Log Retention Worker
  *
- * BullMQ worker that prunes old event log entries.
+ * BullMQ worker that prunes old event log entries in bounded ctid batches.
  * Resolves per-org retention from event_log configuration policies.
  * Skips orgs on failure to avoid premature data deletion.
+ *
+ * Batch bounds: EVENT_LOG_RETENTION_BATCH_SIZE / EVENT_LOG_RETENTION_MAX_BATCHES
+ * (applied PER ORG). Previously one unbounded DELETE per org, preceded by a
+ * `SELECT DISTINCT org_id` across the whole of `device_event_logs` — a full scan
+ * of one of the largest tables on every single run, just to learn a list the
+ * `organizations` table already holds (#4343).
+ *
+ * Reading the org list from `organizations` is safe rather than merely cheaper:
+ * `device_event_logs.org_id` is `NOT NULL REFERENCES organizations(id)`, so no
+ * event log can exist for an org that is absent from that table. Orgs are NOT
+ * filtered by status — an archived org's logs still need pruning.
  */
 
 import { Queue, Worker, Job } from 'bullmq';
+import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { deviceEventLogs } from '../db/schema';
-import { and, eq, lt } from 'drizzle-orm';
+import { organizations } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { getOrgEventLogRetentionDays } from '../routes/agents/helpers';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
+import {
+  parsePositiveIntEnv,
+  pruneInCtidBatches,
+  resolveRetentionDays,
+  warnOnRetentionBacklog,
+} from './retentionBatch';
 
 const { db } = dbModule;
+const LOG_PREFIX = '[EventLogRetention]';
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
 const QUEUE_NAME = 'event-log-retention';
+const MAX_RETENTION_DAYS = 365;
+// Matches the eventLogInlineSettings validator default (min 7, max 365) and the
+// fallback inside getOrgEventLogRetentionDays.
+const FALLBACK_RETENTION_DAYS = 30;
+const BATCH_SIZE = parsePositiveIntEnv(LOG_PREFIX, 'EVENT_LOG_RETENTION_BATCH_SIZE', 10000);
+const MAX_BATCHES = parsePositiveIntEnv(LOG_PREFIX, 'EVENT_LOG_RETENTION_MAX_BATCHES', 50);
 
 let retentionQueue: Queue | null = null;
 
@@ -36,6 +60,8 @@ export function getEventLogRetentionQueue(): Queue {
 
 interface RetentionJobData {
   retentionDays?: number;
+  batchSize?: number;
+  maxBatches?: number;
 }
 
 export function createEventLogRetentionWorker(): Worker<RetentionJobData> {
@@ -44,38 +70,71 @@ export function createEventLogRetentionWorker(): Worker<RetentionJobData> {
     async (job: Job<RetentionJobData>) => {
       return runWithSystemDbAccess(async () => {
         const startTime = Date.now();
+        const batchSize = Math.max(1, job.data.batchSize ?? BATCH_SIZE);
+        const maxBatches = Math.max(1, job.data.maxBatches ?? MAX_BATCHES);
 
-        // Get distinct org IDs from event logs
-        const orgRows = await db
-          .selectDistinct({ orgId: deviceEventLogs.orgId })
-          .from(deviceEventLogs);
+        // The org list comes from `organizations`, not a DISTINCT scan over
+        // device_event_logs — see the module header.
+        const orgRows = await db.select({ orgId: organizations.id }).from(organizations);
+
+        let deletedTotal = 0;
+        let orgsPruned = 0;
+        let orgsSkipped = 0;
+        let orgsFailed = 0;
+        const orgsWithBacklog: string[] = [];
 
         for (const { orgId } of orgRows) {
           let retentionDays: number;
           try {
             retentionDays = await getOrgEventLogRetentionDays(orgId);
           } catch (err) {
-            console.error(`[EventLogRetention] Failed to resolve retention for org ${orgId}, SKIPPING org to avoid premature data deletion:`, err);
+            console.error(`${LOG_PREFIX} Failed to resolve retention for org ${orgId}, SKIPPING org to avoid premature data deletion:`, err);
+            orgsSkipped += 1;
             continue; // Skip this org — better to retain too much than too little
           }
 
-          const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+          // Defence in depth: the validator bounds this to 7..365, so a 0 or
+          // negative here is a corrupt/hand-edited row, not a request to delete
+          // every event this org has.
+          retentionDays = resolveRetentionDays(retentionDays, FALLBACK_RETENTION_DAYS, MAX_RETENTION_DAYS);
+
+          // postgres-js does not coerce JS Date in template-literal params; pass an ISO string.
+          const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
           try {
-            await db
-              .delete(deviceEventLogs)
-              .where(and(
-                eq(deviceEventLogs.orgId, orgId),
-                lt(deviceEventLogs.timestamp, cutoff),
-              ));
+            const result = await pruneInCtidBatches({
+              table: 'device_event_logs',
+              // `timestamp` is timestamptz here, unlike the other log tables.
+              where: sql`org_id = ${orgId}::uuid AND "timestamp" < ${cutoff}::timestamptz`,
+              batchSize,
+              maxBatches,
+            });
+            deletedTotal += result.deleted;
+            orgsPruned += 1;
+            if (result.hasMore) {
+              orgsWithBacklog.push(orgId);
+              warnOnRetentionBacklog(LOG_PREFIX, `device_event_logs org=${orgId}`, result);
+            }
           } catch (err) {
-            console.error(`[EventLogRetention] Failed to prune events for org ${orgId}:`, err);
+            console.error(`${LOG_PREFIX} Failed to prune events for org ${orgId}:`, err);
+            orgsFailed += 1;
           }
         }
 
         const durationMs = Date.now() - startTime;
-        console.log(`[EventLogRetention] Processed ${orgRows.length} orgs with per-org retention in ${durationMs}ms`);
+        console.log(
+          `${LOG_PREFIX} Pruned ${deletedTotal} event log rows across ${orgsPruned}/${orgRows.length} orgs ` +
+          `(skipped=${orgsSkipped}, failed=${orgsFailed}, backlog=${orgsWithBacklog.length}) in ${durationMs}ms`,
+        );
 
-        return { durationMs, orgsProcessed: orgRows.length };
+        return {
+          durationMs,
+          orgsProcessed: orgRows.length,
+          orgsPruned,
+          orgsSkipped,
+          orgsFailed,
+          deleted: deletedTotal,
+          hasMore: orgsWithBacklog.length > 0,
+        };
       });
     },
     {
@@ -107,7 +166,7 @@ export async function initializeEventLogRetention(): Promise<void> {
     // Daily at a registry-allocated slot (jobs/scheduleRegistry.ts).
     await queue.add(
       'cleanup',
-      {},
+      { batchSize: BATCH_SIZE, maxBatches: MAX_BATCHES },
       {
         // Daily at a registry-allocated slot. NOT `every: 24h` — BullMQ anchors
         // `every` to the Unix epoch, so every 24h job fires at 00:00:00.000 UTC
@@ -135,3 +194,10 @@ export async function shutdownEventLogRetention(): Promise<void> {
     retentionQueue = null;
   }
 }
+
+export const __testOnly = {
+  QUEUE_NAME,
+  BATCH_SIZE,
+  MAX_BATCHES,
+  FALLBACK_RETENTION_DAYS,
+};

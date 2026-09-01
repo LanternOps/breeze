@@ -8,6 +8,7 @@ const {
   workerCloseMock,
   withSystemDbAccessContextMock,
   dbExecuteMock,
+  attachWorkerObservabilityMock,
   capturedWorkerProcessor,
 } = vi.hoisted(() => ({
   addMock: vi.fn(),
@@ -17,6 +18,7 @@ const {
   workerCloseMock: vi.fn(),
   withSystemDbAccessContextMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   dbExecuteMock: vi.fn(),
+  attachWorkerObservabilityMock: vi.fn(),
   capturedWorkerProcessor: { current: null as null | ((job: { data: Record<string, unknown> }) => Promise<unknown>) },
 }));
 
@@ -48,18 +50,20 @@ vi.mock('../services/redis', () => ({
   getBullMQConnection: vi.fn(() => ({ host: 'localhost', port: 6379 })),
 }));
 
-vi.mock('../services/sentry', () => ({
-  captureException: vi.fn(),
+vi.mock('./workerObservability', () => ({
+  attachWorkerObservability: (...args: unknown[]) => attachWorkerObservabilityMock(...(args as [])),
 }));
 
 import {
   __testOnly,
-  createReliabilityRetentionWorker,
-  initializeReliabilityRetention,
-  shutdownReliabilityRetention,
-} from './reliabilityRetention';
+  createSnmpRetentionWorker,
+  initializeSnmpRetention,
+  shutdownSnmpRetention,
+} from './snmpRetention';
 
-describe('reliability retention worker', () => {
+describe('SNMP metrics retention worker', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     vi.resetAllMocks();
     withSystemDbAccessContextMock.mockImplementation(async (fn: () => Promise<unknown>) => fn());
@@ -70,100 +74,93 @@ describe('reliability retention worker', () => {
     workerCloseMock.mockResolvedValue(undefined);
     dbExecuteMock.mockResolvedValue({ rowCount: 0 });
     capturedWorkerProcessor.current = null;
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   });
 
   afterEach(async () => {
-    await shutdownReliabilityRetention();
+    warnSpy.mockRestore();
+    await shutdownSnmpRetention();
   });
 
-  it('registers a repeatable pruning job with a stable jobId', async () => {
-    await initializeReliabilityRetention();
+  it('registers a repeatable pruning job carrying batchSize/maxBatches', async () => {
+    await initializeSnmpRetention();
 
+    expect(attachWorkerObservabilityMock).toHaveBeenCalledWith(expect.anything(), 'snmpRetention');
     expect(addMock).toHaveBeenCalledWith(
-      __testOnly.JOB_NAME,
+      'cleanup',
       expect.objectContaining({
-        retentionDays: expect.any(Number),
+        retentionDays: __testOnly.DEFAULT_RETENTION_DAYS,
         batchSize: __testOnly.BATCH_SIZE,
         maxBatches: __testOnly.MAX_BATCHES,
       }),
       expect.objectContaining({
-        jobId: __testOnly.REPEAT_JOB_ID,
-        // Staggered daily slot, not an epoch-anchored interval (scheduleRegistry.ts).
-        repeat: { pattern: '3 14 * * *' },
+        repeat: expect.objectContaining({ pattern: expect.any(String) }),
       }),
     );
   });
 
-  it('prunes reliability history in bounded batches inside system DB context', async () => {
+  it('deletes snmp_metrics in bounded ctid batches on the timestamp column, inside system DB context', async () => {
     dbExecuteMock
       .mockResolvedValueOnce({ rowCount: 4 })
-      .mockResolvedValueOnce({ rowCount: 1 });
-    createReliabilityRetentionWorker();
+      .mockResolvedValueOnce({ rowCount: 4 })
+      .mockResolvedValueOnce({ rowCount: 2 });
+    createSnmpRetentionWorker();
 
     const result = await capturedWorkerProcessor.current!({
-      data: { retentionDays: 30, batchSize: 4, maxBatches: 3 },
+      data: { retentionDays: 7, batchSize: 4, maxBatches: 5 },
     });
 
     expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
-    expect(dbExecuteMock).toHaveBeenCalledTimes(2);
+    expect(dbExecuteMock).toHaveBeenCalledTimes(3);
+    const sqlDump = JSON.stringify(dbExecuteMock.mock.calls);
+    expect(sqlDump).toContain('DELETE FROM');
+    expect(sqlDump).toContain('snmp_metrics');
+    expect(sqlDump).toContain('SELECT ctid');
+    expect(sqlDump).toContain('\\"timestamp\\" <');
+    expect(sqlDump).toContain('LIMIT');
     expect(result).toMatchObject({
-      retentionDays: 30,
-      deleted: 5,
-      batches: 2,
-      batchSize: 4,
-      maxBatches: 3,
+      deletedCount: 10,
+      batches: 3,
       hasMore: false,
+      retentionDays: 7,
     });
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('reports hasMore when every allowed batch is full', async () => {
+  it('stops at maxBatches, reports hasMore, and warns about the backlog', async () => {
     dbExecuteMock
       .mockResolvedValueOnce({ rowCount: 4 })
       .mockResolvedValueOnce({ rowCount: 4 });
-    createReliabilityRetentionWorker();
+    createSnmpRetentionWorker();
 
     const result = await capturedWorkerProcessor.current!({
-      data: { retentionDays: 30, batchSize: 4, maxBatches: 2 },
+      data: { retentionDays: 7, batchSize: 4, maxBatches: 2 },
     });
 
     expect(dbExecuteMock).toHaveBeenCalledTimes(2);
     expect(result).toMatchObject({
-      deleted: 8,
+      deletedCount: 8,
       batches: 2,
       hasMore: true,
     });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('snmp_metrics');
   });
 
-  // #4343: hasMore was only ever reported into an info-level log line, so a job
-  // that never caught up looked identical to one that did.
-  it('warns loudly when the batch cap leaves a backlog behind', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.spyOn(console, 'log').mockImplementation(() => {});
-    dbExecuteMock
-      .mockResolvedValueOnce({ rowCount: 4 })
-      .mockResolvedValueOnce({ rowCount: 4 });
-    createReliabilityRetentionWorker();
-
-    await capturedWorkerProcessor.current!({
-      data: { retentionDays: 30, batchSize: 4, maxBatches: 2 },
-    });
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0]?.[0])).toContain('device_reliability_history');
-    warn.mockRestore();
-  });
-
-  it('stays silent when the sweep drained the backlog', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.spyOn(console, 'log').mockImplementation(() => {});
-    dbExecuteMock.mockResolvedValueOnce({ rowCount: 1 });
-    createReliabilityRetentionWorker();
-
-    await capturedWorkerProcessor.current!({
-      data: { retentionDays: 30, batchSize: 4, maxBatches: 2 },
-    });
-
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
+  it('honours SNMP_METRICS_RETENTION_DAYS instead of the old hardcoded 7-day window', async () => {
+    const previous = process.env.SNMP_METRICS_RETENTION_DAYS;
+    process.env.SNMP_METRICS_RETENTION_DAYS = '21';
+    vi.resetModules();
+    try {
+      const fresh = await import('./snmpRetention');
+      expect(fresh.__testOnly.DEFAULT_RETENTION_DAYS).toBe(21);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.SNMP_METRICS_RETENTION_DAYS;
+      } else {
+        process.env.SNMP_METRICS_RETENTION_DAYS = previous;
+      }
+      vi.resetModules();
+    }
   });
 });

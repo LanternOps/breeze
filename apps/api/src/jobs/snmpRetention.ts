@@ -1,26 +1,40 @@
 /**
  * SNMP Metrics Retention Worker
  *
- * BullMQ worker that prunes old SNMP metric entries.
- * Default retention: 7 days.
+ * BullMQ worker that prunes old SNMP metric entries in bounded ctid batches.
+ * Default retention: 7 days (configurable via SNMP_METRICS_RETENTION_DAYS,
+ * clamped to 1..365). Batch bounds: SNMP_METRICS_RETENTION_BATCH_SIZE /
+ * SNMP_METRICS_RETENTION_MAX_BATCHES.
+ *
+ * Previously a single unbounded DELETE with a hardcoded 7-day window and no env
+ * override, unlike every sibling (#4343). Pruning rides
+ * `snmp_metrics_timestamp_idx`.
  */
 
 import { Queue, Worker, Job } from 'bullmq';
+import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { snmpMetrics } from '../db/schema';
-import { lt } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
+import {
+  parsePositiveIntEnv,
+  pruneInCtidBatches,
+  resolveRetentionDays,
+  warnOnRetentionBacklog,
+} from './retentionBatch';
 
-const { db } = dbModule;
+const LOG_PREFIX = '[SnmpRetention]';
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
 
 const QUEUE_NAME = 'snmp-retention';
-const DEFAULT_RETENTION_DAYS = 7;
+const MAX_RETENTION_DAYS = 365;
+const DEFAULT_RETENTION_DAYS = resolveRetentionDays(process.env.SNMP_METRICS_RETENTION_DAYS, 7, MAX_RETENTION_DAYS);
+const BATCH_SIZE = parsePositiveIntEnv(LOG_PREFIX, 'SNMP_METRICS_RETENTION_BATCH_SIZE', 10000);
+const MAX_BATCHES = parsePositiveIntEnv(LOG_PREFIX, 'SNMP_METRICS_RETENTION_MAX_BATCHES', 50);
 
 let retentionQueue: Queue | null = null;
 
@@ -35,24 +49,34 @@ export function getSnmpRetentionQueue(): Queue {
 
 interface RetentionJobData {
   retentionDays?: number;
+  batchSize?: number;
+  maxBatches?: number;
 }
 
-function createSnmpRetentionWorker(): Worker<RetentionJobData> {
+export function createSnmpRetentionWorker(): Worker<RetentionJobData> {
   return new Worker<RetentionJobData>(
     QUEUE_NAME,
     async (job: Job<RetentionJobData>) => {
       return runWithSystemDbAccess(async () => {
         const startTime = Date.now();
-        const retentionDays = job.data.retentionDays || DEFAULT_RETENTION_DAYS;
-        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+        const retentionDays = resolveRetentionDays(job.data.retentionDays, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS);
+        const batchSize = Math.max(1, job.data.batchSize ?? BATCH_SIZE);
+        const maxBatches = Math.max(1, job.data.maxBatches ?? MAX_BATCHES);
+        // postgres-js does not coerce JS Date in template-literal params; pass an ISO string.
+        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
 
-        await db
-          .delete(snmpMetrics)
-          .where(lt(snmpMetrics.timestamp, cutoff));
+        const { deleted: deletedCount, batches, hasMore } = await pruneInCtidBatches({
+          table: 'snmp_metrics',
+          where: sql`"timestamp" < ${cutoff}`,
+          batchSize,
+          maxBatches,
+        });
 
         const durationMs = Date.now() - startTime;
-        console.log(`[SnmpRetention] Pruned metrics older than ${retentionDays} days in ${durationMs}ms`);
-        return { durationMs };
+        console.log(`${LOG_PREFIX} Pruned ${deletedCount} metrics older than ${retentionDays} days (batches=${batches}) in ${durationMs}ms`);
+        warnOnRetentionBacklog(LOG_PREFIX, 'snmp_metrics', { deleted: deletedCount, batches, hasMore });
+
+        return { durationMs, deletedCount, retentionDays, batches, hasMore };
       });
     },
     {
@@ -84,7 +108,7 @@ export async function initializeSnmpRetention(): Promise<void> {
     // Every 6h at a registry-allocated slot (jobs/scheduleRegistry.ts).
     await queue.add(
       'cleanup',
-      { retentionDays: DEFAULT_RETENTION_DAYS },
+      { retentionDays: DEFAULT_RETENTION_DAYS, batchSize: BATCH_SIZE, maxBatches: MAX_BATCHES },
       {
         repeat: { pattern: jobSchedule('snmp-retention') },
         removeOnComplete: { count: 5 },
@@ -109,3 +133,10 @@ export async function shutdownSnmpRetention(): Promise<void> {
     retentionQueue = null;
   }
 }
+
+export const __testOnly = {
+  QUEUE_NAME,
+  DEFAULT_RETENTION_DAYS,
+  BATCH_SIZE,
+  MAX_BATCHES,
+};
