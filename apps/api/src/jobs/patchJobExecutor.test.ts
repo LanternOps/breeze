@@ -1270,8 +1270,11 @@ async function runDeviceExecution(opts: {
   approvedPatches: Array<{ patchId: string; externalId: string; requiresReboot: boolean }>;
   rebootPolicy?: string;
   command: { status: string; result: unknown } | null;
+  /** When provided, every `patchJobResults.values(...)` call is pushed here
+   *  (#4267 — asserting the per-row status the executor actually wrote). */
+  insertedRows?: any[];
 }) {
-  const { approvedPatches, rebootPolicy = 'if_required', command } = opts;
+  const { approvedPatches, rebootPolicy = 'if_required', command, insertedRows } = opts;
 
   vi.mocked(db.select)
     // 1. patch job row
@@ -1299,7 +1302,10 @@ async function runDeviceExecution(opts: {
     .mockImplementationOnce(() => createSelectChain([]) as any);
 
   vi.mocked(db.insert).mockImplementation(() => ({
-    values: vi.fn(() => Promise.resolve()),
+    values: vi.fn((v: any) => {
+      insertedRows?.push(v);
+      return Promise.resolve();
+    }),
   }) as any);
   vi.mocked(db.update).mockImplementation(() => ({
     set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
@@ -1637,5 +1643,124 @@ describe('post-patch reboot policy is independent of overall job success (#4228)
 
     expect(evaluateRebootPolicy).toHaveBeenCalledWith('device-1', 'if_required', true);
     expect(executeReboot).toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// #4267 — patch_job_results per-patch status must not collapse to the batch's
+// overall status
+// ============================================================================
+
+const THREE_PATCHES = [
+  { patchId: 'patch-1', externalId: 'KB5000001', requiresReboot: true },
+  { patchId: 'patch-2', externalId: 'KB5000002', requiresReboot: false },
+  { patchId: 'patch-3', externalId: 'KB5000003', requiresReboot: false },
+];
+
+describe('per-patch patch_job_results status is not collapsed to the batch status (#4267)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.useFakeTimers();
+    shared.processorRef = undefined;
+    shared.processorRefs = {};
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(executeReboot).mockResolvedValue({ success: true, delayMinutes: 15 });
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: false,
+      reason: 'no reboot needed for this test',
+      deferred: false,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('records a mixed batch (one failed, two installed) with per-patch status, not all-failed', async () => {
+    const insertedRows: any[] = [];
+
+    await runDeviceExecution({
+      approvedPatches: THREE_PATCHES,
+      command: agentCommandRow({
+        success: false,
+        installedCount: 2,
+        failedCount: 1,
+        rebootRequired: true,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'installed', rebootRequired: true },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'failed', error: '0x80070005' },
+          { id: 'patch-3', externalId: 'KB5000003', status: 'installed', rebootRequired: false },
+        ],
+      }),
+      insertedRows,
+    });
+
+    expect(insertedRows).toHaveLength(3);
+    const byPatchId = Object.fromEntries(insertedRows.map((r: any) => [r.patchId, r]));
+
+    // The batch's aggregate status is "failed" (one patch failed) — the two
+    // patches that installed cleanly must NOT inherit that.
+    expect(byPatchId['patch-1'].status).toBe('completed');
+    expect(byPatchId['patch-1'].errorMessage).toBeNull();
+
+    expect(byPatchId['patch-2'].status).toBe('failed');
+    expect(byPatchId['patch-2'].errorMessage).toBe('0x80070005');
+
+    expect(byPatchId['patch-3'].status).toBe('completed');
+    expect(byPatchId['patch-3'].errorMessage).toBeNull();
+  });
+
+  it('matches each per-patch result on the agent-reported `id` field, not a `patchId` field the agent never sends', async () => {
+    const insertedRows: any[] = [];
+
+    await runDeviceExecution({
+      // Single patch, fully successful — if the lookup silently fails (because
+      // it keys off a `patchId` field the agent never sends), `perPatchResult`
+      // is undefined and this falls back to `overallSuccess`, which happens to
+      // also be true here — so exercise a case where the fallback would be
+      // WRONG: a failed batch whose lone patch actually installed.
+      approvedPatches: [{ patchId: 'patch-1', externalId: 'KB5000001', requiresReboot: false }],
+      command: agentCommandRow({
+        success: false,
+        installedCount: 1,
+        failedCount: 0,
+        rebootRequired: false,
+        results: [
+          { id: 'patch-1', externalId: 'DIFFERENT-EXTERNAL-ID', status: 'installed' },
+        ],
+      }),
+      insertedRows,
+    });
+
+    expect(insertedRows).toHaveLength(1);
+    // externalId doesn't match, so only the `id` branch can have found this
+    // entry. If it had fallen back to `overallSuccess`, this would be
+    // 'completed' too by coincidence — assert the row content that only the
+    // real per-patch match can produce.
+    expect(insertedRows[0].status).toBe('completed');
+    expect(insertedRows[0].rebootRequired).toBe(false);
+  });
+
+  it('falls back to the batch status only when no per-patch entry matches at all', async () => {
+    const insertedRows: any[] = [];
+
+    await runDeviceExecution({
+      approvedPatches: [{ patchId: 'patch-1', externalId: 'KB5000001', requiresReboot: true }],
+      command: agentCommandRow({
+        success: true,
+        installedCount: 1,
+        failedCount: 0,
+        rebootRequired: false,
+        // No results array at all — an omitted/legacy payload.
+        results: [],
+      }),
+      insertedRows,
+    });
+
+    expect(insertedRows).toHaveLength(1);
+    expect(insertedRows[0].status).toBe('completed');
+    expect(insertedRows[0].rebootRequired).toBe(true);
   });
 });
