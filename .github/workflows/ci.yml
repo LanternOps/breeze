@@ -551,6 +551,8 @@ jobs:
   # in no CI job at all until issue #3410 added a regression test here and found
   # the gap — only the Rust half (apps/viewer/src-tauri) was covered, by
   # rust-check. Uses test:run because the package's `test` script is watch mode.
+  # Covers tests + types only: @breeze/viewer still defines no `lint` script, so
+  # `turbo run lint` skips it and the repo-wide Lint job does not reach it.
   test-viewer:
     name: Test Viewer
     runs-on: ubuntu-latest

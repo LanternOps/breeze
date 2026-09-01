@@ -131,3 +131,69 @@ describe('createWebRTCSession — missing RTCPeerConnection', () => {
   });
 });
 
+// A webkit2gtk build missing its GStreamer WebRTC plugins is the case the issue
+// actually describes, and there the global usually EXISTS while construction
+// fails. A `typeof` probe alone would call that supported and let the failure
+// resurface as a generic "connection failed", so construction is guarded too.
+describe('createWebRTCSession — RTCPeerConnection present but unusable', () => {
+  const params: AuthenticatedConnectionParams = {
+    sessionId: 'sess-3410',
+    apiUrl: 'https://api.example.com',
+    accessToken: 'viewer-token',
+  };
+
+  function stubIceFetch(): void {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => ({ iceServers: [] }),
+        text: async () => '{}',
+      })),
+    );
+  }
+
+  it('maps a throwing constructor to WebRTCUnsupportedError', async () => {
+    stubIceFetch();
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      class {
+        constructor() {
+          throw new TypeError('WebRTC is not supported in this build');
+        }
+      },
+    );
+
+    const err = await createWebRTCSession(params, document.createElement('video')).catch((e) => e);
+
+    expect(err).toBeInstanceOf(WebRTCUnsupportedError);
+    // The underlying cause must survive — it is the only clue about which
+    // part of the WebView stack is missing.
+    expect(String(err.message)).toContain('WebRTC is not supported in this build');
+  });
+
+  it('maps a throwing createDataChannel to WebRTCUnsupportedError and closes the connection', async () => {
+    stubIceFetch();
+    const close = vi.fn();
+    vi.stubGlobal(
+      'RTCPeerConnection',
+      class {
+        close = close;
+        addTransceiver() {}
+        createDataChannel(): never {
+          throw new DOMException('Not implemented', 'NotSupportedError');
+        }
+      },
+    );
+
+    const err = await createWebRTCSession(params, document.createElement('video')).catch((e) => e);
+
+    expect(err).toBeInstanceOf(WebRTCUnsupportedError);
+    // Without this the half-built peer connection leaks — `close` is only
+    // defined further down, after the channels are created.
+    expect(close).toHaveBeenCalled();
+  });
+});
+

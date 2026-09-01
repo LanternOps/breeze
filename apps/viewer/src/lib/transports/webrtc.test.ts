@@ -44,13 +44,16 @@ function makeDeps(): WebRTCDeps {
 }
 
 describe('connectWebRTC — WebView without WebRTC (issue #3410)', () => {
-  it('resolves to null so the caller falls back, instead of rejecting', async () => {
+  it('short-circuits before any signalling traffic, and resolves null to fall back', async () => {
     removeRTCPeerConnection();
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await expect(connectWebRTC(auth, makeDeps())).resolves.toBeNull();
-    // The guard must short-circuit before any signalling traffic.
+    // The `toBeNull` half is NOT discriminating on its own — the generic catch
+    // also returns null. This assertion is the one that fails if the guard in
+    // createWebRTCSession is removed.
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -69,17 +72,16 @@ describe('connectWebRTC — WebView without WebRTC (issue #3410)', () => {
     expect(logged).not.toMatch(/WebRTC connection failed/);
     expect(logged).toMatch(/websocket/i);
   });
-
-  it('does not fire the failure lifecycle callbacks that drive reconnect', async () => {
-    removeRTCPeerConnection();
-    vi.stubGlobal('fetch', vi.fn());
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const deps = makeDeps();
-
-    await connectWebRTC(auth, deps);
-
-    // An unsupported WebView is permanent — retrying WebRTC is pure waste.
-    expect(deps.onFailed).not.toHaveBeenCalled();
-    expect(deps.onConnected).not.toHaveBeenCalled();
-  });
 });
+
+// NOTE ON LOG-COUPLING: the assertions above match on warning prose, which is
+// normally brittle. It is unavoidable here — the unsupported branch and the
+// generic catch both `return null`, so the log is the ONLY observable
+// difference between them. If you are rewording that warning, update these
+// assertions; do not delete them, because they are the only guard on the
+// branch existing at all.
+//
+// Deliberately NOT tested: that onFailed/onConnected stay unfired. Those are
+// only ever invoked from a live `pc.onconnectionstatechange` handler, so any
+// throw from createWebRTCSession skips them regardless of this PR's changes —
+// such a test passes under every mutation and guards nothing.

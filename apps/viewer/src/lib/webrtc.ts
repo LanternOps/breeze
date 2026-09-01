@@ -146,6 +146,49 @@ export function nextAnswerPollInterval(currentMs: number): number {
 }
 
 /**
+ * Build the peer connection and its two data channels, treating any failure as
+ * a permanent capability gap rather than a failed attempt.
+ *
+ * `isWebRTCSupported()` catches the WebViews where `RTCPeerConnection` is not a
+ * global at all, but that is only the blunter half of the problem: a webkit2gtk
+ * build missing its GStreamer WebRTC plugins commonly *exposes* the constructor
+ * and then throws when you actually use it. Left unguarded, that resurfaced as
+ * a generic "WebRTC connection failed" — retryable-looking, and it suppressed
+ * the notice that tells the operator why quality dropped (issue #3410).
+ *
+ * Also closes a leak: `close()` is not defined until after the channels exist,
+ * so a throw from `createDataChannel` used to strand an open peer connection.
+ */
+function createPeerConnection(iceServers: RTCIceServer[]): {
+  pc: RTCPeerConnection;
+  inputChannel: RTCDataChannel;
+  controlChannel: RTCDataChannel;
+} {
+  let pc: RTCPeerConnection | undefined;
+  try {
+    pc = new RTCPeerConnection({ iceServers });
+
+    // Receive-only video transceiver (agent sends H264 video track)
+    pc.addTransceiver('video', { direction: 'recvonly' });
+
+    // DataChannels for input events and control messages.
+    // Input uses ordered + unreliable delivery: ordered ensures mouse_down →
+    // mouse_move → mouse_up arrive in sequence (required for drag operations),
+    // maxRetransmits: 0 keeps latency low by skipping retransmission of lost packets.
+    const inputChannel = pc.createDataChannel('input', { ordered: true, maxRetransmits: 0 });
+    const controlChannel = pc.createDataChannel('control', { ordered: true });
+    return { pc, inputChannel, controlChannel };
+  } catch (err) {
+    try { pc?.close(); } catch { /* already failing — nothing to salvage */ }
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new WebRTCUnsupportedError(
+      `This WebView could not create a WebRTC peer connection: ${cause}. On Linux ` +
+        'this usually means the webkit2gtk build is missing its GStreamer WebRTC plugins.',
+    );
+  }
+}
+
+/**
  * Create a WebRTC session with the remote agent.
  *
  * Flow:
@@ -188,17 +231,7 @@ export async function createWebRTCSession(
     console.warn('Failed to fetch ICE servers, falling back to STUN-only:', error);
   }
 
-  const pc = new RTCPeerConnection({ iceServers });
-
-  // Receive-only video transceiver (agent sends H264 video track)
-  pc.addTransceiver('video', { direction: 'recvonly' });
-
-  // DataChannels for input events and control messages.
-  // Input uses ordered + unreliable delivery: ordered ensures mouse_down →
-  // mouse_move → mouse_up arrive in sequence (required for drag operations),
-  // maxRetransmits: 0 keeps latency low by skipping retransmission of lost packets.
-  const inputChannel = pc.createDataChannel('input', { ordered: true, maxRetransmits: 0 });
-  const controlChannel = pc.createDataChannel('control', { ordered: true });
+  const { pc, inputChannel, controlChannel } = createPeerConnection(iceServers);
 
   let closed = false;
   const close = () => {

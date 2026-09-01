@@ -59,15 +59,25 @@ const HANDSHAKE_REJECTED_MESSAGE =
   'The connection was refused before it opened. Retry to reconnect.';
 
 // Shown when this WebView has no WebRTC implementation at all, so the session
-// runs on the WebSocket/JPEG transport instead (issue #3410). This is normal on
-// Linux, where the Viewer renders in webkit2gtk and WebRTC is only present if
-// the distro built it with the GStreamer WebRTC plugins. Not an error — the
-// session works, just without the WebRTC-only extras (audio, multi-monitor,
-// bitrate control), so it is a notice rather than a failure state.
+// runs on a fallback transport instead (issue #3410). This is normal on Linux,
+// where the Viewer renders in webkit2gtk and WebRTC is only present if the
+// distro built it with the GStreamer WebRTC plugins. Not an error — the session
+// works, just without the WebRTC-only extras (audio, multi-monitor, bitrate
+// control), so it is a notice rather than a failure state.
+//
+// Deliberately does NOT name the fallback transport: the session can start on
+// WebSocket and later auto-hand-off to VNC, and naming one would either go
+// stale mid-session or force the notice to be gated on the current transport —
+// which is what previously hid it from every VNC session entirely.
+//
+// The feature list is the intersection of what the two fallbacks lose, per
+// `capabilitiesFor` in lib/transports/types.ts — VNC keeps clipboard sync while
+// WebSocket does not, so clipboard is deliberately not named here.
 const WEBRTC_UNSUPPORTED_MESSAGE =
-  'This system’s WebView has no WebRTC support, so the session is using the ' +
-  'compatibility (WebSocket) transport. Video will be lower quality, and audio, ' +
-  'multi-monitor and bitrate controls are unavailable.';
+  'This system’s WebView has no WebRTC support, so the session is using a ' +
+  'compatibility transport. Video quality is lower, and remote audio, ' +
+  'multi-monitor switching, bitrate controls, Ctrl+Alt+Del and session ' +
+  'switching are unavailable.';
 
 // Module-level dedupe for the one-time connect-code exchange.
 // React strict-mode in dev mounts → unmounts → remounts the component
@@ -355,11 +365,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
     if (transportRef.current === target) return;
     // Never tear down a working session to switch to a transport this WebView
-    // cannot run. Guarding here covers both the toolbar's manual switch and the
-    // macOS auto-handoff, which are the only ways to reach WebRTC after the
-    // initial connect (issue #3410).
+    // cannot run (issue #3410). Backstop only: the toolbar already hides or
+    // disables both WebRTC affordances via `transportAvailability`, and the
+    // macOS auto-handoff is gated the same way, so reaching this means one of
+    // those gates has drifted — hence error, not warn. A silent return here
+    // would be a dead click with no feedback at all.
     if (target === 'webrtc' && !webrtcSupported) {
-      console.warn('Ignoring switch to WebRTC: this WebView has no RTCPeerConnection.');
+      console.error('Ignoring switch to WebRTC: this WebView has no RTCPeerConnection. A UI gate should have prevented this.');
       return;
     }
     const auth = authRef.current;
@@ -1330,7 +1342,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       setWebRTCAvailable(mode === 'user_session');
       setRemoteUserName(result.poll.username);
 
-      if (shouldAutoHandoffToWebRTC({
+      // `webrtcSupported` first: this poll runs every 2s, so without it a
+      // WebRTC-less WebView would re-attempt the handoff (and trip the
+      // switchTransport backstop) on every tick (issue #3410).
+      if (webrtcSupported && shouldAutoHandoffToWebRTC({
         remoteOs,
         deviceId,
         currentTransport: transportRef.current,
@@ -1349,7 +1364,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       cancelled = true;
       clearInterval(interval);
     };
-  }, [transport, remoteOs, status]);
+  }, [transport, remoteOs, status, webrtcSupported]);
 
   // ── Frame rendering (WebSocket JPEG path) ──────────────────────────
 
@@ -1784,6 +1799,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
   }, []);
 
+  // Reconnects over WebRTC unconditionally, and deliberately carries no
+  // `webrtcSupported` guard: it is unreachable on a WebView without WebRTC.
+  // `sessions` is only ever populated from the WebRTC control channel, and the
+  // toolbar hides the session switcher behind `capabilities.sessionSwitch`,
+  // which is false for both fallback transports (issue #3410).
   const handleSwitchSession = useCallback(async (sessionId: number) => {
     if (switchingSessionRef.current) return;
     const auth = authRef.current;
@@ -1978,6 +1998,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         onCancelPaste={handleCancelPaste}
         reconnectSecondsLeft={reconnectSecondsLeft}
         webRTCAvailable={webRTCAvailable}
+        webrtcSupported={webrtcSupported}
         remoteUserName={remoteUserName}
         desktopState={desktopState}
         onSwitchTransport={(target) => switchTransport(target, 'user')}
@@ -2048,9 +2069,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
         {/* WebRTC-unsupported notice (issue #3410).
             Non-modal and dismissible: the session works, so this explains the
-            degraded quality rather than blocking on it. Gated on the WebSocket
-            transport so it never contradicts what the toolbar badge shows. */}
-        {!webrtcSupported && transport === 'websocket' && !webrtcNoticeDismissed && (
+            degraded quality rather than blocking on it.
+
+            Gated on the capability, NOT on the resulting transport. Keying it to
+            `transport === 'websocket'` hid it from every VNC session (including
+            VNC deep links, which never attempt WebRTC at all) and made it vanish
+            mid-session on the macOS websocket→VNC auto-handoff. Suppressed only
+            while the fatal error overlay owns the screen. */}
+        {!webrtcSupported && status !== 'error' && !webrtcNoticeDismissed && (
           <div
             role="status"
             aria-live="polite"
