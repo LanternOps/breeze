@@ -16,7 +16,8 @@
       ],
       "infoPlist": {
         "NSFaceIDUsageDescription": "Use Face ID to unlock the app",
-        "NSCameraUsageDescription": "Camera access for QR code scanning",
+        "NSCameraUsageDescription": "Take photos of hardware, screens and cabling to attach to a ticket.",
+        "NSPhotoLibraryUsageDescription": "Choose photos of hardware, screens and cabling to attach to a ticket.",
         "NSMotionUsageDescription": "Use device motion to support responsive interface animations.",
         "NSSpeechRecognitionUsageDescription": "Use voice to ask Breeze about your fleet.",
         "NSMicrophoneUsageDescription": "Use voice to ask Breeze about your fleet."
@@ -34,7 +35,8 @@
         "USE_BIOMETRIC",
         "USE_FINGERPRINT",
         "RECEIVE_BOOT_COMPLETED",
-        "VIBRATE"
+        "VIBRATE",
+        "CAMERA"
       ]
     },
     "web": {
@@ -84,6 +86,13 @@
         {
           "microphonePermission": "Use voice to ask Breeze about your fleet.",
           "speechRecognitionPermission": "Use voice to ask Breeze about your fleet."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Choose photos of hardware, screens and cabling to attach to a ticket.",
+          "cameraPermission": "Take photos of hardware, screens and cabling to attach to a ticket."
         }
       ],
       [

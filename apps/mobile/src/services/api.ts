@@ -22,7 +22,9 @@ import { AUTH_TOKEN_KEY, NATIVE_AUTH_BINDING_KEY } from './authSessionKeys';
 export const FALLBACK_API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_PREFIX = '/api/v1/mobile';
-const API_CORE_PREFIX = '/api/v1';
+/** Exported so callers that build a raw URL (authenticated `<Image>` sources,
+ *  file downloads) cannot drift from the prefix `coreRequest` itself uses. */
+export const API_CORE_PREFIX = '/api/v1';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
 const CSRF_HEADER_VALUE = '1';
 export const MOBILE_DEVICE_ID_HEADER = 'x-breeze-mobile-device-id';
@@ -217,6 +219,41 @@ async function getToken(): Promise<string | null> {
   }
 }
 
+/**
+ * `body instanceof FormData`, guarded for runtimes that lack the global.
+ *
+ * React Native ships its own FormData polyfill and Node 22 has undici's, so the
+ * global exists on both paths we run on — but a bare `instanceof` against a
+ * missing global is a ReferenceError that would take down every request, not
+ * just uploads.
+ */
+function isFormData(body: BodyInit | null | undefined): boolean {
+  return typeof FormData !== 'undefined' && body instanceof FormData;
+}
+
+/**
+ * Auth headers for a component that fetches bytes itself rather than through
+ * `coreRequest` — `<Image source={{ uri, headers }}>` over the authenticated
+ * attachment content route, which is never a presigned public URL.
+ *
+ * Deliberately NOT the full request header set: there is no CSRF header (these
+ * are GETs) and no native binding (not an auth-issuer endpoint). Authorization
+ * is omitted entirely when no token is stored, because a literal
+ * `Bearer null` reads as a malformed credential rather than an absent one.
+ */
+export async function getAuthImageHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {};
+  const token = await getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  try {
+    const installationId = await getOrCreateInstallationId();
+    if (installationId) headers[MOBILE_DEVICE_ID_HEADER] = installationId;
+  } catch {
+    // Same posture as the request path: the id is diagnostic, not authority.
+  }
+  return headers;
+}
+
 // Request helper
 async function requestWithPrefix<T>(
   endpoint: string,
@@ -245,10 +282,24 @@ async function requestWithPrefix<T>(
       ? sessionContext.bearerToken ?? null
       : await getToken();
     const method = (options.method ?? 'GET').toUpperCase();
+    const multipart = isFormData(options.body);
     const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
+      // Multipart is the one body kind we must NOT name: the runtime generates a
+      // per-request boundary and writes `multipart/form-data; boundary=…` itself.
+      // A hand-set value has no boundary, so the server parses zero parts and the
+      // upload fails with a confusing 400 rather than an obvious one.
+      ...(multipart ? {} : { 'Content-Type': 'application/json' }),
       ...(options.headers as Record<string, string> | undefined),
     };
+
+    // Strip it case-insensitively rather than merely declining to add it. A
+    // caller passing its own `Content-Type` alongside FormData is always wrong
+    // (see above) and the spread would let it back in.
+    if (multipart) {
+      for (const name of Object.keys(headers)) {
+        if (name.toLowerCase() === 'content-type') delete headers[name];
+      }
+    }
 
     if (token) headers.Authorization = `Bearer ${token}`;
 
