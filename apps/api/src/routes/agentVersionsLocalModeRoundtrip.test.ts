@@ -48,8 +48,13 @@ vi.mock("../db", () => ({
 // and this suite makes real network calls.
 vi.mock("../services/urlSafety", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../services/urlSafety")>()),
-  safeFetchFollowingRedirects: (url: string, init?: RequestInit) =>
-    globalThis.fetch(url, init),
+  // Typed against SafeFetchInit (not RequestInit) so a call site's `maxBytes` /
+  // `timeoutMs` survive the bridge instead of being silently dropped, and a
+  // vi.fn() so a suite CAN assert on what binarySync passed the helper.
+  safeFetchFollowingRedirects: vi.fn(
+    (url: string, init?: import("../services/urlSafety").SafeFetchInit) =>
+      globalThis.fetch(url, init as RequestInit),
+  ),
 }));
 
 // agentVersions.ts imports these middlewares/services at module scope; stub

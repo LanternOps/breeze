@@ -133,6 +133,21 @@ const ALLOWED_TAG_NAMES = new Set([
   'binary_component',
   'release_asset_name',
   'manifest_refusal_reason',
+  // #4262: binarySync's release fetches now run through the SSRF-guarded
+  // helper, and all three of its catch sites deliberately FAIL OPEN — a
+  // transient resolver blip must not take boot down. That makes the Sentry
+  // event the only durable record that a refusal happened, and `scrubEvent`
+  // deletes `message`, so without these two tags it arrives as a contentless
+  // blank: the operator learns an exception occurred but not that the SSRF
+  // guard fired, which is the difference between "GitHub had a bad day" and
+  // "something is resolving api.github.com to an internal address".
+  // `release_sync_failure_reason` is a closed 2-value set derived from the
+  // error CLASS (never its message, which interpolates the offending host);
+  // `release_sync_context` is one of four hardcoded call-site literals.
+  // Neither carries a tenant, device, host or resolved IP — the addresses stay
+  // in the server-side log line only.
+  'release_sync_failure_reason',
+  'release_sync_context',
   // #1379/BREEZE-9: `attachWorkerObservability` sets this tag on every worker —
   // twice, in fact: on the per-job isolation scope (so anything captured DURING
   // a job inherits it) and again on the `failed` listener. It is a closed set of

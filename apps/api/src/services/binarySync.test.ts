@@ -48,8 +48,13 @@ vi.mock("../db", () => ({
 // actually adopts it by the source scan in `binarySync.redirect.test.ts`.
 vi.mock("./urlSafety", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./urlSafety")>()),
-  safeFetchFollowingRedirects: (url: string, init?: RequestInit) =>
-    globalThis.fetch(url, init),
+  // Typed against SafeFetchInit (not RequestInit) so a call site's `maxBytes` /
+  // `timeoutMs` survive the bridge instead of being silently dropped, and a
+  // vi.fn() so a suite CAN assert on what binarySync passed the helper.
+  safeFetchFollowingRedirects: vi.fn(
+    (url: string, init?: import("./urlSafety").SafeFetchInit) =>
+      globalThis.fetch(url, init as RequestInit),
+  ),
 }));
 
 // Capture eq/and so a test can inspect the WHERE built for the per-component

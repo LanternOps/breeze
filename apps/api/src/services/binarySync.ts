@@ -14,6 +14,7 @@ import {
 } from "./binarySource";
 import { getBinaryEdition } from "./binaryEdition";
 import {
+  MAX_MANIFEST_BYTES,
   isReleaseArtifactManifestVerificationConfigured,
   ReleaseAssetNotDistributableError,
   ReleaseManifestAssetAbsentError,
@@ -30,7 +31,11 @@ import {
   isOfficialReleaseSource,
 } from "./releaseSource";
 import { captureException } from "./sentry";
-import { safeFetchFollowingRedirects } from "./urlSafety";
+import {
+  ResponseTooLargeError,
+  SsrfBlockedError,
+  safeFetchFollowingRedirects,
+} from "./urlSafety";
 
 // Byte ceilings for every outbound response this module buffers (#4262).
 //
@@ -43,12 +48,117 @@ import { safeFetchFollowingRedirects } from "./urlSafety";
 // runs on the boot path, and a ceiling that a real release could trip would
 // turn a security control into an availability bug.
 
-/** Matches MAX_MANIFEST_BYTES in releaseArtifactManifest.ts — same two files. */
-const MAX_RELEASE_MANIFEST_BYTES = 1024 * 1024;
+/**
+ * The manifest + signature ceiling. IMPORTED rather than redeclared: this module
+ * fetches the same two artifacts as releaseArtifactManifest.ts, and a local copy
+ * would let the two paths silently drift to different limits for one file.
+ */
+const MAX_RELEASE_MANIFEST_BYTES = MAX_MANIFEST_BYTES;
 /** checksums.txt is one ~100-byte line per asset. */
 const MAX_CHECKSUMS_BYTES = 1024 * 1024;
 /** A GitHub release JSON: asset list + release notes (GitHub caps body ~125KB). */
 const MAX_RELEASE_API_JSON_BYTES = 8 * 1024 * 1024;
+
+// `safeFetch` applies NO timeout unless asked (urlSafety.ts: `if (timeoutMs &&
+// timeoutMs > 0)`), and the bare `fetch` these replaced had none either. That
+// matters more here than at most call sites: every one of these runs inside a
+// held DB access context (see the note on assertOutsideHeldDbContext below), so
+// a hung socket to GitHub pins a pooled Postgres connection idle-in-transaction
+// for as long as it hangs. A ceiling on bytes without a ceiling on time only
+// closes half of that.
+const RELEASE_FETCH_TIMEOUT_MS = 30_000;
+
+// #1105 tripwire — READ BEFORE ENABLING DB_CONTEXT_TRIPWIRE_STRICT.
+//
+// `safeFetch` calls `assertOutsideHeldDbContext`. All four call sites in this
+// module run INSIDE a held DB access context:
+//   - boot: index.ts wraps syncBinaries() in runWithSystemDbAccess
+//     → withSystemDbAccessContext → withDbAccessContext (a real transaction);
+//   - route: POST /agent-versions/sync-github takes the withDbAccessContext
+//     branch in middleware/auth.ts and is NOT in SELF_MANAGED_DB_CONTEXT_ROUTES.
+//
+// This is PRE-EXISTING: the bare `fetch` these replaced did the identical
+// round-trip inside the identical transaction. The tripwire only ever
+// instrumented safeFetch, so adopting the guard made an existing problem
+// VISIBLE rather than creating one. Today that is a console.warn plus a deduped
+// Sentry event; DB_CONTEXT_TRIPWIRE_STRICT is set by no CI job.
+//
+// The latent hazard, stated so the next person is warned rather than surprised:
+// under that strict flag `assertOutsideHeldDbContext` THROWS, syncBinaries
+// throws, and index.ts treats that as fatal in BINARY_SOURCE=local mode — the
+// API refuses to boot. Before this module adopted safeFetch, flipping the flag
+// was safe here.
+//
+// Do NOT "fix" this by wrapping these fetches in runOutsideDbContext: that exits
+// the AsyncLocalStorage store without releasing the pooled connection, silencing
+// the alarm while leaving the connection pinned idle-in-transaction across the
+// network round-trip. The real fix is to run the network phase before the system
+// context opens and let this module open its own short contexts around only its
+// DB writes — a boot-critical restructure that belongs in its own PR (#4262).
+
+/**
+ * Render an outbound-fetch failure for an operator.
+ *
+ * `SsrfBlockedError.message` names the refused HOST but not what it resolved
+ * to: the DNS cases read `all resolved IPs for <host> are private/loopback/…`,
+ * and the address list itself lives only on `.resolvedIps`. So a plain
+ * `err.message` rendering tells an operator the guard fired while withholding
+ * the fact they need to act on it.
+ *
+ * Worth distinguishing from "GitHub returned 503" for a second reason: on this
+ * path a refusal means something resolved `api.github.com` or
+ * `objects.githubusercontent.com` to an internal address, which is a
+ * DNS-hijack/poisoned-resolver signal rather than a routine network fault.
+ */
+function describeFetchFailure(err: unknown): string {
+  if (err instanceof SsrfBlockedError) {
+    return (
+      `BLOCKED BY SSRF GUARD: ${err.message} ` +
+      `(host=${err.hostname ?? "?"}, resolved=${err.resolvedIps?.join(", ") ?? "n/a"}). ` +
+      `The release host resolved to a private, loopback or link-local address — check DNS and egress on this host.`
+    );
+  }
+  if (err instanceof ResponseTooLargeError) {
+    return `release host returned a body over the ${err.maxBytes}-byte ceiling`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Call-site literals for the `release_sync_context` tag — closed set. */
+type ReleaseSyncContext =
+  | "stale-volume-fallback"
+  | "no-local-binaries-fallback"
+  | "ensure-current-version-registered";
+
+/**
+ * Report a guard refusal to Sentry.
+ *
+ * The three catch sites below deliberately DO NOT fail closed — a transient
+ * resolver blip must not take boot down — so without this a refusal would be a
+ * console line and nothing else. There is no console→Sentry integration in
+ * `services/sentry.ts`, so `console.error` alone does not reach alerting; the
+ * pre-existing comments claiming otherwise were wrong and are corrected below.
+ *
+ * The tags are the whole payload, not decoration: `scrubEvent` deletes
+ * `message` from every outbound event, so an event whose discriminator is not
+ * an ALLOWLISTED tag does not exist as far as triage is concerned. Both names
+ * here are registered in `ALLOWED_TAG_NAMES` (services/sentry.ts) and asserted
+ * end-to-end through both gates in `sentry.test.ts`. Values are derived from
+ * the error CLASS and a hardcoded literal — never from the message, which
+ * interpolates the refused hostname.
+ */
+function reportIfGuardRefusal(err: unknown, context: ReleaseSyncContext): void {
+  const reason = err instanceof SsrfBlockedError
+    ? "ssrf-blocked"
+    : err instanceof ResponseTooLargeError
+      ? "response-too-large"
+      : null;
+  if (!reason) return;
+  captureException(err, undefined, {
+    release_sync_failure_reason: reason,
+    release_sync_context: context,
+  });
+}
 
 const GH_PLATFORM_MAP: Record<string, string> = {
   linux: "linux",
@@ -188,6 +298,7 @@ async function fetchReleaseAssetBuffer(
   const resp = await safeFetchFollowingRedirects(asset.browser_download_url, {
     headers: { "User-Agent": "breeze-api" },
     maxBytes: MAX_RELEASE_MANIFEST_BYTES,
+    timeoutMs: RELEASE_FETCH_TIMEOUT_MS,
   });
   if (!resp.ok) {
     throw new Error(`Failed to download ${label}`);
@@ -259,6 +370,7 @@ async function parseChecksumsFallback(
     {
       headers: { "User-Agent": "breeze-api" },
       maxBytes: MAX_CHECKSUMS_BYTES,
+      timeoutMs: RELEASE_FETCH_TIMEOUT_MS,
     },
   );
   if (!checksumResp.ok) {
@@ -859,11 +971,16 @@ export async function syncBinaries(): Promise<void> {
       return;
     } catch (err) {
       // Compound failure — stale binaries volume AND GitHub fallback failed.
-      // Agents will be served the wrong binary; surface as error so Sentry
-      // and log alerting catch it (#644).
+      // Agents will be served the wrong binary, so this must be loud. Note the
+      // fall-through is deliberate and unchanged: execution continues to local
+      // registration and the stale volume is served. That is right for a
+      // transient GitHub outage, but an SSRF refusal is NOT transient, so
+      // describeFetchFailure names it and reportIfGuardRefusal escalates it
+      // rather than letting it read as "GitHub 503".
       console.error(
-        `[binarySync] Stale binaries volume + GitHub sync FAILED — agents will be served the wrong version: ${err instanceof Error ? err.message : err}`,
+        `[binarySync] Stale binaries volume + GitHub sync FAILED — agents will be served the wrong version: ${describeFetchFailure(err)}`,
       );
+      reportIfGuardRefusal(err, "stale-volume-fallback");
     }
   }
 
@@ -1063,8 +1180,9 @@ export async function syncBinaries(): Promise<void> {
       console.error(
         pinnedTag
           ? unpublishedPinnedReleaseHint(pinnedTag, err)
-          : `[binarySync] No local binaries + GitHub sync FAILED — no agent binaries are registered: ${err instanceof Error ? err.message : err}`,
+          : `[binarySync] No local binaries + GitHub sync FAILED — no agent binaries are registered: ${describeFetchFailure(err)}`,
       );
+      reportIfGuardRefusal(err, "no-local-binaries-fallback");
     }
   }
 
@@ -1124,13 +1242,17 @@ export async function syncFromGitHub(
     ghHeaders.Authorization = `Bearer ${ghToken}`;
   }
 
-  // ghHeaders may carry `Authorization: Bearer <GITHUB_TOKEN>`. The guarded
-  // helper drops credential headers on a cross-origin hop, so a redirect can no
-  // longer walk the operator's token to another host — something bare
-  // `fetch` (which replays headers across redirects) would happily do.
+  // ghHeaders may carry `Authorization: Bearer <GITHUB_TOKEN>`; the guarded
+  // helper drops credential headers on a cross-origin hop. To be precise about
+  // what that is and isn't worth: it is NOT a leak this fixes. undici already
+  // implements the fetch spec's step 13 and deletes authorization/cookie/host
+  // on a cross-origin redirect, so bare `fetch` did not walk the token either.
+  // The real win at this site is the per-hop DNS resolution and IP pinning
+  // below; the header handling merely keeps parity.
   const ghResp = await safeFetchFollowingRedirects(ghUrl, {
     headers: ghHeaders,
     maxBytes: MAX_RELEASE_API_JSON_BYTES,
+    timeoutMs: RELEASE_FETCH_TIMEOUT_MS,
   });
   if (!ghResp.ok) {
     throw new Error(`GitHub API error: ${ghResp.status}`);
@@ -1423,11 +1545,15 @@ async function ensureCurrentVersionRegistered(): Promise<void> {
   } catch (err) {
     // ensureCurrentVersionRegistered is the safety net for the agent_versions
     // table — if it fails, agents trying to download the currently-running
-    // version 404. Surface as error so Sentry and log alerting catch it (#644).
+    // version 404. This catch also swallows everything thrown by
+    // backfillBackupRowsForVersion, which is the ONLY caller path to that
+    // function's outbound fetch — so without reportIfGuardRefusal an SSRF
+    // refusal there would produce one boot-time log line and no alert at all.
     console.error(
       `[binarySync] Failed to auto-sync version ${currentVersion} from GitHub:`,
-      err instanceof Error ? err.message : err,
+      describeFetchFailure(err),
     );
+    reportIfGuardRefusal(err, "ensure-current-version-registered");
   }
 }
 
@@ -1467,13 +1593,17 @@ async function backfillBackupRowsForVersion(
     ghHeaders.Authorization = `Bearer ${ghToken}`;
   }
 
-  // ghHeaders may carry `Authorization: Bearer <GITHUB_TOKEN>`. The guarded
-  // helper drops credential headers on a cross-origin hop, so a redirect can no
-  // longer walk the operator's token to another host — something bare
-  // `fetch` (which replays headers across redirects) would happily do.
+  // ghHeaders may carry `Authorization: Bearer <GITHUB_TOKEN>`; the guarded
+  // helper drops credential headers on a cross-origin hop. To be precise about
+  // what that is and isn't worth: it is NOT a leak this fixes. undici already
+  // implements the fetch spec's step 13 and deletes authorization/cookie/host
+  // on a cross-origin redirect, so bare `fetch` did not walk the token either.
+  // The real win at this site is the per-hop DNS resolution and IP pinning
+  // below; the header handling merely keeps parity.
   const ghResp = await safeFetchFollowingRedirects(ghUrl, {
     headers: ghHeaders,
     maxBytes: MAX_RELEASE_API_JSON_BYTES,
+    timeoutMs: RELEASE_FETCH_TIMEOUT_MS,
   });
   if (!ghResp.ok) {
     throw new Error(`GitHub API error: ${ghResp.status}`);

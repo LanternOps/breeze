@@ -53,10 +53,23 @@ vi.mock("../db", () => ({
   assertOutsideHeldDbContext: vi.fn(),
 }));
 
-vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn().mockRejectedValue(new Error("ENOENT")),
-  readdir: vi.fn().mockResolvedValue([]),
-  stat: vi.fn().mockRejectedValue(new Error("ENOENT")),
+// Settable rather than fixed: the local-mode case below (site 4) needs readdir
+// and the version file to describe a populated binaries volume.
+const fsMocks = vi.hoisted(() => ({
+  readFile: vi.fn(),
+  readdir: vi.fn(),
+  stat: vi.fn(),
+}));
+vi.mock("node:fs/promises", () => fsMocks);
+
+// Spread the original: the source-scan case needs the REAL `readFileSync`, so
+// this may only override `createReadStream` (used for local checksumming).
+vi.mock("node:fs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs")>()),
+  createReadStream: () => {
+    const { Readable } = require("node:stream");
+    return Readable.from(Buffer.from("local agent bytes"));
+  },
 }));
 
 vi.mock("./s3Storage", () => ({
@@ -74,7 +87,7 @@ vi.mock("./manifestSigning", () => ({
 
 vi.mock("./sentry", () => ({ captureException: vi.fn() }));
 
-import { syncFromGitHub } from "./binarySync";
+import { syncBinaries, syncFromGitHub } from "./binarySync";
 import { requiredPlatformTrustFor } from "./releaseAssetTrust";
 import {
   ResponseTooLargeError,
@@ -220,6 +233,11 @@ describe("binarySync — SSRF-guarded release fetches (#4262)", () => {
     process.env.BINARY_GITHUB_REPOSITORY = REPO;
     delete process.env.GITHUB_REPO;
     vi.clearAllMocks();
+    // Default: an EMPTY binaries volume, so the syncFromGitHub cases below are
+    // not accidentally rescued by local registration.
+    fsMocks.readFile.mockRejectedValue(new Error("ENOENT"));
+    fsMocks.readdir.mockResolvedValue([]);
+    fsMocks.stat.mockRejectedValue(new Error("ENOENT"));
     __setLookupForTests(async () => [{ address: "93.184.216.34", family: 4 }]);
   });
 
@@ -324,6 +342,15 @@ describe("binarySync — SSRF-guarded release fetches (#4262)", () => {
     expect(err).toBeInstanceOf(SsrfBlockedError);
     expect(String(err)).toMatch(/169\.254\.169\.254/);
     expect(stub.requests.map((req) => req.host)).not.toContain(METADATA_IP);
+    // `not.toContain` alone would pass on an EMPTY request list, so pin the
+    // positive shape too. The manifest and its signature are fetched
+    // concurrently (Promise.all), so the github.com hop count is 1 or 2
+    // depending on scheduling — assert the SET of hosts and a floor, not an
+    // exact sequence.
+    expect(stub.requests.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(stub.requests.map((req) => req.host))).toEqual(
+      new Set([API_HOST, "github.com"]),
+    );
   });
 
   it("REFUSES a checksums.txt redirect to a host that RESOLVES into RFC1918", async () => {
@@ -356,6 +383,10 @@ describe("binarySync — SSRF-guarded release fetches (#4262)", () => {
     expect(err).toBeInstanceOf(SsrfBlockedError);
     expect(String(err)).toMatch(/internal\.example|192\.168\.1\.10/);
     expect(stub.requests.map((req) => req.host)).not.toContain("internal.example");
+    // Positive shape, so the `not.toContain` above cannot pass on an empty
+    // list: exactly the API call and the one refused hop. checksums.txt is a
+    // single fetch, so unlike the manifest pair this count IS deterministic.
+    expect(stub.requests.map((req) => req.host)).toEqual([API_HOST, "github.com"]);
   });
 
   it("aborts an oversized manifest at the streaming ceiling", async () => {
@@ -366,10 +397,25 @@ describe("binarySync — SSRF-guarded release fetches (#4262)", () => {
     const signed = makeSignedManifest();
     process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
 
+    // Served from the REDIRECT TARGET, not from the first hop. In production
+    // every release-asset fetch redirects to objects.githubusercontent.com, so
+    // the ceiling that actually protects the boot path is the one applied on
+    // hop 2. `safeFetchFollowingRedirects` carries `maxBytes` across a hop only
+    // because its per-hop init spread preserves it — and no test in this repo
+    // pinned that (urlSafety.test.ts exercises maxBytes on bare `safeFetch`
+    // only). A refactor of that spread would otherwise go unnoticed.
     const oversized = Buffer.alloc(1024 * 1024 + 1, 0x61);
     const stub = installRequestStub((req) => {
       if (req.host === API_HOST) {
         return { status: 200, body: releaseJson({ withManifest: true }) };
+      }
+      if (req.host === "github.com") {
+        return {
+          status: 302,
+          headers: {
+            location: `https://objects.githubusercontent.com/breeze${req.path}?token=abc`,
+          },
+        };
       }
       return pathWithoutQuery(req.path).endsWith(".ed25519")
         ? { status: 200, body: signed.signature }
@@ -379,6 +425,67 @@ describe("binarySync — SSRF-guarded release fetches (#4262)", () => {
 
     const err = await syncFromGitHub().catch((error) => error);
     expect(err).toBeInstanceOf(ResponseTooLargeError);
+    // The overrun really did happen on the far side of the redirect.
+    expect(stub.requests.map((req) => req.host)).toContain(
+      "objects.githubusercontent.com",
+    );
+  });
+
+  it("REFUSES the backup-backfill redirect, and says so instead of failing mute", async () => {
+    // Site :1474 (`backfillBackupRowsForVersion`) is the ONE call site not
+    // reachable from syncFromGitHub — it hangs off syncBinaries() →
+    // ensureCurrentVersionRegistered(). It is also the site whose failure is
+    // SWALLOWED by a catch that only console.errors, so a regression here is
+    // silent by construction. That inverts the usual priority: this is the site
+    // where a behavioral test earns the most, not the least.
+    process.env.BINARY_SOURCE = "local";
+    process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+    process.env.BINARY_VERSION_FILE = "/fake/version";
+    process.env.BREEZE_VERSION = "0.65.9";
+    fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as never);
+    fsMocks.readFile.mockResolvedValue("0.65.9" as never);
+    fsMocks.readdir.mockResolvedValue([
+      "breeze-agent-linux-amd64",
+      "breeze-backup-linux-amd64",
+    ] as never);
+    // Agent row registered, backup row missing — the state that triggers the
+    // narrow backfill.
+    dbMocks.select.mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ component: "agent" }]),
+      }),
+    });
+
+    const stub = installRequestStub((req) =>
+      req.host === API_HOST
+        ? {
+            status: 302,
+            headers: { location: `http://${METADATA_IP}/latest/meta-data/iam/` },
+          }
+        : { status: 200, body: Buffer.from("unexpected") },
+    );
+    restoreRequests = stub.restore;
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // Deliberately does NOT reject: the caller swallows it. That is existing,
+    // intended behavior (a transient failure must not take boot down), so the
+    // assertion is on the guard holding and the refusal being REPORTED.
+    await expect(syncBinaries()).resolves.toBeUndefined();
+
+    expect(stub.requests.map((req) => req.host)).not.toContain(METADATA_IP);
+    expect(stub.requests.map((req) => req.host)).toEqual([API_HOST]);
+    // The backfill was genuinely attempted against the pinned tag — otherwise
+    // the assertions above would hold vacuously for a code path never entered.
+    expect(stub.requests[0]?.path).toContain("/releases/tags/v0.65.9");
+    // And the swallow is not mute: the operator gets the guard named, plus the
+    // host and resolved address, which live on the error's properties rather
+    // than in its message.
+    const logged = errorSpy.mock.calls.map((args) => args.join(" ")).join("\n");
+    expect(logged).toContain("Failed to auto-sync version 0.65.9");
+    expect(logged).toContain("BLOCKED BY SSRF GUARD");
+    expect(logged).toContain(METADATA_IP);
+
+    errorSpy.mockRestore();
   });
 
   it("contains no raw fetch call, and every outbound call is guarded and capped", () => {
@@ -387,31 +494,99 @@ describe("binarySync — SSRF-guarded release fetches (#4262)", () => {
     // quietly reopening the hole — the same anti-regrowth contract
     // `releaseArtifactManifest.redirect.test.ts` and
     // `backupSsrfAdoption.test.ts` apply to their surfaces.
-    const source = readFileSync(
+    const raw = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), "binarySync.ts"),
       "utf8",
     );
 
-    // Bare `fetch(` — exactly what a revert would look like.
-    expect(source).not.toMatch(/(?<![.\w])fetch\s*\(/);
-    // …and the qualified spellings the lookbehind above deliberately exempts,
-    // so `globalThis.fetch(url)` cannot slip past this guard.
-    expect(source).not.toMatch(/\b(?:globalThis|window|global)\s*\.\s*fetch\s*\(/);
+    // Scan CODE, not prose. The forbidden list below includes bare words like
+    // `undici` and `axios`, and this module's comments legitimately discuss
+    // them — a comment explaining what undici does across a redirect would
+    // otherwise red this test. (That fails safe rather than open, but it sends
+    // the next person word-policing their comments instead of fixing code.)
+    //
+    // Deliberately conservative: only block comments and comments occupying a
+    // WHOLE line are removed. Stripping trailing `//` comments would have to
+    // cope with `"https://…"` inside string literals, and a regex that got it
+    // wrong there would silently delete real code from the scan — a false
+    // NEGATIVE on a security control, which is the one direction that must not
+    // happen. A trailing comment can still trip this; that is the safe way to
+    // be wrong.
+    const source = raw
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^[ \t]*\/\/.*$/gm, "");
+    // Guard the strip itself: if a regex change ever nuked the file, every
+    // `not.toMatch` below would pass vacuously.
+    expect(source).toContain("safeFetchFollowingRedirects");
+    expect(source.length).toBeGreaterThan(raw.length / 2);
+
+    // Banning only `fetch` is too narrow — a reintroduction could just as
+    // easily use `https.request` or axios and satisfy a fetch-only scan. This
+    // mirrors the FORBIDDEN list already used by `backupSsrfAdoption.test.ts`
+    // for the backup surface.
+    const FORBIDDEN: Array<[string, RegExp]> = [
+      // Bare `fetch(` — exactly what a revert would look like. The lookbehind
+      // exempts `.fetch`/`safeFetch`, so the next entry covers those.
+      ["bare fetch(", /(?<![.\w])fetch\s*\(/],
+      [
+        "qualified global fetch(",
+        /\b(?:globalThis|window|global)\s*\.\s*fetch\s*\(/,
+      ],
+      // Indexed and indirect spellings that evade the two patterns above.
+      ["indexed global fetch", /\b(?:globalThis|window|global)\s*\[\s*["'`]fetch/],
+      ["fetch.call/.apply", /(?<![.\w])fetch\s*\.\s*(?:call|apply|bind)\s*\(/],
+      ["http(s).request(", /\bhttps?\s*\.\s*request\s*\(/],
+      ["http(s).get(", /\bhttps?\s*\.\s*get\s*\(/],
+      ["axios", /\baxios\b/],
+      ["undici", /\bundici\b/],
+      ["new http(s).Agent(", /new\s+https?\s*\.\s*Agent\s*\(/],
+      // SSRF-guarded but UNCAPPED: bare `safeFetch(` takes no redirect budget
+      // and evades the per-call-site maxBytes loop below entirely, so it would
+      // otherwise be a silent way to add an unbounded outbound call here.
+      ["uncapped safeFetch(", /(?<![.\w])safeFetch\s*\(/],
+    ];
+    for (const [label, pattern] of FORBIDDEN) {
+      expect(
+        source,
+        `binarySync.ts must not reach the network via ${label} — route it through ` +
+          "safeFetchFollowingRedirects with a maxBytes ceiling (services/urlSafety.ts).",
+      ).not.toMatch(pattern);
+    }
 
     // Positive half: the helper must actually be CALLED, not merely imported —
     // an orphaned import would satisfy a bare identifier match. Pin the count
     // too, so deleting a call site cannot pass this test the way an empty file
-    // would.
-    const callSites = source.match(/safeFetchFollowingRedirects\s*\(/g) ?? [];
-    expect(callSites).toHaveLength(4);
+    // would. This is a DELETION tripwire, not a completeness check: adding a
+    // legitimate fifth guarded call site is expected to fail here once, so that
+    // a human confirms it carries a ceiling and a timeout.
+    const CALL_SITE = /safeFetchFollowingRedirects\s*\(/g;
+    const offsets = [...source.matchAll(CALL_SITE)].map((m) => m.index ?? 0);
+    expect(
+      offsets,
+      "binarySync.ts should have exactly 4 guarded outbound call sites; if you " +
+        "added or removed one deliberately, update this count and confirm the " +
+        "new site passes maxBytes and timeoutMs.",
+    ).toHaveLength(4);
 
-    // Every one of them carries a byte ceiling. Without this a new call site
-    // could adopt the SSRF guard and still buffer an unbounded body.
-    for (const match of source.matchAll(/safeFetchFollowingRedirects\s*\(/g)) {
-      const window = source.slice(match.index, match.index + 400);
-      expect(window, `call site at offset ${match.index} must pass maxBytes`).toMatch(
-        /maxBytes:/,
-      );
-    }
+    // Every one of them carries BOTH ceilings. Bytes without time still lets a
+    // hung socket pin a pooled DB connection (these all run inside a held
+    // context); time without bytes still lets a huge body be buffered.
+    //
+    // The window is clamped at the NEXT call site rather than a fixed length,
+    // so a new site cannot borrow its neighbour's `maxBytes:` match. The value
+    // must be a named constant or a literal — `maxBytes: undefined` satisfies a
+    // bare /maxBytes:/ while disabling the ceiling entirely.
+    offsets.forEach((start, i) => {
+      const end = offsets[i + 1] ?? source.length;
+      const callSite = source.slice(start, Math.min(end, start + 600));
+      expect(
+        callSite,
+        `call site at offset ${start} must pass a real maxBytes`,
+      ).toMatch(/maxBytes:\s*(?:[A-Z][A-Z0-9_]*|\d)/);
+      expect(
+        callSite,
+        `call site at offset ${start} must pass a real timeoutMs`,
+      ).toMatch(/timeoutMs:\s*(?:[A-Z][A-Z0-9_]*|\d)/);
+    });
   });
 });

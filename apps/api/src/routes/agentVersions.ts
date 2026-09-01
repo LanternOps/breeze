@@ -14,6 +14,8 @@ import {
 import { platformAdminMiddleware } from "../middleware/platformAdmin";
 import { writeRouteAudit } from "../services/auditEvents";
 import { syncFromGitHub } from "../services/binarySync";
+import { captureException } from "../services/sentry";
+import { ResponseTooLargeError, SsrfBlockedError } from "../services/urlSafety";
 import { getBinaryEdition } from "../services/binaryEdition";
 import { getGithubReleaseVersion } from "../services/binarySource";
 import { PERMISSIONS } from "../services/permissions";
@@ -985,8 +987,48 @@ agentVersionRoutes.post(
       // short registration instead of assuming a clean sync.
       return c.json(result);
     } catch (err) {
+      // A guard refusal (#4262) is not a routine sync failure: it means the
+      // release host resolved to a private/loopback/link-local address, which
+      // is a DNS-hijack signal. Left in the generic branch it became a 422 with
+      // no server-side trace at all — no log, no Sentry (writeRouteAudit only
+      // runs on success), so nobody could reconstruct it later. Log and
+      // escalate, and answer 502: the fault is upstream, not in the request.
+      // The response deliberately does NOT echo err.resolvedIps — internal
+      // addresses stay in the server-side log.
+      if (err instanceof SsrfBlockedError) {
+        console.error(
+          `[agentVersions] sync-github REFUSED by the SSRF guard (host=${err.hostname ?? "?"}, resolved=${err.resolvedIps?.join(", ") ?? "n/a"})`,
+        );
+        captureException(err, c, {
+          release_sync_failure_reason: "ssrf-blocked",
+          release_sync_context: "sync-github-route",
+        });
+        return c.json(
+          {
+            error:
+              "Release sync refused: the release host resolved to a private or link-local address. Check DNS and egress on the API host.",
+          },
+          502,
+        );
+      }
+      if (err instanceof ResponseTooLargeError) {
+        console.error(
+          `[agentVersions] sync-github aborted: response exceeded the ${err.maxBytes}-byte ceiling`,
+        );
+        captureException(err, c, {
+          release_sync_failure_reason: "response-too-large",
+          release_sync_context: "sync-github-route",
+        });
+        return c.json(
+          {
+            error: `Release sync aborted: the release host returned a body over the ${err.maxBytes}-byte limit.`,
+          },
+          502,
+        );
+      }
       const msg = err instanceof Error ? err.message : String(err);
       const status = msg.includes("GitHub API error") ? 502 : 422;
+      console.error(`[agentVersions] sync-github failed: ${msg}`);
       return c.json({ error: msg }, status);
     }
   },

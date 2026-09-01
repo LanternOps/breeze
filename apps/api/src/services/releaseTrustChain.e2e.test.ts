@@ -27,10 +27,23 @@ vi.mock('../db', () => ({
 // http/https directly and never touches global `fetch`. Bridge it back to the
 // stubbed global or the `vi.stubGlobal('fetch', …)` below stops intercepting
 // and this suite makes real network calls.
+//
+// SCOPE WARNING: this mock is module-wide, so it also un-guards
+// releaseArtifactManifest.ts's `fetchSmallBuffer`, which imports the same
+// helper. Inert today — this suite never reaches
+// `verifyGithubReleaseArtifactBuffer`'s URL-fetching path — but a future e2e
+// case added here would be silently unguarded. If you add one, assert its
+// guard semantics in `binarySync.redirect.test.ts` (which does NOT mock
+// urlSafety) rather than here.
 vi.mock('./urlSafety', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./urlSafety')>()),
-  safeFetchFollowingRedirects: (url: string, init?: RequestInit) =>
-    globalThis.fetch(url, init),
+  // Typed against SafeFetchInit (not RequestInit) so a call site's `maxBytes` /
+  // `timeoutMs` survive the bridge instead of being silently dropped, and a
+  // vi.fn() so a suite CAN assert on what binarySync passed the helper.
+  safeFetchFollowingRedirects: vi.fn(
+    (url: string, init?: import('./urlSafety').SafeFetchInit) =>
+      globalThis.fetch(url, init as RequestInit),
+  ),
 }));
 vi.mock('./s3Storage', () => ({ isS3Configured: () => false, syncDirectory: vi.fn() }));
 
