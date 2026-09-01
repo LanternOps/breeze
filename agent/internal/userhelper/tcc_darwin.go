@@ -116,6 +116,11 @@ const tccFastCheckDuration = 30 * time.Minute
 
 const tccHelperCommandTimeout = 15 * time.Second
 
+// screenRecordingRequestInterval is the minimum gap between two macOS Screen
+// Recording consent dialogs raised by this helper for the same user, applied
+// only while the permission is actually missing.
+const screenRecordingRequestInterval = 24 * time.Hour
+
 // CheckTCCPermissions probes macOS TCC permissions. On the first call,
 // triggers the accessibility system prompt; subsequent calls check silently.
 func CheckTCCPermissions(desktopContext string) *ipc.TCCStatus {
@@ -169,11 +174,59 @@ var (
 	requestScreenRecordingFn = RequestScreenRecording
 )
 
-// maybeRequestScreenRecording decides whether to raise the macOS Screen
-// Recording consent dialog.
+// maybeRequestScreenRecording raises the macOS Screen Recording consent dialog
+// only when it can actually help. CGRequestScreenCaptureAccess() shows the
+// system dialog on *every* call whose grant macOS does not attribute to this
+// binary, so calling it once per helper process meant one dialog per launchd
+// (re)start — every kickstart, and once per respawn in the exit-1 loop from
+// #4194 (#4327). Two gates:
+//
+//  1. If the non-prompting probe (CGPreflightScreenCaptureAccess, with the
+//     macOS 26 capture fallback) already reports access, never ask.
+//  2. Otherwise ask at most once per screenRecordingRequestInterval per user,
+//     recorded in a marker file, so a fresh install still gets its consent
+//     dialog but a respawning helper cannot storm the user with them.
+//
+// A marker we cannot read or write fails open (we prompt), matching the FDA
+// guidance marker: gate 1 already stops the reported re-prompt on its own.
 func maybeRequestScreenRecording(markerPath string, now time.Time) {
+	if screenRecordingGrantedFn() {
+		log.Debug("Screen Recording already granted — not raising the consent dialog")
+		return
+	}
+	if !screenRecordingRequestDue(markerPath, now) {
+		log.Debug("Screen Recording consent requested recently — not raising the dialog again",
+			"path", markerPath)
+		return
+	}
+
 	granted := requestScreenRecordingFn()
 	log.Info("Screen Recording permission request", "alreadyGranted", granted)
+
+	if err := os.WriteFile(markerPath, []byte(now.UTC().Format(time.RFC3339)), 0600); err != nil {
+		log.Warn("failed to write Screen Recording request marker — user may see repeated prompts",
+			"path", markerPath, "error", err.Error())
+	}
+}
+
+// screenRecordingRequestDue reports whether enough time has passed since the
+// last consent dialog. An absent, unreadable, or unparseable marker means yes.
+func screenRecordingRequestDue(markerPath string, now time.Time) bool {
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Warn("could not read Screen Recording request marker — requesting anyway",
+				"path", markerPath, "error", err.Error())
+		}
+		return true
+	}
+	last, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data)))
+	if err != nil {
+		log.Warn("Screen Recording request marker is unparseable — requesting anyway",
+			"path", markerPath, "error", err.Error())
+		return true
+	}
+	return now.Sub(last) >= screenRecordingRequestInterval
 }
 
 // probeFullDiskAccess checks Full Disk Access by attempting to open the system
@@ -194,9 +247,10 @@ func probeFullDiskAccess() bool {
 }
 
 // RunTCCCheckLoop periodically checks TCC permissions and sends status via IPC.
-// It runs an immediate check on start (triggering the Screen Recording prompt
-// if not yet granted), then re-checks at a fast interval while permissions are
-// missing, switching to the slower interval once all are granted.
+// It runs an immediate check on start (raising the Screen Recording consent
+// dialog only when the permission is missing and we have not asked recently),
+// then re-checks at a fast interval while permissions are missing, switching to
+// the slower interval once all are granted.
 func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext string, canProbe func() bool) {
 	startedAt := time.Now()
 	var seq uint64
