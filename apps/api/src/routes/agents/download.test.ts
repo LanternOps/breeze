@@ -371,6 +371,22 @@ describe('component downloads serve the DB-promoted version (issue #3499)', () =
     expect(getPromotedComponentVersion).not.toHaveBeenCalled();
   });
 
+  it('503s when the promoted row carries a malformed release tag', async () => {
+    // agent_versions.version has no format constraint, so a promoted row can
+    // carry a tag the URL builder refuses. That is the same "cannot determine
+    // a release" condition as a lookup fault and must not escape as a bare 500.
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(getPromotedComponentVersion).mockResolvedValue('../../evil');
+    vi.mocked(getGithubAgentUrl).mockImplementation(() => {
+      throw new Error('Refusing to build a download URL for malformed release tag');
+    });
+
+    const res = await downloadRoutes.request('/download/linux/amd64');
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get('retry-after')).toBe('30');
+  });
+
   it('leaves the macOS .pkg route on env resolution, deliberately', async () => {
     // install.sh's darwin branch verifies the .pkg with xar magic bytes and
     // `spctl` Gatekeeper notarization, never a SHA-256 against

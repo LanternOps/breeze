@@ -229,6 +229,11 @@ describe("agentVersions routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks clears calls but KEEPS implementations, so a
+    // mockResolvedValue set by one backup-guard test would leak into every
+    // later one and silently stop it exercising the branch its name claims.
+    vi.mocked(getPromotedComponentVersion).mockReset();
+    vi.mocked(getPromotedComponentVersion).mockResolvedValue(null);
     platformAdminState.allow = true;
     delete process.env.AGENT_UPDATE_MANIFEST_PUBLIC_KEYS;
     delete process.env.BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS;
@@ -1558,6 +1563,72 @@ describe("agentVersions routes", () => {
         expect(body.url).toBe(canonical);
         expect(body.checksum).toBe(checksum);
       } finally {
+        delete process.env.PUBLIC_API_URL;
+        delete process.env.BINARY_VERSION;
+      }
+    });
+
+    // The guard must mirror the download route's BINARY_SOURCE branch, not
+    // just its github half. In local mode that route streams ONE unversioned
+    // file from disk/S3 whose version is the binaries-volume build — the env
+    // version — and never consults the promoted row. Deriving the promoted row
+    // here would withhold the rewrite (and cost a pointless query) whenever the
+    // promoted row differs from the disk build, e.g. AGENT_AUTO_PROMOTE=false
+    // or after a rollback via POST /agent-versions/promote, silently ending
+    // backup self-heal for those deployments.
+    it("compares against the env version in local mode, without consulting the promoted row", async () => {
+      const canonical =
+        "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-backup-linux-amd64";
+      const checksum = "c".repeat(64);
+      const signed = makeSignedReleaseManifest({
+        component: "backup",
+        platform: "linux",
+        arch: "amd64",
+        url: canonical,
+        checksum,
+        size: 2048,
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "linux",
+                architecture: "amd64",
+                component: "backup",
+                downloadUrl: canonical,
+                checksum,
+                fileSize: BigInt(2048),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: "test-key",
+                // Not promoted — 1.1.0 is. In github mode that would withhold
+                // the rewrite; in local mode the disk build is what matters.
+                isLatest: false,
+              },
+            ]),
+          }),
+        }),
+      } as any);
+      vi.mocked(getPromotedComponentVersion).mockResolvedValue("1.1.0");
+
+      process.env.BINARY_SOURCE = "local";
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      process.env.BINARY_VERSION = "1.0.0";
+      try {
+        const res = await app.request(
+          "/agent-versions/1.0.0/download?platform=linux&arch=amd64&component=backup",
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.url).toBe(
+          "https://us.example.com/api/v1/agents/download/backup/linux/amd64",
+        );
+        expect(getPromotedComponentVersion).not.toHaveBeenCalled();
+      } finally {
+        delete process.env.BINARY_SOURCE;
         delete process.env.PUBLIC_API_URL;
         delete process.env.BINARY_VERSION;
       }

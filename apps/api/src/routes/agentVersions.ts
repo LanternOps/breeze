@@ -17,7 +17,7 @@ import { syncFromGitHub } from "../services/binarySync";
 import { captureException } from "../services/sentry";
 import { ResponseTooLargeError, SsrfBlockedError } from "../services/urlSafety";
 import { getBinaryEdition } from "../services/binaryEdition";
-import { getGithubReleaseVersion } from "../services/binarySource";
+import { getBinarySource, getGithubReleaseVersion } from "../services/binarySource";
 import { getPromotedComponentVersion } from "../services/promotedAgentVersion";
 import { PERMISSIONS } from "../services/permissions";
 import {
@@ -823,12 +823,22 @@ agentVersionRoutes.get(
     // the unconditional rewrite.
     let backupVersionIsServableByVersionlessRoute = true;
     if (versionInfo.component === "backup") {
+      // Mirror the route's own BINARY_SOURCE branch. Only the github branch
+      // resolves the promoted row; in local mode the route streams ONE
+      // unversioned file from disk/S3 whose version is the binaries-volume
+      // build — i.e. the env version, which is what this guard has always
+      // compared against there. Deriving the promoted row in local mode would
+      // withhold the rewrite (and cost a query) whenever the promoted row and
+      // the disk build differ, e.g. AGENT_AUTO_PROMOTE=false or after a
+      // rollback via POST /agent-versions/promote.
       const versionlessRouteServes =
-        (await getPromotedComponentVersion(
-          "backup",
-          dbPlatformToRouteOs(versionInfo.platform),
-          versionInfo.architecture,
-        )) ?? getGithubReleaseVersion();
+        getBinarySource() === "github"
+          ? ((await getPromotedComponentVersion(
+              "backup",
+              dbPlatformToRouteOs(versionInfo.platform),
+              versionInfo.architecture,
+            )) ?? getGithubReleaseVersion())
+          : getGithubReleaseVersion();
       backupVersionIsServableByVersionlessRoute =
         versionInfo.version === versionlessRouteServes;
     }

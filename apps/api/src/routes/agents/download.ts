@@ -106,16 +106,22 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
     // the very mismatch this fixes and report a server-side DB fault to the
     // end user as a checksum failure.
     if (getBinarySource() === 'github') {
-      let promotedVersion: string | null;
+      let redirectUrl: string;
       try {
-        promotedVersion = await getPromotedComponentVersion(
+        const promotedVersion = await getPromotedComponentVersion(
           config.component,
           os,
           arch,
         );
+        // Inside the try on purpose: the URL builder ALSO throws — on a
+        // malformed release tag, which a promoted row can carry because
+        // agent_versions.version has no format constraint. That is the same
+        // "we cannot determine a release to serve" condition, so it belongs on
+        // the same 503 rather than falling through to a bare 500.
+        redirectUrl = config.githubUrlFor(os, arch, promotedVersion ?? undefined);
       } catch (err) {
         console.error(
-          `[${config.logTag}] refusing to serve ${filename}: could not resolve the promoted release`,
+          `[${config.logTag}] refusing to serve ${filename}: could not resolve a release to redirect to`,
           err,
         );
         return c.json(
@@ -128,10 +134,7 @@ function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
           { 'Retry-After': '30' },
         );
       }
-      return c.redirect(
-        config.githubUrlFor(os, arch, promotedVersion ?? undefined),
-        302,
-      );
+      return c.redirect(redirectUrl, 302);
     }
 
     // Local mode: try S3 presigned redirect first (bandwidth offload)

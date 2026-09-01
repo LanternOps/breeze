@@ -229,6 +229,19 @@ describe('getPromotedComponentVersion', () => {
     expect(captureException).toHaveBeenCalledTimes(1);
   });
 
+  it('treats the "unknown" local-registration sentinel as no promoted row', async () => {
+    // binarySync stores the literal "unknown" when BINARY_VERSION_FILE is
+    // unset and promotes it under the default AGENT_AUTO_PROMOTE. Returning it
+    // would build ".../releases/download/vunknown/..." and 404 every download
+    // on a deployment that later switches to BINARY_SOURCE=github.
+    dbMock._setResult([{ version: 'unknown' }]);
+
+    await expect(
+      getPromotedComponentVersion('agent', 'linux', 'amd64'),
+    ).resolves.toBeNull();
+    expect(console.warn).toHaveBeenCalledTimes(1);
+  });
+
   it('THROWS on an unmapped route OS rather than reporting a missing row', async () => {
     // VALID_OS gates this upstream, but that invariant lives in another file.
     // An unmapped OS must not match zero rows and masquerade as a

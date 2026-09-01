@@ -157,8 +157,25 @@ export async function getPromotedComponentVersion(
         `(edition ${edition})`,
       err,
     );
-    captureException(new PromotedVersionUnavailableError(component, platform, arch, err));
-    throw new PromotedVersionUnavailableError(component, platform, arch, err);
+    const unavailable = new PromotedVersionUnavailableError(
+      component,
+      platform,
+      arch,
+      err,
+    );
+    captureException(unavailable);
+    throw unavailable;
+  }
+
+  // binarySync's local-registration path stores the literal "unknown" when
+  // BINARY_VERSION_FILE is unset (services/binarySync.ts, registerLocalBinaries),
+  // and registers it with isLatest=true under the default AGENT_AUTO_PROMOTE.
+  // A deployment that later switches to BINARY_SOURCE=github would otherwise
+  // build ".../releases/download/vunknown/..." and 404 every download, where
+  // before #3499 it served the env version. Treat the sentinel as "no usable
+  // promoted row" so that fallback still applies.
+  if (row?.version === 'unknown') {
+    row = undefined;
   }
 
   if (!row) {
