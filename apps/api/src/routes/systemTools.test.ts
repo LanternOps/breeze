@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Hono } from 'hono';
 import { systemToolsRoutes } from './systemTools';
 
@@ -1136,5 +1138,299 @@ describe('system tools routes', () => {
       expect(body.success).toBe(true);
       expect(body.purged).toBe(3);
     });
+  });
+
+  // Issue #4025. Every systemTools route outside the File Browser tested
+  // `result.status === 'failed'` and nothing else, so a `status: 'timeout'`
+  // result fell straight through into the success path:
+  //
+  //   - `kill_process` answered `{ success: true, "Process N terminated
+  //     successfully" }` when the agent never replied — while the audit row it
+  //     had just written said `result: 'failure'`. The trail and the response
+  //     actively contradicted each other about whether a device was mutated.
+  //   - Every listing parsed `undefined` stdout as `{}` and returned HTTP 200
+  //     with an empty array, so a technician read "no processes running" off a
+  //     device that simply did not answer in time.
+  //
+  // These routes now share the File Browser's classifier. The table below
+  // covers every one of the 25 sites so a new route cannot regress silently.
+  describe('agent timeout is never reported as success (#4025)', () => {
+    const taskPath = encodeURIComponent('\\Backup\\Daily Backup');
+    const registryQs = 'hive=HKEY_LOCAL_MACHINE&path=SOFTWARE';
+    const jsonPost = (body: unknown) => ({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    type RouteCase = {
+      label: string;
+      path: string;
+      init?: RequestInit;
+      /** Route changes device state → response must warn the result is unverified. */
+      mutating: boolean;
+      /** `action` on the audit row a mutating route writes. */
+      audit?: string;
+    };
+
+    const routes: RouteCase[] = [
+      // processes.ts
+      { label: 'processes:list', path: '/processes', mutating: false },
+      { label: 'processes:get', path: '/processes/2048', mutating: false },
+      { label: 'processes:kill', path: '/processes/3456/kill?force=true', init: { method: 'POST' }, mutating: true, audit: 'kill_process' },
+      // services.ts
+      { label: 'services:list', path: '/services', mutating: false },
+      { label: 'services:get', path: '/services/WinRM', mutating: false },
+      { label: 'services:start', path: '/services/WinRM/start', init: { method: 'POST' }, mutating: true, audit: 'start_service' },
+      { label: 'services:stop', path: '/services/WinRM/stop', init: { method: 'POST' }, mutating: true, audit: 'stop_service' },
+      { label: 'services:restart', path: '/services/WinRM/restart', init: { method: 'POST' }, mutating: true, audit: 'restart_service' },
+      // registry.ts
+      { label: 'registry:keys', path: `/registry/keys?${registryQs}`, mutating: false },
+      { label: 'registry:values', path: `/registry/values?${registryQs}`, mutating: false },
+      { label: 'registry:value:get', path: `/registry/value?${registryQs}&name=ProductName`, mutating: false },
+      {
+        label: 'registry:value:set',
+        path: '/registry/value',
+        init: {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hive: 'HKEY_LOCAL_MACHINE', path: 'SOFTWARE', name: 'TestValue', type: 'REG_SZ', data: 'Hello' }),
+        },
+        mutating: true,
+        audit: 'set_registry_value',
+      },
+      { label: 'registry:value:delete', path: `/registry/value?${registryQs}&name=TestValue`, init: { method: 'DELETE' }, mutating: true, audit: 'delete_registry_value' },
+      { label: 'registry:key:create', path: '/registry/key', init: jsonPost({ hive: 'HKEY_LOCAL_MACHINE', path: 'SOFTWARE\\Breeze' }), mutating: true, audit: 'create_registry_key' },
+      { label: 'registry:key:delete', path: `/registry/key?${registryQs}\\Breeze`, init: { method: 'DELETE' }, mutating: true, audit: 'delete_registry_key' },
+      // eventLogs.ts
+      { label: 'eventLogs:list', path: '/eventlogs', mutating: false },
+      { label: 'eventLogs:info', path: '/eventlogs/System', mutating: false },
+      { label: 'eventLogs:query', path: '/eventlogs/System/events', mutating: false },
+      { label: 'eventLogs:get', path: '/eventlogs/System/events/15234', mutating: false },
+      // scheduledTasks.ts
+      { label: 'tasks:list', path: '/tasks', mutating: false },
+      { label: 'tasks:get', path: `/tasks/${taskPath}`, mutating: false },
+      { label: 'tasks:history', path: `/tasks/${taskPath}/history?limit=10`, mutating: false },
+      { label: 'tasks:run', path: `/tasks/${taskPath}/run`, init: { method: 'POST' }, mutating: true, audit: 'run_scheduled_task' },
+      { label: 'tasks:enable', path: `/tasks/${taskPath}/enable`, init: { method: 'POST' }, mutating: true, audit: 'enable_scheduled_task' },
+      { label: 'tasks:disable', path: `/tasks/${taskPath}/disable`, init: { method: 'POST' }, mutating: true, audit: 'disable_scheduled_task' },
+    ];
+
+    // Cross-reference the table against the SOURCE, not against itself.
+    //
+    // `expect(routes).toHaveLength(25)` was the first version of this and it
+    // was a lie: the array literal is declared 40 lines up, so the assertion
+    // only fails if someone deletes a row — never if someone adds a route to
+    // one of the five files without a row here, which is the case the guard
+    // exists for. Proven by adding a 26th real call site and watching the
+    // suite stay green.
+    //
+    // Reading the files is what makes it a guard. Every `executeCommand` in
+    // these five modules must be followed by an `isCommandFailure` gate, and
+    // the table must have one row per gate.
+    it('has one row per agent command in the five converted route files', () => {
+      const files = ['processes', 'services', 'registry', 'eventLogs', 'scheduledTasks'];
+      const ungated: string[] = [];
+      let dispatchTotal = 0;
+
+      for (const name of files) {
+        const src = readFileSync(join(__dirname, 'systemTools', `${name}.ts`), 'utf8');
+
+        // Pair each dispatch with the text that FOLLOWS it, up to the next
+        // dispatch. Counting `executeCommand`s and `isCommandFailure`s
+        // separately and comparing the totals would let one route grow a
+        // second gate while another loses its only one — the totals still
+        // balance and #4025 walks back in. Matching on a bare
+        // `isCommandFailure(` reference rather than a full `if (…) {` also
+        // keeps this from red-flagging the `!isCommandFailure(result)` idiom
+        // fileBrowser.ts uses, which is equally correct.
+        const segments = src.split(/await executeCommand\(/).slice(1);
+        dispatchTotal += segments.length;
+
+        segments.forEach((segment, index) => {
+          if (!/isCommandFailure\(/.test(segment)) {
+            ungated.push(`${name}.ts dispatch #${index + 1}`);
+          }
+        });
+      }
+
+      // A dispatch with no failure gate before the next one is a route that
+      // can still report an agent timeout as success.
+      expect(ungated, `agent commands with no isCommandFailure gate: ${ungated.join(', ')}`).toEqual([]);
+
+      expect(routes, `source has ${dispatchTotal} agent commands; the table has ${routes.length} rows`)
+        .toHaveLength(dispatchTotal);
+    });
+
+    it.each(routes)('$label answers 503 agent_timeout, never a success', async ({ path, init, mutating }) => {
+      mockDeviceSelect();
+      // `stdout` is absent on a timeout — exactly what used to parse to `{}`
+      // and become an empty listing or a "terminated successfully" message.
+      mockExecuteCommand.mockResolvedValue({ status: 'timeout', error: 'Command timed out' });
+
+      const res = await app.request(`/system-tools/devices/${deviceId}${path}`, init);
+
+      // 503, not 502/504: Cloudflare replaces an origin 502/504 body with its
+      // own branded page, which would blank this message on hosted.
+      // These two lines are what actually pin #4025: pre-fix the route
+      // answered 200 with a success body, so `status` and `code` are the
+      // assertions that go red. The shape checks below them document the
+      // contract but can never be the ones that catch the bug — vitest stops
+      // at the first failure, so they are never reached in a red run.
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.code).toBe('agent_timeout');
+      expect(body.error).toContain("didn't respond in time");
+      expect(body.success).toBeUndefined();
+      expect(body.data).toBeUndefined();
+      expect(body.message).toBeUndefined();
+      // Only a state-changing route can leave the device in an unknown state.
+      expect(body.unverified).toBe(mutating ? true : undefined);
+    });
+
+    it.each(routes.filter((route) => route.mutating))(
+      '$label warns the operation may have completed, and tags its audit row',
+      async ({ path, init, audit }) => {
+        mockDeviceSelect();
+        mockExecuteCommand.mockResolvedValue({ status: 'timeout', error: 'Command timed out' });
+
+        const res = await app.request(`/system-tools/devices/${deviceId}${path}`, init);
+        const body = await res.json();
+
+        // Re-running a kill/registry-delete/service-stop against a
+        // half-completed state can compound the damage, so the copy must tell
+        // the user to verify rather than "please try again".
+        expect(body.error).toContain('may have completed');
+        expect(body.error).not.toContain('Please try again');
+
+        // The audit trail must agree with the response that the device's final
+        // state was never confirmed. Asserted for all 11 mutating routes, not
+        // just kill_process: the `[unverified]` marker on a timed-out registry
+        // key delete or service stop is exactly the breadcrumb an admin needs
+        // to answer "did this actually happen on the device?", and it could
+        // previously be dropped from ten of them with a green suite.
+        expect(createAuditLog).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: audit,
+            result: 'failure',
+            errorMessage: expect.stringContaining('[unverified]'),
+          }),
+        );
+      },
+    );
+
+    it('kill_process no longer contradicts its own audit row', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({ status: 'timeout', error: 'Command timed out' });
+
+      const res = await app.request(
+        `/system-tools/devices/${deviceId}/processes/3456/kill?force=true`,
+        { method: 'POST' },
+      );
+
+      const body = await res.json();
+      expect(res.status).toBe(503);
+      expect(body.success).toBeUndefined();
+      expect(body.message).toBeUndefined();
+
+      // The audit row already said 'failure' before this fix; the response now
+      // agrees, and the trail is tagged so an admin reviewing it can see the
+      // device's final state was never confirmed.
+      expect(createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'kill_process',
+          result: 'failure',
+          errorMessage: expect.stringContaining('[unverified]'),
+        }),
+      );
+    });
+
+    // The queue can report a timeout as a plain `failed` with timeout-shaped
+    // prose. Testing `status === 'timeout'` literally in the routes would miss
+    // it and present an unverifiable mutation as a verified failure that is
+    // safe to retry — the same trap fixed in `buildBulkItemFailure`.
+    it('treats a prose-only timeout on a mutating route as unverified', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({ status: 'failed', error: 'command timed out after 30s' });
+
+      const res = await app.request(`/system-tools/devices/${deviceId}/services/WinRM/stop`, {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.code).toBe('agent_timeout');
+      expect(body.unverified).toBe(true);
+    });
+
+    it('still surfaces a real agent failure as a 500 with the agent message', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({ status: 'failed', error: 'access is denied' });
+
+      const res = await app.request(`/system-tools/devices/${deviceId}/registry/keys?${registryQs}`);
+
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toBe('access is denied');
+      expect(body.code).toBe('agent_execution_failed');
+      expect(body.unverified).toBeUndefined();
+    });
+
+    it('keeps the 404 the routes used to derive from a "not found" substring', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({ status: 'failed', error: 'service not found: WinRM' });
+
+      const res = await app.request(`/system-tools/devices/${deviceId}/services/WinRM`);
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.code).toBe('path_not_found');
+    });
+
+    // Verbatim from commandQueue.ts:832,1013 — `Device is ${device.status},
+    // cannot execute command`. Using the real producer string rather than a
+    // paraphrase is the whole point: the paraphrase 'Device is offline' passed
+    // while the five OTHER non-online states were being mislabelled.
+    it('reports an offline device as 503 device_offline, not a timeout', async () => {
+      mockDeviceSelect();
+      mockExecuteCommand.mockResolvedValue({
+        status: 'failed',
+        error: 'Device is offline, cannot execute command',
+      });
+
+      const res = await app.request(`/system-tools/devices/${deviceId}/tasks`);
+
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.code).toBe('device_offline');
+      expect(body.error).toBe('The device is offline.');
+      expect(body.unverified).toBeUndefined();
+    });
+
+    // `device_status` has seven values and the queue refuses all six non-online
+    // ones with the same sentence. Reporting every one of them as "offline"
+    // sends a technician to chase a network fault — `updating` is set on every
+    // agent self-update (agentWs.ts:2156), and `quarantined` is a security
+    // containment state that must not read as a connectivity problem.
+    it.each(['maintenance', 'decommissioned', 'quarantined', 'updating', 'pending'])(
+      'names the real device state for a %s device instead of calling it offline',
+      async (deviceState) => {
+        mockDeviceSelect();
+        mockExecuteCommand.mockResolvedValue({
+          status: 'failed',
+          error: `Device is ${deviceState}, cannot execute command`,
+        });
+
+        const res = await app.request(`/system-tools/devices/${deviceId}/services/WinRM/restart`, {
+          method: 'POST',
+        });
+
+        expect(res.status).toBe(503);
+        const body = await res.json();
+        expect(body.code).toBe('device_offline');
+        expect(body.error).toBe(`The device is ${deviceState} and cannot run commands.`);
+        expect(body.error).not.toContain('offline');
+      },
+    );
   });
 });
