@@ -19,7 +19,16 @@ import Animated, {
 import Constants from 'expo-constants';
 
 import { useApprovalTheme, palette, radii, spacing, type } from '../../../theme';
-import { useAppDispatch, useAppSelector } from '../../../store';
+import {
+  clearNotificationPrefsError,
+  loadTicketPushPrefs,
+  saveTicketPushPrefs,
+  selectTicketPushPrefs,
+  selectTicketPushPrefsError,
+  selectTicketPushPrefsSaving,
+  useAppDispatch,
+  useAppSelector,
+} from '../../../store';
 import { logoutAsync } from '../../../store/authSlice';
 import {
   blockPairedDevice,
@@ -31,14 +40,6 @@ import {
   selectConnectedApps,
   selectPairedDevices,
 } from '../../../store/lifecycleSlice';
-import {
-  clearError as clearNotificationPrefsError,
-  loadTicketPushPrefs,
-  saveTicketPushPrefs,
-  selectTicketPushPrefs,
-  selectTicketPushPrefsError,
-  selectTicketPushPrefsSaving,
-} from '../../../store/notificationPrefsSlice';
 import {
   checkBiometricAvailability,
   isBiometricEnabled,

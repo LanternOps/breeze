@@ -341,7 +341,10 @@ Breeze also supports push notifications to registered mobile devices via Firebas
 Push notifications subscribe to the same `alert.triggered` event bus and run in parallel with the notification dispatcher. Delivery status is tracked in the `push_notifications` table with states: `pending`, `sent`, `stubbed`, `failed`.
 
 <Aside type="note">
-  APNS (iOS) push delivery is currently stubbed and not yet fully implemented. Android push via FCM is functional when `FIREBASE_SERVICE_ACCOUNT` is configured.
+  APNs (iOS) delivery is live: it powers approval requests and ticket push
+  categories. Android push via FCM is functional when `FIREBASE_SERVICE_ACCOUNT`
+  is configured; ticket push categories are iOS-only today — the server logs and
+  skips FCM tokens for them.
 </Aside>
 
 ---
