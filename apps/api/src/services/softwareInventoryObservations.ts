@@ -7,9 +7,36 @@ import type {
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceVulnerabilities, softwareInventory } from '../db/schema';
+import { tightenLockTimeout } from '../db/lockTimeout';
 import { resolveInventoryVersion } from '../routes/agents/agentSelfInventory';
 import { sanitizeDate } from '../routes/agents/helpers';
 import { retryOnTransientLockError } from '../utils/pgErrors';
+
+/**
+ * Bound for `lock_timeout`, set at the top of the ingest transaction (#3925).
+ *
+ * `correlateOrg`'s per-org pass (vulnerabilityCorrelation.ts) can legitimately
+ * hold `device_vulnerabilities` / `software_inventory` row locks for its whole
+ * duration — see the lock-ordering comment there. Before this, an ingest that
+ * overlapped a pass WAITED on those locks with nothing bounding the wait
+ * (`idle_in_transaction_session_timeout` doesn't apply — a backend blocked on
+ * a lock isn't idle). If the wait outlived the agent's 30s HTTP budget
+ * (`sendInventoryData` in agent/internal/heartbeat/heartbeat.go), the report
+ * was dropped SILENTLY: no SQLSTATE, so no Sentry event and no retry log.
+ *
+ * 5s leaves room for `retryOnTransientLockError`'s 3 attempts (worst case
+ * 3 x 5s = 15s of waiting) plus the transaction's own work inside that 30s
+ * budget. A timed-out acquisition now raises 55P03 (`lock_not_available`),
+ * which `isTransientLockError` classifies as transient, so the wait becomes
+ * bounded and, when exceeded, LOUD instead of silent.
+ *
+ * Not restored on success: this transaction is the entire scope of one
+ * ingest attempt — `runOutsideDbContext`/`withSystemDbAccessContext` open a
+ * fresh system-scoped outer transaction just for this call, which commits
+ * immediately after `db.transaction` returns, so there is no later statement
+ * in the same outer transaction that the tighter bound could wrongly govern.
+ */
+const INVENTORY_LOCK_TIMEOUT_MS = 5000;
 
 export type SoftwareInventoryDecisionReason =
   | 'accepted_legacy'
@@ -237,6 +264,11 @@ export async function ingestSoftwareInventoryReport(input: {
 }> {
   return runOutsideDbContext(() => withSystemDbAccessContext(() =>
     retryOnTransientLockError(`Inventory software device=${input.device.id}`, () => db.transaction(async (tx) => {
+      // Each retry attempt opens a NEW savepoint (this `db.transaction` call),
+      // and ROLLBACK TO SAVEPOINT undoes a `SET LOCAL` issued after the
+      // savepoint — so the bound must be re-applied at the top of every
+      // attempt, not just the first.
+      await tightenLockTimeout(tx, INVENTORY_LOCK_TIMEOUT_MS);
       const lockedDevice = rows<{ id: string; org_id: string }>(await tx.execute(sql`
         SELECT id, org_id FROM devices
         WHERE id = ${input.device.id}::uuid
