@@ -27,7 +27,9 @@ import {
   bulkActionLabel,
   emptyPendingAcks,
   endAck,
+  markAckConfirmed,
   reconcileSelection,
+  releaseStaleAcks,
   toggleSelection,
   visibleAlerts,
 } from './pendingAcks';
@@ -153,7 +155,18 @@ export function SystemsScreen() {
     devicesTruncated,
     refresh,
     refreshIfStale,
+    activeAlertsGeneration,
+    getActiveAlertsGeneration,
   } = useSystemsData();
+
+  // Release any pending ack whose confirmed generation has been superseded,
+  // whenever a fresh `activeAlerts` snapshot lands — from ANY caller (push,
+  // WS, tab-focus, or the acknowledge's own refresh). See #3782 and the
+  // `pendingAcks` module doc for why this can't just be "after refresh()
+  // resolves".
+  useEffect(() => {
+    setPendingAcks((p) => releaseStaleAcks(p, activeAlertsGeneration));
+  }, [activeAlertsGeneration]);
 
   const onRefresh = useCallback(() => {
     track('systems_pulled_to_refresh');
@@ -252,30 +265,33 @@ export function SystemsScreen() {
             text: `Acknowledged ${acknowledged.length}, ${failed.length} failed.`,
           });
         }
-        // Successful ids stay hidden until the refetch supplies the new truth,
-        // so the list cannot flash the old rows back.
+        // Successful ids stay hidden until a fresh fetch supplies the new
+        // truth, so the list cannot flash the old rows back.
         setPendingAcks((p) => endAck(p, failed));
-        // Un-hide unconditionally, DELIBERATELY, despite `refresh()` being an
-        // unreliable signal of freshness (it swallows its own failures and
-        // resolves either way).
-        //
-        // Gating the un-hide on the refetch is the obvious fix and it is worse:
-        // when this refresh coalesces into one already in flight it reports no
-        // fresh read, nothing else releases these ids, and the rows stay hidden
-        // for the life of the screen. A briefly stale visible row is recoverable;
-        // a permanently concealed active alert is not, and this list is how an
-        // operator learns an alert exists.
-        //
-        // The real fix is to release a pending ack when a NEWER alerts snapshot
-        // lands, whoever fetched it — a fetch generation the pendingAcks map can
-        // compare against — rather than tying release to this one call. That is
-        // a change to the data layer, not to this call site. See the PR thread.
-        await refresh();
-        // Release the confirmed ones AND the unknown ones: the refetch above is
-        // now the authority for both. Holding `unknown` past the refresh would
-        // conceal a still-active alert for the life of the screen, which is the
-        // one outcome worse than showing a briefly stale row.
-        setPendingAcks((p) => endAck(p, [...acknowledged, ...unknown]));
+        // Mark the confirmed AND unknown ids to release once a strictly NEWER
+        // activeAlerts snapshot lands than the one current right now — proof
+        // the server's true state for these ids has actually been observed,
+        // rather than trusting `refresh()` resolving (unreliable: it swallows
+        // its own failures and can coalesce into an unrelated in-flight
+        // call). `unknown` ids are included for the same reason as before:
+        // the request may well have committed them server-side, and holding
+        // them past a fresh fetch would conceal a still-active alert for the
+        // life of the screen. Read via the ref-backed getter, not a value
+        // captured when this callback was created — acknowledgeAlerts can
+        // take 13-15s, during which an unrelated fetch may have already
+        // bumped the generation, and stamping with a stale pre-await value
+        // would let that earlier fetch (which predates this ack's own
+        // confirmation) wrongly satisfy the release condition. See #3782.
+        const generationAtConfirm = getActiveAlertsGeneration();
+        setPendingAcks((p) =>
+          markAckConfirmed(p, [...acknowledged, ...unknown], generationAtConfirm)
+        );
+        // Kick a refresh so the release condition above gets satisfied
+        // promptly. Its return value is deliberately unused for un-hiding —
+        // that happens automatically via the generation-watching effect,
+        // whichever fetch actually lands the fresh snapshot, coalesced or
+        // not, this one included.
+        void refresh();
         return;
       } catch (err) {
         reportInternalError(err, 'bulk-acknowledge');
@@ -283,7 +299,7 @@ export function SystemsScreen() {
         setPendingAcks((p) => endAck(p, toRestore));
       }
     },
-    [refresh]
+    [refresh, getActiveAlertsGeneration]
   );
 
   // The dispatch path is reached from a timer, an unmount and a replacing
