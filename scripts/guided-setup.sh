@@ -12,6 +12,7 @@ YES_MODE="false"
 NO_UP="false"
 DRY_RUN="${BREEZE_SETUP_DRY_RUN:-false}"
 INSTALL_SYSTEMD_ONLY="false"
+RENDER_SYSTEMD_DIR=""
 DOWNLOAD_MODE="ask"
 SECRET_MODE="${BREEZE_SETUP_SECRET_MODE:-}"
 STORAGE_MODE="${BREEZE_SETUP_STORAGE_MODE:-}"
@@ -77,6 +78,10 @@ Options:
   --no-up              Generate/validate .env but do not pull images or start Compose.
   --dry-run            Exercise the full guided flow without Docker or systemd changes.
   --install-systemd    Install/update the Linux systemd boot service, then exit.
+  --render-systemd-unit DIR
+                       Write the systemd unit and Compose boot helper to DIR without
+                       installing anything (no root needed), then exit. Used by CI to
+                       verify the generated unit with systemd-analyze.
   -y, --yes            Accept safe defaults and non-destructive prompts.
   -h, --help           Show this help.
 
@@ -124,6 +129,11 @@ while [[ $# -gt 0 ]]; do
       INSTALL_SYSTEMD_ONLY="true"
       shift
       ;;
+    --render-systemd-unit)
+      RENDER_SYSTEMD_DIR="${2:-}"
+      [[ -n "${RENDER_SYSTEMD_DIR}" ]] || { echo "--render-systemd-unit requires a directory." >&2; exit 2; }
+      shift 2
+      ;;
     -y|--yes)
       YES_MODE="true"
       shift
@@ -162,6 +172,13 @@ WORK_DIR="$(cd "${WORK_DIR}" && pwd)"
 
 if [[ -z "${ENV_FILE}" ]]; then
   ENV_FILE="${WORK_DIR}/.env"
+fi
+
+# systemd requires absolute ExecStart= paths, and the helper installer derives
+# its directory from this value, so a relative override can never work.
+if [[ "${SYSTEMD_HELPER_FILE}" != /* ]]; then
+  echo "BREEZE_SETUP_SYSTEMD_HELPER_FILE must be an absolute path (got: ${SYSTEMD_HELPER_FILE})." >&2
+  exit 2
 fi
 
 COMPOSE_FILE="${WORK_DIR}/docker-compose.yml"
@@ -663,8 +680,17 @@ run_privileged() {
   fail "Root privileges are required. Rerun with sudo or install the systemd unit manually."
 }
 
-write_boot_helper() {
-  local compose_array file helper_dir helper_tmp
+# systemd expands %-specifiers (%h, %i, ...) in unit paths and command lines,
+# so a literal % in a path must be written as %%.
+systemd_escape_specifiers() {
+  printf '%s' "${1//%/%%}"
+}
+
+# Prints the Compose boot helper script to stdout. Kept separate from the
+# privileged install so CI (--render-systemd-unit) can exercise the exact text
+# self-hosters get.
+render_boot_helper() {
+  local compose_array file
 
   compose_array=$'compose=(\n  docker\n  compose\n'
   for file in "${COMPOSE_FILES[@]}"; do
@@ -675,9 +701,7 @@ write_boot_helper() {
   compose_array+="  $(bash_source_quote "${ENV_FILE}")"$'\n'
   compose_array+=')'
 
-  helper_dir="${SYSTEMD_HELPER_FILE%/*}"
-  helper_tmp="$(mktemp)"
-  cat > "${helper_tmp}" <<EOF
+  cat <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -739,9 +763,57 @@ case "\${1:-up}" in
     ;;
 esac
 EOF
+}
+
+write_boot_helper() {
+  local helper_dir helper_tmp
+
+  helper_dir="${SYSTEMD_HELPER_FILE%/*}"
+  helper_tmp="$(mktemp)"
+  render_boot_helper > "${helper_tmp}"
   run_privileged install -d -m 0755 "${helper_dir}"
   run_privileged install -m 0755 "${helper_tmp}" "${SYSTEMD_HELPER_FILE}"
   rm -f "${helper_tmp}"
+}
+
+# Prints the systemd unit to stdout. Every directive here is validated by
+# scripts/check-guided-setup-systemd-unit.sh (systemd-analyze verify in CI):
+# a unit that systemd rejects surfaces as "bad unit file setting" only at the
+# self-hoster's `systemctl enable --now`, which has already shipped twice
+# (#4201: Type=oneshot + Restart=, then a quoted WorkingDirectory=).
+render_systemd_unit() {
+  cat <<EOF
+[Unit]
+Description=Breeze RMM Docker Compose startup repair
+Requires=docker.service
+Wants=network-online.target
+After=docker.service network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+WorkingDirectory=$(systemd_escape_specifiers "${WORK_DIR}")
+ExecStart=$(systemd_escape_specifiers "$(shell_quote "${SYSTEMD_HELPER_FILE}")")
+ExecStop=$(systemd_escape_specifiers "$(shell_quote "${SYSTEMD_HELPER_FILE}")") down
+RemainAfterExit=yes
+TimeoutStartSec=15min
+TimeoutStopSec=3min
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# --render-systemd-unit DIR: write both generated files unprivileged and stop.
+render_systemd_artifacts() {
+  local dir="$1" helper_name
+
+  helper_name="${SYSTEMD_HELPER_FILE##*/}"
+  mkdir -p "${dir}"
+  render_boot_helper > "${dir}/${helper_name}"
+  chmod 0755 "${dir}/${helper_name}"
+  render_systemd_unit > "${dir}/${SYSTEMD_SERVICE_NAME}.service"
+  log "Rendered ${dir}/${SYSTEMD_SERVICE_NAME}.service and ${dir}/${helper_name} (nothing installed)."
 }
 
 install_systemd_boot_service() {
@@ -758,27 +830,7 @@ install_systemd_boot_service() {
   write_boot_helper
   unit_file="/etc/systemd/system/${SYSTEMD_SERVICE_NAME}.service"
   unit_tmp="$(mktemp)"
-
-  cat > "${unit_tmp}" <<EOF
-[Unit]
-Description=Breeze RMM Docker Compose startup repair
-Requires=docker.service
-Wants=network-online.target
-After=docker.service network-online.target
-StartLimitIntervalSec=0
-
-[Service]
-Type=oneshot
-WorkingDirectory=$(shell_quote "${WORK_DIR}")
-ExecStart=$(shell_quote "${SYSTEMD_HELPER_FILE}")
-ExecStop=$(shell_quote "${SYSTEMD_HELPER_FILE}") down
-RemainAfterExit=yes
-TimeoutStartSec=15min
-TimeoutStopSec=3min
-
-[Install]
-WantedBy=multi-user.target
-EOF
+  render_systemd_unit > "${unit_tmp}"
 
   run_privileged install -m 0644 "${unit_tmp}" "${unit_file}"
   rm -f "${unit_tmp}"
@@ -4093,6 +4145,11 @@ main() {
   section "Breeze Guided Setup"
   log "Working directory: ${WORK_DIR}"
   log "Environment file: ${ENV_FILE}"
+
+  if [[ -n "${RENDER_SYSTEMD_DIR}" ]]; then
+    render_systemd_artifacts "${RENDER_SYSTEMD_DIR}"
+    return
+  fi
 
   if [[ "${INSTALL_SYSTEMD_ONLY}" == "true" ]]; then
     install_systemd_only
