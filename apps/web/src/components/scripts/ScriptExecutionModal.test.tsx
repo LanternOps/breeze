@@ -397,3 +397,129 @@ describe('ScriptExecutionModal empty state (2026-08-28 sweep)', () => {
     expect(screen.getByText(/requires Windows/i)).toBeInTheDocument();
   });
 });
+
+// Fix round 1 (review I-1/I-2/I-3): the same disambiguation on the SERVER
+// options path, where the hidden count comes from the one-row probe. A blame
+// message is an assertion about the fleet, so it may only be rendered on
+// settled evidence — never while the probe is in flight, never after it fails,
+// and never for a multi-OS script whose probe cannot be OS-narrowed.
+describe('ScriptExecutionModal empty state on the server options path', () => {
+  /** The probe is the only request with `limit=1`; the picker's own is `limit=100`. */
+  const isProbe = (url: string) => /[?&]limit=1(?:&|$)/.test(url);
+
+  function optionsPage(data: Array<Record<string, unknown>>, total: number) {
+    return {
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        data,
+        page: { nextCursor: null, returned: data.length, total, hasMore: false, observedAt: '2026-09-01T00:00:00.000Z' },
+      }),
+    } as unknown as Response;
+  }
+
+  const windowsOption = (id: string, hostname: string, status: string) => ({
+    id, hostname, displayName: null, osType: 'windows', status, siteId: null, siteName: null,
+  });
+
+  /** No `devices` prop: the modal sources its options from the server. */
+  function renderServerModal(osTypes: Script['osTypes'] = ['windows']) {
+    render(
+      <ScriptExecutionModal
+        script={{ ...baseScript, osTypes, parameters: [] }}
+        isOpen
+        onClose={vi.fn()}
+        onExecute={vi.fn()}
+      />
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('blames the status filter with the probe exact total, and the reset repopulates the picker', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (isProbe(url)) return Promise.resolve(optionsPage([windowsOption('d-1', 'ws-01', 'offline')], 3));
+      if (url.includes('status=online')) return Promise.resolve(optionsPage([], 0));
+      // After the reset: the picker's own query with the status filter lifted.
+      return Promise.resolve(optionsPage([
+        windowsOption('d-1', 'ws-01', 'offline'),
+        windowsOption('d-2', 'ws-02', 'offline'),
+        windowsOption('d-3', 'ws-03', 'offline'),
+      ], 3));
+    });
+
+    renderServerModal();
+
+    expect(await screen.findByText(/3 compatible devices are hidden by the status filter/i)).toBeInTheDocument();
+    expect(screen.queryByText(/requires Windows/i)).toBeNull();
+
+    fireEvent.click(screen.getByText('Show all devices'));
+
+    await waitFor(() => expect(screen.getAllByRole('checkbox')).toHaveLength(3));
+  });
+
+  it('renders NEITHER blame message when the probe fails', async () => {
+    const probeBody = vi.fn().mockResolvedValue({ error: 'probe unavailable' });
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (isProbe(url)) {
+        return Promise.resolve({ ok: false, status: 503, json: probeBody } as unknown as Response);
+      }
+      return Promise.resolve(optionsPage([], 0));
+    });
+
+    renderServerModal();
+
+    // Control: prove the probe ran AND its failure body was consumed, so the
+    // absences below are evidence about the fix rather than about timing.
+    await waitFor(() => expect(probeBody).toHaveBeenCalled());
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(screen.getByText('No devices found.')).toBeInTheDocument();
+    expect(screen.queryByText(/hidden by the status filter/i)).toBeNull();
+    expect(screen.queryByText(/requires Windows/i)).toBeNull();
+  });
+
+  it('blames the OS when the probe settles with a zero total', async () => {
+    fetchWithAuthMock.mockImplementation(() => Promise.resolve(optionsPage([], 0)));
+
+    renderServerModal();
+
+    expect(await screen.findByText(/requires Windows/i)).toBeInTheDocument();
+    expect(screen.queryByText(/hidden by the status filter/i)).toBeNull();
+  });
+
+  it('issues no probe and asserts nothing for a multi-OS script the probe cannot narrow', async () => {
+    fetchWithAuthMock.mockImplementation(() => Promise.resolve(optionsPage([], 7)));
+
+    renderServerModal(['windows', 'macos']);
+
+    expect(await screen.findByText('No devices found.')).toBeInTheDocument();
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => isProbe(String(url)))).toBe(false);
+    expect(screen.queryByText(/hidden by the status filter/i)).toBeNull();
+    expect(screen.queryByText(/requires Windows/i)).toBeNull();
+  });
+
+  it('probes with limit=1, the status filter lifted, and the script OS still bound', async () => {
+    fetchWithAuthMock.mockImplementation((input) => {
+      const url = String(input);
+      if (isProbe(url)) return Promise.resolve(optionsPage([windowsOption('d-1', 'ws-01', 'offline')], 2));
+      return Promise.resolve(optionsPage([], 0));
+    });
+
+    renderServerModal();
+
+    await screen.findByText(/2 compatible devices are hidden by the status filter/i);
+    const probeUrl = String(fetchWithAuthMock.mock.calls.map(([url]) => String(url)).find(isProbe));
+    expect(probeUrl).toMatch(/[?&]limit=1(?:&|$)/);
+    expect(probeUrl).not.toMatch(/[?&]status=/);
+    // The status filter is what the probe lifts; the OS constraint must stay,
+    // or `total` counts devices this script can never run on (review I-2).
+    expect(probeUrl).toContain('osType=windows');
+  });
+});

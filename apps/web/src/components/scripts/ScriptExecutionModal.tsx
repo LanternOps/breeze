@@ -152,23 +152,50 @@ export default function ScriptExecutionModal({
   // Server-options path: an exact count from a one-row probe with the status
   // filter lifted. `page.total` is the full match count, so limit 1 is enough,
   // and `enabled` keeps this to a single extra request on the empty+filtered
-  // path only. A multi-OS script cannot push `osType` to the server (neither
-  // can the primary query above), so its total is not OS-narrowed.
+  // path only.
+  //
+  // The endpoint takes one `osType`, so a MULTI-OS script cannot narrow the
+  // probe (neither can the primary query above, which filters OS client-side
+  // after fetching). An un-narrowed total would let us claim N hidden
+  // "compatible" devices when none of them can run this script, and the reset
+  // would then land the operator on a blank pane. Over-fetching is survivable;
+  // over-asserting is not — so a multi-OS script does not probe at all and
+  // says nothing, leaving the picker's own neutral empty text.
+  const probeEnabled = devices === undefined
+    && isOpen
+    && pickerEmpty
+    && statusFilterActive
+    && script.osTypes.length === 1;
   const unfilteredProbe = useDeviceOptions({
     search: query,
     status: undefined,
     siteId: siteFilter === 'all' ? undefined : siteFilter,
     osType: script.osTypes.length === 1 ? script.osTypes[0] : undefined,
-    enabled: devices === undefined && isOpen && pickerEmpty && statusFilterActive,
+    enabled: probeEnabled,
     limit: 1,
   });
 
-  const hiddenCompatibleCount = legacyCompatible
-    ? legacyCompatible.count
-    : unfilteredProbe.page?.total ?? 0;
-  const statusFilteredEmptyState = pickerEmpty
-    && statusFilterActive
-    && (legacyCompatible ? legacyCompatible.hiddenByStatus : hiddenCompatibleCount > 0);
+  // Settled evidence only. `page` is null while the probe is in flight and
+  // stays null when it fails, and a disabled hook also reports state 'empty' —
+  // so "no answer yet" and "answered zero" must not collapse into one value.
+  // `null` here means: assert nothing about this fleet.
+  const probeTotal = probeEnabled
+    && (unfilteredProbe.state === 'ready' || unfilteredProbe.state === 'empty')
+    && unfilteredProbe.page
+      ? unfilteredProbe.page.total
+      : null;
+
+  // Which empty-state message the evidence supports: blame the status filter,
+  // blame the OS, or — while the probe is unsettled, failed, or unavailable —
+  // neither.
+  const emptyBlame: 'statusFilter' | 'osMismatch' | null = !pickerEmpty
+    ? null
+    : legacyCompatible
+      ? (statusFilterActive && legacyCompatible.hiddenByStatus ? 'statusFilter' : 'osMismatch')
+      : probeTotal === null
+        ? null
+        : probeTotal > 0 ? 'statusFilter' : 'osMismatch';
+  const hiddenCompatibleCount = legacyCompatible ? legacyCompatible.count : probeTotal ?? 0;
 
   // Initialize parameters with defaults. Runtime parameters only (#3409 PR3):
   // a bound parameter is resolved per target device by the server, so it is
@@ -437,10 +464,12 @@ export default function ScriptExecutionModal({
               showSelectAll
             />
 
-            {/* #4172: offline-vs-OS disambiguation for the empty picker. The
-                picker keeps its own neutral "No devices found." line — it has
-                no empty-state slot, and this port does not reshape it. */}
-            {pickerEmpty && (statusFilteredEmptyState ? (
+            {/* #4172: offline-vs-OS disambiguation for the empty picker, shown
+                only where the evidence supports it (`emptyBlame`). The picker
+                keeps its own neutral "No devices found." line — it has no
+                empty-state slot, and that line is all the operator sees while
+                the evidence is still missing. */}
+            {emptyBlame === 'statusFilter' ? (
               <div className="p-4 text-center text-sm text-muted-foreground space-y-2">
                 <p>
                   {t('scriptExecutionModal.empty.offlineFiltered', {
@@ -458,13 +487,13 @@ export default function ScriptExecutionModal({
                   {t('scriptExecutionModal.empty.showAllDevices')}
                 </button>
               </div>
-            ) : (
+            ) : emptyBlame === 'osMismatch' ? (
               <p className="p-4 text-center text-sm text-muted-foreground">
                 {t('scriptExecutionModal.empty.noCompatibleDevices', {
                   os: script.osTypes.map(os => t(/* i18n-dynamic */ `scriptExecutionModal.os.${os}`)).join(t('scriptExecutionModal.orSeparator'))
                 })}
               </p>
-            ))}
+            ) : null}
           </div>
 
           {/* Execution Progress */}
