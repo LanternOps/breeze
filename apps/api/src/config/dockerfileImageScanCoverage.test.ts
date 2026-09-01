@@ -65,9 +65,16 @@ import { describe, expect, it } from 'vitest';
  *  3. **That the scanned build and the published build are the same bytes.**
  *     CI builds the Dockerfile at PR time; `release.yml` builds it again at tag
  *     time. Only the three M365 executors scan the exact published manifest
- *     before promoting its tag. `release-time digest scanning` below snapshots
- *     which published images have that and which do not, so the gap stays
- *     visible rather than silent.
+ *     before promoting its tag. The snapshot below records, per publishing job,
+ *     whether it has a trivy-action step at all — a weaker fact than
+ *     "scans the pushed digest", and labelled as the weaker fact deliberately
+ *     (see the comment there). It keeps the gap visible; it does not measure it.
+ *
+ * Sources for the claims above that live outside this repo, so a later reader
+ * knows they were checked rather than assumed: the ruleset in (2) was read with
+ * `gh api repos/LanternOps/breeze/rulesets` on 2026-09-01 — one rule of type
+ * `required_status_checks`, one context, `CI Success`. Re-check it before
+ * relying on it; nothing here can.
  */
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -241,17 +248,19 @@ function publishedDockerfiles(): { dockerfile: string; workflow: string; job: st
 
   for (const [workflow, doc] of allWorkflows()) {
     for (const [jobId, job] of Object.entries(doc.jobs ?? {})) {
-      const buildSteps = (job.steps ?? []).filter((step) =>
-        step.uses?.startsWith(BUILD_PUSH_ACTION),
+      const where = `${workflow} job '${jobId}'`;
+      // Whether a step pushes needs no matrix, so decide that FIRST. Expanding
+      // up front would make a job that merely builds (`push: false`) inside a
+      // dynamic matrix throw over a matrix irrelevant to publishing.
+      const pushingSteps = (job.steps ?? []).filter(
+        (step) => step.uses?.startsWith(BUILD_PUSH_ACTION) && stepPushes(step.with ?? {}, where),
       );
-      if (buildSteps.length === 0) continue;
-      // Expanded only for image-building jobs: a job with a matrix this cannot
-      // resolve is a hard error, but only when it might publish an image.
+      if (pushingSteps.length === 0) continue;
+      // Now the matrix must resolve: this job publishes, so an unresolvable
+      // matrix means we cannot know which Dockerfiles it ships.
       const bindings = matrixCombinations(job.strategy?.matrix);
-      for (const step of buildSteps) {
-        const where = `${workflow} job '${jobId}'`;
+      for (const step of pushingSteps) {
         const inputs = step.with ?? {};
-        if (!stepPushes(inputs, where)) continue;
         const file = inputs.file;
         if (typeof file !== 'string') {
           throw new Error(`${where} pushes without a \`file:\` input`);
@@ -297,7 +306,17 @@ function uncoveredPublished(
   return published.filter((file) => !scanned.includes(file) && !(file in exempt));
 }
 
-/** Every Dockerfile tracked in the repo, wherever it lives. */
+/**
+ * Every Dockerfile tracked in the repo, wherever it lives.
+ *
+ * Tracked, note: this reads the git index, so an *untracked* Dockerfile is
+ * invisible to the snapshot below. That is the right trade — CI and release
+ * only ever build tracked files, and a path-glob walk would instead miss any
+ * Dockerfile outside the two directories it knew about — but the snapshot is
+ * the sole backstop for several drift shapes, so the dependency is worth
+ * knowing. It fails loud (non-zero `git ls-files`) outside a git checkout
+ * rather than returning an empty list.
+ */
 function findDockerfiles(): string[] {
   const result = spawnSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8' });
   if (result.status !== 0) {
@@ -381,18 +400,24 @@ describe('Trivy image scan covers the images we publish', () => {
     expect(dockerfileVar, 'build step does not receive `matrix.dockerfile`').toBeDefined();
     expect(imageVar, 'build step does not receive `matrix.image`').toBeDefined();
 
-    // …and the command must actually consume them. Carrying the values in
-    // `env:` while the command hardcodes a path satisfies "references the
-    // matrix" without scanning anything the matrix names.
+    // …and the command must actually consume them, as the `-f` argument
+    // itself. One claim about one token: "does the run line mention
+    // $DOCKERFILE somewhere" is satisfied by an unrelated `echo`, and a
+    // negative "no literal path" check is evaded by writing `./apps/...`.
+    // Asserting the argument position can be neither drifted past nor dodged.
     const runLine = buildStep?.run ?? '';
-    expect(runLine).toMatch(new RegExp(`\\$\\{?${dockerfileVar}\\b`));
-    expect(runLine).toMatch(new RegExp(`\\$\\{?${imageVar}\\b`));
     expect(
       runLine,
-      'the build command names a Dockerfile path literally instead of using the ' +
-        'matrix value, so every matrix leg would build the same image while ' +
-        'reporting per-image check names.',
-    ).not.toMatch(/-f\s+["']?(apps|docker)\//);
+      'the build command must pass the matrix Dockerfile as its `-f` argument. ' +
+        'Carrying the value in `env:` while `-f` names a path literally satisfies ' +
+        '"references the matrix" while every matrix leg builds the same image and ' +
+        'still reports per-image check names.',
+    ).toMatch(new RegExp(`-f\\s+["']?\\$\\{?${dockerfileVar}\\b`));
+    expect(
+      runLine,
+      'the built tag must carry the matrix image name, or the scan step below ' +
+        'would look up an image this step never produced.',
+    ).toMatch(new RegExp(`-t\\s+["'][^"']*\\$\\{?${imageVar}\\b`));
 
     const scanStep = steps.find((step) => step.uses?.startsWith(TRIVY_ACTION));
     expect(scanStep, `${SCAN_JOB_ID} has no trivy-action step`).toBeDefined();
@@ -492,12 +517,12 @@ describe('Trivy image scan covers the images we publish', () => {
     // never pushes them, on the grounds that CI's smoke test and the
     // local-build compose mode build them. Derive that instead of asserting it
     // in prose, so the rationale cannot rot while the entries stay.
-    const compose = ['docker-compose.override.yml.ci', 'docker-compose.override.yml.local-build']
+    const CI_OVERRIDE = 'docker-compose.override.yml.ci';
+    const compose = [CI_OVERRIDE, 'docker-compose.override.yml.local-build']
       .map((file) => readFileSync(path.join(REPO_ROOT, file), 'utf8'))
       .join('\n');
 
     for (const dockerfile of ['docker/Dockerfile.api', 'docker/Dockerfile.web']) {
-      if (!SCANNED_FILES.includes(dockerfile)) continue;
       expect(
         compose,
         `${dockerfile} is scanned but nothing publishes it and no compose override ` +
@@ -505,6 +530,16 @@ describe('Trivy image scan covers the images we publish', () => {
           'still scanned has changed and belongs in the snapshot above.',
       ).toContain(dockerfile);
     }
+
+    // The override file naming those Dockerfiles is only half the claim; the
+    // other half is that CI still runs it. Without this, every `.ci` reference
+    // in ci.yml could be repointed elsewhere and the rationale would read as
+    // derived while being false.
+    expect(
+      readFileSync(path.join(REPO_ROOT, '.github/workflows/ci.yml'), 'utf8'),
+      `ci.yml no longer uses ${CI_OVERRIDE}, so "CI's smoke test builds them" is ` +
+        'no longer a reason to keep the compose variants in the scan matrix.',
+    ).toContain(CI_OVERRIDE);
   });
 
   it('records a reason for every scan exemption', () => {
@@ -538,25 +573,35 @@ describe('Trivy image scan covers the images we publish', () => {
             stepPushes(step.with ?? {}, `${workflow} job '${jobId}'`),
         );
         if (!pushes) continue;
+        // Label exactly what is checked — the presence of a trivy-action step
+        // in the job — and nothing more. The stronger claim ("scans the exact
+        // pushed digest before promoting its tag") additionally requires an
+        // `image-ref` naming the digest and the build→scan→promote ordering,
+        // which check-supply-chain-hardening.sh:321-330 enforces for the
+        // executors. Writing that stronger label here from this weaker
+        // predicate would put a false coverage claim in the file, which the
+        // docblock above then cites: an unrelated `scan-type: fs` step would
+        // earn a job the "scans the pushed digest" label, and the natural
+        // review action on a snapshot diff is to accept the new label.
         coverage[`${workflow}:${jobId}`] = steps.some((step) => step.uses?.startsWith(TRIVY_ACTION))
-          ? 'scans the pushed digest'
-          : 'NO release-time scan';
+          ? 'has a trivy-action step'
+          : 'NO trivy-action step';
       }
     }
 
     expect(coverage).toEqual({
-      '.github/workflows/hosted-images.yml:build-m365-executor-image': 'scans the pushed digest',
-      '.github/workflows/hosted-images.yml:build-server-image': 'NO release-time scan',
-      '.github/workflows/release.yml:build-binaries-image': 'NO release-time scan',
-      '.github/workflows/release.yml:build-docker-api': 'NO release-time scan',
+      '.github/workflows/hosted-images.yml:build-m365-executor-image': 'has a trivy-action step',
+      '.github/workflows/hosted-images.yml:build-server-image': 'NO trivy-action step',
+      '.github/workflows/release.yml:build-binaries-image': 'NO trivy-action step',
+      '.github/workflows/release.yml:build-docker-api': 'NO trivy-action step',
       '.github/workflows/release.yml:build-docker-m365-communications-executor':
-        'scans the pushed digest',
+        'has a trivy-action step',
       '.github/workflows/release.yml:build-docker-m365-graph-actions-executor':
-        'scans the pushed digest',
+        'has a trivy-action step',
       '.github/workflows/release.yml:build-docker-m365-graph-read-executor':
-        'scans the pushed digest',
-      '.github/workflows/release.yml:build-docker-portal': 'NO release-time scan',
-      '.github/workflows/release.yml:build-docker-web': 'NO release-time scan',
+        'has a trivy-action step',
+      '.github/workflows/release.yml:build-docker-portal': 'NO trivy-action step',
+      '.github/workflows/release.yml:build-docker-web': 'NO trivy-action step',
     });
   });
 
