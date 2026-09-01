@@ -111,7 +111,11 @@ export interface MappingProposal {
   proposedRemoteName: string | null;
   confidence: 'existing_link' | 'exact_email' | 'exact_sku' | 'exact_name' | 'none' | 'ambiguous';
   linkStatus: 'suggested' | 'confirmed' | 'create_new' | 'unlinked';
-  syncStatus: 'pending' | 'synced' | 'error';
+  // 'synced_with_tax_variance' is a Phase C (invoice push) outcome — org/item
+  // mapping rows never carry it themselves, but this type is the shared shape
+  // `accountingEntityMappings.syncStatus` casts through (toProposalFromMapping),
+  // so it must stay a superset of every value the DB column actually allows.
+  syncStatus: 'pending' | 'synced' | 'error' | 'synced_with_tax_variance';
   lastError: string | null;
 }
 
@@ -142,8 +146,13 @@ function orgBillingEmail(billingContact: unknown): string | null {
  * request-scoped RLS context. Everything else in this module reads through
  * the ambient `db` (the caller's partner-scoped context), matching "Request
  * route reads/writes otherwise stay in the caller's partner RLS context."
+ *
+ * Exported for `accountingInvoicePush.ts` (Phase C, Task 3): the invoice-push
+ * coordinator needs the exact same connection/token/reauth resolution this
+ * module already owns, and re-deriving it would risk the two falling out of
+ * agreement on what "not connected"/"reauth required" mean.
  */
-async function resolveConnectionAndToken(
+export async function resolveConnectionAndToken(
   partnerId: string,
   provider: 'quickbooks',
 ): Promise<{ conn: AccountingConnection; liveConn: AccountingConnection }> {
