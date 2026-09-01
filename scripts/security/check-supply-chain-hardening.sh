@@ -679,6 +679,28 @@ require_grep 'metrics_scrape_token:' docker-compose.monitoring.yml \
 require_grep 'environment: METRICS_SCRAPE_TOKEN' docker-compose.monitoring.yml \
   "monitoring compose must source metrics scrape token from the environment"
 
+# docker-compose.monitoring.yml must compose cleanly on top of BOTH base
+# stacks: the self-host root docker-compose.yml (which runs a local `postgres`
+# service) and deploy/docker-compose.prod.yml (which has no local Postgres —
+# managed database only). A `depends_on` on a service name that exists in only
+# one of the two makes the combined project invalid for the other (#4362).
+# Behavioral proof, requires Docker — advisory when unavailable, matching
+# check-relay-edge-hardening.sh's coturn probe.
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  monitoring_err="$(mktemp)"
+  if ! docker compose --env-file .env.example -f docker-compose.yml -f docker-compose.monitoring.yml config >/dev/null 2>"$monitoring_err"; then
+    cat "$monitoring_err" >&2
+    rm -f "$monitoring_err"
+    fail "docker-compose.monitoring.yml does not compose cleanly with the root docker-compose.yml (dev)"
+  fi
+  if ! docker compose --env-file deploy/compose-config-test.env -f deploy/docker-compose.prod.yml -f docker-compose.monitoring.yml config >/dev/null 2>"$monitoring_err"; then
+    cat "$monitoring_err" >&2
+    rm -f "$monitoring_err"
+    fail "docker-compose.monitoring.yml does not compose cleanly with deploy/docker-compose.prod.yml (#4362)"
+  fi
+  rm -f "$monitoring_err"
+fi
+
 require_grep 'envFlag..ENABLE_REGISTRATION., false' apps/api/src/routes/system.ts \
   "system config status must default registration to disabled"
 require_grep "envFlag\\('ENABLE_REGISTRATION', false\\)" apps/api/src/routes/auth/schemas.ts \
