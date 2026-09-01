@@ -836,7 +836,16 @@ install_systemd_boot_service() {
   rm -f "${unit_tmp}"
   run_privileged systemctl daemon-reload
   run_privileged systemctl enable --now "${SYSTEMD_SERVICE_NAME}.service"
-  log "${C_OK}Installed ${SYSTEMD_HELPER_FILE} and enabled ${SYSTEMD_SERVICE_NAME}.service.${C_RESET}"
+  # `enable --now` exits 0 when the enable succeeds even if the start did not
+  # (a rejected unit prints "Failed to start ... bad unit file setting" and the
+  # script used to carry on to "Guided setup complete" — #4201). Verify the
+  # unit is actually running before claiming success.
+  if ! systemctl is-active --quiet "${SYSTEMD_SERVICE_NAME}.service"; then
+    warn "${SYSTEMD_SERVICE_NAME}.service was installed but is not active:"
+    systemctl status "${SYSTEMD_SERVICE_NAME}.service" --no-pager -l 2>&1 | sed 's/^/  /' >&2 || true
+    fail "The reboot-startup service failed to start. Fix the unit (journalctl -u ${SYSTEMD_SERVICE_NAME}.service) or rerun with --install-systemd; the Breeze stack itself is unaffected."
+  fi
+  log "${C_OK}Installed ${SYSTEMD_HELPER_FILE}; ${SYSTEMD_SERVICE_NAME}.service is enabled and active.${C_RESET}"
 }
 
 configure_boot_start() {
