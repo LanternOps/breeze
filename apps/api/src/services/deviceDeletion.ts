@@ -128,10 +128,13 @@ export async function deleteDeviceCascade(
   // be unit-parsed on the client. Doing the comparison here removes that parser
   // and, more importantly, removes the failure mode it created: an earlier
   // revision decided whether to bound the lock based on a value it had to
-  // decode first, so an unreadable result meant choosing between aborting a
-  // delete whose SELF_UNINSTALL had already gone out and proceeding on an
-  // UNBOUNDED wait that pins a pooled connection. This statement always leaves
-  // the timeout bounded, so neither branch can arise.
+  // decode first, so an unreadable result meant choosing between aborting the
+  // delete outright and proceeding on an UNBOUNDED wait that pins a pooled
+  // connection. This statement always leaves the timeout bounded, so neither
+  // branch can arise. (That "abort" horn used to be worse still, because the
+  // route dispatched SELF_UNINSTALL before this transaction — #3817 moved the
+  // dispatch after the commit, so nothing irreversible has happened by the
+  // time this runs, for either caller.)
   //
   // `ms = 0` is Postgres's "disable the timeout", i.e. infinitely loose, so it
   // is always worth tightening. A caller already stricter than the bound keeps
