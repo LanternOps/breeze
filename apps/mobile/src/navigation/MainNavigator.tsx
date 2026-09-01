@@ -13,6 +13,7 @@ import { HomeScreen } from '../screens/chat/HomeScreen';
 import { SystemsScreen } from '../screens/systems/SystemsScreen';
 import { TicketsScreen } from '../screens/tickets/TicketsScreen';
 import { TicketDetailScreen } from '../screens/tickets/TicketDetailScreen';
+import { AttachmentViewerScreen } from '../screens/tickets/AttachmentViewerScreen';
 import { TimesheetScreen } from '../screens/time/TimesheetScreen';
 import { TimeSuggestionsScreen } from '../screens/time/TimeSuggestionsScreen';
 import { HomeIcon, SystemsIcon, TicketsIcon, TimeIcon } from '../components/TabIcons';
@@ -30,6 +31,18 @@ export type SystemsStackParamList = {
 export type TicketsStackParamList = {
   Tickets: undefined;
   TicketDetail: { ticketId: string };
+  /**
+   * W11 (#4337). Carries `contentType` and `filename` as params rather than
+   * re-fetching the attachment row: the feed already holds both, and the viewer
+   * needs `contentType` to decide between rendering inline and handing the file
+   * to the OS *before* it can usefully fetch anything.
+   */
+  AttachmentViewer: {
+    ticketId: string;
+    attachmentId: string;
+    contentType: string;
+    filename: string;
+  };
 };
 
 /**
@@ -79,6 +92,13 @@ function TicketsStackNavigator() {
         name="TicketDetail"
         component={TicketDetailScreen}
         options={{ title: 'Ticket' }}
+      />
+      <TicketsStack.Screen
+        name="AttachmentViewer"
+        component={AttachmentViewerScreen}
+        // A modal, not a push: the viewer is a detour from the ticket, and a
+        // swipe-down back to the feed is what a full-screen photo should do.
+        options={{ presentation: 'modal', title: 'Attachment' }}
       />
     </TicketsStack.Navigator>
   );

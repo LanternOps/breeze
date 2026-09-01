@@ -6,6 +6,25 @@ import { Directory, File, Paths } from 'expo-file-system';
 
 import { API_CORE_PREFIX, coreRequest, FALLBACK_API_BASE_URL, getAuthImageHeaders } from './api';
 import { getServerUrl } from './serverConfig';
+import {
+  ATTACHMENT_UPLOAD_TIMEOUT_MS,
+  attachmentError,
+  attachmentFilePart,
+  isAllowedMime,
+  MAX_IMAGE_EDGE,
+  TICKET_ATTACHMENT_LIMITS,
+  toAttachmentError,
+  type PickedAttachment,
+  type PickOutcome,
+  type TicketAttachmentMeta,
+} from './ticketAttachmentContract';
+
+// Re-exported so a caller that already needs the native functions has one
+// import site. Anything that needs ONLY the contract (composer/feed logic, and
+// every test of it) must import `./ticketAttachmentContract` directly — going
+// through this module drags six Expo packages, and therefore Flow-typed
+// `react-native` source, into the Vitest runner.
+export * from './ticketAttachmentContract';
 
 /**
  * Ticket comment attachments for mobile (W11 of #3206; server half is #4282).
@@ -22,141 +41,6 @@ import { getServerUrl } from './serverConfig';
  * correctness, and a queued upload would replay a file whose local URI the OS
  * may already have reclaimed. Uploads are online-only, and the composer says so.
  */
-
-/**
- * Mirrors `TICKET_ATTACHMENT_LIMITS` in `packages/shared/src/constants/ticketAttachments.ts`.
- *
- * Duplicated rather than imported because `apps/mobile` does not depend on
- * `@breeze/shared` at all — the Metro bundler resolves no workspace packages
- * here, and `services/tickets.ts` already mirrors `TICKET_STATUS_TRANSITIONS`
- * the same way. The server re-validates all of it, so the copy is a UX
- * shortcut (fail before spending the upload), never the enforcement point.
- */
-export const TICKET_ATTACHMENT_LIMITS = {
-  maxBytes: 10 * 1024 * 1024,
-  maxPerComment: 5,
-  maxPendingPerUser: 20,
-  allowedMimes: ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'],
-} as const;
-
-/** Long-edge cap applied before upload. 2048 keeps a phone photo legible on a
- *  desktop ticket view while cutting a 4032px capture to roughly a tenth. */
-export const MAX_IMAGE_EDGE = 2048;
-
-/** Uploads get their own deadline: 15s (the app default) loses a 10 MB photo on cellular. */
-export const ATTACHMENT_UPLOAD_TIMEOUT_MS = 120_000;
-
-/** Mirrors `TicketAttachmentMeta` in `packages/shared/src/types/tickets.ts`. */
-export interface TicketAttachmentMeta {
-  id: string;
-  /** `null` while the row is pending — i.e. uploaded but not yet claimed by a comment. */
-  commentId: string | null;
-  contentType: string;
-  byteSize: number;
-  originalFilename: string;
-  createdAt: string;
-}
-
-/** A file chosen on the device, normalised across the three pickers. */
-export interface PickedAttachment {
-  uri: string;
-  name: string;
-  mimeType: string;
-  /** Bytes, or null when the picker did not report a size. */
-  size: number | null;
-  /** Pixel dimensions when known; null for PDFs. Used to pick the long edge. */
-  width: number | null;
-  height: number | null;
-}
-
-export type PickOutcome =
-  | { ok: true; files: PickedAttachment[] }
-  | { ok: false; reason: 'cancelled' | 'permission-denied' };
-
-export type AttachmentErrorCode =
-  | 'ATTACHMENT_TOO_LARGE'
-  | 'UNSUPPORTED_ATTACHMENT_TYPE'
-  | 'TOO_MANY_PENDING'
-  | 'TICKET_DELETED'
-  | 'TICKET_NOT_FOUND'
-  | 'STORAGE_UNAVAILABLE'
-  | 'ATTACHMENT_NOT_CLAIMABLE'
-  | 'INVALID_MULTIPART'
-  | 'EMPTY_ATTACHMENT'
-  | 'SHARING_UNAVAILABLE'
-  | 'UPLOAD_FAILED';
-
-/**
- * A failed attachment operation, carrying a message written for a technician
- * rather than the server's own string.
- *
- * `retryable` drives whether the chip offers Retry. Getting this wrong in
- * either direction is bad: offering Retry on a 415 invites an action that can
- * never succeed, and hiding it on a 503 loses a photo to a transient outage.
- */
-export class AttachmentUploadError extends Error {
-  readonly name = 'AttachmentUploadError';
-
-  constructor(
-    readonly code: AttachmentErrorCode,
-    message: string,
-    readonly retryable: boolean
-  ) {
-    super(message);
-  }
-}
-
-const ERROR_COPY: Record<AttachmentErrorCode, { message: string; retryable: boolean }> = {
-  ATTACHMENT_TOO_LARGE: { message: 'That file is over the 10 MB limit.', retryable: false },
-  UNSUPPORTED_ATTACHMENT_TYPE: {
-    message: 'Only JPEG, PNG, WebP images and PDFs can be attached.',
-    retryable: false,
-  },
-  TOO_MANY_PENDING: {
-    message: 'Too many attachments are waiting to be posted. Send or remove some first.',
-    retryable: false,
-  },
-  TICKET_DELETED: { message: 'This ticket was deleted, so files cannot be attached.', retryable: false },
-  TICKET_NOT_FOUND: { message: 'This ticket is no longer available.', retryable: false },
-  STORAGE_UNAVAILABLE: {
-    message: 'Attachment storage is unavailable right now. Try again shortly.',
-    retryable: true,
-  },
-  ATTACHMENT_NOT_CLAIMABLE: {
-    message: 'One or more attachments could not be posted with this comment.',
-    retryable: false,
-  },
-  INVALID_MULTIPART: { message: 'That file could not be read. Pick it again.', retryable: false },
-  EMPTY_ATTACHMENT: { message: 'That file is empty.', retryable: false },
-  SHARING_UNAVAILABLE: { message: 'This device cannot open that file.', retryable: false },
-  UPLOAD_FAILED: { message: 'Upload failed. Check your connection and try again.', retryable: true },
-};
-
-function attachmentError(code: AttachmentErrorCode): AttachmentUploadError {
-  const copy = ERROR_COPY[code];
-  return new AttachmentUploadError(code, copy.message, copy.retryable);
-}
-
-/**
- * Translate whatever `coreRequest` threw into a typed, user-facing failure.
- *
- * An unrecognised code becomes `UPLOAD_FAILED` and stays RETRYABLE: we cannot
- * tell a new server-side rejection from a dropped connection, and offering a
- * retry that fails again is a much cheaper mistake than silently dropping a
- * photo the technician believes they attached.
- */
-export function toAttachmentError(err: unknown): AttachmentUploadError {
-  if (err instanceof AttachmentUploadError) return err;
-  const code = (err as { code?: unknown } | null)?.code;
-  if (typeof code === 'string' && code in ERROR_COPY) {
-    return attachmentError(code as AttachmentErrorCode);
-  }
-  return attachmentError('UPLOAD_FAILED');
-}
-
-function isAllowedMime(mimeType: string): boolean {
-  return (TICKET_ATTACHMENT_LIMITS.allowedMimes as readonly string[]).includes(mimeType);
-}
 
 /** Best-effort filename when a picker gives none — the server re-sanitises it anyway. */
 function fallbackName(uri: string, mimeType: string): string {
@@ -274,22 +158,6 @@ export async function prepareImage(file: PickedAttachment): Promise<PickedAttach
     width: saved.width,
     height: saved.height,
   };
-}
-
-/**
- * React Native's `FormData` accepts this shape as a file part and streams the
- * file off disk; the DOM typings know nothing about it, hence the cast at the
- * call site. Exported so a test can assert the shape without constructing a
- * FormData whose parts Node cannot introspect the same way.
- */
-export interface AttachmentFilePart {
-  uri: string;
-  name: string;
-  type: string;
-}
-
-export function attachmentFilePart(file: PickedAttachment): AttachmentFilePart {
-  return { uri: file.uri, name: file.name, type: file.mimeType };
 }
 
 /**

@@ -1,5 +1,5 @@
 import { coreRequest } from './api';
-import type { TicketAttachmentMeta } from './ticketAttachments';
+import type { TicketAttachmentMeta } from './ticketAttachmentContract';
 
 /**
  * Ticket surface for mobile. `/api/v1/mobile/*` has no ticket routes, so the
