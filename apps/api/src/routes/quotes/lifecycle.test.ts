@@ -38,14 +38,21 @@ vi.mock('../../jobs/quoteSendQueue', () => ({
   scheduleQuoteSend: vi.fn(),
   cancelQuoteSend: vi.fn(),
 }));
-vi.mock('../../services/quoteImageStorage', () => ({
-  writeQuoteImage: vi.fn(), readQuoteImage: vi.fn(), sniffImageMime: vi.fn(), MAX_QUOTE_IMAGE_SIZE_BYTES: 5 * 1024 * 1024,
-  fetchRemoteImage: vi.fn(),
-  QUOTE_IMAGE_WEBP_REJECTED_MESSAGE: "WebP images can't be used in quote PDFs — please upload a PNG or JPEG image instead.",
-  RemoteImageError: class RemoteImageError extends Error {
-    constructor(public reason: string, msg: string) { super(msg); this.name = 'RemoteImageError'; }
-  },
-}));
+// QUOTE_IMAGE_WEBP_REJECTED_MESSAGE comes from the REAL module (importActual)
+// rather than a hardcoded copy here — a hardcoded duplicate would let the
+// mock and the real constant drift apart silently, since every assertion
+// below compares the route's response against this same import.
+vi.mock('../../services/quoteImageStorage', async (importActual) => {
+  const actual = await importActual<typeof import('../../services/quoteImageStorage')>();
+  return {
+    writeQuoteImage: vi.fn(), readQuoteImage: vi.fn(), sniffImageMime: vi.fn(), MAX_QUOTE_IMAGE_SIZE_BYTES: 5 * 1024 * 1024,
+    fetchRemoteImage: vi.fn(),
+    QUOTE_IMAGE_WEBP_REJECTED_MESSAGE: actual.QUOTE_IMAGE_WEBP_REJECTED_MESSAGE,
+    RemoteImageError: class RemoteImageError extends Error {
+      constructor(public reason: string, msg: string) { super(msg); this.name = 'RemoteImageError'; }
+    },
+  };
+});
 vi.mock('./quotes', () => ({
   quoteActorFrom: () => ({ userId: 'u1', partnerId: 'p1', accessibleOrgIds: null }),
   handleServiceError: (_c: unknown, err: unknown) => { throw err; },

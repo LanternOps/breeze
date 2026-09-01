@@ -1,8 +1,19 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import zlib from 'node:zlib';
 import PDFKitDocument from 'pdfkit';
 import { PDFDocument, PDFDict, PDFName } from 'pdf-lib';
 import { formatMoney } from '@breeze/shared';
+
+// Spy on captureException (kept otherwise-real) so the #3483 doc.image()
+// failure tests can assert the render loop actually REPORTS a draw failure,
+// not just that it degrades to "no image" — the two behaviors are distinct
+// and the previous version of this file only proved the latter.
+vi.mock('./sentry', async (importActual) => {
+  const actual = await importActual<typeof import('./sentry')>();
+  return { ...actual, captureException: vi.fn() };
+});
+
+import { captureException } from './sentry';
 import { renderQuotePdf, contractUploadedMarker, columnsFor, imageIntrinsicSize } from './quotePdf';
 
 // Encode a real, pdfkit-decodable grayscale PNG of the given dimensions. The
@@ -346,6 +357,7 @@ describe('renderQuotePdf', () => {
   // imageIntrinsicSize-only assertion that WebP merely fails to *parse*
   // (which never proved the render path degrades instead of vanishing silently).
   it('degrades gracefully — surrounding content still renders — when an image block holds WebP bytes pdfkit cannot embed', async () => {
+    vi.mocked(captureException).mockClear();
     const webpBytes = Buffer.from([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]); // RIFF....WEBP
     const buf = await renderQuotePdf(
       { id: 'q1', quoteNumber: 'Q-WEBP', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD' },
@@ -363,6 +375,34 @@ describe('renderQuotePdf', () => {
     // render — a decode failure degrades to "no image", never aborts the doc.
     expect(text).toContain('Skipped image');
     expect(text).toContain('AFTERWEBP');
+    // The draw failure must be REPORTED, not just swallowed — this is the
+    // actual behavior change this PR makes at this call site (previously
+    // console.error-only). A previous version of this test only proved the
+    // "no throw" half; this proves the "not silent" half too.
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('cover image: reports a WebP draw failure via captureException and leaves the page usable (no leaked clip/save state)', async () => {
+    vi.mocked(captureException).mockClear();
+    const webpBytes = Buffer.from([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]); // RIFF....WEBP
+    const buf = await renderQuotePdf(
+      {
+        id: 'q1', quoteNumber: 'Q-WEBP-COVER', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD',
+        coverPage: { enabled: true, title: 'COVERTITLE', coverImageId: 'cover-webp' },
+      } as never,
+      [{ id: 'b1', blockType: 'rich_text', sortOrder: 0, content: { html: '<p>BODYAFTERCOVER</p>' } }],
+      [],
+      async () => ({ data: webpBytes }),
+      {},
+    );
+    expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+    expect(captureException).toHaveBeenCalledTimes(1);
+    const text = extractPdfText(buf);
+    // A failed cover-image draw must not corrupt the content stream (the
+    // unmatched doc.save()/doc.restore() bug this PR also fixes) — the cover
+    // title and the body content that follows must both still be legible.
+    expect(text).toContain('COVERTITLE');
+    expect(text).toContain('BODYAFTERCOVER');
   });
 
   it('embeds a product thumbnail for a catalog-sourced line via loadCatalogImage', async () => {
