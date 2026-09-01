@@ -37,7 +37,9 @@ PROXY_BIND_HOST="${BREEZE_SETUP_PROXY_BIND_HOST:-127.0.0.1}"
 PROXY_TARGET_HOST="${BREEZE_SETUP_PROXY_TARGET_HOST:-}"
 API_HOST_PORT="${BREEZE_SETUP_API_HOST_PORT:-3001}"
 WEB_HOST_PORT="${BREEZE_SETUP_WEB_HOST_PORT:-4321}"
-SELECTED_BREEZE_VERSION=""
+# BREEZE_SETUP_VERSION preselects the release (skips the GitHub/GHCR lookups) —
+# used by CI to run the installer against locally built images.
+SELECTED_BREEZE_VERSION="${BREEZE_SETUP_VERSION:-}"
 BACK_STATUS=42
 BOOTSTRAP_ENV_KEYS=(
   BREEZE_BOOTSTRAP_ADMIN_EMAIL
@@ -83,6 +85,9 @@ Options:
 Environment overrides:
   BREEZE_SETUP_REMOTE_BASE   Override raw GitHub base URL for template testing.
   BREEZE_SETUP_GITHUB_REPO   GitHub repo for latest release lookup.
+  BREEZE_SETUP_VERSION       Preselect the Breeze version/tag; skips the GitHub
+                             release lookup and the GHCR image check (for pinned,
+                             air-gapped, or locally built images).
   BREEZE_SETUP_SECRET_MODE   Secret workflow: auto or manual.
   BREEZE_SETUP_STORAGE_MODE  Storage mode: docker or local.
   BREEZE_SETUP_DRY_RUN       Exercise prompts without Docker/systemd changes: true or false.
