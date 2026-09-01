@@ -34,7 +34,13 @@ export const aiAgentGraduation = pgTable(
     /**
      * The four-eyes `manage_ai_agents:authorize_supervised_key` intent that
      * granted the key. Composite FK (promoted_intent_id, org_id) ->
-     * action_intents(id, org_id) declared below, ON DELETE SET NULL.
+     * action_intents(id, org_id) declared below, ON DELETE SET NULL
+     * (promoted_intent_id). The migration pins the PG15 explicit column
+     * list so only promoted_intent_id is nulled — the NOT NULL org_id is
+     * left untouched. drizzle-orm's `foreignKey(...).onDelete('set null')`
+     * below cannot express that column list; it renders bare
+     * `ON DELETE SET NULL`, so this comment is the only place the
+     * invariant is pinned in TS.
      */
     promotedIntentId: uuid('promoted_intent_id'),
     demotedAt: timestamp('demoted_at', { withTimezone: true }),

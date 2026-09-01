@@ -6,22 +6,7 @@ import {
   AI_AGENT_FIX_WATCH_SOURCE_KINDS,
   AI_AGENT_FIX_WATCH_STATES,
 } from './aiAgentFixWatches';
-
-function checkConstraintLiterals(sql: string, constraintName: string, column: string): string[] {
-  const pattern = new RegExp(`${constraintName}\\s+CHECK\\s*\\(\\s*${column}\\s+IN\\s*\\(([^)]*)\\)\\s*\\)`, 'i');
-  const check = pattern.exec(sql);
-  const memberList = check?.[1];
-  expect(memberList, `${constraintName} CHECK constraint not found in the migration`).toBeDefined();
-
-  return (memberList ?? '')
-    .split(',')
-    .map((raw) => raw.trim())
-    .filter((raw) => raw.length > 0)
-    .map((raw) => {
-      expect(raw, `CHECK member ${raw} is not a single-quoted literal`).toMatch(/^'[^']*'$/);
-      return raw.slice(1, -1);
-    });
-}
+import { checkConstraintLiterals } from './checkConstraintTestHelpers';
 
 describe('AI_AGENT_FIX_WATCH_STATES', () => {
   it('has exactly the six verdict states', () => {

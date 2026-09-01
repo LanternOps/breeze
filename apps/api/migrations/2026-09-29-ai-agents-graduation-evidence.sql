@@ -26,9 +26,12 @@ CREATE TABLE IF NOT EXISTS ai_agent_op_evidence (
 
 -- Composite same-org provenance FK. ai_agent_runs_id_org_uq already exists
 -- (renamed by 2026-09-25-ai-agents-ticket-triage.sql) — do not recreate it.
+-- ON DELETE SET NULL carries the explicit PG15 column list (run_id): without
+-- it Postgres nulls every FK column, including the NOT NULL org_id, which
+-- would abort the parent delete with 23502 instead of preserving the row.
 DO $$ BEGIN
   ALTER TABLE ai_agent_op_evidence ADD CONSTRAINT ai_agent_op_evidence_run_org_fk
-    FOREIGN KEY (run_id, org_id) REFERENCES ai_agent_runs (id, org_id) ON DELETE SET NULL;
+    FOREIGN KEY (run_id, org_id) REFERENCES ai_agent_runs (id, org_id) ON DELETE SET NULL (run_id);
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- Exactly-once under BullMQ redelivery: a no-op INSERT means "already counted".
@@ -76,9 +79,11 @@ CREATE TABLE IF NOT EXISTS ai_agent_graduation (
   demote_watch_id uuid,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+-- Explicit PG15 column list (promoted_intent_id) — same rationale as above:
+-- without it, deleting the referenced intent would null org_id too and 23502.
 DO $$ BEGIN
   ALTER TABLE ai_agent_graduation ADD CONSTRAINT ai_agent_graduation_intent_org_fk
-    FOREIGN KEY (promoted_intent_id, org_id) REFERENCES action_intents (id, org_id) ON DELETE SET NULL;
+    FOREIGN KEY (promoted_intent_id, org_id) REFERENCES action_intents (id, org_id) ON DELETE SET NULL (promoted_intent_id);
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS ai_agent_graduation_key_uq
   ON ai_agent_graduation (org_id, agent_id, op_key);

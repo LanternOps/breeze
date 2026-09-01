@@ -25,8 +25,10 @@ import { organizations } from './orgs';
 // (`aiAgentGraduation.ts`, Task 1), same pattern as `aiAgents.ts` importing
 // `AiAgentKind`/`AiAgentMode` rather than redeclaring them here — this file
 // imports the TYPES only for `.$type<>()`; the migration's CHECK
-// constraints are the runtime source of truth, mirrored 1:1 against the
-// shared consts by construction (see aiAgentOpEvidence.registry.test.ts).
+// constraints are the runtime source of truth. They are pinned against the
+// shared consts by an explicit assertion in aiAgentOpEvidence.registry.test.ts
+// (checkConstraintLiterals() reads the migration's CHECK bodies verbatim and
+// compares them to the @breeze/shared arrays) — not by construction.
 //
 // Tenancy Shape 1: direct NOT NULL org_id, `breeze_has_org_access(org_id)`.
 export const aiAgentOpEvidence = pgTable(
@@ -49,9 +51,14 @@ export const aiAgentOpEvidence = pgTable(
     metric: text('metric').notNull().$type<AiAgentEvidenceMetric>(),
     /**
      * The originating run, if any. Composite FK (run_id, org_id) ->
-     * ai_agent_runs(id, org_id) declared below, ON DELETE SET NULL — a
-     * cross-tenant forged pointer is a 23503 even under a system context,
-     * and SET NULL keeps the evidence row when a run is erased.
+     * ai_agent_runs(id, org_id) declared below, ON DELETE SET NULL (run_id)
+     * — a cross-tenant forged pointer is a 23503 even under a system
+     * context, and SET NULL keeps the evidence row when a run is erased.
+     * The migration pins the PG15 explicit column list (`SET NULL (run_id)`)
+     * so only run_id is nulled — the NOT NULL org_id is left untouched.
+     * drizzle-orm's `foreignKey(...).onDelete('set null')` below cannot
+     * express that column list; it renders bare `ON DELETE SET NULL`, so
+     * this comment is the only place the invariant is pinned in TS.
      */
     runId: uuid('run_id'),
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),

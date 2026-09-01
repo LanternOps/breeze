@@ -6,11 +6,24 @@
 // than only under the (DB-requiring) integration suites so it fails fast
 // in the unit job too.
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import {
+  AI_AGENT_EVIDENCE_METRICS,
+  AI_AGENT_EVIDENCE_NAMESPACES,
+  AI_AGENT_EVIDENCE_SOURCE_KINDS,
+  AI_AGENT_GRADUATION_STATES,
+} from '@breeze/shared';
 import { getOrgCascadeDeleteOrder, ORG_CASCADE_DELETE_ORDER } from '../../services/tenantCascade';
 import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegistry';
 import { __testOnly as orgMergeRegistryTestOnly } from '../../services/orgMergeRegistry';
+import { checkConstraintLiterals } from './checkConstraintTestHelpers';
 import { aiAgentOpEvidence } from './aiAgentOpEvidence';
 import { aiAgentGraduation } from './aiAgentGraduation';
+
+const MIGRATION_SQL = readFileSync(
+  new URL('../../../migrations/2026-09-29-ai-agents-graduation-evidence.sql', import.meta.url),
+  'utf8',
+);
 
 describe('P2-5 schema registries (Task 2)', () => {
   // getOrgCascadeDeleteOrder() (not the raw CORE_ORG_CASCADE_DELETE_ORDER
@@ -92,5 +105,32 @@ describe('P2-5 schema registries (Task 2)', () => {
     for (const key of expectedKeys) {
       expect(aiAgentGraduation, `aiAgentGraduation.${key} should exist`).toHaveProperty(key);
     }
+  });
+
+  // Pin the migration's four CHECK constraints against the @breeze/shared
+  // enums the Drizzle `.$type<>()` narrowing relies on — the schema files'
+  // comments claim these are mirrored 1:1, but nothing enforced it before
+  // this test (review finding, fix round 1/5). A member added to one side
+  // without the other must fail here, not as a production 23514.
+  describe('CHECK constraints match @breeze/shared literals exactly', () => {
+    it('ai_agent_op_evidence_namespace_chk matches AI_AGENT_EVIDENCE_NAMESPACES', () => {
+      const literals = checkConstraintLiterals(MIGRATION_SQL, 'ai_agent_op_evidence_namespace_chk', 'namespace');
+      expect([...literals].sort()).toEqual([...AI_AGENT_EVIDENCE_NAMESPACES].sort());
+    });
+
+    it('ai_agent_op_evidence_source_kind_chk matches AI_AGENT_EVIDENCE_SOURCE_KINDS', () => {
+      const literals = checkConstraintLiterals(MIGRATION_SQL, 'ai_agent_op_evidence_source_kind_chk', 'source_kind');
+      expect([...literals].sort()).toEqual([...AI_AGENT_EVIDENCE_SOURCE_KINDS].sort());
+    });
+
+    it('ai_agent_op_evidence_metric_chk matches AI_AGENT_EVIDENCE_METRICS', () => {
+      const literals = checkConstraintLiterals(MIGRATION_SQL, 'ai_agent_op_evidence_metric_chk', 'metric');
+      expect([...literals].sort()).toEqual([...AI_AGENT_EVIDENCE_METRICS].sort());
+    });
+
+    it('ai_agent_graduation_state_chk matches AI_AGENT_GRADUATION_STATES', () => {
+      const literals = checkConstraintLiterals(MIGRATION_SQL, 'ai_agent_graduation_state_chk', 'state');
+      expect([...literals].sort()).toEqual([...AI_AGENT_GRADUATION_STATES].sort());
+    });
   });
 });
