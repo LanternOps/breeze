@@ -3,6 +3,7 @@ import { SQL, Param } from 'drizzle-orm';
 
 vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
+  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 vi.mock('./commandQueue', () => ({ queueCommand: vi.fn() }));
@@ -484,6 +485,72 @@ describe('dispatchScriptToDevice — users-FK probe-and-degrade (#3826)', () => 
     expect(db.insert).not.toHaveBeenCalled();
     const [, , , userId] = vi.mocked(queueCommand).mock.calls[0]!;
     expect(userId).toBeUndefined();
+  });
+
+  // #4299: the load-bearing half of the probe. `users` is an RLS-forced
+  // dual-axis table and `withSystemDbAccessContext` short-circuits to the
+  // caller's store when one is already open (`withDbAccessContext` returns
+  // early on an existing store), so a probe that does not FIRST escape the
+  // request context runs org-scoped. A partner-level human (`users.org_id IS
+  // NULL`) matches no branch of the users SELECT policy from an org-scoped,
+  // user-less context, so the probe reads zero rows and degrades a REAL human
+  // to NULL on both `triggered_by` and `created_by` — silently, since this
+  // path is FK-safe. Nesting order is the observable proof this suite can
+  // make: `db` is mocked here, so no RLS policy is actually evaluated. The
+  // real-Postgres proof of the identical escape (a partner-level human kept
+  // through an org-scoped, user-less caller context) is the load-bearing test
+  // in __tests__/integration/commandQueueCreatedBy.integration.test.ts, which
+  // covers the sibling probe in commandQueue.ts. This assertion fails against
+  // the pre-#4299 code — verified, not assumed.
+  it('runs the actor probe OUTSIDE the caller DB context, in a system context', async () => {
+    const dbModule = await import('../db');
+    const order: string[] = [];
+    vi.mocked(dbModule.runOutsideDbContext).mockImplementationOnce(async (fn: () => unknown) => {
+      order.push('enter-outside');
+      const result = await fn();
+      order.push('exit-outside');
+      return result;
+    });
+    vi.mocked(dbModule.withSystemDbAccessContext).mockImplementationOnce(async (fn: () => unknown) => {
+      order.push('enter-system');
+      const result = await fn();
+      order.push('exit-system');
+      return result;
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockImplementation(() => {
+            order.push('users-probe');
+            return Promise.resolve([{ id: 'probed' }]);
+          }),
+        }),
+      }),
+    } as any);
+
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript() },
+      triggeredBy: 'user-1',
+      createdBy: 'user-1',
+    });
+
+    expect(r.ok).toBe(true);
+    // Nesting matters: outside must open before system, and the read must land
+    // between them. `withSystemDbAccessContext` alone (no escape) yields
+    // ['enter-system', 'users-probe', 'exit-system'] and is the regression.
+    expect(order).toEqual([
+      'enter-outside',
+      'enter-system',
+      'users-probe',
+      'exit-system',
+      'exit-outside',
+    ]);
+    // And the real user still survives the guard on BOTH columns.
+    const execValues = vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0]![0];
+    expect(execValues.triggeredBy).toBe('user-1');
+    const [, , , userId] = vi.mocked(queueCommand).mock.calls[0]!;
+    expect(userId).toBe('user-1');
   });
 
   it('does not add an $actor key when the script has no bound parameters and the actor IS real', async () => {
