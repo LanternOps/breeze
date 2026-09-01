@@ -527,11 +527,13 @@ require_grep '^  trivy-image-scan:' .github/workflows/security.yml \
   "security workflow must scan built Docker images"
 # The scan must target the Dockerfiles release.yml and hosted-images.yml
 # actually publish. It previously built the docker/Dockerfile.api|web compose
-# variants, which ship to nobody, leaving the two most widely deployed images
-# with no image-level gate at all (issues #4273 / #4260). Full published-vs-
-# scanned reconciliation lives in
+# variants, which ship to nobody, so the two most widely deployed images in the
+# product were never scanned at all (issues #4273 / #4260). Note this makes the
+# images visible, not merge-blocking: main's ruleset requires only `CI Success`,
+# which does not depend on any security.yml job. Full published-vs-scanned
+# reconciliation lives in
 # apps/api/src/config/dockerfileImageScanCoverage.test.ts; these two keep the
-# regression visible to the shell gate as well.
+# regression visible to the shell check as well.
 require_grep 'dockerfile: apps/api/Dockerfile' .github/workflows/security.yml \
   "security workflow's trivy-image-scan matrix must build and scan the shipped API image"
 require_grep 'dockerfile: apps/web/Dockerfile' .github/workflows/security.yml \

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
@@ -19,12 +20,12 @@ import { describe, expect, it } from 'vitest';
  *
  * The durable defect was the hand-maintained parallel list: a scan roster kept
  * by hand next to a publish roster kept by hand, with nothing tying the two
- * together. So this guard does not hand-list anything. It derives:
+ * together. So this guard hand-lists neither. It derives:
  *
  *  - **published** — every `file:` input of every `docker/build-push-action`
- *    step in `release.yml` and `hosted-images.yml` whose step actually pushes
- *    (`push: true`, or `outputs: ...push=true` for the push-by-digest lanes),
- *    with `${{ matrix.* }}` expanded against that job's own matrix.
+ *    step, in every workflow, whose step actually pushes (`push: true`, or
+ *    `outputs: ...push=true` for the push-by-digest lanes), with
+ *    `${{ matrix.* }}` expanded against that job's own matrix.
  *  - **scanned** — the `dockerfile:` values of `security.yml`'s
  *    `trivy-image-scan` matrix.
  *
@@ -32,32 +33,53 @@ import { describe, expect, it } from 'vitest';
  * Add a new published image and this test fails until it is scanned; retarget a
  * publish step at a different Dockerfile and it fails until the scan follows.
  *
+ * Anything the derivation cannot resolve **throws** rather than resolving to
+ * nothing. That asymmetry is deliberate: every assertion here is a set
+ * comparison, so a derivation that silently shrinks turns the whole suite
+ * vacuously green — the same "green means nothing" failure this file exists to
+ * prevent, one level up.
+ *
  * This is a static read of the workflow YAML; it never invokes Docker or the
  * GitHub API.
  *
- * Scope note: this covers the **CI** gate (`security.yml` runs on every PR,
- * every push to `main`, and weekly). Release-*time* digest scanning
- * (build → scan the exact manifest → promote the tag) exists today only for the
- * three M365 executors; extending it to api/web/portal/binaries means
- * hand-rolling the multi-tag promotion that `docker/metadata-action` currently
- * does for those jobs, and is deliberately left to a follow-up.
+ * ## What this guard does NOT prove
+ *
+ * Recorded so they are not mistaken for coverage:
+ *
+ *  1. **That the images are clean.** It proves the scan job *looks at* every
+ *     published Dockerfile. Whether Trivy then finds something is CI's job.
+ *  2. **That the scan job's result blocks a merge.** It does not, today:
+ *     `main`'s ruleset requires exactly one status check, `CI Success`, whose
+ *     `needs:` list contains no job from this workflow. So a red
+ *     `Trivy Image Scan` is *visible* — on the PR, and on `main` — but not
+ *     merge-blocking, before or after this change. (That visibility is what
+ *     eventually surfaced CVE-2026-14456; see dockerfileOpensslUpgrade.test.ts.)
+ *     `runs on pull requests and blocks on failure` below checks what is
+ *     checkable from inside the repo — the trigger, the absence of a job-level
+ *     `if:`, the absence of `continue-on-error` — but branch protection lives
+ *     in repo settings, which no test here can read. Related: the matrix
+ *     conversion renamed the check from `Trivy Image Scan` to
+ *     `Trivy Image Scan (<image>)`. That is safe only because nothing requires
+ *     the old context; if these are ever made required, they must be added as
+ *     the eight new per-image contexts.
+ *  3. **That the scanned build and the published build are the same bytes.**
+ *     CI builds the Dockerfile at PR time; `release.yml` builds it again at tag
+ *     time. Only the three M365 executors scan the exact published manifest
+ *     before promoting its tag. `release-time digest scanning` below snapshots
+ *     which published images have that and which do not, so the gap stays
+ *     visible rather than silent.
  */
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 
-const SECURITY_WORKFLOW = '.github/workflows/security.yml';
+const WORKFLOW_DIR = '.github/workflows';
+const SECURITY_WORKFLOW = `${WORKFLOW_DIR}/security.yml`;
 const SCAN_JOB_ID = 'trivy-image-scan';
 
-/** Workflows that push images to the registry. */
-const PUBLISHING_WORKFLOWS = [
-  '.github/workflows/release.yml',
-  '.github/workflows/hosted-images.yml',
-];
-
 /**
- * Published images that the CI scan job deliberately does not build, with the
- * reason recorded. Keep this list at zero entries wherever possible — every
- * entry is a shipped image with no image-level vulnerability gate.
+ * Published images the CI scan job deliberately does not build, with the reason
+ * recorded. Keep this at zero entries wherever possible — every entry is a
+ * shipped image with no image-level vulnerability gate.
  */
 const SCAN_EXEMPT: Record<string, string> = {
   'docker/Dockerfile.binaries':
@@ -70,13 +92,40 @@ const SCAN_EXEMPT: Record<string, string> = {
     'already covers.',
 };
 
-type Step = { uses?: string; run?: string; with?: Record<string, unknown>; env?: Record<string, unknown> };
+type Step = {
+  uses?: string;
+  run?: string;
+  with?: Record<string, unknown>;
+  env?: Record<string, unknown>;
+  'continue-on-error'?: unknown;
+};
 type Matrix = { include?: Record<string, unknown>[] } & Record<string, unknown>;
-type Job = { steps?: Step[]; strategy?: { matrix?: Matrix } };
-type Workflow = { jobs?: Record<string, Job> };
+type Job = {
+  if?: unknown;
+  'continue-on-error'?: unknown;
+  steps?: Step[];
+  // `matrix` is a string when the workflow computes it at run time
+  // (`matrix: ${{ fromJSON(...) }}`).
+  strategy?: { matrix?: Matrix | string };
+};
+type Workflow = { on?: Record<string, unknown>; jobs?: Record<string, Job> };
+
+const BUILD_PUSH_ACTION = 'docker/build-push-action';
+const TRIVY_ACTION = 'aquasecurity/trivy-action';
 
 function readWorkflow(relPath: string): Workflow {
   return load(readFileSync(path.join(REPO_ROOT, relPath), 'utf8')) as Workflow;
+}
+
+/** Every workflow in the repo, parsed. Derived — nothing here is hand-listed. */
+function allWorkflows(): [string, Workflow][] {
+  return readdirSync(path.join(REPO_ROOT, WORKFLOW_DIR))
+    .filter((name) => name.endsWith('.yml') || name.endsWith('.yaml'))
+    .sort((a, b) => a.localeCompare(b))
+    .map((name) => {
+      const rel = `${WORKFLOW_DIR}/${name}`;
+      return [rel, readWorkflow(rel)] as [string, Workflow];
+    });
 }
 
 /**
@@ -84,11 +133,20 @@ function readWorkflow(relPath: string): Workflow {
  *
  * Only the two shapes these workflows use are supported — a bare `include:`
  * list, and plain list-valued keys. Anything else throws rather than silently
- * expanding to nothing, because a silent empty expansion would drop a published
- * image out of the derived set and make this whole guard pass vacuously.
+ * expanding to nothing.
  */
-function matrixCombinations(matrix: Matrix | undefined): Record<string, unknown>[] {
+function matrixCombinations(matrix: Matrix | string | undefined): Record<string, unknown>[] {
   if (!matrix) return [{}];
+
+  // A whole-matrix expression (`matrix: ${{ fromJSON(...) }}`, as
+  // dev-build-agent.yml uses) is only knowable at run time. Spreading the
+  // string would yield one bogus axis per character, so refuse it outright —
+  // callers only reach here for jobs that actually build images.
+  if (typeof matrix === 'string') {
+    throw new Error(
+      `Dynamic matrix expression cannot be resolved statically: ${matrix.trim().slice(0, 80)}`,
+    );
+  }
 
   const { include, ...axes } = matrix;
   const axisNames = Object.keys(axes);
@@ -116,51 +174,94 @@ function matrixCombinations(matrix: Matrix | undefined): Record<string, unknown>
 /** Substitute `${{ matrix.key }}` in a workflow expression against one binding. */
 function expandMatrixRefs(template: string, binding: Record<string, unknown>): string | null {
   let unresolved = false;
-  const expanded = template.replace(/\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}/g, (_full, key: string) => {
-    const value = binding[key];
-    if (typeof value !== 'string') {
-      unresolved = true;
-      return '';
-    }
-    return value;
-  });
+  const expanded = template.replace(
+    /\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}/g,
+    (_full, key: string) => {
+      const value = binding[key];
+      if (typeof value !== 'string') {
+        unresolved = true;
+        return '';
+      }
+      return value;
+    },
+  );
   // Any other `${{ ... }}` (env, needs, inputs) means we cannot resolve a
   // concrete path; report it rather than guessing.
   if (unresolved || /\$\{\{/.test(expanded)) return null;
   return expanded;
 }
 
-/** True when a build-push-action step publishes the image it builds. */
-function stepPushes(inputs: Record<string, unknown>): boolean {
-  if (inputs.push === true || inputs.push === 'true') return true;
+/**
+ * Whether a build-push-action step publishes the image it builds.
+ *
+ * Throws on a `push:` this cannot decide — notably the common
+ * `push: ${{ github.event_name != 'pull_request' }}` idiom, which would
+ * otherwise make a genuinely published image invisible to the whole guard.
+ */
+function stepPushes(inputs: Record<string, unknown>, where: string): boolean {
+  const push = inputs.push;
+  if (push !== undefined) {
+    if (push === true || push === 'true') return true;
+    if (push === false || push === 'false') return false;
+    throw new Error(
+      `${where}: cannot decide whether \`push: ${String(push)}\` publishes. Teach ` +
+        'stepPushes about it — treating it as "does not push" would drop a shipped ' +
+        'image out of the coverage check.',
+    );
+  }
   const outputs = inputs.outputs;
-  return typeof outputs === 'string' && /(^|,)push=true(,|$)/.test(outputs);
+  if (outputs !== undefined) {
+    if (typeof outputs !== 'string') {
+      throw new Error(`${where}: unsupported \`outputs:\` of type ${typeof outputs}`);
+    }
+    // Split into fields and read only `push=`. Other fields routinely
+    // interpolate (`name=${{ env.IMAGE_BASE }}/...`) without affecting whether
+    // the step publishes. Splitting also survives a YAML block scalar's
+    // trailing newline, which an anchored regex over the raw string would miss
+    // — silently reclassifying a push-by-digest step as "does not push".
+    const fields = outputs.split(',').map((field) => field.trim());
+    const pushField = fields.find((field) => field.startsWith('push='));
+    if (pushField === undefined) return false;
+    const value = pushField.slice('push='.length);
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    throw new Error(
+      `${where}: cannot decide whether \`${pushField}\` publishes. Teach stepPushes ` +
+        'about it — treating it as "does not push" would drop a shipped image out ' +
+        'of the coverage check.',
+    );
+  }
+  // No `push:` and no `push=` field: build-push-action defaults to not pushing.
+  return false;
 }
 
-/** Dockerfiles published to the registry, derived from the release workflows. */
-function publishedDockerfiles(): { dockerfile: string; source: string }[] {
-  const published: { dockerfile: string; source: string }[] = [];
+/** Dockerfiles published to a registry, derived from every workflow. */
+function publishedDockerfiles(): { dockerfile: string; workflow: string; job: string }[] {
+  const published: { dockerfile: string; workflow: string; job: string }[] = [];
 
-  for (const workflow of PUBLISHING_WORKFLOWS) {
-    const jobs = readWorkflow(workflow).jobs ?? {};
-    for (const [jobId, job] of Object.entries(jobs)) {
+  for (const [workflow, doc] of allWorkflows()) {
+    for (const [jobId, job] of Object.entries(doc.jobs ?? {})) {
+      const buildSteps = (job.steps ?? []).filter((step) =>
+        step.uses?.startsWith(BUILD_PUSH_ACTION),
+      );
+      if (buildSteps.length === 0) continue;
+      // Expanded only for image-building jobs: a job with a matrix this cannot
+      // resolve is a hard error, but only when it might publish an image.
       const bindings = matrixCombinations(job.strategy?.matrix);
-      for (const step of job.steps ?? []) {
-        if (!step.uses?.startsWith('docker/build-push-action')) continue;
+      for (const step of buildSteps) {
+        const where = `${workflow} job '${jobId}'`;
         const inputs = step.with ?? {};
-        if (!stepPushes(inputs)) continue;
+        if (!stepPushes(inputs, where)) continue;
         const file = inputs.file;
         if (typeof file !== 'string') {
-          throw new Error(`${workflow} job '${jobId}' pushes without a \`file:\` input`);
+          throw new Error(`${where} pushes without a \`file:\` input`);
         }
         for (const binding of bindings) {
           const resolved = expandMatrixRefs(file, binding);
           if (resolved === null) {
-            throw new Error(
-              `${workflow} job '${jobId}' has a \`file:\` this guard cannot resolve: ${file}`,
-            );
+            throw new Error(`${where} has a \`file:\` this guard cannot resolve: ${file}`);
           }
-          published.push({ dockerfile: resolved, source: `${workflow}:${jobId}` });
+          published.push({ dockerfile: resolved, workflow, job: jobId });
         }
       }
     }
@@ -183,17 +284,29 @@ function scannedDockerfiles(): string[] {
   });
 }
 
+/**
+ * THE predicate this whole file exists to enforce: published images with no
+ * scan and no recorded reason. Kept as a pure function so it can be exercised
+ * against synthetic rosters below, rather than only against the live one.
+ */
+function uncoveredPublished(
+  published: readonly string[],
+  scanned: readonly string[],
+  exempt: Readonly<Record<string, string>>,
+): string[] {
+  return published.filter((file) => !scanned.includes(file) && !(file in exempt));
+}
+
+/** Every Dockerfile tracked in the repo, wherever it lives. */
 function findDockerfiles(): string[] {
-  const found: string[] = [];
-  for (const entry of readdirSync(path.join(REPO_ROOT, 'apps'), { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const rel = `apps/${entry.name}/Dockerfile`;
-    if (existsSync(path.join(REPO_ROOT, rel))) found.push(rel);
+  const result = spawnSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(`git ls-files failed: ${result.stderr}`);
   }
-  for (const entry of readdirSync(path.join(REPO_ROOT, 'docker'), { withFileTypes: true })) {
-    if (entry.isFile() && entry.name.startsWith('Dockerfile')) found.push(`docker/${entry.name}`);
-  }
-  return found.sort((a, b) => a.localeCompare(b));
+  return result.stdout
+    .split('\0')
+    .filter((file) => file && path.basename(file).startsWith('Dockerfile'))
+    .sort((a, b) => a.localeCompare(b));
 }
 
 const PUBLISHED = publishedDockerfiles();
@@ -201,7 +314,6 @@ const PUBLISHED_FILES = [...new Set(PUBLISHED.map((entry) => entry.dockerfile))]
   a.localeCompare(b),
 );
 const SCANNED_FILES = scannedDockerfiles();
-const SECURITY_SOURCE = readFileSync(path.join(REPO_ROOT, SECURITY_WORKFLOW), 'utf8');
 
 describe('Trivy image scan covers the images we publish', () => {
   it('derives a non-empty published and scanned set', () => {
@@ -211,26 +323,30 @@ describe('Trivy image scan covers the images we publish', () => {
     expect(PUBLISHED_FILES).toContain('apps/web/Dockerfile');
     expect(PUBLISHED_FILES.length).toBeGreaterThanOrEqual(6);
     expect(SCANNED_FILES.length).toBeGreaterThanOrEqual(6);
+    // The disk walk backstops the derivation, so it must see more than the
+    // published set — otherwise a Dockerfile could go missing from both.
+    expect(findDockerfiles().length).toBeGreaterThan(PUBLISHED_FILES.length);
   });
 
-  it.each(PUBLISHED_FILES)('%s is built and scanned by the CI Trivy job', (dockerfile) => {
-    if (dockerfile in SCAN_EXEMPT) {
-      expect(SCANNED_FILES).not.toContain(dockerfile);
-      return;
-    }
-
-    const publishers = PUBLISHED.filter((entry) => entry.dockerfile === dockerfile)
-      .map((entry) => entry.source)
-      .join(', ');
+  it('leaves no published image unscanned', () => {
+    const uncovered = uncoveredPublished(PUBLISHED_FILES, SCANNED_FILES, SCAN_EXEMPT);
+    const detail = uncovered
+      .map((file) => {
+        const publishers = PUBLISHED.filter((entry) => entry.dockerfile === file)
+          .map((entry) => `${entry.workflow}:${entry.job}`)
+          .join(', ');
+        return `  ${file} — pushed by ${publishers}`;
+      })
+      .join('\n');
 
     expect(
-      SCANNED_FILES,
-      `${dockerfile} is pushed to the registry by ${publishers}, but ` +
-        `${SECURITY_WORKFLOW}'s ${SCAN_JOB_ID} matrix never builds it — so no ` +
-        'image-level vulnerability gate ever looks at the image customers run ' +
-        '(issues #4273 / #4260). Add a matrix entry for it, or record a reason ' +
-        'in SCAN_EXEMPT.',
-    ).toContain(dockerfile);
+      uncovered,
+      'These Dockerfiles are pushed to a registry but never built by ' +
+        `${SECURITY_WORKFLOW}'s ${SCAN_JOB_ID} matrix, so no image-level ` +
+        'vulnerability gate ever looks at the image customers run ' +
+        `(issues #4273 / #4260):\n${detail}\n` +
+        'Add a matrix entry for each, or record a reason in SCAN_EXEMPT.',
+    ).toEqual([]);
   });
 
   it('every scanned Dockerfile exists on disk', () => {
@@ -245,19 +361,40 @@ describe('Trivy image scan covers the images we publish', () => {
 
   it('the scan matrix actually drives the build and scan steps', () => {
     // Without this, the matrix could list every published image while the steps
-    // kept building a hardcoded one — a roster that looks like coverage and is
-    // not. The build step must reference `matrix.dockerfile`, and the scan must
-    // still be blocking on HIGH/CRITICAL.
+    // kept building a hardcoded one — eight legs all building the API image and
+    // reporting a green `Trivy Image Scan (web)`. A roster that looks like
+    // coverage and is not, which is this file's whole subject.
     const job = readWorkflow(SECURITY_WORKFLOW).jobs?.[SCAN_JOB_ID];
     const steps = job?.steps ?? [];
 
-    const buildStep = steps.find((step) => typeof step.run === 'string' && step.run.includes('docker build'));
+    const buildStep = steps.find(
+      (step) => typeof step.run === 'string' && step.run.includes('docker build'),
+    );
     expect(buildStep, `${SCAN_JOB_ID} has no \`docker build\` step`).toBeDefined();
-    const buildRefs = JSON.stringify([buildStep?.run, buildStep?.env]);
-    expect(buildRefs).toMatch(/matrix\.dockerfile/);
-    expect(buildRefs).toMatch(/matrix\.image/);
 
-    const scanStep = steps.find((step) => step.uses?.startsWith('aquasecurity/trivy-action'));
+    // The matrix values reach the shell through `env:` (the injection-safe
+    // idiom). Find the variable names by what they carry, so renaming them is
+    // fine but dropping the wiring is not.
+    const stepEnv = Object.entries(buildStep?.env ?? {});
+    const dockerfileVar = stepEnv.find(([, v]) => /matrix\.dockerfile/.test(String(v)))?.[0];
+    const imageVar = stepEnv.find(([, v]) => /matrix\.image/.test(String(v)))?.[0];
+    expect(dockerfileVar, 'build step does not receive `matrix.dockerfile`').toBeDefined();
+    expect(imageVar, 'build step does not receive `matrix.image`').toBeDefined();
+
+    // …and the command must actually consume them. Carrying the values in
+    // `env:` while the command hardcodes a path satisfies "references the
+    // matrix" without scanning anything the matrix names.
+    const runLine = buildStep?.run ?? '';
+    expect(runLine).toMatch(new RegExp(`\\$\\{?${dockerfileVar}\\b`));
+    expect(runLine).toMatch(new RegExp(`\\$\\{?${imageVar}\\b`));
+    expect(
+      runLine,
+      'the build command names a Dockerfile path literally instead of using the ' +
+        'matrix value, so every matrix leg would build the same image while ' +
+        'reporting per-image check names.',
+    ).not.toMatch(/-f\s+["']?(apps|docker)\//);
+
+    const scanStep = steps.find((step) => step.uses?.startsWith(TRIVY_ACTION));
     expect(scanStep, `${SCAN_JOB_ID} has no trivy-action step`).toBeDefined();
     expect(String(scanStep?.with?.['image-ref'])).toMatch(/matrix\.image/);
     expect(scanStep?.with?.severity).toBe('HIGH,CRITICAL');
@@ -265,19 +402,65 @@ describe('Trivy image scan covers the images we publish', () => {
 
     // The action must stay SHA-pinned like every other third-party action here.
     // (The trailing `# vX.Y.Z` is a YAML comment, so it is not part of `uses`.)
-    expect(scanStep?.uses).toMatch(/^aquasecurity\/trivy-action@[0-9a-f]{40}$/);
+    expect(scanStep?.uses).toMatch(new RegExp(`^${TRIVY_ACTION}@[0-9a-f]{40}$`));
+  });
+
+  it('the scan job runs on pull requests and blocks on failure', () => {
+    // A correct roster on a job that never runs — or that swallows its own
+    // failure — is the same false green in a different place.
+    const workflow = readWorkflow(SECURITY_WORKFLOW);
+    expect(Object.keys(workflow.on ?? {}), `${SECURITY_WORKFLOW} must run on PRs`).toContain(
+      'pull_request',
+    );
+
+    const job = workflow.jobs?.[SCAN_JOB_ID];
+    expect(
+      job?.if,
+      `${SCAN_JOB_ID} has a job-level \`if:\`, so it may not run on the PRs it is ` +
+        'supposed to gate. If the condition is intentional, assert the intent here.',
+    ).toBeUndefined();
+    expect(job?.['continue-on-error'], `${SCAN_JOB_ID} must fail the run, not warn`).toBeFalsy();
+    for (const step of job?.steps ?? []) {
+      expect(
+        step['continue-on-error'],
+        `a step in ${SCAN_JOB_ID} sets continue-on-error, so a HIGH/CRITICAL finding ` +
+          'would report green.',
+      ).toBeFalsy();
+    }
+  });
+
+  it('no workflow publishes an image outside docker/build-push-action', () => {
+    // The derivation only understands build-push-action steps. A raw
+    // `docker push` or `docker buildx build --push` would publish an image the
+    // whole guard is blind to.
+    for (const [workflow, doc] of allWorkflows()) {
+      for (const [jobId, job] of Object.entries(doc.jobs ?? {})) {
+        for (const step of job.steps ?? []) {
+          const run = typeof step.run === 'string' ? step.run : '';
+          expect(
+            /docker\s+push\s|docker\s+buildx\s+build\b[^\n]*--push/.test(run),
+            `${workflow} job '${jobId}' publishes an image with a raw docker command. ` +
+              'publishedDockerfiles() cannot see it, so its Dockerfile would silently ' +
+              'drop out of the scan-coverage check.',
+          ).toBe(false);
+        }
+      }
+    }
   });
 
   it('leaves no Dockerfile silently unclassified', () => {
-    // Anti-rot snapshot: a new Dockerfile, or a publish step retargeted at a
-    // different file, changes this map and forces a human to decide which side
-    // of the line it belongs on instead of quietly losing coverage.
+    // Anti-rot snapshot over every tracked Dockerfile, not just the published
+    // ones — it is the backstop for a derivation that shrinks. A new image, or
+    // a publish step retargeted at a different file, changes this map and
+    // forces a human to decide which side of the line it belongs on.
     const classification = Object.fromEntries(
       findDockerfiles().map((dockerfile) => {
         const published = PUBLISHED_FILES.includes(dockerfile);
         const scanned = SCANNED_FILES.includes(dockerfile);
         if (published && scanned) return [dockerfile, 'published + scanned'];
-        if (published) return [dockerfile, 'published, scan-exempt'];
+        if (published && dockerfile in SCAN_EXEMPT) return [dockerfile, 'published, scan-exempt'];
+        // Never a resting state: a shipped image with no gate and no reason.
+        if (published) return [dockerfile, 'PUBLISHED BUT UNSCANNED'];
         if (scanned) return [dockerfile, 'not published, scanned anyway'];
         return [dockerfile, 'not published, not scanned'];
       }),
@@ -290,9 +473,9 @@ describe('Trivy image scan covers the images we publish', () => {
       'apps/m365-graph-read-executor/Dockerfile': 'published + scanned',
       'apps/portal/Dockerfile': 'published + scanned',
       'apps/web/Dockerfile': 'published + scanned',
-      // Built by ci.yml's smoke test (docker-compose.override.yml.ci) and by the
-      // local-build compose mode, so they stay gated even though release never
-      // pushes them.
+      // Built from source by ci.yml's smoke test and the local-build compose
+      // mode; see `the compose variants are still built from source` below,
+      // which derives that rather than trusting this comment.
       'docker/Dockerfile.api': 'not published, scanned anyway',
       'docker/Dockerfile.web': 'not published, scanned anyway',
       // See SCAN_EXEMPT: staging/ build context cannot be reproduced in CI.
@@ -304,13 +487,77 @@ describe('Trivy image scan covers the images we publish', () => {
     });
   });
 
+  it('the compose variants are still built from source somewhere', () => {
+    // The snapshot keeps docker/Dockerfile.api|web scanned even though release
+    // never pushes them, on the grounds that CI's smoke test and the
+    // local-build compose mode build them. Derive that instead of asserting it
+    // in prose, so the rationale cannot rot while the entries stay.
+    const compose = ['docker-compose.override.yml.ci', 'docker-compose.override.yml.local-build']
+      .map((file) => readFileSync(path.join(REPO_ROOT, file), 'utf8'))
+      .join('\n');
+
+    for (const dockerfile of ['docker/Dockerfile.api', 'docker/Dockerfile.web']) {
+      if (!SCANNED_FILES.includes(dockerfile)) continue;
+      expect(
+        compose,
+        `${dockerfile} is scanned but nothing publishes it and no compose override ` +
+          'builds it — either it is dead and both should go, or the reason it is ' +
+          'still scanned has changed and belongs in the snapshot above.',
+      ).toContain(dockerfile);
+    }
+  });
+
   it('records a reason for every scan exemption', () => {
     for (const [dockerfile, reason] of Object.entries(SCAN_EXEMPT)) {
       expect(PUBLISHED_FILES, `${dockerfile} is exempted but nothing publishes it`).toContain(
         dockerfile,
       );
+      expect(
+        SCANNED_FILES,
+        `${dockerfile} is now scanned, so its SCAN_EXEMPT entry is stale — delete it ` +
+          'so the exemption list stays an accurate inventory of unguarded images.',
+      ).not.toContain(dockerfile);
       expect(reason.length).toBeGreaterThan(80);
     }
+  });
+
+  it('marks which published images lack release-time digest scanning', () => {
+    // Blind-spot marker, not a gate. CI scans the Dockerfile at PR time;
+    // `release.yml` builds it again at tag time. Only jobs that scan the exact
+    // pushed manifest before promoting its tag close that window. Snapshotting
+    // the split keeps the remaining gap visible and makes closing it a
+    // deliberate, reviewed change rather than an invisible non-event.
+    const coverage: Record<string, string> = {};
+    for (const [workflow, doc] of allWorkflows()) {
+      for (const [jobId, job] of Object.entries(doc.jobs ?? {})) {
+        const steps = job.steps ?? [];
+        if (!steps.some((step) => step.uses?.startsWith(BUILD_PUSH_ACTION))) continue;
+        const pushes = steps.some(
+          (step) =>
+            step.uses?.startsWith(BUILD_PUSH_ACTION) &&
+            stepPushes(step.with ?? {}, `${workflow} job '${jobId}'`),
+        );
+        if (!pushes) continue;
+        coverage[`${workflow}:${jobId}`] = steps.some((step) => step.uses?.startsWith(TRIVY_ACTION))
+          ? 'scans the pushed digest'
+          : 'NO release-time scan';
+      }
+    }
+
+    expect(coverage).toEqual({
+      '.github/workflows/hosted-images.yml:build-m365-executor-image': 'scans the pushed digest',
+      '.github/workflows/hosted-images.yml:build-server-image': 'NO release-time scan',
+      '.github/workflows/release.yml:build-binaries-image': 'NO release-time scan',
+      '.github/workflows/release.yml:build-docker-api': 'NO release-time scan',
+      '.github/workflows/release.yml:build-docker-m365-communications-executor':
+        'scans the pushed digest',
+      '.github/workflows/release.yml:build-docker-m365-graph-actions-executor':
+        'scans the pushed digest',
+      '.github/workflows/release.yml:build-docker-m365-graph-read-executor':
+        'scans the pushed digest',
+      '.github/workflows/release.yml:build-docker-portal': 'NO release-time scan',
+      '.github/workflows/release.yml:build-docker-web': 'NO release-time scan',
+    });
   });
 
   it('local preflight builds the published api/web images, not the compose proxies', () => {
@@ -324,22 +571,66 @@ describe('Trivy image scan covers the images we publish', () => {
 });
 
 describe('the coverage derivation is discriminating', () => {
-  // These exercise the helpers against synthetic workflows: without them the
+  // These run the real predicates against synthetic input. Without them the
   // suite would pass just as happily on a derivation that returned nothing.
 
-  it('counts only steps that actually push', () => {
-    const inputs = { file: 'apps/api/Dockerfile' };
-    expect(stepPushes({ ...inputs, push: true })).toBe(true);
-    expect(stepPushes({ ...inputs, push: false })).toBe(false);
-    expect(stepPushes(inputs)).toBe(false);
+  it('flags a published image dropped from the scan roster', () => {
+    // The exact regression this file exists for, run through the real
+    // predicate rather than re-asserting the live rosters.
+    const published = ['apps/api/Dockerfile', 'apps/web/Dockerfile'];
+    expect(uncoveredPublished(published, published, {})).toEqual([]);
+    expect(uncoveredPublished(published, ['apps/web/Dockerfile'], {})).toEqual([
+      'apps/api/Dockerfile',
+    ]);
+    // …and the pre-fix roster: scanning proxies nobody ships covers nothing.
     expect(
-      stepPushes({
-        ...inputs,
-        outputs: 'type=image,name=ghcr.io/x/api,push-by-digest=true,name-canonical=true,push=true',
-      }),
+      uncoveredPublished(published, ['docker/Dockerfile.api', 'docker/Dockerfile.web'], {}),
+    ).toEqual(published);
+    // An exemption suppresses the finding — and only for the file it names.
+    expect(uncoveredPublished(published, [], { 'apps/api/Dockerfile': 'reason' })).toEqual([
+      'apps/web/Dockerfile',
+    ]);
+  });
+
+  it('counts only steps that actually push, and refuses the ones it cannot decide', () => {
+    const inputs = { file: 'apps/api/Dockerfile' };
+    const where = 'test';
+    expect(stepPushes({ ...inputs, push: true }, where)).toBe(true);
+    expect(stepPushes({ ...inputs, push: false }, where)).toBe(false);
+    expect(stepPushes(inputs, where)).toBe(false);
+    expect(
+      stepPushes(
+        {
+          ...inputs,
+          outputs: 'type=image,name=ghcr.io/x/api,push-by-digest=true,name-canonical=true,push=true',
+        },
+        where,
+      ),
     ).toBe(true);
     // `push-by-digest=true` alone is not a push.
-    expect(stepPushes({ ...inputs, outputs: 'type=image,push-by-digest=true' })).toBe(false);
+    expect(stepPushes({ ...inputs, outputs: 'type=image,push-by-digest=true' }, where)).toBe(false);
+    // A YAML block scalar keeps a trailing newline; an anchored regex would
+    // read this as "does not push" and drop a shipped image from the guard.
+    expect(stepPushes({ ...inputs, outputs: 'type=image,name=x,push=true\n' }, where)).toBe(true);
+    // The idiom that would otherwise make a published image invisible.
+    expect(() =>
+      stepPushes({ ...inputs, push: "${{ github.event_name != 'pull_request' }}" }, where),
+    ).toThrow(/cannot decide/);
+    expect(() =>
+      stepPushes({ ...inputs, outputs: 'type=image,push=${{ inputs.publish }}' }, where),
+    ).toThrow(/cannot decide/);
+    // An expression in a field that is NOT `push=` says nothing about whether
+    // the step publishes — this is the live push-by-digest form.
+    expect(
+      stepPushes(
+        {
+          ...inputs,
+          outputs:
+            'type=image,name=${{ env.IMAGE_BASE }}/api,push-by-digest=true,name-canonical=true,push=true',
+        },
+        where,
+      ),
+    ).toBe(true);
   });
 
   it('expands matrix references and refuses the ones it cannot resolve', () => {
@@ -367,16 +658,14 @@ describe('the coverage derivation is discriminating', () => {
     ]);
   });
 
-  it('would fail if a published Dockerfile were dropped from the scan matrix', () => {
-    // The real check is `expect(SCANNED_FILES).toContain(dockerfile)`. Prove it
-    // discriminates by running the same comparison against a scan roster with
-    // the shipped API image removed.
-    const withApiDropped = SCANNED_FILES.filter((f) => f !== 'apps/api/Dockerfile');
-    expect(withApiDropped).not.toContain('apps/api/Dockerfile');
-    expect(PUBLISHED_FILES).toContain('apps/api/Dockerfile');
-  });
-
-  it('reads the security workflow it claims to check', () => {
-    expect(SECURITY_SOURCE).toContain('trivy-image-scan:');
+  it('walks the whole repo for Dockerfiles, not just two directories', () => {
+    // The snapshot is the backstop for a shrinking derivation, so its input has
+    // to see a Dockerfile wherever someone puts one.
+    const found = findDockerfiles();
+    expect(found).toContain('apps/api/Dockerfile');
+    expect(found).toContain('docker/Dockerfile.binaries');
+    // Basename match, not a substring sweep: the test files next to this one
+    // have "dockerfile" in their names and are not Dockerfiles.
+    expect(found.every((file) => path.basename(file).startsWith('Dockerfile'))).toBe(true);
   });
 });
