@@ -2207,6 +2207,49 @@ describe('PUT /ai-agents/impact/weights', () => {
     expect(res.status).toBe(400);
     expect(saveImpactWeightsMock).not.toHaveBeenCalled();
   });
+
+  /**
+   * Review round 1 finding: mapError's ImpactPartnerUnresolvedError branch
+   * (aiAgents.ts) was previously untested despite being reachable — a
+   * system-scoped caller that clears canManagePartnerWidePolicies still
+   * calls resolveImpactPartnerId(auth) with no orgId, which throws this for
+   * any auth.scope === 'system' caller (impactWeights.ts:71-79). A
+   * partner-admin fixture exercises the same catch branch since the route
+   * never passes an orgId on this path either way.
+   */
+  it('maps a resolveImpactPartnerId ImpactPartnerUnresolvedError to 400 org_id_required', async () => {
+    resolveImpactPartnerIdMock.mockRejectedValue(new ImpactPartnerUnresolvedError());
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all' });
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'org_id_required' }));
+    expect(saveImpactWeightsMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Review round 1 finding: the ImpactPartnerNotFoundError branch (zero-row
+   * UPDATE / RLS-decline guard, impactWeights.ts:148-149) was untested. This
+   * asserts the route's mapError call actually reaches it — not just that
+   * mapError itself maps the class to 404 in isolation.
+   */
+  it('maps a saveImpactWeights ImpactPartnerNotFoundError to 404', async () => {
+    saveImpactWeightsMock.mockRejectedValue(new ImpactPartnerNotFoundError());
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all' });
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+
+    expect(res.status).toBe(404);
+  });
 });
 
 describe('DELETE /ai-agents/impact/weights', () => {
