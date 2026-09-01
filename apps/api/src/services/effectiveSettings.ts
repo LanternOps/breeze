@@ -28,7 +28,10 @@ interface EffectiveSettingsResult {
   locked: string[];
 }
 
-interface EffectiveAiBudget {
+/** #4388 — pre-cap alert rungs (1-99). Empty = pre-cap warnings off; 100 is always implicit. */
+export const DEFAULT_AI_ALERT_THRESHOLD_PERCENTS: readonly number[] = Object.freeze([50, 80, 95]);
+
+export interface EffectiveAiBudget {
   enabled: boolean;
   monthlyBudgetCents: number | null;
   dailyBudgetCents: number | null;
@@ -36,6 +39,8 @@ interface EffectiveAiBudget {
   messagesPerMinutePerUser: number;
   messagesPerHourPerOrg: number;
   approvalMode: string;
+  /** #4388 — pre-cap alert rungs (1-99). Empty = pre-cap warnings off; 100 is always implicit. */
+  alertThresholdPercents: number[];
 }
 
 const AI_BUDGET_DEFAULTS: EffectiveAiBudget = {
@@ -46,6 +51,7 @@ const AI_BUDGET_DEFAULTS: EffectiveAiBudget = {
   messagesPerMinutePerUser: 20,
   messagesPerHourPerOrg: 200,
   approvalMode: 'per_step',
+  alertThresholdPercents: [...DEFAULT_AI_ALERT_THRESHOLD_PERCENTS],
 };
 
 const AI_BUDGET_FIELDS = [
@@ -56,6 +62,7 @@ const AI_BUDGET_FIELDS = [
   'messagesPerMinutePerUser',
   'messagesPerHourPerOrg',
   'approvalMode',
+  'alertThresholdPercents',
 ] as const;
 
 // ---------------------------------------------------------------------------
