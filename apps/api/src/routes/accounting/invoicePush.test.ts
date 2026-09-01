@@ -358,7 +358,7 @@ describe('GET /accounting/:provider/remote-candidates', () => {
     ]);
     const res = await getCandidates('?entityType=org&q=Acme');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual([{ id: 'qb-1', displayName: 'Acme', email: 'billing@acme.test', currencyCode: 'USD' }]);
+    expect(await res.json()).toEqual({ data: [{ id: 'qb-1', displayName: 'Acme', email: 'billing@acme.test', currencyCode: 'USD' }] });
     expect(withAuthDbAccessContext).toHaveBeenCalledTimes(1);
     expect(resolveConnectionAndTokenMock).toHaveBeenCalledWith('p1', 'quickbooks');
     expect(listRemoteCustomersMock).toHaveBeenCalledWith({ accessToken: 'tok' }, 'Acme');
@@ -370,7 +370,7 @@ describe('GET /accounting/:provider/remote-candidates', () => {
     listRemoteItemsMock.mockResolvedValue([{ id: 'qb-item-1', displayName: 'Widget', sku: 'W-1', syncToken: '0' }]);
     const res = await getCandidates('?entityType=catalog_item&q=Widget');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual([{ id: 'qb-item-1', displayName: 'Widget', sku: 'W-1' }]);
+    expect(await res.json()).toEqual({ data: [{ id: 'qb-item-1', displayName: 'Widget', sku: 'W-1' }] });
     expect(listRemoteItemsMock).toHaveBeenCalledWith({ accessToken: 'tok' }, 'Widget');
     expect(listRemoteCustomersMock).not.toHaveBeenCalled();
   });

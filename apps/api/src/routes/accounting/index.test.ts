@@ -47,6 +47,11 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       captureMessage: vi.fn(),
       writeRouteAudit: vi.fn(),
       buildAuthUrl: vi.fn((state: string) => `https://qbo.example.test/connect?scope=com.intuit.quickbooks.accounting&state=${encodeURIComponent(state)}`),
+      // Task 5 review fix: POST /:provider/settings/refresh is self-managed
+      // (no ambient request tx), so it now wraps refreshRealmSettings in
+      // withAuthDbAccessContext. Runs `fn` through so existing behavior is
+      // unchanged; asserted directly in the settings/refresh describe block.
+      withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => unknown) => fn()),
     },
     AccountingConnectionErrorClass,
   };
@@ -97,6 +102,7 @@ vi.mock('../../middleware/auth', () => ({
   // The customer routes are permission-gated (organizations:write +
   // sites:write); this suite covers the OAuth/settings routes, so grant it.
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  withAuthDbAccessContext: mocks.withAuthDbAccessContext,
 }));
 
 vi.mock('../../services/accounting/accountingConnectionService', () => ({
@@ -586,6 +592,9 @@ describe('accounting routes', () => {
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toEqual({ homeCurrency: 'CAD', multiCurrencyEnabled: true });
       expect(mocks.refreshRealmSettings).toHaveBeenCalledWith(authState.partnerId, 'quickbooks');
+      // Self-managed route (no ambient request tx) — the service call must
+      // run inside an explicit withAuthDbAccessContext (Task 5 review fix).
+      expect(mocks.withAuthDbAccessContext).toHaveBeenCalledTimes(1);
       expect(mocks.writeRouteAudit).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ action: 'accounting.settings.refresh' }),

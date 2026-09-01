@@ -630,17 +630,23 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
 // MFA-gated (same tier as PATCH /:provider/settings above — it makes a real
 // outbound QuickBooks call and persists the result). The service call makes a
 // live QBO HTTP request, so this route also carries the
-// SELF_MANAGED_DB_CONTEXT_ROUTES registration (middleware/selfManagedDbContextRoutes.ts).
+// SELF_MANAGED_DB_CONTEXT_ROUTES registration (middleware/selfManagedDbContextRoutes.ts)
+// — no ambient request transaction, so `refreshRealmSettings`'s ambient-`db`
+// reads/writes need an explicit context, supplied here via
+// `withAuthDbAccessContext` (Task 5 review fix — this route (and the four
+// mapping-workbench routes below) previously called the service bare, which
+// RLS-denies every read/write under real Postgres).
 accountingRoutes.post('/:provider/settings/refresh', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
-  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
 
   let settings;
   try {
-    settings = await refreshRealmSettings(partner.partnerId, provider);
+    settings = await withAuthDbAccessContext(auth, () => refreshRealmSettings(partner.partnerId, provider));
   } catch (err) {
     return handleConnectionError(c, err);
   }
@@ -663,17 +669,20 @@ accountingRoutes.post('/:provider/settings/refresh', authMiddleware, partnerScop
 // Mapping proposals (reconciliation) — read-only, so partner/system scope is
 // the whole gate, same as GET /:provider/customers above. The service performs
 // QuickBooks HTTP inside, so this route is registered in
-// SELF_MANAGED_DB_CONTEXT_ROUTES (middleware/selfManagedDbContextRoutes.ts).
+// SELF_MANAGED_DB_CONTEXT_ROUTES (middleware/selfManagedDbContextRoutes.ts) —
+// no ambient request transaction, so the service's ambient-`db` reads need an
+// explicit context (Task 5 review fix — see the settings/refresh comment above).
 accountingRoutes.get('/:provider/mappings', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', mappingEntityQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
-  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const { entityType } = c.req.valid('query');
 
   try {
-    const data = await listMappingProposals({ partnerId: partner.partnerId, provider, entityType });
+    const data = await withAuthDbAccessContext(auth, () => listMappingProposals({ partnerId: partner.partnerId, provider, entityType }));
     return c.json({ data });
   } catch (err) {
     return handleMappingError(c, err);
@@ -681,16 +690,18 @@ accountingRoutes.get('/:provider/mappings', authMiddleware, partnerScopes, zVali
 });
 
 // Remote income account selector for item mapping — read-only. Also QBO-HTTP
-// backed, so it carries the same SELF_MANAGED_DB_CONTEXT_ROUTES registration.
+// backed, so it carries the same SELF_MANAGED_DB_CONTEXT_ROUTES registration
+// (and the same explicit-context requirement — Task 5 review fix).
 accountingRoutes.get('/:provider/income-accounts', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
-  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
 
   try {
-    const data = await listRemoteIncomeAccountsForPartner({ partnerId: partner.partnerId, provider });
+    const data = await withAuthDbAccessContext(auth, () => listRemoteIncomeAccountsForPartner({ partnerId: partner.partnerId, provider }));
     return c.json({ data });
   } catch (err) {
     return handleMappingError(c, err);
@@ -700,25 +711,27 @@ accountingRoutes.get('/:provider/income-accounts', authMiddleware, partnerScopes
 // Confirm/create/unlink a single mapping. Write + MFA-gated, entity-aware
 // permission (ORGS_WRITE for org, CATALOG_WRITE for catalog_item) — the
 // `confirmed` path calls the provider list to verify the remote entity, so
-// this route also carries the SELF_MANAGED_DB_CONTEXT_ROUTES registration.
+// this route also carries the SELF_MANAGED_DB_CONTEXT_ROUTES registration
+// (and the same explicit-context requirement — Task 5 review fix).
 accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingDecisionSchema), requireMappingWrite, async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
-  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const body = c.req.valid('json');
 
   let mapping;
   try {
-    mapping = await saveMappingDecision({
+    mapping = await withAuthDbAccessContext(auth, () => saveMappingDecision({
       partnerId: partner.partnerId,
       provider,
       breezeEntityType: body.breezeEntityType,
       breezeEntityId: body.breezeEntityId,
       decision: body.decision as MappingDecision,
       remoteEntityId: body.remoteEntityId,
-    });
+    }));
   } catch (err) {
     return handleMappingError(c, err);
   }
@@ -743,23 +756,25 @@ accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requi
 // Push a confirmed/create_new mapping to QuickBooks. Write + MFA-gated, same
 // entity-aware permission guard as PUT above, and the same
 // SELF_MANAGED_DB_CONTEXT_ROUTES registration (the provider upsert call is
-// real QuickBooks HTTP).
+// real QuickBooks HTTP) — and the same explicit-context requirement (Task 5
+// review fix).
 accountingRoutes.post('/:provider/mappings/sync', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingSyncSchema), requireMappingWrite, async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
-  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const body = c.req.valid('json');
 
   let mapping;
   try {
-    mapping = await syncMappedEntity({
+    mapping = await withAuthDbAccessContext(auth, () => syncMappedEntity({
       partnerId: partner.partnerId,
       provider,
       breezeEntityType: body.breezeEntityType,
       breezeEntityId: body.breezeEntityId,
-    });
+    }));
   } catch (err) {
     return handleMappingError(c, err);
   }
@@ -896,7 +911,10 @@ accountingRoutes.post(
 // route's comment for why). Makes a real outbound QuickBooks call via
 // `resolveConnectionAndToken` + `listRemoteCustomers`/`listRemoteItems`, so it
 // carries the same SELF_MANAGED_DB_CONTEXT_ROUTES + `withAuthDbAccessContext`
-// treatment as the push route above.
+// treatment as the push route above. Wraps its response in `{ data }` —
+// review ruling (Task 5 fix round): every sibling list route in this file
+// (`/customers`, `/mappings`, `/income-accounts`) uses that envelope, and
+// Task 7's web layer consumes it the same way.
 accountingRoutes.get(
   '/:provider/remote-candidates',
   authMiddleware,
@@ -922,7 +940,7 @@ accountingRoutes.get(
         : (await runOutsideDbContext(() => providerImpl.listRemoteItems(liveConn, q))).map((r) => ({
           id: r.id, displayName: r.displayName, sku: r.sku ?? null,
         }));
-      return c.json(data);
+      return c.json({ data });
     } catch (err) {
       return handleMappingError(c, err);
     }

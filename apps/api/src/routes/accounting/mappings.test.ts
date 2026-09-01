@@ -7,6 +7,7 @@ const {
   saveMappingDecisionMock,
   syncMappedEntityMock,
   writeRouteAuditMock,
+  withAuthDbAccessContextMock,
   AccountingMappingError,
   authState,
 } = vi.hoisted(() => {
@@ -15,6 +16,7 @@ const {
   const saveMappingDecisionMock = vi.fn();
   const syncMappedEntityMock = vi.fn();
   const writeRouteAuditMock = vi.fn();
+  const withAuthDbAccessContextMock = vi.fn(async (_auth: unknown, fn: () => unknown) => fn());
   class AccountingMappingError extends Error {
     code: string;
     status: number;
@@ -36,6 +38,7 @@ const {
     saveMappingDecisionMock,
     syncMappedEntityMock,
     writeRouteAuditMock,
+    withAuthDbAccessContextMock,
     AccountingMappingError,
     authState,
   };
@@ -83,6 +86,12 @@ vi.mock('../../middleware/auth', () => ({
     if (!authState.permissions.has(`${resource}:${action}`)) return c.json({ error: 'Permission denied' }, 403);
     return next();
   },
+  // Task 5 review fix: these routes are self-managed (no ambient request
+  // transaction), so each now wraps its service call in
+  // `withAuthDbAccessContext` to give the service's ambient-`db` reads/writes
+  // a real RLS context. Asserted directly (call count + that it actually ran
+  // `fn`) rather than left an untested pass-through mock, per the review note.
+  withAuthDbAccessContext: withAuthDbAccessContextMock,
 }));
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: writeRouteAuditMock }));
@@ -161,6 +170,9 @@ describe('GET /accounting/:provider/mappings', () => {
     const body = await res.json();
     expect(body.data).toHaveLength(1);
     expect(listMappingProposalsMock).toHaveBeenCalledWith({ partnerId: 'p1', provider: 'quickbooks', entityType: 'org' });
+    // Self-managed route (no ambient request tx) — the service call must run
+    // inside an explicit withAuthDbAccessContext (Task 5 review fix).
+    expect(withAuthDbAccessContextMock).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a missing/invalid entityType with 400 before calling the service', async () => {
@@ -229,6 +241,7 @@ describe('GET /accounting/:provider/income-accounts', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: [{ id: '1', displayName: 'Sales', accountType: 'Income' }] });
     expect(listRemoteIncomeAccountsForPartnerMock).toHaveBeenCalledWith({ partnerId: 'p1', provider: 'quickbooks' });
+    expect(withAuthDbAccessContextMock).toHaveBeenCalledTimes(1);
   });
 
   it('is read-only: no MFA/permission gate blocks a plain partner-scoped caller', async () => {
@@ -285,6 +298,7 @@ describe('PUT /accounting/:provider/mappings', () => {
       decision: 'confirmed',
       remoteEntityId: 'qb-1',
     });
+    expect(withAuthDbAccessContextMock).toHaveBeenCalledTimes(1);
     expect(writeRouteAuditMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -465,6 +479,7 @@ describe('POST /accounting/:provider/mappings/sync', () => {
     expect(syncMappedEntityMock).toHaveBeenCalledWith({
       partnerId: 'p1', provider: 'quickbooks', breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID,
     });
+    expect(withAuthDbAccessContextMock).toHaveBeenCalledTimes(1);
     expect(writeRouteAuditMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
