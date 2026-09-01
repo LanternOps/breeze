@@ -1,4 +1,5 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, smallint, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
@@ -175,9 +176,40 @@ export const aiBudgets = pgTable('ai_budgets', {
   messagesPerMinutePerUser: integer('messages_per_minute_per_user').notNull().default(20),
   messagesPerHourPerOrg: integer('messages_per_hour_per_org').notNull().default(200),
   approvalMode: aiApprovalModeEnum('approval_mode').notNull().default('per_step'),
+  // #4388 — pre-cap alert ladder. NULL = inherit default [50,80,95]; [] = off.
+  // Property name must equal the partner-JSONB key so the AI_BUDGET_FIELDS
+  // merge loop in effectiveSettings.ts reads both sides with one name.
+  alertThresholdPercents: integer('alert_threshold_pcts').array(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
+
+// ============================================
+// AI Budget Alert Events (#4388) — durable outbox, one row per threshold
+// crossing per (org, period, period_key). RLS shape 1.
+// ============================================
+
+export const aiBudgetAlertEvents = pgTable('ai_budget_alert_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  period: text('period', { enum: ['daily', 'monthly'] }).notNull(),
+  periodKey: varchar('period_key', { length: 10 }).notNull(),
+  thresholdPct: smallint('threshold_pct').notNull(),
+  capCents: integer('cap_cents').notNull(),
+  usedCents: integer('used_cents').notNull(),
+  billingSource: text('billing_source', { enum: ['platform', 'partner_key'] }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  deliveryAttempts: integer('delivery_attempts').notNull().default(0),
+  lastDeliveryError: text('last_delivery_error'),
+  recipientCount: integer('recipient_count'),
+}, (table) => ({
+  orgPeriodRungIdx: uniqueIndex('ai_budget_alert_events_org_period_rung_uidx')
+    .on(table.orgId, table.period, table.periodKey, table.thresholdPct),
+  undeliveredIdx: index('ai_budget_alert_events_undelivered_idx')
+    .on(table.createdAt)
+    .where(sql`${table.deliveredAt} IS NULL`),
+}));
 
 // ============================================
 // AI Action Plans (multi-step approval)
