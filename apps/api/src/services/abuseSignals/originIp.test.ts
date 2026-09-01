@@ -195,6 +195,48 @@ describe('fraud.suspended_console_ip', () => {
     );
     expect(keys(out)).toEqual([SUSPENDED_CONSOLE_IP_KEY]);
   });
+
+  it('matches a compressed IPv6 literal against its expanded form exactly', () => {
+    // The exact-match path is the alert-tier signal, so compression must not
+    // defeat it any more than it defeats the /64 grouping.
+    const out = computeOriginIpSignals(
+      [agg({ originIps: ['2001:db8:145:2002::1'] })],
+      corpus({ suspendedIps: new Map([['2001:0db8:0145:2002:0000:0000:0000:0001', ['Dead Co']]]) }),
+      cfg,
+      NOW,
+    );
+    expect(keys(out)).toEqual([SUSPENDED_CONSOLE_IP_KEY]);
+    expect(out[0]!.evidence.matchedIps).toEqual(['2001:db8:145:2002::1']);
+  });
+
+  it('matches an IPv4-mapped IPv6 address against itself and counts it once', () => {
+    // ::ffff:203.0.113.7 exercises the embedded-v4-tail branch of expandIPv6.
+    const mapped = '::ffff:203.0.113.7';
+    const out = computeOriginIpSignals(
+      [agg({ originIps: [mapped, '::ffff:cb00:7107'] })],
+      corpus({ suspendedIps: new Map([[mapped, ['Dead Co']]]) }),
+      cfg,
+      NOW,
+    );
+    expect(keys(out)).toEqual([SUSPENDED_CONSOLE_IP_KEY]);
+    // The dotted-quad and hex spellings canonicalize to one address: one
+    // match, base score only, no per_extra_ip inflation.
+    expect(out[0]!.score).toBe(cfg['fraud.suspended_console_ip.base_score']);
+    expect(out[0]!.evidence.matchedIps).toHaveLength(1);
+  });
+
+  it('counts two XFF spellings of one client address as ONE matched IP', () => {
+    // Same real client behind two different legacy proxy second hops must not
+    // earn the per_extra_ip bonus, and the evidence must cite the clean IP.
+    const out = computeOriginIpSignals(
+      [agg({ originIps: ['203.0.113.7, 172.19.0.8', '203.0.113.7, 172.19.0.5'] })],
+      corpus({ suspendedIps: new Map([['203.0.113.7', ['Dead Co']]]) }),
+      cfg,
+      NOW,
+    );
+    expect(out[0]!.score).toBe(cfg['fraud.suspended_console_ip.base_score']);
+    expect(out[0]!.evidence.matchedIps).toEqual(['203.0.113.7']);
+  });
 });
 
 describe('fraud.dead_account_probe_origin', () => {
@@ -232,6 +274,29 @@ describe('fraud.dead_account_probe_origin', () => {
     const out = computeOriginIpSignals(
       [agg({ originIps: ['192.0.2.61'] })],
       corpus({ probes: [probe('192.0.2.72', hours * 60 + 1)] }),
+      cfg,
+      NOW,
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('still fires for a probe exactly window_hours old (inclusive boundary)', () => {
+    // Pins the comparator to strict `>` — an accidental `>=` would silently
+    // shave the boundary and no other test would notice.
+    const hours = cfg['fraud.dead_account_probe_origin.window_hours'];
+    const out = computeOriginIpSignals(
+      [agg({ originIps: ['192.0.2.61'] })],
+      corpus({ probes: [probe('192.0.2.72', hours * 60)] }),
+      cfg,
+      NOW,
+    );
+    expect(keys(out)).toEqual([DEAD_ACCOUNT_PROBE_KEY]);
+  });
+
+  it('ignores a probe timestamped in the future (clock skew, not evidence)', () => {
+    const out = computeOriginIpSignals(
+      [agg({ originIps: ['192.0.2.61'] })],
+      corpus({ probes: [probe('192.0.2.72', -5)] }),
       cfg,
       NOW,
     );
