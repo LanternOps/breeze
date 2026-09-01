@@ -696,7 +696,11 @@ export async function queueCommand(
           resourceId: deviceId,
           resourceName: device.hostname,
           details: commandAuditDetails(commandId, type, payload),
-          result: 'success',
+          // Dispatch-time row: the agent hasn't reported back yet, so this
+          // cannot claim 'success' (#4225). No completion-time audit event is
+          // written anywhere — the command's terminal status lives only on
+          // `device_commands` / `patch_job_results`, not the audit log.
+          result: 'dispatched',
         });
       })
     ).catch((err) => {
@@ -1108,7 +1112,9 @@ export async function executeCommand(
               resourceId: deviceId,
               resourceName: device.hostname,
               details: commandAuditDetails(command.id, type, payload),
-              result: 'success',
+              // Dispatch-time row: the agent hasn't reported back yet, so
+              // this cannot claim 'success' (#4225).
+              result: 'dispatched',
             })
             .execute()
       )
