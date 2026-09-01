@@ -128,6 +128,48 @@ export default function ScriptExecutionModal({
     };
   }, [fetchedDeviceOptions, providedDeviceOptions, script.osTypes, selectedDeviceIds]);
 
+  // #4172 re-port (spec D4): the status filter defaults to 'online', so a fleet
+  // of OS-compatible-but-offline devices renders an empty picker. Saying "no
+  // compatible devices — this script requires Windows" there sends the tech off
+  // to check OS compatibility for no reason. When the picker is empty ONLY
+  // because the status filter hid compatible devices, blame the filter and
+  // offer the reset instead.
+  const statusFilterActive = statusFilter !== 'all';
+  const pickerEmpty = deviceOptions.state === 'empty';
+
+  // Legacy `devices`-prop path: main's exact computation — the OS-compatible
+  // devices, and how many of them survive the status filter alone (ignoring the
+  // query/site/advanced filters).
+  const legacyCompatible = useMemo(() => {
+    if (!devices) return null;
+    const compatible = devices.filter(device => script.osTypes.includes(device.os));
+    const afterStatus = statusFilter === 'all'
+      ? compatible.length
+      : compatible.filter(device => device.status === statusFilter).length;
+    return { count: compatible.length, hiddenByStatus: compatible.length > 0 && afterStatus === 0 };
+  }, [devices, script.osTypes, statusFilter]);
+
+  // Server-options path: an exact count from a one-row probe with the status
+  // filter lifted. `page.total` is the full match count, so limit 1 is enough,
+  // and `enabled` keeps this to a single extra request on the empty+filtered
+  // path only. A multi-OS script cannot push `osType` to the server (neither
+  // can the primary query above), so its total is not OS-narrowed.
+  const unfilteredProbe = useDeviceOptions({
+    search: query,
+    status: undefined,
+    siteId: siteFilter === 'all' ? undefined : siteFilter,
+    osType: script.osTypes.length === 1 ? script.osTypes[0] : undefined,
+    enabled: devices === undefined && isOpen && pickerEmpty && statusFilterActive,
+    limit: 1,
+  });
+
+  const hiddenCompatibleCount = legacyCompatible
+    ? legacyCompatible.count
+    : unfilteredProbe.page?.total ?? 0;
+  const statusFilteredEmptyState = pickerEmpty
+    && statusFilterActive
+    && (legacyCompatible ? legacyCompatible.hiddenByStatus : hiddenCompatibleCount > 0);
+
   // Initialize parameters with defaults. Runtime parameters only (#3409 PR3):
   // a bound parameter is resolved per target device by the server, so it is
   // neither prompted for nor seeded — a value supplied for one is ignored and
@@ -394,6 +436,35 @@ export default function ScriptExecutionModal({
               onSearchChange={setQuery}
               showSelectAll
             />
+
+            {/* #4172: offline-vs-OS disambiguation for the empty picker. The
+                picker keeps its own neutral "No devices found." line — it has
+                no empty-state slot, and this port does not reshape it. */}
+            {pickerEmpty && (statusFilteredEmptyState ? (
+              <div className="p-4 text-center text-sm text-muted-foreground space-y-2">
+                <p>
+                  {t('scriptExecutionModal.empty.offlineFiltered', {
+                    count: hiddenCompatibleCount,
+                    status: statusFilter === 'maintenance'
+                      ? t('scriptExecutionModal.status.maintenance')
+                      : t(/* i18n-dynamic */ `common:states.${statusFilter}`)
+                  })}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('all')}
+                  className="text-xs text-primary hover:underline"
+                >
+                  {t('scriptExecutionModal.empty.showAllDevices')}
+                </button>
+              </div>
+            ) : (
+              <p className="p-4 text-center text-sm text-muted-foreground">
+                {t('scriptExecutionModal.empty.noCompatibleDevices', {
+                  os: script.osTypes.map(os => t(/* i18n-dynamic */ `scriptExecutionModal.os.${os}`)).join(t('scriptExecutionModal.orSeparator'))
+                })}
+              </p>
+            ))}
           </div>
 
           {/* Execution Progress */}

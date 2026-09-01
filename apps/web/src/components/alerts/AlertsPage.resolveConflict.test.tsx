@@ -98,8 +98,14 @@ function mockAlerts(resolveResponse: () => Promise<Response>) {
       listCalls += 1;
       return Promise.resolve(makeJsonResponse({ data: [activeAlert] }));
     }
-    if (url === '/devices' && method === 'GET') {
-      return Promise.resolve(makeJsonResponse({ data: [] }));
+    // The device filter reads the options endpoint, not the old `/devices`
+    // list — a `url === '/devices'` arm never matched and left this suite
+    // falling through to the 404 branch.
+    if (url.startsWith('/devices/options?') && method === 'GET') {
+      return Promise.resolve(makeJsonResponse({
+        data: [],
+        page: { nextCursor: null, returned: 0, total: 0, hasMore: false, observedAt: '2026-08-31T00:00:00.000Z' },
+      }));
     }
     if (url === `/alerts/${ALERT_ID}/resolve` && method === 'POST') {
       return resolveResponse();
