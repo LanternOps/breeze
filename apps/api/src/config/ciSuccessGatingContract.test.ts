@@ -40,8 +40,10 @@ const blockingEnd = ciSuccess.indexOf('; then', blockingStart) + '; then'.length
 const blockingCondition = ciSuccess.slice(blockingStart, blockingEnd);
 const conditionalChecks = ciSuccess.slice(blockingEnd);
 
-// smoke-test is deliberately non-blocking on PRs and required on main pushes via the IS_PR guard.
-const PR_EXEMPT_JOBS = new Set(['smoke-test']);
+// smoke-test and guided-setup-smoke are deliberately non-blocking on PRs and required on main
+// pushes via the IS_PR guard (both boot a full stack; guided-setup-smoke also runs the real
+// self-host installer + systemd unit on the runner).
+const PR_EXEMPT_JOBS = new Set(['smoke-test', 'guided-setup-smoke']);
 
 const UNGATED_JOBS = new Set([
   'ci-success', // the aggregate itself
@@ -105,6 +107,15 @@ describe('ci-success gating contract', () => {
       'The smoke-test PR exemption changed shape and must be re-reviewed.',
     ).toContain(
       `if [[ "\${IS_PR}" != "true" ]] && [[ "\${SMOKE_TEST_RESULT}" != "success" ]]; then`,
+    );
+  });
+
+  it('guided-setup-smoke is still guarded on main pushes', () => {
+    expect(
+      conditionalChecks,
+      'The guided-setup-smoke PR exemption changed shape and must be re-reviewed.',
+    ).toContain(
+      `if [[ "\${IS_PR}" != "true" ]] && [[ "\${GUIDED_SETUP_SMOKE_RESULT}" != "success" ]]; then`,
     );
   });
 
