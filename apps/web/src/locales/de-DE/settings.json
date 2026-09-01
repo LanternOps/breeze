@@ -1493,7 +1493,9 @@
       "recipientRolesFailed": "Rollen konnten nicht geladen werden; Benachrichtigungsempfänger lassen sich derzeit nicht ändern.",
       "supervisedActionKeysHint": "Vorgänge, die dieser Agent OHNE einen menschlichen Klick auf Genehmigen ausführen darf, wenn eine passende Richtlinie existiert und im Expositionslimit der Organisation noch Spielraum ist. Jeder Vorgang durchläuft zur Ausführungszeit weiterhin die Live-Schutzmechanismen, den Kill-Switch und die Organisationslimits.",
       "supervisedActionKeysEmpty": "Es sind keine per Richtlinie entscheidbaren Aktionen registriert.",
-      "supervisedActionKeysFailed": "Die Liste der per Richtlinie entscheidbaren Aktionen konnte nicht geladen werden, daher kann die unbeaufsichtigte Autorisierung derzeit nicht geändert werden."
+      "supervisedActionKeysFailed": "Die Liste der per Richtlinie entscheidbaren Aktionen konnte nicht geladen werden, daher kann die unbeaufsichtigte Autorisierung derzeit nicht geändert werden.",
+      "ticketAutonomousWrites": "Autonome Ticket-Schreibvorgänge",
+      "ticketAutonomousWritesHint": "Nur Organisationsüberschreibung — autonome Ticket-Schreibvorgänge erfordern den Aktionsmodus und diese Opt-in-Einstellung auf Organisationsebene"
     },
     "loading": "Agenten werden geladen …",
     "runs": {
@@ -1540,7 +1542,8 @@
       },
       "profile": {
         "sweep": "Prüflauf",
-        "narrative": "Wochenbericht"
+        "narrative": "Wochenbericht",
+        "triage": "Ticket-Triage"
       },
       "sweep": {
         "title": "Ergebnisse des Prüflaufs",
@@ -1678,6 +1681,26 @@
           "partialNote": "Teilweise Erfassung, solange die unbeaufsichtigte Richtlinienautorisierung deaktiviert ist — die tatsächliche Nutzung kann höher sein.",
           "unavailable": "Keine aktive Agentenrichtlinie für die Organisation dieses Laufs.",
           "loading": "Budget wird geladen…"
+        }
+      },
+      "triage": {
+        "title": "Ticket-Triage",
+        "fieldsTitle": "Vorgeschlagene Felder",
+        "fields": {
+          "categoryIdLabel": "Kategorie-ID",
+          "priority": "Priorität"
+        },
+        "confidence": "{{value}} % Konfidenz",
+        "device": "Gerätezuordnung: {{value}}",
+        "draftReplyTitle": "Antwortentwurf",
+        "draftResolutionTitle": "Entwurf der Lösungsnotiz",
+        "notesTitle": "Notizen",
+        "intentsTitle": "Vorgeschlagene Ticketänderungen",
+        "intentUnknown": "Status nicht verfügbar",
+        "draftsWrittenTitle": "Erstellte Entwürfe",
+        "draftKinds": {
+          "reply": "Antwortentwurf",
+          "resolutionNote": "Entwurf der Lösungsnotiz"
         }
       }
     }

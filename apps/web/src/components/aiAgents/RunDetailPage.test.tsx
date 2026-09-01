@@ -222,6 +222,33 @@ const NARRATIVE = {
   contextTruncated: false,
 };
 
+// P2-4 (#4191, Task 12) — a `triage`-profile run's ticket proposal
+// (`AiAgentRunTicketProposalDto`). Every field carries a DISTINCT value (not
+// a uniform fixture) so a wrong-field bug — e.g. rendering `priority.value`
+// under the `categoryId` label — cannot hide behind matching text.
+const TICKET_PROPOSAL = {
+  version: 1 as const,
+  summary: 'Printer offline; the user needs the driver reinstalled.',
+  fields: {
+    categoryId: { value: 'cat-hardware-printer', confidence: 0.82 },
+    priority: { value: 'high' as const, confidence: 0.65 },
+  },
+  device: { hostname: 'WKS-07', serial: 'SN-778812' },
+  draftReply: 'Hi Jordan, we are dispatching a fix for the printer driver now.',
+  draftResolutionNote: 'Reinstalled the HP LaserJet driver remotely; test page printed cleanly.',
+  notes: ['User reported the issue at 08:12.', 'No other devices affected on this site.'],
+  intentIds: ['intent-42'],
+  draftsWritten: [{ kind: 'reply' as const, draftId: 'draft-91' }],
+};
+
+const TICKET_INTENT = {
+  id: 'intent-42',
+  status: 'approved',
+  actionName: 'manage_tickets:update_fields',
+  approvalScope: 'supervised' as const,
+  decidedVia: 'policy',
+};
+
 function mockEndpoints(opts: {
   detail?: unknown;
   detailOk?: boolean;
@@ -606,5 +633,80 @@ describe('RunDetailPage narrative', () => {
     // Formatted through the locale date formatter, never the raw ISO string.
     expect(period.textContent).not.toContain('2026-08-17T00:00:00.000Z');
     expect(period.textContent).toContain('2026');
+  });
+});
+
+// P2-4 (#4191, Task 12) — the ticket-triage proposal section: a
+// `triage`-profile run's outcome (`AiAgentRunTicketProposalDto`). Same
+// "renders nothing when absent" contract as the sweep/narrative sections
+// above — `ticketProposal` is null for every other profile.
+describe('RunDetailPage ticket triage proposal', () => {
+  it('renders nothing when the run carries no ticket proposal', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, ticketProposal: null } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-page')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-triage')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('run-detail-profile-triage')).not.toBeInTheDocument();
+  });
+
+  it('badges the run as triage in the header and renders the proposal summary', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, ticketProposal: TICKET_PROPOSAL, intents: [TICKET_INTENT] } });
+    render(<RunDetailPage runId="run-1" />);
+
+    expect(await screen.findByTestId('run-detail-profile-triage')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-run-triage-summary')).toHaveTextContent(TICKET_PROPOSAL.summary);
+  });
+
+  it('renders each proposed field with its OWN confidence — not the sibling field\'s', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, ticketProposal: TICKET_PROPOSAL, intents: [TICKET_INTENT] } });
+    render(<RunDetailPage runId="run-1" />);
+
+    const categoryRow = await screen.findByTestId('ai-agent-run-triage-field-categoryId');
+    expect(categoryRow).toHaveTextContent('cat-hardware-printer');
+    expect(categoryRow).toHaveTextContent('82');
+
+    const priorityRow = screen.getByTestId('ai-agent-run-triage-field-priority');
+    expect(priorityRow).toHaveTextContent('high');
+    expect(priorityRow).toHaveTextContent('65');
+    // Cross-contamination guard: the category row must not carry priority's
+    // confidence value, and vice versa.
+    expect(categoryRow).not.toHaveTextContent('65');
+    expect(priorityRow).not.toHaveTextContent('82');
+  });
+
+  it('renders the proposed device identifiers, notes, and both drafts', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, ticketProposal: TICKET_PROPOSAL, intents: [TICKET_INTENT] } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-run-triage'));
+    expect(screen.getByTestId('ai-agent-run-triage-device')).toHaveTextContent('WKS-07');
+    expect(screen.getByTestId('ai-agent-run-triage-device')).toHaveTextContent('SN-778812');
+    expect(screen.getByTestId('ai-agent-run-triage-notes')).toHaveTextContent('User reported the issue at 08:12.');
+    expect(screen.getByTestId('ai-agent-run-triage-notes')).toHaveTextContent('No other devices affected on this site.');
+    expect(screen.getByTestId('ai-agent-run-triage-draft-reply')).toHaveTextContent(TICKET_PROPOSAL.draftReply);
+    expect(screen.getByTestId('ai-agent-run-triage-draft-resolution')).toHaveTextContent(TICKET_PROPOSAL.draftResolutionNote);
+  });
+
+  it('links a proposal intent to its live status from the run\'s intents array, and lists the draft written', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, ticketProposal: TICKET_PROPOSAL, intents: [TICKET_INTENT] } });
+    render(<RunDetailPage runId="run-1" />);
+
+    const intentRow = await screen.findByTestId('ai-agent-run-triage-intent-intent-42');
+    expect(intentRow).toHaveTextContent('manage_tickets:update_fields');
+    expect(intentRow).toHaveTextContent('approved');
+
+    expect(screen.getByTestId('ai-agent-run-triage-draft-draft-91')).toBeInTheDocument();
+  });
+
+  it('never renders raw tool args/input/output anywhere in the triage section', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, ticketProposal: TICKET_PROPOSAL, intents: [TICKET_INTENT] } });
+    const { container } = render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-run-triage'));
+    const html = container.innerHTML;
+    for (const forbidden of ['toolInput', 'toolOutput', 'args', 'arguments']) {
+      expect(html).not.toContain(forbidden);
+    }
   });
 });

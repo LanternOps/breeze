@@ -445,6 +445,17 @@
       "feedbackFailed": "Ticket-Triage-Feedback konnte nicht gespeichert werden.",
       "feedbackSaved": "Ticket-Triage-Feedback gespeichert"
     },
+    "aiDraft": {
+      "kindReply": "KI-Antwortentwurf",
+      "kindResolutionNote": "KI-Entwurf des Lösungsvermerks",
+      "sendAsMe": "Als ich senden",
+      "sending": "Wird gesendet…",
+      "discard": "Verwerfen",
+      "sendFailed": "KI-Entwurf konnte nicht gesendet werden.",
+      "sent": "Entwurf gesendet",
+      "discardFailed": "KI-Entwurf konnte nicht verworfen werden.",
+      "discarded": "Entwurf verworfen"
+    },
     "resolve": {
       "noteLabel": "Lösungsvermerk (sichtbar für den Antragsteller)",
       "submit": "Ticket lösen"

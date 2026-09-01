@@ -366,6 +366,18 @@ export default function RunsListPage() {
                           {t('aiAgentsPage.runs.profile.narrative')}
                         </span>
                       )}
+                      {/* Phase 2 wave P2-4 (#4191, Task 12) — a triage-profile
+                          run is a ticket outcome, not a device incident; same
+                          "tell the two apart in a mixed list" rationale as
+                          the sweep/narrative badges above. */}
+                      {run.profile === 'triage' && (
+                        <span
+                          data-testid={`ai-agent-run-profile-triage-${run.id}`}
+                          className="ml-1.5 inline-flex rounded bg-teal-500/10 px-1.5 py-0.5 text-xs font-medium text-teal-700"
+                        >
+                          {t('aiAgentsPage.runs.profile.triage')}
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
                       {formatDateTime(run.queuedAt)}
