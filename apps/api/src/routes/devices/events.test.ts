@@ -109,14 +109,9 @@ describe('formatActionMessage (automated command labels)', () => {
   // #4225: these rows are written at DISPATCH time (commandQueue.ts), before
   // the agent has reported back, so the label must not claim completion and
   // the audit row's `result` must not claim 'success'.
-  it('labels automated patch installs in dispatch tense, not completed tense', () => {
+  it('labels automated patch installs in dispatch tense, not completed tense, with no suffix for the neutral result', () => {
     expect(formatActionMessage('agent.command.install_patches', 'host-1', 'dispatched'))
       .toBe('Patch install command sent — host-1');
-  });
-
-  it('does not append a suffix for the neutral dispatched result', () => {
-    expect(formatActionMessage('agent.command.install_patches', 'host-1', 'dispatched'))
-      .not.toContain('(failed)');
   });
 
   it('labels automated script runs', () => {

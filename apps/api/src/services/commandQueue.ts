@@ -697,9 +697,15 @@ export async function queueCommand(
           resourceName: device.hostname,
           details: commandAuditDetails(commandId, type, payload),
           // Dispatch-time row: the agent hasn't reported back yet, so this
-          // cannot claim 'success' (#4225). No completion-time audit event is
-          // written anywhere — the command's terminal status lives only on
-          // `device_commands` / `patch_job_results`, not the audit log.
+          // cannot claim 'success' (#4225). A completion-time audit event
+          // DOES exist (action: 'agent.command.result.submit', written in
+          // agentWs.ts and routes/agents/commands.ts with a real success/
+          // failure result) — but it can't join THIS device's feed: it's
+          // keyed on resourceId = commandId with no deviceId in `details`,
+          // while the device feed matches on resourceId = deviceId OR
+          // details->>'deviceId' (events.ts). Adding a deviceId to that
+          // existing event's details would close the loop; this PR does not
+          // do that — out of scope per the issue.
           result: 'dispatched',
         });
       })
