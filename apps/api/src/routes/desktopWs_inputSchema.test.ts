@@ -110,24 +110,55 @@ import { desktopInputEvent } from './desktopWs';
 // -------------------------------------------------------------------
 // Derive the real set of input kinds the Viewer emits, straight from its
 // source, rather than hardcoding a list here that could silently drift out
-// of sync with apps/viewer. Every `sendInputFn({ type: '<kind>', ... })`
-// call site in DesktopViewer.tsx feeds the WS fallback transport
-// (`wsSession.inputChannel.send`) exactly like it feeds WebRTC — see
-// `sendInputFn` in that file, which branches on transport but sends the
-// same event shape either way.
-function readViewerEmittedInputKinds(): string[] {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  // apps/api/src/routes -> apps/viewer/src/components/DesktopViewer.tsx
-  const viewerPath = path.resolve(here, '../../../viewer/src/components/DesktopViewer.tsx');
-  const source = readFileSync(viewerPath, 'utf8');
+// of sync with apps/viewer.
+//
+// Two sources feed the WS input channel (`wsSession.inputChannel.send`,
+// inside `sendInputFn` in DesktopViewer.tsx — it branches on transport but
+// sends the same event shape to WS and WebRTC either way):
+//
+//  1. Direct literal calls: `sendInputFn({ type: '<kind>', ... })` in
+//     DesktopViewer.tsx (mouse/keyboard live input).
+//  2. The indirect Paste Text path: DesktopViewer.tsx wires
+//     `sendInput: event => sendInputFn({ ...event })` into `sendPasteText`
+//     (pasteText.ts), which forwards `PasteKeyEvent` objects built by
+//     `textToKeyEvents` in paste.ts. Those events never appear as a literal
+//     `sendInputFn({ type: ... })` call site — an earlier version of this
+//     scraper only caught `key_press` here by coincidence, via unrelated
+//     live-keystroke call sites — so paste.ts is scanned directly for the
+//     `type:` literals it constructs.
+//
+// Deliberately NOT scanned: the many other `{ type: '...' }` messages
+// DesktopViewer.tsx sends over the WebRTC *control* channel via raw
+// `ch.send(...)` (e.g. `list_monitors`, `set_cursor_stream`, `toggle_audio`).
+// Those are WebRTC-exclusive control messages with no WS-fallback
+// counterpart in `desktopMessageSchema` at all, so they're out of scope for
+// this input-event coverage check.
+function readTypeLiterals(source: string, re: RegExp): Set<string> {
   const kinds = new Set<string>();
-  const re = /sendInputFn\(\{\s*type:\s*'([a-z_]+)'/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(source)) !== null) {
     const kind = match[1];
     if (kind) kinds.add(kind);
   }
-  return Array.from(kinds);
+  return kinds;
+}
+
+function readViewerEmittedInputKinds(): string[] {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  // apps/api/src/routes -> apps/viewer/src/...
+  const viewerRoot = path.resolve(here, '../../../viewer/src');
+
+  const desktopViewerSource = readFileSync(path.join(viewerRoot, 'components/DesktopViewer.tsx'), 'utf8');
+  // Quote- and property-order-agnostic within each sendInputFn({...}) call.
+  const directKinds = readTypeLiterals(
+    desktopViewerSource,
+    /sendInputFn\(\{[^}]*?\btype:\s*['"]([a-zA-Z_]+)['"]/g
+  );
+
+  const pasteSource = readFileSync(path.join(viewerRoot, 'lib/paste.ts'), 'utf8');
+  const pasteKinds = readTypeLiterals(pasteSource, /type:\s*['"]([a-zA-Z_]+)['"]/g);
+
+  return Array.from(new Set([...directKinds, ...pasteKinds]));
 }
 
 describe('desktopWs input schema — Viewer coverage', () => {
