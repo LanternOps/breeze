@@ -46,7 +46,9 @@ interface RemoteIncomeAccount {
   id: string;
   displayName: string;
   accountType: string;
-  accountSubType: string;
+  /** Optional: QBO omits AccountSubType on some accounts, and the API passes
+   *  the field through as-is (RemoteIncomeAccount in services/accounting/types.ts). */
+  accountSubType?: string;
 }
 
 const MANUAL_REMOTE_OPTION = "__manual__";
@@ -109,13 +111,28 @@ export default function QuickbooksMappingWorkbench({
   async function load() {
     setLoading(true);
     try {
+      // Isolated from the mapping load below on purpose. The income-account
+      // list only populates the selector; the mapping list is the screen's
+      // whole purpose. Sharing one try/catch meant a QuickBooks Account-query
+      // failure aborted the load before the mappings request was even issued,
+      // leaving an empty workbench and a toast about income accounts. runAction
+      // has already toasted by the time this catch runs, so it deliberately
+      // swallows and continues — except a 401, which must still reach the
+      // auth redirect via the outer handler.
       if (entityType === "catalog_item" && incomeAccounts === null) {
-        const accountsRes = await runAction<{ data: RemoteIncomeAccount[] }>({
-          request: () => fetchWithAuth("/accounting/quickbooks/income-accounts"),
-          errorFallback: t("quickbooksMapping.failedToLoadIncomeAccounts"),
-          onUnauthorized,
-        });
-        setIncomeAccounts(accountsRes.data);
+        try {
+          const accountsRes = await runAction<{ data: RemoteIncomeAccount[] }>({
+            request: () => fetchWithAuth("/accounting/quickbooks/income-accounts"),
+            errorFallback: t("quickbooksMapping.failedToLoadIncomeAccounts"),
+            onUnauthorized,
+          });
+          setIncomeAccounts(accountsRes.data);
+        } catch (err) {
+          if (err instanceof ActionError && err.status === 401) throw err;
+          if (!(err instanceof ActionError)) {
+            handleActionError(err, t("quickbooksMapping.failedToLoadIncomeAccounts"));
+          }
+        }
       }
       const mappingsRes = await runAction<{ data: MappingProposal[] }>({
         request: () => fetchWithAuth(`/accounting/quickbooks/mappings?entityType=${entityType}`),
@@ -357,12 +374,19 @@ export default function QuickbooksMappingWorkbench({
             {proposals.map((p) => {
               const id = p.breezeEntityId;
               const busy = !!rowBusy[id];
+              // `existing_link` is a recorded link, not a guess — labelling it
+              // "Suggested match" told the operator Breeze had proposed the
+              // mapping they themselves confirmed. The API only reports it for
+              // a persisted row that actually carries a remote id
+              // (confidenceForMapping, accountingMappingService.ts).
               const confidenceLabel =
                 p.confidence === "ambiguous"
                   ? t("quickbooksMapping.ambiguousMatch")
                   : p.confidence === "none"
                     ? t("quickbooksMapping.noMatch")
-                    : t("quickbooksMapping.suggestedMatch");
+                    : p.confidence === "existing_link"
+                      ? t("quickbooksMapping.linkedMatch")
+                      : t("quickbooksMapping.suggestedMatch");
               const statusLabel =
                 p.syncStatus === "synced"
                   ? t("quickbooksMapping.synced")

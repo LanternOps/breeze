@@ -41,6 +41,7 @@ import {
 import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../../db/schema';
 import { getConnection } from './accountingConnectionService';
 import type { AccountingConnection } from './accountingConnectionService';
+import { normalizeCurrencyCode } from './accountingCurrency';
 import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
 import { getAccountingProvider } from './providerRegistry';
 import { captureException } from '../sentry';
@@ -73,6 +74,13 @@ export type AccountingMappingErrorCode =
   | 'entity_not_found'
   | 'income_account_required'
   | 'mapping_not_ready'
+  // QuickBooks stamps CurrencyRef from the realm default at CREATE time and
+  // never lets it change afterwards, so creating a Customer/Item for a Breeze
+  // entity stamped in a different currency mints a permanently unusable remote
+  // record — Phase C's invoice-push guard then rejects that org forever.
+  // Surfaced as a pre-flight 409 before any provider call, same shape as
+  // income_account_required.
+  | 'currency_mismatch'
   // Not in the original Task 4 brief: the rebased seam requires a single
   // currencyCode+unitPrice pair per Item (there is no per-org context here —
   // a catalog item syncs once per partner), so the price book can genuinely
@@ -183,6 +191,21 @@ async function callProviderOrThrow<T>(action: () => Promise<T>, errorMessage: st
 
 type MappingRow = AccountingEntityMappingRow;
 
+/**
+ * `confidence` describes how the PROPOSED remote id was arrived at, so a
+ * persisted row only earns `existing_link` when it actually links to
+ * something. A `create_new` or `unlinked` decision links to nothing — hard
+ * -coding `existing_link` for those made the workbench render the operator's
+ * own recorded decision as a "Suggested match" (it labels anything that isn't
+ * `ambiguous`/`none` that way), i.e. Breeze telling the user it had guessed
+ * the choice they themselves made. `none` is the accurate reading — no remote
+ * counterpart is proposed — and the row's separate `linkStatus` is what
+ * carries the decision itself.
+ */
+function confidenceForMapping(mapping: MappingRow): MappingProposal['confidence'] {
+  return mapping.remoteEntityId ? 'existing_link' : 'none';
+}
+
 function toProposalFromMapping(
   breezeEntityType: MappingEntityType,
   breezeEntityId: string,
@@ -198,7 +221,7 @@ function toProposalFromMapping(
     remoteEntityType,
     proposedRemoteId: mapping.remoteEntityId,
     proposedRemoteName: mapping.remoteEntityId ? remoteDisplayNameById.get(mapping.remoteEntityId) ?? null : null,
-    confidence: 'existing_link',
+    confidence: confidenceForMapping(mapping),
     linkStatus: mapping.linkStatus as MappingProposal['linkStatus'],
     syncStatus: mapping.syncStatus as MappingProposal['syncStatus'],
     lastError: mapping.lastError ?? null,
@@ -737,6 +760,51 @@ async function resolveItemSellPrice(
   return { currencyCode: targetCurrency, unitPrice: priceRow.unitPrice };
 }
 
+/**
+ * CREATE-ONLY currency contract for QuickBooks entities (multi-currency §11).
+ *
+ * QuickBooks derives a Customer's/Item's `CurrencyRef` from the realm's home
+ * currency at CREATE time and treats it as immutable afterwards. Breeze never
+ * sends `CurrencyRef` (see the comment on `QuickbooksProvider.upsertCustomer`),
+ * so creating an entity whose Breeze-stamped currency differs from the realm's
+ * silently books it at the realm default: the sync goes green, the remote
+ * record is wrong forever, and Phase C's `assertAccountingInvoicePushCurrency`
+ * then 409s every invoice for that org with no remediation short of deleting
+ * the QBO record by hand.
+ *
+ * A NULL home currency blocks too, for the same reason
+ * `assertAccountingInvoicePushCurrency` blocks on it: "we don't know" is not
+ * "it matches". Reconnecting the integration re-captures it.
+ *
+ * Deliberately NOT applied to an UPDATE (a mapping that already carries a
+ * `remoteEntityId`): the remote entity's currency was fixed when it was
+ * created, a sparse update cannot change it, and gating updates would strand
+ * every already-linked entity in a realm whose home currency was later
+ * corrected — with no way to push the fix.
+ */
+function assertCreateCurrencyMatchesRealm(
+  conn: AccountingConnection,
+  entityCurrencyCode: string | null,
+  label: 'organization' | 'catalog item',
+): void {
+  const home = normalizeCurrencyCode(conn.homeCurrency);
+  if (!home) {
+    throw new AccountingMappingError(
+      'currency_mismatch',
+      409,
+      'The connected QuickBooks company\'s home currency is unknown, so Breeze cannot safely create records in it. Reconnect QuickBooks to capture it, then retry.',
+    );
+  }
+  const entityCurrency = normalizeCurrencyCode(entityCurrencyCode);
+  if (entityCurrency !== home) {
+    throw new AccountingMappingError(
+      'currency_mismatch',
+      409,
+      `This ${label} is priced in ${entityCurrency ?? 'an unknown currency'}, but the connected QuickBooks company's home currency is ${home}. QuickBooks fixes a record's currency when it is created and never lets it change, so Breeze will not create it.`,
+    );
+  }
+}
+
 /** Breeze `service` -> QBO `Service`; `hardware`/`software` -> `NonInventory` (plan Global Constraints). */
 function buildItemPayload(
   item: CatalogItemRow,
@@ -862,6 +930,7 @@ export async function syncMappedEntity(input: SyncMappedEntityInput): Promise<Ma
   try {
     if (breezeEntityType === 'org') {
       const org = await loadOwnedOrg(breezeEntityId, partnerId);
+      if (isCreate) assertCreateCurrencyMatchesRealm(conn, org.currencyCode, 'organization');
       remote = await runOutsideDbContext(() => providerImpl.upsertCustomer(liveConn, buildCustomerPayload(org), existingRef));
     } else {
       if (isCreate && !conn.defaultIncomeAccountRef) {
@@ -873,6 +942,9 @@ export async function syncMappedEntity(input: SyncMappedEntityInput): Promise<Ma
       }
       const item = await loadOwnedCatalogItem(breezeEntityId, partnerId);
       const { currencyCode, unitPrice } = await resolveItemSellPrice(item, partnerId);
+      // The Item payload's currency is the PARTNER's default currency (see
+      // resolveItemSellPrice), so that is what QBO would stamp the new Item at.
+      if (isCreate) assertCreateCurrencyMatchesRealm(conn, currencyCode, 'catalog item');
       remote = await runOutsideDbContext(() =>
         providerImpl.upsertItem(liveConn, buildItemPayload(item, conn, currencyCode, unitPrice), existingRef),
       );

@@ -84,7 +84,11 @@ const ITEM_A = 'item-a';
 function connectedConn(overrides: Record<string, unknown> = {}) {
   return {
     id: 'c1', partnerId: PARTNER, provider: 'quickbooks', realmId: 'r1', accessToken: 'stale-tok',
-    environment: 'sandbox', status: 'connected', defaultIncomeAccountRef: '79', ...overrides,
+    environment: 'sandbox', status: 'connected', defaultIncomeAccountRef: '79',
+    // Matches stubReads' default org/partner currency ('USD'), so the Phase-B
+    // create-time home-currency guard is satisfied unless a test opts out.
+    homeCurrency: 'USD',
+    ...overrides,
   };
 }
 
@@ -298,6 +302,27 @@ describe('listMappingProposals — org matching priority', () => {
       linkStatus: 'confirmed', syncStatus: 'synced',
     });
     expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  // A persisted row is a RECORDED DECISION, not a guess. Reporting
+  // `existing_link` for a decision that links to nothing made the workbench
+  // label the operator's own "Create new"/"Unlink" choice a "Suggested match".
+  it.each([
+    ['create_new' as const],
+    ['unlinked' as const],
+  ])('reports confidence "none" for a persisted %s row that links to no remote entity', async (linkStatus) => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [{
+        id: 'm1', breezeEntityType: 'org', breezeEntityId: ORG_A, remoteEntityType: 'Customer',
+        remoteEntityId: null, linkStatus, syncStatus: 'pending', lastError: null,
+      }],
+    });
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-12', displayName: 'Acme' }]);
+
+    const result = await listMappingProposals({ partnerId: PARTNER, provider: 'quickbooks', entityType: 'org' });
+
+    expect(result[0]).toMatchObject({ confidence: 'none', linkStatus, proposedRemoteId: null });
   });
 
   it('prefers one exact email match over a name match', async () => {
@@ -750,6 +775,9 @@ describe('syncMappedEntity', () => {
   });
 
   it('maps org billing contact email, address, currency, and tax id onto the customer payload', async () => {
+    // Realm home currency matches the org's stamped EUR, so the create-time
+    // currency guard passes and this stays a payload-shape assertion.
+    getConnectionMock.mockResolvedValue(connectedConn({ homeCurrency: 'EUR' }));
     stubReads({
       orgs: [{
         id: ORG_A, name: 'Acme', email: 'ap@acme.test', taxId: 'TAX-123', currencyCode: 'EUR',
@@ -803,6 +831,94 @@ describe('syncMappedEntity', () => {
     const persisted = currentMappingRows.find((r) => r.id === 'm1');
     expect(persisted).toMatchObject({ syncStatus: 'error', remoteEntityId: 'qb-1' }); // prior ref survives the failure
     expect(persisted?.lastError).not.toContain('SUPER-SECRET-UPSTREAM-BODY');
+  });
+
+  // --- create-time home-currency guard (multi-currency §11) ------------------
+  //
+  // QuickBooks stamps CurrencyRef at CREATE time from the realm default and it
+  // is immutable afterwards, so a create whose Breeze-side currency differs
+  // from the realm home currency produces a permanently unusable entity: the
+  // Phase-C invoice-push guard then 409s that org forever. These prove the
+  // guard fires BEFORE the provider is touched, on both entity types, and that
+  // it does NOT gate an update of an already-linked entity.
+
+  it('refuses to create a QuickBooks Customer for an org whose currency is not the realm home currency', async () => {
+    getConnectionMock.mockResolvedValue(connectedConn({ homeCurrency: 'USD' }));
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme', currencyCode: 'EUR' }],
+      mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null })],
+    });
+
+    const err: unknown = await syncMappedEntity(syncOrg()).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ code: 'currency_mismatch', status: 409 });
+    expect((err as Error).message).toContain('EUR');
+    expect((err as Error).message).toContain('USD');
+    expect(upsertCustomerMock).not.toHaveBeenCalled();
+    // A pre-flight refusal never attempted a sync, so the row must not be
+    // marked errored (same rule the income_account_required guard follows).
+    expect(currentMappingRows.find((r) => r.id === 'm1')).toMatchObject({ syncStatus: 'pending' });
+  });
+
+  it('refuses to create a QuickBooks Customer when the connection has no captured home currency', async () => {
+    getConnectionMock.mockResolvedValue(connectedConn({ homeCurrency: null }));
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme', currencyCode: 'USD' }],
+      mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null })],
+    });
+
+    await expect(syncMappedEntity(syncOrg())).rejects.toMatchObject({ code: 'currency_mismatch', status: 409 });
+    expect(upsertCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('creates a QuickBooks Customer when the org currency matches the realm home currency', async () => {
+    getConnectionMock.mockResolvedValue(connectedConn({ homeCurrency: 'usd' })); // case-insensitive
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme', currencyCode: 'USD' }],
+      mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null })],
+    });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-new', syncToken: '0' });
+
+    await expect(syncMappedEntity(syncOrg())).resolves.toMatchObject({ remoteEntityId: 'qb-new', syncStatus: 'synced' });
+    expect(upsertCustomerMock).toHaveBeenCalled();
+  });
+
+  it('still updates an already-linked Customer whose currency differs from the realm (CurrencyRef is fixed at create)', async () => {
+    getConnectionMock.mockResolvedValue(connectedConn({ homeCurrency: 'USD' }));
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme', currencyCode: 'EUR' }],
+      mappings: [orgMappingRow({ linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3' })],
+    });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-1', syncToken: '4' });
+
+    await expect(syncMappedEntity(syncOrg())).resolves.toMatchObject({ remoteEntityId: 'qb-1', syncStatus: 'synced' });
+    expect(upsertCustomerMock).toHaveBeenCalled();
+  });
+
+  it('refuses to create a QuickBooks Item priced in a currency other than the realm home currency', async () => {
+    getConnectionMock.mockResolvedValue(connectedConn({ homeCurrency: 'USD' }));
+    stubReads({
+      items: [{ id: ITEM_A, name: 'Managed Service', sku: 'MS-1' }],
+      mappings: [itemMappingRow({ linkStatus: 'create_new', remoteEntityId: null })],
+      partnerCurrency: 'EUR',
+      itemPrices: [{ itemId: ITEM_A, currencyCode: 'EUR', unitPrice: '125.50' }],
+    });
+
+    await expect(syncMappedEntity(syncCatalogItem())).rejects.toMatchObject({ code: 'currency_mismatch', status: 409 });
+    expect(upsertItemMock).not.toHaveBeenCalled();
+  });
+
+  it('still updates an already-linked Item whose partner currency differs from the realm', async () => {
+    getConnectionMock.mockResolvedValue(connectedConn({ homeCurrency: 'USD' }));
+    stubReads({
+      items: [{ id: ITEM_A, name: 'Managed Service', sku: 'MS-1' }],
+      mappings: [itemMappingRow({ linkStatus: 'confirmed', remoteEntityId: 'qb-item-1', remoteSyncToken: '2' })],
+      partnerCurrency: 'EUR',
+      itemPrices: [{ itemId: ITEM_A, currencyCode: 'EUR', unitPrice: '125.50' }],
+    });
+    upsertItemMock.mockResolvedValueOnce({ id: 'qb-item-1', syncToken: '3' });
+
+    await expect(syncMappedEntity(syncCatalogItem())).resolves.toMatchObject({ syncStatus: 'synced' });
   });
 
   it('surfaces a non-retry-safe error with the remote id in Sentry metadata when persisting a successful remote create fails', async () => {

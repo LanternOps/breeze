@@ -984,4 +984,68 @@ describe('org merge engine SQL against real Postgres', () => {
       if (!(err instanceof Rollback)) throw err;
     }
   });
+
+  it('drops the merged-away org\'s QuickBooks mapping so its remote claim is released', async () => {
+    // accounting_entity_mappings has no org_id column and its Breeze side is a
+    // polymorphic (type, id) pair, so the registry walk never reaches it — the
+    // post-pass fixup is the ONLY place an org merge can act on it. A surviving
+    // loser row would keep `qbo-cust-loser` in claimedRemoteIds forever, hiding
+    // that QuickBooks Customer from every proposal and 409ing any manual
+    // confirm, with no UI able to show the row.
+    const P = randomUUID();
+    const L = randomUUID();
+    const S = randomUUID();
+    const conn = randomUUID();
+    const item = randomUUID();
+
+    try {
+      await withSystemDbAccessContext(async () => {
+        await db.execute(sql`
+          INSERT INTO partners (id, name, slug)
+          VALUES (${P}::uuid, 'QBO mapping merge', ${`qbo-mapping-${P.slice(0, 8)}`})`);
+        await db.execute(sql`
+          INSERT INTO organizations (id, partner_id, name, slug, status, currency_code)
+          VALUES (${L}::uuid, ${P}::uuid, 'Loser', ${`loser-${L.slice(0, 8)}`}, 'active', 'USD'),
+                 (${S}::uuid, ${P}::uuid, 'Survivor', ${`survivor-${S.slice(0, 8)}`}, 'active', 'USD')`);
+        await db.execute(sql`
+          INSERT INTO accounting_connections (id, partner_id, provider, environment, status, home_currency)
+          VALUES (${conn}::uuid, ${P}::uuid, 'quickbooks', 'sandbox', 'connected', 'USD')`);
+        await db.execute(sql`
+          INSERT INTO catalog_items (id, partner_id, item_type, name, unit_price, cost_currency)
+          VALUES (${item}::uuid, ${P}::uuid, 'service', 'Managed Service', 100.00, 'USD')`);
+        await db.execute(sql`
+          INSERT INTO accounting_entity_mappings
+            (integration_id, partner_id, breeze_entity_type, breeze_entity_id, remote_entity_type, remote_entity_id, link_status, sync_status)
+          VALUES
+            (${conn}::uuid, ${P}::uuid, 'org', ${L}::uuid, 'Customer', 'qbo-cust-loser', 'confirmed', 'synced'),
+            (${conn}::uuid, ${P}::uuid, 'org', ${S}::uuid, 'Customer', 'qbo-cust-survivor', 'confirmed', 'synced'),
+            (${conn}::uuid, ${P}::uuid, 'catalog_item', ${item}::uuid, 'Item', 'qbo-item-1', 'confirmed', 'synced')`);
+
+        const fixups = await runPostPassFixups(L, S, P);
+        expect(fixups.dropped).toBe(1);
+
+        const rows = (await db.execute(sql`
+          SELECT breeze_entity_type, breeze_entity_id, remote_entity_id
+            FROM accounting_entity_mappings
+           WHERE integration_id = ${conn}::uuid
+           ORDER BY remote_entity_id`)) as unknown as Array<{
+          breeze_entity_type: string;
+          breeze_entity_id: string;
+          remote_entity_id: string;
+        }>;
+
+        // Loser row gone; the survivor's own mapping and the partner-scoped
+        // catalog_item mapping untouched. Deleted rather than repointed: the
+        // survivor already claims its own QuickBooks Customer, so a repoint
+        // would collide on accounting_entity_mappings_breeze_uniq, and the
+        // survivor must reconcile fresh rather than inherit a stale claim.
+        expect(rows.map((r) => r.remote_entity_id)).toEqual(['qbo-cust-survivor', 'qbo-item-1']);
+        expect(rows.some((r) => r.breeze_entity_id === L)).toBe(false);
+
+        throw new Rollback('done');
+      });
+    } catch (err) {
+      if (!(err instanceof Rollback)) throw err;
+    }
+  });
 });

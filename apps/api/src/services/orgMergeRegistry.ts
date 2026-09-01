@@ -63,10 +63,25 @@ const FOLLOWS_PARENT_NOTES: Readonly<Record<string, string>> = {
 };
 const FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS = new Set(['software_deployments']);
 
+/**
+ * ASSOCIATED_SYSTEM_SCOPED_TABLES entries this registry deliberately does NOT
+ * classify, because the merge engine could never reach them: the walk iterates
+ * `topologicalCascadeOrder()`, which only contains tables in
+ * `getOrgCascadeDeleteOrder()`. A table with no `org_id` column that is also
+ * not FK-reachable from one gets no policy dispatch at all, so registering a
+ * `custom` policy for it would be a dead entry that reads as coverage.
+ *
+ * These are handled by `runPostPassFixups` in orgMerge.ts instead — the same
+ * place `config_policy_assignments` (also polymorphic: level/target_id, no
+ * org_id) is handled, for exactly the same reason.
+ */
+const POST_PASS_FIXUP_TABLES = new Set(['accounting_entity_mappings']);
+
 function buildFollowsParentEntries(): Record<string, OrgMergePolicy> {
   const entries: Record<string, OrgMergePolicy> = {};
   for (const { table } of tenantCascadeTestOnly.ASSOCIATED_SYSTEM_SCOPED_TABLES) {
     if (FOLLOWS_PARENT_OWN_ORG_ID_EXCEPTIONS.has(table)) continue;
+    if (POST_PASS_FIXUP_TABLES.has(table)) continue;
     const note = FOLLOWS_PARENT_NOTES[table];
     if (!note) {
       // tenantCascade.ts gained a new ASSOCIATED_SYSTEM_SCOPED_TABLES entry

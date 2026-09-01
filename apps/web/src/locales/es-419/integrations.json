@@ -717,6 +717,7 @@
     "suggestedMatch": "Coincidencia sugerida",
     "ambiguousMatch": "Coincidencia ambigua",
     "noMatch": "Sin coincidencia",
+    "linkedMatch": "Vinculado",
     "confirmed": "Confirmado",
     "createNew": "Crear nuevo",
     "unlink": "Desvincular",

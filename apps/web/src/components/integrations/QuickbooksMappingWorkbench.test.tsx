@@ -86,6 +86,10 @@ const itemProposalConfirmed = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks drops recorded calls but KEEPS queued `mockResolvedValueOnce`
+  // implementations, so a test that leaves one unconsumed (any test asserting an
+  // early abort) would silently serve it to the next test. Reset the queue.
+  fetchWithAuthMock.mockReset();
   window.location.hash = "";
 });
 
@@ -542,5 +546,61 @@ describe("QuickbooksMappingWorkbench", () => {
     await waitFor(() =>
       expect(screen.getByTestId("quickbooks-mapping-load")).not.toBeDisabled(),
     );
+  });
+
+  it("still renders the item mapping list when the income-account fetch fails", async () => {
+    // The income-account list is a convenience for the selector; the mapping
+    // list is the screen's whole purpose. A single shared try/catch let a
+    // QuickBooks Account-query failure abort the load before the mappings
+    // request was ever issued, so the operator saw an empty workbench and one
+    // toast about income accounts.
+    fetchWithAuthMock
+      .mockResolvedValueOnce(jsonResponse({ error: "QuickBooks returned an error" }, 502))
+      .mockResolvedValueOnce(jsonResponse({ data: [itemProposal] }));
+
+    render(
+      <QuickbooksMappingWorkbench
+        onUnauthorized={vi.fn()}
+        defaultIncomeAccountRef="79"
+      />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-tab-items"));
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+
+    expect(
+      await screen.findByTestId(`quickbooks-mapping-row-${ITEM_ID}`),
+    ).toBeInTheDocument();
+    // The failure is still reported — it is not swallowed, just isolated.
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "error" }),
+    );
+    expect(fetchWithAuthMock.mock.calls[1]![0]).toContain("entityType=catalog_item");
+  });
+
+  it("labels a confirmed row as linked rather than a suggested match", async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      jsonResponse({
+        data: [{
+          ...suggestedOrgProposal,
+          confidence: "existing_link",
+          linkStatus: "confirmed",
+        }],
+      }),
+    );
+    render(
+      <QuickbooksMappingWorkbench
+        onUnauthorized={vi.fn()}
+        defaultIncomeAccountRef={null}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
+
+    expect(
+      screen.getByTestId(`quickbooks-mapping-confidence-${ORG_ID}`),
+    ).not.toHaveTextContent(/suggested/i);
+    expect(
+      screen.getByTestId(`quickbooks-mapping-confidence-${ORG_ID}`),
+    ).toHaveTextContent(/linked/i);
   });
 });

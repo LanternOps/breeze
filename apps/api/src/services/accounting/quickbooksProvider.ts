@@ -338,10 +338,16 @@ export class QuickbooksProvider implements AccountingProvider {
     if (mapping && !mapping.remoteSyncToken) {
       throw new Error('QuickBooks Customer update requires the current SyncToken');
     }
-    // CurrencyRef is deliberately NOT sent: Breeze only syncs entities whose
-    // stamped currency matches the realm's home currency (multi-currency §11
-    // invoice-push guard), so the realm default is already correct — and
-    // sending CurrencyRef to a single-currency realm is a QBO error.
+    // CurrencyRef is deliberately NOT sent — sending it to a single-currency
+    // realm is a QBO error, so the realm default is what a create gets. What
+    // makes that safe is the CREATE-path guard in accountingMappingService.ts
+    // (`assertCreateCurrencyMatchesRealm`, called from `syncMappedEntity`
+    // before this method is reached): it refuses to create a Customer/Item
+    // whose Breeze-stamped currency is not the connection's captured
+    // `homeCurrency`, and refuses outright when that home currency is unknown.
+    // Phase C's `assertAccountingInvoicePushCurrency` is the matching guard on
+    // the invoice-push path; neither one gates an UPDATE, because QBO fixes
+    // CurrencyRef at creation and a sparse update cannot change it.
     const payload = {
       ...(mapping ? {
         sparse: true,

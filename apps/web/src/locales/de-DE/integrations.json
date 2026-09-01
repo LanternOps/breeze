@@ -717,6 +717,7 @@
     "suggestedMatch": "Vorgeschlagene Übereinstimmung",
     "ambiguousMatch": "Mehrdeutige Übereinstimmung",
     "noMatch": "Keine Übereinstimmung",
+    "linkedMatch": "Verknüpft",
     "confirmed": "Bestätigt",
     "createNew": "Neu erstellen",
     "unlink": "Verknüpfung aufheben",

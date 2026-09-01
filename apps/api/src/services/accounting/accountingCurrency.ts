@@ -39,11 +39,19 @@ export class AccountingCurrencyContractError extends Error {
   }
 }
 
-function normalizeCode(value: string | null | undefined): string | null {
+/**
+ * Exported so the Phase-B entity-create guard in `accountingMappingService.ts`
+ * compares codes by exactly these rules rather than re-deriving them — a
+ * second, subtly different normalization is how a guard drifts out of
+ * agreement with the push guard it exists to protect.
+ */
+export function normalizeCurrencyCode(value: string | null | undefined): string | null {
   if (typeof value !== 'string') return null;
   const code = value.trim().toUpperCase();
   return code.length > 0 ? code : null;
 }
+
+const normalizeCode = normalizeCurrencyCode;
 
 function providerLabel(provider: AccountingConnection['provider']): string {
   return provider === 'xero' ? 'Xero' : 'QuickBooks';

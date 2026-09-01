@@ -717,6 +717,7 @@
     "suggestedMatch": "Önerilen eşleşme",
     "ambiguousMatch": "Belirsiz eşleşme",
     "noMatch": "Eşleşme yok",
+    "linkedMatch": "Bağlandı",
     "confirmed": "Onaylandı",
     "createNew": "Yeni oluştur",
     "unlink": "Bağlantıyı kaldır",

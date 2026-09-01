@@ -717,6 +717,7 @@
     "suggestedMatch": "Suggested match",
     "ambiguousMatch": "Ambiguous match",
     "noMatch": "No match",
+    "linkedMatch": "Linked",
     "confirmed": "Confirmed",
     "createNew": "Create new",
     "unlink": "Unlink",
