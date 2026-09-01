@@ -1806,9 +1806,10 @@ coreRoutes.delete(
         //
         // uninstallSent is necessarily false here (#3817): the dispatch sits
         // below this try/catch, so reaching it at all means the cascade
-        // committed. Reported anyway, because the field is part of this
-        // response's shape and a caller reading `undefined` cannot tell "not
-        // sent" from "endpoint changed".
+        // committed. Kept in the body for response-shape stability — no
+        // current consumer reads it (the web caller surfaces only
+        // `err.message`), so this is about not silently dropping a documented
+        // field, not about a distinction someone is making today.
         return c.json({
           error: `Cannot delete: device still has related records${constraintTable ? ` in ${constraintTable}` : ''}. A related table may be missing from the cascade delete list.`,
           uninstallSent,
@@ -1820,12 +1821,14 @@ coreRoutes.delete(
       // Without this branch that bound would surface as a generic 500, which
       // reads as a bug rather than the transient, retryable conflict it is.
       //
-      // This used to be the one path that could leave an agent uninstalling
-      // itself while its device row survived, because the dispatch ran before
-      // the transaction. Since #3817 it cannot: the lock is the cascade's first
-      // statement, so a bounded lock failure rolls back having mutated nothing
-      // AND having sent nothing. A retry is therefore an ordinary retry, and
-      // saying more than that would describe damage that did not occur.
+      // This was one of the three rollback paths (with 23503 above and the
+      // generic rethrow below) that could leave an agent uninstalling itself
+      // while its device row survived, because the dispatch ran before the
+      // transaction. Since #3817 none of them can. What is specific to THIS
+      // branch: the lock is the cascade's first statement, so a bounded lock
+      // failure rolls back having mutated nothing at all. A retry is therefore
+      // an ordinary retry, and saying more would describe damage that did not
+      // occur.
       if (pgCode === '55P03') {
         console.warn(`[devices] lock timeout acquiring devices row for ${deviceId}; another writer holds it (uninstallSent=${uninstallSent})`, err);
         return c.json({
@@ -1855,21 +1858,33 @@ coreRoutes.delete(
     // #3817 — deliberately AFTER the cascade commits. SELF_UNINSTALL is
     // irreversible, so dispatching it speculatively (as this route used to)
     // meant any rollback above stranded a self-removing agent against a
-    // surviving device row. The narrow cost of this ordering is the inverse
-    // race — the agent disconnecting between the commit and this send — which
-    // degrades to the `warning` below and a manual uninstall. That is
-    // recoverable; the other direction is not. Nothing here may turn an
-    // already-committed delete into a 500, hence the catch.
-    if (device.agentId && isAgentConnected(device.agentId)) {
-      try {
+    // surviving device row. The cost of this ordering is the inverse race —
+    // the agent disconnecting between the commit and this send — which leaves
+    // `uninstallSent` false and puts the `warning` below in the 200 body, i.e.
+    // a manual uninstall. That is recoverable; the other direction is not.
+    // (The web caller currently discards that warning — #4368.)
+    //
+    // The delete is ALREADY COMMITTED here, so nothing in this block may throw
+    // out of the handler: a 500 now would lose the audit entry and the
+    // device-count invalidation below while the row is permanently gone, and
+    // would tell the caller nothing happened when everything did. The guard is
+    // therefore INSIDE the try — `isAgentConnected` is not a bare Map read, it
+    // asserts the process role first (agentWs.ts) and throws in the worker
+    // role. Same reasoning as the getRedis() call further down.
+    try {
+      if (device.agentId && isAgentConnected(device.agentId)) {
         uninstallSent = sendCommandToAgent(device.agentId, {
           id: `uninstall-${deviceId}`,
           type: CommandTypes.SELF_UNINSTALL,
           payload: { removeConfig: true },
         });
-      } catch (err) {
-        console.error(`[devices] best-effort self_uninstall failed for ${deviceId}:`, err);
       }
+    } catch (err) {
+      // Durable, not just console: this is a post-commit failure on an
+      // irreversible operation, and a console line on a droplet is not a record
+      // anyone will find later.
+      console.error(`[devices] best-effort self_uninstall failed for ${deviceId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)), c);
     }
 
     writeRouteAudit(c, {

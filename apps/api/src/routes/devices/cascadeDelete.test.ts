@@ -511,6 +511,11 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks clears CALLS but keeps implementations, and the ordering
+    // test below wraps db.transaction in a closure over its own rig. Without
+    // this reset that wrapper leaks into any later test that forgets to
+    // re-rig, which would silently record ordering from the wrong test.
+    vi.mocked(db.transaction).mockReset();
     app = new Hono();
     app.route('/devices', coreRoutes);
   });
@@ -684,11 +689,26 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
   // agentId plus a live agent connection.
   const CONNECTED_DEVICE = { ...DEVICE, agentId: 'agent-1' };
 
-  function rigUninstallDispatched() {
+  /**
+   * Rigs the agent as online AND the send as succeeding — i.e. dispatch is
+   * POSSIBLE. Named for that, not for "dispatched": the rollback tests below
+   * use it precisely to prove nothing was sent, and a name like
+   * `rigUninstallDispatched` reads as the opposite of what they assert.
+   */
+  function rigAgentOnlineAndSendable() {
     vi.mocked(isAgentConnected).mockReturnValue(true);
     // Returns synchronously — `uninstallSent = sendCommandToAgent(...)`, not an
     // awaited promise, so mockResolvedValue would make uninstallSent a Promise.
     vi.mocked(sendCommandToAgent).mockReturnValue(true as never);
+  }
+
+  async function auditDetails(): Promise<Record<string, unknown>> {
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    const call = vi.mocked(writeRouteAudit).mock.calls
+      .map((c) => c[1] as { action?: string; details?: Record<string, unknown> })
+      .find((entry) => entry.action === 'device.permanent_delete');
+    expect(call, 'expected a device.permanent_delete audit entry').toBeDefined();
+    return call!.details ?? {};
   }
 
   /**
@@ -698,19 +718,28 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
    * generic rethrow) left the agent removing itself while its device row
    * survived — an unmanageable orphan.
    *
-   * This is the discriminating assertion for that ordering, and the only one
-   * that is: response fields and call counts are identical either way. Both
-   * orderings send exactly one command on the happy path, so nothing short of
-   * recording WHEN the send happened relative to the commit can tell the fixed
-   * code from the broken code. Against the pre-fix route this expects
-   * ['tx-commit', 'dispatch'] and receives ['dispatch', 'tx-commit'].
+   * On the HAPPY path this is the discriminating assertion for that ordering,
+   * and the only one that is: both orderings send exactly one command with
+   * identical response fields, so nothing short of recording WHEN the send
+   * happened relative to the transaction can tell the fixed code from the
+   * broken code. Against the pre-fix route this expects ['tx-commit',
+   * 'dispatch'] and receives ['dispatch', 'tx-commit']. The rollback tests
+   * below pin the same ordering from the other side — do not delete those as
+   * redundant, they cover the paths this one cannot reach.
+   *
+   * On what 'tx-commit' means: `db.transaction` is mocked, so the marker
+   * records the transaction callback RESOLVING, not a real COMMIT. Real commit
+   * ordering is out of scope for a mocked-db test. That is enough to catch
+   * every plausible regression here — dispatching before `db.transaction`,
+   * inside the callback, or without awaiting it all land on the wrong side of
+   * the marker.
    */
   it('dispatches SELF_UNINSTALL only after the cascade transaction commits (#3817)', async () => {
     rigDeviceLookup(CONNECTED_DEVICE);
     const order: string[] = [];
 
     // Wrap the real rig rather than replacing it, so the cascade still runs its
-    // actual statements — an empty stub transaction would "commit" trivially and
+    // actual statements — an empty stub transaction would resolve trivially and
     // weaken the ordering claim to something the route could satisfy by accident.
     rigDeleteTransaction();
     const runTransaction = vi.mocked(db.transaction).getMockImplementation()!;
@@ -750,6 +779,108 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     expect(body.success).toBe(true);
     expect(body.agentUninstallSent).toBe(true);
     expect(body.warning).toBeUndefined();
+
+    // The audit entry is now the only DURABLE record that the irreversible
+    // command actually went out — the device row it described is gone. It also
+    // pins the audit below the dispatch: hoisting writeRouteAudit back above it
+    // would record `false` for a command that was in fact sent.
+    expect(await auditDetails()).toMatchObject({ uninstallCommandSent: true });
+  });
+
+  /**
+   * The failure mode this fix deliberately ACCEPTS, and therefore the one that
+   * has to be pinned: the agent drops between the commit and the dispatch. The
+   * reorder moved the `isAgentConnected` check from before the transaction to
+   * after it, so this state is strictly more reachable than it was — and in
+   * practice it is the common case, since decommissioning (a precondition of
+   * permanent delete) force-closes the agent socket.
+   *
+   * The delete must still succeed, and the operator must be TOLD the endpoint
+   * needs a manual uninstall. Without this test, deleting the `warning` spread
+   * or the connectivity guard is a silent change: mutating either leaves the
+   * rest of the suite green.
+   */
+  it('completes the delete and warns when the agent is gone by commit time (#3817)', async () => {
+    rigDeviceLookup(CONNECTED_DEVICE);
+    rigDeleteTransaction();
+    // Online at request time is irrelevant — what matters is the check that now
+    // runs after the commit.
+    vi.mocked(isAgentConnected).mockReturnValue(false);
+
+    const res = await app.request(`/devices/${CONNECTED_DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    // The delete committed; a best-effort uninstall that could not be delivered
+    // must never undo that.
+    expect(res.status).toBe(200);
+    // Guard intact: no send attempted against a socket that isn't there.
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+
+    const body = await res.json() as { success: boolean; agentUninstallSent: boolean; warning?: string };
+    expect(body.success).toBe(true);
+    expect(body.agentUninstallSent).toBe(false);
+    expect(body.warning).toMatch(/manually remove/i);
+
+    expect(await auditDetails()).toMatchObject({ uninstallCommandSent: false });
+  });
+
+  it('does not attempt an uninstall for a device that never had an agent', async () => {
+    // DEVICE has agentId: null. The `device.agentId &&` half of the guard is
+    // what stops a send keyed to a null agent id.
+    rigDeviceLookup(DEVICE);
+    rigDeleteTransaction();
+    vi.mocked(isAgentConnected).mockReturnValue(true);
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    const body = await res.json() as { agentUninstallSent: boolean; warning?: string };
+    expect(body.agentUninstallSent).toBe(false);
+    // No agentId means there is no endpoint to go clean up by hand, so the
+    // warning would be noise.
+    expect(body.warning).toBeUndefined();
+  });
+
+  /**
+   * The relocated dispatch runs AFTER the cascade committed, so nothing in it
+   * may escape as a 500: that would lose the audit entry and the device-count
+   * invalidation while the row is permanently gone, and would tell the caller
+   * nothing happened when everything did. `isAgentConnected` is inside the try
+   * for exactly this reason — it asserts the process role and can throw.
+   */
+  it('still reports success when the post-commit uninstall dispatch throws (#3817)', async () => {
+    rigDeviceLookup(CONNECTED_DEVICE);
+    rigDeleteTransaction();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(isAgentConnected).mockImplementation(() => {
+      throw new Error('[BREEZE_ROLE] isAgentConnected is socket-local');
+    });
+
+    try {
+      const res = await app.request(`/devices/${CONNECTED_DEVICE.id}/permanent`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { success: boolean; agentUninstallSent: boolean; warning?: string };
+      expect(body.success).toBe(true);
+      expect(body.agentUninstallSent).toBe(false);
+      expect(body.warning).toMatch(/manually remove/i);
+      // Not swallowed in silence: the committed delete plus a failed uninstall
+      // is exactly the state someone will need to reconstruct later.
+      expect(await auditDetails()).toMatchObject({ uninstallCommandSent: false });
+      const { captureException } = await import('../../services/sentry');
+      expect(captureException).toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   /**
@@ -772,7 +903,7 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
    */
   it('does not dispatch SELF_UNINSTALL when the cascade fails with 55P03 (#3817)', async () => {
     rigDeviceLookup(CONNECTED_DEVICE);
-    rigUninstallDispatched();
+    rigAgentOnlineAndSendable();
     vi.mocked(db.transaction).mockImplementation(async () => {
       throw Object.assign(new Error('Failed query: SELECT id FROM devices ... FOR UPDATE'), {
         cause: Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' }),
@@ -805,7 +936,7 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
    */
   it('does not dispatch SELF_UNINSTALL when the cascade fails with 23503 (#3817)', async () => {
     rigDeviceLookup(CONNECTED_DEVICE);
-    rigUninstallDispatched();
+    rigAgentOnlineAndSendable();
     vi.mocked(db.transaction).mockImplementation(async () => {
       throw Object.assign(new Error('Failed query: DELETE FROM devices'), {
         cause: Object.assign(new Error('update or delete violates foreign key constraint'), {
@@ -847,7 +978,7 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
    */
   it('logs deviceId and uninstallSent=false before rethrowing an unmapped SQLSTATE (#3952, #3817)', async () => {
     rigDeviceLookup(CONNECTED_DEVICE);
-    rigUninstallDispatched();
+    rigAgentOnlineAndSendable();
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.mocked(db.transaction).mockImplementation(async () => {
       throw Object.assign(new Error('Failed query: UPDATE discovered_assets'), {
