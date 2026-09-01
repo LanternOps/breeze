@@ -8,6 +8,8 @@ import { loadPartnerAggregates, computeHeuristicSignals, loadHostnameIndicators 
 import { loadScriptFindings, computeScriptSignals, loadScriptIndicators } from './scriptContent';
 import { loadBillingIdentityAggregates, computeBillingIdentitySignals } from './billingIdentity';
 import { syncEndpointFingerprints, loadRecidivistMatches, computeRecidivistSignals } from './recidivistEndpoint';
+import { loadOriginIpAggregates, computeOriginIpSignals } from './originIp';
+import { computeCorroborationSignals } from './corroboration';
 import { persistSignals, markDelivered } from './persistence';
 import type { ComputedSignal } from './types';
 
@@ -48,7 +50,7 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
   const cfg = loadSignalConfig();
   const now = new Date();
 
-  const { invariants, aggregates, scriptFindings, billingIdentity, recidivist } = await runSystemDbCompute(
+  const { invariants, aggregates, scriptFindings, billingIdentity, recidivist, originIp } = await runSystemDbCompute(
     async () => {
       // syncEndpointFingerprints refreshes the corpus before the correlation
       // read below runs, same ordering scriptContent uses for its own scan.
@@ -59,6 +61,7 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
         scriptFindings: await loadScriptFindings(now),
         billingIdentity: await loadBillingIdentityAggregates(),
         recidivist: await loadRecidivistMatches(),
+        originIp: await loadOriginIpAggregates(),
       };
     },
   );
@@ -80,7 +83,19 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
     // re-established aged account matching a suspended partner's fingerprint
     // is more suspicious, not less (see the scorer's own header comment).
     ...computeRecidivistSignals(recidivist.matches, cfg),
+    // Origin-IP recidivism is likewise never age-decayed — a pre-positioned
+    // account sits dormant for weeks by design, so weighting it by account age
+    // would silence it exactly when it matures into a live operator.
+    ...computeOriginIpSignals(originIp.aggregates, originIp.corpus, cfg, now),
   ];
+  // Corroboration runs LAST and reads only what the detectors above produced —
+  // no extra queries. It promotes a partner whose evidence spans two or more
+  // independent axes, which is the mechanism the capped watch scores in
+  // config.ts have always assumed. Deliberately not added to
+  // evaluatedPartnerIds below: every partner it can fire on already got there
+  // via the detector that produced the underlying watch signal, and widening
+  // that set would change stale-resolution for OTHER signals on that partner.
+  computed.push(...computeCorroborationSignals(computed, cfg));
   // Script-scanned and billing-scanned partners join the evaluated set so open
   // rows for those detectors stale-resolve when the evidence disappears
   // (script edited/deleted, cardholder name corrected). persistSignals only
@@ -90,6 +105,7 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
     ...scriptFindings.scannedPartnerIds,
     ...billingIdentity.scannedPartnerIds,
     ...recidivist.scannedPartnerIds,
+    ...originIp.scannedPartnerIds,
   ]);
   const { toNotify } = await runSystemDbCompute(() => persistSignals(computed, now, evaluatedPartnerIds));
 

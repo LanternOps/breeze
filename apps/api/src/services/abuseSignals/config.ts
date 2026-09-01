@@ -150,6 +150,50 @@ export const SIGNAL_DEFAULTS = {
   'rmm.recidivist_endpoint.hostname_ip_score': 90,
   'rmm.recidivist_endpoint.hostname_score': 60,
   'rmm.recidivist_endpoint.ip_score': 40,
+  // Origin-IP recidivism (originIp.ts). NOT age-decayed — an address shared
+  // with a suspended operator is evidence about infrastructure, and
+  // pre-positioned accounts sit dormant for weeks precisely to age out of
+  // young-account weighting.
+  //
+  // base_score is set to meet severity.alert_score exactly, so ONE exact
+  // address shared with a suspended partner pages. That equality is an intent,
+  // not an invariant — both numbers are independently overridable — and it
+  // mirrors the confidence the signup gate already assigns to an exact
+  // signup-IP match, whose every production hold has been a true positive.
+  // There is deliberately no cap on how many suspended partners may share an
+  // address; see the note in originIp.ts on why that guard was removed.
+  'fraud.suspended_console_ip.base_score': 70,
+  'fraud.suspended_console_ip.per_extra_ip': 10,
+  // The /24 (IPv6 /64) sibling. A network is a weaker tie than an address, so
+  // this caps BELOW severity.alert_score and corroborates instead — same rule
+  // as session_intensity and cardholder_name_mismatch. Its looseness is
+  // bounded on two sides: the counterparty must be a failed login against an
+  // ALREADY-SUSPENDED account, and it must fall inside window_hours. Do not
+  // raise it past the alert threshold; widen the evidence instead.
+  'fraud.dead_account_probe_origin.window_hours': 24,
+  'fraud.dead_account_probe_origin.score': 55,
+  // Cross-signal corroboration (corroboration.ts). This is the "second signal"
+  // that the capped scores above (session_intensity, cardholder_name_mismatch,
+  // provider_default_hostname generic) have always referred to — it did not
+  // exist until 2026-08-16, which is why a partner could fire several capped
+  // watch signals and never notify anyone.
+  //
+  // min_axes counts DISTINCT EVIDENCE AXES, not signals: two detectors that
+  // restate one observation (the two IP-scatter signals) share an axis and
+  // cannot corroborate each other. 2 is the meaningful floor — one axis is a
+  // single detector, which is what the caps already decided is not enough.
+  //
+  // per_extra_axis is deliberately large enough that two watch-tier axes clear
+  // severity.alert_score at defaults (55 + 15 = 70), because the whole point is
+  // to make a corroborated pair reach an operator in real time.
+  //
+  // Reaching min_axes is necessary but NOT sufficient: the aggregate must also
+  // cross severity.alert_score or nothing is emitted at all. Two weak axes can
+  // sum below it (45 + 15 = 60), and a synthetic *watch* row would notify
+  // nobody while crowding out the weekly digest's 20-row watch list. Lowering
+  // this value therefore silences the signal rather than demoting it.
+  'fraud.corroborated_watch.min_axes': 2,
+  'fraud.corroborated_watch.per_extra_axis': 15,
 } as const satisfies Record<string, number>;
 
 export type SignalConfigKey = keyof typeof SIGNAL_DEFAULTS;
