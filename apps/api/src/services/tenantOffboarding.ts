@@ -848,18 +848,59 @@ async function repairIncompleteEntry(
   // the same cross-connection cycle Postgres cannot detect (#2877). Row lock
   // first means whichever side wins the tenant row proceeds while the other
   // waits holding nothing.
+  //
+  // The lock is also the only correct place to RE-READ the tenant's state.
+  // `sweepOffboardingTenants` snapshots its candidates in one transaction and
+  // processes each one in another, so an operator's abort committing in between
+  // is an ordinary interleaving, not a rare race. Repairing on the snapshot
+  // would not merely fail to notice — it would MANUFACTURE the bad state
+  // (#4022): with a null stamp `abortOrganizationOffboarding` correctly no-ops
+  // (its UPDATE guards on `isNotNull(offboardingStartedAt)`) and returns before
+  // cancelling anything, so nothing downstream cleans up what this would queue.
+  // The tenant would be left `active` with a live `offboardingStartedAt` and
+  // fresh `self_uninstall` rows — and because it is no longer `offboarding`,
+  // `getAgentTenantState` stops reporting `'draining'`, so
+  // `claimPendingCommandsForDevice` runs with no type allowlist and the agent
+  // claims those uninstalls on its next heartbeat.
+  //
+  // Re-read under the lock, and mirror the candidate query's predicates
+  // exactly — status AND deletedAt. A tenant soft-deleted mid-sweep must not be
+  // drained either.
+  let current: { status: string | null; deletedAt: Date | null } | undefined;
   if (scope === 'organization') {
-    await db
-      .select({ id: organizations.id })
+    [current] = await db
+      .select({ status: organizations.status, deletedAt: organizations.deletedAt })
       .from(organizations)
       .where(eq(organizations.id, scopeId))
       .for('update');
   } else {
-    await db
-      .select({ id: partners.id })
+    [current] = await db
+      .select({ status: partners.status, deletedAt: partners.deletedAt })
       .from(partners)
       .where(eq(partners.id, scopeId))
       .for('update');
+  }
+
+  // A vanished row counts as "not offboarding" — fail closed rather than drain
+  // a tenant we can no longer see.
+  if (!current || current.status !== 'offboarding' || current.deletedAt !== null) {
+    console.warn(
+      `[tenantOffboarding] ${scope} ${scopeId} left offboarding before the repair could run ` +
+        `(status=${current?.status ?? 'missing'}) — skipping drain`
+    );
+    // Deliberately a DIFFERENT audit action from the repair's own. Recording a
+    // skip as `offboarding_entry_repaired` with result 'success' is what made
+    // the original defect invisible in the audit trail.
+    writeAuditEvent(requestLikeFromSnapshot({}), {
+      orgId: scope === 'organization' ? scopeId : null,
+      action: `${scope}.offboarding_entry_repair_skipped`,
+      resourceType: scope,
+      resourceId: scopeId,
+      actorType: 'system',
+      result: 'success',
+      details: { reason: current ? `status=${current.status}` : 'row_missing' },
+    });
+    return;
   }
   // Drain prep FIRST, matching begin*Offboarding: #2785 made this step the one
   // that lifts a superseded token suspension, so queueing before it would leave

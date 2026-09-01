@@ -905,7 +905,10 @@ describe('sweepOffboardingTenants', () => {
   // indistinguishable from a clean drain (the #2774 false-confidence bug).
   it('repairs an incomplete entry (queues uninstalls) instead of finalizing it', async () => {
     queueCandidates([{ id: 'org-1', startedAt: null }], []);
-    queueSelect([{ id: 'org-1' }]); // tenant row FOR UPDATE (lock-order guard, #2877)
+    // FOR UPDATE lock + state re-read (#2877 lock order, #4022 re-check). The
+    // status must be stated explicitly: the repair now refuses to drain a
+    // tenant that is no longer offboarding.
+    queueSelect([{ id: 'org-1', status: 'offboarding', deletedAt: null }]);
     queueSelect([{ id: 'd1' }]); // devices to queue
     queueSelect([]); // no existing uninstalls
 
@@ -932,7 +935,10 @@ describe('sweepOffboardingTenants', () => {
       return { enrollmentKeysInvalidated: 0, agentTokensRestored: 0 };
     });
     queueCandidates([{ id: 'org-1', startedAt: null }], []);
-    queueSelect([{ id: 'org-1' }]); // tenant row FOR UPDATE (lock-order guard, #2877)
+    // FOR UPDATE lock + state re-read (#2877 lock order, #4022 re-check). The
+    // status must be stated explicitly: the repair now refuses to drain a
+    // tenant that is no longer offboarding.
+    queueSelect([{ id: 'org-1', status: 'offboarding', deletedAt: null }]);
     queueSelect([{ id: 'd1' }]); // devices to queue
     queueSelect([]); // no existing uninstalls
 
@@ -943,6 +949,96 @@ describe('sweepOffboardingTenants', () => {
     expect(insertsAtPrepareTime).toBe(0);
     // ...and the uninstall was queued after it, not skipped.
     expect(insertLog[0]!.rows[0]).toMatchObject({ deviceId: 'd1', type: 'self_uninstall' });
+  });
+
+  // #4022 — the repair path locked the tenant row by id alone and never
+  // re-read its status, so it could queue fresh self_uninstall commands against
+  // a tenant an operator had already rescued. The sweep snapshots candidates in
+  // ONE transaction and processes each in ANOTHER, so an abort committing in
+  // between is an ordinary interleaving, not a rare race.
+  //
+  // It is not merely a missing backstop: it MANUFACTURES the bad state. With a
+  // null stamp, abortOrganizationOffboarding correctly no-ops (its UPDATE
+  // guards on isNotNull(offboardingStartedAt)) and returns before cancelling
+  // anything — so nothing downstream cleans up what the repair then queues. And
+  // because the tenant is no longer 'offboarding', getAgentTenantState stops
+  // reporting 'draining', so claimPendingCommandsForDevice runs with no type
+  // allowlist and the uninstalls are claimable on the next heartbeat.
+  describe('#4022 repair re-checks tenant state under the lock', () => {
+    it('queues nothing when the org left offboarding while the sweep was in flight', async () => {
+      queueCandidates([{ id: 'org-1', startedAt: null }], []);
+      // Re-read under the lock: an operator aborted between the candidate
+      // snapshot and this transaction.
+      queueSelect([{ id: 'org-1', status: 'active', deletedAt: null }]);
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(result.orgsFinalized).toBe(0);
+      // The load-bearing assertions: nothing was queued and nothing was stamped.
+      expect(prepareAgentDrainForOrgIds).not.toHaveBeenCalled();
+      expect(insertLog).toHaveLength(0);
+      expect(updatesFor(organizations)).toHaveLength(0);
+      // And it must NOT be recorded as a successful repair — the audit row is
+      // the only durable trace, and calling this 'repaired' is what made the
+      // original bug invisible.
+      expect(writeAuditEvent).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'organization.offboarding_entry_repaired' })
+      );
+      expect(writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'organization.offboarding_entry_repair_skipped' })
+      );
+    });
+
+    it('queues nothing when the org was soft-deleted while the sweep was in flight', async () => {
+      queueCandidates([{ id: 'org-1', startedAt: null }], []);
+      // The candidate query filters isNull(deletedAt); the re-read must apply
+      // the same predicate or a tenant deleted mid-sweep still gets uninstalls.
+      queueSelect([{ id: 'org-1', status: 'offboarding', deletedAt: NOW }]);
+
+      await sweepOffboardingTenants(NOW);
+
+      expect(prepareAgentDrainForOrgIds).not.toHaveBeenCalled();
+      expect(insertLog).toHaveLength(0);
+    });
+
+    it('queues nothing when the tenant row vanished under the lock', async () => {
+      queueCandidates([{ id: 'org-1', startedAt: null }], []);
+      queueSelect([]); // hard-deleted between snapshot and lock
+
+      await sweepOffboardingTenants(NOW);
+
+      expect(prepareAgentDrainForOrgIds).not.toHaveBeenCalled();
+      expect(insertLog).toHaveLength(0);
+    });
+
+    it('queues nothing when a partner left offboarding while the sweep was in flight', async () => {
+      queueCandidates([], [{ id: 'partner-1', startedAt: null }]);
+      // The partner branch reads its orgs BEFORE the repair takes the lock, so
+      // the lock re-read is the SECOND select here, not the first.
+      queueSelect([{ id: 'org-1' }]); // orgs under partner
+      queueSelect([{ id: 'partner-1', status: 'active', deletedAt: null }]); // lock re-read
+
+      await sweepOffboardingTenants(NOW);
+
+      expect(prepareAgentDrainForOrgIds).not.toHaveBeenCalled();
+      expect(insertLog).toHaveLength(0);
+      expect(updatesFor(partners)).toHaveLength(0);
+    });
+
+    // The control: the fix must not break the case the repair exists for.
+    it('still repairs a tenant that is genuinely still offboarding', async () => {
+      queueCandidates([{ id: 'org-1', startedAt: null }], []);
+      queueSelect([{ id: 'org-1', status: 'offboarding', deletedAt: null }]);
+      queueSelect([{ id: 'd1' }]);
+      queueSelect([]);
+
+      await sweepOffboardingTenants(NOW);
+
+      expect(prepareAgentDrainForOrgIds).toHaveBeenCalledWith(['org-1']);
+      expect(insertLog[0]!.rows[0]).toMatchObject({ deviceId: 'd1', type: 'self_uninstall' });
+    });
   });
 
   // One bad tenant must not starve every other draining tenant's finalization
