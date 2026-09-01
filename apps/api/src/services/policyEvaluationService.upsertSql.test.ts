@@ -18,7 +18,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { getTableConfig } from 'drizzle-orm/pg-core';
+import { PgDialect, getTableConfig } from 'drizzle-orm/pg-core';
 import {
   buildConfigPolicyComplianceUpsert,
   buildPolicyComplianceUpsert,
@@ -40,7 +40,11 @@ function normalizePredicate(raw: string): string {
     .replace(/"automation_policy_compliance"\./g, '')
     .replace(/"/g, '')
     .replace(/\s+/g, ' ')
-    .replace(/^\(|\)$/g, '')
+    // `.trim()` BEFORE stripping the wrapping parens: the migration's predicate
+    // ends with a newline that collapses to a space, which would otherwise
+    // orphan the trailing `)` and turn a reformat into a confusing false FAIL.
+    .trim()
+    .replace(/^\((.*)\)$/, '$1')
     .trim()
     .toLowerCase();
 }
@@ -127,7 +131,12 @@ describe('buildPolicyComplianceUpsert — compiled SQL', () => {
     // brand-new row gets 0) — what matters is that it is absent from the SET
     // list, which is the only branch that touches an existing row.
     expect(setList).not.toMatch(/remediation_attempts/i);
-    expect(params).toEqual(expect.arrayContaining(['pol-1', 'dev-1', 'non_compliant']));
+    // POSITIONAL, not `arrayContaining`: the compiled VALUES list is
+    // `(default, $1, default, default, $2, $3, ...)` = policy_id, device_id,
+    // status. `arrayContaining` is order-insensitive, so it cannot tell that
+    // apart from `values({ policyId: deviceId, deviceId: policyId })` — a
+    // guaranteed cross-column corruption it would wave through.
+    expect(params.slice(0, 3)).toEqual(['pol-1', 'dev-1', 'non_compliant']);
   });
 });
 
@@ -141,9 +150,14 @@ describe('buildConfigPolicyComplianceUpsert — compiled SQL', () => {
   });
 
   it('writes policy_id NULL so the row cannot also land in the policy-axis index', () => {
-    const { sql, params } = configSql();
-    expect(sql).toMatch(/"policy_id"/);
-    expect(params).toEqual(expect.arrayContaining([null, 'fl-1', 'Disk space', 'dev-1', 'compliant']));
+    // Positional for the same reason as above — and here it is the ONLY way to
+    // prove the null lands in `policy_id` specifically. `toMatch(/"policy_id"/)`
+    // would be trivially true: Drizzle names every column in the INSERT list
+    // regardless of what was passed. Compiled order is
+    // `(default, $1..$4, ...)` = policy_id, config_policy_id, config_item_name,
+    // device_id, status.
+    const { params } = configSql();
+    expect(params.slice(0, 5)).toEqual([null, 'fl-1', 'Disk space', 'dev-1', 'compliant']);
   });
 
   it('preserves remediation_attempts on the conflict branch', () => {
@@ -182,6 +196,19 @@ describe('unique-index lockstep: migration ↔ schema ↔ upsert', () => {
       expect(declared?.where, `${indexName} must stay a PARTIAL index`).toBeDefined();
 
       const migrationIndex = readMigrationIndex(indexName);
+
+      // Compile the schema's own predicate and diff it against the migration's.
+      // `toBeDefined()` alone was not enough: it passes for ANY predicate, so
+      // the schema could declare `device_id IS NOT NULL` — a different index
+      // entirely — and this block would still be green. Comparing the compiled
+      // text is what makes the third copy actually participate in the lockstep.
+      const declaredWhere = declared?.where;
+      expect(declaredWhere).toBeDefined();
+      expect(
+        normalizePredicate(new PgDialect().sqlToQuery(declaredWhere!).sql),
+        `${indexName} schema predicate drifted from the migration`,
+      ).toBe(migrationIndex.predicate);
+
       const declaredColumns = (declared?.columns ?? []).map(
         (column) => (column as { name?: string }).name,
       );

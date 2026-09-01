@@ -23,6 +23,21 @@
 -- window in which a racing writer re-creates a duplicate and the concurrent
 -- build finishes INVALID. Doing both in one transaction is the atomic option.
 
+-- `automation_policy_compliance` is ENABLE + FORCE ROW LEVEL SECURITY
+-- (2026-04-11-bucket-c-phase-5-admin-cold-rls.sql), so the policies apply to the
+-- table OWNER too — and `breeze_current_scope()` defaults to 'none', not
+-- 'system' (0012-tenant-rls-deny-default.sql supersedes 0008: missing scope
+-- DENIES). autoMigrate sets no scope. On the containerised deployment
+-- DATABASE_URL is a superuser and bypasses RLS anyway, but on managed Postgres
+-- (DigitalOcean/RDS) the admin role is NOT a superuser — there the DELETEs
+-- below would match zero rows, the RAISE WARNING would report a truthful-looking
+-- "removed 0" that is actually an RLS artifact, and CREATE UNIQUE INDEX would
+-- then abort on the surviving duplicates and refuse the API's boot.
+--
+-- `is_local = true` scopes this to autoMigrate's per-file transaction. Same
+-- one-liner as 2026-04-13-fix-uuid-hostnames.sql and ~10 later migrations.
+SELECT set_config('breeze.scope', 'system', true);
+
 -- ---------------------------------------------------------------------------
 -- 1. Dedupe the automation-policy shape, keeping the freshest row per pair.
 --    "Freshest" = highest updated_at, id DESC as a deterministic tiebreak.
