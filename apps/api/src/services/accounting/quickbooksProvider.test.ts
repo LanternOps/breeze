@@ -188,6 +188,19 @@ describe('upsertCustomer', () => {
     });
   });
 
+  it('surfaces CurrencyRef.value as currencyCode on the CREATE response, symmetrically with listRemoteCustomers (multi-currency §11)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
+      Customer: { Id: '12', SyncToken: '0', CurrencyRef: { value: 'CAD' } },
+    }), { status: 200 }));
+
+    const ref = await quickbooksProvider.upsertCustomer(conn(), {
+      organizationId: 'org-1', displayName: 'Acme',
+      billingEmail: null, taxId: null, currencyCode: 'CAD',
+    }, null);
+
+    expect(ref).toEqual({ id: '12', syncToken: '0', currencyCode: 'CAD' });
+  });
+
   it('sparse-updates a Customer with its current Id and SyncToken', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
       Customer: { Id: '12', SyncToken: '8' },

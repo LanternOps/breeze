@@ -9,6 +9,7 @@ import type {
   AccountingVoidInvoicePayload,
   InvoicePushResult,
   RealmSettings,
+  RemoteRef,
 } from './types';
 import type { AccountingConnection } from './accountingConnectionService';
 
@@ -33,6 +34,10 @@ describe('AccountingProvider is fully typed (B8, multi-currency §11)', () => {
     >();
     expectTypeOf<AccountingCustomerPayload['currencyCode']>().toEqualTypeOf<string>();
     expectTypeOf<AccountingItemPayload['currencyCode']>().toEqualTypeOf<string>();
+    // upsertCustomer's create response surfaces CurrencyRef.value symmetrically
+    // with listRemoteCustomers/mapQboCustomer (multi-currency §11).
+    expectTypeOf<ReturnType<AccountingProvider['upsertCustomer']>>().toEqualTypeOf<Promise<RemoteRef>>();
+    expectTypeOf<RemoteRef['currencyCode']>().toEqualTypeOf<string | undefined>();
   });
 
   it('voidInvoice takes a connection, a currency-bearing void payload and a required mapping', () => {

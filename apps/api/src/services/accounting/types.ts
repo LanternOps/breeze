@@ -55,6 +55,13 @@ export interface RemoteRef {
   id: string;
   syncToken?: string;
   docNumber?: string;
+  /**
+   * QBO CurrencyRef.value, surfaced on a CREATE response so callers get the
+   * realm-assigned currency symmetrically with listRemoteCustomers/
+   * mapQboCustomer (multi-currency §11). Not populated by every provider
+   * method — currently only upsertCustomer's Customer create response.
+   */
+  currencyCode?: string;
 }
 
 /** A previously-synced remote entity, for update-vs-create decisions. */

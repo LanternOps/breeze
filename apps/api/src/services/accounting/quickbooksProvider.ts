@@ -396,7 +396,11 @@ export class QuickbooksProvider implements AccountingProvider {
       { method: 'POST', body: JSON.stringify(payload) },
     );
     if (!parsed.Customer?.Id) throw new Error('QuickBooks customer response was missing an Id');
-    return { id: parsed.Customer.Id, syncToken: parsed.Customer.SyncToken };
+    return {
+      id: parsed.Customer.Id,
+      syncToken: parsed.Customer.SyncToken,
+      currencyCode: parsed.Customer.CurrencyRef?.value || undefined,
+    };
   }
 
   async upsertItem(
