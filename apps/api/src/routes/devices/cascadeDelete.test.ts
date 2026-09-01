@@ -678,26 +678,6 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     expect(dissolveLinkGroupIfBelowMinimum).not.toHaveBeenCalled();
   });
 
-  /**
-   * A lock timeout must surface as the retryable 409 that reports
-   * `uninstallSent`, because the SELF_UNINSTALL is dispatched BEFORE the
-   * transaction and is irreversible — a bounded lock failure is the one path
-   * that can leave an agent uninstalling itself while its device row survives.
-   *
-   * The shape here is not invented. It is what a REAL lock timeout produces:
-   * verified against live Postgres with two connections contending on one row,
-   * the error arrives as `{ code: undefined, cause: { code: '55P03' } }`,
-   * because Drizzle wraps the postgres-js PostgresError. The route used to read
-   * the top-level `.code`, so this branch was dead and the operator got a bare
-   * 500 with no indication the uninstall had already gone out. Assert the
-   * WRAPPED shape specifically — an unwrapped `{ code: '55P03' }` fixture would
-   * pass against the broken code and prove nothing.
-   *
-   * Uses an ONLINE device with the uninstall actually dispatched. An earlier
-   * revision used the offline fixture, where `uninstallSent` can only ever be
-   * false, and merely asserted the property existed — code that hard-coded
-   * `false` would have passed it.
-   */
   // Still `decommissioned` — the route 400s anything else BEFORE it ever
   // reaches the uninstall dispatch, so an 'online' status here would have
   // tested the wrong branch entirely. What makes the uninstall fire is an
@@ -711,7 +691,86 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     vi.mocked(sendCommandToAgent).mockReturnValue(true as never);
   }
 
-  it('maps a Drizzle-wrapped 55P03 to a retryable 409 that reports uninstallSent: true', async () => {
+  /**
+   * #3817 — SELF_UNINSTALL is IRREVERSIBLE and must therefore be dispatched
+   * only once the cascade has actually committed. It used to fire before
+   * `db.transaction` opened, so every rollback path (23503, 55P03, and the
+   * generic rethrow) left the agent removing itself while its device row
+   * survived — an unmanageable orphan.
+   *
+   * This is the discriminating assertion for that ordering, and the only one
+   * that is: response fields and call counts are identical either way. Both
+   * orderings send exactly one command on the happy path, so nothing short of
+   * recording WHEN the send happened relative to the commit can tell the fixed
+   * code from the broken code. Against the pre-fix route this expects
+   * ['tx-commit', 'dispatch'] and receives ['dispatch', 'tx-commit'].
+   */
+  it('dispatches SELF_UNINSTALL only after the cascade transaction commits (#3817)', async () => {
+    rigDeviceLookup(CONNECTED_DEVICE);
+    const order: string[] = [];
+
+    // Wrap the real rig rather than replacing it, so the cascade still runs its
+    // actual statements — an empty stub transaction would "commit" trivially and
+    // weaken the ordering claim to something the route could satisfy by accident.
+    rigDeleteTransaction();
+    const runTransaction = vi.mocked(db.transaction).getMockImplementation()!;
+    vi.mocked(db.transaction).mockImplementation((async (cb: any) => {
+      const result = await runTransaction(cb);
+      order.push('tx-commit');
+      return result;
+    }) as never);
+
+    vi.mocked(isAgentConnected).mockReturnValue(true);
+    vi.mocked(sendCommandToAgent).mockImplementation((() => {
+      order.push('dispatch');
+      return true;
+    }) as never);
+
+    const res = await app.request(`/devices/${CONNECTED_DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(order).toEqual(['tx-commit', 'dispatch']);
+
+    // Exactly once: moving the dispatch must not leave a second copy behind at
+    // the old call site, which would uninstall via a duplicate command id.
+    expect(sendCommandToAgent).toHaveBeenCalledTimes(1);
+    const [agentId, command] = vi.mocked(sendCommandToAgent).mock.calls[0]!;
+    expect(agentId).toBe('agent-1');
+    expect(command).toMatchObject({
+      id: `uninstall-${CONNECTED_DEVICE.id}`,
+      type: 'self_uninstall',
+      payload: { removeConfig: true },
+    });
+
+    // The success contract is unchanged by the reorder.
+    const body = await res.json() as { success: boolean; agentUninstallSent: boolean; warning?: string };
+    expect(body.success).toBe(true);
+    expect(body.agentUninstallSent).toBe(true);
+    expect(body.warning).toBeUndefined();
+  });
+
+  /**
+   * A lock timeout must surface as a retryable 409 — and, since #3817, one that
+   * reports `uninstallSent: false`, because the dispatch now happens strictly
+   * after the commit and this path never reached it.
+   *
+   * The error shape here is not invented. It is what a REAL lock timeout
+   * produces: verified against live Postgres with two connections contending on
+   * one row, the error arrives as `{ code: undefined, cause: { code: '55P03' } }`,
+   * because Drizzle wraps the postgres-js PostgresError. The route used to read
+   * the top-level `.code`, so this branch was dead and the operator got a bare
+   * 500. Assert the WRAPPED shape specifically — an unwrapped
+   * `{ code: '55P03' }` fixture would pass against that broken code and prove
+   * nothing.
+   *
+   * Uses an ONLINE device, so the dispatch is one ordering mistake away from
+   * firing. On the offline fixture `uninstallSent` can only ever be false and
+   * this test would pass against the very regression it exists to catch.
+   */
+  it('does not dispatch SELF_UNINSTALL when the cascade fails with 55P03 (#3817)', async () => {
     rigDeviceLookup(CONNECTED_DEVICE);
     rigUninstallDispatched();
     vi.mocked(db.transaction).mockImplementation(async () => {
@@ -726,21 +785,25 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     });
 
     expect(res.status).toBe(409);
+    // The load-bearing half: nothing irreversible happened, so a retry is a
+    // plain retry rather than damage control.
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
     const body = await res.json() as { error: string; uninstallSent: boolean };
-    expect(body.uninstallSent).toBe(true);
-    expect(body.error).toMatch(/already sent/i);
-    expect(body.error).toMatch(/retry/i);
+    expect(body.uninstallSent).toBe(false);
+    expect(body.error).toMatch(/try again/i);
+    // The pre-#3817 message disclosed an uninstall that had already gone out.
+    // Keeping that text now would tell the operator their agent may be gone
+    // when it demonstrably is not.
+    expect(body.error).not.toMatch(/already sent/i);
   });
 
   /**
-   * The 23503 branch had NEVER executed before the unwrap — the top-level
-   * `.code` read meant it was unreachable. Switching it on is a behaviour
-   * change, so it gets the same online-agent coverage: a rolled-back cascade
-   * leaves the row present while the agent may already be uninstalling, and the
-   * web callers surface only `err.message`, so the disclosure must be in the
-   * text and not merely in the JSON field.
+   * The 23503 branch had NEVER executed before the SQLSTATE unwrap — the
+   * top-level `.code` read meant it was unreachable. It gets the same
+   * online-agent coverage as 55P03: it is a rollback path, so post-#3817 the
+   * uninstall must not have been dispatched.
    */
-  it('maps a Drizzle-wrapped 23503 to a 409 that discloses the already-sent uninstall', async () => {
+  it('does not dispatch SELF_UNINSTALL when the cascade fails with 23503 (#3817)', async () => {
     rigDeviceLookup(CONNECTED_DEVICE);
     rigUninstallDispatched();
     vi.mocked(db.transaction).mockImplementation(async () => {
@@ -759,12 +822,13 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     });
 
     expect(res.status).toBe(409);
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
     const body = await res.json() as { error: string; uninstallSent: boolean };
-    expect(body.uninstallSent).toBe(true);
+    expect(body.uninstallSent).toBe(false);
     // table_name must come off the SAME node as the code, or this reads
     // "related records in undefined".
     expect(body.error).toContain('some_child');
-    expect(body.error).toMatch(/already sent/i);
+    expect(body.error).not.toMatch(/already sent/i);
   });
 
   /**
@@ -773,12 +837,15 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
    * cascade defect is not user-retryable, so a 409 would advertise a retry
    * that fails identically forever), but it must not take the diagnosis down
    * with it: the global onError logs a bare `Error:` with no deviceId, and in
-   * production returns a sanitized body, so without a log here the fact that
-   * an irreversible SELF_UNINSTALL had already gone out is unrecoverable from
-   * the server side. That breadcrumb is precisely what the original report was
-   * missing.
+   * production returns a sanitized body, so without a log here there is no
+   * server-side record of which device failed to delete. That breadcrumb is
+   * precisely what the original report was missing.
+   *
+   * Post-#3817 the log must read `uninstallSent=false` on this path: it is a
+   * rollback, so the dispatch below the transaction never ran. A `true` here
+   * would mean the irreversible command escaped a failed delete again.
    */
-  it('logs deviceId and uninstallSent before rethrowing an unmapped SQLSTATE (#3952)', async () => {
+  it('logs deviceId and uninstallSent=false before rethrowing an unmapped SQLSTATE (#3952, #3817)', async () => {
     rigDeviceLookup(CONNECTED_DEVICE);
     rigUninstallDispatched();
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -807,10 +874,13 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
         `Expected one cascade-delete context log.\nconsole.error calls: ${JSON.stringify(consoleError.mock.calls.map((c) => String(c[0])))}`
       ).toHaveLength(1);
       // The three facts that make the line worth having: which device, whether
-      // the irreversible uninstall already went out, and which SQLSTATE.
+      // the irreversible uninstall went out, and which SQLSTATE.
       expect(logged[0]).toContain(CONNECTED_DEVICE.id);
-      expect(logged[0]).toContain('uninstallSent=true');
+      expect(logged[0]).toContain('uninstallSent=false');
       expect(logged[0]).toContain('23514');
+      // And the command itself stayed put — the log is a record of that, not a
+      // substitute for it.
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
     } finally {
       consoleError.mockRestore();
     }
