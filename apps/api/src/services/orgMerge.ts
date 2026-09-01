@@ -853,17 +853,28 @@ export async function runPostPassFixups(
   //
   // What this DOES need to guard is a mapping row that has gone orphaned —
   // its invoice or payment deleted through some other path (not by this
-  // merge; nothing in the merge engine deletes invoices). A stale orphan
-  // would sit invisible in the UI forever, so sweep both entity types the
-  // same defensive way, scoped to nothing in particular since an orphan
-  // belongs to no org anymore either way.
+  // merge; nothing in the merge engine deletes invoices — see voidPayment in
+  // invoiceService.ts and the full-refund branch in stripeReconcile.ts for
+  // where a payment mapping COULD orphan once Phase D writes 'payment' rows).
+  // A stale orphan would sit invisible in the UI forever, so sweep both
+  // entity types the same defensive way.
+  //
+  // Scoped to THIS merge's partner: accounting_entity_mappings is
+  // partner-axis (the row still carries partner_id even once its org is
+  // gone — an orphan belongs to no ORG, not to no PARTNER), so an unscoped
+  // sweep would fold another partner's orphans into this merge's dropped
+  // count and delete rows this merge has no business touching. The scope
+  // also lets both DELETEs ride accounting_entity_mappings_partner_status_idx
+  // instead of a whole-table scan.
   const orphanInvoiceMappingsDropped = await exec(sql`
     DELETE FROM accounting_entity_mappings m
-     WHERE m.breeze_entity_type = 'invoice'
+     WHERE m.partner_id = ${uuid(partnerId)}
+       AND m.breeze_entity_type = 'invoice'
        AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.id = m.breeze_entity_id)`);
   const orphanPaymentMappingsDropped = await exec(sql`
     DELETE FROM accounting_entity_mappings m
-     WHERE m.breeze_entity_type = 'payment'
+     WHERE m.partner_id = ${uuid(partnerId)}
+       AND m.breeze_entity_type = 'payment'
        AND NOT EXISTS (SELECT 1 FROM invoice_payments p WHERE p.id = m.breeze_entity_id)`);
 
   return {

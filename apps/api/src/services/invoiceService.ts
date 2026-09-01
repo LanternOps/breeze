@@ -1484,6 +1484,9 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
       reference: pay.reference,
       recordedBy: pay.recordedBy,
     };
+    // Phase D (QBO payment pull-back): clear the 'payment' accounting_entity_mappings
+    // row for this invoice_payments id inline here — see orgMerge.runPostPassFixups'
+    // orphan-sweep comment.
     await tx.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
     await recomputeInvoiceStatus(pay.invoiceId, tx);
     const inv = await getOwnedInvoiceOr404(pay.invoiceId, tx);

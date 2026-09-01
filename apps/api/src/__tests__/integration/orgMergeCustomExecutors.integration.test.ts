@@ -997,22 +997,52 @@ describe('org merge engine SQL against real Postgres', () => {
     const S = randomUUID();
     const conn = randomUUID();
     const item = randomUUID();
+    // A SECOND, unrelated partner — proves the orphan sweep is scoped to the
+    // merging partner and never touches (or miscounts) another partner's rows.
+    const Q = randomUUID();
+    const orgQ = randomUUID();
+    const connQ = randomUUID();
 
     try {
       await withSystemDbAccessContext(async () => {
+        // Both partners inserted together first: a partner-export lock
+        // hierarchy guard (breeze_partner_export_lock_partners_exclusive)
+        // rejects taking a new partner lock after an organization lock has
+        // already been acquired in the same transaction, so every partner
+        // row must exist before any organization insert touches either one.
         await db.execute(sql`
           INSERT INTO partners (id, name, slug)
-          VALUES (${P}::uuid, 'QBO mapping merge', ${`qbo-mapping-${P.slice(0, 8)}`})`);
+          VALUES
+            (${P}::uuid, 'QBO mapping merge', ${`qbo-mapping-${P.slice(0, 8)}`}),
+            (${Q}::uuid, 'QBO mapping merge — foreign partner', ${`qbo-mapping-foreign-${Q.slice(0, 8)}`})`);
         await db.execute(sql`
           INSERT INTO organizations (id, partner_id, name, slug, status, currency_code)
           VALUES (${L}::uuid, ${P}::uuid, 'Loser', ${`loser-${L.slice(0, 8)}`}, 'active', 'USD'),
-                 (${S}::uuid, ${P}::uuid, 'Survivor', ${`survivor-${S.slice(0, 8)}`}, 'active', 'USD')`);
+                 (${S}::uuid, ${P}::uuid, 'Survivor', ${`survivor-${S.slice(0, 8)}`}, 'active', 'USD'),
+                 (${orgQ}::uuid, ${Q}::uuid, 'Foreign Org', ${`foreign-org-${orgQ.slice(0, 8)}`}, 'active', 'USD')`);
         await db.execute(sql`
           INSERT INTO accounting_connections (id, partner_id, provider, environment, status, home_currency)
-          VALUES (${conn}::uuid, ${P}::uuid, 'quickbooks', 'sandbox', 'connected', 'USD')`);
+          VALUES (${conn}::uuid, ${P}::uuid, 'quickbooks', 'sandbox', 'connected', 'USD'),
+                 (${connQ}::uuid, ${Q}::uuid, 'quickbooks', 'sandbox', 'connected', 'USD')`);
         await db.execute(sql`
           INSERT INTO catalog_items (id, partner_id, item_type, name, unit_price, cost_currency)
           VALUES (${item}::uuid, ${P}::uuid, 'service', 'Managed Service', 100.00, 'USD')`);
+
+        // A SECOND, unrelated partner (Q) with its own ALREADY-orphaned invoice
+        // mapping (source invoice deleted up front, before the merge under
+        // test even starts) — proves the orphan sweep is scoped to the
+        // merging partner (P) and never touches (or miscounts) another
+        // partner's rows.
+        const foreignOrphanInvoiceSource = randomUUID();
+        await db.execute(sql`
+          INSERT INTO invoices (id, partner_id, org_id, currency_code, status)
+          VALUES (${foreignOrphanInvoiceSource}::uuid, ${Q}::uuid, ${orgQ}::uuid, 'USD', 'sent')`);
+        await db.execute(sql`
+          INSERT INTO accounting_entity_mappings
+            (integration_id, partner_id, breeze_entity_type, breeze_entity_id, remote_entity_type, remote_entity_id, link_status, sync_status)
+          VALUES
+            (${connQ}::uuid, ${Q}::uuid, 'invoice', ${foreignOrphanInvoiceSource}::uuid, 'Invoice', 'qbo-inv-foreign-orphan', 'confirmed', 'synced')`);
+        await db.execute(sql`DELETE FROM invoices WHERE id = ${foreignOrphanInvoiceSource}::uuid`);
 
         // Phase C: a real invoice + payment under the LOSER org. During a real
         // merge these are REPOINTED (not deleted) by the plain-repoint walk
@@ -1076,8 +1106,19 @@ describe('org merge engine SQL against real Postgres', () => {
         await db.execute(sql`DELETE FROM invoices WHERE id = ${orphanPaymentInvoice}::uuid`);
 
         const fixups = await runPostPassFixups(L, S, P);
-        // org row (loser) + orphan invoice + orphan payment = 3.
+        // org row (loser) + orphan invoice + orphan payment = 3. Must NOT
+        // include the foreign partner's already-orphaned row — the sweep is
+        // scoped to partner P only.
         expect(fixups.dropped).toBe(3);
+
+        // Cross-tenant isolation: partner Q's orphaned mapping must survive
+        // partner P's merge untouched. An unscoped sweep would delete this row
+        // and silently fold a foreign partner's cleanup into P's merge summary
+        // (misattributed counts, small cross-tenant signal in org_merge_events).
+        const foreignRows = (await db.execute(sql`
+          SELECT remote_entity_id FROM accounting_entity_mappings
+           WHERE integration_id = ${connQ}::uuid`)) as unknown as Array<{ remote_entity_id: string }>;
+        expect(foreignRows.map((r) => r.remote_entity_id)).toEqual(['qbo-inv-foreign-orphan']);
 
         const rows = (await db.execute(sql`
           SELECT breeze_entity_type, breeze_entity_id, remote_entity_id
