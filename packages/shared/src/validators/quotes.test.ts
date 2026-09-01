@@ -285,7 +285,19 @@ describe('table block content', () => {
     expect(quoteBlockInputSchema.safeParse(bad).success).toBe(false);
   });
   it('rejects >8 columns, >100 rows, oversized cells, bad weight', () => {
-    const cols9 = { ...valid, content: { ...valid.content, columns: Array.from({ length: 9 }, () => ({ label: 'c' })), rows: [] } };
+    // A real row with 9 cells matching the 9 columns — cells.length ===
+    // columns.length, and rows.min(1) is satisfied — so the only remaining
+    // violation is columns.max(8). An empty `rows: []` here would fail
+    // rows.min(1) first, passing this assertion even if columns.max(8) were
+    // deleted from the schema.
+    const cols9 = {
+      ...valid,
+      content: {
+        ...valid.content,
+        columns: Array.from({ length: 9 }, () => ({ label: 'c' })),
+        rows: [{ cells: Array.from({ length: 9 }, () => 'x') }],
+      },
+    };
     expect(quoteBlockInputSchema.safeParse(cols9).success).toBe(false);
     const bigCell = structuredClone(valid); bigCell.content.rows[0].cells[0] = 'x'.repeat(2001);
     expect(quoteBlockInputSchema.safeParse(bigCell).success).toBe(false);
