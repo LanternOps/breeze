@@ -33,8 +33,10 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   accountingEntityMappings,
   catalogItems,
+  catalogItemPrices,
   organizationExternalLinks,
   organizations,
+  partners,
 } from '../../db/schema';
 import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../../db/schema';
 import { getConnection } from './accountingConnectionService';
@@ -42,7 +44,17 @@ import type { AccountingConnection } from './accountingConnectionService';
 import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
 import { getAccountingProvider } from './providerRegistry';
 import { captureException } from '../sentry';
-import type { RemoteCustomer, RemoteIncomeAccount, RemoteItem } from './types';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
+import type {
+  AccountingCustomerPayload,
+  AccountingEntityMapping as AccountingEntityMappingSeam,
+  AccountingItemPayload,
+  RemoteAddress,
+  RemoteCustomer,
+  RemoteIncomeAccount,
+  RemoteItem,
+  RemoteRef,
+} from './types';
 
 export type MappingEntityType = 'org' | 'catalog_item';
 export type MappingDecision = 'confirmed' | 'create_new' | 'unlinked';
@@ -60,7 +72,13 @@ export type AccountingMappingErrorCode =
   | 'mapping_conflict'
   | 'entity_not_found'
   | 'income_account_required'
-  | 'mapping_not_ready';
+  | 'mapping_not_ready'
+  // Not in the original Task 4 brief: the rebased seam requires a single
+  // currencyCode+unitPrice pair per Item (there is no per-org context here —
+  // a catalog item syncs once per partner), so the price book can genuinely
+  // lack a row in the resolved target currency. Surfaced the same way
+  // income_account_required is: a pre-flight 409 before any provider call.
+  | 'item_price_required';
 
 // Typed failure the route translates straight to an HTTP status (mirrors
 // QbImportError in quickbooksCustomerImport.ts). Narrowing `code`/`status` to
@@ -433,4 +451,466 @@ export async function listRemoteIncomeAccountsForPartner(input: {
       'QuickBooks returned an error while listing income accounts',
     ),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Task 4 — confirm mappings and explicitly sync Customers and Items.
+//
+// Only an explicit `confirmed` or `create_new` decision may ever reach
+// `provider.upsertCustomer`/`upsertItem` (Global Constraint). Ordinary
+// suggestions from Task 3 are never written here.
+// ---------------------------------------------------------------------------
+
+export interface SaveMappingDecisionInput {
+  partnerId: string;
+  provider: 'quickbooks';
+  breezeEntityType: MappingEntityType;
+  breezeEntityId: string;
+  decision: MappingDecision;
+  remoteEntityId?: string;
+}
+
+export interface SyncMappedEntityInput {
+  partnerId: string;
+  provider: 'quickbooks';
+  breezeEntityType: MappingEntityType;
+  breezeEntityId: string;
+}
+
+type OrgRow = typeof organizations.$inferSelect;
+type CatalogItemRow = typeof catalogItems.$inferSelect;
+
+async function loadOwnedOrg(orgId: string, partnerId: string): Promise<OrgRow> {
+  const rows = await db
+    .select()
+    .from(organizations)
+    .where(and(
+      eq(organizations.id, orgId),
+      eq(organizations.partnerId, partnerId),
+      isNull(organizations.deletedAt),
+    ));
+  const org = rows[0] as OrgRow | undefined;
+  if (!org) throw new AccountingMappingError('entity_not_found', 404, 'Organization not found for this partner');
+  return org;
+}
+
+async function loadOwnedCatalogItem(itemId: string, partnerId: string): Promise<CatalogItemRow> {
+  const rows = await db
+    .select()
+    .from(catalogItems)
+    .where(and(eq(catalogItems.id, itemId), eq(catalogItems.partnerId, partnerId)));
+  const item = rows[0] as CatalogItemRow | undefined;
+  if (!item) throw new AccountingMappingError('entity_not_found', 404, 'Catalog item not found for this partner');
+  return item;
+}
+
+/**
+ * All mapping rows for one connection + Breeze entity type, partner-scoped at
+ * the SQL level. Callers narrow to a single entity in JS (matches the
+ * Task 3 `mappingByOrgId`/`mappingByItemId` pattern) — this single query
+ * doubles as both "does a mapping already exist for this entity" (identity)
+ * and "does another entity already claim this remote id" (conflict), so
+ * `saveMappingDecision` never issues two separate reads for those two checks.
+ */
+async function loadMappingRows(
+  partnerId: string,
+  integrationId: string,
+  breezeEntityType: MappingEntityType,
+): Promise<MappingRow[]> {
+  const rows = await db
+    .select()
+    .from(accountingEntityMappings)
+    .where(and(
+      eq(accountingEntityMappings.partnerId, partnerId),
+      eq(accountingEntityMappings.integrationId, integrationId),
+      eq(accountingEntityMappings.breezeEntityType, breezeEntityType),
+    ));
+  return rows as MappingRow[];
+}
+
+interface MappingDecisionFields {
+  remoteEntityId: string | null;
+  remoteSyncToken: string | null;
+  linkStatus: MappingDecision;
+  syncStatus: 'pending';
+  lastError: null;
+}
+
+/**
+ * Creates or updates the one mapping row identified by
+ * (integrationId, breezeEntityType, breezeEntityId). An UPDATE always keys on
+ * both the row's own `id` AND `partnerId` (Global Constraint); a fresh INSERT
+ * has no prior id to key on, so it relies on the schema's own uniqueness.
+ *
+ * The DB's `accounting_entity_mappings_remote_uniq` partial unique index is
+ * the LAST line of defense against two Breeze entities claiming the same
+ * remote id — `saveMappingDecision`'s app-layer check (loadMappingRows +
+ * a JS scan) is the first line and covers the ordinary case; this catch
+ * converts the rare concurrent-confirm race into the same typed 409 instead
+ * of leaking a raw 500.
+ */
+async function upsertMappingRow(params: {
+  existing: MappingRow | null;
+  integrationId: string;
+  partnerId: string;
+  breezeEntityType: MappingEntityType;
+  breezeEntityId: string;
+  remoteEntityType: 'Customer' | 'Item';
+  fields: MappingDecisionFields;
+}): Promise<MappingRow> {
+  try {
+    if (params.existing) {
+      const rows = await db
+        .update(accountingEntityMappings)
+        .set({ ...params.fields, updatedAt: new Date() })
+        .where(and(
+          eq(accountingEntityMappings.id, params.existing.id),
+          eq(accountingEntityMappings.partnerId, params.partnerId),
+        ))
+        .returning();
+      const row = (rows as MappingRow[])[0];
+      if (!row) {
+        throw new Error(`mapping decision update matched no accounting_entity_mappings row (id=${params.existing.id})`);
+      }
+      return row;
+    }
+
+    const rows = await db
+      .insert(accountingEntityMappings)
+      .values({
+        integrationId: params.integrationId,
+        partnerId: params.partnerId,
+        breezeEntityType: params.breezeEntityType,
+        breezeEntityId: params.breezeEntityId,
+        remoteEntityType: params.remoteEntityType,
+        ...params.fields,
+      })
+      .returning();
+    const row = (rows as MappingRow[])[0];
+    if (!row) throw new Error('mapping decision insert returned no row');
+    return row;
+  } catch (err) {
+    if (isPgUniqueViolation(err, 'accounting_entity_mappings_remote_uniq')) {
+      throw new AccountingMappingError(
+        'mapping_conflict',
+        409,
+        'This QuickBooks record is already mapped to a different Breeze entity',
+      );
+    }
+    throw err;
+  }
+}
+
+/**
+ * Verifies ownership, resolves the remote entity type, and — for `confirmed`
+ * — checks both that no OTHER Breeze entity already claims the chosen remote
+ * id (app-layer first line) and that the remote entity actually exists before
+ * ever writing a mapping row. `create_new` and `unlinked` never call
+ * QuickBooks: they only ever write `remoteEntityId: null`.
+ */
+export async function saveMappingDecision(input: SaveMappingDecisionInput): Promise<MappingRow> {
+  const { partnerId, provider, breezeEntityType, breezeEntityId, decision, remoteEntityId } = input;
+  const { conn, liveConn } = await resolveConnectionAndToken(partnerId, provider);
+  const remoteEntityType: 'Customer' | 'Item' = breezeEntityType === 'org' ? 'Customer' : 'Item';
+
+  if (breezeEntityType === 'org') {
+    await loadOwnedOrg(breezeEntityId, partnerId);
+  } else {
+    await loadOwnedCatalogItem(breezeEntityId, partnerId);
+  }
+
+  const mappingRows = await loadMappingRows(partnerId, conn.id, breezeEntityType);
+  const existing = mappingRows.find((m) => m.breezeEntityId === breezeEntityId) ?? null;
+
+  let fields: MappingDecisionFields;
+
+  if (decision === 'confirmed') {
+    if (!remoteEntityId) {
+      throw new AccountingMappingError('entity_not_found', 404, 'A remote entity id is required to confirm a mapping');
+    }
+
+    const conflict = mappingRows.find((m) => m.remoteEntityId === remoteEntityId && m.breezeEntityId !== breezeEntityId);
+    if (conflict) {
+      throw new AccountingMappingError(
+        'mapping_conflict',
+        409,
+        'This QuickBooks record is already mapped to a different Breeze entity',
+      );
+    }
+
+    const remoteProvider = getAccountingProvider(conn.provider);
+    const remoteList = await runOutsideDbContext(() =>
+      callProviderOrThrow(
+        () => (remoteEntityType === 'Customer' ? remoteProvider.listRemoteCustomers(liveConn) : remoteProvider.listRemoteItems(liveConn)),
+        `QuickBooks returned an error while listing ${remoteEntityType === 'Customer' ? 'customers' : 'items'}`,
+      ),
+    );
+    const found = remoteList.find((r) => r.id === remoteEntityId);
+    if (!found) {
+      throw new AccountingMappingError('entity_not_found', 404, `QuickBooks ${remoteEntityType} ${remoteEntityId} was not found`);
+    }
+
+    fields = { remoteEntityId, remoteSyncToken: found.syncToken ?? null, linkStatus: 'confirmed', syncStatus: 'pending', lastError: null };
+  } else if (decision === 'create_new') {
+    fields = { remoteEntityId: null, remoteSyncToken: null, linkStatus: 'create_new', syncStatus: 'pending', lastError: null };
+  } else {
+    fields = { remoteEntityId: null, remoteSyncToken: null, linkStatus: 'unlinked', syncStatus: 'pending', lastError: null };
+  }
+
+  return upsertMappingRow({ existing, integrationId: conn.id, partnerId, breezeEntityType, breezeEntityId, remoteEntityType, fields });
+}
+
+/** Only the fields QBO omission (§11) needs: never send a raw org/item row across the seam. */
+function orgBillingAddress(org: OrgRow): RemoteAddress | undefined {
+  const addr: RemoteAddress = {
+    line1: org.billingAddressLine1 ?? undefined,
+    line2: org.billingAddressLine2 ?? undefined,
+    city: org.billingAddressCity ?? undefined,
+    region: org.billingAddressRegion ?? undefined,
+    postalCode: org.billingAddressPostalCode ?? undefined,
+    country: org.billingAddressCountry ?? undefined,
+  };
+  return Object.values(addr).some((v) => v !== undefined) ? addr : undefined;
+}
+
+/**
+ * `org.currencyCode` is `NOT NULL` with no `.default()` (schema/orgs.ts) —
+ * every org-creation path stamps it explicitly, so there is no "org has no
+ * stamped currency" fallback to write: the column itself is the resolution.
+ * Breeze has no separate org phone/company-name field, so those optional
+ * payload fields are simply omitted rather than guessed.
+ */
+function buildCustomerPayload(org: OrgRow): AccountingCustomerPayload {
+  return {
+    organizationId: org.id,
+    displayName: org.name,
+    billingEmail: orgBillingEmail(org.billingContact),
+    taxId: org.taxId ?? null,
+    billAddr: orgBillingAddress(org),
+    currencyCode: org.currencyCode,
+  };
+}
+
+/**
+ * A catalog item's sell price for QuickBooks sync, resolved in the PARTNER'S
+ * default currency (`partners.currency_code`) — the same target
+ * `catalogService.ts`'s (unexported) `resolvePartnerCurrency` uses whenever no
+ * org context picks one. There IS no org context here: unlike an invoice
+ * line, a catalog item syncs once per partner, not once per org, so
+ * `AccountingItemPayload` carries exactly one currency+price pair.
+ *
+ * Deliberately queries `catalog_item_prices` directly rather than reading
+ * `catalogItems.unitPrice` — that column is a deprecated read-mirror the
+ * schema comment marks "read by nothing" (schema/catalog.ts), and it is not
+ * guaranteed to exist in the partner currency (an item created from cost +
+ * markup in a different currency can have zero rows in the partner currency).
+ * A missing row is therefore a real, user-actionable gap, not a bug — this
+ * throws `item_price_required` (409) before any provider call, same shape as
+ * `income_account_required`.
+ */
+async function resolveItemSellPrice(
+  item: CatalogItemRow,
+  partnerId: string,
+): Promise<{ currencyCode: string; unitPrice: string }> {
+  const partnerRows = await db
+    .select({ currencyCode: partners.currencyCode })
+    .from(partners)
+    .where(eq(partners.id, partnerId));
+  const targetCurrency = (partnerRows[0] as { currencyCode: string } | undefined)?.currencyCode;
+  if (!targetCurrency) {
+    throw new AccountingMappingError('entity_not_found', 404, 'Partner not found');
+  }
+
+  const priceRows = await db
+    .select()
+    .from(catalogItemPrices)
+    .where(and(eq(catalogItemPrices.itemId, item.id), eq(catalogItemPrices.partnerId, partnerId)));
+  const priceRow = (priceRows as Array<{ currencyCode: string; unitPrice: string }>)
+    .find((p) => p.currencyCode === targetCurrency);
+  if (!priceRow) {
+    throw new AccountingMappingError(
+      'item_price_required',
+      409,
+      `This catalog item has no price in the partner's currency (${targetCurrency}); add one before syncing to QuickBooks`,
+    );
+  }
+  return { currencyCode: targetCurrency, unitPrice: priceRow.unitPrice };
+}
+
+/** Breeze `service` -> QBO `Service`; `hardware`/`software` -> `NonInventory` (plan Global Constraints). */
+function buildItemPayload(
+  item: CatalogItemRow,
+  conn: AccountingConnection,
+  currencyCode: string,
+  unitPrice: string,
+): AccountingItemPayload {
+  return {
+    catalogItemId: item.id,
+    name: item.name,
+    sku: item.sku ?? undefined,
+    description: item.description ?? null,
+    type: item.itemType === 'service' ? 'Service' : 'NonInventory',
+    unitPrice,
+    currencyCode,
+    taxable: item.taxable,
+    active: item.isActive,
+    incomeAccountRef: conn.defaultIncomeAccountRef ?? undefined,
+  };
+}
+
+/**
+ * Never persists or rethrows a raw provider error's message/body (mirrors
+ * `callProviderOrThrow`'s sanitization) — only the HTTP status, when the
+ * provider attached one, is safe to keep.
+ */
+function sanitizeSyncErrorMessage(err: unknown, breezeEntityType: MappingEntityType): string {
+  const label = breezeEntityType === 'org' ? 'customer' : 'item';
+  const status = err && typeof err === 'object' && typeof (err as { status?: unknown }).status === 'number'
+    ? (err as { status: number }).status
+    : undefined;
+  return status ? `QuickBooks rejected the ${label} sync (HTTP ${status})` : `QuickBooks rejected the ${label} sync`;
+}
+
+/**
+ * Records a provider-side sync failure (Global Constraint: persist
+ * `sync_status='error'` + a sanitized message, then rethrow). Best-effort: if
+ * this housekeeping write itself fails, that is reported to Sentry but never
+ * allowed to replace the caller's real (already-typed) error.
+ */
+async function markMappingError(mappingId: string, partnerId: string, message: string): Promise<void> {
+  try {
+    const rows = await db
+      .update(accountingEntityMappings)
+      .set({ syncStatus: 'error', lastError: message, updatedAt: new Date() })
+      .where(and(eq(accountingEntityMappings.id, mappingId), eq(accountingEntityMappings.partnerId, partnerId)))
+      .returning();
+    if (!(rows as unknown[])[0]) {
+      captureException(
+        new Error(`markMappingError matched no accounting_entity_mappings row (id=${mappingId})`),
+        undefined,
+        { service: 'accountingMappingService', mappingId, partnerId },
+      );
+    }
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      service: 'accountingMappingService', mappingId, partnerId,
+    });
+  }
+}
+
+/**
+ * Persists a successful QuickBooks create/update. UPDATE keys on both mapping
+ * id and partnerId and checks `returning()` for zero rows (Global Constraint)
+ * — a zero-row result here means the remote write SUCCEEDED but Breeze could
+ * not record it, which the caller must treat as non-retry-safe (a blind retry
+ * risks creating a second QuickBooks entity).
+ */
+async function persistRemoteRef(params: {
+  mappingId: string;
+  partnerId: string;
+  remoteEntityId: string;
+  remoteSyncToken: string | null;
+}): Promise<MappingRow> {
+  const rows = await db
+    .update(accountingEntityMappings)
+    .set({
+      remoteEntityId: params.remoteEntityId,
+      remoteSyncToken: params.remoteSyncToken,
+      linkStatus: 'confirmed',
+      syncStatus: 'synced',
+      lastSyncedAt: new Date(),
+      lastError: null,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(accountingEntityMappings.id, params.mappingId), eq(accountingEntityMappings.partnerId, params.partnerId)))
+    .returning();
+  const row = (rows as MappingRow[])[0];
+  if (!row) {
+    throw new Error(`persistRemoteRef matched no accounting_entity_mappings row (id=${params.mappingId}); refusing to lose the QuickBooks sync result`);
+  }
+  return row;
+}
+
+/**
+ * Pushes a confirmed/create_new mapping to QuickBooks. `unlinked` (and any
+ * mapping that isn't `confirmed`/`create_new`, e.g. a never-persisted
+ * `suggested` state) refuses to sync. A present `remoteEntityId` makes this a
+ * QBO sparse update carrying the persisted Id+SyncToken (mirrors
+ * `AccountingEntityMapping` in types.ts); its absence makes it a create —
+ * Item creation additionally requires `accounting_connections.default_income_account_ref`.
+ */
+export async function syncMappedEntity(input: SyncMappedEntityInput): Promise<MappingRow> {
+  const { partnerId, provider, breezeEntityType, breezeEntityId } = input;
+  const { conn, liveConn } = await resolveConnectionAndToken(partnerId, provider);
+  const providerImpl = getAccountingProvider(conn.provider);
+
+  const mappingRows = await loadMappingRows(partnerId, conn.id, breezeEntityType);
+  const mapping = mappingRows.find((m) => m.breezeEntityId === breezeEntityId);
+  if (!mapping) {
+    throw new AccountingMappingError('mapping_not_ready', 409, 'Confirm or create a mapping before syncing this entity');
+  }
+  if (mapping.linkStatus !== 'confirmed' && mapping.linkStatus !== 'create_new') {
+    throw new AccountingMappingError('mapping_not_ready', 409, 'Confirm or create a mapping before syncing this entity');
+  }
+
+  const existingRef: AccountingEntityMappingSeam | null = mapping.remoteEntityId
+    ? { remoteEntityId: mapping.remoteEntityId, remoteSyncToken: mapping.remoteSyncToken ?? null }
+    : null;
+  const isCreate = existingRef === null;
+
+  let remote: RemoteRef;
+  try {
+    if (breezeEntityType === 'org') {
+      const org = await loadOwnedOrg(breezeEntityId, partnerId);
+      remote = await runOutsideDbContext(() => providerImpl.upsertCustomer(liveConn, buildCustomerPayload(org), existingRef));
+    } else {
+      if (isCreate && !conn.defaultIncomeAccountRef) {
+        throw new AccountingMappingError(
+          'income_account_required',
+          409,
+          'Select a default QuickBooks income account before creating catalog items in QuickBooks',
+        );
+      }
+      const item = await loadOwnedCatalogItem(breezeEntityId, partnerId);
+      const { currencyCode, unitPrice } = await resolveItemSellPrice(item, partnerId);
+      remote = await runOutsideDbContext(() =>
+        providerImpl.upsertItem(liveConn, buildItemPayload(item, conn, currencyCode, unitPrice), existingRef),
+      );
+    }
+  } catch (err) {
+    // Pre-flight typed errors (income_account_required, item_price_required,
+    // entity_not_found) never reached the provider — nothing to record, and
+    // marking sync_status='error' for a request that never attempted a sync
+    // would misreport the mapping's health.
+    if (err instanceof AccountingMappingError) throw err;
+
+    const message = sanitizeSyncErrorMessage(err, breezeEntityType);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      service: 'accountingMappingService', mappingId: mapping.id, breezeEntityType,
+    });
+    await markMappingError(mapping.id, partnerId, message);
+    throw new AccountingMappingError('quickbooks_error', 502, message);
+  }
+
+  try {
+    return await persistRemoteRef({
+      mappingId: mapping.id,
+      partnerId,
+      remoteEntityId: remote.id,
+      remoteSyncToken: remote.syncToken ?? null,
+    });
+  } catch (dbErr) {
+    captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
+      service: 'accountingMappingService',
+      mappingId: mapping.id,
+      remoteEntityId: remote.id,
+      remoteSyncToken: remote.syncToken ?? 'none',
+    });
+    const label = breezeEntityType === 'org' ? 'customer' : 'item';
+    throw new AccountingMappingError(
+      'quickbooks_error',
+      502,
+      `QuickBooks accepted the ${label} sync (remote id ${remote.id}) but Breeze failed to record it — do not retry; contact support to reconcile`,
+    );
+  }
 }

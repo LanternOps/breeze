@@ -13,6 +13,8 @@ const {
   listRemoteCustomersMock,
   listRemoteItemsMock,
   listRemoteIncomeAccountsMock,
+  upsertCustomerMock,
+  upsertItemMock,
   captureExceptionMock,
   ReauthRequiredError,
 } = vi.hoisted(() => {
@@ -29,6 +31,8 @@ const {
     listRemoteCustomersMock: vi.fn(),
     listRemoteItemsMock: vi.fn(),
     listRemoteIncomeAccountsMock: vi.fn(),
+    upsertCustomerMock: vi.fn(),
+    upsertItemMock: vi.fn(),
     captureExceptionMock: vi.fn(),
     ReauthRequiredError,
   };
@@ -54,16 +58,22 @@ vi.mock('./providerRegistry', () => ({
     listRemoteCustomers: listRemoteCustomersMock,
     listRemoteItems: listRemoteItemsMock,
     listRemoteIncomeAccounts: listRemoteIncomeAccountsMock,
+    upsertCustomer: upsertCustomerMock,
+    upsertItem: upsertItemMock,
   }),
 }));
 
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 
-import { organizations, organizationExternalLinks, catalogItems, accountingEntityMappings } from '../../db/schema';
+import {
+  organizations, organizationExternalLinks, catalogItems, accountingEntityMappings, partners, catalogItemPrices,
+} from '../../db/schema';
 import {
   listMappingProposals,
   listRemoteIncomeAccountsForPartner,
   normalizeMatchValue,
+  saveMappingDecision,
+  syncMappedEntity,
 } from './accountingMappingService';
 
 const PARTNER = 'p1';
@@ -74,16 +84,34 @@ const ITEM_A = 'item-a';
 function connectedConn(overrides: Record<string, unknown> = {}) {
   return {
     id: 'c1', partnerId: PARTNER, provider: 'quickbooks', realmId: 'r1', accessToken: 'stale-tok',
-    environment: 'sandbox', status: 'connected', ...overrides,
+    environment: 'sandbox', status: 'connected', defaultIncomeAccountRef: '79', ...overrides,
   };
 }
 
-interface OrgRow { id: string; name: string; email?: string }
+// postgres.js surfaces a unique-violation as `.code === '23505'` with the index
+// name on `.constraint_name` (see utils/pgErrors.ts, the shared detector this
+// service uses to convert the DB's last-line defense into `mapping_conflict`).
+function pgUniqueViolation(constraint: string) {
+  return Object.assign(new Error(`duplicate key value violates unique constraint "${constraint}"`), {
+    code: '23505',
+    constraint_name: constraint,
+  });
+}
+
+interface OrgRow {
+  id: string; name: string; email?: string; taxId?: string | null; currencyCode?: string;
+  billingAddressLine1?: string | null; billingAddressLine2?: string | null; billingAddressCity?: string | null;
+  billingAddressRegion?: string | null; billingAddressPostalCode?: string | null; billingAddressCountry?: string | null;
+}
 interface LinkRow { orgId: string; system: string; externalId: string }
-interface ItemRow { id: string; name: string; sku?: string | null }
+interface ItemRow {
+  id: string; name: string; sku?: string | null; itemType?: string; taxable?: boolean; isActive?: boolean;
+  description?: string | null;
+}
 interface MappingRow {
   id: string; breezeEntityType: string; breezeEntityId: string; remoteEntityType: string;
-  remoteEntityId: string | null; linkStatus: string; syncStatus: string; lastError?: string | null;
+  remoteEntityId: string | null; remoteSyncToken?: string | null; linkStatus: string; syncStatus: string;
+  lastError?: string | null;
 }
 
 /**
@@ -105,21 +133,41 @@ function conditionContainsValue(obj: unknown, value: string, seen = new Set<unkn
   return false;
 }
 
+// Mutable across a single test: `accounting_entity_mappings` reads/writes all
+// share this array, so a syncMappedEntity call that persists a remote ref is
+// immediately visible to the NEXT call in the same test (create-then-retry
+// idempotency) without the test manually re-stubbing reads in between — the
+// same behavior real Postgres gives for free.
+let currentMappingRows: MappingRow[] = [];
+let currentItemPrices: Array<{ itemId: string; partnerId: string; currencyCode: string; unitPrice: string }> = [];
+
 /**
  * Stubs every `db.select().from(table).where(cond)` read the service issues.
  * Every read is required to carry the partner id in its compiled condition —
  * a query that doesn't throws, so partner scoping is enforced across the WHOLE
  * suite, not just in one dedicated test.
  */
-function stubReads(opts: { orgs?: OrgRow[]; links?: LinkRow[]; items?: ItemRow[]; mappings?: MappingRow[] } = {}) {
+function stubReads(opts: {
+  orgs?: OrgRow[]; links?: LinkRow[]; items?: ItemRow[]; mappings?: MappingRow[];
+  partnerCurrency?: string | null; itemPrices?: Array<{ itemId: string; currencyCode: string; unitPrice: string }>;
+} = {}) {
   const orgRows = (opts.orgs ?? []).map((o) => ({
     deletedAt: null,
     billingContact: o.email ? { email: o.email } : null,
+    taxId: null,
+    currencyCode: 'USD',
+    billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null,
+    billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null,
     ...o,
   }));
-  const itemRows = (opts.items ?? []).map((i) => ({ isActive: true, sku: null, ...i }));
+  const itemRows = (opts.items ?? []).map((i) => ({
+    isActive: true, sku: null, itemType: 'service', taxable: true, description: null, ...i,
+  }));
   const linkRows = opts.links ?? [];
-  const mappingRows = opts.mappings ?? [];
+  currentMappingRows = (opts.mappings ?? []).map((m) => ({ ...m }));
+  const partnerCurrency = opts.partnerCurrency === undefined ? 'USD' : opts.partnerCurrency;
+  const partnerRows = partnerCurrency === null ? [] : [{ id: PARTNER, currencyCode: partnerCurrency }];
+  currentItemPrices = (opts.itemPrices ?? []).map((p) => ({ partnerId: PARTNER, ...p }));
 
   selectMock.mockImplementation(() => ({
     from: (table: unknown) => ({
@@ -131,7 +179,9 @@ function stubReads(opts: { orgs?: OrgRow[]; links?: LinkRow[]; items?: ItemRow[]
         if (table === organizations) rows = orgRows;
         else if (table === organizationExternalLinks) rows = linkRows;
         else if (table === catalogItems) rows = itemRows;
-        else if (table === accountingEntityMappings) rows = mappingRows;
+        else if (table === accountingEntityMappings) rows = currentMappingRows;
+        else if (table === partners) rows = partnerRows;
+        else if (table === catalogItemPrices) rows = currentItemPrices;
         else rows = [];
         return Promise.resolve(rows);
       },
@@ -143,13 +193,42 @@ const insertedValues: Array<Record<string, unknown>> = [];
 function stubInsert() {
   let n = 0;
   insertMock.mockImplementation(() => ({
-    values: (v: Record<string, unknown>) => ({
-      onConflictDoNothing: () => ({
+    values: (v: Record<string, unknown>) => {
+      n++;
+      const row = { id: `gen-${n}`, lastError: null, createdAt: new Date(), updatedAt: new Date(), ...v };
+      const finalize = () => {
+        insertedValues.push(row);
+        if ('breezeEntityType' in row) currentMappingRows.push(row as unknown as MappingRow);
+        return Promise.resolve([row]);
+      };
+      return {
+        onConflictDoNothing: () => ({ returning: finalize }),
+        returning: finalize,
+      };
+    },
+  }));
+}
+
+/**
+ * Stubs `db.update(accountingEntityMappings).set(patch).where(cond).returning()`.
+ * Finds the target row by scanning `currentMappingRows` for the one whose `id`
+ * literal appears in the compiled where-condition (the same technique
+ * `conditionContainsValue` already uses for the partner-scoping guard) — this
+ * proves the real code passed the row's OWN id, not just partnerId, and lets
+ * an id that no longer matches (simulating a lost race) yield zero rows.
+ */
+function stubUpdate() {
+  updateMock.mockImplementation(() => ({
+    set: (patch: Record<string, unknown>) => ({
+      where: (cond: unknown) => ({
         returning: () => {
-          n++;
-          const row = { id: `gen-${n}`, lastError: null, createdAt: new Date(), updatedAt: new Date(), ...v };
-          insertedValues.push(row);
-          return Promise.resolve([row]);
+          if (!conditionContainsValue(cond, PARTNER)) {
+            throw new Error('update issued without partner scoping — every write must filter by partnerId');
+          }
+          const idx = currentMappingRows.findIndex((row) => conditionContainsValue(cond, row.id));
+          if (idx === -1) return Promise.resolve([]);
+          currentMappingRows[idx] = { ...currentMappingRows[idx], ...patch } as MappingRow;
+          return Promise.resolve([currentMappingRows[idx]]);
         },
       }),
     }),
@@ -160,12 +239,15 @@ beforeEach(() => {
   vi.clearAllMocks();
   insertedValues.length = 0;
   stubInsert();
+  stubUpdate();
   stubReads();
   getConnectionMock.mockResolvedValue(connectedConn());
   getValidAccessTokenMock.mockResolvedValue('fresh-token');
   listRemoteCustomersMock.mockResolvedValue([]);
   listRemoteItemsMock.mockResolvedValue([]);
   listRemoteIncomeAccountsMock.mockResolvedValue([]);
+  upsertCustomerMock.mockResolvedValue({ id: 'qb-new', syncToken: '0' });
+  upsertItemMock.mockResolvedValue({ id: 'qb-new-item', syncToken: '0' });
 });
 
 describe('normalizeMatchValue', () => {
@@ -414,5 +496,335 @@ describe('listRemoteIncomeAccountsForPartner', () => {
     listRemoteIncomeAccountsMock.mockRejectedValue(new Error('boom'));
     await expect(listRemoteIncomeAccountsForPartner({ partnerId: PARTNER, provider: 'quickbooks' }))
       .rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 4: saveMappingDecision / syncMappedEntity
+// ---------------------------------------------------------------------------
+
+function confirmOrg(remoteEntityId: string, overrides: Record<string, unknown> = {}) {
+  return {
+    partnerId: PARTNER, provider: 'quickbooks' as const, breezeEntityType: 'org' as const,
+    breezeEntityId: ORG_A, decision: 'confirmed' as const, remoteEntityId, ...overrides,
+  };
+}
+function createNewOrg(overrides: Record<string, unknown> = {}) {
+  return {
+    partnerId: PARTNER, provider: 'quickbooks' as const, breezeEntityType: 'org' as const,
+    breezeEntityId: ORG_A, decision: 'create_new' as const, ...overrides,
+  };
+}
+function unlinkOrg(overrides: Record<string, unknown> = {}) {
+  return {
+    partnerId: PARTNER, provider: 'quickbooks' as const, breezeEntityType: 'org' as const,
+    breezeEntityId: ORG_A, decision: 'unlinked' as const, ...overrides,
+  };
+}
+function syncOrg(overrides: Record<string, unknown> = {}) {
+  return {
+    partnerId: PARTNER, provider: 'quickbooks' as const, breezeEntityType: 'org' as const,
+    breezeEntityId: ORG_A, ...overrides,
+  };
+}
+function syncCatalogItem(overrides: Record<string, unknown> = {}) {
+  return {
+    partnerId: PARTNER, provider: 'quickbooks' as const, breezeEntityType: 'catalog_item' as const,
+    breezeEntityId: ITEM_A, ...overrides,
+  };
+}
+function orgMappingRow(overrides: Partial<MappingRow> = {}): MappingRow {
+  return {
+    id: 'm1', breezeEntityType: 'org', breezeEntityId: ORG_A, remoteEntityType: 'Customer',
+    remoteEntityId: null, remoteSyncToken: null, linkStatus: 'create_new', syncStatus: 'pending', lastError: null,
+    ...overrides,
+  };
+}
+function itemMappingRow(overrides: Partial<MappingRow> = {}): MappingRow {
+  return {
+    id: 'm-item-1', breezeEntityType: 'catalog_item', breezeEntityId: ITEM_A, remoteEntityType: 'Item',
+    remoteEntityId: null, remoteSyncToken: null, linkStatus: 'create_new', syncStatus: 'pending', lastError: null,
+    ...overrides,
+  };
+}
+
+describe('saveMappingDecision', () => {
+  it('confirms a remote Customer only when it exists and is unclaimed', async () => {
+    stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }] });
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Acme', syncToken: '3' }]);
+
+    const row = await saveMappingDecision(confirmOrg('qb-1'));
+
+    expect(row).toMatchObject({
+      remoteEntityId: 'qb-1', remoteSyncToken: '3', linkStatus: 'confirmed', syncStatus: 'pending',
+    });
+  });
+
+  it('rejects a remote ID already claimed by another Breeze entity', async () => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [{
+        id: 'm-b', breezeEntityType: 'org', breezeEntityId: ORG_B, remoteEntityType: 'Customer',
+        remoteEntityId: 'qb-1', linkStatus: 'confirmed', syncStatus: 'synced',
+      }],
+    });
+    // Deliberately no remoteCustomers() setup (defaults to []): the app-layer
+    // claim check must fire before the remote-existence check ever runs, or
+    // this test would misdiagnose the failure as entity_not_found instead.
+
+    await expect(saveMappingDecision(confirmOrg('qb-1'))).rejects.toMatchObject({ code: 'mapping_conflict', status: 409 });
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('does not accept a remote Item id when confirming an organization (wrong remote entity type)', async () => {
+    stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }] });
+    listRemoteCustomersMock.mockResolvedValue([]); // 'qb-9' is an Item id, not a Customer
+
+    await expect(saveMappingDecision(confirmOrg('qb-9'))).rejects.toMatchObject({ code: 'entity_not_found', status: 404 });
+    expect(listRemoteItemsMock).not.toHaveBeenCalled();
+  });
+
+  it('create_new stores a null remote id with a pending sync status and makes no QuickBooks call', async () => {
+    stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }] });
+
+    const row = await saveMappingDecision(createNewOrg());
+
+    expect(row).toMatchObject({ remoteEntityId: null, remoteSyncToken: null, linkStatus: 'create_new', syncStatus: 'pending' });
+    expect(listRemoteCustomersMock).not.toHaveBeenCalled();
+  });
+
+  it('unlinked clears a previously confirmed remote id and token', async () => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ remoteEntityId: 'qb-1', remoteSyncToken: '3', linkStatus: 'confirmed', syncStatus: 'synced' })],
+    });
+
+    const row = await saveMappingDecision(unlinkOrg());
+
+    expect(row).toMatchObject({ remoteEntityId: null, remoteSyncToken: null, linkStatus: 'unlinked' });
+  });
+
+  it('throws entity_not_found for a Breeze org id that does not belong to this partner', async () => {
+    stubReads({ orgs: [] });
+    await expect(saveMappingDecision(confirmOrg('qb-1'))).rejects.toMatchObject({ code: 'entity_not_found', status: 404 });
+  });
+
+  it('converts a 23505 unique violation on the mapping insert into mapping_conflict (DB is the last-line defense)', async () => {
+    stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }] }); // no existing mapping row -> insert path
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-1', displayName: 'Acme', syncToken: '0' }]);
+    insertMock.mockImplementationOnce(() => ({
+      values: () => ({
+        returning: () => Promise.reject(pgUniqueViolation('accounting_entity_mappings_remote_uniq')),
+      }),
+    }));
+
+    await expect(saveMappingDecision(confirmOrg('qb-1'))).rejects.toMatchObject({ code: 'mapping_conflict', status: 409 });
+  });
+
+  it('re-confirming an existing mapping updates it by id+partnerId instead of inserting a duplicate row', async () => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ id: 'm-existing', linkStatus: 'suggested', syncStatus: 'pending' })],
+    });
+    listRemoteCustomersMock.mockResolvedValue([{ id: 'qb-2', displayName: 'Acme', syncToken: '1' }]);
+
+    const row = await saveMappingDecision(confirmOrg('qb-2'));
+
+    expect(row).toMatchObject({ id: 'm-existing', remoteEntityId: 'qb-2', linkStatus: 'confirmed' });
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(updateMock).toHaveBeenCalled();
+  });
+});
+
+describe('syncMappedEntity', () => {
+  it('throws mapping_not_ready when no mapping decision has been made yet', async () => {
+    stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }], mappings: [] });
+
+    await expect(syncMappedEntity(syncOrg())).rejects.toMatchObject({ code: 'mapping_not_ready', status: 409 });
+    expect(upsertCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses to sync an unlinked mapping', async () => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ linkStatus: 'unlinked' })],
+    });
+
+    await expect(syncMappedEntity(syncOrg())).rejects.toMatchObject({ code: 'mapping_not_ready', status: 409 });
+    expect(upsertCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('throws entity_not_found when the mapped org no longer resolves for this partner', async () => {
+    stubReads({
+      orgs: [],
+      mappings: [orgMappingRow({ linkStatus: 'create_new' })],
+    });
+
+    await expect(syncMappedEntity(syncOrg())).rejects.toMatchObject({ code: 'entity_not_found', status: 404 });
+    expect(upsertCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('blocks Item creation until an income account is configured', async () => {
+    getConnectionMock.mockResolvedValue(connectedConn({ defaultIncomeAccountRef: null }));
+    stubReads({
+      items: [{ id: ITEM_A, name: 'Managed Service', sku: 'MS-1' }],
+      mappings: [itemMappingRow()],
+      itemPrices: [{ itemId: ITEM_A, currencyCode: 'USD', unitPrice: '125.50' }],
+    });
+
+    await expect(syncMappedEntity(syncCatalogItem())).rejects.toMatchObject({ code: 'income_account_required', status: 409 });
+    expect(upsertItemMock).not.toHaveBeenCalled();
+  });
+
+  it('does not require an income account to sparse-update an already-confirmed Item', async () => {
+    getConnectionMock.mockResolvedValue(connectedConn({ defaultIncomeAccountRef: null }));
+    stubReads({
+      items: [{ id: ITEM_A, name: 'Managed Service', sku: 'MS-1' }],
+      mappings: [itemMappingRow({ linkStatus: 'confirmed', remoteEntityId: 'qb-item-1', remoteSyncToken: '2' })],
+      itemPrices: [{ itemId: ITEM_A, currencyCode: 'USD', unitPrice: '125.50' }],
+    });
+    upsertItemMock.mockResolvedValueOnce({ id: 'qb-item-1', syncToken: '3' });
+
+    const row = await syncMappedEntity(syncCatalogItem());
+
+    expect(row).toMatchObject({ remoteEntityId: 'qb-item-1', remoteSyncToken: '3', syncStatus: 'synced' });
+  });
+
+  it('throws item_price_required when the catalog item has no price row in the partner currency', async () => {
+    stubReads({
+      items: [{ id: ITEM_A, name: 'Managed Service', sku: 'MS-1' }],
+      mappings: [itemMappingRow()],
+      itemPrices: [],
+    });
+
+    await expect(syncMappedEntity(syncCatalogItem())).rejects.toMatchObject({ code: 'item_price_required', status: 409 });
+    expect(upsertItemMock).not.toHaveBeenCalled();
+  });
+
+  it('create_new sync creates once and retries as a sparse update carrying the persisted SyncToken', async () => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null })],
+    });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-new', syncToken: '0' });
+
+    const first = await syncMappedEntity(syncOrg());
+
+    expect(first).toMatchObject({
+      remoteEntityId: 'qb-new', remoteSyncToken: '0', linkStatus: 'confirmed', syncStatus: 'synced',
+    });
+    expect(upsertCustomerMock.mock.calls[0]?.[2]).toBeNull(); // first call is a CREATE: no existing ref
+
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-new', syncToken: '1' });
+    const second = await syncMappedEntity(syncOrg());
+
+    // The second call must carry the FIRST call's persisted id+SyncToken as a
+    // sparse update, proving persistRemoteRef's write is what the retry reads.
+    expect(upsertCustomerMock.mock.calls[1]?.[2]).toMatchObject({ remoteEntityId: 'qb-new', remoteSyncToken: '0' });
+    expect(second).toMatchObject({ remoteEntityId: 'qb-new', remoteSyncToken: '1' });
+  });
+
+  it.each([
+    ['service', 'Service'],
+    ['hardware', 'NonInventory'],
+    ['software', 'NonInventory'],
+  ] as const)('maps catalog itemType %s to QuickBooks type %s and passes unitPrice as a decimal string', async (itemType, qboType) => {
+    stubReads({
+      items: [{ id: ITEM_A, name: 'Widget', sku: 'W-1', itemType, taxable: false, isActive: true }],
+      mappings: [itemMappingRow()],
+      itemPrices: [{ itemId: ITEM_A, currencyCode: 'USD', unitPrice: '125.50' }],
+    });
+    upsertItemMock.mockResolvedValueOnce({ id: 'qb-item-1', syncToken: '0' });
+
+    await syncMappedEntity(syncCatalogItem());
+
+    expect(upsertItemMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        type: qboType, unitPrice: '125.50', currencyCode: 'USD', sku: 'W-1', taxable: false, active: true,
+        incomeAccountRef: '79',
+      }),
+      null,
+    );
+  });
+
+  it('maps org billing contact email, address, currency, and tax id onto the customer payload', async () => {
+    stubReads({
+      orgs: [{
+        id: ORG_A, name: 'Acme', email: 'ap@acme.test', taxId: 'TAX-123', currencyCode: 'EUR',
+        billingAddressLine1: '1 Main St', billingAddressCity: 'Springfield', billingAddressCountry: 'US',
+      }],
+      mappings: [orgMappingRow()],
+    });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-new', syncToken: '0' });
+
+    await syncMappedEntity(syncOrg());
+
+    expect(upsertCustomerMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        displayName: 'Acme', billingEmail: 'ap@acme.test', taxId: 'TAX-123', currencyCode: 'EUR',
+        billAddr: expect.objectContaining({ line1: '1 Main St', city: 'Springfield', country: 'US' }),
+      }),
+      null,
+    );
+  });
+
+  it('clears a prior lastError and marks synced on a successful sync', async () => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({
+        linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3', syncStatus: 'error', lastError: 'previous failure',
+      })],
+    });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-1', syncToken: '4' });
+
+    const row = await syncMappedEntity(syncOrg());
+
+    expect(row).toMatchObject({ syncStatus: 'synced', lastError: null, remoteSyncToken: '4' });
+  });
+
+  it('records sync_status=error with a sanitized message on a provider failure (e.g. a stale SyncToken) and rethrows a typed 502', async () => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({
+        linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3', syncStatus: 'synced',
+      })],
+    });
+    const staleTokenErr = Object.assign(new Error('Stale Object Error: SUPER-SECRET-UPSTREAM-BODY'), { status: 400 });
+    upsertCustomerMock.mockRejectedValueOnce(staleTokenErr);
+
+    const err: unknown = await syncMappedEntity(syncOrg()).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ code: 'quickbooks_error', status: 502 });
+    expect((err as Error).message).not.toContain('SUPER-SECRET-UPSTREAM-BODY');
+    expect(captureExceptionMock).toHaveBeenCalled();
+    const persisted = currentMappingRows.find((r) => r.id === 'm1');
+    expect(persisted).toMatchObject({ syncStatus: 'error', remoteEntityId: 'qb-1' }); // prior ref survives the failure
+    expect(persisted?.lastError).not.toContain('SUPER-SECRET-UPSTREAM-BODY');
+  });
+
+  it('surfaces a non-retry-safe error with the remote id in Sentry metadata when persisting a successful remote create fails', async () => {
+    stubReads({
+      orgs: [{ id: ORG_A, name: 'Acme' }],
+      mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null })],
+    });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-created', syncToken: '0' });
+    // Simulate the mapping row vanishing between read and write (0 rows on the
+    // persist UPDATE) — the remote entity now exists in QuickBooks but Breeze
+    // could not record it, so a blind retry risks a duplicate QBO Customer.
+    updateMock.mockImplementationOnce(() => ({
+      set: () => ({ where: () => ({ returning: () => Promise.resolve([]) }) }),
+    }));
+
+    const err: unknown = await syncMappedEntity(syncOrg()).catch((e: unknown) => e);
+
+    expect(err).toMatchObject({ code: 'quickbooks_error', status: 502 });
+    expect((err as Error).message).toContain('qb-created');
+    expect((err as Error).message.toLowerCase()).toContain('do not retry');
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.any(Error), undefined, expect.objectContaining({ remoteEntityId: 'qb-created' }),
+    );
   });
 });
