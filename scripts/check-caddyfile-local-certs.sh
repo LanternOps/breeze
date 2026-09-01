@@ -25,8 +25,10 @@
 #   4. UNSET  -> identical to EMPTY, so an operator who never defines the variable
 #                gets exactly the pre-existing behavior.
 #
-# Degrades to a skip (exit 0) when Docker is unavailable, so a runner without a
-# daemon or a registry hiccup cannot redden CI over an unrelated failure.
+# A missing prerequisite (no docker CLI, no reachable daemon, unpullable image)
+# is a hard failure when CI is set and a skip otherwise: in the required Lint job
+# a skip would make this guard silently vacuous, while a developer without Docker
+# should not be blocked locally.
 
 set -euo pipefail
 
@@ -53,9 +55,32 @@ if ! grep -q '{\$CADDY_LOCAL_CERTS' "${CADDYFILE}"; then
   exit 1
 fi
 
-if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-  echo "SKIP: Docker unavailable; cannot adapt the Caddyfile. (Guard needs ${CADDY_IMAGE}.)"
+# Hard-fail under CI, skip locally: a skipped guard in the required Lint job is
+# indistinguishable from a passing one, and this is the only check that the
+# CADDY_LOCAL_CERTS opt-in stays a no-op when empty.
+missing_prereq() {
+  if [[ -n "${CI:-}" ]]; then
+    echo "FAIL: $1" >&2
+    echo "CI is set, so this guard must not skip itself. docker/Caddyfile.prod is shared" >&2
+    echo "with hosted production and nothing else proves an empty CADDY_LOCAL_CERTS adapts" >&2
+    echo "to unchanged JSON. Fix the runner prerequisite rather than bypassing the check." >&2
+    exit 1
+  fi
+  echo "SKIP: $1 (local run, CI unset)"
   exit 0
+}
+
+if ! command -v docker >/dev/null 2>&1; then
+  missing_prereq "the docker CLI is not on PATH; this guard adapts the Caddyfile with ${CADDY_IMAGE}"
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  missing_prereq "no reachable Docker daemon ('docker info' failed); this guard adapts the Caddyfile with ${CADDY_IMAGE}"
+fi
+
+if ! docker image inspect "${CADDY_IMAGE}" >/dev/null 2>&1 \
+  && ! docker pull -q "${CADDY_IMAGE}" >/dev/null 2>&1; then
+  missing_prereq "the caddy image ${CADDY_IMAGE} is neither present locally nor pullable"
 fi
 
 TMP_DIR="$(mktemp -d)"
