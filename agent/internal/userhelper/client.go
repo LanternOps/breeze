@@ -13,10 +13,8 @@ import (
 	"net"
 	"os"
 	osexec "os/exec"
-	"os/user"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,6 +35,10 @@ var log = logging.L("userhelper")
 
 var newPamActuator = pamactuator.New
 
+// runTCCCheckLoop is a seam over RunTCCCheckLoop so the per-Run goroutine
+// teardown contract can be asserted on any platform.
+var runTCCCheckLoop = RunTCCCheckLoop
+
 const (
 	maxLaunchBinaryPathBytes = 4096
 	maxLaunchArgs            = 32
@@ -49,6 +51,9 @@ type Client struct {
 	role       ipc.HelperRole // "system" or "user"
 	binaryKind string
 	context    string
+	// connMu guards conn against the Stop-from-another-goroutine race the
+	// reconnect supervisor creates; see connect and currentConn.
+	connMu     sync.Mutex
 	conn       *ipc.Conn
 	sessionKey []byte
 	agentID    string
@@ -115,6 +120,16 @@ func (c *Client) Run() error {
 	// TypePong reply (issue #2273). No-op on non-macOS / nocgo builds.
 	guardAgainstAppNap()
 
+	// runDone closes when this Run returns for ANY reason — a dropped
+	// connection as well as an explicit Stop. Per-Run goroutines must key off
+	// this, not c.stopChan: the reconnect supervisor discards a client after
+	// Run returns and never calls Stop, so a goroutine watching stopChan
+	// alone is stranded holding a dead *ipc.Conn until its own timeout. For
+	// the TCC check loop that is up to three 60-minute intervals, and the
+	// orphans accumulate one per reconnect (#4194).
+	runDone := make(chan struct{})
+	defer close(runDone)
+
 	if err := c.connect(); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -147,7 +162,7 @@ func (c *Client) Run() error {
 	// Skip capture probes while a live session is active to avoid contending
 	// with the streaming capturer in the same helper process.
 	safeGo("tcc_check", func() {
-		RunTCCCheckLoop(c.conn, c.stopChan, c.context, func() bool {
+		runTCCCheckLoop(c.conn, runDone, c.context, func() bool {
 			return !c.desktopMgr.hasActiveSessions()
 		})
 	})
@@ -168,9 +183,11 @@ func (c *Client) Stop() {
 	if c.desktopMgr != nil {
 		c.desktopMgr.stopAll()
 	}
-	if c.conn != nil {
-		c.conn.SendTyped("disconnect", ipc.TypeDisconnect, nil)
-		c.conn.Close()
+	if conn := c.currentConn(); conn != nil {
+		// Best-effort courtesy notice on the way out; the broker also notices
+		// the socket closing, so a failure here changes nothing.
+		_ = conn.SendTyped("disconnect", ipc.TypeDisconnect, nil)
+		_ = conn.Close()
 	}
 }
 
@@ -179,8 +196,21 @@ func (c *Client) connect() error {
 	if err != nil {
 		return err
 	}
+	// Guard the write: Stop() reads c.conn from the supervisor's shutdown
+	// goroutine, which can run concurrently with Run() dialling. Every other
+	// read happens on the Run goroutine (or on handler goroutines it starts
+	// after connect returns), so it is ordered behind this write already.
+	c.connMu.Lock()
 	c.conn = ipc.NewConn(conn)
+	c.connMu.Unlock()
 	return nil
+}
+
+// currentConn returns the live connection, or nil if Run has not dialled yet.
+func (c *Client) currentConn() *ipc.Conn {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	return c.conn
 }
 
 // dialIPC is implemented in client_windows.go and client_unix.go.
@@ -209,16 +239,12 @@ func (c *Client) authenticate() error {
 		}
 		username = uname
 	} else {
-		cu, err := user.Current()
+		resolvedUID, resolvedUser, err := resolveUnixIdentity()
 		if err != nil {
 			return fmt.Errorf("get current user: %w", err)
 		}
-		parsed, parseErr := strconv.ParseUint(cu.Uid, 10, 32)
-		if parseErr != nil {
-			return fmt.Errorf("parse uid %q: %w", cu.Uid, parseErr)
-		}
-		uid = parsed
-		username = cu.Username
+		uid = resolvedUID
+		username = resolvedUser
 	}
 
 	if username == "" {
