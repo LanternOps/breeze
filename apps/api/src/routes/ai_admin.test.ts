@@ -234,6 +234,32 @@ describe('AI routes', () => {
 
       expect(res.status).toBe(403);
     });
+
+    it('rejects an alert threshold outside 1..99', async () => {
+      const res = await app.request('/ai/budget', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ alertThresholdPercents: [50, 100] }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('stores normalised alert thresholds', async () => {
+      vi.mocked(updateBudget).mockResolvedValueOnce(undefined);
+
+      const res = await app.request('/ai/budget', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ alertThresholdPercents: [95, 50, 50] }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateBudget).toHaveBeenCalledWith(
+        ORG_ID,
+        expect.objectContaining({ alertThresholdPercents: [50, 95] })
+      );
+    });
   });
 
   // ============================================

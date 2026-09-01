@@ -31,6 +31,7 @@ import { createTicket, changeTicketStatus, TicketServiceError } from '../service
 import { createTimeEntry } from '../services/timeEntryService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
+import { normalizeAlertThresholds } from '../services/aiBudgetAlerts';
 import { db } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents } from '../db/schema';
 import { eq, and, desc, gte, lte, count, avg, sql as drizzleSql } from 'drizzle-orm';
@@ -1086,6 +1087,7 @@ aiRoutes.put(
     messagesPerMinutePerUser: z.number().int().min(1).max(100).optional(),
     messagesPerHourPerOrg: z.number().int().min(1).max(10000).optional(),
     approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
+    alertThresholdPercents: z.array(z.number().int().min(1).max(99)).max(5).nullable().optional(),
   })),
   async (c) => {
     const auth = c.get('auth');
@@ -1105,7 +1107,10 @@ aiRoutes.put(
       await assertNotLocked(orgId, 'aiBudgets', body);
     }
 
-    await updateBudget(orgId, body);
+    const normalized = body.alertThresholdPercents == null
+      ? body
+      : { ...body, alertThresholdPercents: normalizeAlertThresholds(body.alertThresholdPercents) };
+    await updateBudget(orgId, normalized);
 
     writeRouteAudit(c, {
       orgId,

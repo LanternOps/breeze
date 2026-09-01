@@ -1173,6 +1173,7 @@ export async function updateBudget(orgId: string, settings: {
   messagesPerMinutePerUser?: number;
   messagesPerHourPerOrg?: number;
   approvalMode?: 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
+  alertThresholdPercents?: number[] | null;
 }): Promise<void> {
   const [existing] = await db
     .select()
@@ -1193,7 +1194,8 @@ export async function updateBudget(orgId: string, settings: {
       dailyBudgetCents: settings.dailyBudgetCents ?? null,
       maxTurnsPerSession: settings.maxTurnsPerSession ?? 50,
       messagesPerMinutePerUser: settings.messagesPerMinutePerUser ?? 20,
-      messagesPerHourPerOrg: settings.messagesPerHourPerOrg ?? 200
+      messagesPerHourPerOrg: settings.messagesPerHourPerOrg ?? 200,
+      alertThresholdPercents: settings.alertThresholdPercents ?? null,
     });
   }
 }

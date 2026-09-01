@@ -689,6 +689,7 @@ const partnerSettingsSchema = z.object({
     messagesPerMinutePerUser: z.number().int().min(1).max(100).optional(),
     messagesPerHourPerOrg: z.number().int().min(1).max(10000).optional(),
     approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
+    alertThresholdPercents: z.array(z.number().int().min(1).max(99)).max(5).optional(),
   }).optional(),
   organizationOrder: z.array(z.string().guid()).max(10_000).optional(),
   remoteAccessProviders: z.object({
