@@ -25,6 +25,8 @@ import { ensureApproverDevice } from '../services/approverDevice';
 import { AuthNavigator } from './AuthNavigator';
 import { MainNavigator } from './MainNavigator';
 import { ApprovalGate } from './ApprovalGate';
+import { PushTapRouter } from './PushTapRouter';
+import { flushPendingNavigation, navigationRef } from './navigationRef';
 import { OnboardingScreen } from '../screens/onboarding/OnboardingScreen';
 import { Spinner } from '../components/Spinner';
 import { palette } from '../theme';
@@ -300,14 +302,27 @@ export function RootNavigator() {
   }
 
   return (
-    <NavigationContainer theme={navigationTheme}>
+    <NavigationContainer theme={navigationTheme} ref={navigationRef} onReady={flushPendingNavigation}>
+      {/* Mandatory MFA enrollment outranks everything, ticket taps included:
+          PushTapRouter is not mounted in that branch, so a buffered tap waits
+          rather than navigating past the gate. */}
       {mfaEnrollmentRequired ? (
         <MfaEnrollmentRequiredScreen />
       ) : token ? (
         hasOnboarded ? (
-          <ApprovalGate>
-            <MainNavigator />
-          </ApprovalGate>
+          // PushTapRouter is a SIBLING of ApprovalGate, never a child (#4336).
+          // ApprovalGate renders <ApprovalScreen /> INSTEAD of its children
+          // while an approval is focused, so nesting the router would tear its
+          // notification subscriptions down for the whole approval lifecycle
+          // and silently stop routing ticket taps. It stays inside the
+          // authenticated + onboarded branch so a tap never navigates a
+          // signed-out container.
+          <>
+            <PushTapRouter />
+            <ApprovalGate>
+              <MainNavigator />
+            </ApprovalGate>
+          </>
         ) : (
           <OnboardingScreen onComplete={handleOnboardingComplete} />
         )
