@@ -49,6 +49,19 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // around each DB op, so we must NOT pin a request transaction across the call.
   { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/customers\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/customers\/import\/?$/ },
+  // Task 5 (2026-08-29-quickbooks-customer-item-mapping) — entity-mapping
+  // reconciliation and sync routes. GET .../mappings and GET
+  // .../income-accounts call the QBO list APIs inside the handler
+  // (listMappingProposals / listRemoteIncomeAccountsForPartner); PUT
+  // .../mappings calls the same provider list to verify a `confirmed`
+  // decision before writing (saveMappingDecision); POST .../mappings/sync
+  // calls provider.upsertCustomer/upsertItem (syncMappedEntity). All four
+  // manage their own short DB access contexts around the outbound QuickBooks
+  // call — see accountingMappingService.ts's per-function comments.
+  { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/mappings\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/income-accounts\/?$/ },
+  { method: 'PUT', pattern: /^\/api\/v1\/accounting\/[^/]+\/mappings\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/mappings\/sync\/?$/ },
   // #2190 — the three distributor catalog import routes run a best-effort AI
   // enrichment (enrichDistributorListing, up to a 12s outbound Anthropic call)
   // before persisting. The import services manage their own short
