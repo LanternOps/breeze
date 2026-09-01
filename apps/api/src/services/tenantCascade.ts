@@ -80,6 +80,16 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // alphabetization (same reasoning as ai_unattended_exposure below).
   'ai_agent_circuit_state',
   'ai_agent_fix_watches',
+  // ai_agent_graduation (P2-5, #4192): both FKs carry an explicit ON
+  // DELETE (agent_id CASCADE, promoted_intent_id/org_id composite SET
+  // NULL) so position relative to ai_agents/action_intents is cosmetic —
+  // topologicalCascadeOrder()'s runtime pg_constraint read orders the
+  // actual DELETE, not this list's alphabetization.
+  'ai_agent_graduation',
+  // ai_agent_op_evidence (P2-5, #4192): both FKs carry an explicit ON
+  // DELETE (agent_id CASCADE, run_id/org_id composite SET NULL) — same
+  // position-independence reasoning as ai_agent_graduation above.
+  'ai_agent_op_evidence',
   'ai_agent_runs',
   // ai_agent_schedules (P2-2, #4189): dual-owner config. org override rows
   // cascade with the org; partner rows have org_id NULL and are untouched by
