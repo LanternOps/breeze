@@ -261,20 +261,69 @@ func TestInjectTextFallsBackToKeySynthesis(t *testing.T) {
 // are skipped, but InjectText must SAY SO rather than dropping them silently.
 func TestInjectTextReportsUnmappableCharactersOnKeySynthesisFallback(t *testing.T) {
 	h := &recordingHandler{}
-	err := InjectText(h, "café")
+	err := InjectText(h, "café ☕")
 	if err == nil {
-		t.Fatal("expected an error naming the skipped characters, got nil")
+		t.Fatal("expected an error reporting the skipped characters, got nil")
 	}
-	if !strings.Contains(err.Error(), "é") {
-		t.Fatalf("error should name the skipped character, got %q", err.Error())
+	if !strings.Contains(err.Error(), "2 character(s)") {
+		t.Fatalf("error should report how many characters were skipped, got %q", err.Error())
 	}
 	// Everything mappable must still have been typed.
 	var typed strings.Builder
 	for _, kp := range h.keyPresses {
 		typed.WriteString(kp.key)
 	}
-	if got, want := typed.String(), "caf"; got != want {
+	if got, want := typed.String(), "caf "; got != want {
 		t.Fatalf("mappable characters: got %q want %q", got, want)
+	}
+}
+
+// The error must not carry the clipboard content itself — a paste can be a
+// password, and this error is written to the agent's log.
+func TestInjectTextErrorsNeverEchoClipboardContent(t *testing.T) {
+	secret := "hunter2-ünïcode"
+	err := InjectText(&recordingHandler{}, secret)
+	if err == nil {
+		t.Fatal("expected an error for the unmappable characters")
+	}
+	for _, fragment := range []string{"hunter2", "ü", "ï"} {
+		if strings.Contains(err.Error(), fragment) {
+			t.Fatalf("error leaked clipboard content %q: %q", fragment, err.Error())
+		}
+	}
+}
+
+// bothTyperHandler implements TextTyper AND TypeCharHandler, like the real
+// macOS and Windows handlers do. Without it nothing pins the dispatch ORDER —
+// a switch that checked TypeCharHandler first would still produce the right
+// characters, just one CGEvent/SendInput call per character instead of one per
+// run.
+type bothTyperHandler struct {
+	recordingHandler
+	texts []string
+	runes []rune
+}
+
+func (h *bothTyperHandler) TypeText(text string) error {
+	h.texts = append(h.texts, text)
+	return nil
+}
+
+func (h *bothTyperHandler) TypeChar(ch rune) error {
+	h.runes = append(h.runes, ch)
+	return nil
+}
+
+func TestInjectTextPrefersTypeTextOverTypeChar(t *testing.T) {
+	h := &bothTyperHandler{}
+	if err := InjectText(h, "echo hi"); err != nil {
+		t.Fatalf("InjectText: %v", err)
+	}
+	if len(h.texts) != 1 || h.texts[0] != "echo hi" {
+		t.Fatalf("expected one whole-string TypeText call, got %q", h.texts)
+	}
+	if len(h.runes) != 0 {
+		t.Fatalf("expected TypeChar not to be used when TypeText exists, got %q", string(h.runes))
 	}
 }
 

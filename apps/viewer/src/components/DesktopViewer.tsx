@@ -13,7 +13,8 @@ import type { VncSessionWrapper } from '../lib/transports/vnc';
 import { createVncTunnel, closeTunnel, retryVncTunnel, type VncTunnelInfo } from '../lib/tunnel';
 import { pollDesktopAccess } from '../lib/desktopAccess';
 import { mapKey, getModifiers, isModifierOnly } from '../lib/keymap';
-import { sendPasteText } from '../lib/pasteText';
+import { sendPasteText, pasteFailureMessage } from '../lib/pasteText';
+import { createInputCapabilitiesGate } from '../lib/inputCapabilities';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import { handleCtrlVPaste } from '../lib/clipboardPaste';
 import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from '../lib/autoHandoff';
@@ -38,6 +39,9 @@ const RECONNECT_INTERVAL_MS = 3_000;
 // round-trip; long enough to cover a paste fired the instant a session opens,
 // short enough that an agent which never answers costs nothing noticeable.
 const INPUT_CAPABILITIES_WAIT_MS = 500;
+
+// How long a paste-failure notice stays in the toolbar.
+const PASTE_NOTICE_TTL_MS = 8_000;
 
 // Shown when the server rejects (re)connection because the session has ended
 // (HTTP 401 'Session ended', Finding #5). The viewer holds a single-session
@@ -105,17 +109,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const pressedKeysRef = useRef<Set<string>>(new Set());
   const wheelAccRef = useRef(DEFAULT_WHEEL_ACCUMULATOR);
   const pasteCancelRef = useRef(false);
-  // Whether the connected agent answered the input_capabilities handshake with
-  // typeText — i.e. it understands the type_text control message and can inject
-  // pasted text literally instead of replaying it as US-layout keystrokes
-  // (issue #4089). Agents that predate type_text never reply, so this stays
-  // false and Paste Text keeps using per-character key synthesis.
-  const agentTypeTextRef = useRef(false);
-  // Resolves when the handshake is answered, so a paste issued moments after
-  // the control channel opens waits for the answer instead of silently taking
-  // the fallback path. Reset on every (re)connect.
-  const inputCapabilitiesReadyRef = useRef<Promise<void>>(Promise.resolve());
-  const inputCapabilitiesResolveRef = useRef<(() => void) | null>(null);
+  // What the connected agent said it can do with injected text. An agent that
+  // predates the input_capabilities handshake never answers, so this stays
+  // unsupported and Paste Text keeps using per-character key synthesis
+  // (issue #4089). Lifecycle is unit-tested in lib/inputCapabilities.test.ts.
+  const inputCapabilitiesRef = useRef(createInputCapabilitiesGate());
   const userDisconnectRef = useRef(false);
   const reconnectTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectDeadlineRef = useRef<number | null>(null);
@@ -155,6 +153,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const [connectedAt, setConnectedAt] = useState<Date | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [pasteProgress, setPasteProgress] = useState<{ current: number; total: number } | null>(null);
+  // Transient toolbar notice for a paste that did not fully land. Deliberately
+  // NOT errorMessage — that only renders behind the full-screen connection-error
+  // overlay, and a failed paste must not tear down a working session.
+  const [pasteNotice, setPasteNotice] = useState<string | null>(null);
   const [remapCmdCtrl, setRemapCmdCtrl] = useState(true);
   const [cursorStreamActive, setCursorStreamActive] = useState(false);
   const [monitors, setMonitors] = useState<Array<{ index: number; name: string; width: number; height: number; isPrimary: boolean }>>([]);
@@ -1151,10 +1153,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	      // Ask what this agent can do with pasted text. An agent that predates
 	      // type_text has no case for this and no default branch, so it simply
 	      // never answers and Paste Text keeps its old behaviour.
-	      agentTypeTextRef.current = false;
-	      inputCapabilitiesReadyRef.current = new Promise<void>(resolve => {
-	        inputCapabilitiesResolveRef.current = resolve;
-	      });
+	      inputCapabilitiesRef.current.arm();
 	      ch.send(JSON.stringify({ type: 'input_capabilities' }));
 	    };
     const onMessage = (e: MessageEvent) => {
@@ -1183,9 +1182,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             if (!msg.ok) console.warn('Lock workstation failed:', msg.error);
             break;
           case 'input_capabilities':
-            agentTypeTextRef.current = msg.typeText === true;
-            inputCapabilitiesResolveRef.current?.();
-            inputCapabilitiesResolveRef.current = null;
+            inputCapabilitiesRef.current.apply(msg);
+            break;
+          // Sent only when a paste did NOT fully land. The progress indicator
+          // completes on send, not on delivery, so without this the operator
+          // could not tell a dropped paste from a successful one.
+          case 'type_text_result':
+            if (msg.ok === false) setPasteNotice(pasteFailureMessage(msg));
             break;
           // Agent's live WebRTC control-channel event uses `'loginwindow'` (no underscore).
           // The persisted DesktopAccessMode enum uses `'login_window'` (with underscore).
@@ -1233,9 +1236,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	      clearInterval(sessionPollInterval);
 	      // This control channel is gone; the next one re-runs the handshake.
 	      // Release anything waiting on the old answer so a paste can't hang.
-	      agentTypeTextRef.current = false;
-	      inputCapabilitiesResolveRef.current?.();
-	      inputCapabilitiesResolveRef.current = null;
+	      inputCapabilitiesRef.current.release();
 	    };
 	    // webrtcEpoch: re-attach to the NEW control channel after an
 	    // auto-reconnect — without it this stays bound to the dead channel and
@@ -1547,18 +1548,16 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // The handshake is sent the moment the control channel opens, but a paste
     // fired immediately after (re)connect can still beat the reply. Wait
     // briefly for it rather than silently dropping to the lossy fallback.
-    await Promise.race([
-      inputCapabilitiesReadyRef.current,
-      new Promise<void>(r => setTimeout(r, INPUT_CAPABILITIES_WAIT_MS)),
-    ]);
+    await inputCapabilitiesRef.current.settled(INPUT_CAPABILITIES_WAIT_MS);
 
     const control = transportRef.current === 'webrtc' ? webrtcRef.current?.controlChannel : undefined;
     pasteCancelRef.current = false;
+    setPasteNotice(null);
 
     try {
       await sendPasteText({
         text,
-        supportsTypeText: agentTypeTextRef.current,
+        supportsTypeText: inputCapabilitiesRef.current.supportsTypeText(),
         // type_text rides the reliable control channel: the input channel is
         // created with maxRetransmits: 0, so a dropped datagram would silently
         // truncate the paste.
@@ -1570,10 +1569,21 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       });
     } catch (err) {
       // sendPasteText clears the progress indicator before rethrowing, so the
-      // toolbar is never left showing a paste that stopped.
+      // toolbar is never left showing a paste that stopped — but the operator
+      // still needs to be told, or a half-delivered shell command looks like a
+      // finished one.
       console.warn('Paste Text failed:', err);
+      setPasteNotice('Paste failed — the text could not be sent to the remote machine.');
     }
   }, [sendInputFn]);
+
+  // Clear the paste notice on a timer so it reads as a transient alert rather
+  // than sticky chrome the operator has to dismiss.
+  useEffect(() => {
+    if (!pasteNotice) return;
+    const timer = setTimeout(() => setPasteNotice(null), PASTE_NOTICE_TTL_MS);
+    return () => clearTimeout(timer);
+  }, [pasteNotice]);
 
   const handleCancelPaste = useCallback(() => {
     pasteCancelRef.current = true;
@@ -1911,6 +1921,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         maxFps={maxFps}
         bitrate={bitrate}
         pasteProgress={pasteProgress}
+        pasteNotice={pasteNotice}
         remapCmdCtrl={remapCmdCtrl}
         monitors={monitors}
         activeMonitor={activeMonitor}

@@ -148,43 +148,59 @@ func (s *Session) handleInputMessage(data []byte) {
 	}
 }
 
-// sendInputCapabilities answers the viewer's input_capabilities request so it
-// knows whether this agent understands the type_text message (issue #4089).
+// buildInputCapabilities is the body of the input_capabilities reply.
 //
-// Agents that predate type_text have no case for it and no default branch, so
-// they silently ignore both the request and the message. The viewer treats "no
-// reply" as "not supported" and keeps using per-character key synthesis, which
-// is why an updated viewer talking to an old agent still pastes as it does
-// today instead of pasting nothing at all.
-//
-//   - typeText:    this agent handles the type_text control message.
-//   - unicodeText: literal Unicode injection is available, so pasted text is
-//     delivered verbatim and does not depend on the remote keyboard layout.
-//     False on platforms that can only synthesise US-layout key presses
-//     (Linux/XTEST has no Unicode injection primitive).
-func (s *Session) sendInputCapabilities() {
-	_, unicodeText := s.inputHandler.(TextTyper)
-	if !unicodeText {
-		_, unicodeText = s.inputHandler.(TypeCharHandler)
+// typeText says this agent understands the type_text control message at all.
+// Agents that predate it have no case for the request and no default branch, so
+// they never reply; the viewer reads "no reply" as "not supported" and keeps
+// using per-character key synthesis. That fallback is why an updated viewer
+// talking to an old agent still pastes the way it does today rather than
+// pasting nothing at all.
+func buildInputCapabilities() map[string]any {
+	return map[string]any{
+		"type":     "input_capabilities",
+		"typeText": true,
 	}
+}
 
-	resp, err := json.Marshal(map[string]any{
-		"type":        "input_capabilities",
-		"typeText":    true,
-		"unicodeText": unicodeText,
-	})
+// typeTextResult reports a paste that did not fully land. There is no success
+// message: silence means the text was injected.
+//
+// Without this the operator has no way to know. The viewer's progress indicator
+// runs to completion on send, not on delivery, so a paste dropped at the login
+// window or truncated by a failing SendInput would finish looking identical to
+// one that worked — and the operator would go on believing the remote machine
+// holds what their clipboard holds.
+func typeTextResult(reason, detail string) map[string]any {
+	body := map[string]any{
+		"type":   "type_text_result",
+		"ok":     false,
+		"reason": reason,
+	}
+	if detail != "" {
+		body["error"] = detail
+	}
+	return body
+}
+
+// sendControlJSON marshals body and sends it on the control channel if the
+// viewer has attached one. Dropping the message when it has not is correct:
+// every control reply is an answer to something the viewer asked for.
+func (s *Session) sendControlJSON(body map[string]any) {
+	resp, err := json.Marshal(body)
 	if err != nil {
-		slog.Warn("Failed to marshal input_capabilities", "session", s.id, "error", err.Error())
+		slog.Warn("Failed to marshal control message", "session", s.id, "type", body["type"], "error", err.Error())
 		return
 	}
 
 	s.mu.RLock()
 	dc := s.controlDC
 	s.mu.RUnlock()
-	if dc != nil {
-		if err := dc.SendText(string(resp)); err != nil {
-			slog.Debug("Failed to send input_capabilities", "session", s.id, "error", err.Error())
-		}
+	if dc == nil {
+		return
+	}
+	if err := dc.SendText(string(resp)); err != nil {
+		slog.Debug("Failed to send control message", "session", s.id, "type", body["type"], "error", err.Error())
 	}
 }
 
@@ -202,12 +218,15 @@ func (s *Session) sendInputCapabilities() {
 //     (see onViewerDataChannelMessage). A paste is genuine operator presence,
 //     unlike the viewer's automated viewer_stats heartbeat.
 //
-// The text itself is never logged: a paste can carry a password or a token.
+// The text itself is never logged, and never echoed back to the viewer: a paste
+// can carry a password or a token.
 func (s *Session) handleTypeText(data []byte) {
-	// Same early drop as handleInputMessage: nothing can be injected at the
-	// macOS login window without IOHIDSystem, and the viewer has already been
-	// told so once via sendInputStatus().
+	// Same early drop as handleInputMessage — nothing can be injected at the
+	// macOS login window without IOHIDSystem. Unlike the input path, this one
+	// tells the viewer, because a paste that vanishes is not something the
+	// operator can notice on their own.
 	if !s.inputHandler.InputAvailable() {
+		s.sendControlJSON(typeTextResult("input_unavailable", ""))
 		return
 	}
 
@@ -216,6 +235,7 @@ func (s *Session) handleTypeText(data []byte) {
 	}
 	if err := json.Unmarshal(data, &msg); err != nil {
 		slog.Warn("Failed to parse type_text message", "session", s.id, "error", err.Error())
+		s.sendControlJSON(typeTextResult("malformed", ""))
 		return
 	}
 	if msg.Text == "" {
@@ -226,8 +246,11 @@ func (s *Session) handleTypeText(data []byte) {
 	s.inputActive.Store(true)
 
 	if err := InjectText(s.inputHandler, msg.Text); err != nil {
+		// InjectText's messages are content-free by construction (see its doc
+		// comment), so this is safe to log and to return to the viewer.
 		slog.Warn("Text injection incomplete",
 			"session", s.id, "bytes", len(msg.Text), "error", err.Error())
+		s.sendControlJSON(typeTextResult("injection_failed", err.Error()))
 	}
 }
 
@@ -406,7 +429,7 @@ func (s *Session) handleControlMessage(data []byte) {
 			dc.SendText(string(resp))
 		}
 	case "input_capabilities":
-		s.sendInputCapabilities()
+		s.sendControlJSON(buildInputCapabilities())
 	case "type_text":
 		s.handleTypeText(data)
 	case "toggle_audio":

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   TYPE_TEXT_CHUNK_UNITS,
   chunkTextForInjection,
+  pasteFailureMessage,
   sendPasteText,
   type PasteTextDeps,
 } from './pasteText';
@@ -170,6 +171,32 @@ describe('sendPasteText — key-synthesis fallback', () => {
     await sendPasteText(deps);
 
     expect(input).toHaveLength(2);
+  });
+});
+
+describe('pasteFailureMessage', () => {
+  it('explains an unavailable remote input path', () => {
+    const msg = pasteFailureMessage({ reason: 'input_unavailable' });
+    expect(msg).toContain('not accepting input');
+    expect(msg).toContain('login window');
+  });
+
+  it('surfaces the agent detail for a partial injection', () => {
+    const msg = pasteFailureMessage({
+      reason: 'injection_failed',
+      error: 'skipped 2 character(s) with no key mapping on this platform',
+    });
+    expect(msg).toContain('incomplete');
+    expect(msg).toContain('skipped 2 character(s)');
+  });
+
+  it('omits the parenthetical when the agent sent no detail', () => {
+    expect(pasteFailureMessage({ reason: 'injection_failed' })).not.toContain('(');
+  });
+
+  it('still says something useful for an unrecognised reason', () => {
+    const msg = pasteFailureMessage({ reason: 'something_new' });
+    expect(msg).toContain('Paste failed');
   });
 });
 

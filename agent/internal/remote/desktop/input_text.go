@@ -145,9 +145,11 @@ func charToKeyPress(ch rune) (key string, modifiers []string, ok bool) {
 // Newlines and tabs are always real key presses so pasted shell blocks execute.
 //
 // On the key-synthesis fallback, characters outside printable ASCII have no
-// US-layout key press; they are skipped and named in the returned error so the
-// operator's log says what did not arrive instead of the paste quietly
-// differing from the clipboard.
+// US-layout key press; they are skipped and COUNTED in the returned error so
+// the operator is told the paste is incomplete instead of it quietly differing
+// from the clipboard. Only the count is reported, never the characters
+// themselves — a paste can carry a password, and this error reaches the agent's
+// log.
 func InjectText(handler InputHandler, text string) error {
 	if handler == nil {
 		return fmt.Errorf("no input handler available")
@@ -159,7 +161,7 @@ func InjectText(handler InputHandler, text string) error {
 	textTyper, canTypeText := handler.(TextTyper)
 	charTyper, canTypeChar := handler.(TypeCharHandler)
 
-	var skipped []rune
+	skipped := 0
 	for _, segment := range splitTextSegments(text) {
 		if segment.Key != "" {
 			if err := handler.SendKeyPress(segment.Key, nil); err != nil {
@@ -176,26 +178,27 @@ func InjectText(handler InputHandler, text string) error {
 		case canTypeChar:
 			for _, ch := range segment.Literal {
 				if err := charTyper.TypeChar(ch); err != nil {
-					return fmt.Errorf("failed to type %q: %w", string(ch), err)
+					// The failing character is never named: it is clipboard
+					// content, and this error reaches the agent's log.
+					return fmt.Errorf("failed to inject text: %w", err)
 				}
 			}
 		default:
 			for _, ch := range segment.Literal {
 				key, modifiers, ok := charToKeyPress(ch)
 				if !ok {
-					skipped = append(skipped, ch)
+					skipped++
 					continue
 				}
 				if err := handler.SendKeyPress(key, modifiers); err != nil {
-					return fmt.Errorf("failed to type %q: %w", string(ch), err)
+					return fmt.Errorf("failed to inject text: %w", err)
 				}
 			}
 		}
 	}
 
-	if len(skipped) > 0 {
-		return fmt.Errorf("skipped %d character(s) with no key mapping on this platform: %q",
-			len(skipped), string(skipped))
+	if skipped > 0 {
+		return fmt.Errorf("skipped %d character(s) with no key mapping on this platform", skipped)
 	}
 	return nil
 }

@@ -38,6 +38,28 @@ import { textToKeyEvents, type PasteKeyEvent } from './paste';
  */
 export const TYPE_TEXT_CHUNK_UNITS = 2000;
 
+/**
+ * Turn the agent's `type_text_result` failure report into something an MSP
+ * technician can act on.
+ *
+ * The progress indicator completes on *send*, not on delivery, so without this
+ * a paste the agent dropped looks exactly like one that worked — and the
+ * operator goes on believing the remote machine holds what their clipboard
+ * holds. The agent only sends this message on failure.
+ */
+export function pasteFailureMessage(result: { reason?: unknown; error?: unknown }): string {
+  switch (result.reason) {
+    case 'input_unavailable':
+      return 'Paste failed: the remote machine is not accepting input right now (it may be at the login window).';
+    case 'injection_failed': {
+      const detail = typeof result.error === 'string' && result.error ? ` (${result.error})` : '';
+      return `Paste may be incomplete — the remote machine rejected part of the text${detail}.`;
+    }
+    default:
+      return 'Paste failed — the remote machine did not accept the text.';
+  }
+}
+
 export interface PasteTextDeps {
   /** The clipboard text to deliver. */
   text: string;

@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -124,7 +125,54 @@ func TestHandleTypeTextRejectsOversizedPayload(t *testing.T) {
 
 // The handshake must not panic before the viewer has attached a control
 // channel — the reply is simply dropped and the viewer falls back.
-func TestSendInputCapabilitiesWithoutControlChannel(t *testing.T) {
+func TestHandleInputCapabilitiesWithoutControlChannel(t *testing.T) {
 	session, _ := newTypeTextSession()
 	session.handleControlMessage([]byte(`{"type":"input_capabilities"}`))
+}
+
+// typeText:true is the entire signal the viewer uses to choose the literal-text
+// paste path, so pin the wire shape — flipping it silently regresses every
+// session back to layout-dependent keystroke replay.
+func TestBuildInputCapabilitiesWireShape(t *testing.T) {
+	body, err := json.Marshal(buildInputCapabilities())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got, want := string(body), `{"type":"input_capabilities","typeText":true}`; got != want {
+		t.Fatalf("input_capabilities payload:\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// A failed paste must reach the viewer: the progress indicator completes on
+// send, not on delivery, so silence would look identical to success.
+func TestTypeTextResultWireShape(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		detail string
+		want   string
+	}{
+		{
+			name:   "no detail",
+			reason: "input_unavailable",
+			want:   `{"ok":false,"reason":"input_unavailable","type":"type_text_result"}`,
+		},
+		{
+			name:   "with detail",
+			reason: "injection_failed",
+			detail: "skipped 2 character(s) with no key mapping on this platform",
+			want:   `{"error":"skipped 2 character(s) with no key mapping on this platform","ok":false,"reason":"injection_failed","type":"type_text_result"}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := json.Marshal(typeTextResult(tc.reason, tc.detail))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if got := string(body); got != tc.want {
+				t.Fatalf("type_text_result payload:\n got: %s\nwant: %s", got, tc.want)
+			}
+		})
+	}
 }
