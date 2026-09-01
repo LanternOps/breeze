@@ -170,12 +170,33 @@ Beyond priced line items, a quote body can contain content blocks that turn it i
 | **Rich text** | Scope, assumptions, terms — formatted paragraphs, lists, and headings |
 | **Table** | Comparison grids, schedules, responsibility matrices |
 | **Callout** | Pulling out a caveat, an inclusion, or a deadline |
+| **Contract** | Attaching a template from your [contract template library](/features/contracts/#contract-templates) for the customer to review as part of the proposal |
 
 Tables and callouts are edited **in place** on the quote itself, so what you see while editing is what the customer receives — no round trip through a PDF to check the result.
 
 <Aside>
   Rich text is sanitized before it is stored. If you paste markup Breeze does not allow, it tells you what was stripped rather than silently discarding it.
 </Aside>
+
+### Contract blocks
+
+A **Contract** block attaches a document from your [contract template library](/features/contracts/#contract-templates) to a quote, so the customer reviews (and, by accepting the quote, effectively agrees to) that document alongside the priced lines.
+
+<Steps>
+1. Add a **Contract** block and choose a **template** and, if the template has more than one, a **published version**.
+2. Optionally give the block a **label** (shown instead of the template's name).
+3. If the template declares any **manual variables**, fill them in -- Breeze won't let you add the block with one left blank.
+</Steps>
+
+The block pins to the **specific published version** you picked at attach time -- it doesn't automatically follow later edits to the template. If a newer version of the same template is published afterward, the block shows an **Update to vN** button so you can re-pin it deliberately; nothing changes until you click it.
+
+**Variables** are resolved when the block renders: auto variables (customer name/address, your organization's name, quote number/title, totals, dates) come from the quote automatically; manual variables use whatever you entered when you attached (or last edited) the block. An uploaded-PDF template has no variables -- it's attached as-is.
+
+<Aside type="caution">
+  **Send is blocked while any contract block has an unresolved variable.** If a manual variable is left blank -- for example, after switching a block to a newer template version that added one -- Breeze refuses to send the quote until every declared variable on every contract block has a value. The block editor lists which ones are still missing.
+</Aside>
+
+When the customer **accepts** a quote with contract blocks, Breeze freezes each block's rendered content (an authored template's substituted text, or an uploaded PDF as-is) into a permanent, standalone **contract document** -- the record of exactly what the customer saw and agreed to at that moment, unaffected by any later edits to the template. Executed contract documents can be downloaded as PDF from the **Contracts → Documents** tab, or from the related recurring contract's own detail page if one was linked.
 
 ## Cloning a Quote
 
@@ -205,4 +226,5 @@ Quote access is governed by role permissions: viewing requires quote read access
 - [Product Catalog](/features/product-catalog/) -- the price list quotes pull from
 - [Invoices](/features/invoices/) -- where an accepted quote's one-time charges land, deposit first
 - [Recurring Contracts](/features/contracts/) -- where an accepted quote's recurring lines become agreements
+- [Recurring Contracts → Contract Templates](/features/contracts/#contract-templates) -- manage the document library contract blocks attach
 - [Online Payments](/features/online-payments/) -- let customers pay the deposit and balance by card
