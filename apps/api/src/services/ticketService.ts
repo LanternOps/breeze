@@ -337,20 +337,26 @@ async function assertRequesterInOrg(portalUserId: string, orgId: string) {
  * the DB level too; this check exists so the caller gets a typed 400 instead
  * of a raw constraint violation.
  *
- * The read runs system-scope for the same reason as the portal-user one: the
- * ticket writers include background paths (inbound email) that hold no
- * org-scoped RLS context, and the explicit org comparison here is the boundary.
+ * Deliberately reads on the CURRENT DB context, NOT through the
+ * `runOutsideDbContext(withSystemDbAccessContext(...))` escape the portal-user
+ * guard above uses. That escape opens a second pooled connection, which cannot
+ * see rows written by the caller's still-open transaction — and the inbound
+ * path creates the contact and the ticket in ONE transaction, so the escape
+ * would fail every emailed ticket from a first-time sender with a spurious
+ * "Requester contact not found". (It did: the integration suite caught it.)
+ *
+ * Reading in-context is also no weaker. `contacts` is org-axis RLS, so a
+ * system context sees everything and a request context sees exactly the orgs
+ * the caller can reach; an invisible row degrades to 404 rather than a wrong-org
+ * 400, which is the stricter of the two. The explicit comparison below remains
+ * the security boundary either way.
  */
 async function assertRequesterContactInOrg(contactId: string, orgId: string) {
-  const rows = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      db
-        .select({ id: contacts.id, orgId: contacts.orgId, name: contacts.name, email: contacts.email })
-        .from(contacts)
-        .where(eq(contacts.id, contactId))
-        .limit(1)
-    )
-  );
+  const rows = await db
+    .select({ id: contacts.id, orgId: contacts.orgId, name: contacts.name, email: contacts.email })
+    .from(contacts)
+    .where(eq(contacts.id, contactId))
+    .limit(1);
   const contact = rows[0];
   if (!contact) throw new TicketServiceError('Requester contact not found', 404, 'REQUESTER_CONTACT_NOT_FOUND');
   if (contact.orgId !== orgId) {
