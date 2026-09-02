@@ -22,6 +22,10 @@ const RUN_ID = '00000000-0000-4000-8000-0000000000b5';
 const WATCH_ID = '00000000-0000-4000-8000-0000000000b6';
 const INTENT_ID = '00000000-0000-4000-8000-0000000000b7';
 const USER_ID = '00000000-0000-4000-8000-0000000000b8';
+/** Named on the PARTNER baseline row's `recipients`. */
+const PARTNER_USER_ID = '00000000-0000-4000-8000-0000000000b9';
+/** Named ONLY on the ORG override's `recipients` — the half the baseline column drops. */
+const ORG_USER_ID = '00000000-0000-4000-8000-0000000000ba';
 const SCRIPT_ID = '00000000-0000-4000-8000-0000000000bf';
 const OP_KEY = 'manage_services:restart';
 const OTHER_KEY = 'manage_alerts:acknowledge';
@@ -457,8 +461,22 @@ describe('notifyDemotion', () => {
     ...overrides,
   });
 
+  /** The PARTNER baseline row `agentId` names — read in full so the run-less
+   *  fallback can merge its policy with the org override's. */
+  function baselineRow(overrides: Record<string, unknown> = {}) {
+    return {
+      ...orgRow([OP_KEY]),
+      id: AGENT_ID,
+      orgId: null,
+      partnerId: PARTNER_ID,
+      name: 'Disk Cleaner',
+      recipients: { userIds: [PARTNER_USER_ID], roleIds: [] },
+      ...overrides,
+    };
+  }
+
   function queueNotify(opts: { agent?: unknown[]; run?: unknown[] } = {}): void {
-    state.selectQueue.push(opts.agent ?? [{ name: 'Disk Cleaner', orgId: null, partnerId: PARTNER_ID }]);
+    state.selectQueue.push(opts.agent ?? [baselineRow()]);
     state.selectQueue.push(
       opts.run ?? [{ policySnapshot: { effective: { recipients: { userIds: [USER_ID] } } } }],
     );
@@ -516,19 +534,106 @@ describe('notifyDemotion', () => {
     expect(createNotificationMock).not.toHaveBeenCalled();
   });
 
-  it('sends nothing when the run whose snapshot names the recipients is gone', async () => {
-    queueNotify({ run: [] });
+  // #4582 — a revoke that notifies nobody is a silent loss of unattended
+  // authority. The run snapshot stays the PREFERRED recipient source; when it
+  // cannot be read the effective policy is the fallback, never a stand-down.
+  describe('#4582 — a demotion with no readable run still notifies', () => {
+    /** The reads of the run-less path: baseline agent row, then the ORG override. */
+    function queueFallback(opts: { agent?: unknown[]; org?: unknown[] } = {}): void {
+      state.selectQueue.push(opts.agent ?? [baselineRow()]);
+      state.selectQueue.push(opts.org ?? [orgRow([OP_KEY], {
+        recipients: { userIds: [ORG_USER_ID], roleIds: [] },
+      })]);
+    }
 
-    await notify();
+    it('notifies the EFFECTIVE recipients — partner baseline UNION org override — when there is no run id', async () => {
+      queueFallback();
 
-    expect(createNotificationMock).not.toHaveBeenCalled();
-  });
+      await notify({ runId: null, watchId: WATCH_ID, reason: 'recurrence' });
 
-  it('sends nothing when there is no run to resolve recipients from', async () => {
-    state.selectQueue.push([{ name: 'Disk Cleaner', orgId: null, partnerId: PARTNER_ID }]);
+      // Not the baseline row's own `recipients` column: that silently drops
+      // everyone the organization added through its override.
+      expect(resolveRecipientUserIdsMock).toHaveBeenCalledWith(
+        {
+          orgId: null,
+          partnerId: PARTNER_ID,
+          recipients: { userIds: [PARTNER_USER_ID, ORG_USER_ID], roleIds: [] },
+        },
+        ORG_ID,
+      );
+      expect(createNotificationMock).toHaveBeenCalledTimes(1);
+      const sent = createNotificationMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect(sent).toMatchObject({
+        userId: USER_ID,
+        orgId: ORG_ID,
+        priority: 'high',
+        // The episode is the WATCH when there is no run — the dedupe key the
+        // P2-5 plan specified (`<runId ?? watchId>`).
+        dedupeKey: `graduation-demote-${ORG_AGENT_ID}-${OP_KEY}-${WATCH_ID}`,
+        metadata: { runId: null, watchId: WATCH_ID, reason: 'recurrence' },
+      });
+      // No run to link to, so the link points at the page whose state changed.
+      expect(sent.link).toBe('/settings/ai-agents');
+      expect(sent.message).toContain(OP_KEY);
+    });
 
-    await notify({ runId: null, watchId: WATCH_ID });
+    it('falls back to the effective recipients when the run row is gone, still keyed by the run', async () => {
+      state.selectQueue.push([baselineRow()]);
+      state.selectQueue.push([]); // the run no longer exists
+      state.selectQueue.push([orgRow([OP_KEY], {
+        recipients: { userIds: [ORG_USER_ID], roleIds: [] },
+      })]);
 
-    expect(createNotificationMock).not.toHaveBeenCalled();
+      await notify({ watchId: WATCH_ID });
+
+      expect(createNotificationMock).toHaveBeenCalledTimes(1);
+      const sent = createNotificationMock.mock.calls[0]![0] as Record<string, unknown>;
+      // The episode identity is the run id whether or not its row is readable.
+      expect(sent.dedupeKey).toBe(`graduation-demote-${ORG_AGENT_ID}-${OP_KEY}-${RUN_ID}`);
+      // The run page would 404, so the link degrades with the recipient source.
+      expect(sent.link).toBe('/settings/ai-agents');
+    });
+
+    it('still notifies with NO dedupe key when neither a run nor a watch identifies the episode', async () => {
+      queueFallback();
+
+      await notify({ runId: null, watchId: null });
+
+      expect(createNotificationMock).toHaveBeenCalledTimes(1);
+      const sent = createNotificationMock.mock.calls[0]![0] as Record<string, unknown>;
+      // A literal placeholder would collapse every FUTURE demotion of this
+      // tuple into the first one; with no episode there are no siblings to
+      // collapse, so the notice carries no dedupe key at all.
+      expect(sent.dedupeKey).toBeNull();
+    });
+
+    it('sends nothing when the effective policy names no recipient at all', async () => {
+      state.selectQueue.push([baselineRow({ recipients: { userIds: [], roleIds: [] } })]);
+      state.selectQueue.push([orgRow([OP_KEY], { recipients: { userIds: [], roleIds: [] } })]);
+      resolveRecipientUserIdsMock.mockResolvedValueOnce([]);
+
+      await notify({ runId: null, watchId: WATCH_ID });
+
+      // The fallback RAN — this is an empty recipient set, not the old
+      // stand-down that skipped resolution altogether.
+      expect(resolveRecipientUserIdsMock).toHaveBeenCalledWith(
+        expect.objectContaining({ recipients: { userIds: [], roleIds: [] } }),
+        ORG_ID,
+      );
+      expect(createNotificationMock).not.toHaveBeenCalled();
+    });
+
+    it('notifies from the partner baseline alone when the org override row is gone', async () => {
+      state.selectQueue.push([baselineRow()]);
+      state.selectQueue.push([]); // no org override row
+
+      await notify({ runId: null, watchId: WATCH_ID });
+
+      expect(resolveRecipientUserIdsMock).toHaveBeenCalledWith(
+        expect.objectContaining({ recipients: { userIds: [PARTNER_USER_ID], roleIds: [] } }),
+        ORG_ID,
+      );
+      expect(createNotificationMock).toHaveBeenCalledTimes(1);
+    });
   });
 });
