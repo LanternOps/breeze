@@ -27,6 +27,7 @@ import {
   peripheralPolicyActionEnum,
 } from '../db/schema';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
+import { CONTACT_ROLES } from './contacts/types';
 import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import {
@@ -2256,7 +2257,7 @@ export function createBreezeMcpServer(
 
     tool(
       'manage_organizations',
-      'Create and manage organizations and sites (new-customer intake). Actions: create_org (name required; creates the org under the caller\'s partner with a default "Main Office" site — partner scope only), update_org (name/status patch), create_site (orgId + name + optional address), add_contact (not yet supported — returns guidance). create_org, update_org, and create_site require approval.',
+      'Create and manage organizations, sites, and contacts (new-customer intake). Actions: create_org (name required; creates the org under the caller\'s partner with a default "Main Office" site — partner scope only), update_org (name/status patch), create_site (orgId + name + optional address), add_contact (orgId required; at least one of name/email/phone/mobile required — mirrors contacts_identifiable_chk; optional title/roles/siteId/isPrimary — creates a first-class contact on the organization or one of its sites). create_org, update_org, create_site, and add_contact require approval.',
       {
         action: z.enum(['create_org', 'update_org', 'create_site', 'add_contact']),
         orgId: uuid.optional(),
@@ -2264,6 +2265,12 @@ export function createBreezeMcpServer(
         status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
         address: z.record(z.string(), z.unknown()).optional(),
         email: z.string().email().max(255).optional(),
+        siteId: uuid.optional(),
+        phone: z.string().max(64).optional(),
+        mobile: z.string().max(64).optional(),
+        title: z.string().max(255).optional(),
+        roles: z.array(z.enum(CONTACT_ROLES)).optional(),
+        isPrimary: z.boolean().optional(),
       },
       makeHandler('manage_organizations', getAuth, onPreToolUse, onPostToolUse)
     ),
