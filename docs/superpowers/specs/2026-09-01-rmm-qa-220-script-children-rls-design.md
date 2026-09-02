@@ -53,7 +53,7 @@ The brief's line references were re-read after the fast-forward. The six new com
 
 ### D1 — One new idempotent migration, canonical child shape, no `BEGIN/COMMIT`
 
-File: `apps/api/migrations/2026-09-30-100000-script-children-rls.sql`. Re-verify the ceiling at commit time with `bash scripts/check-migration-naming.sh --staged` (pre-commit hook); if main has grown past `2026-09-30-100000-*`, pick the next `HHMMSS` that sorts strictly after the new max — never rename after commit. Content per table: `DROP POLICY IF EXISTS` ×4, `ALTER TABLE … ENABLE ROW LEVEL SECURITY`, `ALTER TABLE … FORCE ROW LEVEL SECURITY`, four per-command `CREATE POLICY` named `breeze_org_isolation_{select,insert,update,delete}` (F8 convention). `DROP IF EXISTS` + `CREATE` converges, so no `DO $$` guard; no data cleanup, so no row-count `RAISE WARNING` obligation. Header comment states: threat (RMM-QA-220), shape, why `is_system` never appears in a write predicate (pointer to `catalog-partner-axis-rls.sql:62-68`, #633), the D3 tag-visibility asymmetry, the F10/F12 bound-parameter note, and F7 (nested EXISTS is additionally filtered by the parents' own policies).
+File: `apps/api/migrations/2026-10-01-100000-script-children-rls.sql`. Re-verify the ceiling at commit time with `bash scripts/check-migration-naming.sh --staged` (pre-commit hook); if main has grown past `2026-09-30-100000-*`, pick the next `HHMMSS` that sorts strictly after the new max — never rename after commit. Content per table: `DROP POLICY IF EXISTS` ×4, `ALTER TABLE … ENABLE ROW LEVEL SECURITY`, `ALTER TABLE … FORCE ROW LEVEL SECURITY`, four per-command `CREATE POLICY` named `breeze_org_isolation_{select,insert,update,delete}` (F8 convention). `DROP IF EXISTS` + `CREATE` converges, so no `DO $$` guard; no data cleanup, so no row-count `RAISE WARNING` obligation. Header comment states: threat (RMM-QA-220), shape, why `is_system` never appears in a write predicate (pointer to `catalog-partner-axis-rls.sql:62-68`, #633), the D3 tag-visibility asymmetry, the F10/F12 bound-parameter note, and F7 (nested EXISTS is additionally filtered by the parents' own policies).
 
 Cost if wrong: a mis-sorted filename replays before its parents on a fresh DB — caught by the pre-commit hook and `autoMigrate.test.ts`.
 
@@ -107,7 +107,7 @@ Add to `PARENT_FK_JOIN_POLICY_TABLES` (`rls-coverage:584`), replacing nothing:
   // RMM-QA-220: script_versions (script content history) and script_to_tags
   // (script↔tag join) shipped in the baseline with NO rls and reach their
   // tenant only through scripts (dual-axis, nullable org_id, is_system) and
-  // script_tags (dual-axis). See 2026-09-30-100000-script-children-rls.sql.
+  // script_tags (dual-axis). See 2026-10-01-100000-script-children-rls.sql.
   ['script_versions', ['scripts']],
   ['script_to_tags', ['scripts', 'script_tags']],
 ```
@@ -207,7 +207,7 @@ Per CLAUDE.md:149-157 a read-only Codex review (`codex exec … -s read-only -m 
 
 | File | Change | Guard |
 | --- | --- | --- |
-| `apps/api/migrations/2026-09-30-100000-script-children-rls.sql` (new) | D1–D3 DDL; idempotent; no transaction block; header as D1. | `autoMigrate.test.ts`; `check-migration-naming.sh --staged`; re-apply on a migrated DB is a no-op (run twice, `pg_policies` unchanged). |
+| `apps/api/migrations/2026-10-01-100000-script-children-rls.sql` (new) | D1–D3 DDL; idempotent; no transaction block; header as D1. | `autoMigrate.test.ts`; `check-migration-naming.sh --staged`; re-apply on a migrated DB is a no-op (run twice, `pg_policies` unchanged). |
 | `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` | D4 two catalog entries; D5 new test + `PLATFORM_INFRASTRUCTURE_TABLES` + `UNREVIEWED_RLS_CLASSIFICATION_DEBT`; D6a/D6b new tests + `PARENT_FK_REQUIRED_PARENTS_PER_COMMAND` (+ `RLS_SHAPE_TRIAGE` only if the fresh-DB simulation demands it); D7 forge describe; schema imports (`scripts`, `scriptTags`, `scriptToTags`, `scriptVersions`). No existing assertion is weakened or removed. | `pnpm --filter=@breeze/api test:rls-coverage` on a fresh migrated DB with `DATABASE_URL_APP` and `DB_CONTEXTLESS_WRITE_STRICT=true`. |
 | `apps/api/src/db/rlsPolicyShape.ts` (new) | D6 pure matchers; no DB import; imported by the contract test as `../../db/rlsPolicyShape`. | `rlsPolicyShape.test.ts`. |
 | `apps/api/src/db/rlsPolicyShape.test.ts` (new) | D6 fixture-driven unit test; runs in **Test API** only (F20). | Test API job. |

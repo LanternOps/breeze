@@ -653,7 +653,7 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // RMM-QA-220: script_versions (script content history) and script_to_tags
   // (script↔tag join) shipped in the baseline with NO rls and reach their
   // tenant only through scripts (dual-axis, nullable org_id, is_system) and
-  // script_tags (dual-axis). See 2026-09-30-100000-script-children-rls.sql.
+  // script_tags (dual-axis). See apps/api/migrations/2026-10-01-100000-script-children-rls.sql.
   // script_to_tags additionally carries a per-command both-parents overlay
   // (PARENT_FK_REQUIRED_PARENTS_PER_COMMAND below).
   ['script_versions', ['scripts']],
@@ -4347,7 +4347,7 @@ describe('m365 communications-delegated RLS — structural enforcement', () => {
 // ---------------------------------------------------------------------------
 // Both tables reach their tenant only through `scripts` (dual-axis, nullable
 // org_id, is_system) and `script_tags` (dual-axis). Migration under test:
-// 2026-09-30-100000-script-children-rls.sql. Runs as `breeze_app` under real
+// apps/api/migrations/2026-10-01-100000-script-children-rls.sql. Runs as `breeze_app` under real
 // contexts, modelled on the scripts partner-wide block above: self-contained
 // fixtures seeded under system scope, cleanup by id in afterAll.
 //

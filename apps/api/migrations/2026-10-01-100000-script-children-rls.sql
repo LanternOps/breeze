@@ -1,4 +1,4 @@
--- 2026-09-30-100000: forced parent-join RLS for the two script CHILD tables
+-- 2026-10-01-100000: forced parent-join RLS for the two script CHILD tables
 -- that shipped in 0001-baseline.sql with NO row-level security (RMM-QA-220).
 --
 -- Threat: script_versions carries customer script content + history and

@@ -1,6 +1,6 @@
 /**
  * Script bundle import under REAL RLS on script_versions / script_to_tags
- * (RMM-QA-220, migration 2026-09-30-100000-script-children-rls.sql).
+ * (RMM-QA-220, migration apps/api/migrations/2026-10-01-100000-script-children-rls.sql).
  *
  * importBundle authorises the parent script through resolveScriptCreateScope
  * and then INSERTs script_to_tags (linkTags) and, in `new-version` mode,

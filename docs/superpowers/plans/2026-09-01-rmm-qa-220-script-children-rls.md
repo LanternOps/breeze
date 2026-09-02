@@ -22,8 +22,8 @@
   - Integration runner (migrates the stack DB once via `globalSetup`): `pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts <file>`.
   - RLS coverage runner (no migrations, no truncation — run it only AFTER an integration run has migrated the DB). Task 0 writes the CI-equivalent variables (`ci.yml:2006-2020`) to `$LOGS/rls-coverage.env`; every invocation is then `set -a && . "$LOGS/rls-coverage.env" && set +a && pnpm --filter @breeze/api test:rls-coverage` (append `-- -t '<test name>'` to run a subset). The shell is zsh, which does not word-split an unquoted `$VAR`, so never try `env $VARS cmd`. `vitest.config.rls-coverage.ts` loads `WT/.env.test` itself.
   - Postgres container name: `PG="$(grep '^# compose project:' "$WT/.env.test" | awk '{print $4}')-postgres"` (project name derives from the branch: `breeze-test-fix-rmm-qa-220-script-children-rls`). `docker exec -i "$PG" psql -U breeze_test -d breeze_test` is the superuser shell; `breeze_test` may `SET ROLE breeze_app` to act as the unprivileged request role.
-- **Migration hygiene (Task 5 only):** filename `apps/api/migrations/2026-09-30-100000-script-children-rls.sql` (sorts strictly after the current ceiling `2026-09-29-detach-ticket-runs-on-device-org-move.sql`; if `main` has grown past it at commit time pick the next `HHMMSS` that sorts last — never rename after commit). `bash scripts/check-migration-naming.sh --staged` (also runs from the `.githooks/pre-commit` hook) and `pnpm --filter @breeze/api check:migrations` against a fresh database. No inner `BEGIN;`/`COMMIT;` (`autoMigrate` wraps each file — CLAUDE.md, `migrations/README.md:54-56`; the verifier's "some migrations wrap in BEGIN" note is refuted by `grep -l '^BEGIN;' apps/api/migrations/2026-09-*.sql` → nothing). Idempotent: `DROP POLICY IF EXISTS` then `CREATE POLICY`. **Never edit a shipped migration** (`0001-baseline.sql` stays byte-identical).
-- **Files you may touch** (spec §3): `apps/api/migrations/2026-09-30-100000-script-children-rls.sql` (new), `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`, `apps/api/src/db/rlsPolicyShape.ts` (new), `apps/api/src/db/rlsPolicyShape.test.ts` (new), `apps/api/src/__tests__/integration/scriptBundleRls.integration.test.ts` (new), and this plan/spec pair. **Nothing else** — in particular not `ensureAppRole.ts`, `scriptBundle/index.ts`, `aiToolsScripts.ts`, `routes/scripts.ts`, `tenantCascade.ts`, `orgMergeRegistry.ts`, `db/schema/scripts.ts`, nor anything under `/Users/toddhebebrand/breeze-rmm-qa/docs/qa/probes/` (the QA probe pins the PRE-fix state and is expected to flip; QA owns that).
+- **Migration hygiene (Task 5 only):** filename `apps/api/migrations/2026-10-01-100000-script-children-rls.sql` (originally `2026-09-30-100000-…`, which sorted after the ceiling at planning time, `2026-09-29-detach-ticket-runs-on-device-org-move.sql`; renamed before merge, while still unshipped, after `main` landed `2026-09-30-ai-agents-impact.sql` and the review found the old name sorting into the middle — never rename after the file ships). `bash scripts/check-migration-naming.sh --staged` (also runs from the `.githooks/pre-commit` hook) and `pnpm --filter @breeze/api check:migrations` against a fresh database. No inner `BEGIN;`/`COMMIT;` (`autoMigrate` wraps each file — CLAUDE.md, `migrations/README.md:54-56`; the verifier's "some migrations wrap in BEGIN" note is refuted by `grep -l '^BEGIN;' apps/api/migrations/2026-09-*.sql` → nothing). Idempotent: `DROP POLICY IF EXISTS` then `CREATE POLICY`. **Never edit a shipped migration** (`0001-baseline.sql` stays byte-identical).
+- **Files you may touch** (spec §3): `apps/api/migrations/2026-10-01-100000-script-children-rls.sql` (new), `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`, `apps/api/src/db/rlsPolicyShape.ts` (new), `apps/api/src/db/rlsPolicyShape.test.ts` (new), `apps/api/src/__tests__/integration/scriptBundleRls.integration.test.ts` (new), and this plan/spec pair. **Nothing else** — in particular not `ensureAppRole.ts`, `scriptBundle/index.ts`, `aiToolsScripts.ts`, `routes/scripts.ts`, `tenantCascade.ts`, `orgMergeRegistry.ts`, `db/schema/scripts.ts`, nor anything under `/Users/toddhebebrand/breeze-rmm-qa/docs/qa/probes/` (the QA probe pins the PRE-fix state and is expected to flip; QA owns that).
 - **Policy semantics that must not drift** (D2/D3, verifier concerns 1–3): `is_system` appears ONLY in the `script_versions`/`script_to_tags` SELECT predicates, never in INSERT/UPDATE/DELETE (`2026-06-13-catalog-partner-axis-rls.sql:62-68`, Discussion #633); unlink/UPDATE authority derives from the script WRITE predicate; UPDATE `WITH CHECK` re-applies the tag READ leg; no strict `s.org_id = t.org_id` tightening.
 - **No existing assertion is weakened or removed.** New tests are added beside existing ones.
 - **Commit trailer (every commit):**
@@ -40,7 +40,7 @@
 | `apps/api/src/db/rlsPolicyShape.ts` (new, pure) | Predicate-shape matchers: alias discovery for `FROM <parent> [AS] <alias>`, helper-on-parent-alias check (`any-of` / `all-of`), org-axis argument check, command→slot coverage (`coveredCommands`). No DB import. |
 | `apps/api/src/db/rlsPolicyShape.test.ts` (new) | Fixture-driven unit test for the module (Test API job). |
 | `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` | D4 catalog entries; D5 exhaustive classification + `PLATFORM_INFRASTRUCTURE_TABLES` + `UNREVIEWED_RLS_CLASSIFICATION_DEBT`; D6a/D6b command-specific tests + `PARENT_FK_REQUIRED_PARENTS_PER_COMMAND`; D7 forge describe. |
-| `apps/api/migrations/2026-09-30-100000-script-children-rls.sql` (new) | D1–D3 DDL. |
+| `apps/api/migrations/2026-10-01-100000-script-children-rls.sql` (new) | D1–D3 DDL. |
 | `apps/api/src/__tests__/integration/scriptBundleRls.integration.test.ts` (new) | D8 bundle-import regression under real RLS (org / partner-wide / system callers). |
 
 Commit order (spec §4): (1) plan doc → (2) shape module + unit test → (3) catalog + D5 RED→partial-GREEN → (4) D6a/D6b → (5) D7 forge, committed RED → (6) migration, everything green → (7) D8 regression + mutation proof → (8) push + draft PR. Intermediate commits are allowed to be red in CI; the PR head must be green.
@@ -664,7 +664,7 @@ Add to `PARENT_FK_JOIN_POLICY_TABLES` immediately after the `['ticket_form_org_l
   // RMM-QA-220: script_versions (script content history) and script_to_tags
   // (script↔tag join) shipped in the baseline with NO rls and reach their
   // tenant only through scripts (dual-axis, nullable org_id, is_system) and
-  // script_tags (dual-axis). See 2026-09-30-100000-script-children-rls.sql.
+  // script_tags (dual-axis). See 2026-10-01-100000-script-children-rls.sql.
   // script_to_tags additionally carries a per-command both-parents overlay
   // (PARENT_FK_REQUIRED_PARENTS_PER_COMMAND below).
   ['script_versions', ['scripts']],
@@ -968,7 +968,7 @@ Change `import { eq, sql } from 'drizzle-orm';` to `import { and, eq, inArray, s
 // ---------------------------------------------------------------------------
 // Both tables reach their tenant only through `scripts` (dual-axis, nullable
 // org_id, is_system) and `script_tags` (dual-axis). Migration under test:
-// 2026-09-30-100000-script-children-rls.sql. Runs as `breeze_app` under real
+// 2026-10-01-100000-script-children-rls.sql. Runs as `breeze_app` under real
 // contexts, modelled on the scripts partner-wide block above: self-contained
 // fixtures seeded under system scope, cleanup by id in afterAll.
 //
@@ -1311,7 +1311,7 @@ Claude-Session: https://claude.ai/code/session_01E9p3mtFLSv8SFcZ9fcn8Vu"
 ### Task 5: The migration (D1–D3) — everything goes green; idempotency, fresh-DB apply, manual `breeze_app` forge, catalog proof
 
 **Files:**
-- Create: `apps/api/migrations/2026-09-30-100000-script-children-rls.sql`
+- Create: `apps/api/migrations/2026-10-01-100000-script-children-rls.sql`
 
 **Interfaces:**
 - Produces: policies `breeze_org_isolation_{select,insert,update,delete}` on `public.script_versions` and `public.script_to_tags`; RLS ENABLED + FORCED on both. Consumed by every test from Tasks 2–4 and by Task 6.
@@ -1325,7 +1325,7 @@ Expected: `2026-09-29-detach-ticket-runs-on-device-org-move.sql`. If main has mo
 
 - [ ] **Step 2: Write the migration**
 
-Create `apps/api/migrations/2026-09-30-100000-script-children-rls.sql`:
+Create `apps/api/migrations/2026-10-01-100000-script-children-rls.sql`:
 
 ```sql
 -- 2026-09-30-100000: forced parent-join RLS for the two script CHILD tables
@@ -1520,7 +1520,7 @@ CREATE POLICY breeze_org_isolation_delete ON public.script_to_tags FOR DELETE US
 - [ ] **Step 3: Naming guard + static migration test**
 
 ```bash
-cd "$WT" && git add apps/api/migrations/2026-09-30-100000-script-children-rls.sql
+cd "$WT" && git add apps/api/migrations/2026-10-01-100000-script-children-rls.sql
 bash scripts/check-migration-naming.sh --staged 2>&1 | tee "$LOGS/task5-naming.log" | tail -3
 pnpm --filter @breeze/api exec vitest run src/db/autoMigrate.test.ts 2>&1 | tee "$LOGS/task5-automigrate-unit.log" | tail -4
 ```
@@ -1547,8 +1547,8 @@ WHERE schemaname = 'public' AND tablename IN ('script_versions', 'script_to_tags
 ORDER BY 1, 2;
 SQL
 docker exec -i "$PG" psql -U breeze_test -d breeze_test -At < "$LOGS/policy-snapshot.sql" > "$LOGS/task5-policies-1.txt"
-docker exec -i "$PG" psql -U breeze_test -d breeze_test -v ON_ERROR_STOP=1 < apps/api/migrations/2026-09-30-100000-script-children-rls.sql > "$LOGS/task5-reapply-1.log" 2>&1
-docker exec -i "$PG" psql -U breeze_test -d breeze_test -v ON_ERROR_STOP=1 < apps/api/migrations/2026-09-30-100000-script-children-rls.sql > "$LOGS/task5-reapply-2.log" 2>&1
+docker exec -i "$PG" psql -U breeze_test -d breeze_test -v ON_ERROR_STOP=1 < apps/api/migrations/2026-10-01-100000-script-children-rls.sql > "$LOGS/task5-reapply-1.log" 2>&1
+docker exec -i "$PG" psql -U breeze_test -d breeze_test -v ON_ERROR_STOP=1 < apps/api/migrations/2026-10-01-100000-script-children-rls.sql > "$LOGS/task5-reapply-2.log" 2>&1
 docker exec -i "$PG" psql -U breeze_test -d breeze_test -At < "$LOGS/policy-snapshot.sql" > "$LOGS/task5-policies-2.txt"
 diff "$LOGS/task5-policies-1.txt" "$LOGS/task5-policies-2.txt" && echo IDEMPOTENT && wc -l < "$LOGS/task5-policies-2.txt"
 grep -c 'NOTICE' "$LOGS/task5-reapply-2.log" || true
@@ -1620,7 +1620,7 @@ Expected: both rows `rls_enabled=true, force_rls=true`, privileges unchanged (`a
 
 ```bash
 cd "$WT" && NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter @breeze/api exec tsc --noEmit 2>&1 | tail -3
-git add apps/api/migrations/2026-09-30-100000-script-children-rls.sql
+git add apps/api/migrations/2026-10-01-100000-script-children-rls.sql
 git commit -m "fix(rls): forced parent-join RLS for script_versions and script_to_tags (RMM-QA-220)
 
 Both tables shipped in 0001-baseline.sql with RLS off while breeze_app
@@ -1672,7 +1672,7 @@ Why this file and not the rls-coverage suite: `importBundle` writes through the 
 ```ts
 /**
  * Script bundle import under REAL RLS on script_versions / script_to_tags
- * (RMM-QA-220, migration 2026-09-30-100000-script-children-rls.sql).
+ * (RMM-QA-220, migration 2026-10-01-100000-script-children-rls.sql).
  *
  * importBundle authorises the parent script through resolveScriptCreateScope
  * and then INSERTs script_to_tags (linkTags) and, in `new-version` mode,
@@ -1861,7 +1861,7 @@ CREATE POLICY breeze_org_isolation_insert ON public.script_versions FOR INSERT W
 );
 SQL
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/scriptBundleRls.integration.test.ts 2>&1 | tee "$LOGS/task6-mutation.log" | grep -E '✓|✗|×|FAIL|row-level security' | head -12
-docker exec -i "$PG" psql -U breeze_test -d breeze_test -v ON_ERROR_STOP=1 < apps/api/migrations/2026-09-30-100000-script-children-rls.sql > "$LOGS/task6-restore.log" 2>&1
+docker exec -i "$PG" psql -U breeze_test -d breeze_test -v ON_ERROR_STOP=1 < apps/api/migrations/2026-10-01-100000-script-children-rls.sql > "$LOGS/task6-restore.log" 2>&1
 pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts src/__tests__/integration/scriptBundleRls.integration.test.ts 2>&1 | tee "$LOGS/task6-green-after-restore.log" | tail -6
 ```
 Expected: with the partner branch removed, test (b) FAILS (`importBundle` throws `new row violates row-level security policy for table "script_versions"` because the partner-wide script has `org_id NULL`); (a), (c) and the cross-check still pass. After re-applying the migration file: 4 pass.
@@ -1882,7 +1882,7 @@ Discrimination proof (once, on the per-worktree DB): re-created
 script_versions' INSERT policy WITHOUT the breeze_has_partner_access
 branch -> (b) partner-wide import failed with 'new row violates row-level
 security policy for table \"script_versions\"' (task6-mutation.log); re-
-applied 2026-09-30-100000-script-children-rls.sql -> 4/4 green.
+applied 2026-10-01-100000-script-children-rls.sql -> 4/4 green.
 
 Refs RMM-QA-220.
 
@@ -1961,7 +1961,7 @@ Design: `docs/superpowers/specs/2026-09-01-rmm-qa-220-script-children-rls-design
 ```text
 Finding IDs: RMM-QA-220
 Branch / commit / PR: fix/rmm-qa-220-script-children-rls / <head sha> (base origin/main 1b733cedb) / this PR (draft)
-Behavior changed: script_versions and script_to_tags now have RLS ENABLED + FORCED with four per-command policies each (2026-09-30-100000-script-children-rls.sql). script_versions SELECT mirrors scripts' read predicate (org OR partner OR is_system OR own-partner read branch); INSERT/UPDATE/DELETE mirror scripts' write predicate only. script_to_tags SELECT requires script read AND tag read; INSERT requires script WRITE AND tag READ; UPDATE USING script WRITE, WITH CHECK script WRITE AND tag READ; DELETE script WRITE. No app-layer code changed; breeze_app privileges unchanged (RLS is the defense, ensureAppRole untouched).
+Behavior changed: script_versions and script_to_tags now have RLS ENABLED + FORCED with four per-command policies each (2026-10-01-100000-script-children-rls.sql). script_versions SELECT mirrors scripts' read predicate (org OR partner OR is_system OR own-partner read branch); INSERT/UPDATE/DELETE mirror scripts' write predicate only. script_to_tags SELECT requires script read AND tag read; INSERT requires script WRITE AND tag READ; UPDATE USING script WRITE, WITH CHECK script WRITE AND tag READ; DELETE script WRITE. No app-layer code changed; breeze_app privileges unchanged (RLS is the defense, ensureAppRole untouched).
 Exit-contract clauses proved: (1) idempotent forced parent-join policies preserving reviewed system-script behavior (forge rows 13/14: system version readable, never writable) and preventing cross-tenant pairing (rows 5, 12, 16); (2) exhaustive table classification registers both tables (D5 test + PARENT_FK_JOIN_POLICY_TABLES entries); (3) real breeze_app Org A/B and Partner A/B tests: same-tenant success (rows 1, 2, 8, 11), foreign SELECT hidden (3, 7, 10), forged INSERT rejected (4, 5, 7, 9, 12, 14), foreign UPDATE/DELETE ineffective (6, 15); (4) command-specific policy-shape checks validate USING/WITH CHECK/helper argument for all 32 parent-FK tables (both-parents overlay for script_to_tags) and all asserted org-axis tables.
 Exit-contract clauses still open: none on the two script children at the DB layer; QA-side re-characterisation of the probe blocks core-tenant-isolation-release-contract.test.ts:151-177 (they pin the pre-fix state and now invert) and candidate-bound retest are QA's.
 Tests run and exact results: rlsPolicyShape.test.ts 22/22 PASS (unit; mutations A–E each observed red then reverted); autoMigrate.test.ts PASS; scriptBundle/index.test.ts PASS; test:rls-coverage <N>/<N> PASS on a fresh per-worktree DB (RED before the migration: force test + parent-FK tests naming both tables, forge negatives <list>); scriptBundleRls.integration.test.ts 4/4 PASS (mutation: INSERT policy without partner branch -> partner-wide import fails with the RLS violation; restored -> 4/4); scripts-system-rls, scripts-soft-delete, tenantCascade, orgMergeRegistry, tenant-export-policy integration suites PASS; tsc clean; check:migrations from an empty DB OK; migration applied twice -> identical pg_policies (8 rows).
