@@ -4,7 +4,7 @@
  * `POST /devices/:id/maintenance` echoed `durationHours` into an audit detail
  * and threw it away, so there was no durable record of who suppressed
  * monitoring on a device, why, or until when — and "extend the window" was not
- * a distinguishable operation. `2026-10-01-100001-device-manual-maintenance-
+ * a distinguishable operation. `2026-10-05-100000-device-manual-maintenance-
  * lease.sql` adds that record: maintenance_started_at / maintenance_until /
  * maintenance_reason / maintenance_started_by, plus
  * `devices_maintenance_lease_chk`, which forbids a HALF-written lease.
@@ -50,7 +50,7 @@ import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegi
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
-const MIGRATION_FILENAME = '2026-10-01-100001-device-manual-maintenance-lease.sql';
+const MIGRATION_FILENAME = '2026-10-05-100000-device-manual-maintenance-lease.sql';
 const MIGRATION_FILE = join(__dirname, '../../../migrations', MIGRATION_FILENAME);
 const LEASE_CONSTRAINT = 'devices_maintenance_lease_chk';
 

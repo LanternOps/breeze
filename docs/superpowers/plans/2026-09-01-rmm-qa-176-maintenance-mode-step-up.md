@@ -32,8 +32,8 @@ rigor: HIGH (auth + tenancy-adjacent + shipped surfaces + migration)
 - **Web tests:** `pnpm --filter @breeze/web exec vitest run <paths>`. Web lint: `pnpm --filter @breeze/web exec eslint <files>`. Web typecheck: `pnpm --filter @breeze/web exec tsc --noEmit`. API lint: `pnpm --filter @breeze/api exec eslint <files>`.
 - **Integration tests (real Postgres as `breeze_app` + real Redis):** from the **worktree root** run `pnpm test-stack up` (a private, per-worktree stack that writes a worktree-local `.env.test`) → `pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts <paths>` → `pnpm test-stack down` at the end of the plan (Task 14). **NEVER run `pnpm --filter @breeze/api test:docker:up`** — it uses fixed container names that collide with and corrupt other worktrees' stacks and would destroy other agents' evidence. New integration files go under `apps/api/src/__tests__/integration/`; the config glob already includes them, so do not edit `vitest.integration.config.ts`.
 - **Migration rules (Task 5 owns the only migration):**
-  - Preferred filename form `YYYY-MM-DD-HHMMSS-<slug>.sql`. This plan's file is `apps/api/migrations/2026-10-01-100001-device-manual-maintenance-lease.sql`.
-  - **Re-verify the ceiling at execution time** — main moves. Run `ls apps/api/migrations | sort | tail -3`. The ceiling verified while writing this plan is `2026-10-01-100000-script-children-rls.sql`; `…-100001-…` sorts strictly after it (`localeCompare` differs at the sixth stamp character, `1` > `0`, so the slug never enters the comparison). If a later stamp has landed, take the next free `2026-10-01-1000NN` or a later date that sorts after the real max.
+  - Preferred filename form `YYYY-MM-DD-HHMMSS-<slug>.sql`. This plan's file is `apps/api/migrations/2026-10-05-100000-device-manual-maintenance-lease.sql`.
+  - **Re-verify the ceiling at execution time** — main moves, and it did: the ceiling verified while writing this plan (`2026-10-01-100000-script-children-rls.sql`) was overtaken during execution, so Task 14 renamed the file from `…-2026-10-01-100001-…` to `2026-10-05-100000-device-manual-maintenance-lease.sql` against the ceiling then in force, `2026-10-04-100002-portal-users-contact-composite-fk.sql`. Run `ls apps/api/migrations | sort | tail -3`. The name sorts strictly after that ceiling (`localeCompare` differs at the sixth stamp character, `1` > `0`, so the slug never enters the comparison). If a later stamp has landed, take the next free `2026-10-01-1000NN` or a later date that sorts after the real max.
   - Gates: `bash scripts/check-migration-naming.sh --staged` (rule 3, strict sort-after-max, is only checked in `--staged` mode) and `pnpm --filter @breeze/api check:migrations`.
   - **A shipped migration is NEVER edited.** If the file is wrong after it lands, add a new forward migration.
   - `devices` is an org-cascade table whose export policy enumerates every column (`services/tenantExportPolicyRegistry.ts:185`). **Every new column must be registered** or `__tests__/integration/tenant-export-policy.integration.test.ts` fails with `devices.<column>: unclassified`.
@@ -66,7 +66,7 @@ rigor: HIGH (auth + tenancy-adjacent + shipped surfaces + migration)
 | `apps/api/src/routes/auth/schemas.test.ts` | operation-list assertions extended (T12 half) | 4 |
 | `apps/api/src/routes/auth/mfa.ts:1094-1197` | `RESOURCE_BOUND_OPERATIONS` map; digest dispatch by operation (D11) | 4 |
 | `apps/api/src/routes/auth.test.ts:3675` | T12 mint-route cases | 4 |
-| `apps/api/migrations/2026-10-01-100001-device-manual-maintenance-lease.sql` (new) | four nullable lease columns + idempotent CHECK (D5) | 5 |
+| `apps/api/migrations/2026-10-05-100000-device-manual-maintenance-lease.sql` (new) | four nullable lease columns + idempotent CHECK (D5) | 5 |
 | `apps/api/src/db/schema/devices.ts:85` | four matching Drizzle fields (D5) | 5 |
 | `apps/api/src/services/tenantExportPolicyRegistry.ts:185` | four column names appended to `devices.included` (F12) | 5 |
 | `apps/api/src/__tests__/integration/deviceMaintenanceLease.integration.test.ts` (new) | T19 migration idempotency, CHECK, `ON DELETE SET NULL`, export-policy registration | 5 |
@@ -126,9 +126,9 @@ Expected: install exits 0; `node_modules/` present at the worktree root.
 ```bash
 ls apps/api/migrations | sort | tail -3
 ```
-Expected: the last dated entry is `2026-10-01-100000-script-children-rls.sql` (the ceiling this plan's `…-100001-…` name was chosen against). If a higher name is present, record the new ceiling here and adjust the Task 5 filename to sort strictly after it. Confirm the choice mechanically:
+Expected at plan-writing time: `2026-10-01-100000-script-children-rls.sql`. **This is stale as executed** — main landed later migrations, and Task 14 re-verified the ceiling as `2026-10-04-100002-portal-users-contact-composite-fk.sql` and renamed the file accordingly. If a higher name is present, record the new ceiling here and adjust the filename to sort strictly after it. Confirm the choice mechanically:
 ```bash
-node -e 'console.log("2026-10-01-100001-device-manual-maintenance-lease.sql".localeCompare("2026-10-01-100000-script-children-rls.sql") > 0)'
+node -e 'console.log("2026-10-05-100000-device-manual-maintenance-lease.sql".localeCompare("2026-10-04-100002-portal-users-contact-composite-fk.sql") > 0)'
 ```
 Expected: `true`.
 
@@ -167,8 +167,9 @@ git commit -m "docs(qa): RMM-QA-176 executable plan — maintenance-mode step-up
 
 Turns the reviewed design spec (e34b9d852) into 14 executable tasks: RED-first
 per behaviour change with mutation-proven controls, one forward migration
-(2026-10-01-100001-device-manual-maintenance-lease.sql, sorts after the
-2026-10-01-100000-script-children-rls.sql ceiling), and the per-file plan for
+(2026-10-05-100000-device-manual-maintenance-lease.sql, sorts after the
+then-current script-children-rls ceiling; renamed in Task 14 to sort after
+the real ceiling 2026-10-04-100002-portal-users-contact-composite-fk.sql), and the per-file plan for
 the three existing suites that must FLIP from asserting the ungated behaviour.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
@@ -846,7 +847,7 @@ Claude-Session: https://claude.ai/code/session_011ZcfdKzt7p6NSWkqPgv54c"
 This is the only migration in the plan. It brings the private per-worktree Postgres stack up; **leave it up** — Tasks 9 and 14 reuse it, and Task 14 tears it down.
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-01-100001-device-manual-maintenance-lease.sql`
+- Create: `apps/api/migrations/2026-10-05-100000-device-manual-maintenance-lease.sql`
 - Modify: `apps/api/src/db/schema/devices.ts:85` (insert four fields after `isEphemeral`)
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts:185` (`devices.included`)
 - Create: `apps/api/src/__tests__/integration/deviceMaintenanceLease.integration.test.ts`
@@ -861,7 +862,7 @@ This is the only migration in the plan. It brings the private per-worktree Postg
 ls apps/api/migrations | sort | tail -3
 pnpm test-stack up
 ```
-Expected: the ceiling is still `2026-10-01-100000-script-children-rls.sql` (if not, rename the file below to sort after the real max and note the change in the commit message); `test-stack up` reports a running Postgres + Redis and writes a worktree-local `.env.test`. **Do NOT run `pnpm --filter @breeze/api test:docker:up`.**
+Expected at plan-writing time: `2026-10-01-100000-script-children-rls.sql`. **As executed it was not** — the ceiling had moved to `2026-10-04-100002-portal-users-contact-composite-fk.sql` and Task 14 renamed the migration to `2026-10-05-100000-device-manual-maintenance-lease.sql`; `test-stack up` reports a running Postgres + Redis and writes a worktree-local `.env.test`. **Do NOT run `pnpm --filter @breeze/api test:docker:up`.**
 
 - [ ] **Step 2: Write the failing integration test `apps/api/src/__tests__/integration/deviceMaintenanceLease.integration.test.ts`**
 
@@ -931,7 +932,7 @@ describe('devices manual maintenance lease columns (RMM-QA-176 D5)', () => {
   });
 
   it('re-applying the migration is a no-op (idempotency)', async () => {
-    const sqlText = await readMigration('2026-10-01-100001-device-manual-maintenance-lease.sql');
+    const sqlText = await readMigration('2026-10-05-100000-device-manual-maintenance-lease.sql');
     await rawSql(sqlText);
     await rawSql(sqlText);
     const [{ count }] = await rawSql(
@@ -962,7 +963,7 @@ pnpm --filter @breeze/api exec vitest run --config vitest.integration.config.ts 
 ```
 Expected: FAIL — the columns query returns `[]`; the CHECK test rejects with `column "maintenance_until" of relation "devices" does not exist` rather than the constraint name; the export-policy assertion reads `undefined`.
 
-- [ ] **Step 4: Write the migration `apps/api/migrations/2026-10-01-100001-device-manual-maintenance-lease.sql`**
+- [ ] **Step 4: Write the migration `apps/api/migrations/2026-10-05-100000-device-manual-maintenance-lease.sql`**
 
 ```sql
 -- 2026-10-01-100001: persist the MANUAL device maintenance lease (RMM-QA-176).
@@ -1033,7 +1034,7 @@ They are customer operational data, not credentials, and none of the names conta
 - [ ] **Step 7: Migration gates + drift check**
 
 ```bash
-git add apps/api/migrations/2026-10-01-100001-device-manual-maintenance-lease.sql
+git add apps/api/migrations/2026-10-05-100000-device-manual-maintenance-lease.sql
 bash scripts/check-migration-naming.sh --staged
 pnpm --filter @breeze/api check:migrations
 pnpm --filter @breeze/api db:check-drift
@@ -1057,14 +1058,14 @@ Expected: all pass. `rls-coverage` is unchanged because no new table was added.
 - [ ] **Step 9: Mutation controls**
 
   1. Remove `"maintenance_reason"` from the `devices.included` array in `tenantExportPolicyRegistry.ts`. Re-run `tenant-export-policy.integration.test.ts`. Expected: FAIL with `devices.maintenance_reason: unclassified` — the executed proof that registration is load-bearing (F12). Revert `git checkout -- apps/api/src/services/tenantExportPolicyRegistry.ts`; re-run green.
-  2. In a **scratch copy** of the migration (never edit the staged file after it is committed; at this point it is still uncommitted, so edit and revert is safe), weaken the CHECK to `CHECK (true)`, drop and re-create the constraint against the live DB, and re-run the "rejects a partial lease" test. Expected: FAIL (the partial UPDATE succeeds). Revert the file with `git checkout -- apps/api/migrations/2026-10-01-100001-device-manual-maintenance-lease.sql`, drop the weakened constraint, re-apply the real migration, re-run green.
+  2. In a **scratch copy** of the migration (never edit the staged file after it is committed; at this point it is still uncommitted, so edit and revert is safe), weaken the CHECK to `CHECK (true)`, drop and re-create the constraint against the live DB, and re-run the "rejects a partial lease" test. Expected: FAIL (the partial UPDATE succeeds). Revert the file with `git checkout -- apps/api/migrations/2026-10-05-100000-device-manual-maintenance-lease.sql`, drop the weakened constraint, re-apply the real migration, re-run green.
 
   Record both mutations and their observed failures.
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add apps/api/migrations/2026-10-01-100001-device-manual-maintenance-lease.sql \
+git add apps/api/migrations/2026-10-05-100000-device-manual-maintenance-lease.sql \
         apps/api/src/db/schema/devices.ts \
         apps/api/src/services/tenantExportPolicyRegistry.ts \
         apps/api/src/__tests__/integration/deviceMaintenanceLease.integration.test.ts
@@ -1074,8 +1075,9 @@ git commit -m "feat(db): persist the manual device maintenance lease on devices 
 Four nullable columns (maintenance_started_at, maintenance_until,
 maintenance_reason, maintenance_started_by -> users ON DELETE SET NULL) plus an
 idempotent CHECK forbidding a half-written lease. Migration
-2026-10-01-100001-device-manual-maintenance-lease.sql sorts strictly after the
-verified ceiling 2026-10-01-100000-script-children-rls.sql; naming gate and
+2026-10-05-100000-device-manual-maintenance-lease.sql sorts strictly after the
+then-verified ceiling (superseded: Task 14 renamed the file to sort after
+2026-10-04-100002-portal-users-contact-composite-fk.sql); naming gate and
 check:migrations pass on the staged commit. Drizzle fields added and
 db:check-drift is clean. All four columns registered in the devices
 tenant-export policy — devices is an org-cascade table whose policy enumerates
