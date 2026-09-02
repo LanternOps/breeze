@@ -435,7 +435,8 @@ func (m *lifecycleManager) reconcileActiveLocked(ctx context.Context, entry Ledg
 			return m.result(entry.ActuationID, entry.Generation, ResultVerifiedActive, evidence), true
 		}
 	}
-	verifiedEvidence, code, verified := m.verifyAccountClean(ctx, evidence)
+	// A ledger entry is being reconciled, so an actuation is on record.
+	verifiedEvidence, code, verified := m.verifyAccountClean(ctx, evidence, false)
 	result := m.result(entry.ActuationID, entry.Generation, ResultFailed, verifiedEvidence)
 	if code != "" {
 		result.FailureCode = code
@@ -447,7 +448,16 @@ func (m *lifecycleManager) reconcileActiveLocked(ctx context.Context, entry Ledg
 	return result, verified
 }
 
-func (m *lifecycleManager) verifyAccountClean(ctx context.Context, evidence ResultEvidence) (ResultEvidence, string, bool) {
+// verifyAccountClean proves the dormant elevation account is deprovisioned,
+// disabled, out of Administrators and holding no live token.
+//
+// neverActuated is true only for the disable path with an empty ledger, where
+// this agent has no record of ever having applied an actuation. That is the
+// one context in which the account legitimately may not exist at all: it is
+// provisioned lazily when PAM is first enabled, so the majority of the fleet
+// has never created it. Every other caller reconciles a recorded actuation,
+// where a missing account is anomalous and must keep failing closed.
+func (m *lifecycleManager) verifyAccountClean(ctx context.Context, evidence ResultEvidence, neverActuated bool) (ResultEvidence, string, bool) {
 	deprovisioned, err := m.account.Deprovision(ctx)
 	if err != nil {
 		return evidence, "account_cleanup_failed", false
@@ -457,7 +467,19 @@ func (m *lifecycleManager) verifyAccountClean(ctx context.Context, evidence Resu
 		return evidence, "account_verification_failed", false
 	}
 	privileged, err := m.windows.VerifyNoPrivilegedToken(ctx, elevaccount.AccountName)
-	if err != nil || privileged {
+	switch {
+	case err != nil:
+		// The scan needs the account's SID, so it fails outright when the name
+		// resolves to nothing. On a never-actuated agent that means the
+		// dormant account was never created: nothing has ever logged on as it,
+		// so no process can be holding a token for it (#4587). Any other
+		// error, and any error at all once an actuation is on record — where a
+		// deleted account can still leave a live orphaned token behind — stays
+		// a verification failure.
+		if !neverActuated || !elevaccount.IsAccountAbsent(err) {
+			return evidence, "privileged_token_verification_failed", false
+		}
+	case privileged:
 		return evidence, "privileged_token_verification_failed", false
 	}
 	evidence.AccountEnabled = boolPtr(false)
@@ -504,7 +526,7 @@ func (m *lifecycleManager) SetEnabled(ctx context.Context, enabled bool) error {
 		if bootErr != nil {
 			failures = append(failures, "account:boot_id_unavailable")
 			m.markUnresolved("__account__", 0)
-		} else if _, code, verified := m.verifyAccountClean(ctx, ResultEvidence{BootID: bootID}); !verified {
+		} else if _, code, verified := m.verifyAccountClean(ctx, ResultEvidence{BootID: bootID}, true); !verified {
 			failures = append(failures, "account:"+code)
 			m.markUnresolved("__account__", 0)
 		} else {

@@ -1320,11 +1320,26 @@ jobs:
       # sessionbroker. Note the #3007 bug itself was NOT a data race — sendSeq
       # was already atomic — so -race would not have caught it; the regression
       # test asserts receiver-visible ordering instead.
+      #
+      # ./internal/elevaccount is the fourth instance of the eventlog/logging
+      # gap, found by #4587: the whole package is netapi32 account lifecycle
+      # behind //go:build windows, and the only Windows-tagged test it had was
+      # a compile-time interface assertion that no job ran. The bug it shipped
+      # was precisely a netapi32 status code the Windows-only code mishandled
+      # (NERR_UserNotFound on an account that was never provisioned, which is
+      # the DEFAULT state of every agent that never enabled PAM), so a gate
+      # that never executes on Windows could not have caught it and cannot
+      # catch the next one. Verified the same way as logging and ipc: with
+      # GOOS=windows GOARCH=amd64 CGO_ENABLED=0 the package vets, its test
+      # binary compiles, and its Windows dependency graph contains no
+      # remote/desktop and no cgo. Its two behavioural tests assert against the
+      # real netapi32 and skip loudly, rather than pass, on a host where
+      # ~breeze_elev exists or local-account queries are not permitted.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./cmd/breeze-watchdog
 
       # Software inventory has platform-specific registry behavior. Keep this
       # filtered until the inherited Windows package backlog in #2523 is green,

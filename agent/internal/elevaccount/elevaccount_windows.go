@@ -4,7 +4,6 @@ package elevaccount
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"syscall"
@@ -47,9 +46,9 @@ const (
 	accountEnabledFlags  = ufNormalAccount | ufPasswdCantChange | ufDontExpirePassword
 
 	nerrSuccess        = 0
-	nerrUserNotFound   = 2221
 	nerrUserExists     = 2224
 	nerrUserNotInGroup = 2237
+	// nerrUserNotFound lives in absent.go alongside IsAccountAbsent.
 
 	errorMemberInAlias    = 1378
 	errorMemberNotInAlias = 1377
@@ -147,6 +146,12 @@ func (*windowsManager) Demote(ctx context.Context) error {
 	return err
 }
 
+// absentAccountEvidence is what an account that does not exist proves: it
+// cannot be enabled and it cannot be in Administrators. See IsAccountAbsent.
+func absentAccountEvidence() AccountEvidence {
+	return AccountEvidence{Enabled: false, InAdministrators: false}
+}
+
 func (*windowsManager) Deprovision(ctx context.Context) (AccountEvidence, error) {
 	if err := ctx.Err(); err != nil {
 		return AccountEvidence{}, err
@@ -156,11 +161,15 @@ func (*windowsManager) Deprovision(ctx context.Context) (AccountEvidence, error)
 		return AccountEvidence{}, err
 	}
 	if err := setPassword(AccountName, password); err != nil {
+		if IsAccountAbsent(err) {
+			return absentAccountEvidence(), nil
+		}
 		return AccountEvidence{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return AccountEvidence{}, err
 	}
+	// removeFromAdministrators already maps an absent account to nil.
 	if err := removeFromAdministrators(AccountName); err != nil {
 		return AccountEvidence{}, err
 	}
@@ -168,6 +177,9 @@ func (*windowsManager) Deprovision(ctx context.Context) (AccountEvidence, error)
 		return AccountEvidence{}, err
 	}
 	if err := setUserFlags(AccountName, accountDisabledFlags); err != nil {
+		if IsAccountAbsent(err) {
+			return absentAccountEvidence(), nil
+		}
 		return AccountEvidence{}, err
 	}
 	return (&windowsManager{}).VerifyClean(ctx)
@@ -179,10 +191,16 @@ func (*windowsManager) VerifyClean(ctx context.Context) (AccountEvidence, error)
 	}
 	enabled, err := accountEnabled(AccountName)
 	if err != nil {
+		if IsAccountAbsent(err) {
+			return absentAccountEvidence(), nil
+		}
 		return AccountEvidence{}, err
 	}
 	inAdministrators, err := accountInAdministrators(AccountName)
 	if err != nil {
+		if IsAccountAbsent(err) {
+			return absentAccountEvidence(), nil
+		}
 		return AccountEvidence{}, err
 	}
 	return AccountEvidence{Enabled: enabled, InAdministrators: inAdministrators}, nil
@@ -277,7 +295,9 @@ func addToAdministrators(username string) error {
 func removeFromAdministrators(username string) error {
 	status, err := localGroupMembersCall(procNetLocalGroupDelMembers, username)
 	if err != nil {
-		if errors.Is(err, windows.ERROR_NONE_MAPPED) {
+		// The SID lookup fails with ERROR_NONE_MAPPED when the account does
+		// not exist, which is nothing to remove.
+		if IsAccountAbsent(err) {
 			return nil
 		}
 		return err
