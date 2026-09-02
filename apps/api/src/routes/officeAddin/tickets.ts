@@ -89,10 +89,10 @@ import { draftSchema, fromEmailSchema, linkEmailSchema } from './schemas';
  *       corrupting anything.
  *     - `createAuditLogAsync` leaves an orphan `ticket.create` audit row.
  *     - `resolveConfirmedContact` (the `create_contact` requester branch) runs
- *       before the nested transaction opens, so the requester's portal-user
+ *       before the nested transaction opens, so the requester's `contacts`
  *       row survives a claim-race loser. Intentional: the technician
- *       explicitly confirmed that contact, and it stays valid for the winning
- *       ticket / future ones.
+ *       explicitly confirmed that person, and they stay valid for the winning
+ *       ticket / future ones. (#3258 — this used to be a `portal_users` row.)
  *   The first three are pre-existing consequences of the shapes those helpers
  *   chose; the route adds no new escape. The route's OWN audit event
  *   (`office_addin.ticket.created_from_email`) is written only after the nested

@@ -60,8 +60,19 @@ export async function resolveLinkableEntraAddress(
   partnerId: string,
   claims: ClientAiEntraClaims,
 ): Promise<EntraAddressDecision> {
-  // (a) Pick the address, by provenance rather than by preference order. The
-  // UPN wins when present because it is the stronger claim, not merely first.
+  // (a) Pick the address by PROVENANCE, not merely by preference order. The UPN
+  // wins whenever present because it is the stronger claim.
+  //
+  // Deliberately ONE candidate, not "try each until one passes (b)". A tenant
+  // whose UPNs sit on the default `*.onmicrosoft.com` domain while the `email`
+  // claim carries the vanity domain will therefore NOT link, because the UPN is
+  // what gets domain-checked and no MSP declares onmicrosoft.com. That is a
+  // known, safe degradation — the login still works, the audit says
+  // `unverified-address`, and the remedy is for the partner to declare the
+  // domain in customer_email_domains, after which the next login backfills.
+  // Falling through to the second claim would mean a mismatch between the two
+  // domains — exactly the shape worth refusing — silently resolves to whichever
+  // one happens to be declared.
   const vouched = claims.upn ?? (claims.emailDomainOwnerVerified ? claims.emailClaim : null);
 
   if (!vouched) {
