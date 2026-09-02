@@ -64,7 +64,14 @@ import { Toast } from '../../components/Toast';
 import { relativeTime } from '../../lib/relativeTime';
 import { reportInternalError } from '../../lib/errorReporting';
 
-import { priorityColor, priorityLabel, statusLabel, ticketRef } from './ticketCopy';
+import {
+  isVisibleActivityEntry,
+  priorityColor,
+  priorityLabel,
+  statusLabel,
+  ticketRef,
+  visibleActivityCount,
+} from './ticketCopy';
 import { startForTicket, stopRunningTimer } from './timerActions';
 import { startOutcomeEffects, stopOutcomeEffects } from './timerOutcomeEffects';
 import { CommentAttachments } from './CommentAttachments';
@@ -529,11 +536,13 @@ export function TicketDetailScreen() {
   const attachBlocked = attachDisabledReason({ connected, chips });
   const sendable = canSend({ chips, text: comment, busy });
   const quickStatuses = allowedQuickStatuses(ticket.status, QUICK_STATUS_CANDIDATES);
-  // Only person-authored entries are "comments"; the rest of the array is
-  // activity (status changes, assignments, time entries).
-  const commentCount = ticket.comments.filter(
-    (c) => !c.commentType || !SYSTEM_COMMENT_TYPES.has(c.commentType)
-  ).length;
+  // The "ACTIVITY" header counts every row the feed below actually renders —
+  // person comments AND system rows (status changes, assignments, time
+  // entries) — via the same predicate the render loop uses to skip blank
+  // system rows (see `isVisibleActivityEntry`). It must not diverge from
+  // what's on screen: a prior version counted only non-system comments while
+  // the list rendered system rows too, so the header undercounted.
+  const activityCount = visibleActivityCount(ticket.comments);
 
   return (
     <KeyboardAvoidingView
@@ -642,13 +651,20 @@ export function TicketDetailScreen() {
         )}
 
         <Text style={styles.sectionHeader}>
-          ACTIVITY{commentCount ? ` (${commentCount})` : ''}
+          ACTIVITY{activityCount ? ` (${activityCount})` : ''}
         </Text>
         {ticket.comments.length === 0 ? (
           <Text style={styles.metaDim}>No comments yet.</Text>
         ) : (
           ticket.comments.map((c) => {
             const isSystem = Boolean(c.commentType && SYSTEM_COMMENT_TYPES.has(c.commentType));
+            // A system row with no content carries no information — it has
+            // no author chip or subject line to anchor it, so rendering it
+            // blank reads as a bug (observed live: a row with only a "10w
+            // ago" timestamp and no text). Skip it rather than render it
+            // empty; `activityCount` above is computed the same way so the
+            // header stays consistent with what's actually on screen.
+            if (isSystem && !isVisibleActivityEntry(c)) return null;
             if (isSystem) {
               // Activity entries are not comments: no author chip, no INTERNAL
               // badge (they are non-public by nature), and dimmed.

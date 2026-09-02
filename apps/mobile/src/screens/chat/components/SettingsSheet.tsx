@@ -410,6 +410,9 @@ function SheetBody({
           paddingTop: insetTop + spacing[6],
           paddingBottom: spacing[8],
         }}
+        // The bar itself is drawn over by the cap below, so keep the scroll
+        // indicator out from under it rather than letting it run to y=0.
+        scrollIndicatorInsets={{ top: insetTop }}
       >
         <View
           style={{
@@ -551,6 +554,24 @@ function SheetBody({
           {buildVersion}
         </Text>
       </View>
+
+      {/* `insetTop` only positions the RESTING layout — it does nothing once the
+          list is scrolled, and the avatar, account name and email then ride up
+          into the status bar and collide with the clock and the Dynamic Island.
+          An opaque cap in the sheet's own surface colour, painted last so it
+          sits above the list, gives that strip something to disappear behind.
+          Not pressable: taps in the status-bar strip belong to the OS. */}
+      <View
+        pointerEvents="none"
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: insetTop,
+          backgroundColor: theme.bg1,
+        }}
+      />
     </View>
   );
 }
