@@ -18,10 +18,15 @@
  *  (e) template missing but a custom same-name row present → template is
  *      created; the custom row is untouched (the name-only lookup used to
  *      report "Role exists" and create nothing)
+ *  (f) template missing while an organization-scope global system row and a
+ *      tenant copy share the name → the partner-scope template is created;
+ *      neither row is claimed (no force_mfa flip, no permission grants). The
+ *      lookup must pin scope and partner_id IS NULL independently — the
+ *      migration's ownership boundary is scope='partner' AND is_system.
  */
 import './setup';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, count, eq, isNull } from 'drizzle-orm';
 import { rolePermissions, roles } from '../../db/schema';
 import { seedPermissions, seedRoles, SYSTEM_ROLES } from '../../db/seed';
 import { createPartner } from './db-utils';
@@ -34,7 +39,7 @@ const PARTNER_ADMIN = 'Partner Admin';
 /** Global system rows: is_system AND partner_id IS NULL AND org_id IS NULL. */
 async function globalSystemRows() {
   return getTestDb()
-    .select({ id: roles.id, name: roles.name, forceMfa: roles.forceMfa })
+    .select({ id: roles.id, name: roles.name, scope: roles.scope, forceMfa: roles.forceMfa })
     .from(roles)
     .where(and(eq(roles.isSystem, true), isNull(roles.partnerId), isNull(roles.orgId)));
 }
@@ -135,5 +140,33 @@ describe('seedRoles() Partner Admin force_mfa (RMM-QA-164)', () => {
     const customAfter = await rowById(custom!.id);
     expect(customAfter?.isSystem).toBe(false);
     expect(customAfter?.forceMfa).toBe(false);
+  });
+
+  runDb('(f) a missing partner-scope template is created even when an organization-scope global system row and a tenant copy share the name; neither is claimed', async () => {
+    const partner = await createPartner();
+    const [orgScoped] = await getTestDb()
+      .insert(roles)
+      .values({ scope: 'organization', name: PARTNER_ADMIN, isSystem: true, forceMfa: false })
+      .returning({ id: roles.id });
+    const [tenantCopy] = await getTestDb()
+      .insert(roles)
+      .values({ partnerId: partner.id, scope: 'partner', name: PARTNER_ADMIN, isSystem: true, forceMfa: false })
+      .returning({ id: roles.id });
+
+    await seedRoles();
+
+    const partnerTemplates = (await templateRows(PARTNER_ADMIN)).filter((row) => row.scope === 'partner');
+    expect(partnerTemplates).toHaveLength(1);
+    expect(partnerTemplates[0]?.forceMfa).toBe(true);
+    expect(partnerTemplates[0]?.id).not.toBe(orgScoped!.id);
+
+    for (const id of [orgScoped!.id, tenantCopy!.id]) {
+      expect((await rowById(id))?.forceMfa).toBe(false);
+      const [grants] = await getTestDb()
+        .select({ n: count() })
+        .from(rolePermissions)
+        .where(eq(rolePermissions.roleId, id));
+      expect(grants?.n).toBe(0);
+    }
   });
 });

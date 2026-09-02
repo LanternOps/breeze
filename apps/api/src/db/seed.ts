@@ -879,18 +879,23 @@ export async function seedRoles() {
   const permMap = new Map(allPerms.map(p => [p.resource + ':' + p.action, p.id]));
 
   for (const roleDef of SYSTEM_ROLES) {
-    // RMM-QA-164: match ONLY the global system template. A name-only lookup
-    // could match a tenant copy (partner_id set, created by createPartner())
-    // or a custom is_system=false role that happens to share the name — it
-    // would then skip creating the template and, with the reconcile below,
-    // flip a row the seed never owned. Tenant copies are reconciled by the
-    // 2026-10-01-200000 migration, not here.
+    // RMM-QA-164: match ONLY the global system template of THIS definition
+    // (name + scope, is_system, no tenant axis). A name-only lookup could
+    // match a tenant copy (partner_id set, created by createPartner()), a
+    // custom is_system=false role that happens to share the name, or a
+    // global system row of the other scope — it would then skip creating
+    // the template and, with the reconcile and grants below, flip and
+    // over-privilege a row the seed never owned. Scope is pinned because the
+    // ownership boundary the reconcile migration enforces is
+    // scope='partner' AND is_system; the seed must not be looser. Tenant
+    // copies are reconciled by the 2026-10-01-200000 migration, not here.
     const [existing] = await db
       .select()
       .from(roles)
       .where(
         and(
           eq(roles.name, roleDef.name),
+          eq(roles.scope, roleDef.scope),
           eq(roles.isSystem, true),
           isNull(roles.partnerId),
           isNull(roles.orgId),
