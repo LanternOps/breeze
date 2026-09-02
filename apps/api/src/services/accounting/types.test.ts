@@ -71,6 +71,9 @@ describe('AccountingProvider is fully typed (B8, multi-currency §11)', () => {
       .toEqualTypeOf<[AccountingConnection, Date | null]>();
     expectTypeOf<ReturnType<AccountingProvider['reconcileChanges']>>().toEqualTypeOf<Promise<ChangeSet>>();
     expectTypeOf<ChangeSet['deletedPayments']>().toEqualTypeOf<string[]>();
+    // Alive-but-unallocated is its OWN list, not a deletion (finding C1): the
+    // applier has to keep a Breeze-origin row's remote id for these.
+    expectTypeOf<ChangeSet['unappliedPayments']>().toEqualTypeOf<string[]>();
     expectTypeOf<ChangeSet['deletedInvoices']>().toEqualTypeOf<string[]>();
     expectTypeOf<ChangeSetPaymentLine['amountMinor']>().toEqualTypeOf<number>();
     expectTypeOf<ChangeSetPaymentLine['remotePaymentSyncToken']>().toEqualTypeOf<string | null>();

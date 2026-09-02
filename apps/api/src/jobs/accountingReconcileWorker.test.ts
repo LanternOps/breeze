@@ -175,6 +175,7 @@ const EMPTY_CHANGESET: ChangeSet = {
   cursor: new Date('2026-09-02T20:10:00.000Z'),
   payments: [],
   deletedPayments: [],
+  unappliedPayments: [],
   deletedInvoices: [],
   overflowed: false,
 };
@@ -616,6 +617,56 @@ describe('processReconcileConnectionJob: cursor', () => {
       'applyAccountingPayment', 'applyAccountingPayment', 'reverseStaleAllocations',
     ]);
     expect(depthsOf('reverseStaleAllocations')).toEqual([0, 0]);
+  });
+
+  it('routes an UNAPPLIED payment through the stale sweep with an EMPTY keep-set, never through the deleter', async () => {
+    // Finding C1. A voided/unapplied QuickBooks Payment still EXISTS, so it must
+    // NOT reach `reverseAccountingPayment` — that path clears a Breeze-origin
+    // row's remote id, and the invoice fan-out then pushes a duplicate Payment.
+    reconcileChangesMock.mockResolvedValue({
+      ...EMPTY_CHANGESET,
+      unappliedPayments: ['183'],
+    });
+    reverseStaleMock.mockImplementation(async () => {
+      record('reverseStaleAllocations');
+      return [result('reversed', '183')];
+    });
+
+    const summary = await processReconcileConnectionJob(JOB);
+
+    expect(reverseMock).not.toHaveBeenCalled();
+    expect(reverseStaleMock).toHaveBeenCalledTimes(1);
+    expect(reverseStaleMock).toHaveBeenCalledWith(expect.anything(), '183', [], expect.any(Function), 'fp1:legacy:abc');
+    expect(depthsOf('reverseStaleAllocations')).toEqual([0]);
+    expect(summary?.reversed).toBe(1);
+  });
+
+  it('runs unapplied payments AFTER the lined payments and after the deletions', async () => {
+    reconcileChangesMock.mockResolvedValue({
+      ...EMPTY_CHANGESET,
+      payments: [line({ remotePaymentId: '180', remoteInvoiceId: '145' })],
+      deletedPayments: ['181'],
+      deletedInvoices: ['145'],
+      unappliedPayments: ['183'],
+    });
+    reverseReturns('reversed');
+    reverseStaleMock.mockImplementation(async () => {
+      record('reverseStaleAllocations');
+      return [];
+    });
+
+    await processReconcileConnectionJob(JOB);
+
+    expect(applierOrder()).toEqual([
+      'markInvoiceDeletedRemotely',
+      'reverseAccountingPayment',
+      'applyAccountingPayment',
+      'reverseStaleAllocations',
+      // ...and the unapplied sweep last.
+      'reverseStaleAllocations',
+    ]);
+    expect(reverseStaleMock.mock.calls.map((c) => [c[1], c[2]]))
+      .toEqual([['180', ['145']], ['183', []]]);
   });
 
   it('turns the run dirty when a stale-allocation reversal reports failed', async () => {

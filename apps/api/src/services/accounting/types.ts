@@ -229,8 +229,28 @@ export interface ChangeSet {
   /** The instant the CDC window ends. Becomes the connection's next cdc_cursor. */
   cursor: Date;
   payments: ChangeSetPaymentLine[];
-  /** QBO Payment ids the realm reports as status:"Deleted", plus voided (TotalAmt 0) payments. */
+  /**
+   * QBO Payment ids the realm reports as `status: "Deleted"` — a REAL deletion
+   * and nothing else. A voided or unapplied Payment still EXISTS in QuickBooks
+   * and belongs in `unappliedPayments`; classifying it here made the pull clear
+   * a Breeze-origin row's remote id, after which the invoice fan-out re-owned
+   * the mapping and pushed a SECOND QuickBooks Payment for money that moved
+   * once (final-review finding C1).
+   */
   deletedPayments: string[];
+  /**
+   * QBO Payment ids that are ALIVE but currently settle no invoice: a Payment
+   * QuickBooks voided (`TotalAmt` 0) or whose Invoice-linked lines were all
+   * removed (unapplied, left as customer credit).
+   *
+   * Delivered as a live payment with an EMPTY line set, so the applier routes it
+   * through `reverseStaleAllocations` with an empty keep-set. That reverses a
+   * QuickBooks-origin mirror row exactly as a deletion did (the money is no
+   * longer applied to the invoice), while a Breeze-origin row KEEPS its remote
+   * id and SyncToken — a later Breeze void still has to delete that Payment, and
+   * it cannot without them.
+   */
+  unappliedPayments: string[];
   /** QBO Invoice ids the realm reports as status:"Deleted" or voided. */
   deletedInvoices: string[];
   /**

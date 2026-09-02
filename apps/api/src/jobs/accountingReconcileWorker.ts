@@ -351,6 +351,22 @@ export async function processReconcileConnectionJob(
       }
     }
 
+    // A Payment that is ALIVE but settles nothing: QuickBooks voided it
+    // (`TotalAmt` 0) or its Invoice links were all removed. It is the same
+    // operation as the loop above with an EMPTY current line set — every
+    // allocation Breeze holds for this Payment is stale — and deliberately NOT
+    // `reverseAccountingPayment`: the Payment still exists, so a Breeze-origin
+    // mapping must keep the remote id and SyncToken its own pending delete needs
+    // (finding C1). A QuickBooks-origin mirror row is still removed, exactly as
+    // Phase D removed it when the provider called this a deletion.
+    for (const remotePaymentId of changes.unappliedPayments) {
+      for (const stale of await reverseStaleAllocations(
+        fresh, remotePaymentId, [], runInDbContext, expectedRealmFingerprint,
+      )) {
+        tally(summary, stale.outcome);
+      }
+    }
+
     // The run line is emitted by `finish()` below, AFTER the cursor CAS, so
     // `cursorAfter` reflects what was actually claimed (null on a throw or a
     // lost CAS). Logging it here printed `cursorAfter=null` on every run.

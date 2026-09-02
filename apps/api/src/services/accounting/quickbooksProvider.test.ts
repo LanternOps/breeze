@@ -722,22 +722,28 @@ describe('reconcileChanges (CDC)', () => {
     expect(cs.payments.map((p) => [p.remoteInvoiceId, p.amountMinor])).toEqual([['145', 10000], ['146', 15000]]);
   });
 
-  it('ignores non-Invoice LinkedTxn lines (deposits, credit applications)', async () => {
+  it('reports a payment with no Invoice-linked line as UNAPPLIED, never as deleted', async () => {
     mockFetchJsonOnce(cdcResponse([{ Payment: [qboPayment({
       Line: [{ Amount: 150.0, LinkedTxn: [{ TxnId: '9', TxnType: 'CreditMemo' }] }],
     })] }]));
     const cs = await quickbooksProvider.reconcileChanges(conn(), new Date());
     expect(cs.payments).toEqual([]);
-    // No Invoice-linked line means nothing for the applier to reconcile against
-    // — same "deletion candidate" bucket as a voided payment (brief step 3).
-    expect(cs.deletedPayments).toEqual(['180']);
+    // The Payment is ALIVE, it just settles no invoice. Calling it a deletion
+    // made the pull clear a Breeze-origin row's remote id, after which the
+    // invoice fan-out re-owned the mapping and pushed a SECOND QuickBooks
+    // Payment for money that moved once (finding C1).
+    expect(cs.unappliedPayments).toEqual(['180']);
+    expect(cs.deletedPayments).toEqual([]);
   });
 
-  it('treats a voided payment (TotalAmt 0, no lines) as a deletion, not a zero payment', async () => {
+  it('reports a QBO-voided payment (TotalAmt 0, no lines) as UNAPPLIED, not as deleted', async () => {
     mockFetchJsonOnce(cdcResponse([{ Payment: [qboPayment({ TotalAmt: 0, Line: [] })] }]));
     const cs = await quickbooksProvider.reconcileChanges(conn(), new Date());
     expect(cs.payments).toEqual([]);
-    expect(cs.deletedPayments).toEqual(['180']);
+    // QBO never DELETES a Payment on a void — it zeroes it and keeps the row,
+    // which is precisely why a delete Breeze still owes it needs the remote id.
+    expect(cs.unappliedPayments).toEqual(['180']);
+    expect(cs.deletedPayments).toEqual([]);
   });
 
   it('collects status:"Deleted" Payment and Invoice entities into the deletion lists', async () => {
@@ -747,6 +753,8 @@ describe('reconcileChanges (CDC)', () => {
     ]));
     const cs = await quickbooksProvider.reconcileChanges(conn(), new Date());
     expect(cs.deletedPayments).toEqual(['181']);
+    // `status: "Deleted"` is the ONLY thing that reaches the deletion list.
+    expect(cs.unappliedPayments).toEqual([]);
     expect(cs.deletedInvoices).toEqual(['145']);
   });
 
@@ -849,6 +857,33 @@ describe('reconcileChanges (CDC)', () => {
     expect(decodeURIComponent(String(spy.mock.calls[1]![0]))).toContain('select * from Invoice where');
     // The CDC deletion survives: /query never returns deleted entities.
     expect(cs.deletedInvoices.sort()).toEqual(['145', '146']);
+    expect(cs.overflowed).toBe(false);
+  });
+
+  it('re-buckets unapplied payments both ways when the /query backfill covers them', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse(cdcResponse([{
+        Payment: [
+          // Unapplied at CDC read time...
+          qboPayment({ Id: '180', TotalAmt: 0, Line: [] }),
+          // ...and applied at CDC read time.
+          qboPayment({ Id: '182' }),
+        ],
+        startPosition: 1, maxResults: 2, totalCount: 5,
+      }])))
+      .mockResolvedValueOnce(jsonResponse({ QueryResponse: { Payment: [
+        // /query is AUTHORITATIVE: 180 has since been re-applied...
+        qboPayment({ Id: '180' }),
+        // ...and 182 has since been unapplied.
+        qboPayment({ Id: '182', TotalAmt: 0, Line: [] }),
+      ] } }));
+
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date('2026-09-02T20:00:00.000Z'));
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(cs.payments.map((p) => p.remotePaymentId)).toEqual(['180']);
+    expect(cs.unappliedPayments).toEqual(['182']);
+    expect(cs.deletedPayments).toEqual([]);
     expect(cs.overflowed).toBe(false);
   });
 

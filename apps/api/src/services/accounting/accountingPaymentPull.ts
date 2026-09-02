@@ -1042,10 +1042,19 @@ export async function reverseAccountingPayment(
  * existing `<PaymentId>/<remoteInvoiceId>` mapping whose invoice is NOT in it
  * is reversed through the same row-level path a full reversal uses, so the
  * lock order, the mapping-authorises-the-delete rule and the audit trail are
- * identical. An empty current set is NOT special-cased: that is a payment whose
- * every allocation was removed, and every row should indeed go — a payment with
- * no invoice-linked line at all reaches `reverseAccountingPayment` instead,
- * because the provider classifies it as a deletion.
+ * identical.
+ *
+ * An EMPTY current set is not special-cased, and it is a real case, not a
+ * theoretical one: a Payment QuickBooks VOIDED (`TotalAmt` 0) or UNAPPLIED
+ * (every Invoice link removed) arrives here, from the worker's
+ * `changes.unappliedPayments` loop, with `keepRemoteInvoiceIds = []`. Only
+ * `status: "Deleted"` reaches `reverseAccountingPayment`. The distinction is
+ * load-bearing for a Breeze-origin row: the Payment is still THERE, so its
+ * remote id and SyncToken survive (`breeze_origin_diverged`, or no write at all
+ * while a delete is owed) instead of being cleared for a re-push that would
+ * mint a second QuickBooks Payment (final-review finding C1). A
+ * QuickBooks-origin mirror row is removed either way — the money is no longer
+ * applied to that invoice.
  */
 export async function reverseStaleAllocations(
   conn: AccountingConnection,

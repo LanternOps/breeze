@@ -1032,6 +1032,22 @@ describe('reverseStaleAllocations', () => {
     expect(currentPayments.map((p) => p.id).sort()).toEqual(['pay-qbo-a', 'pay-qbo-b']);
   });
 
+  it('reverses EVERY allocation when the current line set is empty (a voided/unapplied Payment)', async () => {
+    // Finding C1: the provider no longer calls a live-but-unallocated Payment a
+    // deletion, so this is the path a QBO void now takes. For a QuickBooks-origin
+    // mirror the end state must be identical to the Phase D deletion it replaces
+    // — both Breeze payment rows gone, both mapping rows gone.
+    splitPaymentFixture();
+
+    const results = await reverseStaleAllocations(conn(), QBO_PAYMENT_ID, [], runCtx, REALM_FP);
+
+    expect(results.map((r) => r.outcome)).toEqual(['reversed', 'reversed']);
+    expect(currentPayments).toEqual([]);
+    expect(currentMappings.map((m) => m.id)).toEqual(['map-invoice-1']);
+    expect(recomputeMock).toHaveBeenCalledWith(INVOICE_ID, db);
+    expect(recomputeMock).toHaveBeenCalledWith(SECOND_INVOICE, db);
+  });
+
   it('never touches a mapping row for a DIFFERENT QuickBooks payment id', async () => {
     splitPaymentFixture();
     currentPayments.push(paymentRow({ id: 'pay-other', invoiceId: SECOND_INVOICE }));
@@ -1610,6 +1626,26 @@ describe('a Breeze-origin Payment REALLOCATED in QuickBooks (the payment still e
     expect(updateMock).not.toHaveBeenCalled();
     expect(deleteMock).not.toHaveBeenCalled();
     expect(writeAuditEventMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a Breeze-origin row INTACT when QuickBooks merely VOIDED the Payment (empty line set)', async () => {
+    // The C1 twin of the delete case: a QBO void arrives as an empty current
+    // line set, not as a deletion. The Payment is still there, so the remote id
+    // and token SURVIVE — clearing them would let the invoice fan-out re-own the
+    // row and push a SECOND QuickBooks Payment for money that moved once.
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
+
+    const results = await reverseStaleAllocations(conn(), QBO_PAYMENT_ID, [], runCtx, REALM_FP);
+
+    expect(results.map((r) => r.outcome)).toEqual(['breeze_origin_diverged']);
+    expect(currentPayments).toHaveLength(1);
+    expect(currentMappings[1]).toMatchObject({
+      syncStatus: 'error',
+      remoteEntityId: REMOTE_MAPPING_ID,
+      remoteSyncToken: '0',
+      pendingOp: null,
+    });
   });
 
   it('still reverses a QuickBooks-ORIGIN dropped allocation (Phase D behaviour, unchanged)', async () => {

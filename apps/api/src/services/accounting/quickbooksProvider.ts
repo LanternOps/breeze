@@ -217,9 +217,18 @@ interface QboCdcResponse {
 }
 
 /**
- * A CDC-reported Payment is a deletion candidate for the applier when QBO
- * either zeroed it (a void — QBO never deletes a Payment) or it carries no
- * Invoice-linked line (nothing for the applier to reconcile against).
+ * The Invoice-linked lines a CDC-reported Payment carries RIGHT NOW.
+ *
+ * An EMPTY result does NOT mean the Payment was deleted (final-review finding
+ * C1). QBO zeroes a voided Payment (`TotalAmt` 0) and leaves an unapplied one
+ * with no Invoice `LinkedTxn` — in both cases the Payment still EXISTS, and the
+ * only entity QBO ever reports as gone is one carrying `status: "Deleted"`,
+ * which the callers classify before they get here. So an empty line set is
+ * delivered as a LIVE payment with no allocations (`unappliedPayments`), which
+ * the applier reconciles through `reverseStaleAllocations` with an empty
+ * keep-set: identical to a deletion for a QuickBooks-origin mirror row, but a
+ * Breeze-origin row keeps the remote id and SyncToken its own pending delete
+ * still needs.
  */
 export function mapQboCdcPayment(raw: QboRawCdcPayment, conn: AccountingConnection): ChangeSetPaymentLine[] {
   const currency = raw.CurrencyRef?.value ?? conn.homeCurrency ?? '';
@@ -280,6 +289,8 @@ type CdcEntity = 'Payment' | 'Invoice';
 interface CdcWindowResult {
   payments: ChangeSetPaymentLine[];
   deletedPayments: string[];
+  /** Alive, but settling no invoice — voided or unapplied (see `ChangeSet`). */
+  unappliedPayments: string[];
   deletedInvoices: string[];
   /**
    * Entities whose CDC block reported `totalCount` greater than the array it
@@ -336,15 +347,18 @@ function mergeQueryBackfill(
   const covered = new Set(raws.map((raw) => raw.Id));
   window.payments = window.payments.filter((p) => !covered.has(p.remotePaymentId));
   const deleted = new Set(window.deletedPayments);
+  const unapplied = new Set(window.unappliedPayments);
   for (const raw of raws) {
-    const lines = mapQboCdcPayment(raw, conn);
-    if (lines.length === 0) { deleted.add(raw.Id); continue; }
-    // A live, invoice-linked payment is not a deletion, whatever the truncated
-    // CDC list said about it.
+    // `/query` never returns a DELETED entity, so every id it covers is alive —
+    // whatever the truncated CDC list said about it.
     deleted.delete(raw.Id);
+    const lines = mapQboCdcPayment(raw, conn);
+    if (lines.length === 0) { unapplied.add(raw.Id); continue; }
+    unapplied.delete(raw.Id);
     window.payments.push(...lines);
   }
   window.deletedPayments = [...deleted];
+  window.unappliedPayments = [...unapplied];
 }
 
 export function mapQboAddress(raw: QboRawAddress | undefined): RemoteAddress | undefined {
@@ -934,6 +948,7 @@ export class QuickbooksProvider implements AccountingProvider {
       cursor: window.responseTime ?? now,
       payments: window.payments,
       deletedPayments: window.deletedPayments,
+      unappliedPayments: window.unappliedPayments,
       deletedInvoices: window.deletedInvoices,
       overflowed,
     };
@@ -957,6 +972,7 @@ export class QuickbooksProvider implements AccountingProvider {
 
     const payments: ChangeSetPaymentLine[] = [];
     const deletedPayments: string[] = [];
+    const unappliedPayments: string[] = [];
     const deletedInvoices: string[] = [];
     const overflowedEntities = new Set<CdcEntity>();
 
@@ -964,9 +980,12 @@ export class QuickbooksProvider implements AccountingProvider {
       const totalCount = block.totalCount;
 
       for (const raw of block.Payment ?? []) {
+        // `status: "Deleted"` is the ONE deletion signal. A Payment QBO voided
+        // or unapplied is still there, and treating it as deleted re-pushed a
+        // duplicate through the fan-out (finding C1).
         if (raw.status === 'Deleted') { deletedPayments.push(raw.Id); continue; }
         const lines = mapQboCdcPayment(raw, conn);
-        if (lines.length === 0) { deletedPayments.push(raw.Id); continue; }
+        if (lines.length === 0) { unappliedPayments.push(raw.Id); continue; }
         payments.push(...lines);
       }
       if (totalCount !== undefined && totalCount > (block.Payment?.length ?? 0) && block.Payment) {
@@ -982,7 +1001,7 @@ export class QuickbooksProvider implements AccountingProvider {
     }
 
     return {
-      payments, deletedPayments, deletedInvoices,
+      payments, deletedPayments, unappliedPayments, deletedInvoices,
       overflowedEntities: [...overflowedEntities],
       responseTime: parseCdcResponseTime(parsed.time),
     };
