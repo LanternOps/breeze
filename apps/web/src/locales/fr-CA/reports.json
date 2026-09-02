@@ -849,10 +849,6 @@
           "description": "Alertes principales, tendances de gravité et charge de travail en réponse.",
           "name": "Rapport de résumé des alertes"
         },
-        "billing_usage": {
-          "description": "Utilisation des licences, niveaux d’utilisation et résumés de rétrofacturation.",
-          "name": "Rapport de facturation/utilisation"
-        },
         "device_health": {
           "description": "CPU, la mémoire et les tendances de temps d’activité avec le score de santé des appareils.",
           "name": "Rapport sur l’état de l’appareil"
@@ -861,21 +857,9 @@
           "description": "KPI de haut niveau, posture de risque et tendances stratégiques pour le leadership.",
           "name": "Résumé exécutif"
         },
-        "patch_compliance": {
-          "description": "Couverture des correctifs, mises à jour en retard et statut de remédiation.",
-          "name": "Rapport de conformité des correctifs"
-        },
         "security_compliance_posture": {
           "description": "Preuves prêtes à l’assurance ou à la vérification : couverture EDR, chiffrement, pare-feu, correctifs, vulnérabilités, accès privilégié et intégrations de sécurité avec des rollups en pourcentage.",
           "name": "Posture de sécurité et conformité (Assurance)"
-        },
-        "sla_compliance": {
-          "description": "SLA adhésion, risque de violation et délais de réponse.",
-          "name": "SLA Rapport de conformité"
-        },
-        "technician_activity": {
-          "description": "Volume de billets, interventions sur les appareils et rapidité de résolution.",
-          "name": "Rapport d’activité des techniciens"
         }
       },
       "title": "Modèles de rapports",

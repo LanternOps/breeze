@@ -3,13 +3,10 @@ import {
   Activity,
   BarChart3,
   Bell,
-  CreditCard,
   FileText,
   Loader2,
   Plus,
   ShieldCheck,
-  Timer,
-  Users,
   X
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -127,23 +124,6 @@ const defaultTemplates: ReportTemplate[] = [
     }
   },
   {
-    id: 'patch_compliance',
-    name: 'Patch Compliance Report',
-    description: 'Patch coverage, overdue updates, and remediation status.',
-    defaults: {
-      name: 'Patch Compliance Report',
-      type: 'compliance',
-      dateRange: { preset: 'last_30_days' },
-      schedule: 'monthly',
-      format: 'pdf'
-    },
-    icon: ShieldCheck,
-    tone: {
-      iconBg: 'bg-amber-500/15',
-      iconColor: 'text-amber-600'
-    }
-  },
-  {
     id: 'alert_summary',
     name: 'Alert Summary Report',
     description: 'Top alerts, severity trends, and response workload.',
@@ -161,66 +141,11 @@ const defaultTemplates: ReportTemplate[] = [
       iconColor: 'text-rose-600'
     }
   },
-  {
-    id: 'technician_activity',
-    name: 'Technician Activity Report',
-    description: 'Ticket volume, device touches, and resolution velocity.',
-    defaults: {
-      name: 'Technician Activity Report',
-      type: 'device_inventory',
-      dateRange: { preset: 'last_30_days' },
-      schedule: 'weekly',
-      format: 'csv'
-    },
-    icon: Users,
-    tone: {
-      iconBg: 'bg-teal-500/15',
-      iconColor: 'text-teal-600'
-    }
-  },
-  {
-    id: 'sla_compliance',
-    name: 'SLA Compliance Report',
-    description: 'SLA adherence, breach risk, and response timelines.',
-    defaults: {
-      name: 'SLA Compliance Report',
-      type: 'compliance',
-      dateRange: { preset: 'last_90_days' },
-      schedule: 'monthly',
-      format: 'pdf'
-    },
-    icon: Timer,
-    tone: {
-      iconBg: 'bg-blue-500/15',
-      iconColor: 'text-blue-600'
-    }
-  },
-  {
-    id: 'billing_usage',
-    name: 'Billing/Usage Report',
-    description: 'License utilization, usage tiers, and chargeback summaries.',
-    defaults: {
-      name: 'Billing/Usage Report',
-      type: 'software_inventory',
-      dateRange: { preset: 'last_30_days' },
-      schedule: 'monthly',
-      format: 'excel'
-    },
-    icon: CreditCard,
-    tone: {
-      iconBg: 'bg-orange-500/15',
-      iconColor: 'text-orange-600'
-    }
-  }
 ];
 
 const typeAliases: Record<string, TemplateReportType> = {
   device_health: 'performance',
-  patch_compliance: 'compliance',
-  alert_summary: 'alert_summary',
-  technician_activity: 'device_inventory',
-  sla_compliance: 'compliance',
-  billing_usage: 'software_inventory'
+  alert_summary: 'alert_summary'
 };
 
 const resolveReportType = (

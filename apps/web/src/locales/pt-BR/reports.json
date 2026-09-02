@@ -849,10 +849,6 @@
           "description": "Principais alertas, tendências de severidade e carga de resposta.",
           "name": "Relatório de Resumo de Alertas"
         },
-        "billing_usage": {
-          "description": "Utilizacao de licencas, faixas de uso e resumos de chargeback.",
-          "name": "Relatório de Cobrança/Uso"
-        },
         "device_health": {
           "description": "Tendências de CPU, memória e uptime com pontuação de saúde dos dispositivos.",
           "name": "Relatório de Saude dos Dispositivos"
@@ -861,21 +857,9 @@
           "description": "KPIs de alto nivel, postura de risco e tendências estrategicas para lideranca.",
           "name": "Resumo Executivo"
         },
-        "patch_compliance": {
-          "description": "Cobertura de patches, atualizacoes atrasadas e status de remediacao.",
-          "name": "Relatório de Conformidade de Patches"
-        },
         "security_compliance_posture": {
           "description": "Evidências prontas para seguro/vetting: cobertura de EDR, criptografia, firewall, patches, vulnerabilidades, acesso privilegiado e integrações de segurança com consolidações percentuais de implementação.",
           "name": "Postura de Seguranca e Conformidade (Seguro)"
-        },
-        "sla_compliance": {
-          "description": "Aderencia a SLA, risco de violacao e linhas do tempo de resposta.",
-          "name": "Relatório de Conformidade de SLA"
-        },
-        "technician_activity": {
-          "description": "Volume de tickets, interações com dispositivos e velocidade de resolução.",
-          "name": "Relatório de Atividade de Tecnicos"
         }
       },
       "title": "Modelos de Relatório",
