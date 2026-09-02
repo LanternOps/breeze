@@ -1,7 +1,13 @@
 import '@/lib/i18n';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, Bot, Check, Layers, Loader2, ShieldCheck, X } from 'lucide-react';
+import { AlertTriangle, Bot, Check, CheckCheck, Layers, Loader2, ShieldCheck, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import {
+  AI_AGENT_KINDS,
+  type AiAgentGraduationDto,
+  type AiAgentGraduationRowDto,
+  type AiAgentKind,
+} from '@breeze/shared';
 import { useEventStream } from '@/hooks/useEventStream';
 import {
   CeremonyError,
@@ -14,9 +20,10 @@ import {
 } from '@/lib/intentApprovals';
 import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
-import { ActionError } from '@/lib/runAction';
+import { ActionError, runAction } from '@/lib/runAction';
 import { formatRelativeTime } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 
 const LIVE_REFETCH_DEBOUNCE_MS = 750;
 /** WS is only a nudge; polling is the guarantee. useEventStream gives up
@@ -191,6 +198,82 @@ function buildSections(rows: PendingApproval[]): Section[] {
 }
 
 /**
+ * P2-5 (#4192, Task 21) — "Approve and always allow". Eligibility for a
+ * card's `${actionToolName}:${action}` comes from `GET
+ * /ai/agents/graduation`, which is scoped to ONE `(orgId, kind)` pair. The
+ * card carries neither field: `approvalScope`/`riskTier` are the intent's
+ * OWN Tier-3 classification (`checkGuardrails` at create time), not the
+ * originating agent's `kind` — an org can run up to three active agents at
+ * once (`ai_agents_org_kind_uq`), one per `AiAgentKind`. So this reads all
+ * three kinds per distinct org and merges the `eligible` rows into one Set,
+ * remembering which kind produced each — the promote POST needs that kind
+ * back. A kind with no active agent for the org 404s and is skipped; worst
+ * case on a rare opKey collision across two kinds is a promotion raised
+ * against the wrong kind, which `attemptPolicyDecision` re-validates at
+ * RELEASE time and fails closed on — never a silent over-grant.
+ */
+interface OrgGraduationInfo {
+  eligible: Map<string, AiAgentKind>;
+  policyDecideEnabled: boolean;
+}
+
+/** The exact template the card's key is checked against — literal, not a
+ *  re-derivation of the server's `canonicalPolicyKey`. `action` is null for a
+ *  non-multiplexed tool, and such a card is never offered the affordance:
+ *  every `POLICY_DECIDABLE_TIER3` entry is a `(tool, action)` pair. */
+function alwaysAllowOpKey(approval: PendingApproval): string | null {
+  return approval.action !== null ? `${approval.actionToolName}:${approval.action}` : null;
+}
+
+/** One org's worth of graduation state, across every `AiAgentKind` that has
+ *  an active agent. Never throws — a failed or malformed response for one
+ *  kind is skipped, because this affordance is additive and must never take
+ *  the inbox (or even just Approve) down with it. */
+async function fetchOrgGraduation(orgId: string): Promise<OrgGraduationInfo> {
+  const eligible = new Map<string, AiAgentKind>();
+  let policyDecideEnabled = false;
+  await Promise.all(
+    AI_AGENT_KINDS.map(async (kind) => {
+      try {
+        const res = await fetchWithAuth(
+          `/ai/agents/graduation?orgId=${encodeURIComponent(orgId)}&kind=${encodeURIComponent(kind)}`,
+        );
+        // Most orgs run fewer than three kinds — a 404 here just means this
+        // kind has no active agent, not a failure.
+        if (!res.ok) return;
+        const body = (await res.json()) as Partial<AiAgentGraduationDto> | null;
+        if (!body || !Array.isArray(body.rows)) return;
+        if (body.policyDecideEnabled === true) policyDecideEnabled = true;
+        for (const row of body.rows as AiAgentGraduationRowDto[]) {
+          if (row.state === 'eligible' && !eligible.has(row.opKey)) eligible.set(row.opKey, kind);
+        }
+      } catch {
+        // Network failure for this one kind — additive feature, never surfaced.
+      }
+    }),
+  );
+  return { eligible, policyDecideEnabled };
+}
+
+/** Resolves what the always-allow button needs for one card, or null when it
+ *  must not render. `riskTier !== 'critical'` mirrors `isGroupable`'s own
+ *  exclusion just above: even if a future registry change ever marked a
+ *  critical-risk key `eligible`, this affordance still must not offer to
+ *  pre-authorize the highest-risk tier unattended. */
+function alwaysAllowTargetFor(
+  approval: PendingApproval,
+  info: OrgGraduationInfo | undefined,
+): { opKey: string; kind: AiAgentKind } | null {
+  if (!info || !info.policyDecideEnabled) return null;
+  if (approval.approvalScope !== 'supervised') return null;
+  if (approval.riskTier === 'critical') return null;
+  const opKey = alwaysAllowOpKey(approval);
+  if (opKey === null) return null;
+  const kind = info.eligible.get(opKey);
+  return kind ? { opKey, kind } : null;
+}
+
+/**
  * Maps a decide failure to the inline error kind, or null when the caller must
  * redirect to login instead.
  *
@@ -255,6 +338,19 @@ export default function ApprovalsInbox() {
   // Mirrors `approvals` so the silent-failure branch of loadApprovals (empty
   // deps) can see whether anything is currently on screen.
   const approvalsRef = useRef<PendingApproval[]>([]);
+  // Always-allow: per-org graduation state, keyed by orgId. `requestedGraduationOrgsRef`
+  // is the cache-for-the-component's-lifetime gate — an org is fetched at most
+  // once, even across every silent poll refresh that follows.
+  const [orgGraduation, setOrgGraduation] = useState<Map<string, OrgGraduationInfo>>(
+    () => new Map(),
+  );
+  const requestedGraduationOrgsRef = useRef<Set<string>>(new Set());
+  const [alwaysAllowTarget, setAlwaysAllowTarget] = useState<{
+    approval: PendingApproval;
+    opKey: string;
+    kind: AiAgentKind;
+  } | null>(null);
+  const [alwaysAllowBusy, setAlwaysAllowBusy] = useState(false);
 
   const loadApprovals = useCallback(async (options?: { silent?: boolean }) => {
     // Silent reloads (WS nudge, poll, reconnect, post-decision refresh) must
@@ -301,6 +397,41 @@ export default function ApprovalsInbox() {
   useEffect(() => {
     void loadApprovals();
   }, [loadApprovals]);
+
+  // Always-allow eligibility: one fetch per distinct org among supervised
+  // cards, gated by `requestedGraduationOrgsRef` so a poll refresh (which
+  // hands this effect a brand-new `approvals` array every 30s) never
+  // re-requests an org already resolved this session.
+  useEffect(() => {
+    const orgIds = new Set<string>();
+    for (const approval of approvals) {
+      if (
+        approval.approvalScope === 'supervised' &&
+        approval.orgId !== null &&
+        !requestedGraduationOrgsRef.current.has(approval.orgId)
+      ) {
+        orgIds.add(approval.orgId);
+      }
+    }
+    if (orgIds.size === 0) return;
+    for (const orgId of orgIds) requestedGraduationOrgsRef.current.add(orgId);
+
+    let cancelled = false;
+    void (async () => {
+      const entries = await Promise.all(
+        [...orgIds].map(async (orgId) => [orgId, await fetchOrgGraduation(orgId)] as const),
+      );
+      if (cancelled) return;
+      setOrgGraduation((current) => {
+        const next = new Map(current);
+        for (const [orgId, info] of entries) next.set(orgId, info);
+        return next;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [approvals]);
 
   // Polling fallback: the WS layer can die permanently and silently
   // (useEventStream stops retrying after 5 ticket failures), and approvals
@@ -386,6 +517,11 @@ export default function ApprovalsInbox() {
     setDenyingGroupIdentity((current) => (current === identity ? null : identity));
   };
 
+  const openAlwaysAllow = (approval: PendingApproval, opKey: string, kind: AiAgentKind) => {
+    if (busy) return;
+    setAlwaysAllowTarget({ approval, opKey, kind });
+  };
+
   const decide = async (
     approval: PendingApproval,
     decision: 'approve' | 'deny',
@@ -418,6 +554,81 @@ export default function ApprovalsInbox() {
       if (kind === null) UNAUTHORIZED();
       else setDecisionError(approval.id, kind);
     } finally {
+      setDecidingIds(new Set());
+    }
+  };
+
+  /**
+   * "Approve and always allow": approve the card the normal way FIRST, then
+   * ask a second approver to pre-authorize the op key for future runs.
+   * Graduation never retro-authorizes the card being decided right now — the
+   * promote POST only raises a request; nothing is granted here.
+   *
+   * The approve and the promote are reported separately on failure: a failed
+   * promote after a successful approve must say so explicitly (the card is
+   * already decided) rather than read as "the whole action failed".
+   */
+  const confirmAlwaysAllow = async () => {
+    const target = alwaysAllowTarget;
+    if (!target || alwaysAllowBusy) return;
+
+    setAlwaysAllowBusy(true);
+    setDecidingIds(new Set([target.approval.id]));
+    clearRowErrors([target.approval.id]);
+
+    try {
+      const outcome = await decideIntentApproval(target.approval.id, 'approve');
+      if (outcome === 'needs_device') {
+        setDecisionError(target.approval.id, 'noApproverDevice');
+        return;
+      }
+      if (outcome === 'not_sole_approver') {
+        setDecisionError(target.approval.id, 'notSoleApprover');
+        return;
+      }
+
+      await loadApprovals({ silent: true });
+
+      try {
+        await runAction({
+          // Inline thunk: the no-silent-mutations guard walks parents for an
+          // enclosing runAction call, so a hoisted thunk reads as an
+          // unwrapped mutation even when passed straight in.
+          request: () =>
+            fetchWithAuth('/ai/agents/graduation/promote', {
+              method: 'POST',
+              body: JSON.stringify({
+                orgId: target.approval.orgId,
+                kind: target.kind,
+                opKey: target.opKey,
+              }),
+            }),
+          successMessage: t('alwaysAllow.toasts.requested'),
+          // The approve above already succeeded — this copy must say so,
+          // not imply the whole action failed.
+          errorFallback: t('alwaysAllow.errors.approvedPromoteFailed'),
+          // A CATCH-ALL, not a lookup for one known token: `extractApiError`
+          // prefers a server-supplied `error`/`message` string verbatim over
+          // `errorFallback`, so without this every non-`policy_decide_disabled`
+          // failure (a generic 500, a validation 400) would show the raw
+          // server text instead of the "approved, but…" copy this affordance
+          // exists to guarantee.
+          friendly: (code) =>
+            code === 'policy_decide_disabled'
+              ? t('alwaysAllow.errors.policyDecideDisabled')
+              : t('alwaysAllow.errors.approvedPromoteFailed'),
+        });
+      } catch {
+        // Already toasted by runAction above with copy naming the approve as
+        // having succeeded — nothing further to surface here.
+      }
+    } catch (err) {
+      const kind = classifyDecideError(err);
+      if (kind === null) UNAUTHORIZED();
+      else setDecisionError(target.approval.id, kind);
+    } finally {
+      setAlwaysAllowBusy(false);
+      setAlwaysAllowTarget(null);
       setDecidingIds(new Set());
     }
   };
@@ -497,6 +708,10 @@ export default function ApprovalsInbox() {
   const renderRow = (approval: PendingApproval) => {
     const isDeciding = decidingIds.has(approval.id);
     const rowError = rowErrors[approval.id];
+    const alwaysAllow = alwaysAllowTargetFor(
+      approval,
+      approval.orgId !== null ? orgGraduation.get(approval.orgId) : undefined,
+    );
     return (
       <article
         key={approval.id}
@@ -649,6 +864,18 @@ export default function ApprovalsInbox() {
               )}
               {isDeciding ? t('deciding') : t('approve')}
             </button>
+            {alwaysAllow && (
+              <button
+                type="button"
+                onClick={() => openAlwaysAllow(approval, alwaysAllow.opKey, alwaysAllow.kind)}
+                disabled={busy}
+                className="inline-flex h-10 items-center gap-2 rounded-lg border border-emerald-600 px-3 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-emerald-300 dark:hover:bg-emerald-950/30"
+                data-testid={`approval-always-allow-${approval.id}`}
+              >
+                <CheckCheck className="h-4 w-4" aria-hidden="true" />
+                {t('alwaysAllow.button')}
+              </button>
+            )}
           </div>
         </div>
       </article>
@@ -825,6 +1052,20 @@ export default function ApprovalsInbox() {
           )}
         </div>
       )}
+
+      <ConfirmDialog
+        open={alwaysAllowTarget !== null}
+        onClose={() => setAlwaysAllowTarget(null)}
+        onConfirm={() => void confirmAlwaysAllow()}
+        variant="warning"
+        isLoading={alwaysAllowBusy}
+        title={t('alwaysAllow.confirm.title')}
+        message={t('alwaysAllow.confirm.message', { opKey: alwaysAllowTarget?.opKey ?? '' })}
+        confirmLabel={t('alwaysAllow.confirm.action')}
+        confirmTestId={
+          alwaysAllowTarget ? `approval-always-allow-confirm-${alwaysAllowTarget.approval.id}` : undefined
+        }
+      />
     </div>
   );
 }

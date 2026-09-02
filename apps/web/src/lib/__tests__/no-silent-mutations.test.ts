@@ -222,6 +222,12 @@ const TARGET_GLOBS = [
   // so a slow response invited a duplicate-creating double click. The mount at
   // /reports/builder passed no onSubmit, the only success path.
   'src/components/reports/ReportBuilder.tsx',
+  // "Approve and always allow" (P2-5, #4192, Task 21): the promote POST raises
+  // a four-eyes authority change widening what an agent may do unattended, on
+  // top of the ordinary approve. A silent failure here would read as
+  // "requested" while no promotion was ever queued — same reasoning as
+  // AiAgentGraduationPanel.tsx above.
+  'src/components/approvals/ApprovalsInbox.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -523,8 +529,8 @@ describe('no silent mutations in targeted set', () => {
     // ImpactPage.tsx (P2-6 Task 10, #4193), plus ImpactWeightsDrawer.tsx
     // (P2-6 Task 11, #4193), plus AccountingSyncCard.tsx (QuickBooks invoice
     // push, Phase C Task 7), plus AiAgentGraduationPanel.tsx (P2-5 Task 20,
-    // #4192).
-    expect(absoluteFiles.length).toBe(108);
+    // #4192), plus ApprovalsInbox.tsx (P2-5 Task 21, #4192).
+    expect(absoluteFiles.length).toBe(109);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

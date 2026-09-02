@@ -41,5 +41,20 @@
     "batchStepUp": "This batch needs a stronger sign-in. Approve the requests one at a time.",
     "batchNotHomogeneous": "These requests can no longer be decided together."
   },
-  "registerDevice": "Register device"
+  "registerDevice": "Register device",
+  "alwaysAllow": {
+    "button": "Approve and always allow",
+    "confirm": {
+      "title": "Approve and request pre-authorization",
+      "message": "This approves the request you're looking at right now. It also asks a second approver to pre-authorize {{opKey}} for this organization's agent, so it applies to future runs only and never authorizes this request or anything already waiting for a decision.",
+      "action": "Approve and request"
+    },
+    "toasts": {
+      "requested": "Approved. A second approver has to approve pre-authorization before this operation runs unattended, and it applies to future runs only."
+    },
+    "errors": {
+      "approvedPromoteFailed": "Approved, but the pre-authorization request could not be sent. Try again from the agent's settings.",
+      "policyDecideDisabled": "Approved. Pre-authorization could not be requested because it is turned off for this deployment."
+    }
+  }
 }
