@@ -42,6 +42,7 @@ Set expectations with your team and your customers before you start. Nothing bel
 | Category | Status | Notes |
 |---|---|---|
 | Customer / site / device tree | **You rebuild it** | Scripted from the incumbent's API. See [Phase 2](#phase-2--rebuild-the-tenancy-tree). |
+| Customer contacts | **Scriptable** | First-class records in Breeze, organization-level or pinned to a site. Export from the incumbent or your PSA and load them with the [contacts importer](/migration/toolkit/#recipe-1c--import-contacts). |
 | Hardware & software inventory | **Regenerates** | Full inventory lands within minutes of enrollment. No migration needed. |
 | Patch state & compliance | **Regenerates** | Breeze re-scans; missing-patch state is accurate on first scan cycle. |
 | Performance / metric history | **Lost** | Starts from zero at enrollment. Keep the incumbent read-only if you need historical charts. |
@@ -144,6 +145,7 @@ This is the single largest variable in migration cost, and it is determined enti
    - Re-point your **PSA** so tickets are created by Breeze, not the incumbent. Connect via [PSA integrations](/features/psa-integrations/) and map organizations. Run both alert sources briefly, then disable alerting in the incumbent so you are not double-ticketing.
    - Migrate scripts (see the portability split above).
    - Re-create monitors, thresholds, and custom fields.
+   - Import each organization's contacts — see [Recipe 1c](/migration/toolkit/#recipe-1c--import-contacts). Rows carrying the incumbent's contact ID match on that link, so a later re-import is idempotent.
    - Re-point EDR, DNS filtering, backup, and documentation integrations.
    - Re-create technician accounts, roles, and MFA. Do this properly rather than mirroring the incumbent's grown-over-time permission sprawl.
 
