@@ -88,6 +88,11 @@ export const aiAgentFixWatches = pgTable('ai_agent_fix_watches', {
   index('ai_agent_fix_watches_org_created_idx').on(t.orgId, t.createdAt.desc()),
   index('ai_agent_fix_watches_state_due_idx').on(t.state, t.dueAt),
   index('ai_agent_fix_watches_pending_recovery_idx').on(t.createdAt, t.id).where(sql`${t.state} = 'pending'`),
+  // P2-6 (#4193, migrations/2026-09-30-ai-agents-impact.sql): the rollup's
+  // fix_watches_held/fix_watches_recurred scans — neither existing index
+  // above covers evaluated_at.
+  index('ai_agent_fix_watches_org_evaluated_idx').on(t.orgId, t.evaluatedAt)
+    .where(sql`${t.evaluatedAt} IS NOT NULL`),
 ]);
 
 export type AiAgentFixWatch = typeof aiAgentFixWatches.$inferSelect;

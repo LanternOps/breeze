@@ -58,6 +58,7 @@ export * from './aiAgents';
 export * from './aiAgentFixWatches';
 export * from './aiAgentOpEvidence';
 export * from './aiAgentGraduation';
+export * from './aiAgentImpactDaily';
 export * from './aiAgentCircuitState';
 export * from './aiUnattendedExposure';
 export * from './aiAlertVerdicts';

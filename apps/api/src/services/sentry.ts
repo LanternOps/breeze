@@ -261,6 +261,16 @@ const ALLOWED_TAG_NAMES = new Set([
   // thousand. Cardinality is bounded in practice by the throttle: at most one
   // event per outage.
   'llm_egress_dropped',
+  // #4143: which CONTAINER produced the event. Since the api/worker role split
+  // (#4086) a droplet in split mode runs two processes off the same image,
+  // same DSN, same release — so an event from the worker was indistinguishable
+  // from one served on the request path, and "is this the scheduler or the
+  // API?" (the first question asked in both #3022 and #3214) could not be
+  // answered from Sentry at all. Set once at init from `breezeRole()`, whose
+  // return type is the closed union `'all' | 'api' | 'worker'`; anything else
+  // in BREEZE_ROLE is folded to `all` by that function, so this tag is a
+  // 3-value set by construction and carries no tenant, device or host.
+  'breeze_role',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;
@@ -437,6 +447,30 @@ export function scrubTransactionEvent<T extends Record<string, any>>(event: T): 
   return event;
 }
 
+/**
+ * The `breeze_role` tag value (#4143).
+ *
+ * Deliberately re-derived from `process.env.BREEZE_ROLE` here instead of
+ * importing `breezeRole()` from `config/env`. This module is imported by ~120
+ * others including `db/index.ts` (see setConnectTimeoutClassifier above for the
+ * incident that established the rule), and `config/env` is not a leaf: it reads
+ * ~40 `process.env` values into module-scope `export const`s, so importing it
+ * from here would both grow this module's graph and pull that env SNAPSHOT
+ * forward to whenever anything first reports an error.
+ *
+ * The duplication is intentional and pinned: `sentry.breezeRole.test.ts`
+ * asserts this function agrees with `breezeRole()` over every input class,
+ * including the unrecognised-value fallback, so the two cannot drift apart
+ * silently. Unlike `breezeRole()` this one does NOT warn on an unrecognised
+ * value — that warning is the config layer's job and is already emitted once
+ * at boot; repeating it from the Sentry layer would add nothing.
+ */
+export function sentryBreezeRoleTag(): 'all' | 'api' | 'worker' {
+  const raw = (process.env.BREEZE_ROLE ?? '').trim().toLowerCase();
+  if (raw === 'api' || raw === 'worker') return raw;
+  return 'all';
+}
+
 function parseSampleRate(raw: string | undefined): number {
   if (!raw) return 0;
   const parsed = Number(raw);
@@ -469,6 +503,18 @@ export function initSentry(): void {
     beforeSend: (event) => scrubEvent(event),
     beforeSendTransaction: (event) => scrubTransactionEvent(event)
   });
+
+  // #4143. Set on the global scope so EVERY event inherits it — including the
+  // per-job isolation scopes `attachWorkerObservability` forks, and the
+  // process-level unhandledRejection/uncaughtException reports that belong to
+  // no request. Without it the two containers a split-mode droplet runs are
+  // indistinguishable in Sentry: same DSN, same release, same environment.
+  //
+  // Allowlisted in ALLOWED_TAG_NAMES above — `scrubEvent` rebuilds `tags` from
+  // that list on the way out, so an unallowlisted tag set here would be
+  // silently dropped rather than merely unused (the exact `worker`-tag
+  // regression documented there).
+  Sentry.setTag('breeze_role', sentryBreezeRoleTag());
 
   initialized = true;
 }

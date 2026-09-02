@@ -1078,6 +1078,24 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Phase 2 wave P2-6 (value accounting), task A5: nightly scan + per-org
+    // impact rollup fan-out.
+    //
+    // `global`: its runtime import closure is `services/aiAgents/impactRollup.ts`
+    // (db + schema + the frozen IMPACT_FIX_TOOLS literal) — it never reaches
+    // `runService.createAndEnqueueAgentRun`, `routes/agentWs.ts` or
+    // `services/agentCommandAwait.ts`. Do NOT copy this value by analogy:
+    // `workerEntrypointClosure.contract.test.ts` is the mechanical authority
+    // and must be run for this entry (see CLAUDE.md — never relitigate
+    // placement by guessing).
+    name: 'aiAgentImpactRollup',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiAgentImpactRollup');
+      return { init: m.initializeAiAgentImpactRollupWorker, shutdown: m.shutdownAiAgentImpactRollupWorker };
+    },
+  },
+  {
     // Phase 2 wave P2-5 (#4192), Task 9: retention sweep for the
     // `ai_agent_op_evidence` ledger. `global`, same reasoning as
     // `aiUnattendedExposureRetention` above — this module's closure reaches

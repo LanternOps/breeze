@@ -410,6 +410,13 @@ export const actionIntents = pgTable(
     }).onDelete('set null'),
     scopeTicketIdx: index('action_intents_scope_ticket_idx')
       .on(table.scopeTicketId).where(sql`${table.scopeTicketId} IS NOT NULL`),
+    // P2-6 (#4193, migrations/2026-09-30-ai-agents-impact.sql): the rollup's
+    // fixes_proposed/fixes_executed scans. orgStatusIdx above is
+    // (org_id, status, expires_at) — neither created_at nor executed_at is
+    // covered.
+    orgCreatedIdx: index('action_intents_org_created_idx').on(table.orgId, table.createdAt),
+    orgExecutedIdx: index('action_intents_org_executed_idx')
+      .on(table.orgId, table.executedAt).where(sql`${table.executedAt} IS NOT NULL`),
   }),
 );
 

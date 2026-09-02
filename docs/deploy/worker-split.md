@@ -17,9 +17,9 @@ Design docs:
 - `worker` (new, opt-in) runs `node dist/worker.cjs`: the same image, hardcoded
   `BREEZE_ROLE=worker`, no HTTP route graph, no agent sockets. It owns the
   global-placement background workers (retention jobs, sync workers, most
-  scheduled jobs) and exposes a slim health surface (`/health`,
-  `/health/ready`) on the same `API_PORT` (default 3001) inside its own
-  container.
+  scheduled jobs) and exposes a slim health + metrics surface (`/health`,
+  `/health/ready`, `/metrics`) on the same `API_PORT` (default 3001) inside
+  its own container.
 - Socket-owner workers (anything whose import closure or runtime reaches
   agent-socket dispatch — see the plan's Task 5 classification) **stay on the
   `api` container** this wave. `BREEZE_ROLE=all` (the default, both
@@ -30,6 +30,34 @@ Design docs:
   `worker` service always sees the same env the `api` container does (Redis,
   DB, encryption keys, feature flags, …), with only `BREEZE_ROLE` hardcoded
   differently per service.
+
+## Observability (#4143)
+
+The `worker` container publishes its own Prometheus series on
+`http://<worker>:3001/metrics` — **a separate scrape target from the api
+container's `/api/metrics/scrape`**. Add it to your Prometheus config when you
+adopt the split, or the process that runs the heavy jobs is invisible: before
+#4143 its series were not stale or zero, they were ABSENT, and `up` for it did
+not exist at all.
+
+- **Auth is the same gate as the api role's `/api/metrics/scrape`**:
+  `METRICS_SCRAPE_TOKEN` as a bearer token (503 when unset), the optional
+  `METRICS_SCRAPE_IP_ALLOWLIST` (403), then the token compare (401). Both come
+  from the shared `x-api-env` anchor, so the worker already has them.
+- **One deliberate difference:** the worker's IP allowlist matches the
+  **direct peer** and ignores `X-Forwarded-For`, because this port has no
+  trusted-proxy configuration to validate forwarded headers against. If you put
+  a proxy in front of it, allowlist the *proxy's* address, not the scraper's.
+- **What it publishes** is the role-agnostic runtime set — event-loop lag
+  (#3022) and Postgres pool health (#3214) — which is precisely the
+  instrumentation that matters most on the container running the heavy jobs.
+  It does NOT publish the api's HTTP/business/fleet series, because a
+  worker-role process does not serve requests; expect those only from the api
+  target, and do not alert on their absence here.
+- **Sentry events from this container carry `breeze_role: worker`** (the api
+  container's carry `api`, an unsplit one `all`). Before that tag, both
+  containers reported under the same DSN, release and environment with nothing
+  to tell them apart.
 
 ## Prerequisites
 

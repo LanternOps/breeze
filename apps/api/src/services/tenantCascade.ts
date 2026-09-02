@@ -86,6 +86,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // topologicalCascadeOrder()'s runtime pg_constraint read orders the
   // actual DELETE, not this list's alphabetization.
   'ai_agent_graduation',
+  // ai_agent_impact_daily (P2-6, #4193): derived daily rollup. Its ONLY FK
+  // is org_id -> organizations ON DELETE CASCADE, so it has no
+  // child-before-parent constraint of its own and
+  // topologicalCascadeOrder()'s runtime pg_constraint read orders the real
+  // DELETE.
+  'ai_agent_impact_daily',
   // ai_agent_op_evidence (P2-5, #4192): both FKs carry an explicit ON
   // DELETE (agent_id CASCADE, run_id/org_id composite SET NULL) — same
   // position-independence reasoning as ai_agent_graduation above.

@@ -55,6 +55,9 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // timestamps tracking one colon-key's promotion journey — no open
   // containers, no credential-shaped columns.
   "ai_agent_graduation": tablePolicy("org_id", {"included":["id","org_id","agent_id","op_key","state","first_verified_at","promoted_at","promoted_intent_id","demoted_at","demote_reason","demote_run_id","demote_watch_id","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // ai_agent_impact_daily (P2-6, #4193): every column is a counter, an id
+  // or a date — no jsonb/bytea, no SUSPICIOUS_NAME_PARTS hit.
+  "ai_agent_impact_daily": tablePolicy("org_id", {"included":["id","org_id","day","alerts_judged","noise_flagged","suppressions_applied","tickets_triaged","drafts_sent","fixes_proposed","fixes_executed","fix_watches_held","fix_watches_recurred","narratives_delivered","llm_cents","rebuilt_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // ai_agent_op_evidence (P2-5, #4192): an immutable ledger of terminal
   // outcome identifiers/timestamps only — no model-authored text (see
   // CLAUDE.md leak rules), no open containers.

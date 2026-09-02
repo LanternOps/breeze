@@ -45,6 +45,17 @@ function getSessionExpiredNotice(t: ReturnType<typeof useTranslation<'auth'>>['t
     idle: t('login.notices.idle', {
       defaultValue: 'You were signed out due to inactivity.',
     }),
+    // Not an expiry: POST /auth/refresh answered 403 "Invalid request origin",
+    // i.e. the API was never told about the address this browser is using
+    // (classically a self-hoster on an SSH tunnel — https://localhost:8443
+    // against a CORS_ALLOWED_ORIGINS of https://localhost). Without naming the
+    // origin, the bounce is indistinguishable from a bad password and it
+    // repeats after every successful sign-in.
+    'origin-rejected': t('login.notices.originRejected', {
+      origin: window.location.origin,
+      defaultValue:
+        'This Breeze server is not configured to accept sign-ins from {{origin}}. Open Breeze at the public URL set during setup (PUBLIC_APP_URL), or add {{origin}} to CORS_ALLOWED_ORIGINS in .env and restart the API.',
+    }),
   };
   return reason ? sessionExpiredCopy[reason] : undefined;
 }

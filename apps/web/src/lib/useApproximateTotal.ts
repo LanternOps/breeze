@@ -13,9 +13,13 @@
 // currency from the actor's partner and returns it as `targetCurrencyCode`.
 // There is no client-side default and no 'USD' fallback anywhere here.
 //
-// Failure is always quiet: `failed` means "render segmentation only". A
-// partner with no reporting currency answers 409 NO_REPORTING_CURRENCY, which
-// is a configuration state, not an error to surface.
+// Failure is quiet in PRESENTATION, never in existence (#4415): `failed` means
+// "the segmentation above is the only figure", and the caller still renders a
+// muted sentence saying the approximate total could not be produced. It used to
+// mean "render nothing", which is how a self-hoster with no exchange-rate feed
+// got a line that simply never appeared. Every non-2xx — including the 409
+// NO_REPORTING_CURRENCY a partner can effectively never hit — lands here and
+// reads the same to the user.
 import { useEffect, useState } from 'react';
 
 import { fetchWithAuth } from '../stores/auth';
@@ -26,17 +30,27 @@ export { resetApproximateTotalCache };
 
 export interface ApproximateTotalState {
   /** The server's validated answer, or null while loading / after a failure.
-   *  `status: 'unavailable'` is an ANSWER (a leg was missing or stale), not a
-   *  failure — the caller renders nothing either way. */
+   *  `status: 'unavailable'` is an ANSWER (a leg was missing or stale) carrying
+   *  the codes it could not convert — the caller RENDERS that, it is not a
+   *  synonym for "show nothing" (#4415). */
   response: ReportingTotalResponse | null;
-  /** True while a request for this key is in flight. Callers render nothing. */
+  /** True while a request for this key is in flight. Callers render nothing —
+   *  this is the only state with nothing honest to say yet. */
   loading: boolean;
-  /** True when the request could not produce an answer (non-2xx, rejected, or
-   *  malformed). Callers render the per-currency segmentation only. */
+  /** True when no answer could be produced: non-2xx (including the near-dead
+   *  409 NO_REPORTING_CURRENCY), a rejected fetch, a malformed body, or a book
+   *  this client could not even turn into a request. Deliberately ONE flag and
+   *  not a discriminated error code: every one of those resolves to the same
+   *  user-facing sentence, and a partner always has a reporting currency
+   *  (`partners.currency_code` is NOT NULL DEFAULT 'USD'), so splitting the 409
+   *  out would buy a message nobody sees at the cost of threading a code
+   *  through the loader and its cache. Callers render an explicit muted
+   *  "could not load exchange rates", never silence. */
   failed: boolean;
 }
 
 const IDLE: ApproximateTotalState = { response: null, loading: false, failed: false };
+const FAILED: ApproximateTotalState = { response: null, loading: false, failed: true };
 
 const STATUSES = new Set(['available', 'unavailable', 'not-needed']);
 
@@ -133,18 +147,27 @@ export function useApproximateTotal(
   byCurrency: readonly { code: string; amount: string | number }[],
   date?: string,
 ): ApproximateTotalState {
-  const groupsParam = buildGroupsParam(byCurrency);
+  const query = buildGroupsParam(byCurrency);
+  const groupsParam = query.kind === 'query' ? query.value : '';
+  // An empty book has nothing to say; a book we could not encode is a failure
+  // the caller must SHOW, not a second flavour of "nothing to ask" (#4415).
+  const unbuildable = query.kind === 'invalid';
   const requestDate = date ?? todayUtc();
   const key = groupsParam ? approximateTotalCacheKey(requestDate, groupsParam) : '';
 
   const [state, setState] = useState<ApproximateTotalState>(() => {
+    if (unbuildable) return FAILED;
     const cached = key ? approximateTotalCache.values.get(key) : undefined;
     return cached ? { response: cached, loading: false, failed: false } : IDLE;
   });
 
   useEffect(() => {
-    // Nothing to ask about (empty book, or every entry malformed): no request,
-    // no loading state, no line.
+    if (unbuildable) {
+      setState(FAILED);
+      return;
+    }
+
+    // Nothing to ask about (empty book): no request, no loading state, no line.
     if (!groupsParam) {
       setState(IDLE);
       return;
@@ -165,7 +188,7 @@ export function useApproximateTotal(
         : { response: null, loading: false, failed: true });
     });
     return () => { cancelled = true; };
-  }, [key, groupsParam, requestDate]);
+  }, [key, groupsParam, requestDate, unbuildable]);
 
   return state;
 }

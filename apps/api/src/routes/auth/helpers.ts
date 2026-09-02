@@ -15,7 +15,7 @@ import {
 } from '../../services';
 import { envStr } from '../../utils/envStr';
 import { getImmediatePeerIpOrUndefined, rateLimitIpKey, trustsForwardedHeadersFrom } from '../../services/clientIp';
-import { effectiveRequestScheme } from '../../services/requestTransport';
+import { effectiveRequestScheme, isSameOriginRequest } from '../../services/requestTransport';
 import { createAuditLogAsync } from '../../services/auditService';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
 import { consumeMFAToken } from '../../services/mfa';
@@ -1011,8 +1011,11 @@ export function validateCookieCsrfRequest(c: Context): string | null {
     return 'Invalid CSRF token';
   }
 
+  // A same-origin request (SSH tunnel / LAN name that is not the configured
+  // public URL) is not CSRF even when its Origin is outside the allowlist —
+  // see isSameOriginRequest.
   const origin = c.req.header('origin');
-  if (origin && !isAllowedOrigin(origin)) {
+  if (origin && !isAllowedOrigin(origin) && !isSameOriginRequest(c, origin)) {
     return 'Invalid request origin';
   }
 
@@ -1041,7 +1044,7 @@ export function validateStrictCookieCsrfRequest(c: Context): string | null {
 
   const origin = c.req.header('origin');
   if (!origin) return 'Missing request origin';
-  if (!isAllowedOrigin(origin)) return 'Invalid request origin';
+  if (!isAllowedOrigin(origin) && !isSameOriginRequest(c, origin)) return 'Invalid request origin';
 
   const fetchSite = c.req.header('sec-fetch-site');
   if (fetchSite) {
