@@ -470,7 +470,27 @@ aiAgentsRoutes.post(
     }
 
     try {
-      const intent = await createActionIntent(auth, {
+      // `runOutsideDbContext` is LOAD-BEARING, not tidiness — found by
+      // `aiAgentGraduation.integration.test.ts` (Task A2-9) against real
+      // Postgres, where this route 500'd on every promotion.
+      // `createActionIntent` opens its transaction with a bare
+      // `withSystemDbAccessContext`, and that is a NO-OP passthrough when a
+      // context is already held (`db/index.ts`). This route is not in
+      // `SELF_MANAGED_DB_CONTEXT_ROUTES`, so `authMiddleware` runs the whole
+      // handler inside the REQUESTER's org-scoped request transaction; the
+      // four-eyes fan-out then inserts an `approval_requests` row owned by a
+      // DIFFERENT user, and that table's Shape-6 policy is
+      // `user_id = breeze_current_user_id() OR breeze_current_scope() = 'system'`
+      // — so the insert dies 42501 and the request 500s. Every OTHER caller
+      // of `createActionIntent` (the chat SDK, the agent run loop, the
+      // verdict/triage/sweep proposers) reaches it from a contextless stack,
+      // which is why this is the first route to meet it. Exiting the request
+      // context makes the system wrapper actually elevate.
+      //
+      // No atomicity is lost: nothing else in this handler writes, and
+      // `createActionIntent`'s own transaction still commits the intent, its
+      // fan-out and its outbox row together.
+      const intent = await runOutsideDbContext(() => createActionIntent(auth, {
         toolName: 'manage_ai_agents',
         // `orgId` is carried in the ARGUMENTS as well as on the intent: the
         // effect-digest resolver receives only `(args, database)` and pins
@@ -481,7 +501,7 @@ aiAgentsRoutes.post(
         source: 'mcp_api',
         orgId,
         requestingClientLabel: 'Breeze',
-      });
+      }));
       return c.json({ intentId: intent.id }, 201);
     } catch (err) {
       // Every ActionIntentError is a caller-fixable refusal (tool blocked or
