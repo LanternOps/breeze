@@ -115,6 +115,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'aiBudgetAlertDeliveryWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiBudgetAlertDelivery');
+      return { init: m.initializeAiBudgetAlertWorker, shutdown: m.shutdownAiBudgetAlertWorker };
+    },
+  },
+  {
     name: 'fleetFindingsWorker',
     placement: 'global',
     load: async () => {

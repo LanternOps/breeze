@@ -11,8 +11,10 @@ vi.mock('../db', () => ({
 vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: vi.fn(), DEFAULT_AI_ALERT_THRESHOLD_PERCENTS: [50, 80, 95] }));
 vi.mock('./llm/llmConfigResolver', () => ({ getLlmBillingSourceForOrg: vi.fn() }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../jobs/aiBudgetAlertDelivery', () => ({ enqueueAiBudgetAlertDelivery: vi.fn().mockResolvedValue(undefined) }));
 
 import { computeBudgetPct, evaluateAiBudgetThresholds, normalizeAlertThresholds, periodKeysFor, pickRung } from './aiBudgetAlerts';
+import { enqueueAiBudgetAlertDelivery } from '../jobs/aiBudgetAlertDelivery';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
@@ -73,6 +75,7 @@ describe('evaluateAiBudgetThresholds', () => {
     vi.mocked(runOutsideDbContext).mockClear();
     vi.mocked(withSystemDbAccessContext).mockClear();
     vi.mocked(getCurrentDbAccessContext).mockReset().mockReturnValue(undefined);
+    vi.mocked(enqueueAiBudgetAlertDelivery).mockClear();
   });
 
   it('does nothing when AI is disabled', async () => {
@@ -89,6 +92,7 @@ describe('evaluateAiBudgetThresholds', () => {
     expect(created).toEqual([{ id: 'evt-1', period: 'monthly', thresholdPct: 95 }]);
     expect(executed.join('\n')).toContain('threshold_pct >=');
     expect(executed.join('\n')).toContain('ON CONFLICT');
+    expect(enqueueAiBudgetAlertDelivery).toHaveBeenCalledWith('evt-1');
   });
 
   it('returns nothing when the insert is suppressed (rung already fired)', async () => {
@@ -96,6 +100,7 @@ describe('evaluateAiBudgetThresholds', () => {
     // usage read, then advisory lock (unused), then insert suppressed by the monotonic guard
     responses = [[{ total_cost_cents: 8100 }], [], []];
     await expect(evaluateAiBudgetThresholds('org1')).resolves.toEqual([]);
+    expect(enqueueAiBudgetAlertDelivery).not.toHaveBeenCalled();
   });
 
   it('does not escape to a system context when already system-scoped (finding #1)', async () => {
@@ -124,6 +129,43 @@ describe('evaluateAiBudgetThresholds', () => {
     expect(created).toEqual([{ id: 'evt-1', period: 'monthly', thresholdPct: 95 }]);
     expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
     expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('enqueues delivery only AFTER the system context (and its transaction) has resolved (W02 critical #1)', async () => {
+    // The event row is inserted inside the transaction `withSystemDbAccessContext`
+    // opens. Enqueuing from inside that callback races the COMMIT: BullMQ can
+    // hand `deliver-<id>` to a worker that sees no row, and a completed job's
+    // retained hash then makes reconcile's re-add a silent no-op. The enqueue
+    // must therefore run at context depth 0 — i.e. after the wrapper resolved.
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({ scope: 'organization' } as never);
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue({ enabled: true, monthlyBudgetCents: 10000, dailyBudgetCents: null, alertThresholdPercents: [50, 80, 95] } as never);
+    responses = [[{ total_cost_cents: 9600 }], [], [{ id: 'evt-1' }]];
+
+    let contextDepth = 0;
+    const depthsAtEnqueue: number[] = [];
+    vi.mocked(withSystemDbAccessContext).mockImplementationOnce(async (fn: () => unknown) => {
+      contextDepth++;
+      try {
+        return await fn();
+      } finally {
+        contextDepth--;
+      }
+    });
+    vi.mocked(enqueueAiBudgetAlertDelivery).mockImplementationOnce(async () => {
+      depthsAtEnqueue.push(contextDepth);
+    });
+
+    await expect(evaluateAiBudgetThresholds('org1')).resolves.toEqual([{ id: 'evt-1', period: 'monthly', thresholdPct: 95 }]);
+
+    expect(depthsAtEnqueue).toEqual([0]);
+  });
+
+  it('still returns the created rows when the enqueue itself fails (never-throws contract)', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue({ enabled: true, monthlyBudgetCents: 10000, dailyBudgetCents: null, alertThresholdPercents: [50, 80, 95] } as never);
+    responses = [[{ total_cost_cents: 9600 }], [], [{ id: 'evt-1' }]];
+    vi.mocked(enqueueAiBudgetAlertDelivery).mockRejectedValueOnce(new Error('redis down'));
+
+    await expect(evaluateAiBudgetThresholds('org1')).resolves.toEqual([{ id: 'evt-1', period: 'monthly', thresholdPct: 95 }]);
   });
 
   it('returns early without checking the billing source when the org has no caps (finding #3)', async () => {
