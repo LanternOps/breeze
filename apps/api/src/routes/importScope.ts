@@ -3,9 +3,10 @@
  *
  * `POST /orgs/import*` and `POST /orgs/contacts/import*` answer the same
  * question — "which partner is this import for, and may this caller import into
- * it?" — and answered it with two verbatim copies of this function. One copy
- * is enough: the 400/403 messages are part of the wire contract for both, and
- * two copies drift.
+ * it?". The org importer answered it inline; this is that code lifted out so
+ * the contact importer (#3258) reuses it instead of growing a second copy. One
+ * copy is enough: the 400/403 messages are part of the wire contract for both,
+ * and two copies drift.
  *
  * Deliberately free of database and schema imports so either route's test suite
  * can import it without adding a mock.
