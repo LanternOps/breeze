@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, ShieldCheck } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { ActionError, handleActionError, runAction } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 
 type EvidenceCard = {
   partner: {
@@ -168,6 +169,16 @@ export default function TrustQueue() {
   const act = async (row: TrustQueueRow, action: TrustAction) => {
     const reason = window.prompt(`Reason for ${action === 'approve' ? 'approving' : action === 'restrict' ? 'restricting' : 'suspending'} ${row.name}:`);
     if (reason === null) return;
+
+    // Client-side validation for reason length
+    const minLength = action === 'suspend' ? 10 : 8;
+    if (reason.trim().length < minLength) {
+      showToast({
+        message: `Reason must be at least ${minLength} characters`,
+        type: 'error',
+      });
+      return;
+    }
 
     let confirmEmail: string | null = null;
     if (action === 'suspend') {

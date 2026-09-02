@@ -185,4 +185,131 @@ describe('TrustQueue', () => {
 
     expect(await screen.findByText('Sign in as a platform admin')).toBeTruthy();
   });
+
+  it('does not call promote when reason is too short (< 8 chars)', async () => {
+    fetchWithAuth.mockResolvedValue(queueResponse());
+    vi.spyOn(window, 'prompt').mockReturnValue('Short');
+    render(<TrustQueue />);
+    await screen.findByText('Acme MSP');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+
+    await waitFor(() => {
+      const mutations = fetchWithAuth.mock.calls.filter(
+        ([url]) => url === '/admin/partners/partner-1/trust/promote'
+      );
+      expect(mutations).toHaveLength(0);
+    });
+    expect(showToast).toHaveBeenCalledWith({
+      message: 'Reason must be at least 8 characters',
+      type: 'error',
+    });
+  });
+
+  it('does not call restrict when reason is too short (< 8 chars)', async () => {
+    fetchWithAuth.mockResolvedValue(queueResponse());
+    vi.spyOn(window, 'prompt').mockReturnValue('Short');
+    render(<TrustQueue />);
+    await screen.findByText('Acme MSP');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restrict' }));
+
+    await waitFor(() => {
+      const mutations = fetchWithAuth.mock.calls.filter(
+        ([url]) => url === '/admin/partners/partner-1/trust/restrict'
+      );
+      expect(mutations).toHaveLength(0);
+    });
+    expect(showToast).toHaveBeenCalledWith({
+      message: 'Reason must be at least 8 characters',
+      type: 'error',
+    });
+  });
+
+  it('does not call suspend when reason is too short (< 10 chars)', async () => {
+    fetchWithAuth.mockResolvedValue(queueResponse());
+    vi.spyOn(window, 'prompt')
+      .mockReturnValueOnce('Short')
+      .mockReturnValueOnce('operator@example.com');
+    render(<TrustQueue />);
+    await screen.findByText('Acme MSP');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Suspend' }));
+
+    await waitFor(() => {
+      const mutations = fetchWithAuth.mock.calls.filter(
+        ([url]) => url === '/admin/partners/partner-1/suspend-for-abuse'
+      );
+      expect(mutations).toHaveLength(0);
+    });
+    expect(showToast).toHaveBeenCalledWith({
+      message: 'Reason must be at least 10 characters',
+      type: 'error',
+    });
+  });
+
+  it('calls promote when reason is exactly 8 characters', async () => {
+    fetchWithAuth.mockImplementation((url: string, options?: RequestInit) => {
+      if (!options) return Promise.resolve(queueResponse());
+      if (
+        url === '/admin/partners/partner-1/trust/promote' &&
+        options.method === 'POST'
+      )
+        return Promise.resolve(jsonResponse({ success: true }));
+      throw new Error(`Unexpected request: ${options.method} ${url}`);
+    });
+    vi.spyOn(window, 'prompt').mockReturnValue('12345678');
+    render(<TrustQueue />);
+    await screen.findByText('Acme MSP');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+
+    await waitFor(() => {
+      const mutation = fetchWithAuth.mock.calls.find(
+        ([url]) => url === '/admin/partners/partner-1/trust/promote'
+      );
+      expect(mutation).toBeTruthy();
+    });
+  });
+
+  it('calls suspend when reason is exactly 10 characters', async () => {
+    const endpoint = '/admin/partners/partner-1/suspend-for-abuse';
+    fetchWithAuth.mockImplementation((url: string, options?: RequestInit) => {
+      if (!options) return Promise.resolve(queueResponse());
+      if (url === endpoint && options.method === 'POST')
+        return Promise.resolve(jsonResponse({ success: true }));
+      throw new Error(`Unexpected request: ${options.method} ${url}`);
+    });
+    vi.spyOn(window, 'prompt')
+      .mockReturnValueOnce('1234567890')
+      .mockReturnValueOnce('operator@example.com');
+    render(<TrustQueue />);
+    await screen.findByText('Acme MSP');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Suspend' }));
+
+    await waitFor(() => {
+      const mutation = fetchWithAuth.mock.calls.find(([url]) => url === endpoint);
+      expect(mutation).toBeTruthy();
+    });
+  });
+
+  it('shows platform admin message when action returns 401', async () => {
+    fetchWithAuth.mockImplementation((url: string, options?: RequestInit) => {
+      if (!options) return Promise.resolve(queueResponse());
+      if (
+        url === '/admin/partners/partner-1/trust/promote' &&
+        options.method === 'POST'
+      )
+        return Promise.resolve(jsonResponse({ error: 'Unauthorized' }, 401));
+      throw new Error(`Unexpected request: ${options.method} ${url}`);
+    });
+    vi.spyOn(window, 'prompt').mockReturnValue('Valid reason of sufficient length');
+    render(<TrustQueue />);
+    await screen.findByText('Acme MSP');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+
+    expect(await screen.findByText('Sign in as a platform admin')).toBeTruthy();
+  });
 });
