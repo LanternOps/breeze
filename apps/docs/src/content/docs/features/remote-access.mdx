@@ -538,6 +538,15 @@ The viewer handles both. The first is detected before connecting, so WebRTC is s
 | | Switching between user sessions |
 | | Low-latency cursor streaming |
 
+<Aside type="note" title="Paste Text and keyboard layouts">
+  On a WebRTC session, **Paste Text** delivers the text literally, so accented
+  characters and symbols arrive as typed regardless of the keyboard layout on
+  either end. On the WebSocket fallback, paste is replayed as individual
+  keystrokes and is still interpreted through the remote machine's layout —
+  a non-US layout can turn `/` into `?` or drop characters. If pasted text
+  arrives mangled, check whether the toolbar badge reads **WS**.
+</Aside>
+
 To get WebRTC, install the GStreamer plugin sets webkit2gtk uses for it, then relaunch the viewer:
 
 ```bash

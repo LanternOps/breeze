@@ -147,6 +147,8 @@ POST and PATCH on `/enrollment-keys` reject any field that isn't in the table ab
 
 <Aside>
   The default TTL is configurable via the `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` environment variable. If unset, keys expire 30 days after creation.
+
+  Two paths do **not** yet pick up that 30-day fallback when the variable is unset: keys minted through the partner-provisioning API expire after 60 minutes, and installer child keys after 24 hours. If you rely on either, set `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` (and `CHILD_ENROLLMENT_KEY_TTL_MINUTES`) explicitly rather than depending on the default.
 </Aside>
 
 <Aside type="tip">

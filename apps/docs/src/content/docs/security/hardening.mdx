@@ -47,8 +47,8 @@ Before going live, verify every item:
 
 ### Authentication
 
-- [ ] MFA (TOTP) enabled for all admin accounts
-- [ ] Roles that should require MFA have **Force MFA** turned on. Users in a force-MFA role get a `428 Precondition Required` response until they enroll a TOTP device; the dashboard then redirects them through a forced-enrollment page before any other workflow becomes available.
+- [ ] MFA enabled for all admin accounts (authenticator app, SMS, or a passkey)
+- [ ] Roles that should require MFA have **Force MFA** turned on. Users in a force-MFA role get a `428 Precondition Required` response until they enrol an allowed MFA method; the dashboard then redirects them through a forced-enrollment page before any other workflow becomes available.
 - [ ] Registration disabled in production (`ENABLE_REGISTRATION=false`) after initial setup
 - [ ] Rate limiting active on login endpoints
 - [ ] Session timeout configured (`SESSION_MAX_AGE`)
