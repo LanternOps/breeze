@@ -730,3 +730,172 @@ describe('moveTicketOrg — requester contact detach (#3258 W03)', () => {
     expect(after.orgId).toBe(orgA.id);
   });
 });
+
+// ── #4524: the ai_agent_runs ↔ ticket pointer pair must be severed on a move ──
+
+/**
+ * Seeds one `ai_agent_runs` row pointing at `ticketId`. Unlike
+ * `seedTicketScopedIntent` (which needs a run only as an intent's requester
+ * and leaves `ticket_id` NULL), this is the shape #4524 is about: a
+ * trigger_kind='ticket' run whose `ticket_id` names the ticket.
+ *
+ * `deviceId` is parameterised because ticket-triggered runs are normally
+ * device-LESS (the ticket axis stamps ticket_id and leaves device_id NULL),
+ * while a device-triggered run can also carry a ticket_id — the ticket-keyed
+ * detach must reach both, and a `WHERE device_id IS NULL` narrowing must not
+ * pass.
+ */
+async function seedRunOnTicket(
+  orgId: string,
+  agentId: string,
+  ticketId: string,
+  deviceId: string | null = null,
+): Promise<{ id: string }> {
+  const adminDb = getTestDb() as any;
+  const [run] = await adminDb
+    .insert(aiAgentRuns)
+    .values({
+      agentId,
+      orgId,
+      triggerKind: 'ticket',
+      dedupeKey: `move-org-run-${uid()}`,
+      modeAtStart: 'shadow',
+      policySnapshot: { schemaVersion: 1 },
+      ticketId,
+      deviceId,
+    })
+    .returning();
+  return { id: run.id };
+}
+
+async function readRun(id: string) {
+  const adminDb = getTestDb() as any;
+  const [row] = await adminDb.select().from(aiAgentRuns).where(eq(aiAgentRuns.id, id)).limit(1);
+  return row as (typeof aiAgentRuns.$inferSelect) | undefined;
+}
+
+async function readComment(id: string) {
+  const adminDb = getTestDb() as any;
+  const [row] = await adminDb.select().from(ticketComments).where(eq(ticketComments.id, id)).limit(1);
+  return row as (typeof ticketComments.$inferSelect) | undefined;
+}
+
+/** A second ticket in the SAME source org, used as the "must not be touched" control. */
+async function seedSiblingTicket(orgId: string, partnerId: string): Promise<{ id: string }> {
+  const adminDb = getTestDb() as any;
+  const unique = uid();
+  const [row] = await adminDb
+    .insert(tickets)
+    .values({
+      orgId,
+      partnerId,
+      ticketNumber: `MO-SIB-${unique}`,
+      subject: `sibling ticket ${unique}`,
+      source: 'manual',
+    })
+    .returning();
+  return { id: row.id };
+}
+
+describe('moveTicketOrg — ai_agent_runs.ticket_id detach (#4524)', () => {
+  it('nulls ticket_id on every run pointing at the moved ticket, leaves the run in the source org, and spares runs on other tickets', async () => {
+    const { orgA, orgB, partner, actor, ticket, device } = await seedMoveOrgFixture();
+    const agent = await seedTriageAgent(orgA.id, partner.id);
+    const sibling = await seedSiblingTicket(orgA.id, partner.id);
+
+    // Device-LESS ticket run: the canonical trigger_kind='ticket' shape.
+    const ticketRun = await seedRunOnTicket(orgA.id, agent.id, ticket.id, null);
+    // Same ticket, but the run also names the device — proves the detach is
+    // keyed on ticket_id, not narrowed to device-less rows.
+    const deviceTicketRun = await seedRunOnTicket(orgA.id, agent.id, ticket.id, device.id);
+    // Control: a run on a DIFFERENT ticket that never leaves orgA. Rejects a
+    // blanket "null every ticket_id in the org".
+    const siblingRun = await seedRunOnTicket(orgA.id, agent.id, sibling.id, null);
+
+    // Fixture guard: the pointers exist before the move, so a post-move NULL
+    // is the detach and not an insert that never landed.
+    expect((await readRun(ticketRun.id))?.ticketId).toBe(ticket.id);
+    expect((await readRun(deviceTicketRun.id))?.ticketId).toBe(ticket.id);
+    expect((await readRun(siblingRun.id))?.ticketId).toBe(sibling.id);
+
+    await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgB.id, actor));
+
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgB.id);
+
+    // Both runs on the departed ticket are severed, and both STAY in the
+    // source org (org_id is trigger-immutable; run history never follows a
+    // move — owner decision 2026-08-23).
+    const movedRunA = await readRun(ticketRun.id);
+    expect(movedRunA?.ticketId).toBeNull();
+    expect(movedRunA?.orgId).toBe(orgA.id);
+    const movedRunB = await readRun(deviceTicketRun.id);
+    expect(movedRunB?.ticketId).toBeNull();
+    expect(movedRunB?.orgId).toBe(orgA.id);
+
+    // The sibling ticket never moved, so its run keeps its pointer.
+    const untouched = await readRun(siblingRun.id);
+    expect(untouched?.ticketId).toBe(sibling.id);
+    expect((await readTicket(sibling.id))?.orgId).toBe(orgA.id);
+  });
+
+  it('severs the pointer under a REAL partner-scoped RLS context, not just system scope', async () => {
+    // The route runs under withDbAccessContext, never withSystemDbAccessContext.
+    // ai_agent_runs is FORCE ROW LEVEL SECURITY with a breeze_has_org_access
+    // policy, so a detach that only works for `breeze.scope=system` would be a
+    // silent zero-row no-op on the one path that actually matters. Every other
+    // case in this file uses system scope, which cannot catch that.
+    const { orgA, orgB, partner, actor, ticket } = await seedMoveOrgFixture();
+    const agent = await seedTriageAgent(orgA.id, partner.id);
+    const run = await seedRunOnTicket(orgA.id, agent.id, ticket.id, null);
+
+    const partnerCtx: DbAccessContext = {
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: [orgA.id, orgB.id],
+      accessiblePartnerIds: [partner.id],
+      userId: actor.userId,
+    };
+    await withDbAccessContext(partnerCtx, () => moveTicketOrg(ticket.id, orgB.id, actor));
+
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgB.id);
+    const after = await readRun(run.id);
+    expect(after?.ticketId).toBeNull();
+    expect(after?.orgId).toBe(orgA.id);
+  });
+
+  it('nulls the reverse pointer ticket_comments.agent_run_id on comments that travel with the ticket', async () => {
+    // ticket_comments has no org_id (child-via-parent tenancy), so every
+    // comment follows the ticket into the target org while the run it names
+    // stays behind — the same reverse-pointer class #3828 fixed for
+    // metric_anomaly_incidents.agent_run_id on the device axis.
+    const { orgA, orgB, partner, actor, ticket } = await seedMoveOrgFixture();
+    const agent = await seedTriageAgent(orgA.id, partner.id);
+    const run = await seedRunOnTicket(orgA.id, agent.id, ticket.id, null);
+    const adminDb = getTestDb() as any;
+
+    const [aiComment] = await adminDb
+      .insert(ticketComments)
+      .values({
+        ticketId: ticket.id,
+        authorType: 'internal',
+        commentType: 'comment',
+        content: 'Proposed next step from triage.',
+        isPublic: false,
+        originPrincipalKind: 'ai_agent',
+        agentRunId: run.id,
+      })
+      .returning();
+    expect(aiComment.agentRunId).toBe(run.id);
+
+    await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgB.id, actor));
+
+    const after = await readComment(aiComment.id);
+    expect(after?.agentRunId).toBeNull();
+    // Only the cross-org link is dropped. The comment itself, its content and
+    // its non-user provenance (which is what the helpdesk loop guard actually
+    // keys on) all survive the move.
+    expect(after?.ticketId).toBe(ticket.id);
+    expect(after?.content).toBe('Proposed next step from triage.');
+    expect(after?.originPrincipalKind).toBe('ai_agent');
+  });
+});

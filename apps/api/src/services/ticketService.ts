@@ -1,8 +1,8 @@
-import { and, asc, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { matchContactByEmail } from './contacts/crud';
-import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, contacts, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, actionIntents, type TicketOutboxEvent } from '../db/schema';
+import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, contacts, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, actionIntents, aiAgentRuns, type TicketOutboxEvent } from '../db/schema';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
@@ -2156,6 +2156,13 @@ export async function restoreTicket(ticketId: string, actor: TicketActor): Promi
 // ticket-linked child tables in the same relative order; see the lock-order
 // comment at moveOrg.ts:~311. S3 objects are keyed by attachment id only
 // (spec D8) and are NOT touched by a move.
+// ticket_email_links is NOT here, and that is a known gap rather than a ruling:
+// it denormalizes org_id from its ticket (shape 1, FORCE RLS) yet is absent
+// from both this list and the device path's CUSTOM_ORG_REWRITE_TABLES, so a
+// moved ticket strands its link rows on the source org on BOTH axes. Left out
+// of the #4524 fix deliberately — closing it correctly spans this service and
+// routes/devices/moveOrg.ts and turns on the inbound-email tenancy model, so it
+// is tracked as its own issue rather than half-fixed on one axis here.
 const TICKET_ORG_DENORMALIZED_TABLES = ['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox', 'ticket_attachments'] as const;
 
 /**
@@ -2279,6 +2286,70 @@ export async function moveTicketOrg(
       .where(eq(tickets.id, ticketId))
       .returning();
     updated = row;
+    // #4524 — sever the ai_agent_runs <-> ticket pointer pair, BOTH directions.
+    //
+    // Agent-run history stays with the SOURCE org (owner decision 2026-08-23):
+    // ai_agent_runs.org_id is trigger-immutable (ai_agent_runs_immutable_guard,
+    // 2026-09-06-a) and the table is deliberately absent from
+    // TICKET_ORG_DENORMALIZED_TABLES above. So a run that triggered on this
+    // ticket keeps org_id = SOURCE while the ticket it names has just become
+    // the TARGET org's — a cross-tenant pointer, and /ai-agents/:id/runs would
+    // serve that now-foreign ticket id back to the source org.
+    //
+    // Unlike ticket_drafts and action_intents above, nothing forces the issue:
+    // ai_agent_runs.ticket_id is a PLAIN single-column FK to tickets(id) with
+    // ON DELETE SET NULL (aiAgents.ts), not a composite (ticket_id, org_id)
+    // tenant FK, so the ticket UPDATE above completes happily and the stale
+    // pointer survives silently. That is exactly why this detach may sit AFTER
+    // the UPDATE while those two must precede it.
+    //
+    // Ordering: it must still run BEFORE assertTicketMoveCurrencyCompatible
+    // below, which takes row locks on time_entries / ticket_parts. The
+    // device-move path (routes/devices/moveOrg.ts, and the
+    // breeze_cascade_device_org_id() trigger) locks ai_agent_runs immediately
+    // after the parent row flip and before any ticket-child table, so taking
+    // these two locks in the opposite order here would give a concurrent
+    // ticket-move and device-move an inverted lock pair — the deadlock shape
+    // the global lock-order comment at the top of this transaction exists to
+    // prevent.
+    //
+    // This is the ticket-axis twin of the device-axis statement added by #4215.
+    // There is no Postgres trigger on `UPDATE OF org_id ON tickets` (the device
+    // axis has breeze_cascade_device_org_id(); the ticket axis has no
+    // equivalent), so this service is the ONLY place the contract is enforced —
+    // see the note added beside orgMergeRegistry's `tickets` entry for why the
+    // org-merge path needs no equivalent.
+    await tx
+      .update(aiAgentRuns)
+      .set({ ticketId: null })
+      .where(eq(aiAgentRuns.ticketId, ticketId));
+    // Reverse direction: ticket_comments has no org_id (child-via-parent
+    // tenancy — see the TICKET_ORG_DENORMALIZED_TABLES comment above), so every
+    // comment on this ticket travels into the target org while the run that
+    // authored it stays behind. A retained agent_run_id would then name a
+    // source-org run from a target-org row — the same reverse-pointer class
+    // #3828 fixed for metric_anomaly_incidents.agent_run_id on the device axis,
+    // just the other end of this ticket's link.
+    //
+    // Only the cross-org link is dropped: origin_principal_kind is untouched,
+    // and that (not agent_run_id) is what the helpdesk loop guard keys on when
+    // it refuses to re-admit non-user content, so severing here cannot open a
+    // feedback loop. Nulling also drops the row out of the partial unique index
+    // ticket_comments_one_ai_note_per_run_uq, whose predicate requires
+    // agent_run_id IS NOT NULL, so it can never collide.
+    //
+    // Scope note: the DEVICE axis has this same reverse-pointer gap — a device
+    // org-move re-stamps its tickets (tickets is in
+    // breeze_device_child_orgid_tables()) and their comments travel along while
+    // the runs stay put — and it is NOT closed here, because closing it means a
+    // new migration replacing breeze_cascade_device_org_id(). Neither axis leaks
+    // today: nothing writes agent_run_id yet (the autonomous-note lane is
+    // deferred; see the column comment in db/schema/portal.ts). Tracked
+    // separately so the contract is in place before that lane ships.
+    await tx
+      .update(ticketComments)
+      .set({ agentRunId: null })
+      .where(and(eq(ticketComments.ticketId, ticketId), isNotNull(ticketComments.agentRunId)));
     guard = await assertTicketMoveCurrencyCompatible(tx, {
       ticketIds: [ticketId],
       sourceCurrency: sourceOrg.currencyCode,
