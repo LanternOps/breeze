@@ -1,5 +1,5 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex } from 'drizzle-orm/pg-core';
-import { organizations, sites } from './orgs';
+import { ipClassEnum, organizations, sites } from './orgs';
 import { users } from './users';
 import type { BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
 
@@ -54,6 +54,9 @@ export const devices = pgTable('devices', {
   // Public IP the agent enrolled from (point-in-time; lastSeenIp above tracks
   // the ongoing value). Feeds the abuse-signals sweep's IP-spread heuristics.
   enrollmentIp: varchar('enrollment_ip', { length: 45 }),
+  enrollmentIpClass: ipClassEnum('enrollment_ip_class').notNull().default('unknown'),
+  enrollmentIpAsn: integer('enrollment_ip_asn'),
+  enrollmentIpClassifiedAt: timestamp('enrollment_ip_classified_at', { withTimezone: true }),
   hostname: varchar('hostname', { length: 255 }).notNull(),
   displayName: varchar('display_name', { length: 255 }),
   osType: osTypeEnum('os_type').notNull(),
