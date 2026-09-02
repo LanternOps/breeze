@@ -1824,6 +1824,7 @@
       "empty": "No evidence has been recorded for this agent yet.",
       "readOnlyNote": "Pre-authorized execution is turned off for this deployment; these figures are informational.",
       "byOrgTruncated": "Showing the first {{limit}} organizations by name. Choose a single organization in the organization switcher to see the rest.",
+      "thresholdPerOrgNote": "Each organization resolves its own promotion threshold, so verified counts are shown here without a target. Choose a single organization in the organization switcher to see that organization's target.",
       "approvalsLink": "Track this request in the approvals inbox",
       "ceilingHint": "Partner-level keys are a ceiling, not a grant. Each organization's agent must be granted the key separately — through graduation or by editing that organization's agent.",
       "promote": "Promote",

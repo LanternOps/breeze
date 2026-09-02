@@ -1824,6 +1824,7 @@
       "empty": "Per questo agente non è stata ancora registrata alcuna prova.",
       "readOnlyNote": "L’esecuzione preautorizzata è disattivata in questa installazione; questi dati sono solo informativi.",
       "byOrgTruncated": "Sono mostrate le prime {{limit}} organizzazioni in ordine di nome. Scegli una sola organizzazione nel selettore delle organizzazioni per vedere le altre.",
+      "thresholdPerOrgNote": "Ogni organizzazione risolve la propria soglia di abilitazione, quindi qui le esecuzioni verificate sono mostrate senza un obiettivo. Scegli una sola organizzazione nel selettore delle organizzazioni per vedere il suo obiettivo.",
       "approvalsLink": "Segui questa richiesta nella casella delle approvazioni",
       "ceilingHint": "Le chiavi a livello di partner sono un limite massimo, non una concessione. L’agente di ogni organizzazione deve ricevere la chiave separatamente: tramite l’abilitazione o modificando l’agente di quella organizzazione.",
       "promote": "Promuovi",

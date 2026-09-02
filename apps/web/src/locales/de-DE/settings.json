@@ -1824,6 +1824,7 @@
       "empty": "Für diesen Agenten wurden noch keine Nachweise erfasst.",
       "readOnlyNote": "Vorab genehmigte Ausführung ist in dieser Installation deaktiviert; diese Zahlen dienen nur zur Information.",
       "byOrgTruncated": "Es werden die ersten {{limit}} Organisationen nach Name angezeigt. Wählen Sie in der Organisationsauswahl eine einzelne Organisation aus, um die übrigen zu sehen.",
+      "thresholdPerOrgNote": "Jede Organisation ermittelt ihren eigenen Schwellenwert für die Freigabe, daher werden die bestätigten Ausführungen hier ohne Zielwert angezeigt. Wählen Sie in der Organisationsauswahl eine einzelne Organisation aus, um deren Zielwert zu sehen.",
       "approvalsLink": "Diesen Antrag im Genehmigungseingang verfolgen",
       "ceilingHint": "Schlüssel auf Partnerebene sind eine Obergrenze, keine Erteilung. Der Agent jeder Organisation muss den Schlüssel gesondert erhalten — über die Freigabestufe oder durch Bearbeiten des Agenten dieser Organisation.",
       "promote": "Hochstufen",

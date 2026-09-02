@@ -67,7 +67,19 @@ interface GraduationGroup {
 
 type Loaded = {
   groups: GraduationGroup[];
+  /**
+   * A valid denominator ONLY in the single-org read, where the route resolved
+   * exactly one org's merged policy. In the byOrg read the route documents it
+   * as informational — "the first resolved org's merged value, or the shared
+   * default" (`routes/aiAgents.ts`) — while every row's `state` and
+   * `blockedReason` already applied that row's OWN org's merged threshold. So
+   * rendering it as each row's denominator prints "22 of 20" beside a
+   * `tracking` / `below_threshold` row for any org whose threshold is higher,
+   * contradicting the one thing this panel exists to explain. `byOrg` gates it.
+   */
   promoteThreshold: number;
+  /** True for the partner fan-out read (`byOrg`), false for a single org. */
+  byOrg: boolean;
   policyDecideEnabled: boolean;
   byOrgTruncated: boolean;
 };
@@ -114,6 +126,7 @@ function normalize(payload: unknown): Loaded {
         actOpReliability: Array.isArray(entry.actOpReliability) ? entry.actOpReliability : [],
       })),
       promoteThreshold: payload.promoteThreshold,
+      byOrg: true,
       policyDecideEnabled: payload.policyDecideEnabled,
       byOrgTruncated: payload.byOrgTruncated === true,
     };
@@ -122,6 +135,7 @@ function normalize(payload: unknown): Loaded {
     return {
       groups: [{ orgId: null, orgName: null, rows: payload.rows, actOpReliability: payload.actOpReliability }],
       promoteThreshold: payload.promoteThreshold,
+      byOrg: false,
       policyDecideEnabled: payload.policyDecideEnabled,
       byOrgTruncated: false,
     };
@@ -270,6 +284,18 @@ export default function AiAgentGraduationPanel({ orgId, kind, isPartnerScope }: 
             </p>
           )}
 
+          {/* The byOrg view drops the denominator because each organization
+              resolves its own threshold; say where the number can be seen
+              rather than leaving a bare count with no target. */}
+          {loaded.byOrg && loaded.groups.some((group) => group.rows.length > 0) && (
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="ai-agent-graduation-threshold-per-org-note"
+            >
+              {t('aiAgentsPage.graduation.thresholdPerOrgNote')}
+            </p>
+          )}
+
           {loaded.byOrgTruncated && (
             <p className="text-xs text-muted-foreground" data-testid="ai-agent-graduation-by-org-truncated">
               {t('aiAgentsPage.graduation.byOrgTruncated', { limit: AI_AGENT_GRADUATION_BY_ORG_LIMIT })}
@@ -349,10 +375,14 @@ export default function AiAgentGraduationPanel({ orgId, kind, isPartnerScope }: 
                             </span>
                           </td>
                           <td className={numeric}>
-                            {t('aiAgentsPage.graduation.verifiedOfThreshold', {
-                              verified: row.window.verified,
-                              threshold: loaded.promoteThreshold,
-                            })}
+                            {/* Denominator only where it is this row's own
+                                threshold — see `Loaded.promoteThreshold`. */}
+                            {loaded.byOrg
+                              ? row.window.verified
+                              : t('aiAgentsPage.graduation.verifiedOfThreshold', {
+                                  verified: row.window.verified,
+                                  threshold: loaded.promoteThreshold,
+                                })}
                           </td>
                           <td className={numeric}>{row.window.failed}</td>
                           <td className={numeric}>{row.window.recurred}</td>

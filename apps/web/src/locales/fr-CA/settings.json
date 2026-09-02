@@ -1824,6 +1824,7 @@
       "empty": "Aucune preuve n’a encore été consignée pour cet agent.",
       "readOnlyNote": "L’exécution préautorisée est désactivée dans ce déploiement; ces chiffres sont donnés à titre indicatif.",
       "byOrgTruncated": "Les {{limit}} premières organisations par nom sont affichées. Choisissez une seule organisation dans le sélecteur d’organisations pour voir les autres.",
+      "thresholdPerOrgNote": "Chaque organisation résout son propre seuil d’habilitation : les exécutions vérifiées sont donc affichées ici sans cible. Choisissez une seule organisation dans le sélecteur d’organisations pour voir sa cible.",
       "approvalsLink": "Suivre cette demande dans la boîte des approbations",
       "ceilingHint": "Les clés au niveau du partenaire constituent un plafond, non une autorisation. L’agent de chaque organisation doit obtenir la clé séparément — par l’habilitation ou en modifiant l’agent de cette organisation.",
       "promote": "Promouvoir",

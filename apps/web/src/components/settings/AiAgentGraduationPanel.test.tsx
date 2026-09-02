@@ -125,6 +125,16 @@ describe('AiAgentGraduationPanel — single-org read', () => {
     expect(cells[4]).toBe('7');
   });
 
+  // The single-org read resolves ONE org's merged threshold, so the denominator
+  // is true for every row here — and the byOrg caveat must not leak onto it.
+  it('keeps the verified-of-threshold denominator and omits the per-org caveat', async () => {
+    mockGraduation(dto());
+    render(<AiAgentGraduationPanel {...orgProps} />);
+
+    await screen.findByTestId('ai-agent-graduation-row-manage_devices:restart_device');
+    expect(screen.queryByTestId('ai-agent-graduation-threshold-per-org-note')).toBeNull();
+  });
+
   it('sends orgId and kind on the graduation read', async () => {
     mockGraduation(dto());
     render(<AiAgentGraduationPanel {...orgProps} />);
@@ -273,6 +283,44 @@ describe('AiAgentGraduationPanel — partner byOrg fan-out', () => {
     mockGraduation(byOrg);
     render(<AiAgentGraduationPanel orgId={null} kind="patch" isPartnerScope />);
     expect(await screen.findByTestId('ai-agent-graduation-by-org-truncated')).toBeTruthy();
+  });
+
+  // The top-level `promoteThreshold` is documented as informational only: it is
+  // "the first resolved org's merged value, or the shared default", while each
+  // row's state/blockedReason already applied that org's OWN merged threshold.
+  // Painting it as every row's denominator produces "22 of 20" beside a
+  // `tracking` / `below_threshold` row for an org whose threshold is higher —
+  // a self-contradiction on the one surface whose job is to explain why a key
+  // is not promotable.
+  it('shows the verified count alone in the byOrg view, never a partner-wide denominator', async () => {
+    mockGraduation({
+      ...byOrg,
+      byOrg: [
+        {
+          ...byOrg.byOrg[0],
+          // An org whose own merged threshold is HIGHER than the response's
+          // top-level 20: 22 verified, still tracking, still below threshold.
+          rows: [row({ state: 'tracking', blockedReason: 'below_threshold' })],
+        },
+      ],
+    });
+    render(<AiAgentGraduationPanel orgId={null} kind="patch" isPartnerScope />);
+
+    const tr = await screen.findByTestId('ai-agent-graduation-row-org-a-manage_devices:restart_device');
+    const cells = within(tr).getAllByRole('cell').map((cell) => cell.textContent ?? '');
+    expect(cells[2].trim()).toBe('22');
+    expect(cells[2]).not.toContain('20');
+    // Still the row's own field, not a neighbour's.
+    expect(cells[3]).toBe('3');
+    expect(cells[4]).toBe('7');
+  });
+
+  it('explains that the promotion target is resolved per organization', async () => {
+    mockGraduation(byOrg);
+    render(<AiAgentGraduationPanel orgId={null} kind="patch" isPartnerScope />);
+    const note = await screen.findByTestId('ai-agent-graduation-threshold-per-org-note');
+    expect((note.textContent ?? '').length).toBeGreaterThan(0);
+    expect(note.textContent ?? '').not.toContain('aiAgentsPage.graduation');
   });
 
   it('promotes with the row group orgId, not the panel prop', async () => {

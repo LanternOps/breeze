@@ -1824,6 +1824,7 @@
       "empty": "Todavía no se registró evidencia para este agente.",
       "readOnlyNote": "La ejecución preautorizada está desactivada en esta instalación; estas cifras son solo informativas.",
       "byOrgTruncated": "Se muestran las primeras {{limit}} organizaciones por nombre. Elige una sola organización en el selector de organizaciones para ver el resto.",
+      "thresholdPerOrgNote": "Cada organización resuelve su propio umbral de promoción, por eso aquí las ejecuciones verificadas se muestran sin objetivo. Elige una sola organización en el selector de organizaciones para ver su objetivo.",
       "approvalsLink": "Seguir esta solicitud en la bandeja de aprobaciones",
       "ceilingHint": "Las claves del nivel de socio son un techo, no una concesión. El agente de cada organización debe recibir la clave por separado: mediante la graduación o editando el agente de esa organización.",
       "promote": "Promover",

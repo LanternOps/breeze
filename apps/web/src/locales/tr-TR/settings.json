@@ -1824,6 +1824,7 @@
       "empty": "Bu araç için henüz hiç kanıt kaydedilmedi.",
       "readOnlyNote": "Önceden yetkili çalıştırma bu kurulumda kapalı; bu sayılar yalnızca bilgi amaçlıdır.",
       "byOrgTruncated": "Ada göre ilk {{limit}} kuruluş gösteriliyor. Geri kalanını görmek için kuruluş seçiciden tek bir kuruluş seçin.",
+      "thresholdPerOrgNote": "Her kuruluş kendi terfi eşiğini çözümler; bu nedenle doğrulanan çalışmalar burada hedefsiz gösterilir. Bir kuruluşun hedefini görmek için kuruluş seçiciden tek bir kuruluş seçin.",
       "approvalsLink": "Bu isteği onay kutusunda izleyin",
       "ceilingHint": "İş ortağı düzeyindeki anahtarlar bir tavandır, bir izin değildir. Her kuruluşun aracına anahtar ayrıca verilmelidir — kademeli yetkilendirmeyle ya da o kuruluşun aracını düzenleyerek.",
       "promote": "Yükselt",
