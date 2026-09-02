@@ -282,9 +282,9 @@ function contactListWhere(orgId: string, filters: ContactListFilters): SQL {
     conditions.push(arrayContains(contacts.roles, [filters.role]));
   }
   if (filters.allowedSiteIds) {
-    // `inArray` with an empty list compiles to a false constant, which is the
-    // wanted reading: a caller who can reach no site still sees the org-level
-    // contacts and nothing else.
+    // The empty case is spelled out rather than left to `inArray([])`: a caller
+    // who can reach no site still sees the ORG-LEVEL contacts, so the clause
+    // has to collapse to `site_id IS NULL` and not to a false constant.
     conditions.push(
       filters.allowedSiteIds.length === 0
         ? isNull(contacts.siteId)
