@@ -256,6 +256,29 @@ describe('tier-3 approval scope classification', () => {
     expect(withoutStatus.approvalScope).toBe('supervised');
   });
 
+  // Task 7 (#3258 wave W02): add_contact went from a stub ("returns guidance
+  // only") to a real write of customer PII, so it must escalate to Tier 3 and
+  // land on `supervised` — not stay Tier 2 (auto-execute with no approval) and
+  // not fall through to `four_eyes` (which would demand a second approver for
+  // routine contact creation, same as create_site). Two assertions, one per
+  // failure mode described in spec §5:
+  //   - membership in BOTH TIER3_ACTIONS and TIER3_SUPERVISED_ACTIONS is
+  //     required — pulling either one out fails a DIFFERENT assertion below,
+  //     so this test cannot go green with just one of the two edits in place.
+  it('add_contact is classified supervised in both required tables, never four_eyes', () => {
+    expect(TIER3_ACTIONS.manage_organizations ?? []).toContain('add_contact');
+    expect(TIER3_SUPERVISED_ACTIONS.manage_organizations ?? []).toContain('add_contact');
+    expect(TIER3_FOUR_EYES_ACTIONS.manage_organizations ?? []).not.toContain('add_contact');
+  });
+
+  it('add_contact resolves to supervised at tier 3 end-to-end — not tier 2, not four_eyes', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: 'o1', name: 'Jane Doe', email: 'jane@customer.example',
+    });
+    expect(check.tier).toBe(3);
+    expect(check.approvalScope).toBe('supervised');
+  });
+
   it('s1_isolate_device is input-aware: exempt from the static whole-tool sets', () => {
     expect(TIER3_INPUT_AWARE_TOOLS.has('s1_isolate_device')).toBe(true);
     expect(TIER3_FOUR_EYES_TOOLS.has('s1_isolate_device')).toBe(false);

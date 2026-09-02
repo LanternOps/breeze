@@ -20,6 +20,7 @@ import {
   peripheralEventTypeEnum
 } from '../db/schema';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
+import { CONTACT_ROLES } from './contacts/types';
 
 // Reusable validators
 const uuid = z.string().guid();
@@ -348,6 +349,12 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
     address: z.record(z.string(), z.unknown()).optional(),
     email: z.string().email().max(255).optional(),
+    siteId: uuid.optional(),
+    phone: z.string().max(64).optional(),
+    mobile: z.string().max(64).optional(),
+    title: z.string().max(255).optional(),
+    roles: z.array(z.enum(CONTACT_ROLES)).optional(),
+    isPrimary: z.boolean().optional(),
   }),
 
   manage_quotes: z.object({

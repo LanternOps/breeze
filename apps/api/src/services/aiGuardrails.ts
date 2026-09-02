@@ -256,10 +256,11 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_contracts: ['activate', 'pause', 'resume', 'cancel'],
   manage_quotes: ['send'],
   // Org lifecycle (issue #2366) — tenant-shape mutations require approval.
-  // add_contact stays at the tool's base tier (it returns guidance only).
+  // add_contact (#3258) writes customer PII (a first-class contact record),
+  // so it escalates too, even though it reshapes no tenant boundary.
   // update_org's approval SCOPE (not its tier) is input-aware — see
   // resolveApprovalScope's override hook below.
-  manage_organizations: ['create_org', 'update_org', 'create_site'],
+  manage_organizations: ['create_org', 'update_org', 'create_site', 'add_contact'],
   // s1_threat_action is registered at base Tier 3 (see TIER3_FOUR_EYES_TOOLS /
   // TIER3_SUPERVISED_TOOLS below for its whole-tool catch-all), but its
   // `action` enum (kill/quarantine/rollback) is a real dispatch discriminator
@@ -410,7 +411,10 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_contracts: ['pause', 'resume'],
   // create_site adds a location within an existing org, not a new tenant —
   // spec §3.2's tenant-shape bullet names only create_org/update_org.
-  manage_organizations: ['create_site'],
+  // add_contact (#3258) writes customer PII but is neither externally-binding
+  // nor identity/destroy-class, so it stays supervised alongside create_site
+  // rather than four_eyes — see spec §5.
+  manage_organizations: ['create_site', 'add_contact'],
   s1_threat_action: ['kill', 'quarantine'],
 };
 
@@ -2111,6 +2115,7 @@ function buildApprovalDescription(
       if (action === 'create_org') parts.push(`Create organization "${input.name}" (with a default Main Office site)`);
       else if (action === 'update_org') parts.push(`Update organization ${(input.orgId as string)?.slice(0, 8)}...${input.status ? ` (status → ${input.status})` : ''}`);
       else if (action === 'create_site') parts.push(`Create site "${input.name}" in organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`);
+      else if (action === 'add_contact') parts.push(`Add contact "${input.name}" (${input.email ?? 'no email'}) to organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`);
       else parts.push(`Organizations: ${action}`);
       break;
 
