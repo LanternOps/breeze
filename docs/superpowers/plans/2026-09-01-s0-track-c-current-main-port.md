@@ -1924,6 +1924,8 @@ Expected: both PASS (no schema/RLS/cascade surface changed; this is a regression
 
 - [x] **Step 5: Push and confirm CI attached to the exact head**
 
+> Truth note (Task 8): on `ad63e4256` the PR-triggered ci.yml run 33595363113 concluded `CI Success = failure` (`Test API` failure; `Security Audit` failure on a string present only via the merge ref, from main `418f7a407`), and the bare-head `workflow_dispatch` run 33596210422 concluded `CI Success = success` but the run itself failed on `Check Migrations` ("lineage is behind mainline release v0.109.0"). Docs CI 33595363106 has a same-named `CI Success` job that is not the CI gate. The tick above records the push and run attachment; the green-on-exact-head requirement is discharged by Task 8, not by this head.
+
 ```bash
 git log --oneline <design-sha>..HEAD          # expect: merge + 5 follow-ups (+ any battery fix-ups)
 git push origin fix/s0-readiness-offline-scaling
@@ -1939,6 +1941,8 @@ gh api repos/LanternOps/breeze/commits/$HEAD_SHA/check-runs --jq '.check_runs[] 
 ```
 
 - [x] **Step 6: PR body and tracker**
+
+> Truth note (Task 8): the body update was ticked before ci.yml's own `CI Success` existed on `ad63e4256` (the body says so) — premature. Task 8 Step 5's rewrite of #4007's body discharges this step.
 
 Update #4007's body (`gh pr edit 4007 --body-file …`, preserving every existing evidence-boundary statement) with a "Current-main port" section citing: the spec path; `<merge-sha>` and the five follow-up SHAs; decisions D1–D5 (incl. D3a and D3b, and the C1/C2 review findings) in one line each; the recorded RED→GREEN checkpoints (manifest/coverage, role + flag tests, `worker.boot` fail-closed + redaction, envComposeParity, webhook lifecycle controls); the resolved counts (117 declared, 113 required on a default `all` box); and these three intentional compatibility notes verbatim: (1) `deploy.sh`'s admission gate now requires every consumer selected for the api container's role to attach (flag-gated consumers excluded) — stricter than the old `/health` smoke (spec §7); (2) `/health/ready` and `/ready` return `PublicReadinessResponse` (`ready/db/redis/workers/checkedAt/consumerSummary`), replacing the old `{ status, checks }` body — external parsers of the old body must update (spec §7); (3) a deployment running without Redis is no longer admitted (Track C's fail-closed rule, D3b). State the evidence non-claim: code-integration on `main` only; Task 5 exact-candidate evidence (RMM-QA-020/038) remains open.
 
@@ -1972,3 +1976,21 @@ Hand back to the controller for the independent whole-branch review scoped to `<
 13. **`pnpm --filter @breeze/docs build`** is the MDX gate in Task 5; if the docs package's dependencies are not present after the frozen install, the implementer reports the error rather than skipping. There is no in-repo test on `health.mdx`.
 14. **Typecheck stays RED from the merge commit through Task 3** by design; the pre-commit hook does not typecheck (verified: only confidential scan + migration naming), so hooks-on commits land. Task 4's gate is the first green typecheck.
 15. **Task 1 inert loops:** at the merge commit `consumersForInitializer('eventDispatch'|'agentCommandRelay')` returns `[]` (no manifest rows yet), so the two out-of-registry loops are no-ops until Task 2 adds the rows. The code shape is what the merge commit fixes; the behavior is pinned by Task 2's source pin and Task 4's eventDispatch failure test.
+
+---
+
+### Task 8: merge-forward (origin/main `fcd5b498a`) and manifest rows for main's three new global workers
+
+**Why:** after Task 7, `origin/main` moved past `1b733cedb` and registered three `WORKER_REGISTRY` entries (`accountingSyncWorker` #4492, `aiAgentImpactRollup` #4486, `aiAgentGraduation` #4490). `workerReadinessManifest.test.ts` derives its expectation from the registry, so a squash-merge of the Task 7 head would go RED on `main`. Spec §1 (second re-pin), §4, §5.
+
+**Files:** `apps/api/src/jobs/workerReadinessManifest.ts` (+3 rows), the spec §1 note, this section. Nothing else in-repo; `pnpm-lock.yaml` is main's.
+
+- [x] **Step 1: Merge** — `git fetch origin main` → `fcd5b498a04abc5b4bb7938a64ce9bd9df0a1696`. `git -c rerere.enabled=false merge --no-ff origin/main`: 0 conflicted files, 0 "using previous resolution" lines (log: `scratchpad/merge-main.log`); auto-merged `.env.example`, `apps/api/src/jobs/intentReleaseWorker.ts`, `docker-compose.yml`. Committed `--no-verify` as `a6ec3698d` (message names the main SHA). Lockfile changed → `pnpm install --frozen-lockfile` exit 0. `workerRegistry.ts` and `index.ts` diff `1b733cedb..origin/main`: registry +3 entries, `index.ts` unchanged.
+
+- [x] **Step 2: RED** — `vitest run src/jobs/workerReadinessManifest.test.ts src/jobs/workerReadinessCoverage.test.ts` on `a6ec3698d`: `Tests 3 failed | 19 passed (22)` — "classifies every initializeWorkers group exactly once" missing `accountingSyncWorker`/`aiAgentGraduation`/`aiAgentImpactRollup`; "declares every stable consumer name exactly once" expected 120 got 117; coverage "matches every attached stable name" seeing `accountingSyncWorker`/`aiAgentGraduation`/`aiAgentImpactRollupWorker` unmatched (log: `scratchpad/task8-red.log`).
+
+- [x] **Step 3: Rows, GREEN, pins, mutation control, counts** — each module read: `accountingSyncWorker.ts` one `new Worker<…>(` L152, attaches `'accountingSyncWorker'` L239, unconditional; `aiAgentImpactRollup.ts` one `new Worker<…>(` L242, attaches `'aiAgentImpactRollupWorker'` L285 (≠ registry key → explicit consumer array), unconditional (`BREEZE_AI_AGENTS_ENABLED` is read inside `processImpactScan`, not before construction — no D3a rule); `aiAgentGraduationWorker.ts` one `new Worker(` L97, attaches `'aiAgentGraduation'` L108, unconditional. Rows: `consumers('accountingSyncWorker')`, `consumers('aiAgentImpactRollup', ['aiAgentImpactRollupWorker'])`, `consumers('aiAgentGraduation')`. GREEN 22/22. Main's own pins untouched and green: `workerRegistry.test.ts` + `workerEntrypointClosure.contract.test.ts` 116/116, 118 registry names. Mutation control: drop the `aiAgentGraduation` row → 3 failed naming it → restored byte-identical → 22/22. Counts from `declareExpectedConsumers` with a fake registry (default box, all flags off): all 120 declared / 116 required; api 27/26; worker 93/90; all-flags-on: all 120/119 (`scratchpad/task8-counts.txt`). Committed `82702d0b8`.
+
+- [x] **Step 4: Gates on `82702d0b8`** — `tsc --noEmit` exit 0, 0 `error TS`; `lint` exit 0; §10.2 battery `Test Files 34 passed (34)` / `Tests 562 passed (562)` and `offlineDetector`+`aiAgentRunner` `7 passed (7)` / `70 passed (70)`; four compose `config --quiet` invocations exit 0 (`:?` var sets unchanged, existing placeholder env-files reused); `bash -n scripts/prod/deploy.sh` exit 0; `git diff --check` clean for the worktree and for `origin/main...HEAD`; §10.1 tripwires all at expected values with the registry-name count now 118. Spec §1 gained the second re-pin note; Task 7 Steps 5/6 carry truth notes.
+
+- [ ] **Step 5: Push, CI on the exact head, PR body** — push; `gh workflow run ci.yml --ref fix/s0-readiness-offline-scaling` so a ci.yml `CI Success` attaches to the bare head; poll `check-runs` until ci.yml's `CI Success` concludes (cite the ci.yml run ID — Docs CI has a same-named job); confirm `Check Migrations` passes on the new head; rewrite #4007's body. Deliberately left unticked here: ticking it would move the head under CI. Outcome is recorded in the PR body and the Task 8 report. No merge, no draft-status change.
