@@ -104,6 +104,41 @@ customer's currency doesn't match the invoice's currency, the push is
 blocked with a customer-currency mismatch error before anything reaches
 QuickBooks, even if the realm-level check above would have passed.
 
+### Customer and item mapping
+
+Before an invoice can push cleanly, Breeze needs to know which QuickBooks
+customer each of your organizations corresponds to, and which QuickBooks item
+each of your catalog items corresponds to. The **Customer and item mapping**
+panel does this, with **Customers** and **Items** tabs.
+
+Click **Load mappings** and Breeze proposes a match for each record, labelled so
+you can see how much to trust it:
+
+| Label | Meaning |
+|---|---|
+| **Linked** | Already mapped — nothing to do. |
+| **Suggested match** | One confident match, on an exact email (customers) or SKU (items), or an exact name. |
+| **Ambiguous match** | More than one plausible candidate. Pick the right one yourself. |
+| **No match** | Nothing in QuickBooks looks like this record. |
+
+Suggestions are proposals only — nothing is written to QuickBooks until you act
+on a row:
+
+- **Confirm match** accepts the proposed record, or one you pick from the search box.
+- **Create new** creates a matching customer or item in QuickBooks.
+- **Unlink** breaks an existing mapping.
+- **Sync now** pushes the mapped record's details to QuickBooks.
+
+<Aside>
+  Set a default **Income account** before creating or syncing items — QuickBooks
+  requires one, and Breeze blocks the action rather than creating an unusable
+  item without it.
+</Aside>
+
+Mappings feed invoice push directly: a mapped customer is the one the invoice is
+raised against in QuickBooks. Getting these right before you start pushing
+invoices avoids duplicate customers in your books.
+
 ### Importing customers
 
 Once QuickBooks is connected, an **Import customers** section appears so you can bring your existing QuickBooks customers into Breeze as organizations — no re-typing.

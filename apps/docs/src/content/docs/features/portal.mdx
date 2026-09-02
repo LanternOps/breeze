@@ -139,6 +139,8 @@ Tickets are automatically associated with the submitter's portal user account an
 
 Both portal users and technicians can add comments to tickets. When a technician sends a public reply from the [Tickets queue](/features/ticketing/), it appears in the portal user's ticket conversation. Portal users only see public comments (`isPublic: true`). Internal notes added by technicians with `isPublic: false` are never shown in the portal view.
 
+Files a technician attaches to a public reply appear beneath it in the portal conversation — images inline, other files as download links. Attachments on internal notes are never exposed. Portal users cannot upload attachments of their own.
+
 ### External Ticket Integration
 
 Tickets support linking to external ticketing systems through the `externalTicketId` and `externalTicketUrl` fields, enabling integration with tools like ConnectWise, Autotask, or Zendesk.

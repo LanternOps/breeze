@@ -1355,14 +1355,16 @@
       "pattern": "apps/api/src/routes/accounting/**",
       "docs": [
         "features/integrations.mdx",
-        "deploy/environment.mdx"
+        "deploy/environment.mdx",
+        "features/accounting-integrations.mdx"
       ]
     },
     {
       "pattern": "apps/api/src/services/accounting/**",
       "docs": [
         "features/integrations.mdx",
-        "deploy/environment.mdx"
+        "deploy/environment.mdx",
+        "features/accounting-integrations.mdx"
       ]
     },
     {
@@ -2410,6 +2412,75 @@
       "pattern": "scripts/guided-setup.sh",
       "docs": [
         "getting-started/prerequisites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgArchive.ts",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgMerge.ts",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/timeEntries/**",
+      "docs": [
+        "features/ticketing.mdx",
+        "features/mobile.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/aiAgentSchedules.ts",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/admin/aiKillState.ts",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/admin/llmProviderCatalog.ts",
+      "docs": [
+        "features/bring-your-own-llm-key.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/actionIntents/ticketAutonomy.ts",
+      "docs": [
+        "features/ai-agents.mdx",
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/accounting/accountingMappingService.ts",
+      "docs": [
+        "features/accounting-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/requestTransport.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "getting-started/quickstart.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/worker.ts",
+      "docs": [
+        "deploy/worker-split.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/workerRegistry.ts",
+      "docs": [
+        "deploy/worker-split.mdx"
       ]
     }
   ]
