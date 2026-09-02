@@ -557,7 +557,7 @@
       "addSection": {
         "captionPlaceholder": "Caption (optional)",
         "headingPlaceholder": "Heading text",
-        "imageHelp": "PNG, JPEG, or WebP, up to 5 MB.",
+        "imageHelp": "PNG or JPEG, up to 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Add section",
         "richTextPlaceholder": "Proposal text…",
@@ -876,7 +876,7 @@
         "preparedForPlaceholder": "Override the customer name",
         "showPreparedBy": "Show “prepared by” (your company)",
         "imageLabel": "Cover image",
-        "imageHelp": "PNG, JPEG, or WebP, up to 5 MB.",
+        "imageHelp": "PNG or JPEG, up to 5 MB.",
         "removeImage": "Remove image"
       },
       "ghost": {

@@ -557,7 +557,7 @@
       "addSection": {
         "captionPlaceholder": "Didascalia (facoltativa)",
         "headingPlaceholder": "Testo intestazione",
-        "imageHelp": "PNG, JPEG o WebP, fino a 5 MB.",
+        "imageHelp": "PNG o JPEG, fino a 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Aggiungi sezione",
         "richTextPlaceholder": "Testo della proposta…",
@@ -839,7 +839,7 @@
         "preparedForPlaceholder": "Sostituisci il nome del cliente",
         "showPreparedBy": "Mostra “preparata da” (la tua azienda)",
         "imageLabel": "Immagine copertina",
-        "imageHelp": "PNG, JPEG o WebP, fino a 5 MB.",
+        "imageHelp": "PNG o JPEG, fino a 5 MB.",
         "removeImage": "Rimuovi immagine"
       },
       "ghost": {

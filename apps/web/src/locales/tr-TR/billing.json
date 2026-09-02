@@ -557,7 +557,7 @@
       "addSection": {
         "captionPlaceholder": "Altyazı (isteğe bağlı)",
         "headingPlaceholder": "Başlık metni",
-        "imageHelp": "PNG, JPEG veya WebP, 5 MB'a kadar.",
+        "imageHelp": "PNG veya JPEG, 5 MB'a kadar.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Bölüm ekle",
         "richTextPlaceholder": "Teklif metni…",
@@ -884,7 +884,7 @@
         "preparedForPlaceholder": "Müşteri adını geçersiz kılın",
         "showPreparedBy": "“Şirketiniz tarafından hazırlanan”ı göster",
         "imageLabel": "Kapak resmi",
-        "imageHelp": "PNG, JPEG veya WebP, 5 MB'a kadar.",
+        "imageHelp": "PNG veya JPEG, 5 MB'a kadar.",
         "removeImage": "Resmi kaldır"
       },
       "ghost": {
