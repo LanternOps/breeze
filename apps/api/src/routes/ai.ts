@@ -1100,16 +1100,21 @@ aiRoutes.put(
 
     const body = c.req.valid('json');
 
-    // Enforce partner locks on AI budget fields. Submitted values are passed so a
-    // field the partner enforces only 403s when the org actually changes it
-    // (issue #2752); re-sending the enforced value is an allowed no-op.
-    if (Object.keys(body).length > 0) {
-      await assertNotLocked(orgId, 'aiBudgets', body);
-    }
-
+    // Normalise BEFORE the lock check: assertNotLocked compares with
+    // isDeepStrictEqual, which is array-order-sensitive, so checking the raw
+    // body would 403 a legitimate no-op resubmit of the same rungs sent in a
+    // different order.
     const normalized = body.alertThresholdPercents == null
       ? body
       : { ...body, alertThresholdPercents: normalizeAlertThresholds(body.alertThresholdPercents) };
+
+    // Enforce partner locks on AI budget fields. Submitted values are passed so a
+    // field the partner enforces only 403s when the org actually changes it
+    // (issue #2752); re-sending the enforced value is an allowed no-op.
+    if (Object.keys(normalized).length > 0) {
+      await assertNotLocked(orgId, 'aiBudgets', normalized);
+    }
+
     await updateBudget(orgId, normalized);
 
     // A lowered cap or a new rung must fire now, not on the next turn (spec §4.2 #2).

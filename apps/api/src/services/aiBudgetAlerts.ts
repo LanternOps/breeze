@@ -4,7 +4,7 @@
  */
 
 import { sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
 import { captureException } from './sentry';
@@ -59,9 +59,15 @@ export function periodKeysFor(now: Date): { daily: string; monthly: string } {
  * belongs right after `created.push(...)` below.
  */
 export async function evaluateAiBudgetThresholds(orgId: string, now = new Date()): Promise<CreatedAlertEvent[]> {
-  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  const run = async (): Promise<CreatedAlertEvent[]> => {
     const budget = await getEffectiveAiBudget(orgId);
     if (!budget.enabled) return [];
+    // No-cap orgs are the common case: bail before the billing-source lookup
+    // (getLlmBillingSourceForOrg — two queries) so an uncapped org costs one
+    // effective-budget read and nothing else. Same cap-truthiness rule as the
+    // per-period skip below.
+    const hasCap = (cap: number | null | undefined) => !!cap && cap > 0;
+    if (!hasCap(budget.dailyBudgetCents) && !hasCap(budget.monthlyBudgetCents)) return [];
     const ladder = budget.alertThresholdPercents;
     const keys = periodKeysFor(now);
     const billingSource = await getLlmBillingSourceForOrg(orgId);
@@ -87,8 +93,12 @@ export async function evaluateAiBudgetThresholds(orgId: string, now = new Date()
 
       // Advisory lock per (org, period) serialises concurrent recorders so two
       // turns landing together cannot insert two different rungs in a burst.
+      // Two-arg hashtext form namespaces this under a fixed 'ai-budget-alerts'
+      // key (repo convention: discoveryJobCreation.ts, c2cJobCreation.ts) so it
+      // doesn't share the flat 32-bit keyspace with unrelated single-arg locks
+      // like metricRollupMaintenance's hashtext('metric_rollup_maintenance').
       const inserted = await db.transaction(async (tx) => {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`ai-budget-alert:${orgId}:${period}`}))`);
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('ai-budget-alerts'), hashtext(${`${orgId}:${period}`}))`);
         return tx.execute<{ id: string }>(sql`
           INSERT INTO ai_budget_alert_events (org_id, period, period_key, threshold_pct, cap_cents, used_cents, billing_source)
           SELECT ${orgId}::uuid, ${period}, ${key}, ${rung}, ${Math.round(cap)}, ${Math.round(used)}, ${billingSource}
@@ -105,7 +115,22 @@ export async function evaluateAiBudgetThresholds(orgId: string, now = new Date()
       if (id) created.push({ id, period, thresholdPct: rung });
     }
     return created;
-  })).catch((err: unknown) => {
+  };
+
+  // AVAILABILITY: the escape to a system context is taken ONLY when it is
+  // actually needed. `withDbAccessContext` opens a real `baseDb.transaction`,
+  // pinning one pooled connection for the whole callback, and
+  // `runOutsideDbContext` exits the AsyncLocalStorage store — so a nested
+  // `withSystemDbAccessContext` does not nest, it opens a SECOND transaction on
+  // a SECOND pooled connection while the first is still held. `checkCostAnomalies`
+  // (aiCostTracker.ts) already runs inside `withSystemDbAccessContext`, so every
+  // recorded turn would otherwise double-hold connections against the
+  // 25-connection production ceiling for ~7 queries. Same skip-branch contract
+  // as `readWithPartnerAxisVisibility` (db/partnerAxisRead.ts).
+  const ambientScope = getCurrentDbAccessContext()?.scope;
+  const evaluate = ambientScope === 'system' ? run() : runOutsideDbContext(() => withSystemDbAccessContext(run));
+
+  return evaluate.catch((err: unknown) => {
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, { orgId, service: 'aiBudgetAlerts' });
     console.error(`[AI] budget threshold evaluation failed for org=${orgId}:`, err instanceof Error ? err.message : err);
     return [];

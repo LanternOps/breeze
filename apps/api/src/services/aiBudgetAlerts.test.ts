@@ -2,13 +2,18 @@ import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../db', () => ({ db: {}, withSystemDbAccessContext: (fn: () => unknown) => fn(), runOutsideDbContext: (fn: () => unknown) => fn() }));
+vi.mock('../db', () => ({
+  db: {},
+  withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  getCurrentDbAccessContext: vi.fn(() => undefined),
+}));
 vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: vi.fn(), DEFAULT_AI_ALERT_THRESHOLD_PERCENTS: [50, 80, 95] }));
 vi.mock('./llm/llmConfigResolver', () => ({ getLlmBillingSourceForOrg: vi.fn() }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 import { computeBudgetPct, evaluateAiBudgetThresholds, normalizeAlertThresholds, periodKeysFor, pickRung } from './aiBudgetAlerts';
-import { db } from '../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
 
@@ -64,7 +69,10 @@ describe('evaluateAiBudgetThresholds', () => {
       return responses.length > 0 ? responses.shift() : [{ id: 'evt-1' }];
     });
     (db as unknown as Record<string, unknown>).transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(db));
-    vi.mocked(getLlmBillingSourceForOrg).mockResolvedValue('platform');
+    vi.mocked(getLlmBillingSourceForOrg).mockReset().mockResolvedValue('platform');
+    vi.mocked(runOutsideDbContext).mockClear();
+    vi.mocked(withSystemDbAccessContext).mockClear();
+    vi.mocked(getCurrentDbAccessContext).mockReset().mockReturnValue(undefined);
   });
 
   it('does nothing when AI is disabled', async () => {
@@ -88,5 +96,59 @@ describe('evaluateAiBudgetThresholds', () => {
     // usage read, then advisory lock (unused), then insert suppressed by the monotonic guard
     responses = [[{ total_cost_cents: 8100 }], [], []];
     await expect(evaluateAiBudgetThresholds('org1')).resolves.toEqual([]);
+  });
+
+  it('does not escape to a system context when already system-scoped (finding #1)', async () => {
+    // `checkCostAnomalies` already runs inside `withSystemDbAccessContext`, so the
+    // evaluator must run the body directly instead of double-holding a second
+    // pooled connection via runOutsideDbContext + a nested system context — same
+    // skip-branch contract as readWithPartnerAxisVisibility (db/partnerAxisRead.ts).
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({ scope: 'system' } as never);
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue({ enabled: true, monthlyBudgetCents: 10000, dailyBudgetCents: null, alertThresholdPercents: [50, 80, 95] } as never);
+    responses = [[{ total_cost_cents: 9600 }], [], [{ id: 'evt-1' }]];
+
+    const created = await evaluateAiBudgetThresholds('org1');
+
+    expect(created).toEqual([{ id: 'evt-1', period: 'monthly', thresholdPct: 95 }]);
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('escapes to a system context when the ambient context is org-scoped (finding #1)', async () => {
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({ scope: 'organization' } as never);
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue({ enabled: true, monthlyBudgetCents: 10000, dailyBudgetCents: null, alertThresholdPercents: [50, 80, 95] } as never);
+    responses = [[{ total_cost_cents: 9600 }], [], [{ id: 'evt-1' }]];
+
+    const created = await evaluateAiBudgetThresholds('org1');
+
+    expect(created).toEqual([{ id: 'evt-1', period: 'monthly', thresholdPct: 95 }]);
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns early without checking the billing source when the org has no caps (finding #3)', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue({ enabled: true, monthlyBudgetCents: null, dailyBudgetCents: 0, alertThresholdPercents: [50, 80, 95] } as never);
+
+    const created = await evaluateAiBudgetThresholds('org1');
+
+    expect(created).toEqual([]);
+    expect(getLlmBillingSourceForOrg).not.toHaveBeenCalled();
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it('namespaces the advisory lock under a shared ai-budget-alerts keyspace (finding #4)', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue({ enabled: true, monthlyBudgetCents: 10000, dailyBudgetCents: null, alertThresholdPercents: [50, 80, 95] } as never);
+    responses = [[{ total_cost_cents: 9600 }], [], [{ id: 'evt-1' }]];
+
+    await evaluateAiBudgetThresholds('org1');
+
+    const lockStatement = executed.find((sqlText) => sqlText.includes('pg_advisory_xact_lock'));
+    expect(lockStatement).toBeDefined();
+    // Two-arg form namespaced under a fixed 'ai-budget-alerts' key, per repo
+    // convention (discoveryJobCreation.ts, c2cJobCreation.ts) — NOT the flat
+    // single-arg hashtext(...) that shares the 32-bit keyspace with unrelated
+    // locks like metricRollupMaintenance's hashtext('metric_rollup_maintenance').
+    expect(lockStatement).toContain("hashtext('ai-budget-alerts')");
+    expect(lockStatement).toMatch(/pg_advisory_xact_lock\(hashtext\('ai-budget-alerts'\),\s*hashtext\(/);
   });
 });

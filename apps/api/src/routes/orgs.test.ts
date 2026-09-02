@@ -4995,6 +4995,46 @@ describe('org routes', () => {
       expect(res.status).toBe(400);
     });
 
+    // finding #2b: assertNotLocked (services/effectiveSettings.ts) compares with
+    // isDeepStrictEqual, which is array-order-sensitive. PUT /ai/budget already
+    // normalises alertThresholdPercents before persisting; this partner-scoped
+    // aiBudgets write path (the partner-wide equivalent) must do the same so a
+    // legitimate no-op resubmit in a different array order isn't stored
+    // differently from what was actually enforced.
+    it('normalises aiBudgets.alertThresholdPercents before persisting', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any);
+      let persistedSettings: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+          persistedSettings = data.settings as Record<string, unknown>;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ ...currentPartner, settings: persistedSettings }]),
+            }),
+          };
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: { aiBudgets: { alertThresholdPercents: [95, 50, 50] } },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(persistedSettings?.aiBudgets).toMatchObject({ alertThresholdPercents: [50, 95] });
+    });
+
     // issue #2124: a partner-locked pin can freeze every child org's fleet, so an
     // unknown version is rejected at save time (before the partner row is even
     // fetched). Default db.select resolves [] → no matching agent_versions row.

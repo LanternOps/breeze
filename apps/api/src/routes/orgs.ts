@@ -14,6 +14,7 @@ import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
+import { normalizeAlertThresholds } from '../services/aiBudgetAlerts';
 import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import {
@@ -916,6 +917,18 @@ orgRoutes.patch(
     newSettings.timeTracking = {
       ...((currentSettings.timeTracking as Record<string, unknown> | undefined) ?? {}),
       ...body.settings.timeTracking,
+    };
+  }
+
+  // Normalise aiBudgets.alertThresholdPercents (sorted, deduped) before
+  // persisting — this partner-wide write path is the equivalent of PUT
+  // /ai/budget's per-org normalisation, and skipping it here would let the
+  // partner-wide rungs be stored in whatever order the client submitted them,
+  // which downstream isDeepStrictEqual-based lock comparisons are sensitive to.
+  if (body.settings?.aiBudgets?.alertThresholdPercents != null) {
+    newSettings.aiBudgets = {
+      ...((newSettings.aiBudgets as Record<string, unknown> | undefined) ?? {}),
+      alertThresholdPercents: normalizeAlertThresholds(body.settings.aiBudgets.alertThresholdPercents),
     };
   }
 
