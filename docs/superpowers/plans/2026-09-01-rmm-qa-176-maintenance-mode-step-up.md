@@ -2412,9 +2412,15 @@ Expected: every bulk case fails with `expected 200 … received 404` (route abse
 // POST /devices/bulk/maintenance - Enter maintenance mode on many devices
 //
 // RMM-QA-176 D2. ENTRY ONLY (exit stays per-device — ending suppression needs
-// no batching). Registered before the `/:id/…` routes in this router so `bulk`
-// is never read as a device id; commandsRoutes is mounted last in
-// routes/devices/index.ts and no earlier router registers POST /bulk/*.
+// no batching). Registered before the `/:id/…` routes IN THIS FILE so `bulk` is
+// never read as a device id: `POST /:id/maintenance` is registered at
+// commands.ts:365, so this handler must appear above that line or Hono matches
+// it with id='bulk'. (`POST /bulk/commands` at commands.ts:25 is the existing
+// precedent for static-before-:id in this file.) Cross-router shadowing is not
+// the hazard: no other router under routes/devices registers POST /bulk/* or
+// /:id/maintenance. Note commandsRoutes is NOT mounted last — it is at
+// routes/devices/index.ts:103 with 14 routers after it — but later mounts
+// cannot shadow an already-registered path, so the mount position is moot.
 //
 // Three phases, in this order and for this reason:
 //   1. PREFLIGHT, no writes — validate the grant against the digest of the
