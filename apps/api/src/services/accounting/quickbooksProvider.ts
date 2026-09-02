@@ -234,6 +234,26 @@ interface CdcWindowResult {
   deletedInvoices: string[];
   /** True when any entity block reported totalCount > the array it returned. */
   overflowed: boolean;
+  /**
+   * Parsed `CDCResponse[].time` — QBO's own server clock for this read, which is
+   * what gets stored as the next cursor (spec: "the response's server time, not
+   * ours"). Null when the response omitted it or it failed to parse; the caller
+   * falls back to its own local clock in that case.
+   */
+  responseTime: Date | null;
+}
+
+/** Parses `parsed.time` into a Date, or null when absent/unparseable. */
+function parseCdcResponseTime(time: string | undefined): Date | null {
+  if (!time) return null;
+  const parsed = new Date(time);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function earliestResponseTime(times: readonly (Date | null)[]): Date | null {
+  const known = times.filter((t): t is Date => t !== null);
+  if (known.length === 0) return null;
+  return known.reduce((earliest, t) => (t.getTime() < earliest.getTime() ? t : earliest));
 }
 
 function mergeCdcWindowResults(parts: readonly CdcWindowResult[]): CdcWindowResult {
@@ -252,6 +272,11 @@ function mergeCdcWindowResults(parts: readonly CdcWindowResult[]): CdcWindowResu
     deletedPayments: [...deletedPayments],
     deletedInvoices: [...deletedInvoices],
     overflowed,
+    // Windows are halved because ONE window overflowed; the stored cursor must
+    // never advance past the earliest server time actually observed across the
+    // merged sub-windows, or a later-overflowing sub-window's unread tail would
+    // be skipped on the next run.
+    responseTime: earliestResponseTime(parts.map((p) => p.responseTime)),
   };
 }
 
@@ -682,7 +707,11 @@ export class QuickbooksProvider implements AccountingProvider {
 
     const result = await this.fetchCdcWindow(conn, from, now);
     return {
-      cursor: now,
+      // Prefer QBO's own server clock (spec: "the response's server time, not
+      // ours") so the next cursor never advances past what QBO actually
+      // observed; fall back to our local `now` when the response omitted or
+      // failed to report `time` (already covered by the 5-min re-read slack).
+      cursor: result.responseTime ?? now,
       payments: result.payments,
       deletedPayments: result.deletedPayments,
       deletedInvoices: result.deletedInvoices,
@@ -731,7 +760,10 @@ export class QuickbooksProvider implements AccountingProvider {
       if (totalCount !== undefined && totalCount > (block.Invoice?.length ?? 0) && block.Invoice) overflowed = true;
     }
 
-    const current: CdcWindowResult = { payments, deletedPayments, deletedInvoices, overflowed };
+    const current: CdcWindowResult = {
+      payments, deletedPayments, deletedInvoices, overflowed,
+      responseTime: parseCdcResponseTime(parsed.time),
+    };
     if (!overflowed || depth >= QBO_CDC_MAX_SPLIT_DEPTH) return current;
 
     const mid = new Date(from.getTime() + (to.getTime() - from.getTime()) / 2);

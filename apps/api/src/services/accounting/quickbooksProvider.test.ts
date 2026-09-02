@@ -721,7 +721,11 @@ describe('reconcileChanges (CDC)', () => {
     mockFetchJsonOnce(cdcResponse([{ Payment: [qboPayment({
       Line: [{ Amount: 150.0, LinkedTxn: [{ TxnId: '9', TxnType: 'CreditMemo' }] }],
     })] }]));
-    expect((await quickbooksProvider.reconcileChanges(conn(), new Date())).payments).toEqual([]);
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date());
+    expect(cs.payments).toEqual([]);
+    // No Invoice-linked line means nothing for the applier to reconcile against
+    // — same "deletion candidate" bucket as a voided payment (brief step 3).
+    expect(cs.deletedPayments).toEqual(['180']);
   });
 
   it('treats a voided payment (TotalAmt 0, no lines) as a deletion, not a zero payment', async () => {
@@ -741,6 +745,24 @@ describe('reconcileChanges (CDC)', () => {
     expect(cs.deletedInvoices).toEqual(['145']);
   });
 
+  it('treats a zero-balance Invoice with a "Voided" PrivateNote as a deletion (QBO does not mark it status:"Deleted")', async () => {
+    mockFetchJsonOnce(cdcResponse([{ Invoice: [{
+      Id: '146', TotalAmt: 0, Balance: 0, PrivateNote: 'Voided on 2026-09-02',
+      MetaData: { LastUpdatedTime: '2026-09-02T20:08:00-07:00' },
+    }] }]));
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date());
+    expect(cs.deletedInvoices).toEqual(['146']);
+  });
+
+  it('does NOT treat a normal zero-balance-but-not-voided Invoice as deleted', async () => {
+    mockFetchJsonOnce(cdcResponse([{ Invoice: [{
+      Id: '147', TotalAmt: 0, Balance: 0,
+      MetaData: { LastUpdatedTime: '2026-09-02T20:09:00-07:00' },
+    }] }]));
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date());
+    expect(cs.deletedInvoices).toEqual([]);
+  });
+
   it('halves the window when an entity reports more changes than it returned, and de-duplicates', async () => {
     const overflow = cdcResponse([{ Payment: [qboPayment()], startPosition: 1, maxResults: 1, totalCount: 2 }]);
     const settled = cdcResponse([{ Payment: [qboPayment({ Id: '182' })], totalCount: 1 }]);
@@ -752,9 +774,40 @@ describe('reconcileChanges (CDC)', () => {
     expect(cs.payments.map((p) => p.remotePaymentId).sort()).toEqual(['180', '182']);
   });
 
-  it('returns the window end as the cursor and never a raw QBO body on failure', async () => {
-    mockFetchJsonOnce({ Fault: { Error: [{ Detail: 'realm secrets' }] } }, 500);
+  it('never leaks a raw QBO fault body on failure', async () => {
+    const faultBody = { Fault: { Error: [{ Detail: 'realm secrets' }] } };
+    // Two reconcileChanges() calls below == two fetch() calls. A base
+    // mockImplementation that throws (rather than falling through to the real
+    // `fetch`) turns any THIRD, unmocked call into a loud test failure instead
+    // of a silent outbound request to sandbox-quickbooks.api.intuit.com.
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      throw new Error('unexpected extra fetch() call — this test only mocks 2 responses');
+    });
+    spy
+      .mockResolvedValueOnce(jsonResponse(faultBody, 500))
+      .mockResolvedValueOnce(jsonResponse(faultBody, 500));
+
     await expect(quickbooksProvider.reconcileChanges(conn(), new Date())).rejects.toThrow(/QuickBooks change data capture failed with 500/);
     await expect(quickbooksProvider.reconcileChanges(conn(), new Date())).rejects.not.toThrow(/realm secrets/);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the CDC response\'s server time as the cursor when present (spec: "the response\'s server time, not ours")', async () => {
+    mockFetchJsonOnce(cdcResponse([{ Payment: [qboPayment()] }], '2026-09-02T20:10:00.000Z'));
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date());
+    expect(cs.cursor).toEqual(new Date('2026-09-02T20:10:00.000Z'));
+  });
+
+  it('falls back to the local clock when the CDC response omits or fails to parse `time`', async () => {
+    vi.useFakeTimers();
+    try {
+      const fixedNow = new Date('2026-09-02T21:00:00.000Z');
+      vi.setSystemTime(fixedNow);
+      mockFetchJsonOnce({ CDCResponse: [{ QueryResponse: [{ Payment: [qboPayment()] }] }] }); // no top-level `time`
+      const cs = await quickbooksProvider.reconcileChanges(conn(), new Date(fixedNow.getTime() - 3600_000));
+      expect(cs.cursor).toEqual(fixedNow);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
