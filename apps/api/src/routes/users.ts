@@ -1182,6 +1182,26 @@ userRoutes.post(
 
     const normalizedEmail = data.email.toLowerCase();
 
+    // RMM-QA-166 (D9): a neutralized tombstone (disabled + no password) may still
+    // carry factor rows — user_passkeys left by pre-fix neutralization or by the
+    // 2026-06-18 backfill, a verified phone, a stale secret. The invite
+    // transaction below runs in the caller's AMBIENT context, where a
+    // user_passkeys DELETE silently matches zero rows under RLS (and the reset
+    // service refuses to run). So sweep every factor through the system-context
+    // composite BEFORE opening the invite transaction. Same visibility as the
+    // in-tx lookup: both read `users` by email under the caller's context. A
+    // tombstone cannot acquire factors between here and the resurrect (no
+    // password, disabled, epochs bumped — no token can be minted), and a
+    // failure here fails the invite before any write.
+    const [tombstone] = await db
+      .select({ id: users.id, status: users.status, passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.email, normalizedEmail))
+      .limit(1);
+    if (tombstone && tombstone.status === 'disabled' && tombstone.passwordHash === null) {
+      await resetAllFactorsAndInvalidate(tombstone.id, 'invite-resurrect');
+    }
+
     const result = await db.transaction(async (tx) => {
       const [existingUser] = await tx
         .select()
@@ -1232,6 +1252,8 @@ userRoutes.post(
         // status='invited'), and re-home it under the inviting scope. We touch
         // ONLY tombstones (disabled + no password) — an active multi-membership
         // user being added to another scope keeps their credentials untouched.
+        // Factor rows (incl. passkeys) were already swept by the pre-flight
+        // above (RMM-QA-166).
         const tenancy = await resolveInviteTenancy();
         const [reset] = await tx
           .update(users)
@@ -1246,6 +1268,8 @@ userRoutes.post(
             mfaSecret: null,
             mfaMethod: null,
             mfaRecoveryCodes: null,
+            phoneNumber: null,
+            phoneVerified: false,
             updatedAt: new Date()
           })
           .where(eq(users.id, user.id))

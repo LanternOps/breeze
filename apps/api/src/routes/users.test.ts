@@ -256,6 +256,15 @@ vi.mock('../services/pendingEmail', () => ({
   requestPendingEmailChange: requestPendingEmailChangeMock
 }));
 
+// RMM-QA-166: spy on the admin composite so the invite pre-flight can be
+// observed without stubbing the tx-level behavior the reset tests exercise.
+const { resetAllFactorsAndInvalidateMock } = vi.hoisted(() => ({ resetAllFactorsAndInvalidateMock: vi.fn() }));
+vi.mock('../services/mfaFactorReset', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/mfaFactorReset')>();
+  resetAllFactorsAndInvalidateMock.mockImplementation(actual.resetAllFactorsAndInvalidate);
+  return { ...actual, resetAllFactorsAndInvalidate: resetAllFactorsAndInvalidateMock };
+});
+
 vi.mock('../services/tokenRevocation', () => ({
   revokeAllUserTokens: vi.fn().mockResolvedValue(undefined)
 }));
@@ -541,6 +550,66 @@ describe('user routes', () => {
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toContain('orgIds');
+    });
+
+    it('U-7: a tombstone email pre-flights the composite factor reset BEFORE the invite transaction', async () => {
+      const TOMBSTONE = '44444444-4444-4444-4444-444444444444';
+      // Selects before the transaction, in order: scoped role, parent role,
+      // partner-wide gate membership, then the NEW tombstone pre-flight.
+      vi.mocked(db.select)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: '22222222-2222-2222-2222-222222222222', scope: 'partner', name: 'Admin', description: null, isSystem: true, partnerId: null, orgId: null }]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ parentRoleId: null }]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: TOMBSTONE, status: 'disabled', passwordHash: null }]) }) }) } as any);
+      resetAllFactorsAndInvalidateMock.mockResolvedValueOnce({
+        mfaEpoch: 3, cleanup: { redisOk: true, permissionCacheOk: true, oauthOk: true }, remoteSessionsTerminated: 0, pendingSweepOk: true,
+        inventory: { wasEnabled: false, previousMethod: null, hadTotp: false, hadSms: false, hadRecoveryCodes: false, hadPhone: true, passkeys: [{ id: 'pk', credentialId: 'c', name: null }], passkeysDeleted: 1 },
+      });
+
+      const capturedTxSets: Array<Record<string, unknown>> = [];
+      // First in-tx select = the users-by-email lookup (the tombstone); every
+      // later one is the partner_users existing-link probe, which must miss so
+      // the invite creates a link (otherwise the route 409s before asserting).
+      const txSelect = vi.fn()
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: TOMBSTONE, email: 'revive@example.com', status: 'disabled', passwordHash: null }]) }) }) })
+        .mockReturnValue({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }) });
+      const txUpdate = vi.fn(() => ({ set: (values: Record<string, unknown>) => { capturedTxSets.push(values); return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: TOMBSTONE, email: 'revive@example.com', name: 'Revived', status: 'invited' }]) }) }; } }));
+      const txInsert = vi.fn().mockReturnValue({ values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'link-1' }]) }) });
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn({ select: txSelect, update: txUpdate, insert: txInsert } as any));
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'revive@example.com', name: 'Revived', roleId: '22222222-2222-2222-2222-222222222222', orgAccess: 'none' })
+      });
+
+      expect(res.status).toBe(201);
+      expect(resetAllFactorsAndInvalidateMock).toHaveBeenCalledWith(TOMBSTONE, 'invite-resurrect');
+      expect(resetAllFactorsAndInvalidateMock.mock.invocationCallOrder[0]!).toBeLessThan(vi.mocked(db.transaction).mock.invocationCallOrder[0]!);
+      // Phone parity in the in-tx tombstone branch.
+      expect(capturedTxSets.some((v) => v.status === 'invited' && v.phoneNumber === null && v.phoneVerified === false)).toBe(true);
+    });
+
+    it('U-7b: an existing ACTIVE user (multi-scope add) is not pre-flight reset', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: '22222222-2222-2222-2222-222222222222', scope: 'partner', name: 'Admin', description: null, isSystem: true, partnerId: null, orgId: null }]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ parentRoleId: null }]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) }) } as any)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: '55555555-5555-5555-5555-555555555555', status: 'active', passwordHash: 'hash' }]) }) }) } as any);
+      const txSelect = vi.fn()
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: '55555555-5555-5555-5555-555555555555', email: 'active@example.com', status: 'active', passwordHash: 'hash' }]) }) }) })
+        .mockReturnValue({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }) });
+      const txInsert = vi.fn().mockReturnValue({ values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'link-1' }]) }) });
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn({ select: txSelect, insert: txInsert } as any));
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'active@example.com', name: 'Active', roleId: '22222222-2222-2222-2222-222222222222', orgAccess: 'none' })
+      });
+
+      expect(res.status).toBe(201);
+      expect(resetAllFactorsAndInvalidateMock).not.toHaveBeenCalled();
     });
   });
 
