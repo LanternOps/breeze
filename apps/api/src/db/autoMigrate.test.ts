@@ -642,6 +642,139 @@ describe('migration filename conventions', () => {
   }, 60_000);
 });
 
+describe('migration ordering vs a remote ref (--against-ref, pre-push guard)', () => {
+  // The commit-time guard (--staged, above) can only see history already
+  // reachable from the branch's own HEAD. It is blind to a migration that
+  // lands on origin/main AFTER the branch was cut — which is exactly what
+  // happened on 2026-10-03: a branch carrying 2026-10-02-100001-… passed the
+  // commit-time guard clean, while origin/main had meanwhile gained
+  // 2026-10-03-audit-chain-verify-range.sql, which sorts after it. CI's
+  // "Check Migrations" job (running against the merge commit) would have
+  // caught it, but only after a push and a red run — the file had to be
+  // renamed and pushed again. --against-ref exists to catch this locally,
+  // in a pre-push hook, before that round-trip.
+  //
+  // This drives the guard against a REAL temporary git repo (with a bare
+  // "origin" remote) rather than the fixture-directory technique the
+  // --staged tests above use, because the new mode's whole job is to diff
+  // two refs — there is no ref to diff without an actual repository.
+  function git(args: string[], cwd: string): string {
+    const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    if (result.status !== 0) {
+      throw new Error(
+        `git ${args.join(' ')} (cwd=${cwd}) failed:\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
+      );
+    }
+    return result.stdout;
+  }
+
+  function runGuard(
+    cwd: string,
+    args: string[],
+  ): { status: number | null; stdout: string; stderr: string } {
+    const result = spawnSync('bash', [GUARD_SCRIPT, ...args], {
+      cwd,
+      encoding: 'utf8',
+      env: { ...process.env, BREEZE_MIGRATIONS_DIR: 'migrations' },
+    });
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  }
+
+  // Builds: a bare "origin" remote, a work tree with a base migration pushed
+  // to origin/main, then a "feature" branch cut from that base — mirroring a
+  // real branch-and-push flow.
+  function makeRepo(): { dir: string; origin: string } {
+    const dir = mkdtempSync(path.join(tmpdir(), 'migration-order-work-'));
+    const origin = mkdtempSync(path.join(tmpdir(), 'migration-order-origin-'));
+    git(['init', '--bare', '--initial-branch=main', origin], origin);
+
+    git(['init', '--initial-branch=main', dir], dir);
+    git(['config', 'user.email', 'guard-test@example.com'], dir);
+    git(['config', 'user.name', 'Guard Test'], dir);
+    git(['remote', 'add', 'origin', origin], dir);
+
+    mkdirSync(path.join(dir, 'migrations'));
+    writeFileSync(path.join(dir, 'migrations', '2026-10-01-base.sql'), '-- base\n');
+    git(['add', '.'], dir);
+    git(['commit', '-m', 'base'], dir);
+    git(['push', 'origin', 'main'], dir);
+
+    git(['checkout', '-b', 'feature'], dir);
+    return { dir, origin };
+  }
+
+  function cleanup(repo: { dir: string; origin: string }): void {
+    rmSync(repo.dir, { recursive: true, force: true });
+    rmSync(repo.origin, { recursive: true, force: true });
+  }
+
+  it('passes when the branch\'s new migration sorts after the newest on origin/main', () => {
+    const repo = makeRepo();
+    try {
+      writeFileSync(path.join(repo.dir, 'migrations', '2026-10-04-feature.sql'), '-- feature\n');
+      git(['add', '.'], repo.dir);
+      git(['commit', '-m', 'feature migration'], repo.dir);
+      git(['fetch', 'origin', 'main'], repo.dir);
+
+      const result = runGuard(repo.dir, ['--against-ref', 'origin/main']);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('OK');
+    } finally {
+      cleanup(repo);
+    }
+  });
+
+  it('fails, naming the offending file and the remedy, when origin/main gained a migration meanwhile that sorts after the branch\'s new one', () => {
+    const repo = makeRepo();
+    try {
+      // The branch adds a migration that looks fine relative to its own
+      // history (sorts after the base it was cut from)...
+      writeFileSync(path.join(repo.dir, 'migrations', '2026-10-02-100001-feature.sql'), '-- feature\n');
+      git(['add', '.'], repo.dir);
+      git(['commit', '-m', 'feature migration'], repo.dir);
+
+      // ...but meanwhile origin/main gained a migration that sorts AFTER it.
+      git(['checkout', 'main'], repo.dir);
+      writeFileSync(path.join(repo.dir, 'migrations', '2026-10-03-main-progressed.sql'), '-- main\n');
+      git(['add', '.'], repo.dir);
+      git(['commit', '-m', 'main progressed'], repo.dir);
+      git(['push', 'origin', 'main'], repo.dir);
+      git(['checkout', 'feature'], repo.dir);
+      git(['fetch', 'origin', 'main'], repo.dir);
+
+      const result = runGuard(repo.dir, ['--against-ref', 'origin/main']);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('2026-10-02-100001-feature.sql');
+      expect(result.stderr).toContain('2026-10-03-main-progressed.sql');
+      expect(result.stderr.toLowerCase()).toContain('rename');
+    } finally {
+      cleanup(repo);
+    }
+  });
+
+  it('passes with no violations when the branch adds no new migrations', () => {
+    const repo = makeRepo();
+    try {
+      git(['fetch', 'origin', 'main'], repo.dir);
+      const result = runGuard(repo.dir, ['--against-ref', 'origin/main']);
+      expect(result.status, result.stderr).toBe(0);
+    } finally {
+      cleanup(repo);
+    }
+  });
+
+  it('fails with a clear error, not a false OK, when the given ref does not exist', () => {
+    const repo = makeRepo();
+    try {
+      const result = runGuard(repo.dir, ['--against-ref', 'origin/does-not-exist']);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('origin/does-not-exist');
+    } finally {
+      cleanup(repo);
+    }
+  });
+});
+
 describe('core migration ordering', () => {
   it('discovers the report site-scope migration exactly once in lexical order', () => {
     const ledgerNames = planMigrations(listMigrationFilenames()).map(
