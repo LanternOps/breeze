@@ -1,4 +1,4 @@
--- apps/api/migrations/2026-09-29-ai-budget-alert-events.sql
+-- apps/api/migrations/2026-09-30-ai-budget-alert-events.sql
 -- #4388 Pre-cap AI budget alerts (spec: docs/superpowers/specs/ai-mcp/2026-09-01-ai-budget-threshold-alerts-design.md §4.1, §4.3)
 
 -- 1. Per-org threshold ladder. NULL = inherit the default (50,80,95); '{}' = pre-cap warnings off.
