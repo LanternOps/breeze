@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { useHashTab } from '@/lib/useHashState';
 
 // Import actual components
 import ProcessManager, { type Process, type ProcessStatus } from './ProcessManager';
@@ -48,6 +49,11 @@ const tabs: { id: ToolTab; label: string; icon: typeof Activity; windowsOnly?: b
   { id: 'terminal', label: 'Terminal', icon: Terminal },
   { id: 'files', label: 'File Browser', icon: FolderOpen }
 ];
+
+// The full set of tab ids, used to validate a deep-linked hash (#4512) — every
+// id in `tabs` above, regardless of `windowsOnly`, since the hash can be
+// followed before the device's OS (and therefore tab availability) resolves.
+const VALID_TABS: readonly ToolTab[] = tabs.map((tab) => tab.id);
 
 type DeviceOs = 'windows' | 'macos' | 'linux';
 
@@ -396,7 +402,13 @@ export default function RemoteToolsPage({
   showClose = false
 }: RemoteToolsPageProps) {
   const { t } = useTranslation('remote');
-  const [activeTab, setActiveTab] = useState<ToolTab>(initialTab);
+  // Tab selection is persisted in the URL hash (#4512) rather than plain
+  // component state, so a browser refresh (or a deep link) lands back on the
+  // tab the user was on instead of always resetting to Processes — same
+  // pattern as DeviceDetails.tsx / DnsSecurityPage.tsx (CLAUDE.md "URL State
+  // in Components": hash, not query params). `useHashTab` is SSR-safe: the
+  // first render uses `initialTab` and the hash is adopted post-mount.
+  const [activeTab, setActiveTabState] = useHashTab<ToolTab>(VALID_TABS, initialTab);
   const [resolvedDeviceName, setResolvedDeviceName] = useState(deviceName);
   const [resolvedDeviceOs, setResolvedDeviceOs] = useState<DeviceOs>(normalizeDeviceOs(deviceOs));
   const [isHeadless, setIsHeadless] = useState(false);
@@ -428,6 +440,13 @@ export default function RemoteToolsPage({
   const availableTabs = tabs.filter(tab => !tab.windowsOnly || isWindows);
   const shouldShowClose = showClose || Boolean(onClose);
   const deviceOsLabel = formatDeviceOs(resolvedDeviceOs);
+
+  // Reflect tab clicks into the URL hash (CLAUDE.md "URL State in
+  // Components") — matches DnsSecurityPage.tsx's switchTab.
+  const switchTab = useCallback((tab: ToolTab) => {
+    window.location.hash = tab;
+    setActiveTabState(tab);
+  }, [setActiveTabState]);
 
   const handleClose = useCallback(() => {
     if (onClose) {
@@ -849,7 +868,7 @@ export default function RemoteToolsPage({
           return (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => switchTab(tab.id)}
               className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
                 isActive
                   ? 'border-primary text-primary'
