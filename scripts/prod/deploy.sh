@@ -133,7 +133,12 @@ required_vars=(
 )
 
 if [[ "${ENABLE_MONITORING}" == "true" ]]; then
-  required_vars+=(METRICS_SCRAPE_TOKEN GRAFANA_ADMIN_PASSWORD)
+  # POSTGRES_EXPORTER_DSN: the prod stack has no local `postgres` service (it
+  # uses a managed database), so postgres-exporter cannot fall back to the
+  # dev-only local DSN docker-compose.monitoring.yml defaults to. Required
+  # here so a missing value fails fast with a clear message instead of a
+  # buried Compose interpolation error (#4362).
+  required_vars+=(METRICS_SCRAPE_TOKEN GRAFANA_ADMIN_PASSWORD POSTGRES_EXPORTER_DSN)
 fi
 
 for name in "${required_vars[@]}"; do

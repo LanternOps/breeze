@@ -139,11 +139,20 @@ services:
     image: prometheuscommunity/postgres-exporter:v0.15.0
     container_name: breeze-postgres-exporter
     restart: unless-stopped
+    # No hard `depends_on: postgres` here on purpose: this overlay must compose
+    # cleanly on top of BOTH the root docker-compose.yml (dev, which runs a
+    # local `postgres` service) and deploy/docker-compose.prod.yml (prod, which
+    # has no local Postgres — it uses a managed database). A `depends_on` on a
+    # service name that only exists in one of the two base files makes the
+    # combined project invalid ("depends on undefined service") for the other
+    # (#4362). `restart: unless-stopped` covers the ordering gap: the exporter
+    # simply retries until the DSN below becomes reachable.
+    #
+    # POSTGRES_EXPORTER_DSN lets prod point this at the managed database
+    # instead of the local `postgres` hostname, which does not resolve there.
+    # Left unset, it falls back to the local dev DSN (unchanged behavior).
     environment:
-      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-breeze}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}@postgres:5432/${POSTGRES_DB:-breeze}?sslmode=disable
-    depends_on:
-      postgres:
-        condition: service_healthy
+      DATA_SOURCE_NAME: ${POSTGRES_EXPORTER_DSN:-postgresql://${POSTGRES_USER:-breeze}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD (local dev postgres) or POSTGRES_EXPORTER_DSN (e.g. prod, no local postgres service) in .env}@postgres:5432/${POSTGRES_DB:-breeze}?sslmode=disable}
     networks:
       - breeze
 

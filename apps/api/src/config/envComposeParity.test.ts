@@ -91,9 +91,15 @@ const ROOT_ALLOWLIST: Record<string, string> = {
     'no consumer — the shipped business-email gate reads SIGNUP_REQUIRE_BUSINESS_EMAIL / SIGNUP_BUSINESS_EMAIL_CONTACT_URL instead',
 };
 
-// The digest-pinned droplet stack. Its api block is well-maintained; after
-// wiring the parity gaps, nothing here needs an intentional exception.
-const PROD_ALLOWLIST: Record<string, string> = {};
+// The digest-pinned droplet stack. Its api block is well-maintained; the two
+// entries below are the prod-side counterpart of GRAFANA_ADMIN_USER/PASSWORD
+// in ROOT_ALLOWLIST above — consumed by the optional docker-compose.monitoring.yml
+// overlay (see scripts/prod/deploy.sh's ENABLE_MONITORING), never by
+// deploy/docker-compose.prod.yml itself (#4362).
+const PROD_ALLOWLIST: Record<string, string> = {
+  GRAFANA_ADMIN_PASSWORD: 'consumed by docker-compose.monitoring.yml, not deploy/docker-compose.prod.yml',
+  POSTGRES_EXPORTER_DSN: 'consumed by docker-compose.monitoring.yml, not deploy/docker-compose.prod.yml',
+};
 
 interface Pair {
   name: string;
