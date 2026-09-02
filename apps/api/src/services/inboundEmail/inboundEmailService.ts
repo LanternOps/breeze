@@ -10,7 +10,7 @@ import {
 } from '../../db/schema';
 import { createTicket } from '../ticketService';
 import { resolvePartnerByRecipient } from './resolvePartner';
-import { resolveOrgBySenderDomain, findOrCreateEmailContact, loadPartnerInboundPolicy } from './resolveOrg';
+import { resolveOrgBySenderDomain, resolveEmailRequester, loadPartnerInboundPolicy } from './resolveOrg';
 import { maybeSendAutoresponse } from './autoresponder';
 import { insertEmailAuthoredComment } from './emailComments';
 import { captureException, captureMessage } from '../sentry';
@@ -384,7 +384,9 @@ export async function processInboundEmail(
     // which is what prevents a thread from forking into N tickets (FIX 2).
     const closedOriginal = await findClosedTicketInPartner(n, partnerId, senderResolver);
     if (closedOriginal) {
-      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber);
+      // No requester and NO acknowledgement: a reply to a closed ticket spawns a
+      // linked ticket, it is not a fresh submission (spec §5).
+      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false);
       await logCreated(n, partnerId, t);
       return;
     }
@@ -394,7 +396,9 @@ export async function processInboundEmail(
     // broader domain mapping).
     const sender = await senderResolver.portalUser();
     if (sender) {
-      const t = await createFromEmail(n, partnerId, sender.orgId, null, null, sender.id);
+      // A portal LOGIN. createTicket derives the person from its contact_id —
+      // the inbound path must not resolve a second candidate by address.
+      const t = await createFromEmail(n, partnerId, sender.orgId, null, null, { kind: 'portal', portalUserId: sender.id }, true);
       await logCreated(n, partnerId, t);
       return;
     }
@@ -405,10 +409,17 @@ export async function processInboundEmail(
     // above, so a forged From: @customer.com can't file into the customer's org.
     const domainMatch = await senderResolver.domainOrg();
     if (domainMatch) {
-      const submittedBy = domainMatch.autoCreateContact
-        ? await findOrCreateEmailContact(domainMatch.orgId, n.from, n.fromName ?? null)
-        : undefined;
-      const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, submittedBy);
+      // `autoCreateContact` is the partner's "onboard people from this domain"
+      // switch. When it is on the sender is an ACCEPTED known sender — which is
+      // what the acknowledgement is gated on — even when the address resolves to
+      // several contacts (a shared mailbox) and no single person can be named.
+      let requester: EmailTicketRequester = null;
+      const autoresponse = domainMatch.autoCreateContact;
+      if (domainMatch.autoCreateContact) {
+        const resolved = await resolveEmailRequester(domainMatch.orgId, n.from, n.fromName ?? null);
+        requester = resolved.kind === 'contact' ? { kind: 'contact', contactId: resolved.contactId } : null;
+      }
+      const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, requester, autoresponse);
       await logCreated(n, partnerId, t);
       return;
     }
@@ -429,7 +440,9 @@ export async function processInboundEmail(
     // 'triage' — auto-create in the partner's default triage org (only when one
     // is configured; otherwise fall through to quarantine).
     if (policy.unknownSenderMode === 'triage' && policy.defaultTriageOrgId) {
-      const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null);
+      // Unknown sender: no requester and no acknowledgement (we would be
+      // replying to an address the partner never vetted).
+      const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null, null, false);
       await logCreated(n, partnerId, t);
       return;
     }
@@ -521,13 +534,29 @@ function senderDomain(addr: string): string {
   return at >= 0 ? a.slice(at + 1) : '';
 }
 
+/**
+ * Who filed an inbound-email ticket (#3258 W03). Two genuinely different
+ * things, so a discriminated union rather than one nullable id:
+ *  - 'portal'  — a known portal LOGIN; createTicket derives the person from
+ *                that login's contact_id.
+ *  - 'contact' — a person with no login, which is the ordinary email case.
+ * `null` means nobody could be named: an unknown sender routed to triage, a
+ * closed-continuation, or a shared mailbox that matched several contacts. The
+ * ticket still carries the submitter name/email snapshot from the message.
+ */
+export type EmailTicketRequester =
+  | { kind: 'portal'; portalUserId: string }
+  | { kind: 'contact'; contactId: string }
+  | null;
+
 async function createFromEmail(
   n: NormalizedInboundEmail,
   partnerId: string,
   orgId: string,
   carryThreadKey: string | null,
   priorNumber: string | null,
-  submittedBy?: string
+  requester: EmailTicketRequester,
+  autoresponse: boolean
 ) {
   // GUARD (spec §6 layer 2): the resolved org MUST belong to the resolved partner before create.
   const orgOk = await db
@@ -546,7 +575,8 @@ async function createFromEmail(
       source: 'email',
       submitterEmail: n.from,
       submitterName: n.fromName,
-      submittedBy
+      submittedBy: requester?.kind === 'portal' ? requester.portalUserId : undefined,
+      requesterContactId: requester?.kind === 'contact' ? requester.contactId : undefined
     },
     SYSTEM_ACTOR
   );
@@ -608,12 +638,25 @@ async function createFromEmail(
     .where(eq(tickets.id, ticket.id));
 
   // One-time autoresponse — ONLY for an accepted known sender on a FRESH ticket.
-  // The known-sender create call passes `submittedBy` and a null `priorNumber`; the
-  // closed-continuation call passes `priorNumber` (and no `submittedBy`). Gating on
-  // `submittedBy && !priorNumber` therefore fires the autoresponder exactly once on
-  // the fresh known-sender path and NEVER on the quarantine path (which never calls
-  // createFromEmail) or the closed-continuation path (spec §5).
-  if (submittedBy && !priorNumber) {
+  //
+  // This used to be gated on `submittedBy && !priorNumber`, reading the presence
+  // of a requester as a PROXY for "we accepted a known sender". #3258 W03 broke
+  // that proxy: a shared mailbox is an accepted known sender that resolves to no
+  // single person, and would have silently stopped being acknowledged. The
+  // decision is therefore computed at each call site and passed in. The table it
+  // must reproduce, unchanged:
+  //
+  //   known portal-user sender, fresh          -> true
+  //   mapped domain, autoCreateContact true    -> true  (INCLUDING ambiguous)
+  //   mapped domain, autoCreateContact false   -> false
+  //   closed-continuation (carries priorNumber)-> false
+  //   triage org (unknown sender)              -> false
+  //   quarantine / drop                        -> never reaches createFromEmail
+  //
+  // `!priorNumber` is kept as well: it is the structural half of the gate (a
+  // continuation is never a fresh submission) and belongs to this function, not
+  // to the caller's accept decision.
+  if (autoresponse && !priorNumber) {
     // Read the PERSISTED subject (token-stripped by createTicket) + internalNumber.
     // Never use raw n.subject — it may still carry the [T-...] token.
     const persisted = await db

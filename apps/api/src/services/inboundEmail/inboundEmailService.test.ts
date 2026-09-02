@@ -188,14 +188,14 @@ vi.mock('./resolvePartner', () => ({ resolvePartnerByRecipient: resolveMock }));
 
 // Phase 5: sender-domain routing helpers. Mocked so the dispatch-precedence
 // tests don't hit the DB — resolveOrg has its own integration suite.
-const { resolveOrgMock, findOrCreateContactMock, loadPolicyMock } = vi.hoisted(() => ({
+const { resolveOrgMock, resolveRequesterMock, loadPolicyMock } = vi.hoisted(() => ({
   resolveOrgMock: vi.fn(),
-  findOrCreateContactMock: vi.fn(),
+  resolveRequesterMock: vi.fn(),
   loadPolicyMock: vi.fn()
 }));
 vi.mock('./resolveOrg', () => ({
   resolveOrgBySenderDomain: resolveOrgMock,
-  findOrCreateEmailContact: findOrCreateContactMock,
+  resolveEmailRequester: resolveRequesterMock,
   loadPartnerInboundPolicy: loadPolicyMock
 }));
 
@@ -292,7 +292,7 @@ beforeEach(() => {
   // unknown sender still quarantines (preserves the pre-Phase-5 behavior).
   resolveOrgMock.mockReset();
   resolveOrgMock.mockResolvedValue(null);
-  findOrCreateContactMock.mockReset();
+  resolveRequesterMock.mockReset();
   loadPolicyMock.mockReset();
   loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
   // (2b) cross-channel idempotency default: nobody has claimed this message id.
@@ -999,26 +999,46 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
     state.selectRows['portal_users'] = [];
     resolveMock.mockResolvedValue('p-1');
     resolveOrgMock.mockReset();
-    findOrCreateContactMock.mockReset();
+    resolveRequesterMock.mockReset();
     loadPolicyMock.mockReset();
     // Safe defaults: no domain match, quarantine unknown senders.
     resolveOrgMock.mockResolvedValue(null);
     loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
   });
 
-  it('routes a mapped domain (autoCreateContact true) -> creates ticket in the org + onboards a contact', async () => {
+  it('routes a mapped domain (autoCreateContact true) -> ticket carries the CONTACT, never a portal login', async () => {
     state.selectRows['organizations'] = [{ id: 'o-9' }];
     resolveOrgMock.mockResolvedValue({ orgId: 'o-9', autoCreateContact: true });
-    findOrCreateContactMock.mockResolvedValue('pu-auto');
+    resolveRequesterMock.mockResolvedValue({ kind: 'contact', contactId: 'ct-auto' });
     createTicketMock.mockResolvedValue({ id: 't-d', internalNumber: 'T-2026-0099' });
 
     await processInboundEmail(email());
 
-    expect(findOrCreateContactMock).toHaveBeenCalledWith('o-9', 'jane@customer.com', 'Jane Doe');
+    expect(resolveRequesterMock).toHaveBeenCalledWith('o-9', 'jane@customer.com', 'Jane Doe');
     expect(createTicketMock).toHaveBeenCalledTimes(1);
     const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(input.orgId).toBe('o-9');
-    expect(input.submittedBy).toBe('pu-auto');
+    // #3258 W03: no password-less portal_users row is minted any more.
+    expect(input.submittedBy ?? null).toBeNull();
+    expect(input.requesterContactId).toBe('ct-auto');
+    expect(inboundOf()[0]!.parseStatus).toBe('created');
+  });
+
+  it('a shared mailbox (ambiguous) still creates the ticket, with NO contact link and the snapshot kept', async () => {
+    state.selectRows['organizations'] = [{ id: 'o-9' }];
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-9', autoCreateContact: true });
+    resolveRequesterMock.mockResolvedValue({ kind: 'ambiguous' });
+    createTicketMock.mockResolvedValue({ id: 't-amb', internalNumber: 'T-2026-0098' });
+
+    await processInboundEmail(email());
+
+    const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input.submittedBy ?? null).toBeNull();
+    expect(input.requesterContactId ?? null).toBeNull();
+    // The snapshot is what the notify worker mails and what threadMatcher
+    // binds on — it must survive an unresolvable person.
+    expect(input.submitterEmail).toBe('jane@customer.com');
+    expect(input.submitterName).toBe('Jane Doe');
     expect(inboundOf()[0]!.parseStatus).toBe('created');
   });
 
@@ -1029,7 +1049,7 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
 
     await processInboundEmail(email());
 
-    expect(findOrCreateContactMock).not.toHaveBeenCalled();
+    expect(resolveRequesterMock).not.toHaveBeenCalled();
     const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(input.orgId).toBe('o-9');
     expect(input.submittedBy ?? null).toBeNull();
@@ -1044,10 +1064,65 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
 
     await processInboundEmail(email());
 
-    expect(findOrCreateContactMock).not.toHaveBeenCalled();
+    expect(resolveRequesterMock).not.toHaveBeenCalled();
     const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(input.orgId).toBe('o-triage');
     expect(inboundOf()[0]!.parseStatus).toBe('created');
+  });
+
+  // ---- #3258 W03: the autoresponse truth table, now an EXPLICIT flag ----
+  //
+  // The one-time acknowledgement used to be gated on `submittedBy && !priorNumber`
+  // — i.e. it read the REQUESTER as a proxy for "we accepted a known sender".
+  // Repointing attribution at contacts breaks that proxy (a shared mailbox is an
+  // accepted known sender with NO resolvable person), so the decision is now a
+  // parameter computed at each call site. These cases pin the table that the old
+  // proxy produced, so the repoint cannot silently start or stop acknowledging.
+
+  it('fires the autoresponder for a mapped domain with autoCreateContact true', async () => {
+    state.selectRows['organizations'] = [{ id: 'o-9' }];
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-9', autoCreateContact: true });
+    resolveRequesterMock.mockResolvedValue({ kind: 'contact', contactId: 'ct-1' });
+    createTicketMock.mockResolvedValue({ id: 't-d', internalNumber: 'T-2026-0099' });
+
+    await processInboundEmail(email());
+
+    expect(maybeSendAutoresponseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('STILL fires the autoresponder when the sender is a shared mailbox (ambiguous)', async () => {
+    // An unresolvable person is not an unaccepted sender: the domain is mapped
+    // and the mail was accepted, so the customer gets their acknowledgement.
+    state.selectRows['organizations'] = [{ id: 'o-9' }];
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-9', autoCreateContact: true });
+    resolveRequesterMock.mockResolvedValue({ kind: 'ambiguous' });
+    createTicketMock.mockResolvedValue({ id: 't-amb', internalNumber: 'T-2026-0098' });
+
+    await processInboundEmail(email());
+
+    expect(maybeSendAutoresponseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT fire the autoresponder for a mapped domain with autoCreateContact false', async () => {
+    state.selectRows['organizations'] = [{ id: 'o-9' }];
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-9', autoCreateContact: false });
+    createTicketMock.mockResolvedValue({ id: 't-d', internalNumber: 'T-2026-0099' });
+
+    await processInboundEmail(email());
+
+    expect(resolveRequesterMock).not.toHaveBeenCalled();
+    expect(maybeSendAutoresponseMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT fire the autoresponder on the triage-org path (the sender is unknown)', async () => {
+    state.selectRows['organizations'] = [{ id: 'o-triage' }];
+    resolveOrgMock.mockResolvedValue(null);
+    loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'triage', defaultTriageOrgId: 'o-triage', dropUnverifiedSenders: false });
+    createTicketMock.mockResolvedValue({ id: 't-t', internalNumber: 'T-2026-0100' });
+
+    await processInboundEmail(email());
+
+    expect(maybeSendAutoresponseMock).not.toHaveBeenCalled();
   });
 
   it('quarantines when nothing matches and mode is quarantine (default)', async () => {
@@ -1105,10 +1180,13 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
     await processInboundEmail(email());
 
     expect(resolveOrgMock).not.toHaveBeenCalled();
-    expect(findOrCreateContactMock).not.toHaveBeenCalled();
+    expect(resolveRequesterMock).not.toHaveBeenCalled();
     const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(input.orgId).toBe('o-known');
     expect(input.submittedBy).toBe('pu-known');
+    // The contact link is DERIVED by createTicket from portal_users.contact_id
+    // — the inbound path must not guess a second person for a known login.
+    expect(input.requesterContactId ?? null).toBeNull();
   });
 });
 
@@ -1171,7 +1249,7 @@ describe('processInboundEmail — inbound enabled master switch (#3597)', () => 
     await processInboundEmail(email());
 
     expect(maybeSendAutoresponseMock).not.toHaveBeenCalled();
-    expect(findOrCreateContactMock).not.toHaveBeenCalled();
+    expect(resolveRequesterMock).not.toHaveBeenCalled();
     expect(resolveOrgMock).not.toHaveBeenCalled();
   });
 
