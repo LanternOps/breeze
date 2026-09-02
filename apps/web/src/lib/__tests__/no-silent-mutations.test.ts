@@ -206,6 +206,9 @@ const TARGET_GLOBS = [
   // file list, not directory-wide.
   'src/components/organizations/BulkContactImport.tsx',
   'src/components/organizations/ContactImportPreviewTable.tsx',
+  // Contact CRUD (#3258 W04): create/update/delete write customer PII, and a
+  // silent failure would leave a tech believing a contact was filed.
+  'src/components/settings/ContactsCard.tsx',
   // Fleet findings: the lifecycle PATCH (acknowledge/dismiss/reopen) lives in
   // the service, and the two components must not grow their own bare mutations
   // alongside it.
@@ -533,9 +536,9 @@ describe('no silent mutations in targeted set', () => {
     // push, Phase C Task 7), plus QuickbooksIntegration.tsx (QuickBooks payment
     // pull-back, Phase D Task 7 — the pull-payments PATCH and the "Sync now"
     // enqueue joined four pre-existing unguarded mutations in that file),
-    // plus BulkContactImport.tsx and ContactImportPreviewTable.tsx (#3258 W04,
-    // the contact CSV importer).
-    expect(absoluteFiles.length).toBe(110);
+    // plus BulkContactImport.tsx, ContactImportPreviewTable.tsx and
+    // ContactsCard.tsx (#3258 W04, the contacts tab and its CSV importer).
+    expect(absoluteFiles.length).toBe(111);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
