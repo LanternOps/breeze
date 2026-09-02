@@ -3706,7 +3706,8 @@
       "title": "Devices",
       "assigned": "devices assigned to this site",
       "viewAll": "View all devices"
-    }
+    },
+    "allContactsLink": "All contacts for this customer"
   },
   "siteForm": {
     "description": "Only the site name is required. Address and contact are optional — you can fill these in later.",
