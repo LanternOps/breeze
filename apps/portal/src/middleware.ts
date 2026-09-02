@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { hasPortalSessionCookie } from './lib/session';
 import { isOutsideBase, stripBase, withBase } from './lib/basePath';
 import { buildFallbackCspDirectives, resolvePortalCspHeader } from './lib/csp';
+import { isHtmlContentType, prefixDevAssetUrls } from './lib/devAssetBase';
 
 // Every signed-in surface. `/quotes` and `/invoices` were missing here, so both
 // rendered server-side for an unauthenticated visitor and only failed at the API
@@ -110,7 +111,23 @@ export const onRequest = defineMiddleware(async (context, next) => {
     headers.set('Cache-Control', 'no-store');
   }
 
-  return new Response(response.body, {
+  // #3906 — dev only: Astro hardcodes a few dev-server URLs straight into the
+  // rendered HTML (`/@vite/client`, the island's `component-url` / `renderer-url` /
+  // `before-hydration-url`, the `/src/styles/*` stylesheet). Vite's `base` — which
+  // the `breeze:portal-dev-base` plugin in astro.config.mjs sets — covers the rest
+  // of the module graph but never reaches those, and they are precisely the entry
+  // points that start hydration. Behind the worktree stack's path-routed Caddy an
+  // unprefixed entry point resolves against the *web* app, so the island stays
+  // dead while the SSR'd markup still looks right. Buffering the body costs dev
+  // streaming only; a production build ships base-prefixed bundled assets and
+  // never enters this branch.
+  let body: BodyInit | null = response.body;
+  if (isDev && isHtmlContentType(headers.get('Content-Type'))) {
+    body = prefixDevAssetUrls(await response.text());
+    headers.delete('Content-Length');
+  }
+
+  return new Response(body, {
     status: response.status,
     statusText: response.statusText,
     headers
