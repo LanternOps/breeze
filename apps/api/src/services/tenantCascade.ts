@@ -80,6 +80,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // alphabetization (same reasoning as ai_unattended_exposure below).
   'ai_agent_circuit_state',
   'ai_agent_fix_watches',
+  // ai_agent_impact_daily (P2-6, #4193): derived daily rollup. Its ONLY FK
+  // is org_id -> organizations ON DELETE CASCADE, so it has no
+  // child-before-parent constraint of its own and
+  // topologicalCascadeOrder()'s runtime pg_constraint read orders the real
+  // DELETE.
+  'ai_agent_impact_daily',
   'ai_agent_runs',
   // ai_agent_schedules (P2-2, #4189): dual-owner config. org override rows
   // cascade with the org; partner rows have org_id NULL and are untouched by

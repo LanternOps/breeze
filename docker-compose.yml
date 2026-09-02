@@ -419,6 +419,11 @@ services:
     environment:
       CADDY_SITE_ADDRESS: "${BREEZE_DOMAIN:-:80}"
       ACME_EMAIL: ${ACME_EMAIL:-}
+      # Empty (the default) leaves Caddy on Let's Encrypt. Set to `local_certs`
+      # in .env when BREEZE_DOMAIN is a name Let's Encrypt cannot reach, so
+      # Caddy issues from its internal CA instead of failing the ACME order and
+      # then aborting the TLS handshake (ERR_SSL_PROTOCOL_ERROR in the browser).
+      CADDY_LOCAL_CERTS: ${CADDY_LOCAL_CERTS:-}
       CADDY_TRUSTED_PROXIES: "${CADDY_TRUSTED_PROXIES:-127.0.0.1/32 ::1/128}"
       CADDY_CLIENT_IP_HEADERS: "${CADDY_CLIENT_IP_HEADERS:-CF-Connecting-IP X-Forwarded-For}"
       REMOTE_ACCESS_ADMISSION_MODE: ${REMOTE_ACCESS_ADMISSION_MODE:?Set REMOTE_ACCESS_ADMISSION_MODE to open or closed}
