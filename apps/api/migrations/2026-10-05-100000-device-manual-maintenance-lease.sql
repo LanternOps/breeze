@@ -1,4 +1,4 @@
--- 2026-10-01-100001: persist the MANUAL device maintenance lease (RMM-QA-176).
+-- 2026-10-05-100000: persist the MANUAL device maintenance lease (RMM-QA-176).
 --
 -- POST /devices/:id/maintenance echoed `durationHours` into an audit detail and
 -- threw it away, so "extend the window" was not a distinguishable operation and

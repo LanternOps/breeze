@@ -13,7 +13,7 @@ import { resolveLivenessStatus } from './deviceLiveness';
  * actor can change the row in between), and issue exactly one UPDATE.
  *
  * The single UPDATE is not just tidiness. `devices_maintenance_lease_chk`
- * (migration 2026-10-01-100001) is ALL-OR-NOTHING over
+ * (migration 2026-10-05-100000) is ALL-OR-NOTHING over
  * {maintenance_started_at, maintenance_until, maintenance_reason}: writing any
  * one of the three on its own raises SQLSTATE 23514. Entry and clear therefore
  * set or null those columns together, in one statement. `maintenance_started_by`
