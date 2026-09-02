@@ -1,7 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { contacts, customerEmailDomains, partners } from '../../db/schema';
-import { createContact, normalizeContactEmail } from '../contacts/crud';
+import { createContact, matchContactByEmail, normalizeContactEmail } from '../contacts/crud';
 
 /** Lowercased domain part of an email address, or null if malformed. */
 function domainOf(address: string): string | null {
@@ -43,17 +43,46 @@ export async function resolveOrgBySenderDomain(
 /**
  * The inbound sender's identity, resolved onto `contacts` (#3258 W03).
  *
- * `ambiguous` is a real outcome, not an error: an org can legitimately have
- * several contacts on one address (a shared `support@` or `ap@` mailbox), and
- * there is no honest way to pick one. Picking by display name would key
- * attribution off a header the sender controls (see inboundEmailService's
- * spoofable-From note); picking the oldest or newest is a coin flip wearing a
- * rule. The ticket is still created and still carries the snapshotted
- * submitter email — it just does not claim to know WHICH person wrote it.
+ * The non-contact outcome is DISCRIMINATED, not a bare "nothing": each reason
+ * is a different operator story and the caller writes it verbatim into
+ * `ticket_email_inbound.error` (which already carries notes, e.g. "lost
+ * message-id claim ..."). Before that, a shared mailbox and a malformed From
+ * were indistinguishable at the audit row — the ticket simply arrived
+ * unattributed and nothing anywhere said why.
+ *
+ *  - 'unusable-address' — the From address is empty/whitespace. Nothing can
+ *    identify anyone; not an error, the ticket is still created.
+ *  - 'shared-mailbox'   — several contacts hold this address. A legitimate
+ *    state (`support@`, `ap@`): `contacts_org_email_idx` is deliberately
+ *    non-unique and there is no honest way to pick one. Picking by display
+ *    name would key attribution off a header the sender controls (see
+ *    inboundEmailService's spoofable-From note); picking oldest or newest is a
+ *    coin flip wearing a rule.
+ *  - 'vanished'         — the single match was deleted between the probe and
+ *    the FOR KEY SHARE pin.
+ *
+ * In every case the ticket is still created and still carries the snapshotted
+ * submitter name/email — it just does not claim to know WHICH person wrote it.
  */
 export type EmailRequesterResolution =
   | { kind: 'contact'; contactId: string }
-  | { kind: 'ambiguous' };
+  | { kind: 'none'; reason: 'unusable-address' | 'shared-mailbox' | 'vanished' };
+
+/**
+ * Advisory-lock namespace for "resolve this (org, address) to a contact".
+ *
+ * The two-argument `pg_advisory_xact_lock(ns, key)` form the rest of the repo
+ * uses (services/discoveryJobCreation.ts, c2cJobCreation.ts, aiBudgetAlerts.ts):
+ * the one-argument form puts every caller in the process into ONE 64-bit key
+ * space, so an unrelated feature hashing a colliding string would block
+ * ingest for a tenant with no way to trace why.
+ *
+ * Exported because the INVITE path (routes/orgPortalUsers.ts) resolves the
+ * same (org, address) to the same contact and must take the SAME lock — an
+ * invite racing a first email from that address would otherwise each see "no
+ * contact" and each create one.
+ */
+export const INBOUND_CONTACT_LOCK_NAMESPACE = 'inbound-email-contact';
 
 /**
  * Resolve an inbound sender to the org's contact for that address, creating
@@ -72,7 +101,14 @@ export type EmailRequesterResolution =
  * `contacts_org_email_idx` is deliberately NON-unique (shared mailboxes), so
  * the database will not stop it. The advisory lock is taken FIRST, keyed on
  * (org, normalized address), which serialises exactly those two and nothing
- * else. It is transaction-scoped: the worker's transaction releases it.
+ * else.
+ *
+ * The lock is TRANSACTION-scoped, and the worker wraps the whole of
+ * `processInboundEmail` in one transaction — so it is held until that
+ * transaction ends, which includes `maybeSendAutoresponse`'s in-transaction
+ * send. That is deliberate (a duplicate contact is worse than a briefly held
+ * per-address lock) but it does mean the lock's hold time includes an SMTP
+ * round trip for the FIRST message from a new sender.
  */
 export async function resolveEmailRequester(
   orgId: string,
@@ -80,37 +116,24 @@ export async function resolveEmailRequester(
   name: string | null,
 ): Promise<EmailRequesterResolution> {
   const normalized = normalizeContactEmail(email);
-  // An empty/whitespace From address cannot identify anyone. Treated as
-  // ambiguous rather than thrown: the ticket must still be created.
-  if (!normalized) return { kind: 'ambiguous' };
+  // An empty/whitespace From cannot identify anyone, and locking on `<org>:`
+  // would serialise every malformed message in the org against each other for
+  // the rest of the worker transaction. Bail BEFORE the lock.
+  if (!normalized) return { kind: 'none', reason: 'unusable-address' };
 
-  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`${orgId}:${normalized}`}))`);
+  await db.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${INBOUND_CONTACT_LOCK_NAMESPACE}), hashtext(${`${orgId}:${normalized}`}))`,
+  );
 
-  // limit(2) is all the arithmetic this needs: one row means one contact, two
-  // rows mean "at least two" — the shared-mailbox case.
-  const found = await db
-    .select({ id: contacts.id })
-    .from(contacts)
-    .where(and(eq(contacts.orgId, orgId), sql`lower(${contacts.email}) = ${normalized}`))
-    .limit(2);
-
-  if (found.length === 0) {
+  const found = await matchContactByEmail(db, orgId, normalized);
+  if (found.kind === 'no-match') {
     // roles: [] — an emailing customer has demonstrated nothing except that
     // they email. 'portal' is claimed by the invite path, which is where
     // someone deliberately grants portal access.
     const created = await createContact(db, { orgId, email: normalized, name, roles: [] }, { userId: null });
     return { kind: 'contact', contactId: created.id };
   }
-
-  if (found.length > 1) return { kind: 'ambiguous' };
-
-  const contactId = found[0]!.id;
-  // Pin the row for the ticket FK the caller is about to write. The FK write
-  // would take FOR KEY SHARE on this parent anyway (#3911); taking it here,
-  // under the advisory lock we already hold, keeps the acquisition order the
-  // same on every inbound path.
-  await db.select({ id: contacts.id }).from(contacts).where(eq(contacts.id, contactId)).for('key share').limit(1);
-  return { kind: 'contact', contactId };
+  return found;
 }
 
 /**

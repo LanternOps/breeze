@@ -613,6 +613,39 @@ describe('processInboundEmail', () => {
     expect(stamp!.set.emailThreadKey).toBe('<ticket-t-mid2@tickets.example.com>');
   });
 
+  // #3258 W03 review I1: a portal LOGIN whose contact_id is null files a ticket
+  // that nobody can claim in the portal — createTicket derives the person from
+  // that column and there is nothing to derive. Recorded as a note (never an
+  // error: the ticket is correct, the login's data is incomplete).
+  it('notes a portal-login sender whose login carries no contact link', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1', name: 'Jane', contactId: null }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-nc', internalNumber: 'T-2026-0031' });
+
+    await processInboundEmail(email({ subject: 'login without contact' }));
+
+    const row = inboundOf()[0]!;
+    expect(row.parseStatus).toBe('created');
+    expect(row.error).toMatch(/requester not linked/i);
+    expect(row.error).toMatch(/login/i);
+  });
+
+  it('adds no note when the portal-login sender IS linked to a contact', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1', name: 'Jane', contactId: 'ct-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    createTicketMock.mockResolvedValue({ id: 't-lc', internalNumber: 'T-2026-0032' });
+
+    await processInboundEmail(email({ subject: 'login with contact' }));
+
+    expect(inboundOf()[0]!.error ?? null).toBeNull();
+  });
+
   it('quarantines an unmatched unknown sender (no ticket)', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = [];
@@ -1024,10 +1057,10 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
     expect(inboundOf()[0]!.parseStatus).toBe('created');
   });
 
-  it('a shared mailbox (ambiguous) still creates the ticket, with NO contact link and the snapshot kept', async () => {
+  it('a shared mailbox still creates the ticket, with NO contact link and the snapshot kept', async () => {
     state.selectRows['organizations'] = [{ id: 'o-9' }];
     resolveOrgMock.mockResolvedValue({ orgId: 'o-9', autoCreateContact: true });
-    resolveRequesterMock.mockResolvedValue({ kind: 'ambiguous' });
+    resolveRequesterMock.mockResolvedValue({ kind: 'none', reason: 'shared-mailbox' });
     createTicketMock.mockResolvedValue({ id: 't-amb', internalNumber: 'T-2026-0098' });
 
     await processInboundEmail(email());
@@ -1040,6 +1073,57 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
     expect(input.submitterEmail).toBe('jane@customer.com');
     expect(input.submitterName).toBe('Jane Doe');
     expect(inboundOf()[0]!.parseStatus).toBe('created');
+  });
+
+  // ---- #3258 W03 review I1: WHY a ticket came in unattributed is recorded ----
+  //
+  // `ticket_email_inbound.error` already carries operator notes rather than
+  // only exceptions ("lost message-id claim to ticket ..."). Before this, an
+  // unresolvable requester was discarded at the call site: the audit row for a
+  // shared mailbox and for a malformed From were byte-identical, so the one
+  // question an operator asks ("why is this ticket attributed to nobody?") had
+  // no answer anywhere in the system.
+
+  it('records the shared-mailbox reason (with the address) on the created audit row', async () => {
+    state.selectRows['organizations'] = [{ id: 'o-9' }];
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-9', autoCreateContact: true });
+    resolveRequesterMock.mockResolvedValue({ kind: 'none', reason: 'shared-mailbox' });
+    createTicketMock.mockResolvedValue({ id: 't-amb', internalNumber: 'T-2026-0098' });
+
+    await processInboundEmail(email());
+
+    const row = inboundOf()[0]!;
+    expect(row.parseStatus).toBe('created');
+    // The ADDRESS is what makes the note actionable — it is the thing the
+    // operator has to go and de-duplicate in the contacts list.
+    expect(row.error).toMatch(/requester not linked/i);
+    expect(row.error).toContain('jane@customer.com');
+    expect(row.error).toMatch(/share/i);
+  });
+
+  it('records the vanished reason distinctly from the shared-mailbox one', async () => {
+    state.selectRows['organizations'] = [{ id: 'o-9' }];
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-9', autoCreateContact: true });
+    resolveRequesterMock.mockResolvedValue({ kind: 'none', reason: 'vanished' });
+    createTicketMock.mockResolvedValue({ id: 't-v', internalNumber: 'T-2026-0097' });
+
+    await processInboundEmail(email());
+
+    const row = inboundOf()[0]!;
+    expect(row.parseStatus).toBe('created');
+    expect(row.error).toMatch(/requester not linked/i);
+    expect(row.error).not.toMatch(/share/i);
+  });
+
+  it('leaves the audit note empty when the requester DID resolve', async () => {
+    state.selectRows['organizations'] = [{ id: 'o-9' }];
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-9', autoCreateContact: true });
+    resolveRequesterMock.mockResolvedValue({ kind: 'contact', contactId: 'ct-ok' });
+    createTicketMock.mockResolvedValue({ id: 't-ok', internalNumber: 'T-2026-0096' });
+
+    await processInboundEmail(email());
+
+    expect(inboundOf()[0]!.error ?? null).toBeNull();
   });
 
   it('routes a mapped domain (autoCreateContact false) -> creates ticket, NO contact onboarding', async () => {
@@ -1090,12 +1174,12 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
     expect(maybeSendAutoresponseMock).toHaveBeenCalledTimes(1);
   });
 
-  it('STILL fires the autoresponder when the sender is a shared mailbox (ambiguous)', async () => {
+  it('STILL fires the autoresponder when the sender is a shared mailbox', async () => {
     // An unresolvable person is not an unaccepted sender: the domain is mapped
     // and the mail was accepted, so the customer gets their acknowledgement.
     state.selectRows['organizations'] = [{ id: 'o-9' }];
     resolveOrgMock.mockResolvedValue({ orgId: 'o-9', autoCreateContact: true });
-    resolveRequesterMock.mockResolvedValue({ kind: 'ambiguous' });
+    resolveRequesterMock.mockResolvedValue({ kind: 'none', reason: 'shared-mailbox' });
     createTicketMock.mockResolvedValue({ id: 't-amb', internalNumber: 'T-2026-0098' });
 
     await processInboundEmail(email());

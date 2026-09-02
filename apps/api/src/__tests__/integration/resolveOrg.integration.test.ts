@@ -126,7 +126,18 @@ describe('resolveEmailRequester', () => {
     expect(logins).toHaveLength(0);
   });
 
-  it('returns ambiguous for a shared mailbox and mints no duplicate', async () => {
+  it("returns none/'unusable-address' for an empty From and creates nothing", async () => {
+    const { org } = await seedPartnerOrg();
+
+    const result = await withSystemDbAccessContext(() => resolveEmailRequester(org.id, '   ', 'Nobody'));
+
+    expect(result).toEqual({ kind: 'none', reason: 'unusable-address' });
+    const adminDb = getTestDb() as any;
+    const rows = await adminDb.select({ id: contacts.id }).from(contacts).where(eq(contacts.orgId, org.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("returns none/'shared-mailbox' for a shared mailbox and mints no duplicate", async () => {
     const { org } = await seedPartnerOrg();
     const email = `support-${uniqueSuffix()}@acme.test`;
     const adminDb = getTestDb() as any;
@@ -138,7 +149,7 @@ describe('resolveEmailRequester', () => {
 
     const result = await withSystemDbAccessContext(() => resolveEmailRequester(org.id, email, 'Acme Support'));
 
-    expect(result).toEqual({ kind: 'ambiguous' });
+    expect(result).toEqual({ kind: 'none', reason: 'shared-mailbox' });
     const rows = await adminDb.select({ id: contacts.id }).from(contacts).where(eq(contacts.orgId, org.id));
     expect(rows).toHaveLength(2);
   });

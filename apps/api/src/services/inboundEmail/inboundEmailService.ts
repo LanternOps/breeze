@@ -399,7 +399,16 @@ export async function processInboundEmail(
       // A portal LOGIN. createTicket derives the person from its contact_id —
       // the inbound path must not resolve a second candidate by address.
       const t = await createFromEmail(n, partnerId, sender.orgId, null, null, { kind: 'portal', portalUserId: sender.id }, true);
-      await logCreated(n, partnerId, t);
+      // A login with no contact_id yields a ticket attributed to nobody. Not an
+      // error (the ticket is right, the login's data is incomplete) — a note,
+      // so the gap is visible instead of only showing up as a customer who
+      // cannot see their own ticket in the portal.
+      await logCreated(
+        n,
+        partnerId,
+        t,
+        sender.contactId ? undefined : `requester not linked: portal login ${n.from} has no contact`
+      );
       return;
     }
 
@@ -414,13 +423,18 @@ export async function processInboundEmail(
       // what the acknowledgement is gated on — even when the address resolves to
       // several contacts (a shared mailbox) and no single person can be named.
       let requester: EmailTicketRequester = null;
+      let requesterNote: string | undefined;
       const autoresponse = domainMatch.autoCreateContact;
       if (domainMatch.autoCreateContact) {
         const resolved = await resolveEmailRequester(domainMatch.orgId, n.from, n.fromName ?? null);
-        requester = resolved.kind === 'contact' ? { kind: 'contact', contactId: resolved.contactId } : null;
+        if (resolved.kind === 'contact') {
+          requester = { kind: 'contact', contactId: resolved.contactId };
+        } else {
+          requesterNote = unlinkedRequesterNote(resolved.reason, n.from);
+        }
       }
       const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, requester, autoresponse);
-      await logCreated(n, partnerId, t);
+      await logCreated(n, partnerId, t, requesterNote);
       return;
     }
 
@@ -467,7 +481,7 @@ export async function processInboundEmail(
 // binding, #3643) and the unmatched fallthrough so both reuse the same
 // partner-scoped queries instead of issuing duplicates.
 function createSenderResolver(from: string, partnerId: string): SenderResolver {
-  let portalUserPromise: Promise<{ id: string; orgId: string; name: string | null } | null> | undefined;
+  let portalUserPromise: Promise<{ id: string; orgId: string; name: string | null; contactId: string | null } | null> | undefined;
   let domainOrgPromise: Promise<{ orgId: string; autoCreateContact: boolean } | null> | undefined;
 
   return {
@@ -485,25 +499,54 @@ function createSenderResolver(from: string, partnerId: string): SenderResolver {
 // Terminal audit row for a create-path result. `lostClaimTo` is normally null;
 // when set, the row names the ticket that already owned this message-id so the
 // duplicate is reconcilable without reading Sentry (see `warnLostClaim`).
+//
+// `note` (#3258 W03) is the second kind of thing this column carries: an
+// operator-facing observation about a ticket that was nonetheless created
+// correctly — today, why its requester could not be resolved to a person.
+// `ticket_email_inbound.error` is the only durable place that answer can live,
+// and both notes are joined rather than one shadowing the other.
 async function logCreated(
   n: NormalizedInboundEmail,
   partnerId: string,
-  result: { id: string; lostClaimTo: string | null }
+  result: { id: string; lostClaimTo: string | null },
+  note?: string
 ): Promise<void> {
-  await logInbound(
-    n,
-    partnerId,
-    'created',
-    result.id,
-    result.lostClaimTo ? `lost message-id claim to ticket ${result.lostClaimTo}` : undefined
-  );
+  const notes = [
+    result.lostClaimTo ? `lost message-id claim to ticket ${result.lostClaimTo}` : null,
+    note ?? null,
+  ].filter((v): v is string => v !== null);
+  await logInbound(n, partnerId, 'created', result.id, notes.length ? notes.join('; ') : undefined);
+}
+
+/**
+ * Operator-facing note for a ticket whose requester could not be pinned to a
+ * person (#3258 W03). Named reasons, not a generic "unresolved": each one has a
+ * different remedy (de-duplicate the shared address; fix the malformed sender;
+ * link the login to a contact), and the audit row is the only place an operator
+ * can read it back.
+ */
+function unlinkedRequesterNote(
+  reason: 'unusable-address' | 'shared-mailbox' | 'vanished',
+  address: string
+): string {
+  switch (reason) {
+    case 'shared-mailbox':
+      // Deliberately not a count: the probe uses limit(2) precisely because
+      // "one or more than one" is the whole decision, and a second COUNT query
+      // on a cold path would buy an exact number nothing acts on.
+      return `requester not linked: several contacts share ${address}`;
+    case 'vanished':
+      return `requester not linked: the contact for ${address} was deleted mid-resolve`;
+    case 'unusable-address':
+      return 'requester not linked: the From address is empty';
+  }
 }
 
 // (4) Sender -> portal user, scoped to the resolved partner via the org->partner join.
 // portal_users has no partner_id; a same-email user under a DIFFERENT partner must not match.
-async function findPortalUserInPartner(email: string, partnerId: string): Promise<{ id: string; orgId: string; name: string | null } | null> {
+async function findPortalUserInPartner(email: string, partnerId: string): Promise<{ id: string; orgId: string; name: string | null; contactId: string | null } | null> {
   const rows = await db
-    .select({ id: portalUsers.id, orgId: portalUsers.orgId, name: portalUsers.name })
+    .select({ id: portalUsers.id, orgId: portalUsers.orgId, name: portalUsers.name, contactId: portalUsers.contactId })
     .from(portalUsers)
     .innerJoin(organizations, eq(portalUsers.orgId, organizations.id))
     .where(and(eq(portalUsers.email, email.toLowerCase()), eq(organizations.partnerId, partnerId)))
