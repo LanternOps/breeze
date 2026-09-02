@@ -829,6 +829,14 @@ jobs:
       - name: Run agent mTLS edge policy guard
         run: pnpm check:agent-mtls-edge-policy
 
+      # #4497: scripts/backup.sh and scripts/restore.sh used to pass
+      # DATABASE_URL (password included) directly on pg_dump's/pg_restore's/
+      # psql's argv, visible to any local user via `ps` for the whole
+      # dump/restore. Covers the PG* URL-splitting helper's parsing and
+      # statically guards both scripts against reintroducing the pattern.
+      - name: Test pg connection env helper (#4497)
+        run: pnpm test:pg-connect-env
+
   build-api:
     name: Build API
     runs-on: ubuntu-latest

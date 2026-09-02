@@ -22,6 +22,7 @@
     "check:agent-mtls-edge-policy": "bash scripts/check-agent-mtls-edge-policy.sh",
     "check:agent-binary-signatures": "bash scripts/security/check-agent-binary-signatures.sh --source",
     "test:agent-binary-signatures": "node --test scripts/security/check-agent-binary-signatures.test.mjs",
+    "test:pg-connect-env": "node --test scripts/lib/pg-connect-env.test.mjs",
     "db:migrate": "turbo run db:migrate --filter=@breeze/api",
     "db:check-drift": "turbo run db:check-drift --filter=@breeze/api",
     "db:seed": "turbo run db:seed --filter=@breeze/api",
