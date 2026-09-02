@@ -223,5 +223,23 @@ BEGIN
     SET status = 'open', accepted_by = NULL, accepted_until = NULL, resolved_at = NULL, mitigation_note = NULL
     WHERE device_id = v_windows_device_id AND vulnerability_id = v_vuln_critical;
 
+  -- ───────────────────────────────────────────────────────────────────
+  -- AI budget alert event (#4388 W03): one fired monthly 80% rung for the
+  -- current UTC calendar month so the AI usage settings page
+  -- (/settings/ai-usage) renders `ai-budget-fired-rungs`. period_key
+  -- computed the same way as aiCostTracker.ts getUsageSummary() (UTC
+  -- `YYYY-MM`) so it's found by the same query. Mirrored in
+  -- apps/api/src/db/seedE2eFixtures.ts.
+  -- ───────────────────────────────────────────────────────────────────
+  INSERT INTO ai_budget_alert_events (org_id, period, period_key, threshold_pct, cap_cents, used_cents, billing_source, delivered_at, recipient_count)
+  SELECT v_org_id, 'monthly', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM'), 80, 10000, 8500, 'platform', NOW(), 1
+  WHERE NOT EXISTS (
+    SELECT 1 FROM ai_budget_alert_events
+    WHERE org_id = v_org_id
+      AND period = 'monthly'
+      AND period_key = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM')
+      AND threshold_pct = 80
+  );
+
   RAISE NOTICE 'E2E fixtures seeded for org %', v_org_id;
 END $$;

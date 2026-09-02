@@ -194,6 +194,35 @@ describe('AI routes', () => {
 
       expect(res.status).toBe(403);
     });
+
+    // #4388: the no-orgId branch (system/partner users with no specific org)
+    // never calls getUsageSummary, so it has its own literal response shape.
+    // alerts.fired must still be present (empty) so callers can read
+    // `usage.alerts.fired` unconditionally across every /ai/usage response.
+    it('returns alerts.fired as an empty array when there is no orgId to resolve', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'admin-1', email: 'admin@example.com' },
+          scope: 'system',
+          orgId: null,
+          accessibleOrgIds: null,
+          canAccessOrg: () => true,
+        });
+        return next();
+      });
+
+      const res = await app.request('/ai/usage', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.budget).toBeNull();
+      expect(body.alerts).toEqual({ fired: [] });
+      expect(getUsageSummary).not.toHaveBeenCalled();
+    });
   });
 
   // ============================================

@@ -1,14 +1,21 @@
 import type { InheritableAiBudgetSettings } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import AiBudgetThresholdsInput from './AiBudgetThresholdsInput';
 
 type Props = {
   /** Internal representation uses cents for budgets; this component displays dollars */
   data: InheritableAiBudgetSettings;
   onChange: (data: InheritableAiBudgetSettings) => void;
+  /**
+   * Raised when the alert-threshold box holds text that does not parse. The
+   * hub gates its Save button on it, so an unparseable ladder cannot be
+   * silently dropped while the save reports success (#4388 W03).
+   */
+  onValidityChange?: (valid: boolean) => void;
 };
 
-export default function PartnerAiBudgetsTab({ data, onChange }: Props) {
+export default function PartnerAiBudgetsTab({ data, onChange, onValidityChange }: Props) {
   const { t } = useTranslation('settings');
   const set = (patch: Partial<InheritableAiBudgetSettings>) =>
     onChange({ ...data, ...patch });
@@ -114,6 +121,18 @@ export default function PartnerAiBudgetsTab({ data, onChange }: Props) {
                 min={1}
                 max={10000}
               />
+            </div>
+
+            <div className="space-y-2 sm:col-span-2">
+              <label className="text-sm font-medium">{t('partnerAiBudgets.alertThresholds')}</label>
+              <AiBudgetThresholdsInput
+                value={data.alertThresholdPercents}
+                onChange={(v) => set({ alertThresholdPercents: v })}
+                onValidityChange={onValidityChange}
+                placeholder={t('partnerAiBudgets.notSet')}
+                testId="partner-ai-budget-thresholds"
+              />
+              <p className="text-xs text-muted-foreground">{t('partnerAiBudgets.alertThresholdsHelp')}</p>
             </div>
           </div>
 

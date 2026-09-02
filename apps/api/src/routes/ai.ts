@@ -1055,12 +1055,15 @@ aiRoutes.get(
     const orgId = c.req.query('orgId') || auth.orgId;
 
     if (!orgId) {
-      // System/partner users without a specific org — return zero usage
+      // System/partner users without a specific org: no org to resolve an
+      // effective budget for, so budget stays null. #4388: alerts.fired must
+      // still be present (empty) so callers can read it unconditionally.
       return c.json({
         daily: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
         monthly: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
         budget: null,
         billedTo: 'platform' as const,
+        alerts: { fired: [] },
       });
     }
 

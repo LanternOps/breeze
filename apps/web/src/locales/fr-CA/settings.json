@@ -119,7 +119,9 @@
     "maxTurns": "Nombre maximal de tours par session",
     "messagesPerMinute": "Messages par minute et utilisateur",
     "messagesPerHour": "Messages par heure et par organisation",
-    "notSet": "Non défini — les organisations se configurent individuellement",
+    "alertThresholds": "Avertir à (% du budget)",
+    "alertThresholdsHelp": "Les administrateurs partenaires ayant accès à la facturation reçoivent une alerte dans l'application à chaque palier et un courriel pour les alertes mensuelles et de plafond atteint. Laissez vide pour hériter de 50, 80, 95.",
+    "notSet": "Non défini, les organisations se configurent individuellement",
     "description": "Les valeurs budgétaires sont appliquées dans toutes les organisations d’enfants. Les montants en dollars sont stockés en centimes en interne.",
     "modes": {
       "perStep": "Par étape",
@@ -127,6 +129,9 @@
       "autoApprove": "Approbation automatique",
       "hybridPlan": "Plan hybride"
     }
+  },
+  "aiBudgetThresholds": {
+    "invalid": "Saisissez jusqu'à cinq nombres entiers entre 1 et 99, séparés par des virgules."
   },
   "partnerAiProvider": {
     "title": "Fournisseur d'IA",
@@ -1294,6 +1299,13 @@
     "monthlyBudget": "Budget mensuel ($)",
     "noLimit": "Aucune limite",
     "dailyBudget": "Budget quotidien ($)",
+    "alertThresholds": "Avertir à (% du budget)",
+    "alertThresholdsHelp": "Les alertes sont envoyées aux administrateurs partenaires ayant accès à la facturation. 100% (plafond atteint) est toujours envoyé.",
+    "firedRung": "Alerte {{pct}}% {{period}} envoyée le {{date}}",
+    "periodLabel": {
+      "daily": "quotidienne",
+      "monthly": "mensuelle"
+    },
     "maxTurnsPerSession": "Nombre maximal de tours par session",
     "msgsMinPerUser": "Messages par Min par utilisateur",
     "msgsHrPerOrg": "Messages et RH par organisation",
